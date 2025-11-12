@@ -1373,6 +1373,11 @@ def _yield_feature_frames(ds: "Dataset",
         except Exception as e:
             print(f"[feature-input] failed to read {p}: {e}", file=sys.stderr)
             continue
+        # Skip marker tiny tables (<= 1 row or < 2 numeric cols)
+        if len(df) <= 1:
+            continue
+        if df.select_dtypes(include=[np.number]).shape[1] < 2:
+            continue
         yield g, s, df
 
 # ----------------------------
@@ -1448,6 +1453,28 @@ def _update_finished_times(idx_path: Path, run_id: str, finished_at: str):
         df.loc[sel, "finished_at"] = str(finished_at)
         df.to_csv(idx_path, index=False)
 
+def _list_feature_runs(ds: "Dataset", feature_name: str) -> pd.DataFrame:
+    idx = _feature_index_path(ds, feature_name)
+    if not idx.exists():
+        raise FileNotFoundError(f"No index for feature '{feature_name}'. Expected: {idx}")
+    df = pd.read_csv(idx)
+    # prefer finished runs, newest first
+    if "finished_at" in df.columns:
+        cand = df[df["finished_at"].fillna("").astype(str) != ""]
+        base = cand if len(cand) else df
+        base = base.sort_values(by=["finished_at" if len(cand) else "started_at"],
+                                ascending=False, kind="stable")
+    else:
+        base = df.sort_values(by=["started_at"], ascending=False, kind="stable")
+    return base
+
+def _latest_feature_run_root(ds: "Dataset", feature_name: str) -> tuple[str, Path]:
+    base = _list_feature_runs(ds, feature_name)
+    if base.empty:
+        raise ValueError(f"No runs found for feature '{feature_name}'.")
+    run_id = str(base.iloc[0]["run_id"])
+    return run_id, _feature_run_root(ds, feature_name, run_id)        
+
 def run_feature(self,
                 feature: Feature,
                 groups: Optional[Iterable[str]] = None,
@@ -1486,13 +1513,19 @@ def run_feature(self,
           features/<feature>/<run_id>/model.joblib
     - Returns run_id.
     """
+    # Determine on-disk storage name (may encode upstream)
+    storage_feature_name = getattr(feature, "storage_feature_name", feature.name)
+    use_input_suffix = getattr(feature, "storage_use_input_suffix", True)
+    if input_kind == "feature" and input_feature and use_input_suffix:
+        storage_feature_name = f"{storage_feature_name}__from__{input_feature}"
+
     # Prepare run id & root
     params_hash = _hash_params(getattr(feature, "params", {}))
     run_id = f"{feature.version}-{params_hash}"
-    run_root = _feature_run_root(self, feature.name, run_id)
+    run_root = _feature_run_root(self, storage_feature_name, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    idx_path = _feature_index_path(self, feature.name)
+    idx_path = _feature_index_path(self, storage_feature_name)
     _ensure_feature_index(idx_path)
     started = _now_iso()
 
@@ -1507,6 +1540,11 @@ def run_feature(self,
         iter_inputs = lambda: _yield_sequences(self, groups, sequences)
 
     # ===== FIT PHASE =====
+    if hasattr(feature, "bind_dataset"):
+        try:
+            feature.bind_dataset(self)   # allow feature to read feature indexes & roots
+        except Exception as e:
+            print(f"[feature:{feature.name}] bind_dataset failed: {e}", file=sys.stderr)
     if feature.needs_fit():
         if feature.supports_partial_fit():
             for _, _, df in iter_inputs():
@@ -1522,31 +1560,44 @@ def run_feature(self,
             all_dfs = []
             for _, _, df in iter_inputs():
                 all_dfs.append(df)
-            if all_dfs:
+            # Always call fit, even if no streamed inputs were found.
+            # Many "global/artifact" features load their own matrices from disk.
+            try:
                 feature.fit(all_dfs)
+            except TypeError:
+                # Backward-compat: some features may define fit(self) with no args.
+                try:
+                    feature.fit()  # type: ignore
+                except Exception as e:
+                    print(f"[feature:{feature.name}] fit() failed: {e}", file=sys.stderr)
 
         # Save model state if any
         model_path = run_root / "model.joblib"
         try:
             feature.save_model(model_path)
         except NotImplementedError:
+            print['No Feature Implemented']
             pass
 
     # ===== TRANSFORM PHASE =====
     out_rows = []
+    had_transform_inputs = False
     for g, s, df in iter_inputs():
+        had_transform_inputs = True
         safe_group = to_safe_name(g) if g else ""
         safe_seq = to_safe_name(s)
         out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
         out_path = run_root / out_name
         if out_path.exists() and not overwrite:
+            if getattr(feature, "skip_existing_outputs", False):
+                continue
             # still record to index with current run_id
             try:
                 n_rows = int(pd.read_parquet(out_path).shape[0])
             except Exception:
                 n_rows = None
             out_rows.append({
-                "feature": feature.name, "version": feature.version, "run_id": run_id,
+                "feature": storage_feature_name, "version": feature.version, "run_id": run_id,
                 "group": g, "sequence": s, "group_safe": safe_group, "sequence_safe": safe_seq,
                 "abs_path": str(out_path.resolve()),
                 "n_rows": n_rows, "params_hash": params_hash,
@@ -1563,16 +1614,34 @@ def run_feature(self,
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df_feat.to_parquet(out_path, index=False)
         out_rows.append({
-            "feature": feature.name, "version": feature.version, "run_id": run_id,
+            "feature": storage_feature_name, "version": feature.version, "run_id": run_id,
             "group": g, "sequence": s, "group_safe": safe_group, "sequence_safe": safe_seq,
             "abs_path": str(out_path.resolve()),
             "n_rows": int(len(df_feat)), "params_hash": params_hash,
             "started_at": started, "finished_at": ""
         })
 
+    # Some global-only features (e.g., clustering over standalone artifacts) never
+    # receive streamed tables. In that case we still want to record the run in the
+    # index so downstream tooling can discover the run_id.
+    if not out_rows and not had_transform_inputs:
+        marker_seq = "__global__"
+        safe_marker_seq = to_safe_name(marker_seq)
+        marker_path = run_root / f"{safe_marker_seq}.parquet"
+        marker_df = pd.DataFrame({"run_marker": [True]})
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_df.to_parquet(marker_path, index=False)
+        out_rows.append({
+            "feature": storage_feature_name, "version": feature.version, "run_id": run_id,
+            "group": "", "sequence": marker_seq, "group_safe": "", "sequence_safe": safe_marker_seq,
+            "abs_path": str(marker_path.resolve()),
+            "n_rows": int(len(marker_df)), "params_hash": params_hash,
+            "started_at": started, "finished_at": ""
+        })
+
     _append_feature_index(idx_path, out_rows)
     _update_finished_times(idx_path, run_id, _now_iso())
-    print(f"[feature:{feature.name}] completed run_id={run_id} -> {run_root}")
+    print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return run_id
 
 # Attach to class
