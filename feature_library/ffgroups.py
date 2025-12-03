@@ -84,6 +84,9 @@ class FFGroups:
         group_col, seq_col = p["group_col"], p["seq_col"]
         distance_cutoff = float(p["distance_cutoff"])
         win = max(1, int(p["window_size"]))
+        if np.mod(win,2)==0:
+            raise ValueError('window_size must be an odd integer')
+
         min_event = int(p["min_event_duration"])
 
         # Basic ordering and bookkeeping

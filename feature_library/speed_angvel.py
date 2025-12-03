@@ -102,37 +102,18 @@ class SpeedAngvel:
         p = self.params
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
+        id_col = p["id_col"]
 
-        x = df[p["x_col"]].to_numpy(dtype=float)
-        y = df[p["y_col"]].to_numpy(dtype=float)
-        angle = df[p["angle_col"]].to_numpy(dtype=float) if p["angle_col"] in df.columns else None
+        if id_col not in df.columns:
+            raise ValueError(f"Missing id column '{id_col}' for per-id speed/angvel.")
 
-        time_arr = None
-        if p["time_col"] in df.columns:
-            time_arr = df[p["time_col"]].to_numpy(dtype=float)
+        out_parts = []
+        for _, sub in df.groupby(id_col, sort=False):
+            out_parts.append(self._compute_one_id(sub, p, order_col))
 
-        # Base step = 1 frame
-        speed = self._compute_speed(x, y, step=1, time_arr=time_arr)
-        angvel = self._compute_angvel(angle, step=1, time_arr=time_arr) if angle is not None else None
-
-        out = pd.DataFrame()
-        out["speed"] = speed
-        if angvel is not None:
-            out["angvel"] = angvel
-
-        step_size = p.get("step_size")
-        if step_size:
-            step_size = int(step_size)
-            out[f"speed_step"] = self._compute_speed(x, y, step=step_size, time_arr=time_arr)
-            if angle is not None:
-                out[f"angvel_step"] = self._compute_angvel(angle, step=step_size, time_arr=time_arr)
-
-        # Attach meta columns
-        for c in ("frame", "time", p["seq_col"], p["group_col"], p["id_col"]):
-            if c in df.columns and c not in out.columns:
-                out[c] = df[c]
-
-        return out
+        if not out_parts:
+            return pd.DataFrame()
+        return pd.concat(out_parts, axis=0, ignore_index=True)
 
     # ------------------ Internal helpers ------------------------
     def _order_col(self, df: pd.DataFrame) -> str:
@@ -163,3 +144,29 @@ class SpeedAngvel:
         dtheta = _angular_diff(angle, step)
         dt = self._dt(step, time_arr, len(angle))
         return dtheta / dt
+
+    def _compute_one_id(self, sub: pd.DataFrame, p: dict, order_col: str) -> pd.DataFrame:
+        sub = sub.sort_values(order_col).reset_index(drop=True)
+        x = sub[p["x_col"]].to_numpy(dtype=float)
+        y = sub[p["y_col"]].to_numpy(dtype=float)
+        angle = sub[p["angle_col"]].to_numpy(dtype=float) if p["angle_col"] in sub.columns else None
+        time_arr = sub[p["time_col"]].to_numpy(dtype=float) if p["time_col"] in sub.columns else None
+
+        out = pd.DataFrame({
+            "speed": self._compute_speed(x, y, step=1, time_arr=time_arr),
+        })
+        if angle is not None:
+            out["angvel"] = self._compute_angvel(angle, step=1, time_arr=time_arr)
+
+        step_size = p.get("step_size")
+        if step_size:
+            step_size = int(step_size)
+            out["speed_step"] = self._compute_speed(x, y, step=step_size, time_arr=time_arr)
+            if angle is not None:
+                out["angvel_step"] = self._compute_angvel(angle, step=step_size, time_arr=time_arr)
+
+        # Attach meta columns from this sub-id
+        for c in ("frame", "time", p["seq_col"], p["group_col"], p["id_col"]):
+            if c in sub.columns:
+                out[c] = sub[c].values
+        return out

@@ -2,3 +2,7 @@
 .DS_Store
 /.ipynb_checkpoints
 /guppies-collective-src
+/src/behavior/__pycache__
+/src/behavior/__pycache__
+*.pyc
+*.pyc

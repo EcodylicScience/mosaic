@@ -2213,19 +2213,56 @@ def _yield_inputset_frames(ds: "Dataset",
         return
     resolved_inputs = scope.get("resolved_inputs") or []
     track_specs = [spec for spec in resolved_inputs if str(spec.get("kind")) == "tracks"]
+    feat_specs = [spec for spec in resolved_inputs if str(spec.get("kind", "feature")) == "feature"]
 
-    # If the inputset includes tracks explicitly, use them and respect optional column selection.
-    if track_specs:
-        cols = track_specs[-1].get("columns")  # use the last spec if multiple are provided
-        for g, s, df in _yield_sequences(ds, groups, sequences, allowed_pairs=allowed_pairs):
+    # Helper to load a prior feature dataframe for a given pair/run_id
+    def _load_feature_df(feat_name: str, run_id: str, group: str, sequence: str) -> Optional[pd.DataFrame]:
+        idx_path = _feature_index_path(ds, feat_name)
+        if not idx_path.exists():
+            return None
+        df_idx = pd.read_csv(idx_path)
+        df_idx = df_idx[
+            (df_idx["run_id"].astype(str) == str(run_id)) &
+            (df_idx["group"].astype(str) == str(group)) &
+            (df_idx["sequence"].astype(str) == str(sequence))
+        ]
+        if df_idx.empty:
+            return None
+        pth = ds.remap_path(df_idx.iloc[0]["abs_path"]) if hasattr(ds, "remap_path") else Path(df_idx.iloc[0]["abs_path"])
+        if not pth.exists():
+            return None
+        try:
+            return pd.read_parquet(pth)
+        except Exception:
+            return None
+
+    for g, s, df_tracks in _yield_sequences(ds, groups, sequences, allowed_pairs=allowed_pairs):
+        df = df_tracks
+        # Apply track column filter if provided
+        if track_specs:
+            cols = track_specs[-1].get("columns")
             if cols:
                 keep = [c for c in cols if c in df.columns]
                 df = df[keep]
-            yield g, s, df
-        return
-
-    # Fallback to default behavior (tracks) when there is no explicit tracks spec.
-    yield from _yield_sequences(ds, groups, sequences, allowed_pairs=allowed_pairs)
+        # Merge in feature specs if any
+        for spec in feat_specs:
+            feat_name = spec.get("feature")
+            run_id = spec.get("run_id")
+            if not feat_name or run_id is None:
+                continue
+            df_feat = _load_feature_df(feat_name, run_id, g, s)
+            if df_feat is None or df_feat.empty:
+                continue
+            # Merge on shared meta columns
+            on_cols = [c for c in ("frame", "time", "id", "group", "sequence") if c in df.columns and c in df_feat.columns]
+            if not on_cols:
+                on_cols = [c for c in ("frame", "time") if c in df.columns and c in df_feat.columns]
+            if not on_cols:
+                # fallback to cartesian concat
+                df = pd.concat([df.reset_index(drop=True), df_feat.reset_index(drop=True)], axis=1)
+            else:
+                df = df.merge(df_feat, how="left", on=on_cols)
+        yield g, s, df
 
 @dataclass
 class FeatureRunInfo:
