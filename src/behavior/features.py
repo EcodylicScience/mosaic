@@ -10,7 +10,7 @@ import pandas as pd
 import joblib
 import pyarrow as pa
 import pyarrow.parquet as pq
-import re, sys
+import re, sys, fnmatch
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.decomposition import IncrementalPCA
@@ -24,7 +24,6 @@ from sklearn.neighbors import NearestNeighbors
 from .helpers import to_safe_name
 
 INHERIT_REGEX = object()
-
 
 try:
     import pywt
@@ -633,234 +632,271 @@ class ModelPredictFeature:
             return None
         return json.loads(json.dumps(self._input_signature))
 
+# === Orientation-aware features ===# === Orientation-aware features ===
+
+
 @register_feature
-class PairPoseDistancePCA:
+class BodyScaleFeature:
     """
-    'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and
-    fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
-    
-    Output of transform(df) is a DataFrame with:
-      - frame (if present) and/or time (if present)
-      - perspective: 0 for A→B, 1 for B→A (if duplicate_perspective=True)
-      - PC0..PC{k-1}
-      - (optionally) group/sequence if present in df, for convenience
+    Per-frame body scale: median intra-animal pose distance.
 
-    Model state (IPCA, mean_, components_, indices) is persisted via save_model().
+    Outputs per sequence parquet with columns: frame, id, scale, sequence, group.
+    Intended to be averaged later (per sequence or dataset) to derive a single
+    normalization constant for downstream orientation features.
     """
 
-    # registry-facing metadata
-    name    = "pair-posedistance-pca"
+    name = "body-scale"
     version = "0.1"
-
-    # ---------- Defaults ----------
-    _defaults = dict(
-        # pose / columns
-        pose_n=7,                               # number of pose points per animal
-        x_prefix="poseX", y_prefix="poseY",     # TRex-ish column naming
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        order_pref=("frame", "time"),           # priority to order frames
-
-        # feature config
-        include_intra_A=True,
-        include_intra_B=True,
-        include_inter=True,
-        duplicate_perspective=True,
-
-        # cleaning / interpolation per animal
-        linear_interp_limit=10,
-        edge_fill_limit=3,
-        max_missing_fraction=0.10,
-
-        # IPCA
-        n_components=6,
-        batch_size=5000,
-    )
+    parallelizable = True
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
-        self._ipca: Optional[IncrementalPCA] = IncrementalPCA(
-            n_components=self.params["n_components"],
-            batch_size=self.params["batch_size"],
-        )
-        self._fitted = False
-        # will be set after first feature-shape discovery
-        self._tri_i: Optional[np.ndarray] = None
-        self._tri_j: Optional[np.ndarray] = None
-        self._feat_len: Optional[int] = None
+        self.params = params or {}
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = False
+        self._ds = None
 
-    # ------------- Feature protocol -------------
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return True
-    def finalize_fit(self) -> None: pass
+    def bind_dataset(self, ds):
+        self._ds = ds
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        for df in X_iter:
-            self.partial_fit(df)
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        # stream feature batches
-        for Xb, _, _ in self._feature_batches(df, for_fit=True):
-            if Xb.size == 0:
-                continue
-            self._ipca.partial_fit(Xb)
-            self._fitted = True
+    def needs_fit(self) -> bool: return False
+    def supports_partial_fit(self) -> bool: return False
+    def fit(self, X: Iterable[pd.DataFrame]):
+        return
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not self._fitted:
-            raise RuntimeError("pair-posedistance-pca: not fitted yet; run fit/partial_fit first.")
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if "frame" not in df.columns or "id" not in df.columns:
+            return pd.DataFrame()
+        pose_pairs = _pose_column_pairs(df.columns)
+        if not pose_pairs:
+            return pd.DataFrame()
+        group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
+        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        rows = []
+        for frame_val, g in df.groupby("frame", sort=True):
+            for id_val, sub in g.groupby("id"):
+                pts = []
+                for x_col, y_col in pose_pairs:
+                    x = sub.iloc[0].get(x_col)
+                    y = sub.iloc[0].get(y_col)
+                    if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
+                        continue
+                    pts.append((float(x), float(y)))
+                if len(pts) < 2:
+                    continue
+                arr = np.asarray(pts, dtype=float)
+                dists = np.sqrt(((arr[:, None, :] - arr[None, :, :]) ** 2).sum(axis=2))
+                dists = dists[np.triu_indices_from(dists, k=1)]
+                if dists.size == 0:
+                    continue
+                med = float(np.median(dists))
+                rows.append({
+                    "frame": int(frame_val),
+                    "id": id_val,
+                    "scale": med,
+                    "sequence": sequence,
+                    "group": group,
+                })
+        return pd.DataFrame(rows)
 
-        pcs: List[pd.DataFrame] = []
-        for Xb, meta_frames, meta_persp in self._feature_batches(df, for_fit=False):
-            if Xb.size == 0:
+
+@register_feature
+class OrientationRelativeFeature:
+    """
+    Orientation-aware relative features between animal pairs, order-agnostic to pose points.
+
+    For each frame and ordered pair (id_a -> id_b):
+      - Express B in A's body frame (using heading angle and global scale).
+      - Emit signed centroid deltas, heading difference, quantiles over B's points
+        in A's frame, and nearest-k distances.
+    """
+
+    name = "orientation-rel"
+    version = "0.1"
+    parallelizable = True
+
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        defaults = {
+            "scale_feature": "body-scale",
+            "scale_run_id": None,
+            "nearest_k": 3,
+            "quantiles": [0.25, 0.5, 0.75],
+        }
+        self.params = {**defaults, **(params or {})}
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = False
+        self._ds = None
+        self._scale_lookup: dict[str, float] = {}
+
+    def bind_dataset(self, ds):
+        self._ds = ds
+        self._load_scales()
+
+    def _load_scales(self):
+        self._scale_lookup = {}
+        if self._ds is None:
+            return
+        feat = self.params.get("scale_feature", "body-scale")
+        run_id = self.params.get("scale_run_id")
+        if run_id is None:
+            try:
+                run_id, _ = _latest_feature_run_root(self._ds, feat)
+            except Exception:
+                return
+        idx_path = _feature_index_path(self._ds, feat)
+        if not idx_path.exists():
+            return
+        df_idx = pd.read_csv(idx_path)
+        df_idx = df_idx[df_idx["run_id"].astype(str) == str(run_id)]
+        if df_idx.empty:
+            return
+        for _, row in df_idx.iterrows():
+            seq_safe = row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
+            abs_path = row.get("abs_path")
+            if not abs_path:
                 continue
-            Zb = self._ipca.transform(Xb)  # (B, k)
-            out = pd.DataFrame(Zb, columns=[f"PC{i}" for i in range(Zb.shape[1])])
-
-            # bring back frame/time if we have it
-            if "frame" in meta_frames:
-                out["frame"] = meta_frames["frame"]
-            if "time" in meta_frames:
-                out["time"] = meta_frames["time"]
-            out["perspective"] = meta_persp  # 0 or 1
-            # optional pass-through if present and constant in df
-            for col in (self.params["seq_col"], self.params["group_col"]):
-                if col in df.columns:
-                    out[col] = df[col].iloc[0]
-            pcs.append(out)
-
-        if not pcs:
-            return pd.DataFrame(columns=["perspective"] + [f"PC{i}" for i in range(self.params["n_components"])])
-
-        out_df = pd.concat(pcs, ignore_index=True)
-        # sort if frame present
-        if "frame" in out_df.columns:
-            out_df = out_df.sort_values(["perspective", "frame"]).reset_index(drop=True)
-        elif "time" in out_df.columns:
-            out_df = out_df.sort_values(["perspective", "time"]).reset_index(drop=True)
-        return out_df
-
-    def save_model(self, path: Path) -> None:
-        if not self._fitted:
-            raise NotImplementedError("Model not fitted; nothing to save.")
-        payload = dict(
-            ipca=self._ipca,
-            params=self.params,
-            tri_i=self._tri_i,
-            tri_j=self._tri_j,
-            feat_len=self._feat_len,
-        )
-        joblib.dump(payload, path)
-
-    def load_model(self, path: Path) -> None:
-        obj = joblib.load(path)
-        self._ipca = obj["ipca"]
-        self.params = _merge_params(obj.get("params", {}), self._defaults)
-        self._tri_i = obj.get("tri_i", None)
-        self._tri_j = obj.get("tri_j", None)
-        self._feat_len = obj.get("feat_len", None)
-        self._fitted = True
-
-    # ------------- Internals -------------
-    def _column_names(self) -> Tuple[List[str], List[str]]:
-        N = int(self.params["pose_n"])
-        xs = [f"{self.params['x_prefix']}{i}" for i in range(N)]
-        ys = [f"{self.params['y_prefix']}{i}" for i in range(N)]
-        return xs, ys
-
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
-
-    def _clean_one_animal(self, g: pd.DataFrame, pose_cols: List[str], order_col: str) -> pd.DataFrame:
-        p = self.params
-        g = g.sort_values(order_col).copy()
-        g = g.set_index(order_col)
-        # interpolate, then edge-fill
-        g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
-        g[pose_cols] = g[pose_cols].interpolate(
-            method="linear", limit=int(p["linear_interp_limit"]), limit_direction="both"
-        )
-        g[pose_cols] = g[pose_cols].ffill(limit=int(p["edge_fill_limit"]))
-        g[pose_cols] = g[pose_cols].bfill(limit=int(p["edge_fill_limit"]))
-        # drop frames with too much missing (row-wise)
-        miss_frac = g[pose_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= float(p["max_missing_fraction"])].copy()
-        # last fill (median) if needed
-        if g[pose_cols].isna().any().any():
-            med = g[pose_cols].median()
-            g[pose_cols] = g[pose_cols].fillna(med)
-        g = g.reset_index()
-        return g
-
-    def _prep_pairs(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
-        """
-        Return cleaned df_small with only needed cols and the pairs index:
-        [(sequence, idA, idB), ...] choosing the first two IDs per sequence.
-        """
-        x_cols, y_cols = self._column_names()
-        pose_cols = x_cols + y_cols
-        order_col = self._order_col(df)
-
-        need = [self.params["id_col"], self.params["seq_col"], order_col] + pose_cols
-        missing = [c for c in need if c not in df.columns]
-        if missing:
-            raise ValueError(f"[pair-posedistance-pca] Missing cols: {missing}")
-
-        # sanitize types & clean per-animal
-        df_small = df[need].copy()
-        if order_col == "frame":
-            df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
-
-        # future-proof grouping with include_groups=True functionality
-        group_cols = [self.params["seq_col"], self.params["id_col"]]
-
-        def wrapped_func(g):
-            # `g.name` holds the current group key(s)
-            result = self._clean_one_animal(g, pose_cols, order_col)
-
-            # Reattach group key(s) as columns (since they’re no longer in `g`)
-            if isinstance(g.name, tuple):
-                for col, val in zip(group_cols, g.name):
-                    result[col] = val
-            else:
-                result[group_cols[0]] = g.name
-
-            return result
-
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(wrapped_func, include_groups=False)  # explicitly future-proof
-        )        
-
-        # build (seq -> first two ids)
-        pairs: List[Tuple[Any, Any, Any]] = []
-        for seq, gseq in df_small.groupby(self.params["seq_col"]):
-            ids = sorted(gseq[self.params["id_col"]].unique())
-            if len(ids) < 2:
+            try:
+                p = Path(abs_path)
+                if hasattr(self._ds, "remap_path"):
+                    p = self._ds.remap_path(p)
+                df_scale = pd.read_parquet(p)
+                if "scale" not in df_scale.columns:
+                    continue
+                mean_scale = float(df_scale["scale"].dropna().mean())
+                if np.isfinite(mean_scale) and mean_scale > 0:
+                    self._scale_lookup[seq_safe] = mean_scale
+            except Exception:
                 continue
-            idA, idB = ids[:2]
-            pairs.append((seq, idA, idB))
 
-        if not pairs:
-            raise ValueError("[pair-posedistance-pca] No sequence with at least two IDs found.")
+    def needs_fit(self) -> bool: return False
+    def supports_partial_fit(self) -> bool: return False
+    def fit(self, X: Iterable[pd.DataFrame]):
+        return
 
-        # cache lower-tri indices and feature length once
-        if self._tri_i is None or self._tri_j is None or self._feat_len is None:
-            N = int(self.params["pose_n"])
-            tri_i, tri_j = np.tril_indices(N, k=-1)
-            n_intra = len(tri_i)
-            n_cross = N * N
-            feat_len = 0
-            if self.params["include_intra_A"]: feat_len += n_intra
-            if self.params["include_intra_B"]: feat_len += n_intra
-            if self.params["include_inter"]:   feat_len += n_cross
-            self._tri_i, self._tri_j, self._feat_len = tri_i, tri_j, feat_len
-        return df_small, pairs
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if "frame" not in df.columns or "id" not in df.columns or "angle" not in df.columns:
+            return pd.DataFrame()
+        pose_pairs = _pose_column_pairs(df.columns)
+        if not pose_pairs:
+            return pd.DataFrame()
+        group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
+        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        seq_safe = to_safe_name(sequence)
+        global_scale = self._scale_lookup.get(seq_safe, None)
+        quantiles = self.params.get("quantiles", [0.25, 0.5, 0.75])
+        nearest_k = int(self.params.get("nearest_k", 3))
+        rows = []
+
+        grouped = df.groupby(["frame", "id"], sort=True)
+        pose_cache: dict[tuple[int, Any], dict] = {}
+        for (frame_val, id_val), sub in grouped:
+            pts = []
+            for x_col, y_col in pose_pairs:
+                x = sub.iloc[0].get(x_col)
+                y = sub.iloc[0].get(y_col)
+                if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
+                    continue
+                pts.append((float(x), float(y)))
+            if len(pts) < 2:
+                continue
+            arr = np.asarray(pts, dtype=float)
+            centroid = arr.mean(axis=0)
+            angle = float(sub.iloc[0].get("angle", 0.0))
+            pose_cache[(int(frame_val), id_val)] = {
+                "pts": arr,
+                "centroid": centroid,
+                "angle": angle,
+            }
+
+        frames = sorted({f for f, _ in pose_cache.keys()})
+        for f in frames:
+            ids_here = [i for (frame_val, i) in pose_cache.keys() if frame_val == f]
+            if len(ids_here) < 2:
+                continue
+            for id_a in ids_here:
+                for id_b in ids_here:
+                    if id_a == id_b:
+                        continue
+                    A = pose_cache.get((f, id_a))
+                    B = pose_cache.get((f, id_b))
+                    if not A or not B:
+                        continue
+                    pts_B = B["pts"]
+                    centroid_B = B["centroid"]
+                    angle_A = A["angle"]
+                    angle_B = B["angle"]
+                    centroid_A = A["centroid"]
+                    scale = global_scale
+                    if scale is None or not np.isfinite(scale) or scale <= 0:
+                        scale = self._local_scale(A["pts"])
+                    if scale is None or scale <= 0:
+                        continue
+                    delta = pts_B - centroid_A
+                    rot = self._rotation(-angle_A)
+                    rel = (rot @ delta.T).T / scale
+                    rel_centroid = (rot @ (centroid_B - centroid_A)) / scale
+                    dtheta = self._wrap_angle(angle_B - angle_A)
+
+                    dists = np.sqrt((rel ** 2).sum(axis=1))
+                    if dists.size == 0:
+                        continue
+                    q_vals = np.quantile(dists, quantiles).tolist() if quantiles else []
+                    dmin = float(np.min(dists))
+                    dmax = float(np.max(dists))
+                    dmed = float(np.median(dists))
+                    d_near = np.sort(dists)[:max(0, nearest_k)].tolist()
+                    d_near += [np.nan] * (max(0, nearest_k) - len(d_near))
+
+                    x_vals = rel[:, 0]
+                    y_vals = rel[:, 1]
+                    feats = {
+                        "frame": int(f),
+                        "id_a": id_a,
+                        "id_b": id_b,
+                        "sequence": sequence,
+                        "group": group,
+                        "dx": float(rel_centroid[0]),
+                        "dy": float(rel_centroid[1]),
+                        "dtheta": float(dtheta),
+                        "dist_min": dmin,
+                        "dist_median": dmed,
+                        "dist_max": dmax,
+                    }
+                    for idx, qv in enumerate(q_vals):
+                        feats[f"dist_q{int(quantiles[idx]*100):02d}"] = float(qv)
+                    feats["x_min"] = float(np.nanmin(x_vals))
+                    feats["x_median"] = float(np.nanmedian(x_vals))
+                    feats["x_max"] = float(np.nanmax(x_vals))
+                    feats["y_min"] = float(np.nanmin(y_vals))
+                    feats["y_median"] = float(np.nanmedian(y_vals))
+                    feats["y_max"] = float(np.nanmax(y_vals))
+                    for i, val in enumerate(d_near):
+                        feats[f"near_{i}"] = float(val) if np.isfinite(val) else np.nan
+                    rows.append(feats)
+
+        return pd.DataFrame(rows)
+
+    def _rotation(self, angle: float) -> np.ndarray:
+        c = np.cos(angle)
+        s = np.sin(angle)
+        return np.array([[c, -s], [s, c]], dtype=float)
+
+    def _wrap_angle(self, a: float) -> float:
+        a = (a + np.pi) % (2 * np.pi) - np.pi
+        return a
+
+    def _local_scale(self, pts: np.ndarray) -> Optional[float]:
+        if pts is None or pts.shape[0] < 2:
+            return None
+        d = np.sqrt(((pts[:, None, :] - pts[None, :, :]) ** 2).sum(axis=2))
+        d = d[np.triu_indices_from(d, k=1)]
+        if d.size == 0:
+            return None
+        val = float(np.median(d))
+        return val if np.isfinite(val) and val > 0 else None
 
     def _pose_to_points(self, row_vals: np.ndarray) -> np.ndarray:
         N = int(self.params["pose_n"])
@@ -3194,14 +3230,19 @@ class VizGlobalColored:
 
     Params (defaults target the global t-SNE + k-means workflow):
       coords: {feature, run_id, pattern, load:{kind:"npz", key:"Y"}}
-      labels: optional spec matching coords (same structure as coords)
+      labels: optional spec matching coords (same structure as coords) OR
+              {"source": "labels", "kind": "<label_kind>", "load": {...}}
+              to load from labels/<kind>/index.csv (e.g., CalMS21 ground truth)
       coord_key_regex: regex applied to coord filenames (default extracts the sequence name)
       label_key_regex: regex for label filenames (defaults to coord regex)
       label_missing_value: sentinel for missing labels (default -1 -> gray)
+      label_order: optional list of label values to fix the color ordering
+      label_name_map: optional dict mapping label ids -> display names
       plot_max: max points to scatter
       palette: seaborn palette name or list
       title: plot title
       point_size / point_alpha: scatter style tweaks
+      debug_save_arrays: if True, save Y_all/L_all (aligned, pre-subsample) as debug_viz_arrays.npz
     Output:
       - PNG in run_root plus a single marker parquet row for indexing.
     """
@@ -3221,11 +3262,14 @@ class VizGlobalColored:
             "coord_key_regex": r"seq=(.+?)(?:_persp=.*)?$",
             "label_key_regex": INHERIT_REGEX,
             "label_missing_value": -1,
+            "label_order": None,
+            "label_name_map": None,
             "plot_max": 300_000,
             "palette": "tab20",
             "title": "Global embedding colored scatter",
             "point_size": 2.0,
             "point_alpha": 0.35,
+            "debug_save_arrays": False,
         }
         self.params = dict(defaults)
         if params:
@@ -3241,9 +3285,14 @@ class VizGlobalColored:
         self._marker_written = False
         self._summary = {}
         self._seq_path_cache: Dict[Tuple[str, str], Dict[Path, str]] = {}
+        self._scope_constraints: Optional[dict] = None
+        self._debug_arrays: Optional[dict] = None
 
     def bind_dataset(self, ds):
         self._ds = ds
+
+    def set_scope_constraints(self, scope: Optional[dict]) -> None:
+        self._scope_constraints = scope or {}
 
     def needs_fit(self): return True
     def supports_partial_fit(self): return False
@@ -3301,6 +3350,36 @@ class VizGlobalColored:
             return obj if key is None else obj[key]
         raise ValueError(f"Unsupported load.kind='{kind}'")
 
+    def _load_labels_from_index(self, spec: dict) -> list[tuple[str, Path]]:
+        """
+        Load (sequence_safe, path) pairs from labels/<kind>/index.csv.
+        Supports optional glob-style filtering via spec['pattern'] on filename.
+        """
+        if self._ds is None:
+            raise RuntimeError("VizGlobalColored requires dataset binding to load labels.")
+        kind = spec.get("kind")
+        if not kind:
+            raise ValueError("labels spec with source='labels' requires 'kind'.")
+        labels_root = self._ds.get_root("labels") / kind
+        idx_path = labels_root / "index.csv"
+        if not idx_path.exists():
+            raise FileNotFoundError(f"Labels index not found: {idx_path}")
+        df = pd.read_csv(idx_path)
+        pattern = spec.get("pattern")
+        entries: list[tuple[str, Path]] = []
+        for _, row in df.iterrows():
+            abs_raw = row.get("abs_path", "")
+            if not isinstance(abs_raw, str) or not abs_raw:
+                continue
+            pth = Path(abs_raw)
+            if pattern and not fnmatch.fnmatch(pth.name, pattern):
+                continue
+            seq_safe = str(row.get("sequence_safe") or row.get("sequence") or "").strip()
+            if not seq_safe:
+                seq_safe = to_safe_name(pth.stem)
+            entries.append((seq_safe, pth))
+        return entries
+
     def _feature_seq_map(self, feature_name: str, run_id: str | None) -> dict[Path, str]:
         key = (feature_name, str(run_id))
         if key in self._seq_path_cache:
@@ -3326,6 +3405,11 @@ class VizGlobalColored:
     def _prepare_color_map(self, labels):
         unique_vals = list(pd.unique(pd.Series(labels, dtype="object")))
         missing = self.params.get("label_missing_value", -1)
+        order = self.params.get("label_order")
+        if order:
+            order_list = [o for o in order if o in unique_vals]
+            unique_vals = order_list + [u for u in unique_vals if u not in order_list]
+
         palette = sns.color_palette(self.params.get("palette", "tab20"),
                                     max(1, len([u for u in unique_vals if u != missing])))
         color_map = {}
@@ -3339,17 +3423,42 @@ class VizGlobalColored:
             color_map[missing] = (0.7, 0.7, 0.7)
         return color_map
 
+    def _label_display(self, val):
+        name_map = self.params.get("label_name_map") or {}
+        if isinstance(name_map, dict):
+            if val in name_map:
+                return str(name_map[val])
+            try:
+                ival = int(val)
+                if ival in name_map:
+                    return str(name_map[ival])
+            except Exception:
+                pass
+        return str(val)
+
     def fit(self, X_iter):
         coord_spec = self.params["coords"]
         coord_run_id, _, coord_files = self._load_artifacts_glob(coord_spec)
         if not coord_files:
             raise FileNotFoundError("[viz-global-colored] No coordinate files found.")
 
+        scope = self._scope_constraints or {}
+        allowed_safe = set(scope.get("safe_sequences") or [])
+        allowed_sequences = set(scope.get("sequences") or [])
+        allowed_any = set()
+        if allowed_sequences:
+            allowed_any.update(allowed_sequences)
+            allowed_any.update(to_safe_name(s) for s in allowed_sequences)
+        allowed_any.update(allowed_safe)
+
         key_regex = self.params.get("coord_key_regex")
         coord_seq_map = self._feature_seq_map(coord_spec["feature"], coord_run_id)
         Y_list, key_list, n_list = [], [], []
         for f in coord_files:
             key = self._extract_key(f, key_regex, coord_seq_map)
+            key_safe = to_safe_name(key)
+            if allowed_any and key not in allowed_any and key_safe not in allowed_any:
+                continue
             arr = self._load_one(f, coord_spec["load"])
             if arr.ndim != 2:
                 arr = np.atleast_2d(arr)
@@ -3358,44 +3467,87 @@ class VizGlobalColored:
             n_list.append(arr.shape[0])
         if not Y_list:
             raise RuntimeError("No coordinate arrays loaded.")
-        Y_all = np.vstack(Y_list)
 
         labels_spec = self.params.get("labels")
         missing_value = self.params.get("label_missing_value", -1)
         if labels_spec:
-            label_run_id, _, label_files = self._load_artifacts_glob(labels_spec)
             label_regex_param = self.params.get("label_key_regex", INHERIT_REGEX)
-            if label_regex_param == INHERIT_REGEX:
-                label_regex = key_regex
+            label_regex = key_regex if label_regex_param == INHERIT_REGEX else label_regex_param
+            label_source = str(labels_spec.get("source", "feature")).lower()
+            label_load_spec = labels_spec.get("load") or {"kind": "npz", "key": "labels"}
+            lab_map: dict[Any, np.ndarray] = {}
+            if label_source == "labels":
+                entries = self._load_labels_from_index(labels_spec)
+                if allowed_any:
+                    entries = [(s, p) for s, p in entries if s in allowed_any]
+                seq_map = {pth.resolve(): safe_seq for safe_seq, pth in entries}
+                for safe_seq, pth in entries:
+                    lab_key = self._extract_key(pth, label_regex, seq_map)
+                    lab_map[lab_key] = np.asarray(self._load_one(pth, label_load_spec))
             else:
-                label_regex = label_regex_param
-            label_seq_map = self._feature_seq_map(labels_spec["feature"], label_run_id)
-            lab_map = {}
-            for lf in label_files:
-                lab_key = self._extract_key(lf, label_regex, label_seq_map)
-                lab_map[lab_key] = np.asarray(self._load_one(lf, labels_spec["load"]))
+                label_run_id, _, label_files = self._load_artifacts_glob(labels_spec)
+                label_seq_map = self._feature_seq_map(labels_spec["feature"], label_run_id)
+                for lf in label_files:
+                    lab_key = self._extract_key(lf, label_regex, label_seq_map)
+                    lab_map[lab_key] = np.asarray(self._load_one(lf, label_load_spec))
             L_parts = []
-            for key, n in zip(key_list, n_list):
+            for idx, (key, n) in enumerate(zip(key_list, n_list)):
                 arr = lab_map.get(key)
+                if arr is None:
+                    arr = lab_map.get(to_safe_name(str(key)))
                 if arr is None:
                     print(f"[viz-global-colored] WARN: missing labels for key={key}; assigning {missing_value}",
                           file=sys.stderr)
                     arr = np.full(n, missing_value, dtype=int)
                 else:
                     arr = np.asarray(arr).ravel()
+                    if arr.shape[0] < n:
+                        if n % arr.shape[0] == 0:
+                            # common case: coord stream duplicated per-id/perspective; repeat labels accordingly
+                            factor = n // arr.shape[0]
+                            if factor == 2:
+                                print(f"[viz-global-colored] INFO: labels shorter than coords for key={key} "
+                                      f"({arr.shape[0]} vs {n}); repeating labels x{factor} "
+                                      "(likely per-id/perspective duplication in inputs).",
+                                      file=sys.stderr)
+                            arr = np.tile(arr, factor)
+                        else:
+                            # lengths differ but not a clean multiple; trim coords to label length
+                            print(f"[viz-global-colored] INFO: trimming coords for key={key} "
+                                  f"from {n} to {arr.shape[0]} (labels length) due to mismatch.",
+                                  file=sys.stderr)
+                            Y_list[idx] = Y_list[idx][:arr.shape[0]]
+                            n_list[idx] = arr.shape[0]
+                            n = arr.shape[0]
                     if arr.shape[0] != n:
                         nmin = min(arr.shape[0], n)
-                        trimmed = arr[:nmin]
+                        if nmin <= 0:
+                            continue
                         if nmin < n:
-                            pad = np.full(n - nmin, missing_value, dtype=trimmed.dtype)
-                            arr = np.concatenate([trimmed, pad])
-                        else:
-                            arr = trimmed
+                            # trim coords to match available labels
+                            print(f"[viz-global-colored] INFO: trimming coords for key={key} "
+                                  f"from {n} to {nmin} to match labels {arr.shape[0]}",
+                                  file=sys.stderr)
+                            Y_list[idx] = Y_list[idx][:nmin]
+                            n_list[idx] = nmin
+                        arr = arr[:nmin]
                 L_parts.append(arr)
+            if not L_parts:
+                raise RuntimeError("No labels aligned with coordinates.")
+            Y_all = np.vstack(Y_list)
             L_all = np.concatenate(L_parts)
         else:
             L_parts = [np.zeros(n, dtype=int) for n in n_list]
+            Y_all = np.vstack(Y_list)
             L_all = np.concatenate(L_parts)
+
+        if bool(self.params.get("debug_save_arrays")):
+            self._debug_arrays = {
+                "Y_all": Y_all.copy(),
+                "L_all": L_all.copy(),
+                "key_list": list(key_list),
+                "n_list": list(n_list),
+            }
 
         plot_max = int(self.params.get("plot_max", 300_000))
         if Y_all.shape[0] > plot_max:
@@ -3429,7 +3581,7 @@ class VizGlobalColored:
             handles = [
                 plt.Line2D([0], [0], marker="o", linestyle="", markersize=6,
                            markerfacecolor=color_map.get(val, (0.7, 0.7, 0.7)),
-                           markeredgecolor="none", label=str(val))
+                           markeredgecolor="none", label=self._label_display(val))
                 for val in unique_vals
             ]
             if handles:
@@ -3456,6 +3608,11 @@ class VizGlobalColored:
         run_root = path.parent
         for fname, fig in self._figs:
             fig.savefig(run_root / fname, dpi=150, bbox_inches="tight")
+        if bool(self.params.get("debug_save_arrays")) and self._debug_arrays:
+            try:
+                np.savez_compressed(run_root / "debug_viz_arrays.npz", **self._debug_arrays)
+            except Exception as exc:
+                print(f"[viz-global-colored] WARN: failed to save debug arrays: {exc}", file=sys.stderr)
         joblib.dump(
             {"params": self.params, "summary": self._summary,
              "files": [fname for fname, _ in self._figs]},

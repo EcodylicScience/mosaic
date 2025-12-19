@@ -6,3 +6,9 @@
 /src/behavior/__pycache__
 *.pyc
 *.pyc
+/outputs
+behavior-v3.ipynb
+/dev-prev
+ESI-predict.ipynb
+behavior-v3.ipynb
+/dev-prev

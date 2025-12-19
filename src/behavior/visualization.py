@@ -90,6 +90,11 @@ def load_tracks_and_labels(
             raise FileNotFoundError(f"Missing feature index for '{feature_name}': {idx_path}")
         df_idx = pd.read_csv(idx_path)
 
+        # Normalize NaNs/None to empty strings so blank/absent groups still match
+        for col in ("sequence", "sequence_safe", "group", "group_safe"):
+            if col in df_idx.columns:
+                df_idx[col] = df_idx[col].fillna("").astype(str)
+
         df_idx = df_idx[df_idx["run_id"].astype(str) == str(resolved_run_id)]
         if "sequence_safe" in df_idx.columns:
             df_idx = df_idx[df_idx["sequence_safe"] == safe_seq]
@@ -218,7 +223,8 @@ def prepare_overlay(tracks_df: pd.DataFrame,
                     labels: dict,
                     gt_df: Optional[pd.DataFrame] = None,
                     kinds: Iterable[str] = ("pose", "bbox"),
-                    color_by: Optional[str] = None) -> dict:
+                    color_by: Optional[str] = None,
+                    hide_unlabeled: bool = False) -> dict:
     """
     Precompute lightweight per-frame overlay structures (pose keypoints, bounding boxes, labels).
 
@@ -305,6 +311,8 @@ def prepare_overlay(tracks_df: pd.DataFrame,
             if labels_for_id:
                 info["labels"] = labels_for_id
 
+            if hide_unlabeled and not labels_for_id:
+                continue
             if not info:
                 continue
             color = None
@@ -375,12 +383,13 @@ def draw_frame(image: np.ndarray,
         color = tuple(int(c) for c in (frame_color if color_mode == "gt" and frame_color is not None else base_color))
         if "bbox" in info:
             x1, y1, x2, y2 = info["bbox"]
-            pt1 = (int(x1 * sx), int(y1 * sy))
-            pt2 = (int(x2 * sx), int(y2 * sy))
-            cv2.rectangle(canvas, pt1, pt2, color, bbox_thickness)
+            if all(np.isfinite([x1, y1, x2, y2])):
+                pt1 = (int(x1 * sx), int(y1 * sy))
+                pt2 = (int(x2 * sx), int(y2 * sy))
+                cv2.rectangle(canvas, pt1, pt2, color, bbox_thickness)
         if "pose" in info:
             for x, y in info["pose"]:
-                if np.isnan(x) or np.isnan(y):
+                if not np.isfinite(x) or not np.isfinite(y):
                     continue
                 pt = (int(x * sx), int(y * sy))
                 cv2.circle(canvas, pt, point_radius, color, -1, lineType=cv2.LINE_AA)
@@ -405,7 +414,7 @@ def draw_frame(image: np.ndarray,
                 anchor = (x1, y1)
             if anchor is None:
                 anchor = info.get("centroid")
-            if anchor and not any(np.isnan(anchor)):
+            if anchor and all(np.isfinite(anchor)):
                 pos = (int(anchor[0] * sx), int(anchor[1] * sy) - 4)
                 cv2.putText(canvas, str(label_text), pos, cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
@@ -436,29 +445,72 @@ def render_stream(video_path: Path | str,
         start, end, color_feature=color_feature, color_mode=color_mode)
 
 
+def _remap_overlay_labels(overlay: dict, label_maps: Dict[str, dict]) -> None:
+    """In-place remap of labels in an already-built overlay."""
+    if not overlay:
+        return
+    per_frame = overlay.get("per_frame", {})
+    if not per_frame:
+        return
+    for frame_val, fdata in per_frame.items():
+        ids_map = fdata.get("ids", {})
+        for _id, info in ids_map.items():
+            labels_map = info.get("labels") or {}
+            for feat, mapping in label_maps.items():
+                if feat in labels_map and labels_map[feat] in mapping:
+                    labels_map[feat] = mapping[labels_map[feat]]
+
+
 def play_video(ds,
                group: str,
                sequence: str,
                feature_runs: Dict[str, Optional[str]],
                label_kind: Optional[str] = "behavior",
                color_by: Optional[str] = None,
-               start: int = 0,
-               end: Optional[int] = None,
-               downscale: float = 1.0,
-               output_path: Optional[Path | str] = None,
-               show_window: bool = True,
-               window_name: Optional[str] = None) -> Optional[Path]:
+               label_maps: Optional[Dict[str, dict]] = None,
+               hide_unlabeled: bool = False,
+               overlay_data: Optional[dict] = None,
+                start: int = 0,
+                end: Optional[int] = None,
+                downscale: float = 1.0,
+                output_path: Optional[Path | str] = None,
+                show_window: bool = True,
+                window_name: Optional[str] = None) -> Optional[Path]:
     """
     Stream a video with overlays; optionally save to disk.
+
+    Parameters
+    ----------
+    label_maps : dict[str, dict], optional
+        Optional mapping per feature to replace numeric labels with names, e.g.
+        {"behavior-xgb-pred__from__...": {0: "attack", 1: "investigation", ...}}.
+    hide_unlabeled : bool
+        If True, skip drawing ids that lack labels (after any filtering/mapping).
+    overlay_data : dict, optional
+        Precomputed overlay from prepare_overlay(). If provided, skips rebuilding overlay
+        (useful when you want to pre-filter labels before playback).
     """
-    tracks_df, labels = load_tracks_and_labels(ds, group, sequence, feature_runs)
-    gt_df = None
-    if label_kind:
-        try:
-            gt_df = load_ground_truth_labels(ds, label_kind, group, sequence)
-        except FileNotFoundError as exc:
-            print(f"[play_video] warning: {exc}")
-    overlay = prepare_overlay(tracks_df, labels, gt_df=gt_df, color_by=color_by)
+    overlay = overlay_data
+    if overlay is None:
+        tracks_df, labels = load_tracks_and_labels(ds, group, sequence, feature_runs)
+
+        if label_maps:
+            # Remap predicted labels to human-friendly names if provided
+            for feat, mapping in label_maps.items():
+                per_id = labels.get("per_id", {}).get(feat, {})
+                for key, series in list(per_id.items()):
+                    per_id[key] = series.map(mapping).fillna(series)
+
+        gt_df = None
+        if label_kind:
+            try:
+                gt_df = load_ground_truth_labels(ds, label_kind, group, sequence)
+            except FileNotFoundError as exc:
+                print(f"[play_video] warning: {exc}")
+        overlay = prepare_overlay(tracks_df, labels, gt_df=gt_df, color_by=color_by, hide_unlabeled=hide_unlabeled)
+    elif label_maps:
+        _remap_overlay_labels(overlay, label_maps)
+
     video_path = ds.resolve_media_path(group, sequence)
 
     stream = render_stream(video_path, overlay, start=start, end=end, downscale=downscale)
@@ -544,17 +596,19 @@ def _extract_pose_points(row: pd.Series, pose_pairs: list[Tuple[str, str]]) -> l
     for x_col, y_col in pose_pairs:
         x = row.get(x_col)
         y = row.get(y_col)
-        if x is None or y is None or np.isnan(x) or np.isnan(y):
+        if x is None or y is None:
+            continue
+        if not (np.isfinite(x) and np.isfinite(y)):
             continue
         pts.append((float(x), float(y)))
     return pts
 
 
 def _compute_bbox(points: list[Tuple[float, float]]) -> Tuple[float, float, float, float]:
-    xs = [p[0] for p in points if not np.isnan(p[0])]
-    ys = [p[1] for p in points if not np.isnan(p[1])]
+    xs = [p[0] for p in points if np.isfinite(p[0])]
+    ys = [p[1] for p in points if np.isfinite(p[1])]
     if not xs or not ys:
-        return (0.0, 0.0, 0.0, 0.0)
+        return (np.nan, np.nan, np.nan, np.nan)
     return (min(xs), min(ys), max(xs), max(ys))
 
 
@@ -562,7 +616,7 @@ def _extract_centroid(row: pd.Series, candidates: list[Tuple[str, str]]) -> Opti
     for x_col, y_col in candidates:
         x = row.get(x_col)
         y = row.get(y_col)
-        if x is not None and y is not None and not (np.isnan(x) or np.isnan(y)):
+        if x is not None and y is not None and np.isfinite(x) and np.isfinite(y):
             return (float(x), float(y))
     return None
 

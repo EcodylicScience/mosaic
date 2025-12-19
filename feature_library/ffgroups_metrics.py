@@ -14,7 +14,6 @@ def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any])
     out.update({k: v for k, v in overrides.items() if v is not None})
     return out
 
-
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
     return (x + np.pi) % (2 * np.pi) - np.pi
 

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
+from sklearn.decomposition import PCA
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -23,6 +24,7 @@ from .dataset import (
     _feature_run_root,
     _latest_feature_run_root,
     _resolve_inputs,
+    _yield_feature_frames,
 )
 from .helpers import to_safe_name
 
@@ -491,7 +493,7 @@ class BehaviorXGBoostModel:
         if "sequence_safe" not in df.columns:
             df["sequence_safe"] = df["sequence"].apply(lambda v: to_safe_name(v) if v else "")
 
-        feature_columns = None
+        feature_columns: Optional[List[str]] = None
         payloads: Dict[str, dict] = {}
         for _, row in df.iterrows():
             safe_seq = str(row.get("sequence_safe") or to_safe_name(row.get("sequence", "")))
@@ -503,10 +505,14 @@ class BehaviorXGBoostModel:
             abs_path = ds.remap_path(abs_raw)
             if not abs_path.exists():
                 continue
-            features = self._load_feature_matrix(abs_path, loader)
+            features, cols = self._load_feature_matrix(abs_path, loader)
             if features.size == 0:
                 continue
-            feature_columns = self._capture_columns(feature_columns, features.shape[1], loader, prefix="")
+            if feature_columns is None:
+                if cols:
+                    feature_columns = cols
+                else:
+                    feature_columns = self._capture_columns(None, features.shape[1], loader, prefix="")
             payloads[safe_seq] = {
                 "features": features.astype(np.float32, copy=False),
                 "sequence": row.get("sequence", ""),
@@ -531,6 +537,7 @@ class BehaviorXGBoostModel:
         per_seq: Dict[str, dict] = {}
         meta_cache: Dict[tuple[str, str], Dict[Path, dict]] = {}
         resolved_specs: list[dict] = []
+        columns_by_input: List[Optional[List[str]]] = [None] * n_inputs
 
         for idx, spec in enumerate(inputs):
             feat_name = spec["feature"]
@@ -557,9 +564,16 @@ class BehaviorXGBoostModel:
                 except Exception:
                     resolved = pth
                 safe_seq = seq_map.get(resolved) or to_safe_name(pth.stem)
-                arr = self._load_feature_matrix(resolved, load_spec)
+                arr, cols = self._load_feature_matrix(resolved, load_spec)
                 if arr is None or arr.size == 0:
                     continue
+                if columns_by_input[idx] is None:
+                    prefix = spec.get("name") or spec.get("feature", f"input{idx}")
+                    prefix = f"{prefix}::"
+                    if cols:
+                        columns_by_input[idx] = [f"{prefix}{c}" for c in cols]
+                    else:
+                        columns_by_input[idx] = self._derive_columns_from_loader(load_spec, arr.shape[1], prefix=prefix)
                 entry = per_seq.setdefault(
                     safe_seq,
                     {
@@ -585,12 +599,13 @@ class BehaviorXGBoostModel:
             if first_columns is None:
                 col_names: List[str] = []
                 for idx, mat in enumerate(mats_trim):
-                    spec = inputs[idx]
-                    prefix = spec.get("name") or spec.get("feature", f"input{idx}")
-                    prefix = f"{prefix}::"
-                    col_names.extend(
-                        self._derive_columns_from_loader(spec.get("load") or {}, mat.shape[1], prefix=prefix)
-                    )
+                    cols = columns_by_input[idx]
+                    if cols is None:
+                        spec = inputs[idx]
+                        prefix = spec.get("name") or spec.get("feature", f"input{idx}")
+                        prefix = f"{prefix}::"
+                        cols = self._derive_columns_from_loader(spec.get("load") or {}, mat.shape[1], prefix=prefix)
+                    col_names.extend(cols)
                 first_columns = col_names
             feature_payloads[safe_seq] = {
                 "features": features,
@@ -624,7 +639,7 @@ class BehaviorXGBoostModel:
                 return [f"{prefix}{c}" for c in cols]
         return [f"{prefix}f{i}" for i in range(width)]
 
-    def _load_feature_matrix(self, path: Path, loader: dict) -> np.ndarray:
+    def _load_feature_matrix(self, path: Path, loader: dict) -> tuple[np.ndarray, Optional[List[str]]]:
         kind = str(loader.get("kind", "parquet")).lower()
         if kind == "parquet":
             df = pd.read_parquet(path)
@@ -638,7 +653,7 @@ class BehaviorXGBoostModel:
                 df = df.select_dtypes(include=[np.number])
             else:
                 df = df.apply(pd.to_numeric, errors="coerce")
-            return df.to_numpy(dtype=np.float32, copy=False)
+            return df.to_numpy(dtype=np.float32, copy=False), list(df.columns)
         if kind == "npz":
             key = loader.get("key")
             if not key:
@@ -651,7 +666,7 @@ class BehaviorXGBoostModel:
                 arr = arr.T
             if arr.ndim == 1:
                 arr = arr[:, None]
-            return arr.astype(np.float32, copy=False)
+            return arr.astype(np.float32, copy=False), None
         raise ValueError(f"Unsupported feature_loader.kind='{kind}'")
 
     def _load_labels(self, path: Path) -> np.ndarray:
@@ -950,8 +965,25 @@ class BehaviorXGBoostModel:
             frames = np.arange(len(df_feat), dtype=np.int64)
         cols = self._predict_feature_columns
         matrix: Optional[np.ndarray] = None
-        if cols and all(c in df_feat.columns for c in cols):
-            matrix = df_feat[cols].to_numpy(dtype=np.float32, copy=False)
+        if cols:
+            overlap = [c for c in cols if c in df_feat.columns]
+            if overlap:
+                # Align to expected columns; any missing columns are filled with zeros to preserve width.
+                df_use = df_feat.reindex(columns=cols, fill_value=0.0)
+                matrix = df_use.to_numpy(dtype=np.float32, copy=False)
+            else:
+                # No overlapping names (e.g., training used positional f0.. while inputs carry full names).
+                numeric = df_feat.select_dtypes(include=[np.number]).copy()
+                numeric = numeric.drop(columns=[c for c in ("frame",) if c in numeric.columns], errors="ignore")
+                arr = numeric.to_numpy(dtype=np.float32, copy=False)
+                # Match expected width by padding/truncating.
+                target_w = len(cols)
+                if arr.shape[1] > target_w:
+                    arr = arr[:, :target_w]
+                elif arr.shape[1] < target_w:
+                    pad = np.zeros((arr.shape[0], target_w - arr.shape[1]), dtype=np.float32)
+                    arr = np.hstack([arr, pad])
+                matrix = arr
         else:
             numeric = df_feat.select_dtypes(include=[np.number]).copy()
             drop_cols = [c for c in ("frame",) if c in numeric.columns]
@@ -967,7 +999,11 @@ class BehaviorXGBoostModel:
             frames = frames[:min_len]
         return matrix, frames
 
-    def _predict_scores(self, model, X: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _predict_scores(model, X: np.ndarray) -> np.ndarray:
+        """
+        Shared scoring helper that matches the training-time branch.
+        """
         if hasattr(model, "predict_proba"):
             out = model.predict_proba(X)
             out = np.asarray(out)
@@ -984,6 +1020,129 @@ class BehaviorXGBoostModel:
                 out = out[:, 0]
             return out.ravel()
         raise RuntimeError("Unsupported model type for prediction.")
+
+def _predict_scores(self, model, X: np.ndarray) -> np.ndarray:
+        if hasattr(model, "predict_proba"):
+            out = model.predict_proba(X)
+            out = np.asarray(out)
+            if out.ndim == 2 and out.shape[1] > 1:
+                return out[:, 1]
+            return out.ravel()
+        if isinstance(model, xgb.Booster):
+            dmat = xgb.DMatrix(X)
+            return model.predict(dmat)
+        if hasattr(model, "predict"):
+            out = model.predict(X)
+            out = np.asarray(out)
+            if out.ndim > 1:
+                out = out[:, 0]
+            return out.ravel()
+        raise RuntimeError("Unsupported model type for prediction.")
+
+
+class OrientationPCAModel:
+    """PCA over orientation-rel features for reusable projection."""
+
+    name = "orientation-pca"
+    version = "0.1"
+
+    def __init__(self, params: Optional[dict] = None):
+        defaults = {
+            "feature": "orientation-rel",
+            "feature_run_id": None,
+            "n_components": 6,
+        }
+        self.params = {**defaults, **(params or {})}
+        self._ds = None
+        self._scaler: Optional[StandardScaler] = None
+        self._pca: Optional[PCA] = None
+        self._feature_cols: Optional[List[str]] = None
+
+    def bind_dataset(self, ds):
+        self._ds = ds
+
+    def needs_fit(self) -> bool: return True
+    def supports_partial_fit(self) -> bool: return False
+
+    def train(self) -> dict:
+        if self._ds is None:
+            raise RuntimeError("OrientationPCAModel requires dataset binding.")
+        feat_name = self.params.get("feature")
+        run_id = self.params.get("feature_run_id")
+        if run_id is None:
+            run_id, _ = _latest_feature_run_root(self._ds, feat_name)
+        X_blocks: List[np.ndarray] = []
+        cols_ref: Optional[List[str]] = None
+        for _, _, df_feat in _yield_feature_frames(self._ds, feat_name, run_id=run_id):
+            if df_feat is None or df_feat.empty:
+                continue
+            df_use = df_feat.select_dtypes(include=[np.number])
+            drop_cols = [c for c in ("frame", "sequence", "group", "id_a", "id_b") if c in df_use.columns]
+            df_use = df_use.drop(columns=drop_cols, errors="ignore")
+            if df_use.empty:
+                continue
+            if cols_ref is None:
+                cols_ref = list(df_use.columns)
+            else:
+                df_use = df_use.reindex(columns=cols_ref, fill_value=np.nan)
+            X_blocks.append(df_use.to_numpy(dtype=np.float32, copy=False))
+        if not X_blocks:
+            raise RuntimeError("No data found to fit OrientationPCAModel.")
+        X = np.vstack(X_blocks)
+        col_means = np.nanmean(X, axis=0)
+        inds = np.where(np.isnan(X))
+        if inds[0].size:
+            X[inds] = np.take(col_means, inds[1])
+        self._scaler = StandardScaler()
+        Xs = self._scaler.fit_transform(X)
+        self._pca = PCA(n_components=int(self.params.get("n_components", 6)))
+        self._pca.fit(Xs)
+        self._feature_cols = cols_ref
+        return {"explained_variance": self._pca.explained_variance_ratio_.tolist()}
+
+    def save_model(self, path: Path) -> None:
+        if self._pca is None or self._scaler is None:
+            raise RuntimeError("Model not trained.")
+        bundle = {
+            "scaler": self._scaler,
+            "pca": self._pca,
+            "feature_cols": self._feature_cols,
+            "params": self.params,
+        }
+        joblib.dump(bundle, path)
+
+    def load_trained_model(self, run_root: Path) -> None:
+        model_path = Path(run_root) / "model.joblib"
+        bundle = joblib.load(model_path)
+        self._scaler = bundle.get("scaler")
+        self._pca = bundle.get("pca")
+        self._feature_cols = bundle.get("feature_cols")
+        self.params = {**self.params, **bundle.get("params", {})}
+
+    def predict_sequence(self, df_feat: pd.DataFrame, meta: dict) -> pd.DataFrame:
+        if self._scaler is None or self._pca is None:
+            raise RuntimeError("OrientationPCAModel not loaded.")
+        if df_feat is None or df_feat.empty:
+            return pd.DataFrame()
+        df_use = df_feat.select_dtypes(include=[np.number])
+        drop_cols = [c for c in ("frame", "sequence", "group", "id_a", "id_b") if c in df_use.columns]
+        df_use = df_use.drop(columns=drop_cols, errors="ignore")
+        if self._feature_cols is not None:
+            df_use = df_use.reindex(columns=self._feature_cols, fill_value=np.nan)
+        X = df_use.to_numpy(dtype=np.float32, copy=False)
+        col_means = np.nanmean(X, axis=0)
+        inds = np.where(np.isnan(X))
+        if inds[0].size:
+            X[inds] = np.take(col_means, inds[1])
+        Xs = self._scaler.transform(X)
+        Z = self._pca.transform(Xs)
+        out = pd.DataFrame(Z, columns=[f"PC{i}" for i in range(Z.shape[1])])
+        if "frame" in df_feat.columns:
+            out["frame"] = df_feat["frame"].to_numpy()
+        for col in ("sequence", "group", "id_a", "id_b"):
+            if col in df_feat.columns:
+                out[col] = df_feat[col]
+        return out
 
     def get_prediction_input_signature(self) -> Optional[dict]:
         if self._predict_input_signature is None:

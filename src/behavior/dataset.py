@@ -898,6 +898,11 @@ class Dataset:
                 out_path = tracks_root / f"{stem}.parquet"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
+                # Respect overwrite flag when outputs already exist
+                if out_path.exists() and not overwrite:
+                    produced.append(out_path)
+                    continue
+
                 # hints to converter (keep canonical in-file keys; converter may preserve them in columns)
                 params_with_hints = dict(params)
                 params_with_hints["group"] = canon_group_infile
