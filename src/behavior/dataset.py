@@ -1980,13 +1980,13 @@ def _yield_sequences(ds: "Dataset",
     if sequences is not None:
         sequences = {s for s in sequences}
         mask &= df_idx["sequence"].isin(sequences)
-    if allowed_pairs:
+    if allowed_pairs is not None:
         allowed_groups = {g for g, _ in allowed_pairs}
         mask &= df_idx["group"].isin(allowed_groups)
 
     for _, row in df_idx[mask].iterrows():
         g, s = str(row["group"]), str(row["sequence"])
-        if allowed_pairs and (g, s) not in allowed_pairs:
+        if allowed_pairs is not None and (g, s) not in allowed_pairs:
             continue
         p = ds.remap_path(row["abs_path"]) if hasattr(ds, "remap_path") else Path(row["abs_path"])
         if not p.exists():
@@ -2006,7 +2006,8 @@ def _yield_feature_frames(ds: "Dataset",
                           feature_name: str,
                           run_id: Optional[str] = None,
                           groups: Optional[Iterable[str]] = None,
-                          sequences: Optional[Iterable[str]] = None):
+                          sequences: Optional[Iterable[str]] = None,
+                          allowed_pairs: Optional[set[tuple[str, str]]] = None):
     """
     Yield (group, sequence, df) from a prior feature's saved outputs.
     If run_id is None, pick the most recent finished run_id for that feature (by finished_at).
@@ -2050,6 +2051,13 @@ def _yield_feature_frames(ds: "Dataset",
     if sequences is not None:
         sequences = set(sequences)
         df_sel = df_sel[df_sel["sequence"].isin(sequences)]
+    if allowed_pairs is not None:
+        mask_pairs = []
+        for _, row in df_sel.iterrows():
+            pair = (str(row["group"]), str(row["sequence"]))
+            mask_pairs.append(pair in allowed_pairs)
+        if len(mask_pairs):
+            df_sel = df_sel[pd.Series(mask_pairs, index=df_sel.index)]
 
     for _, row in df_sel.iterrows():
         g, s = str(row["group"]), str(row["sequence"])
@@ -3041,21 +3049,121 @@ def run_feature(self,
               file=sys.stderr)
         max_workers = 1
 
-    # Choose input iterator
+    # Helpers to enumerate pairs without loading full data (to skip upfront)
+    def _list_track_pairs():
+        idx_path = self.get_root("tracks") / "index.csv"
+        if not idx_path.exists():
+            return set()
+        df_idx = pd.read_csv(idx_path)
+        df_idx["group"] = df_idx["group"].fillna("").astype(str)
+        df_idx["sequence"] = df_idx["sequence"].fillna("").astype(str)
+        mask = pd.Series(True, index=df_idx.index)
+        if groups is not None:
+            mask &= df_idx["group"].isin({str(g) for g in groups})
+        if sequences is not None:
+            mask &= df_idx["sequence"].isin({str(s) for s in sequences})
+        return set(zip(df_idx.loc[mask, "group"], df_idx.loc[mask, "sequence"]))
+
+    def _resolve_feature_run_and_pairs(feat_name: str, run_id_opt: Optional[str]):
+        idx_path = _feature_index_path(self, feat_name)
+        if not idx_path.exists():
+            raise FileNotFoundError(f"No index for feature '{feat_name}'. Expected: {idx_path}")
+        df_idx = pd.read_csv(idx_path)
+        df_idx["group"] = df_idx["group"].fillna("").astype(str)
+        df_idx["sequence"] = df_idx["sequence"].fillna("").astype(str)
+        resolved_run_id = run_id_opt
+        if resolved_run_id is None:
+            if "finished_at" in df_idx.columns:
+                cand = df_idx[df_idx["finished_at"].fillna("").astype(str) != ""]
+                base = cand if len(cand) else df_idx
+                base = base.sort_values(by=["finished_at" if len(cand) else "started_at"],
+                                        ascending=False, kind="stable")
+            else:
+                base = df_idx.sort_values(by=["started_at"], ascending=False, kind="stable")
+            if base.empty:
+                raise ValueError(f"No runs found for feature '{feat_name}'.")
+            resolved_run_id = str(base.iloc[0]["run_id"])
+        df_sel = df_idx[df_idx["run_id"].astype(str) == str(resolved_run_id)]
+        if groups is not None:
+            df_sel = df_sel[df_sel["group"].isin({str(g) for g in groups})]
+        if sequences is not None:
+            df_sel = df_sel[df_sel["sequence"].isin({str(s) for s in sequences})]
+        pairs = set(zip(df_sel["group"], df_sel["sequence"]))
+        return resolved_run_id, pairs
+
+    def _out_path_for_pair(pair: tuple[str, str]) -> Path:
+        g, s = pair
+        g = "" if g is None else str(g)
+        s = "" if s is None else str(s)
+        safe_group = to_safe_name(g) if g else ""
+        safe_seq = to_safe_name(s)
+        out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
+        return run_root / out_name
+
+    # Pre-pass: resolve candidate pairs, skip existing outputs before loading data
     input_scope = None
+    pairs_all: Optional[set[tuple[str, str]]] = None
+    pairs_to_compute: Optional[set[tuple[str, str]]] = None
+    preexisting_rows: list[dict] = []
+    resolved_input_run_id = input_run_id
+
     if input_kind not in {"tracks", "feature", "inputset"}:
         raise ValueError("input_kind must be 'tracks', 'feature', or 'inputset'")
-    if input_kind == "feature":
+
+    if input_kind == "tracks":
+        pairs_all = _list_track_pairs()
+    elif input_kind == "feature":
         if not input_feature:
             raise ValueError("input_feature must be provided when input_kind='feature'")
-        iter_inputs = lambda: _yield_feature_frames(self, input_feature, input_run_id, groups, sequences)
+        resolved_input_run_id, pairs_all = _resolve_feature_run_and_pairs(input_feature, input_run_id)
     elif input_kind == "inputset":
         if not input_feature:
             raise ValueError("input_feature (inputset name) must be provided when input_kind='inputset'")
         input_scope = _resolve_inputset_scope(self, input_feature, groups, sequences)
-        iter_inputs = lambda: _yield_inputset_frames(self, input_feature, groups, sequences, input_scope)
+        pairs_all = input_scope.get("pairs") or set()
+
+    if pairs_all is not None:
+        pairs_to_compute = set()
+        for pair in pairs_all:
+            out_path = _out_path_for_pair(pair)
+            if out_path.exists() and not overwrite:
+                if getattr(feature, "skip_existing_outputs", False):
+                    continue  # neither compute nor index append
+                g, s = pair
+                g = "" if g is None else str(g)
+                s = "" if s is None else str(s)
+                safe_group = to_safe_name(g) if g else ""
+                safe_seq = to_safe_name(s)
+                preexisting_rows.append({
+                    "feature": storage_feature_name,
+                    "version": feature.version,
+                    "run_id": run_id,
+                    "group": g,
+                    "sequence": s,
+                    "group_safe": safe_group,
+                    "sequence_safe": safe_seq,
+                    "abs_path": str(out_path.resolve()),
+                    "n_rows": None,
+                    "params_hash": params_hash,
+                    "started_at": started,
+                    "finished_at": "",
+                })
+            else:
+                pairs_to_compute.add(pair)
+
+    # Choose input iterator (filtered to pairs_to_compute when known)
+    if input_kind == "feature":
+        iter_inputs = lambda: _yield_feature_frames(self, input_feature, resolved_input_run_id, groups, sequences,
+                                                    allowed_pairs=pairs_to_compute)
+    elif input_kind == "inputset":
+        scope_for_iter = input_scope or {}
+        if pairs_to_compute is not None:
+            scope_for_iter = dict(scope_for_iter)
+            scope_for_iter["pairs"] = pairs_to_compute
+        iter_inputs = lambda: _yield_inputset_frames(self, input_feature, groups, sequences, scope_for_iter)
+        input_scope = scope_for_iter
     else:
-        iter_inputs = lambda: _yield_sequences(self, groups, sequences)
+        iter_inputs = lambda: _yield_sequences(self, groups, sequences, allowed_pairs=pairs_to_compute)
 
     # ===== FIT PHASE =====
     if hasattr(feature, "bind_dataset"):
@@ -3131,7 +3239,7 @@ def run_feature(self,
             pass
 
     # ===== TRANSFORM PHASE =====
-    out_rows = []
+    out_rows = list(preexisting_rows) if preexisting_rows else []
     had_transform_inputs = False
 
     def _make_meta(group, sequence):
@@ -3308,6 +3416,11 @@ def run_feature(self,
                 print(f"[feature:{feature.name}] transform failed for ({g},{s}): {e}", file=sys.stderr)
                 continue
             _write_output(meta, df_feat)
+            try:
+                del df_feat
+            except Exception:
+                pass
+            gc.collect()
 
     if executor:
         if futures:
@@ -3320,6 +3433,11 @@ def run_feature(self,
                           file=sys.stderr)
                     continue
                 _write_output(meta, df_feat)
+                try:
+                    del df_feat
+                except Exception:
+                    pass
+                gc.collect()
         executor.shutdown(wait=True)
 
     # Some global-only features (e.g., clustering over standalone artifacts) never
