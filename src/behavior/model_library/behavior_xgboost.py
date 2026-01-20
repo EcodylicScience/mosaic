@@ -579,10 +579,53 @@ class BehaviorXGBoostModel:
         raise ValueError(f"Unsupported feature_loader.kind='{kind}'")
 
     def _load_labels(self, path: Path) -> np.ndarray:
+        """
+        Load labels from NPZ file.
+
+        Handles both old dense format and new individual_pair_v1 sparse format.
+        For sparse format, returns a dense array with label 0 (background) for unlabeled frames.
+
+        For individual_pair_v1 format with multiple events per frame:
+        - Takes the maximum label ID at each frame (assumes higher ID = more specific behavior)
+        - In future: could be extended to support individual_id filtering
+        """
         with np.load(path, allow_pickle=True) as npz:
             if "labels" not in npz.files:
                 raise KeyError(f"'labels' key missing in {path.name}")
-            return np.asarray(npz["labels"], dtype=np.int32)
+
+            labels = np.asarray(npz["labels"], dtype=np.int32)
+
+            # Check if this is individual_pair_v1 format (sparse events)
+            if "label_format" in npz.files:
+                label_format = str(npz["label_format"])
+                if label_format == "individual_pair_v1":
+                    # Sparse format: need to convert to dense
+                    if "frames" not in npz.files:
+                        raise KeyError(f"'frames' key missing in individual_pair_v1 format: {path.name}")
+
+                    frames = np.asarray(npz["frames"], dtype=np.int32)
+
+                    # Determine total number of frames
+                    if len(frames) == 0:
+                        # No events: return empty array
+                        return np.array([], dtype=np.int32)
+
+                    n_frames = int(frames.max()) + 1
+
+                    # Create dense array filled with 0 (background)
+                    dense_labels = np.zeros(n_frames, dtype=np.int32)
+
+                    # Fill in events (if multiple events per frame, take max label)
+                    for frame_idx, label_id in zip(frames, labels):
+                        frame_idx = int(frame_idx)
+                        if frame_idx < n_frames:
+                            # Take max to handle multiple events per frame
+                            dense_labels[frame_idx] = max(dense_labels[frame_idx], label_id)
+
+                    return dense_labels
+
+            # Old format: already dense
+            return labels
 
     def _build_label_lookup(self, ds, label_kind: str) -> Dict[str, dict]:
         label_root = ds.get_root("labels") / label_kind

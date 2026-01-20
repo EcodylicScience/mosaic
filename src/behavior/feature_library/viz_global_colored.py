@@ -20,7 +20,7 @@ import seaborn as sns
 
 from behavior.dataset import register_feature
 from .helpers import _build_path_sequence_map
-from behavior.helpers import to_safe_name
+from behavior.helpers import to_safe_name, detect_label_format, expand_labels_to_dense, load_labels_for_feature_frames
 
 # Sentinel value to indicate label_key_regex should inherit from coord_key_regex
 INHERIT_REGEX = object()
@@ -74,6 +74,9 @@ class VizGlobalColored:
             "point_size": 2.0,
             "point_alpha": 0.35,
             "debug_save_arrays": False,
+            # Frame alignment: feature that contains frame indices for each coord row
+            # Used when coords are row-indexed and labels use different frame coordinates
+            "frame_source_feature": None,  # e.g., "pair-egocentric"
         }
         self.params = dict(defaults)
         if params:
@@ -153,6 +156,80 @@ class VizGlobalColored:
             key = load_spec.get("key")
             return obj if key is None else obj[key]
         raise ValueError(f"Unsupported load.kind='{kind}'")
+
+    def _load_label_file(
+        self,
+        path: Path,
+        load_spec: dict,
+        n_frames: Optional[int] = None,
+        feature_frames: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Load labels from file, auto-detecting and handling both dense and sparse formats.
+
+        For individual_pair_v1 (sparse) format, expands to dense per-frame array
+        OR aligns to feature_frames if provided.
+
+        Parameters
+        ----------
+        path : Path
+            Path to the label file (NPZ)
+        load_spec : dict
+            Load specification (e.g., {"kind": "npz", "key": "labels"})
+        n_frames : int, optional
+            Number of frames for dense expansion. If None, uses max(frames) + 1.
+        feature_frames : np.ndarray, optional
+            If provided, return labels aligned to these specific frame indices.
+            This is needed when coord features are row-indexed but labels use
+            different frame coordinates (e.g., original video frames).
+
+        Returns
+        -------
+        np.ndarray
+            1D array of labels. If feature_frames is provided, shape is
+            (len(feature_frames),). Otherwise, dense per-frame array.
+        """
+        kind = load_spec.get("kind", "npz").lower()
+
+        if kind != "npz":
+            # Non-NPZ files use standard loading
+            return np.asarray(self._load_one(path, load_spec)).ravel()
+
+        # If feature_frames provided, use the alignment helper
+        if feature_frames is not None:
+            return load_labels_for_feature_frames(
+                path, feature_frames, default_label=0, deduplicate_symmetric=True
+            )
+
+        # For NPZ files, detect format and handle appropriately
+        with np.load(path, allow_pickle=True) as npz:
+            fmt = detect_label_format(npz)
+
+            if fmt == "individual_pair_v1":
+                frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
+                labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
+                individual_ids = np.asarray(npz["individual_ids"])
+                if individual_ids.ndim == 1:
+                    individual_ids = individual_ids.reshape(-1, 2)
+
+                # For pair behaviors stored symmetrically, deduplicate.
+                # Keep only events where id1 <= id2 to avoid double-counting.
+                mask = individual_ids[:, 0] <= individual_ids[:, 1]
+                frames = frames[mask]
+                labels = labels[mask]
+
+                return expand_labels_to_dense(
+                    frames, labels,
+                    n_frames=n_frames,
+                    default_label=0,
+                )
+
+            else:
+                # Dense format or unknown - use standard key-based loading
+                key = load_spec.get("key", "labels")
+                if key not in npz.files:
+                    raise KeyError(f"Key '{key}' not found in {path.name}")
+                return np.asarray(npz[key]).ravel()
 
     def _load_labels_from_index(self, spec: dict) -> list[tuple[str, Path]]:
         """
@@ -240,6 +317,63 @@ class VizGlobalColored:
                 pass
         return str(val)
 
+    def _load_frame_source_map(self, allowed_any: set) -> dict[str, np.ndarray]:
+        """
+        Load frame indices from the frame_source_feature for each sequence.
+
+        Returns a dict mapping sequence key -> frame array.
+        """
+        frame_source = self.params.get("frame_source_feature")
+        if not frame_source or not self._ds:
+            return {}
+
+        # Try to find frame source feature files
+        features_root = self._ds.get_root("features")
+        idx_path = features_root / frame_source / "index.csv"
+        if not idx_path.exists():
+            return {}
+
+        try:
+            df = pd.read_csv(idx_path)
+            # Get the most recent run
+            if "finished_at" in df.columns:
+                cand = df[df["finished_at"].fillna("").astype(str) != ""]
+                base = cand if len(cand) else df
+                df = base.sort_values(by=["finished_at" if len(cand) else "started_at"],
+                                      ascending=False, kind="stable")
+            run_id = str(df.iloc[0]["run_id"])
+            run_root = features_root / frame_source / run_id
+
+            frame_map: dict[str, np.ndarray] = {}
+            for _, row in df[df["run_id"].astype(str) == run_id].iterrows():
+                abs_path = row.get("abs_path", "")
+                if not abs_path:
+                    continue
+                pth = Path(abs_path)
+                if not pth.exists():
+                    continue
+                # Get sequence key
+                seq_safe = str(row.get("sequence_safe") or row.get("sequence") or "").strip()
+                if not seq_safe:
+                    seq_safe = to_safe_name(pth.stem.split("__")[-1] if "__" in pth.stem else pth.stem)
+
+                if allowed_any and seq_safe not in allowed_any:
+                    continue
+
+                # Load frame column from parquet
+                if pth.suffix.lower() == ".parquet":
+                    try:
+                        feat_df = pd.read_parquet(pth)
+                        if "frame" in feat_df.columns:
+                            frame_map[seq_safe] = feat_df["frame"].to_numpy(dtype=np.int64)
+                    except Exception:
+                        pass
+            return frame_map
+        except Exception as e:
+            print(f"[viz-global-colored] WARN: failed to load frame source '{frame_source}': {e}",
+                  file=sys.stderr)
+            return {}
+
     def fit(self, X_iter):
         coord_spec = self.params["coords"]
         coord_run_id, _, coord_files = self._load_artifacts_glob(coord_spec)
@@ -272,6 +406,9 @@ class VizGlobalColored:
         if not Y_list:
             raise RuntimeError("No coordinate arrays loaded.")
 
+        # Load frame indices from frame_source_feature if specified
+        frame_source_map = self._load_frame_source_map(allowed_any)
+
         labels_spec = self.params.get("labels")
         missing_value = self.params.get("label_missing_value", -1)
         if labels_spec:
@@ -280,20 +417,30 @@ class VizGlobalColored:
             label_source = str(labels_spec.get("source", "feature")).lower()
             label_load_spec = labels_spec.get("load") or {"kind": "npz", "key": "labels"}
             lab_map: dict[Any, np.ndarray] = {}
+
+            # Build label entries to load
+            label_entries: list[tuple[str, Path]] = []
             if label_source == "labels":
                 entries = self._load_labels_from_index(labels_spec)
                 if allowed_any:
                     entries = [(s, p) for s, p in entries if s in allowed_any]
-                seq_map = {pth.resolve(): safe_seq for safe_seq, pth in entries}
-                for safe_seq, pth in entries:
-                    lab_key = self._extract_key(pth, label_regex, seq_map)
-                    lab_map[lab_key] = np.asarray(self._load_one(pth, label_load_spec))
+                label_entries = entries
             else:
                 label_run_id, _, label_files = self._load_artifacts_glob(labels_spec)
                 label_seq_map = self._feature_seq_map(labels_spec["feature"], label_run_id)
                 for lf in label_files:
                     lab_key = self._extract_key(lf, label_regex, label_seq_map)
-                    lab_map[lab_key] = np.asarray(self._load_one(lf, label_load_spec))
+                    label_entries.append((lab_key, lf))
+
+            # Load labels with frame alignment if available
+            seq_map = {pth.resolve(): safe_seq for safe_seq, pth in label_entries}
+            for safe_seq, pth in label_entries:
+                lab_key = self._extract_key(pth, label_regex, seq_map)
+                # Get feature frames for this sequence if available
+                feature_frames = frame_source_map.get(safe_seq)
+                if feature_frames is None:
+                    feature_frames = frame_source_map.get(to_safe_name(safe_seq))
+                lab_map[lab_key] = self._load_label_file(pth, label_load_spec, feature_frames=feature_frames)
             L_parts = []
             for idx, (key, n) in enumerate(zip(key_list, n_list)):
                 arr = lab_map.get(key)

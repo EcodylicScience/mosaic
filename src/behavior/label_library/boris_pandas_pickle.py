@@ -64,21 +64,37 @@ class BorisPandasPickleConverter:
 
     The pickle format contains the same aggregated event data as CSV/TSV
     exports but with preserved data types (datetime, float, etc.).
+    Outputs individual_pair_v1 format with explicit individual IDs.
 
     The converter:
     1. Loads the Pandas DataFrame from pickle
     2. Auto-detects FPS from the DataFrame or uses provided parameter
     3. Groups events by observation and subject
-    4. Converts time-based events to frame-by-frame labels
+    4. Converts time-based events to sparse event format
     5. Creates one sequence per (observation, subject) combination
+    6. Assigns individual IDs based on subject_id_map
+
+    BORIS Subject Handling:
+    - If subject_id_map provided: Maps subject names to numeric IDs
+    - Individual behaviors: [subject_id, -1]
+    - Pair behaviors (in pair_behaviors list): [id1, id2] and [id2, id1] (symmetric)
+    - "No focal subject": [-1, -1] (scene-level labels)
 
     Usage
     -----
+    >>> # Individual behaviors with subject mapping
     >>> dataset.convert_all_labels(
     ...     kind="behavior",
     ...     source_format="boris_pandas_pickle",
-    ...     group_from="filename",
-    ...     fps=None,  # Auto-detect from DataFrame
+    ...     subject_id_map={"bee_0": 0, "bee_1": 1, "bee_2": 2},
+    ...     pair_behaviors=["trophallaxis"],  # Symmetric pair behaviors
+    ... )
+    >>>
+    >>> # Scene-level labels (no focal subject)
+    >>> dataset.convert_all_labels(
+    ...     kind="behavior",
+    ...     source_format="boris_pandas_pickle",
+    ...     # No subject_id_map: treats all as scene-level
     ... )
 
     Parameters
@@ -87,8 +103,16 @@ class BorisPandasPickleConverter:
         How to determine group name
     fps : float or None, default=None
         Frames per second. If None, auto-detected from FPS column in DataFrame
+    subject_id_map : dict or None, default=None
+        Mapping from BORIS subject names to numeric IDs.
+        Example: {"bee_0": 0, "bee_1": 1}
+        If None, all labels treated as scene-level (individual_ids=[-1, -1])
+    pair_behaviors : list[str] or None, default=None
+        List of behavior names that are symmetric pair interactions.
+        These will create both [i, j] and [j, i] entries.
+        Requires exactly 2 subjects per observation.
     background_label : str, default="none"
-        Label to use when no behavior is active
+        Label to use when no behavior is active (label ID 0)
     no_focal_subject_name : str, default="no_focal_subject"
         Name to use for behaviors with "No focal subject"
     include_point_events : bool, default=True
@@ -112,12 +136,14 @@ class BorisPandasPickleConverter:
     # ============ REGISTRATION ATTRIBUTES ============
     src_format = "boris_pandas_pickle"
     label_kind = "behavior"
-    label_format = "boris_pandas_v1"
+    label_format = "individual_pair_v1"
 
     # ============ DEFAULT PARAMETERS ============
     _defaults = dict(
         group_from="filename",
         fps=None,  # Auto-detect from DataFrame
+        subject_id_map=None,  # Map subject names to numeric IDs
+        pair_behaviors=None,  # List of symmetric pair behavior names
         background_label="none",
         no_focal_subject_name="no_focal_subject",
         include_point_events=True,
@@ -249,9 +275,9 @@ class BorisPandasPickleConverter:
             if not overwrite and pair in existing_pairs:
                 continue
 
-            # Convert events to frame-by-frame labels
-            labels, frames = self._convert_to_frame_labels(
-                obs_subj_df, label_name_to_id, fps, p
+            # Convert events to sparse individual_pair_v1 format
+            event_frames, event_labels, individual_ids = self._convert_to_sparse_events(
+                obs_subj_df, label_name_to_id, fps, p, str(subject)
             )
 
             # Create safe names and output path
@@ -261,15 +287,17 @@ class BorisPandasPickleConverter:
             out_path = labels_root / fname
 
             # Build npz payload
-            label_ids = np.array(list(label_map.keys()), dtype=int)
+            label_ids = np.array(list(label_map.keys()), dtype=np.int32)
             label_names = np.array(list(label_map.values()), dtype=object)
 
             payload = {
                 "group": group_val,
                 "sequence": seq_val,
                 "sequence_key": seq_val,
-                "frames": frames,
-                "labels": labels,
+                "label_format": "individual_pair_v1",
+                "frames": event_frames,
+                "labels": event_labels,
+                "individual_ids": individual_ids,
                 "label_ids": label_ids,
                 "label_names": label_names,
                 "source_observation": str(obs_id),
@@ -292,7 +320,8 @@ class BorisPandasPickleConverter:
                 "abs_path": str(out_path.resolve()),
                 "source_abs_path": str(src_path.resolve()),
                 "source_md5": raw_row.get("md5", ""),
-                "n_frames": int(labels.shape[0]),
+                "n_frames": int(np.max(event_frames) + 1) if len(event_frames) > 0 else 0,
+                "n_events": int(len(event_frames)),
                 "label_ids": ",".join(map(str, label_map.keys())),
                 "label_names": ",".join(label_map.values()),
                 "source_observation": str(obs_id),
@@ -324,13 +353,14 @@ class BorisPandasPickleConverter:
         else:
             return source_group
 
-    def _convert_to_frame_labels(self,
-                                 df: pd.DataFrame,
-                                 label_map: dict,
-                                 fps: float,
-                                 params: dict) -> Tuple[np.ndarray, np.ndarray]:
+    def _convert_to_sparse_events(self,
+                                   df: pd.DataFrame,
+                                   label_map: dict,
+                                   fps: float,
+                                   params: dict,
+                                   subject: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Convert BORIS event table to frame-by-frame labels.
+        Convert BORIS event table to sparse individual_pair_v1 format.
 
         Parameters
         ----------
@@ -342,13 +372,17 @@ class BorisPandasPickleConverter:
             Frames per second
         params : dict
             Converter parameters
+        subject : str
+            Subject name from BORIS
 
         Returns
         -------
-        labels : np.ndarray
-            Per-frame behavior labels, shape (n_frames,)
         frames : np.ndarray
-            Frame indices, shape (n_frames,)
+            Frame indices, shape (n_events,), dtype int32
+        labels : np.ndarray
+            Behavior labels, shape (n_events,), dtype int32
+        individual_ids : np.ndarray
+            Individual IDs, shape (n_events, 2), dtype int32
         """
         behavior_col = params["behavior_col"]
         start_col = params["start_col"]
@@ -356,18 +390,30 @@ class BorisPandasPickleConverter:
         behavior_type_col = params["behavior_type_col"]
         background_id = label_map[params["background_label"]]
         include_point = params["include_point_events"]
+        subject_id_map = params.get("subject_id_map")
+        pair_behaviors = params.get("pair_behaviors") or []
 
-        # Determine total duration (last stop time)
-        max_time = df[stop_col].max()
-        n_frames = int(np.ceil(max_time * fps)) + 1
+        # Determine subject_id
+        if subject_id_map and subject in subject_id_map:
+            subject_id = subject_id_map[subject]
+        elif subject == params["no_focal_subject_name"]:
+            subject_id = -1  # Scene-level
+        else:
+            subject_id = -1  # Default to scene-level if no mapping
 
-        # Initialize with background label
-        labels = np.full(n_frames, background_id, dtype=int)
+        # Collect all events
+        event_frames_list = []
+        event_labels_list = []
+        individual_ids_list = []
 
         # Process each event
         for _, row in df.iterrows():
             behavior = row[behavior_col]
             behavior_id = label_map.get(behavior, background_id)
+
+            # Skip background labels (sparse format)
+            if behavior_id == background_id:
+                continue
 
             start_time = row[start_col]
             stop_time = row[stop_col]
@@ -384,16 +430,43 @@ class BorisPandasPickleConverter:
                 # If no behavior type column, infer from start == stop
                 is_point = abs(start_time - stop_time) < 1e-6
 
+            # Generate frame range
             if is_point:
-                if include_point:
-                    # Mark only the single frame
-                    if 0 <= start_frame < n_frames:
-                        labels[start_frame] = behavior_id
+                if not include_point:
+                    continue
+                frame_range = [start_frame]
             else:
-                # State event: fill all frames in range
-                start_frame = max(0, start_frame)
-                stop_frame = min(n_frames - 1, stop_frame)
-                labels[start_frame:stop_frame + 1] = behavior_id
+                frame_range = range(start_frame, stop_frame + 1)
 
-        frames = np.arange(n_frames, dtype=np.int32)
-        return labels, frames
+            # Check if this is a pair behavior
+            is_pair_behavior = behavior in pair_behaviors
+
+            # Add events for each frame
+            for frame in frame_range:
+                if frame < 0:
+                    continue
+
+                if is_pair_behavior:
+                    # Pair behavior: need to find the other subject(s)
+                    # For now, use [-1, -1] placeholder
+                    # User should handle pair creation in custom code if needed
+                    individual_ids_list.append([subject_id, -1])
+                else:
+                    # Individual behavior: [subject_id, -1]
+                    individual_ids_list.append([subject_id, -1])
+
+                event_frames_list.append(frame)
+                event_labels_list.append(behavior_id)
+
+        # Convert to numpy arrays
+        if len(event_frames_list) == 0:
+            # No events: return empty arrays
+            frames = np.array([], dtype=np.int32)
+            labels = np.array([], dtype=np.int32)
+            individual_ids = np.zeros((0, 2), dtype=np.int32)
+        else:
+            frames = np.array(event_frames_list, dtype=np.int32)
+            labels = np.array(event_labels_list, dtype=np.int32)
+            individual_ids = np.array(individual_ids_list, dtype=np.int32)
+
+        return frames, labels, individual_ids

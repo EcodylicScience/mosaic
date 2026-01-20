@@ -822,18 +822,46 @@ class Dataset:
                          recursive: bool = True,
                          multi_sequences_per_file: bool = False,
                          group_from: Optional[str] = None,
-                         exclude_patterns: Optional[Iterable[str]] = None) -> Path:
+                         group_pattern: Optional[str] = None,
+                         exclude_patterns: Optional[Iterable[str]] = None,
+                         compute_md5: bool = False) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
         Columns: group, sequence, abs_path, src_format, size_bytes, mtime_iso, md5
-        If multi_sequences_per_file=True (e.g., CalMS files), set 'group' from group_from ('filename' or 'parent')
-        and leave 'sequence' blank; conversion will expand to per-sequence later.
+
+        Parameters
+        ----------
+        search_dirs : Iterable[str | Path]
+            Directories to search for files
+        patterns : Iterable[str] | str
+            Glob patterns to match files
+        src_format : str
+            Source format identifier (e.g., "trex_npz", "calms21_npy")
+        index_filename : str
+            Name of output index file
+        recursive : bool
+            Whether to search recursively
+        multi_sequences_per_file : bool
+            If True (e.g., CalMS files), set 'group' from group_from and leave 'sequence' blank
+        group_from : str | None
+            For multi_sequences_per_file: 'filename' or 'parent'
+        group_pattern : str | None
+            Regex pattern to extract group from sequence name. Must have a capturing group.
+            Examples:
+                r'^(hex|OCI|OLE)_' -> extracts 'hex', 'OCI', or 'OLE' as group
+                r'^([A-Za-z]+)_'   -> extracts letters before first underscore as group
+            Applied AFTER sequence is determined (e.g., after stripping _fish0 suffix).
+        exclude_patterns : Iterable[str] | None
+            Glob patterns to exclude
+        compute_md5 : bool
+            If True, compute MD5 hash of each file (slow for large files). Default False.
         """
         out_csv = self.get_root("tracks_raw") / index_filename
         rows = []
 
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
+        group_re = re.compile(group_pattern) if group_pattern else None
 
         for root in map(Path, search_dirs):
             for pat in pat_list:
@@ -855,11 +883,17 @@ class Dataset:
                             grp = ""
                         seq = ""
                     else:
-                        grp = ""
                         if src_format == "trex_npz":
                             seq = _strip_trex_seq(p.stem)
                         else:
                             seq = p.stem  # 1 file ~= 1 sequence default
+
+                        # Extract group from sequence using pattern
+                        if group_re:
+                            m = group_re.search(seq)
+                            grp = m.group(1) if m else ""
+                        else:
+                            grp = ""
 
                     rows.append({
                         "group": grp,
@@ -868,7 +902,7 @@ class Dataset:
                         "src_format": src_format,
                         "size_bytes": st.st_size,
                         "mtime_iso": _to_iso(st.st_mtime),
-                        "md5": _md5(p),
+                        "md5": _md5(p) if compute_md5 else "",
                     })
 
         df = pd.DataFrame(rows).drop_duplicates(subset=["abs_path"])
@@ -1090,7 +1124,14 @@ class Dataset:
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
             raise FileNotFoundError("tracks_raw/index.csv not found; run index_tracks_raw first.")
-        df = pd.read_csv(raw_idx)
+        try:
+            df = pd.read_csv(raw_idx)
+        except pd.errors.EmptyDataError:
+            raise ValueError(
+                f"tracks_raw/index.csv is empty or malformed: {raw_idx}\n"
+                "This usually means index_tracks_raw() found no matching files.\n"
+                "Check your search_dirs and patterns parameters."
+            )
 
         # Decide merging default for trex
         if merge_per_sequence is None:
@@ -1334,6 +1375,156 @@ class Dataset:
 
         print(f"[convert_all_labels] kind={kind} wrote {len(new_rows)} sequences using {src_format} converter (overwrite={overwrite}).")
 
+    def convert_labels_custom(self,
+                               converter_fn: Callable,
+                               kind: str = "behavior",
+                               label_format: str = "individual_pair_v1",
+                               overwrite: bool = False,
+                               **kwargs) -> int:
+        """
+        Convert labels using a custom converter function.
+
+        This method provides flexibility for one-off datasets with unique label
+        structures that don't fit the standard converter pattern. The Dataset
+        handles all index.csv bookkeeping while you provide the conversion logic.
+
+        Parameters
+        ----------
+        converter_fn : callable
+            A function that performs the actual label conversion. Must have signature:
+
+                converter_fn(dataset, labels_root, existing_pairs, overwrite, **kwargs)
+                    -> list[dict]
+
+            Where:
+            - dataset: This Dataset instance (for accessing paths, metadata, etc.)
+            - labels_root: Path to output directory (e.g., dataset/labels/behavior/)
+            - existing_pairs: set of (group, sequence) tuples already converted
+            - overwrite: bool, whether to overwrite existing files
+            - **kwargs: Any additional arguments passed to convert_labels_custom
+
+            Returns:
+            - list[dict]: Index rows for each converted sequence. Each dict should have:
+                - 'kind': str, label kind (e.g., "behavior")
+                - 'label_format': str, format name (e.g., "individual_pair_v1")
+                - 'group': str, group name
+                - 'sequence': str, sequence name
+                - 'group_safe': str, filesystem-safe group name
+                - 'sequence_safe': str, filesystem-safe sequence name
+                - 'abs_path': str, absolute path to output NPZ file
+                - 'n_frames': int, number of unique frames with labels
+                - 'n_events': int, total number of label events
+                - 'label_ids': str, comma-separated label IDs (e.g., "0,1,2")
+                - 'label_names': str, comma-separated label names (e.g., "none,troph,other")
+                - (optional) additional metadata columns
+
+        kind : str, default="behavior"
+            Type of labels being converted (e.g., "behavior", "id_tags")
+
+        label_format : str, default="individual_pair_v1"
+            Format name for metadata. Should match what's saved in NPZ files.
+
+        overwrite : bool, default=False
+            Whether to overwrite existing label files
+
+        **kwargs
+            Additional arguments passed to converter_fn
+
+        Returns
+        -------
+        int
+            Number of sequences converted
+
+        Examples
+        --------
+        >>> def my_converter(dataset, labels_root, existing_pairs, overwrite, **kwargs):
+        ...     '''Custom converter for my unique dataset.'''
+        ...     boris_path = kwargs['boris_path']
+        ...     metadata_path = kwargs['metadata_path']
+        ...     fps = kwargs.get('fps', 50.0)
+        ...
+        ...     # ... your conversion logic here ...
+        ...     # Save NPZ files to labels_root
+        ...     # Return list of index row dicts
+        ...
+        ...     return index_rows
+        >>>
+        >>> n_converted = dataset.convert_labels_custom(
+        ...     converter_fn=my_converter,
+        ...     kind="behavior",
+        ...     boris_path=Path("/path/to/boris.tsv"),
+        ...     metadata_path=Path("/path/to/metadata.json"),
+        ...     fps=50.0,
+        ... )
+
+        NPZ File Format (individual_pair_v1)
+        ------------------------------------
+        The converter should save NPZ files with these keys:
+        - 'group': str, group name
+        - 'sequence': str, sequence name
+        - 'label_format': str, "individual_pair_v1"
+        - 'frames': int32 array, shape (n_events,), frame indices
+        - 'labels': int32 array, shape (n_events,), label IDs
+        - 'individual_ids': int32 array, shape (n_events, 2), [id1, id2] per event
+          - For individual behaviors: [subject_id, -1]
+          - For pair behaviors: [id1, id2] (symmetric: store both directions)
+          - For scene-level: [-1, -1]
+        - 'label_ids': int32 array, all label IDs (e.g., [0, 1, 2])
+        - 'label_names': object array, label names (e.g., ["none", "troph", "other"])
+        - 'fps': float, frames per second
+        - (optional) additional metadata
+
+        See Also
+        --------
+        convert_all_labels : For standard converters registered in label_library
+        load_labels : Load converted labels
+        """
+        kind = str(kind or "behavior").lower()
+
+        # Setup output directory
+        labels_root = self.get_root("labels") / kind
+        labels_root.mkdir(parents=True, exist_ok=True)
+        idx_path = labels_root / "index.csv"
+        _ensure_labels_index(idx_path)
+
+        # Load existing pairs to avoid duplicates
+        existing_pairs: set[tuple[str, str]] = set()
+        if idx_path.exists():
+            df_idx = pd.read_csv(idx_path)
+            if not df_idx.empty:
+                grouped = df_idx.get("group", pd.Series(dtype=str)).fillna("")
+                seqs = df_idx.get("sequence", pd.Series(dtype=str)).fillna("")
+                existing_pairs = set(zip(grouped.astype(str), seqs.astype(str)))
+
+        # Call the custom converter
+        new_rows = converter_fn(
+            dataset=self,
+            labels_root=labels_root,
+            existing_pairs=existing_pairs,
+            overwrite=overwrite,
+            **kwargs
+        )
+
+        # Update index and metadata
+        if new_rows:
+            _append_labels_index(idx_path, new_rows)
+
+            # Update dataset metadata
+            labels_meta = self.meta.setdefault("labels", {})
+            labels_meta[kind] = {
+                "index": str(idx_path.resolve()),
+                "label_format": label_format,
+                "updated_at": _now_iso(),
+            }
+
+            try:
+                self.save()
+            except Exception:
+                pass
+
+        print(f"[convert_labels_custom] kind={kind} wrote {len(new_rows)} sequences (overwrite={overwrite}).")
+        return len(new_rows)
+
     def save_id_labels(self,
                        kind: str,
                        group: str,
@@ -1454,6 +1645,164 @@ class Dataset:
                 "labels": per_id,
                 "metadata": meta,
             }
+        return result
+
+    def load_labels(self,
+                    group: str,
+                    sequence: str,
+                    kind: str = "behavior") -> dict:
+        """
+        Load behavior labels for a specific (group, sequence).
+
+        Returns dict with keys:
+        - frames: np.ndarray of frame indices
+        - labels: np.ndarray of behavior IDs
+        - individual_ids: np.ndarray of shape (n_events, 2) if individual_pair_v1 format
+        - label_ids: np.ndarray of all possible label IDs
+        - label_names: np.ndarray of label names
+        - label_format: str indicating format version
+        - group, sequence, sequence_key: metadata
+
+        For backward compatibility with old dense formats, individual_ids may not be present.
+        """
+        labels_root = self.get_root("labels") / kind
+        idx_path = labels_root / "index.csv"
+        if not idx_path.exists():
+            raise FileNotFoundError(f"Labels index not found for kind='{kind}': {idx_path}")
+
+        df = pd.read_csv(idx_path)
+        df = df[(df["group"].fillna("") == group) & (df["sequence"] == sequence)]
+
+        if len(df) == 0:
+            raise ValueError(f"No labels found for group='{group}', sequence='{sequence}', kind='{kind}'")
+
+        if len(df) > 1:
+            print(f"Warning: Multiple label entries found for ({group}, {sequence}). Using first.")
+
+        row = df.iloc[0]
+        abs_path = str(row.get("abs_path", "")).strip()
+        if not abs_path:
+            raise ValueError(f"No abs_path in index for ({group}, {sequence})")
+
+        path = self.remap_path(abs_path) if hasattr(self, "remap_path") else Path(abs_path)
+        if not Path(path).exists():
+            raise FileNotFoundError(f"Label file not found: {path}")
+
+        with np.load(path, allow_pickle=True) as npz:
+            data = {key: npz[key] for key in npz.files}
+
+        return data
+
+    def get_labels_for_individual(self,
+                                  group: str,
+                                  sequence: str,
+                                  individual_id: int,
+                                  kind: str = "behavior",
+                                  frame_range: Optional[tuple[int, int]] = None) -> dict:
+        """
+        Get all label events for a specific individual.
+
+        Parameters
+        ----------
+        group : str
+            Group name
+        sequence : str
+            Sequence name
+        individual_id : int
+            Individual ID to filter by
+        kind : str
+            Label kind (default "behavior")
+        frame_range : tuple[int, int], optional
+            (start_frame, end_frame) to filter events
+
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - frames: np.ndarray of frame indices
+            - labels: np.ndarray of behavior IDs
+            - individual_ids: np.ndarray of shape (n_events, 2)
+        """
+        data = self.load_labels(group, sequence, kind)
+
+        # Check format
+        if "individual_ids" not in data:
+            # Old format: backward compatibility
+            # Return all frames assuming labels apply to this individual
+            result = {
+                "frames": data["frames"],
+                "labels": data["labels"],
+                "individual_ids": None,
+            }
+            if frame_range:
+                start, end = frame_range
+                mask = (data["frames"] >= start) & (data["frames"] <= end)
+                result["frames"] = data["frames"][mask]
+                result["labels"] = data["labels"][mask]
+            return result
+
+        # New format: filter by individual_id
+        ids = data["individual_ids"]
+        mask = (ids[:, 0] == individual_id) | (ids[:, 1] == individual_id)
+
+        if frame_range:
+            start, end = frame_range
+            mask &= (data["frames"] >= start) & (data["frames"] <= end)
+
+        return {
+            "frames": data["frames"][mask],
+            "labels": data["labels"][mask],
+            "individual_ids": ids[mask],
+        }
+
+    def get_labels_at_frame(self,
+                           group: str,
+                           sequence: str,
+                           frame: int,
+                           kind: str = "behavior",
+                           individual_id: Optional[int] = None) -> dict:
+        """
+        Get all labels at a specific frame.
+
+        Parameters
+        ----------
+        group : str
+            Group name
+        sequence : str
+            Sequence name
+        frame : int
+            Frame index
+        kind : str
+            Label kind (default "behavior")
+        individual_id : int, optional
+            Filter by individual ID if provided
+
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - frames: np.ndarray of frame indices (should all equal frame)
+            - labels: np.ndarray of behavior IDs
+            - individual_ids: np.ndarray or None
+        """
+        data = self.load_labels(group, sequence, kind)
+
+        mask = data["frames"] == frame
+
+        if individual_id is not None and "individual_ids" in data:
+            ids = data["individual_ids"]
+            mask &= (ids[:, 0] == individual_id) | (ids[:, 1] == individual_id)
+
+        result = {
+            "frames": data["frames"][mask],
+            "labels": data["labels"][mask],
+        }
+
+        if "individual_ids" in data:
+            result["individual_ids"] = data["individual_ids"][mask]
+        else:
+            result["individual_ids"] = None
+
         return result
 
     # ----------------------------
@@ -1818,10 +2167,18 @@ def _to_iso(ts: float) -> str:
 ############################################################################################################
 
 # --- TRex per-id NPZ support ---
-_TREX_ID_SUFFIX = re.compile(r"_id(\d+)$")
+# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc.
+_TREX_ID_SUFFIX = re.compile(r"_(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
 
 def _strip_trex_seq(stem: str) -> str:
-    """Return filename stem with trailing '_id<digits>' removed, if present."""
+    """Return filename stem with trailing individual ID suffix removed, if present.
+
+    Handles patterns like: _id0, _fish2, _bee1, _animal3, _ind0
+    Examples:
+        hex_7_fish2 -> hex_7
+        OCI_1_fish0 -> OCI_1
+        video1_id3 -> video1
+    """
     m = _TREX_ID_SUFFIX.search(stem)
     if m:
         return stem[: m.start()]

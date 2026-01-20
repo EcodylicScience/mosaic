@@ -36,15 +36,21 @@ class CalMS21BehaviorConverter:
 
     CalMS21 files contain nested structure: group -> sequence -> annotations.
     This converter extracts per-frame behavior labels and converts them to
-    standardized npz files.
+    individual_pair_v1 format with explicit individual IDs.
+
+    CalMS21 behaviors (attack, investigation, mount, other_interaction) are
+    directed pair interactions between resident (ID=0) and intruder (ID=1).
+    The direction is implicitly resident → intruder.
     """
 
     src_format = "calms21_npy"  # Also handles calms21_json via load_calms21
     label_kind = "behavior"
-    label_format = "calms21_behavior_v1"
+    label_format = "individual_pair_v1"
 
     _defaults = dict(
         group_from="filename",  # 'filename', 'infile', or 'both'
+        resident_id=0,  # Resident mouse ID
+        intruder_id=1,  # Intruder mouse ID
     )
 
     def __init__(self, params: Optional[Dict[str, Any]] = None, **kwargs):
@@ -120,14 +126,26 @@ class CalMS21BehaviorConverter:
                     continue
 
                 # Extract labels array
-                labels = np.asarray(seq_dict["annotations"])
-                if labels.ndim > 1:
+                dense_labels = np.asarray(seq_dict["annotations"])
+                if dense_labels.ndim > 1:
                     # Handle multi-annotator case: take first column
-                    labels = labels[:, 0]
-                labels = labels.astype(int, copy=False)
+                    dense_labels = dense_labels[:, 0]
+                dense_labels = dense_labels.astype(int, copy=False)
 
-                # Create frame index
-                frames = np.arange(labels.shape[0], dtype=np.int32)
+                # Convert dense per-frame to sparse events with individual_ids
+                # CalMS21 behaviors are directed pair interactions: resident → intruder
+                resident_id = self.params["resident_id"]
+                intruder_id = self.params["intruder_id"]
+
+                # Find all frames with non-zero labels (exclude background/none)
+                event_mask = dense_labels != 0  # Assuming 0 is "no behavior"
+                event_frames = np.where(event_mask)[0].astype(np.int32)
+                event_labels = dense_labels[event_mask].astype(np.int32)
+
+                # For each event, create directed pair: [resident, intruder]
+                # All CalMS21 behaviors are resident-initiated interactions
+                n_events = len(event_frames)
+                individual_ids = np.full((n_events, 2), [resident_id, intruder_id], dtype=np.int32)
 
                 # Determine sequence name
                 seq_val = str(seq_key)
@@ -143,13 +161,15 @@ class CalMS21BehaviorConverter:
                 if not overwrite and pair in existing_pairs and out_path.exists():
                     continue
 
-                # Build npz payload
+                # Build npz payload (individual_pair_v1 format)
                 payload = {
                     "group": group_val,
                     "sequence": seq_val,
                     "sequence_key": seq_val,
-                    "frames": frames,
-                    "labels": labels,
+                    "label_format": "individual_pair_v1",
+                    "frames": event_frames,
+                    "labels": event_labels,
+                    "individual_ids": individual_ids,
                     "label_ids": label_ids,
                     "label_names": label_names,
                 }
@@ -165,7 +185,7 @@ class CalMS21BehaviorConverter:
                 # Build index row
                 rows_out.append({
                     "kind": "behavior",
-                    "label_format": "calms21_behavior_v1",
+                    "label_format": "individual_pair_v1",
                     "group": group_val,
                     "sequence": seq_val,
                     "group_safe": safe_group,
@@ -173,7 +193,8 @@ class CalMS21BehaviorConverter:
                     "abs_path": str(out_path.resolve()),
                     "source_abs_path": str(src_path.resolve()),
                     "source_md5": raw_row.get("md5", ""),
-                    "n_frames": int(labels.shape[0]),
+                    "n_frames": int(dense_labels.shape[0]),
+                    "n_events": int(n_events),
                     "label_ids": ",".join(map(str, BEHAVIOR_LABEL_MAP.keys())),
                     "label_names": ",".join(BEHAVIOR_LABEL_MAP.values()),
                 })

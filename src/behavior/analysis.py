@@ -15,7 +15,7 @@ from sklearn.metrics import (
 )
 
 from behavior.dataset import Dataset
-from behavior.helpers import to_safe_name
+from behavior.helpers import to_safe_name, load_labels_auto, detect_label_format, expand_labels_to_dense, load_labels_for_feature_frames
 
 
 def cluster_gt_agreement(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -105,6 +105,7 @@ def compute_cluster_label_agreement(
     max_frames: Optional[int] = None,
     rng_seed: Optional[int] = 42,
     include_per_sequence: bool = False,
+    frame_source_feature: Optional[str] = None,
 ) -> dict:
     """
     Align Ward/K-Means (or any per-frame clustering feature) with ground-truth labels
@@ -130,6 +131,10 @@ def compute_cluster_label_agreement(
         Seed passed to numpy.random.default_rng for subsampling.
     include_per_sequence : bool
         If True, returns per-sequence metrics (with confusion matrices stripped).
+    frame_source_feature : str, optional
+        Feature name that contains frame indices (e.g., "pair-egocentric").
+        Used when cluster labels are row-indexed and need to be aligned with
+        frame-indexed behavior labels. If None, tries to infer from cluster_feature.
     """
     cluster_map, resolved_run_id, run_root = _load_feature_sequence_index(ds, cluster_feature, cluster_run_id)
     label_map = _load_label_sequence_index(ds, label_kind)
@@ -148,6 +153,25 @@ def compute_cluster_label_agreement(
     if not shared_keys:
         raise RuntimeError("No overlap between cluster outputs and labels.")
 
+    # Try to find frame source feature for alignment
+    frame_source_map = None
+    if frame_source_feature:
+        try:
+            frame_source_map, _, _ = _load_feature_sequence_index(ds, frame_source_feature, run_id=None)
+        except Exception:
+            pass
+    elif "__from__" in cluster_feature:
+        # Try to infer from feature chain - walk back to find one with frames
+        # e.g., global-kmeans__from__global-tsne__from__social+ego
+        # Try: pair-egocentric (common source with frames)
+        for candidate in ["pair-egocentric", "pair-posedistance-pca"]:
+            try:
+                frame_source_map, _, _ = _load_feature_sequence_index(ds, candidate, run_id=None)
+                if frame_source_map:
+                    break
+            except Exception:
+                continue
+
     rng = np.random.default_rng(rng_seed) if max_frames else None
     y_true_blocks, y_pred_blocks = [], []
     aligned_rows = []
@@ -159,8 +183,30 @@ def compute_cluster_label_agreement(
         if not c_bundle.path.exists() or not l_bundle.path.exists():
             continue
 
-        pred = _load_cluster_labels(c_bundle.path, cluster_column)
-        true = _load_label_npz(l_bundle.path)
+        # Load cluster labels with frames if available
+        pred, cluster_frames = _load_cluster_labels(c_bundle.path, cluster_column, return_frames=True)
+
+        # If cluster file doesn't have frames, try frame source feature
+        feature_frames = cluster_frames
+        if feature_frames is None and frame_source_map and safe_seq in frame_source_map:
+            frame_bundle = frame_source_map[safe_seq]
+            if frame_bundle.path.exists():
+                try:
+                    _, feature_frames = _load_cluster_labels(
+                        frame_bundle.path, "frame", return_frames=True
+                    )
+                    # The above tries to load "frame" as a column, let's load it properly
+                    if frame_bundle.path.suffix.lower() == ".parquet":
+                        df = pd.read_parquet(frame_bundle.path)
+                        if "frame" in df.columns:
+                            feature_frames = df["frame"].to_numpy(dtype=np.int64)
+                except Exception:
+                    pass
+
+        # Load behavior labels, aligned to feature frames if available
+        true = _load_label_npz(l_bundle.path, feature_frames=feature_frames)
+
+        # Ensure same length
         n = min(len(pred), len(true))
         if n == 0:
             continue
@@ -344,29 +390,99 @@ def _safe_sequence_name(row: pd.Series) -> str:
     return ""
 
 
-def _load_cluster_labels(path: Path, column: str) -> np.ndarray:
+def _load_cluster_labels(
+    path: Path,
+    column: str,
+    return_frames: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
+    """
+    Load cluster labels from parquet or npz file.
+
+    Parameters
+    ----------
+    path : Path
+        Path to cluster labels file
+    column : str
+        Column name for labels (parquet) or key name (npz)
+    return_frames : bool
+        If True, also return the frame indices for each row (if available)
+
+    Returns
+    -------
+    If return_frames is False: np.ndarray of cluster labels
+    If return_frames is True: tuple of (labels, frames) where frames may be None
+    """
     suffix = path.suffix.lower()
+    frames = None
+
     if suffix == ".parquet":
-        df = pd.read_parquet(path, columns=[column])
+        # Try to load both labels and frame columns
+        cols_to_load = [column]
+        if return_frames:
+            cols_to_load.append("frame")
+        df = pd.read_parquet(path)
         if column not in df.columns:
             raise KeyError(f"Column '{column}' missing in {path}")
         data = df[column].to_numpy(copy=False)
+        if return_frames and "frame" in df.columns:
+            frames = df["frame"].to_numpy(copy=False).astype(np.int64)
     elif suffix == ".npz":
         with np.load(path, allow_pickle=True) as npz:
             key = column if column in npz.files else "labels"
             if key not in npz.files:
                 raise KeyError(f"Neither '{column}' nor 'labels' present in {path.name}")
             data = npz[key]
+            if return_frames and "frames" in npz.files:
+                frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
+            elif return_frames and "frame" in npz.files:
+                frames = np.asarray(npz["frame"], dtype=np.int64).ravel()
     else:
         raise ValueError(f"Unsupported cluster artifact format: {path.suffix}")
-    return np.asarray(data, dtype=int).ravel()
+
+    labels = np.asarray(data, dtype=int).ravel()
+
+    if return_frames:
+        return labels, frames
+    return labels
 
 
-def _load_label_npz(path: Path) -> np.ndarray:
-    with np.load(path, allow_pickle=True) as npz:
-        if "labels" not in npz.files:
-            raise KeyError(f"'labels' key missing in {path.name}")
-        return np.asarray(npz["labels"], dtype=int).ravel()
+def _load_label_npz(
+    path: Path,
+    n_frames: Optional[int] = None,
+    feature_frames: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Load labels from NPZ file, supporting both dense and individual_pair_v1 formats.
+
+    For individual_pair_v1 (sparse) format, expands to dense per-frame array.
+    For pair behaviors, takes the first direction only (to avoid double-counting).
+
+    Parameters
+    ----------
+    path : Path
+        Path to the label NPZ file
+    n_frames : int, optional
+        Number of frames for dense expansion. If None, uses max(frames) + 1.
+    feature_frames : np.ndarray, optional
+        If provided, return labels aligned to these specific frame indices.
+        This is needed when cluster features are row-indexed (not frame-indexed)
+        and we need to look up the label for each feature row's frame.
+
+    Returns
+    -------
+    np.ndarray
+        Dense 1D array of labels. If feature_frames is provided, shape is
+        (len(feature_frames),) with one label per feature row. Otherwise,
+        shape is (n_frames,) as a dense per-frame array.
+    """
+    # If feature_frames provided, use the dedicated alignment helper
+    if feature_frames is not None:
+        return load_labels_for_feature_frames(
+            path, feature_frames, default_label=0, deduplicate_symmetric=True
+        )
+
+    # Otherwise, load and expand to dense (legacy behavior)
+    return load_labels_auto(path, n_frames=n_frames, default_label=0)
 
 
 def _normalize_sequence_filters(seq_iter: Sequence[str]) -> set[str]:

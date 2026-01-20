@@ -1,4 +1,5 @@
 from urllib.parse import quote, unquote
+from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
@@ -8,6 +9,318 @@ def to_safe_name(s: str) -> str:
 
 def from_safe_name(safe: str) -> str:
     return unquote(safe)
+
+
+# =============================================================================
+# Label Format Helpers
+# =============================================================================
+
+def detect_label_format(npz_data: dict) -> str:
+    """
+    Detect the label format from an NPZ file's contents.
+
+    Parameters
+    ----------
+    npz_data : dict or np.lib.npyio.NpzFile
+        Loaded NPZ data (from np.load())
+
+    Returns
+    -------
+    str
+        One of: "individual_pair_v1", "dense", "unknown"
+
+    Examples
+    --------
+    >>> with np.load("labels.npz", allow_pickle=True) as npz:
+    ...     fmt = detect_label_format(npz)
+    """
+    # Check for explicit label_format key
+    if "label_format" in npz_data.files if hasattr(npz_data, 'files') else "label_format" in npz_data:
+        fmt = str(npz_data["label_format"])
+        if fmt:
+            return fmt
+
+    # Heuristic detection based on keys present
+    keys = set(npz_data.files if hasattr(npz_data, 'files') else npz_data.keys())
+
+    # individual_pair_v1: has frames, labels, individual_ids arrays
+    if {"frames", "labels", "individual_ids"}.issubset(keys):
+        return "individual_pair_v1"
+
+    # Dense format: just has labels array (and it's likely 1D with length = n_frames)
+    if "labels" in keys:
+        labels = np.asarray(npz_data["labels"])
+        # If labels is 1D and there's no frames array, assume dense
+        if labels.ndim == 1 and "frames" not in keys:
+            return "dense"
+
+    return "unknown"
+
+
+def expand_labels_to_dense(
+    frames: np.ndarray,
+    labels: np.ndarray,
+    individual_ids: Optional[np.ndarray] = None,
+    n_frames: Optional[int] = None,
+    default_label: int = 0,
+    individual_filter: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
+    """
+    Expand sparse event-based labels to a dense per-frame array.
+
+    Converts from individual_pair_v1 format (sparse events) to a dense array
+    where labels[i] is the label at frame i.
+
+    Parameters
+    ----------
+    frames : np.ndarray
+        1D array of frame indices for each event, shape (n_events,)
+    labels : np.ndarray
+        1D array of label IDs for each event, shape (n_events,)
+    individual_ids : np.ndarray, optional
+        2D array of [id1, id2] for each event, shape (n_events, 2).
+        If provided with individual_filter, only events matching the filter
+        are included.
+    n_frames : int, optional
+        Total number of frames in the dense output. If None, uses max(frames) + 1.
+    default_label : int, default=0
+        Label value for frames without events (typically 0 = "none"/"background")
+    individual_filter : tuple of (int, int), optional
+        If provided, only include events where individual_ids matches this pair.
+        For symmetric behaviors, you may want to filter for a specific direction.
+        Use (-1, -1) for scene-level labels, (id, -1) for individual labels.
+
+    Returns
+    -------
+    np.ndarray
+        Dense 1D array of shape (n_frames,) where output[i] is the label at frame i.
+        If multiple events occur at the same frame, the last one wins.
+
+    Examples
+    --------
+    >>> frames = np.array([10, 11, 12, 50, 51])
+    >>> labels = np.array([1, 1, 1, 2, 2])
+    >>> dense = expand_labels_to_dense(frames, labels, n_frames=100)
+    >>> dense[10:13]  # [1, 1, 1]
+    >>> dense[0]      # 0 (default)
+
+    With individual filtering:
+    >>> individual_ids = np.array([[0, 1], [0, 1], [0, 1], [1, 0], [1, 0]])
+    >>> dense_01 = expand_labels_to_dense(frames, labels, individual_ids,
+    ...                                    individual_filter=(0, 1))
+    >>> # Only includes events where individual_ids == [0, 1]
+    """
+    frames = np.asarray(frames, dtype=np.int64).ravel()
+    labels = np.asarray(labels, dtype=np.int64).ravel()
+
+    if frames.shape[0] != labels.shape[0]:
+        raise ValueError(f"frames and labels must have same length, got {frames.shape[0]} vs {labels.shape[0]}")
+
+    if frames.shape[0] == 0:
+        return np.full(n_frames or 1, default_label, dtype=np.int64)
+
+    # Apply individual filter if specified
+    if individual_filter is not None and individual_ids is not None:
+        individual_ids = np.asarray(individual_ids)
+        if individual_ids.ndim == 1:
+            individual_ids = individual_ids.reshape(-1, 2)
+
+        id1, id2 = individual_filter
+        mask = (individual_ids[:, 0] == id1) & (individual_ids[:, 1] == id2)
+        frames = frames[mask]
+        labels = labels[mask]
+
+    # Determine output size
+    if n_frames is None:
+        n_frames = int(frames.max()) + 1 if frames.size > 0 else 1
+
+    # Create dense array with default label
+    dense = np.full(n_frames, default_label, dtype=np.int64)
+
+    # Fill in labeled frames (last event wins if duplicates)
+    valid_mask = (frames >= 0) & (frames < n_frames)
+    dense[frames[valid_mask]] = labels[valid_mask]
+
+    return dense
+
+
+def load_labels_auto(
+    path,
+    n_frames: Optional[int] = None,
+    default_label: int = 0,
+    individual_filter: Optional[Tuple[int, int]] = None,
+    return_format: str = "dense",
+) -> np.ndarray:
+    """
+    Load labels from NPZ file, auto-detecting format and converting as needed.
+
+    Supports both dense (legacy) and individual_pair_v1 (sparse) formats.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the NPZ label file
+    n_frames : int, optional
+        For sparse formats, the total number of frames to expand to.
+        If None, uses max(frames) + 1 from the file.
+    default_label : int, default=0
+        Label for unlabeled frames when expanding sparse to dense
+    individual_filter : tuple of (int, int), optional
+        For individual_pair_v1 format, filter to specific individual pair
+    return_format : str, default="dense"
+        Output format: "dense" returns per-frame array, "sparse" returns
+        (frames, labels, individual_ids) tuple for individual_pair_v1
+
+    Returns
+    -------
+    np.ndarray or tuple
+        If return_format="dense": 1D array of shape (n_frames,)
+        If return_format="sparse": tuple of (frames, labels, individual_ids)
+
+    Examples
+    --------
+    >>> labels = load_labels_auto("behavior/hex_03.npz")
+    >>> labels.shape  # (n_frames,)
+
+    >>> frames, labels, ids = load_labels_auto("behavior/hex_03.npz",
+    ...                                         return_format="sparse")
+    """
+    import numpy as np
+    from pathlib import Path
+
+    path = Path(path)
+    with np.load(path, allow_pickle=True) as npz:
+        fmt = detect_label_format(npz)
+
+        if fmt == "individual_pair_v1":
+            frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
+            labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
+            individual_ids = np.asarray(npz["individual_ids"])
+            if individual_ids.ndim == 1:
+                individual_ids = individual_ids.reshape(-1, 2)
+
+            if return_format == "sparse":
+                return frames, labels, individual_ids
+
+            # Expand to dense
+            return expand_labels_to_dense(
+                frames, labels, individual_ids,
+                n_frames=n_frames,
+                default_label=default_label,
+                individual_filter=individual_filter,
+            )
+
+        elif fmt == "dense" or "labels" in (npz.files if hasattr(npz, 'files') else npz):
+            labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
+
+            if return_format == "sparse":
+                # Convert dense to sparse format
+                frames = np.arange(len(labels), dtype=np.int64)
+                individual_ids = np.full((len(labels), 2), -1, dtype=np.int64)
+                return frames, labels, individual_ids
+
+            return labels
+
+        else:
+            raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
+
+
+def load_labels_for_feature_frames(
+    path,
+    feature_frames: np.ndarray,
+    default_label: int = 0,
+    deduplicate_symmetric: bool = True,
+) -> np.ndarray:
+    """
+    Load labels from NPZ file and align to specific feature frame indices.
+
+    This is the key function for aligning sparse event-based labels (like
+    individual_pair_v1 format) with row-indexed feature data. Rather than
+    expanding to a full dense array, it looks up the label for each
+    specific frame in feature_frames.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the NPZ label file
+    feature_frames : np.ndarray
+        1D array of frame indices from the feature data. Each element
+        specifies which video frame that feature row corresponds to.
+        The output will have one label per element in feature_frames.
+    default_label : int, default=0
+        Label for frames that don't have labeled events (typically 0 = "none")
+    deduplicate_symmetric : bool, default=True
+        For individual_pair_v1 format with symmetric storage (both [i,j] and
+        [j,i] stored), deduplicate by keeping only id1 <= id2 events.
+
+    Returns
+    -------
+    np.ndarray
+        1D array of labels with shape (len(feature_frames),).
+        labels[i] is the label for frame feature_frames[i].
+
+    Examples
+    --------
+    >>> # Feature data has 1000 rows covering frames 5000-6000
+    >>> feature_frames = np.array([5000, 5001, 5002, ...])  # from parquet
+    >>> labels = load_labels_for_feature_frames("behavior.npz", feature_frames)
+    >>> labels.shape  # (1000,) - one label per feature row
+
+    Notes
+    -----
+    This function solves the frame coordinate alignment problem that occurs
+    when:
+    - Behavior labels are stored with original video frame indices (e.g., 15002-65927)
+    - Feature data is row-indexed (0, 1, 2, ...) but each row corresponds to
+      a specific video frame stored in a 'frame' column
+    - The feature frame range may not fully overlap with labeled frames
+
+    For frames without labeled events, default_label is returned.
+    For frames with multiple labeled events, the last one wins.
+    """
+    from pathlib import Path
+
+    path = Path(path)
+    feature_frames = np.asarray(feature_frames, dtype=np.int64).ravel()
+
+    with np.load(path, allow_pickle=True) as npz:
+        fmt = detect_label_format(npz)
+
+        if fmt == "individual_pair_v1":
+            frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
+            labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
+            individual_ids = np.asarray(npz["individual_ids"])
+            if individual_ids.ndim == 1:
+                individual_ids = individual_ids.reshape(-1, 2)
+
+            # Deduplicate symmetric pairs if requested
+            if deduplicate_symmetric:
+                mask = individual_ids[:, 0] <= individual_ids[:, 1]
+                frames = frames[mask]
+                labels = labels[mask]
+
+            # Build frame -> label mapping (last event wins if multiple per frame)
+            frame_to_label = dict(zip(frames, labels))
+
+            # Look up labels for each feature frame
+            result = np.array(
+                [frame_to_label.get(f, default_label) for f in feature_frames],
+                dtype=np.int64,
+            )
+            return result
+
+        elif "labels" in (npz.files if hasattr(npz, 'files') else npz):
+            # Dense format - direct indexing
+            dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
+
+            # Handle out-of-bounds frames with default label
+            result = np.full(len(feature_frames), default_label, dtype=np.int64)
+            valid_mask = (feature_frames >= 0) & (feature_frames < len(dense))
+            result[valid_mask] = dense[feature_frames[valid_mask]]
+            return result
+
+        else:
+            raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
 
 
 def chunk_sequence(df: pd.DataFrame,

@@ -24,3 +24,7 @@ behavior-v3.ipynb.bak
 *.bak
 /src/behavior/__pycache__
 *.pyc
+/dev+docs
+/src/behavior/__pycache__
+uv.lock
+notebooks/trex-bees.ipynb
