@@ -38,6 +38,7 @@ from . import body_scale
 from . import orientation_relative
 from . import nearestneighbor
 from . import pair_egocentric
+from . import pair_position
 from . import pair_wavelet
 from . import pairposedistancepca
 from . import id_tag_columns
@@ -73,6 +74,7 @@ __all__ = [
     "orientation_relative",
     "nearestneighbor",
     "pair_egocentric",
+    "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
     "id_tag_columns",

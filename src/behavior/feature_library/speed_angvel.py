@@ -52,8 +52,8 @@ class SpeedAngvel:
         group_col="group",
         time_col="time",
         order_pref=("frame", "time"),
-        x_col="x",
-        y_col="y",
+        x_col="X",
+        y_col="Y",
         angle_col="ANGLE",
         step_size=None,  # if None, skip _step outputs
     )

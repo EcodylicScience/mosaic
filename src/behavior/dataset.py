@@ -411,6 +411,10 @@ def new_dataset_manifest(
     version: str = "0.1.0",
     index_format: str = "group/sequence",
     outfile: str | Path | None = None,
+    # Continuous dataset support
+    dataset_type: str = "discrete",  # "discrete" or "continuous"
+    segment_duration: str | None = None,  # e.g., "1H", "30min", "1D"
+    time_column: str | None = None,  # column name for timestamps, e.g., "timestamp"
 ) -> Path:
     """
     Create a minimal, extensible dataset manifest (YAML) with only a few required fields.
@@ -434,12 +438,27 @@ def new_dataset_manifest(
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "index_format": index_format,   # recommended: "group/sequence"
         "roots": norm_roots,            # required minimal roots you actually use now
+        "dataset_type": dataset_type,   # "discrete" (default) or "continuous"
         # You can append optional fields later without placeholders
     }
+
+    # Add continuous-specific fields if applicable
+    if dataset_type == "continuous":
+        if segment_duration:
+            manifest["segment_duration"] = segment_duration
+        if time_column:
+            manifest["time_column"] = time_column
 
     header_comment = """# ==========================================================
 # DATASET MANIFEST (extensible YAML)
 # Minimal required fields above; append optional fields below
+#
+# DATASET TYPES:
+#   dataset_type: "discrete"     # Default: distinct recordings (trials, sessions)
+#   dataset_type: "continuous"   # Long continuous recordings (days/months)
+#     segment_duration: "1H"     # Segment size for continuous (e.g., "1H", "30min", "1D")
+#     time_column: "timestamp"   # Column name for time-based operations
+#
 # Common OPTIONAL fields you may add later:
 #   fps_default: 30.0
 #   resolution_default: [1920, 1080]
@@ -496,6 +515,16 @@ class Dataset:
     meta: Dict[str, Any] = field(default_factory=dict)
     _path_map: list[tuple[Path, Path]] = field(default_factory=list, init=False, repr=False)
 
+    # Continuous dataset support
+    dataset_type: str = "discrete"  # "discrete" or "continuous"
+    segment_duration: str | None = None  # e.g., "1H", "30min", "1D"
+    time_column: str | None = None  # column name for timestamps
+
+    @property
+    def is_continuous(self) -> bool:
+        """Check if this is a continuous recording dataset."""
+        return self.dataset_type == "continuous"
+
     # ---- Instance load method ----
     def load(self, ensure_roots: bool = True) -> "Dataset":
         """Load dataset metadata from self.manifest_path."""
@@ -538,6 +567,12 @@ class Dataset:
         self.format = data.get("format", fmt)
         self.roots = data.get("roots", self.roots)
         self.meta = data.get("meta", self.meta)
+
+        # Continuous dataset fields
+        self.dataset_type = data.get("dataset_type", "discrete")
+        self.segment_duration = data.get("segment_duration", None)
+        self.time_column = data.get("time_column", None)
+
         if ensure_roots:
             self._ensure_roots()
         return self
@@ -551,7 +586,14 @@ class Dataset:
             "format": self.format,
             "roots": self.roots,
             "meta": self.meta,
+            "dataset_type": self.dataset_type,
         }
+        # Only include continuous-specific fields if set
+        if self.segment_duration:
+            payload["segment_duration"] = self.segment_duration
+        if self.time_column:
+            payload["time_column"] = self.time_column
+
         if self.format == "json":
             self.manifest_path.write_text(json.dumps(payload, indent=2))
         else:
@@ -608,6 +650,87 @@ class Dataset:
         new_value = _remap_single_path(p, self._path_map)
         return new_value if new_value is not None else p
 
+    def rewrite_index_paths(self, path_map: Mapping[str, str], dry_run: bool = False) -> dict[str, int]:
+        """
+        Permanently rewrite abs_path in all index CSV files on disk.
+
+        Args:
+            path_map: {old_prefix: new_prefix} mapping
+            dry_run: If True, report what would change without writing
+
+        Returns:
+            Dict of {index_path: num_paths_changed}
+        """
+        normalized = _normalize_path_map(path_map)
+        if not normalized:
+            return {}
+
+        def rewrite_index(idx_path: Path) -> int:
+            if not idx_path.exists():
+                return 0
+            df = pd.read_csv(idx_path)
+            if "abs_path" not in df.columns:
+                return 0
+            changed = 0
+            new_paths = []
+            for p in df["abs_path"]:
+                if pd.isna(p):
+                    new_paths.append(p)
+                    continue
+                remapped = _remap_single_path(Path(p), normalized)
+                if remapped is not None and str(remapped) != p:
+                    new_paths.append(str(remapped))
+                    changed += 1
+                else:
+                    new_paths.append(p)
+            if changed > 0 and not dry_run:
+                df["abs_path"] = new_paths
+                df.to_csv(idx_path, index=False)
+            return changed
+
+        results: dict[str, int] = {}
+
+        # All roots that may have index files
+        root_keys = ["tracks", "tracks_raw", "labels", "media", "models", "inputsets"]
+        for key in root_keys:
+            root = self.roots.get(key)
+            if not root:
+                continue
+            idx_path = Path(root) / "index.csv"
+            count = rewrite_index(idx_path)
+            if count > 0:
+                results[str(idx_path)] = count
+
+        # Features: has per-feature subdirectories with their own index.csv
+        features_root = self.roots.get("features")
+        if features_root:
+            features_path = Path(features_root)
+            # Root-level index
+            root_idx = features_path / "index.csv"
+            count = rewrite_index(root_idx)
+            if count > 0:
+                results[str(root_idx)] = count
+            # Per-feature indexes
+            for subdir in features_path.iterdir():
+                if subdir.is_dir():
+                    sub_idx = subdir / "index.csv"
+                    count = rewrite_index(sub_idx)
+                    if count > 0:
+                        results[str(sub_idx)] = count
+
+        # Labels: has per-kind subdirectories (e.g., id_tags) with their own index.csv
+        labels_root = self.roots.get("labels")
+        if labels_root:
+            labels_path = Path(labels_root)
+            for subdir in labels_path.iterdir():
+                if subdir.is_dir():
+                    sub_idx = subdir / "index.csv"
+                    count = rewrite_index(sub_idx)
+                    if count > 0:
+                        results[str(sub_idx)] = count
+
+        return results
+
     def list_groups(self) -> list[str]:
         """Return a sorted list of unique group names in tracks/index.csv."""
         idx_path = self.get_root("tracks") / "index.csv"
@@ -625,7 +748,153 @@ class Dataset:
         df["group"] = df["group"].fillna("")
         if group is not None:
             df = df[df["group"] == group]
-        return sorted(df["sequence"].fillna("").unique())                
+        return sorted(df["sequence"].fillna("").unique())
+
+    def get_sequence_metadata(
+        self,
+        level_names: list[str] | None = None,
+        separator: str = "__",
+    ) -> pd.DataFrame:
+        """
+        Return a DataFrame with all sequences and optionally parsed hierarchy columns.
+
+        This method provides a way to view the full dataset structure and filter
+        by arbitrary hierarchy levels, supporting datasets with different organizational
+        structures (2, 3, 4+ levels).
+
+        Parameters
+        ----------
+        level_names : list[str], optional
+            Names for hierarchy levels. If provided, parses the full path
+            (group + sequence) into columns with these names.
+            E.g., ["fish", "speed", "loop"] for a 3-level hierarchy.
+        separator : str, default "__"
+            The separator used in compound names.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            - group, sequence: Original values from index
+            - group_safe, sequence_safe: URL-encoded versions
+            - abs_path: Path to the parquet file
+            - Additional columns from index (n_rows, etc.)
+            - If level_names provided: one column per level name
+
+        Examples
+        --------
+        >>> # Basic usage - get all sequences
+        >>> meta = ds.get_sequence_metadata()
+        >>> meta[['group', 'sequence']].head()
+
+        >>> # Parse into hierarchy levels
+        >>> meta = ds.get_sequence_metadata(level_names=["fish", "speed", "loop"])
+        >>> meta.groupby("speed")["sequence"].count()
+
+        >>> # 4-level hierarchy for continuous recordings
+        >>> meta = ds.get_sequence_metadata(
+        ...     level_names=["experiment", "arena", "day", "hour"]
+        ... )
+        """
+        from behavior.helpers import parse_hierarchy
+
+        idx_path = self.get_root("tracks") / "index.csv"
+        if not idx_path.exists():
+            raise FileNotFoundError("tracks/index.csv not found.")
+
+        df = pd.read_csv(idx_path)
+        df["group"] = df["group"].fillna("")
+        df["sequence"] = df["sequence"].fillna("")
+
+        if level_names:
+            # Parse each row into hierarchy levels
+            parsed_rows = []
+            for _, row in df.iterrows():
+                parsed = parse_hierarchy(
+                    row["group"], row["sequence"], level_names, separator
+                )
+                parsed_rows.append(parsed)
+
+            # Add parsed columns to DataFrame
+            parsed_df = pd.DataFrame(parsed_rows)
+            df = pd.concat([df, parsed_df], axis=1)
+
+        return df
+
+    def query_sequences(
+        self,
+        group_contains: str | None = None,
+        group_startswith: str | None = None,
+        group_endswith: str | None = None,
+        sequence_contains: str | None = None,
+        sequence_startswith: str | None = None,
+        sequence_endswith: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """
+        Return (group, sequence) pairs matching the specified criteria.
+
+        Provides flexible filtering for hierarchical datasets where group and/or
+        sequence names encode multiple factors.
+
+        Parameters
+        ----------
+        group_contains : str, optional
+            Filter groups containing this substring
+        group_startswith : str, optional
+            Filter groups starting with this prefix
+        group_endswith : str, optional
+            Filter groups ending with this suffix
+        sequence_contains : str, optional
+            Filter sequences containing this substring
+        sequence_startswith : str, optional
+            Filter sequences starting with this prefix
+        sequence_endswith : str, optional
+            Filter sequences ending with this suffix
+
+        Returns
+        -------
+        list[tuple[str, str]]
+            List of (group, sequence) pairs matching all criteria
+
+        Examples
+        --------
+        >>> # Get all sequences for fish_01
+        >>> pairs = ds.query_sequences(group_startswith="fish_01")
+
+        >>> # Get all speed_3 recordings across all fish
+        >>> pairs = ds.query_sequences(sequence_startswith="speed_3")
+
+        >>> # Get all loop_1 recordings at speed_3
+        >>> pairs = ds.query_sequences(
+        ...     sequence_contains="speed_3",
+        ...     sequence_endswith="loop_1"
+        ... )
+        """
+        idx_path = self.get_root("tracks") / "index.csv"
+        if not idx_path.exists():
+            raise FileNotFoundError("tracks/index.csv not found.")
+
+        df = pd.read_csv(idx_path)
+        df["group"] = df["group"].fillna("")
+        df["sequence"] = df["sequence"].fillna("")
+
+        mask = pd.Series([True] * len(df))
+
+        if group_contains is not None:
+            mask &= df["group"].str.contains(group_contains, na=False)
+        if group_startswith is not None:
+            mask &= df["group"].str.startswith(group_startswith, na=False)
+        if group_endswith is not None:
+            mask &= df["group"].str.endswith(group_endswith, na=False)
+        if sequence_contains is not None:
+            mask &= df["sequence"].str.contains(sequence_contains, na=False)
+        if sequence_startswith is not None:
+            mask &= df["sequence"].str.startswith(sequence_startswith, na=False)
+        if sequence_endswith is not None:
+            mask &= df["sequence"].str.endswith(sequence_endswith, na=False)
+
+        filtered = df[mask]
+        return list(zip(filtered["group"], filtered["sequence"]))
 
     # ----------------------------
     # Media indexing (no symlinks)
@@ -1586,6 +1855,212 @@ class Dataset:
         _append_labels_index(idx_path, [row])
         return out_path
 
+    def convert_id_tags_from_csv(
+        self,
+        csv_path: Union[str, Path],
+        csv_type: str = "focal",
+        all_ids: Optional[list] = None,
+        overwrite: bool = False,
+        # Type-specific options:
+        focal_id_column: str = "focal_id",
+        id_column: str = "id",
+        category_column: str = "category",
+        field_columns: Optional[list[str]] = None,
+    ) -> list[Path]:
+        """
+        Convert a CSV file to id_tags labels.
+
+        This method supports different CSV formats for per-individual metadata:
+
+        Supported csv_type values
+        -------------------------
+        "focal"
+            One focal ID per sequence. CSV columns: group, sequence, focal_id.
+            Creates boolean 'focal' field for all IDs (True for focal, False otherwise).
+            Requires `all_ids` parameter to populate non-focal IDs.
+
+        "category"
+            Per-ID category labels. CSV columns: group, sequence, id, category.
+            Creates 'category' field with the value from CSV.
+            IDs not in CSV are skipped (or use all_ids to include them with None).
+
+        "multi"
+            Per-ID multiple fields. CSV columns: group, sequence, id, field1, field2...
+            Creates one field per column specified in `field_columns`.
+
+        Parameters
+        ----------
+        csv_path : str or Path
+            Path to input CSV file
+        csv_type : str
+            One of "focal", "category", "multi"
+        all_ids : list, optional
+            List of all valid IDs. Required for csv_type="focal" to populate non-focal IDs.
+            For other types, auto-detected from CSV if not provided.
+        overwrite : bool
+            Whether to overwrite existing id_tags files
+        focal_id_column : str
+            Column name for focal ID (csv_type="focal")
+        id_column : str
+            Column name for individual ID (csv_type="category" or "multi")
+        category_column : str
+            Column name for category value (csv_type="category")
+        field_columns : list[str], optional
+            List of column names to use as fields (csv_type="multi")
+
+        Returns
+        -------
+        list[Path]
+            Paths to created npz files
+
+        Examples
+        --------
+        # Focal labels (one focal fish per sequence)
+        >>> dataset.convert_id_tags_from_csv(
+        ...     csv_path="focal_ids.csv",
+        ...     csv_type="focal",
+        ...     all_ids=list(range(8)),
+        ...     overwrite=True,
+        ... )
+
+        # Category labels (e.g., strain per fish)
+        >>> dataset.convert_id_tags_from_csv(
+        ...     csv_path="strain_labels.csv",
+        ...     csv_type="category",
+        ...     category_column="strain",
+        ... )
+
+        # Multiple fields per individual
+        >>> dataset.convert_id_tags_from_csv(
+        ...     csv_path="fish_metadata.csv",
+        ...     csv_type="multi",
+        ...     field_columns=["strain", "treatment", "sex"],
+        ... )
+        """
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+        df = pd.read_csv(csv_path)
+
+        # Validate required columns
+        if "group" not in df.columns or "sequence" not in df.columns:
+            raise ValueError("CSV must have 'group' and 'sequence' columns")
+
+        created: list[Path] = []
+
+        if csv_type == "focal":
+            # Focal type: one focal ID per sequence, boolean field for all IDs
+            if all_ids is None:
+                raise ValueError("all_ids is required for csv_type='focal'")
+            if focal_id_column not in df.columns:
+                raise ValueError(f"CSV must have '{focal_id_column}' column for csv_type='focal'")
+
+            for _, row in df.iterrows():
+                group = str(row["group"]) if pd.notna(row["group"]) else ""
+                seq = str(row["sequence"])
+                focal_id = row[focal_id_column]
+
+                # Convert focal_id to same type as all_ids elements for comparison
+                if pd.notna(focal_id):
+                    # Try to match type with all_ids
+                    if all_ids and isinstance(all_ids[0], int):
+                        focal_id = int(focal_id)
+
+                per_id_labels = {
+                    id_val: {"focal": (id_val == focal_id)}
+                    for id_val in all_ids
+                }
+
+                path = self.save_id_labels(
+                    kind="id_tags",
+                    group=group,
+                    sequence=seq,
+                    per_id_labels=per_id_labels,
+                    overwrite=overwrite,
+                )
+                created.append(path)
+
+        elif csv_type == "category":
+            # Category type: per-ID category value
+            if id_column not in df.columns:
+                raise ValueError(f"CSV must have '{id_column}' column for csv_type='category'")
+            if category_column not in df.columns:
+                raise ValueError(f"CSV must have '{category_column}' column for csv_type='category'")
+
+            # Group by (group, sequence)
+            for (group, seq), group_df in df.groupby(["group", "sequence"]):
+                group = str(group) if pd.notna(group) else ""
+                seq = str(seq)
+
+                per_id_labels = {}
+                for _, row in group_df.iterrows():
+                    id_val = row[id_column]
+                    if isinstance(id_val, float) and id_val.is_integer():
+                        id_val = int(id_val)
+                    cat_val = row[category_column]
+                    per_id_labels[id_val] = {category_column: cat_val}
+
+                # Add missing IDs with None if all_ids provided
+                if all_ids is not None:
+                    for id_val in all_ids:
+                        if id_val not in per_id_labels:
+                            per_id_labels[id_val] = {category_column: None}
+
+                path = self.save_id_labels(
+                    kind="id_tags",
+                    group=group,
+                    sequence=seq,
+                    per_id_labels=per_id_labels,
+                    overwrite=overwrite,
+                )
+                created.append(path)
+
+        elif csv_type == "multi":
+            # Multi type: multiple fields per ID
+            if id_column not in df.columns:
+                raise ValueError(f"CSV must have '{id_column}' column for csv_type='multi'")
+            if field_columns is None:
+                # Auto-detect: all columns except group, sequence, id
+                field_columns = [c for c in df.columns if c not in ["group", "sequence", id_column]]
+            if not field_columns:
+                raise ValueError("No field columns found for csv_type='multi'")
+
+            # Group by (group, sequence)
+            for (group, seq), group_df in df.groupby(["group", "sequence"]):
+                group = str(group) if pd.notna(group) else ""
+                seq = str(seq)
+
+                per_id_labels = {}
+                for _, row in group_df.iterrows():
+                    id_val = row[id_column]
+                    if isinstance(id_val, float) and id_val.is_integer():
+                        id_val = int(id_val)
+                    per_id_labels[id_val] = {
+                        col: row[col] for col in field_columns
+                    }
+
+                # Add missing IDs with None values if all_ids provided
+                if all_ids is not None:
+                    for id_val in all_ids:
+                        if id_val not in per_id_labels:
+                            per_id_labels[id_val] = {col: None for col in field_columns}
+
+                path = self.save_id_labels(
+                    kind="id_tags",
+                    group=group,
+                    sequence=seq,
+                    per_id_labels=per_id_labels,
+                    overwrite=overwrite,
+                )
+                created.append(path)
+
+        else:
+            raise ValueError(f"Unknown csv_type: '{csv_type}'. Must be 'focal', 'category', or 'multi'.")
+
+        print(f"Created {len(created)} id_tags files from {csv_path.name}")
+        return created
+
     def load_id_labels(self,
                        kind: str = "id_tags",
                        groups: Optional[Iterable[str]] = None,
@@ -2332,6 +2807,95 @@ def _hash_params(d: dict) -> str:
 # ----------------------------
 # Dataset helpers for tracks
 # ----------------------------
+
+def _get_sequences_sorted_by_time(ds: "Dataset", group: str | None = None) -> list[tuple[str, str]]:
+    """
+    Get all (group, sequence) pairs sorted by sequence name.
+
+    For continuous datasets, sequences are assumed to be named with timestamps
+    (e.g., "2025-07-23T09") so alphabetical sorting = temporal sorting.
+
+    Parameters
+    ----------
+    ds : Dataset
+        The dataset instance
+    group : str, optional
+        Filter to a specific group
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        List of (group, sequence) pairs sorted by sequence name
+    """
+    idx_path = ds.get_root("tracks") / "index.csv"
+    if not idx_path.exists():
+        return []
+
+    df_idx = pd.read_csv(idx_path)
+    df_idx["group"] = df_idx["group"].fillna("")
+    df_idx["sequence"] = df_idx["sequence"].fillna("")
+
+    if group is not None:
+        df_idx = df_idx[df_idx["group"] == group]
+
+    # Sort by group then sequence (alphabetical = temporal for timestamp-named sequences)
+    df_idx = df_idx.sort_values(["group", "sequence"])
+
+    return list(zip(df_idx["group"], df_idx["sequence"]))
+
+
+def _get_adjacent_sequences(
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    before: int = 0,
+    after: int = 0,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """
+    Get sequences adjacent to the given (group, sequence) in time order.
+
+    For continuous datasets, this allows loading data from neighboring time
+    segments to handle edge effects in rolling windows, smoothing, etc.
+
+    Parameters
+    ----------
+    ds : Dataset
+        The dataset instance
+    group : str
+        Group of the target sequence
+    sequence : str
+        Target sequence name
+    before : int
+        Number of sequences to get before the target
+    after : int
+        Number of sequences to get after the target
+
+    Returns
+    -------
+    tuple[list, list]
+        (sequences_before, sequences_after) - each is a list of (group, sequence) tuples
+
+    Examples
+    --------
+    >>> before, after = _get_adjacent_sequences(ds, "arena", "2025-07-23T10", before=1, after=1)
+    >>> # before = [("arena", "2025-07-23T09")]
+    >>> # after = [("arena", "2025-07-23T11")]
+    """
+    all_seqs = _get_sequences_sorted_by_time(ds, group=group)
+
+    # Find index of target sequence
+    try:
+        idx = next(i for i, (g, s) in enumerate(all_seqs) if g == group and s == sequence)
+    except StopIteration:
+        return [], []
+
+    # Get adjacent sequences
+    before_seqs = all_seqs[max(0, idx - before):idx]
+    after_seqs = all_seqs[idx + 1:idx + 1 + after]
+
+    return before_seqs, after_seqs
+
+
 def _yield_sequences(ds: "Dataset",
                      groups: Optional[Iterable[str]] = None,
                      sequences: Optional[Iterable[str]] = None,
@@ -2372,6 +2936,128 @@ def _yield_sequences(ds: "Dataset",
             print(f"[feature] failed to read {p}: {e}", file=sys.stderr)
             continue
         yield g, s, df
+
+
+def _yield_sequences_with_overlap(
+    ds: "Dataset",
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    allowed_pairs: Optional[set[tuple[str, str]]] = None,
+    overlap_frames: int = 0,
+):
+    """
+    Yield (group, sequence, df, df_core_start, df_core_end) with optional overlap from adjacent sequences.
+
+    For continuous datasets, this loads frames from neighboring segments to handle
+    edge effects in rolling windows, smoothing, etc.
+
+    Parameters
+    ----------
+    ds : Dataset
+        The dataset instance
+    groups : Iterable[str], optional
+        Filter to specific groups
+    sequences : Iterable[str], optional
+        Filter to specific sequences
+    allowed_pairs : set[tuple[str, str]], optional
+        Filter to specific (group, sequence) pairs
+    overlap_frames : int, default 0
+        Number of frames to load from adjacent segments.
+        If > 0, loads `overlap_frames` from the end of the previous segment
+        and from the start of the next segment.
+
+    Yields
+    ------
+    tuple[str, str, pd.DataFrame, int, int]
+        (group, sequence, df_with_overlap, core_start_idx, core_end_idx)
+
+        - df_with_overlap: DataFrame containing the main sequence plus overlap
+        - core_start_idx: Index where the main sequence starts (after prefix overlap)
+        - core_end_idx: Index where the main sequence ends (before suffix overlap)
+
+        The caller can use these indices to trim output back to the original segment.
+
+    Examples
+    --------
+    >>> for g, s, df, start, end in _yield_sequences_with_overlap(ds, overlap_frames=300):
+    ...     # df contains: [prev_300_frames] + [main_sequence] + [next_300_frames]
+    ...     # Compute features on full df for continuity
+    ...     features = compute_rolling_average(df)
+    ...     # Trim to original segment for output
+    ...     features_trimmed = features.iloc[start:end]
+    """
+    if overlap_frames <= 0:
+        # No overlap requested, delegate to standard yield
+        for g, s, df in _yield_sequences(ds, groups, sequences, allowed_pairs):
+            yield g, s, df, 0, len(df)
+        return
+
+    # Build index for fast path lookups
+    idx_path = ds.get_root("tracks") / "index.csv"
+    if not idx_path.exists():
+        raise FileNotFoundError("tracks/index.csv not found; run conversion first.")
+    df_idx = pd.read_csv(idx_path)
+    df_idx["group"] = df_idx["group"].fillna("")
+    df_idx["sequence"] = df_idx["sequence"].fillna("")
+
+    # Build path lookup: (group, sequence) -> abs_path
+    path_lookup = {
+        (str(row["group"]), str(row["sequence"])): row["abs_path"]
+        for _, row in df_idx.iterrows()
+    }
+
+    def load_parquet(group: str, seq: str) -> pd.DataFrame | None:
+        """Load a parquet file for (group, sequence), return None on failure."""
+        if (group, seq) not in path_lookup:
+            return None
+        p = ds.remap_path(path_lookup[(group, seq)]) if hasattr(ds, "remap_path") else Path(path_lookup[(group, seq)])
+        if not p.exists():
+            return None
+        try:
+            return pd.read_parquet(p)
+        except Exception:
+            return None
+
+    # Iterate through main sequences
+    for g, s, df_main in _yield_sequences(ds, groups, sequences, allowed_pairs):
+        parts = []
+        prefix_len = 0
+        suffix_len = 0
+
+        # Get adjacent sequences
+        before_seqs, after_seqs = _get_adjacent_sequences(ds, g, s, before=1, after=1)
+
+        # Load prefix overlap (last N frames of previous segment)
+        if before_seqs:
+            prev_g, prev_s = before_seqs[-1]
+            df_prev = load_parquet(prev_g, prev_s)
+            if df_prev is not None and len(df_prev) > 0:
+                n_take = min(overlap_frames, len(df_prev))
+                parts.append(df_prev.iloc[-n_take:])
+                prefix_len = n_take
+
+        # Add main sequence
+        core_start = prefix_len
+        parts.append(df_main)
+        core_end = core_start + len(df_main)
+
+        # Load suffix overlap (first N frames of next segment)
+        if after_seqs:
+            next_g, next_s = after_seqs[0]
+            df_next = load_parquet(next_g, next_s)
+            if df_next is not None and len(df_next) > 0:
+                n_take = min(overlap_frames, len(df_next))
+                parts.append(df_next.iloc[:n_take])
+                suffix_len = n_take
+
+        # Concatenate all parts
+        if len(parts) == 1:
+            df_combined = parts[0]
+        else:
+            df_combined = pd.concat(parts, ignore_index=True)
+
+        yield g, s, df_combined, core_start, core_end
+
 
 # ----------------------------
 # Yield feature outputs as frames (helper)
@@ -2720,6 +3406,14 @@ def _append_feature_index(idx_path: Path, rows: list[dict]):
             df[col] = df[canon_col].apply(lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else "")
     if "finished_at" not in df.columns:
         df["finished_at"] = ""
+    # Remove existing entries that match (run_id, group, sequence) from incoming rows
+    for r in new_rows:
+        mask = (
+            (df["run_id"].fillna("") == r.get("run_id", "")) &
+            (df["group"].fillna("") == r.get("group", "")) &
+            (df["sequence"].fillna("") == r.get("sequence", ""))
+        )
+        df = df[~mask]
     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
     df.to_csv(idx_path, index=False)
 
@@ -3355,7 +4049,8 @@ def run_feature(self,
                 input_feature: Optional[str] = None,
                 input_run_id: Optional[str] = None,
                 parallel_workers: Optional[int] = None,
-                parallel_mode: Optional[str] = "thread"):
+                parallel_mode: Optional[str] = "thread",
+                overlap_frames: int = 0):
     """
     Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -3381,6 +4076,10 @@ def run_feature(self,
     parallel_mode : {'thread','process'}
         Execution backend when parallel_workers > 1. 'thread' (default) uses ThreadPoolExecutor;
         'process' uses ProcessPoolExecutor and requires picklable params/feature/inputs.
+    overlap_frames : int, default 0
+        For continuous datasets, load this many frames from adjacent segments to handle
+        edge effects in rolling windows, smoothing, etc. Only applies when input_kind='tracks'.
+        When > 0, the transform receives data with overlap but output is trimmed to original bounds.
 
     Behavior
     --------
@@ -3529,6 +4228,8 @@ def run_feature(self,
                 pairs_to_compute.add(pair)
 
     # Choose input iterator (filtered to pairs_to_compute when known)
+    use_overlap = overlap_frames > 0 and input_kind == "tracks"
+
     if input_kind == "feature":
         iter_inputs = lambda: _yield_feature_frames(self, input_feature, resolved_input_run_id, groups, sequences,
                                                     allowed_pairs=pairs_to_compute)
@@ -3539,6 +4240,11 @@ def run_feature(self,
             scope_for_iter["pairs"] = pairs_to_compute
         iter_inputs = lambda: _yield_inputset_frames(self, input_feature, groups, sequences, scope_for_iter)
         input_scope = scope_for_iter
+    elif use_overlap:
+        # Use overlap-aware iterator for continuous datasets
+        iter_inputs = lambda: _yield_sequences_with_overlap(self, groups, sequences,
+                                                            allowed_pairs=pairs_to_compute,
+                                                            overlap_frames=overlap_frames)
     else:
         iter_inputs = lambda: _yield_sequences(self, groups, sequences, allowed_pairs=pairs_to_compute)
 
@@ -3581,9 +4287,18 @@ def run_feature(self,
                 feature.set_scope_filter(input_scope)
             except Exception as e:
                 print(f"[feature:{feature.name}] set_scope_filter failed: {e}", file=sys.stderr)
+    # Helper to extract DataFrame from iterator items (handles both 3-tuple and 5-tuple)
+    def _extract_df_from_item(item):
+        """Extract DataFrame from iterator item, handling both overlap and non-overlap modes."""
+        if use_overlap:
+            return item[2]  # (g, s, df, core_start, core_end)
+        else:
+            return item[2]  # (g, s, df)
+
     if feature.needs_fit():
         if feature.supports_partial_fit():
-            for _, _, df in iter_inputs():
+            for item in iter_inputs():
+                df = _extract_df_from_item(item)
                 try:
                     feature.partial_fit(df)
                 except Exception as e:
@@ -3594,7 +4309,8 @@ def run_feature(self,
                 pass
         else:
             all_dfs = []
-            for _, _, df in iter_inputs():
+            for item in iter_inputs():
+                df = _extract_df_from_item(item)
                 all_dfs.append(df)
             # Always call fit, even if no streamed inputs were found.
             # Many "global/artifact" features load their own matrices from disk.
@@ -3754,6 +4470,40 @@ def run_feature(self,
         gc.collect()
         _append_row(meta, n_rows)
 
+    def _trim_feature_output(df_feat, core_start: int, core_end: int):
+        """Trim feature output to original segment bounds (removing overlap regions)."""
+        if core_start == 0 and core_end >= len(df_feat) if hasattr(df_feat, '__len__') else True:
+            return df_feat  # No trimming needed
+
+        # Handle dict-based outputs (chunked parquet, etc.)
+        if isinstance(df_feat, dict):
+            if "parquet_data" in df_feat:
+                # Trim numpy array data
+                data = df_feat["parquet_data"]
+                df_feat["parquet_data"] = data[core_start:core_end]
+                return df_feat
+            elif "data" in df_feat:
+                # Trim data array
+                data = df_feat["data"]
+                df_feat["data"] = data[core_start:core_end]
+                return df_feat
+            elif "parquet_chunk_iter" in df_feat:
+                # Can't easily trim streaming output - warn and return as-is
+                print(f"[feature:{feature.name}] warning: overlap trimming not supported for chunk_iter outputs",
+                      file=sys.stderr)
+                return df_feat
+            return df_feat
+
+        # Handle DataFrame output
+        if isinstance(df_feat, pd.DataFrame):
+            return df_feat.iloc[core_start:core_end].reset_index(drop=True)
+
+        # Handle numpy array
+        if hasattr(df_feat, '__getitem__') and hasattr(df_feat, 'shape'):
+            return df_feat[core_start:core_end]
+
+        return df_feat
+
     executor = None
     if max_workers > 1:
         if parallel_mode == "process":
@@ -3766,7 +4516,14 @@ def run_feature(self,
         if hasattr(feature, attr):
             extra_attrs[attr] = getattr(feature, attr)
 
-    for g, s, df in iter_inputs():
+    # Transform loop - handle both 3-tuple and 5-tuple from iterators
+    for item in iter_inputs():
+        # Unpack based on overlap mode
+        if use_overlap:
+            g, s, df, core_start, core_end = item
+        else:
+            g, s, df = item
+            core_start, core_end = 0, len(df) if hasattr(df, '__len__') else 0
         had_transform_inputs = True
         meta = _make_meta(g, s)
         out_path = meta["out_path"]
@@ -3783,15 +4540,18 @@ def run_feature(self,
         if executor:
             if parallel_mode == "process":
                 payload = (feature.__module__, feature.__class__.__name__, getattr(feature, "params", {}), df, extra_attrs)
-                futures[executor.submit(_process_transform_worker, payload)] = meta
+                futures[executor.submit(_process_transform_worker, payload)] = (meta, core_start, core_end)
             else:
-                futures[executor.submit(feature.transform, df)] = meta
+                futures[executor.submit(feature.transform, df)] = (meta, core_start, core_end)
         else:
             try:
                 df_feat = feature.transform(df)
             except Exception as e:
                 print(f"[feature:{feature.name}] transform failed for ({g},{s}): {e}", file=sys.stderr)
                 continue
+            # Trim output to original segment bounds if overlap was used
+            if use_overlap and (core_start > 0 or core_end < len(df)):
+                df_feat = _trim_feature_output(df_feat, core_start, core_end)
             _write_output(meta, df_feat)
             try:
                 del df_feat
@@ -3802,13 +4562,16 @@ def run_feature(self,
     if executor:
         if futures:
             for future in as_completed(futures):
-                meta = futures[future]
+                meta, core_start, core_end = futures[future]
                 try:
                     df_feat = future.result()
                 except Exception as e:
                     print(f"[feature:{feature.name}] transform failed for ({meta['group']},{meta['sequence']}): {e}",
                           file=sys.stderr)
                     continue
+                # Trim output to original segment bounds if overlap was used
+                if use_overlap and (core_start > 0 or core_end < len(df_feat) if hasattr(df_feat, '__len__') else False):
+                    df_feat = _trim_feature_output(df_feat, core_start, core_end)
                 _write_output(meta, df_feat)
                 try:
                     del df_feat

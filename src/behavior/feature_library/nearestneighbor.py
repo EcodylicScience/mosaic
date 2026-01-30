@@ -52,8 +52,8 @@ class NearestNeighbor:
         id_col="id",
         seq_col="sequence",
         group_col="group",
-        x_col="x",
-        y_col="y",
+        x_col="X",
+        y_col="Y",
         angle_col="ANGLE",
         order_pref=("frame", "time"),
     )

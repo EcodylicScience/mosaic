@@ -375,3 +375,130 @@ def chunk_sequence(df: pd.DataFrame,
             meta["start_time"] = float(df[time_key].iloc[0])
             meta["end_time"] = float(df[time_key].iloc[-1])
         yield 0, df, meta
+
+
+# =============================================================================
+# Hierarchical Naming Helpers
+# =============================================================================
+
+def parse_compound_name(name: str, separator: str = "__") -> list[str]:
+    """
+    Split a compound hierarchical name into its components.
+
+    Supports arbitrary depths (2, 3, 4+ levels).
+
+    Parameters
+    ----------
+    name : str
+        Compound name like "fish_01__speed_3__loop_1"
+    separator : str, default "__"
+        The separator between hierarchy levels
+
+    Returns
+    -------
+    list[str]
+        List of components, e.g. ["fish_01", "speed_3", "loop_1"]
+
+    Examples
+    --------
+    >>> parse_compound_name("fish_01__speed_3__loop_1")
+    ['fish_01', 'speed_3', 'loop_1']
+
+    >>> parse_compound_name("arena_1__day_015__hour_14")
+    ['arena_1', 'day_015', 'hour_14']
+
+    >>> parse_compound_name("simple_name")
+    ['simple_name']
+    """
+    if not name:
+        return []
+    return name.split(separator)
+
+
+def build_compound_name(*parts: str, separator: str = "__") -> str:
+    """
+    Join hierarchy components into a compound name.
+
+    Supports any number of parts.
+
+    Parameters
+    ----------
+    *parts : str
+        Hierarchy components to join, e.g. "fish_01", "speed_3", "loop_1"
+    separator : str, default "__"
+        The separator between hierarchy levels
+
+    Returns
+    -------
+    str
+        Compound name, e.g. "fish_01__speed_3__loop_1"
+
+    Examples
+    --------
+    >>> build_compound_name("fish_01", "speed_3", "loop_1")
+    'fish_01__speed_3__loop_1'
+
+    >>> build_compound_name("arena_1", "day_015", "hour_14")
+    'arena_1__day_015__hour_14'
+
+    >>> build_compound_name("single")
+    'single'
+    """
+    # Filter out None and empty strings
+    valid_parts = [p for p in parts if p]
+    return separator.join(valid_parts)
+
+
+def parse_hierarchy(
+    group: str,
+    sequence: str,
+    level_names: list[str],
+    separator: str = "__",
+) -> dict[str, str | None]:
+    """
+    Parse group and sequence into named hierarchy levels.
+
+    The full hierarchy is constructed by concatenating group and sequence
+    components, then mapping them to the provided level names.
+
+    Parameters
+    ----------
+    group : str
+        The group name (may be compound, e.g. "experiment_A__arena_1")
+    sequence : str
+        The sequence name (may be compound, e.g. "day_015__hour_14")
+    level_names : list[str]
+        Names for each hierarchy level, e.g. ["experiment", "arena", "day", "hour"]
+    separator : str, default "__"
+        The separator between hierarchy levels
+
+    Returns
+    -------
+    dict[str, str | None]
+        Dictionary mapping level names to values. Missing levels are None.
+
+    Examples
+    --------
+    >>> parse_hierarchy("fish_01", "speed_3__loop_1",
+    ...                 level_names=["fish", "speed", "loop"])
+    {'fish': 'fish_01', 'speed': 'speed_3', 'loop': 'loop_1'}
+
+    >>> parse_hierarchy("experiment_A__arena_1", "day_015__hour_14",
+    ...                 level_names=["experiment", "arena", "day", "hour"])
+    {'experiment': 'experiment_A', 'arena': 'arena_1', 'day': 'day_015', 'hour': 'hour_14'}
+
+    >>> # Handles fewer parts than names (missing levels are None)
+    >>> parse_hierarchy("fish_01", "loop_1", level_names=["fish", "speed", "loop"])
+    {'fish': 'fish_01', 'speed': 'loop_1', 'loop': None}
+    """
+    # Combine group and sequence parts
+    group_parts = parse_compound_name(group, separator) if group else []
+    seq_parts = parse_compound_name(sequence, separator) if sequence else []
+    all_parts = group_parts + seq_parts
+
+    # Map to level names
+    result = {}
+    for i, name in enumerate(level_names):
+        result[name] = all_parts[i] if i < len(all_parts) else None
+
+    return result

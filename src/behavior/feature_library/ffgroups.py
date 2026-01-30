@@ -9,8 +9,84 @@ import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.spatial.distance import cdist
 
+import numba
+from numba import njit
 import networkx as nx
 from behavior.dataset import register_feature
+
+
+# ===== Numba-accelerated union-find for connected components =====
+
+@njit
+def _union_find_root(parent, i):
+    """Find root with path compression."""
+    if parent[i] != i:
+        parent[i] = _union_find_root(parent, parent[i])
+    return parent[i]
+
+
+@njit
+def _union_find_union(parent, rank, x, y):
+    """Union by rank."""
+    rx, ry = _union_find_root(parent, x), _union_find_root(parent, y)
+    if rx != ry:
+        if rank[rx] < rank[ry]:
+            parent[rx] = ry
+        elif rank[rx] > rank[ry]:
+            parent[ry] = rx
+        else:
+            parent[ry] = rx
+            rank[rx] += 1
+
+
+@njit
+def _connected_components_numba(adj_matrix, n):
+    """Find connected components using union-find."""
+    parent = np.arange(n, dtype=np.int32)
+    rank = np.zeros(n, dtype=np.int32)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if adj_matrix[i, j] > 0:
+                _union_find_union(parent, rank, i, j)
+
+    # Get component labels
+    components = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        components[i] = _union_find_root(parent, i)
+
+    # Relabel to sequential 0, 1, 2...
+    unique_roots = np.unique(components)
+    label_map = np.zeros(n, dtype=np.int32)
+    for new_label in range(len(unique_roots)):
+        label_map[unique_roots[new_label]] = new_label
+
+    for i in range(n):
+        components[i] = label_map[components[i]]
+
+    return components
+
+
+@njit
+def _calculate_gmembership_numba(pwdf, nparticles, numsteps, threshold):
+    """Vectorized group membership using Numba."""
+    groupmembership = np.zeros((numsteps, nparticles), dtype=np.int32)
+
+    for step in range(numsteps):
+        # Build adjacency matrix from flattened pairwise distances
+        adj = np.zeros((nparticles, nparticles), dtype=np.float32)
+        for i in range(nparticles):
+            for j in range(nparticles - 1):
+                # pwdf shape is (T, N, N-1) - distances to other particles
+                val = pwdf[step, i, j]
+                # Map j back to actual particle index (skip diagonal)
+                actual_j = j if j < i else j + 1
+                if not np.isnan(val) and val < threshold:
+                    adj[i, actual_j] = 1.0
+
+        groupmembership[step] = _connected_components_numba(adj, nparticles)
+
+    return groupmembership
 
 
 def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
@@ -39,8 +115,8 @@ class FFGroups:
 
     _defaults = dict(
         id_col="id",
-        x_col="x",
-        y_col="y",
+        x_col="X",
+        y_col="Y",
         frame_col="frame",
         time_col="time",
         group_col="group",
@@ -156,16 +232,23 @@ class FFGroups:
             if padded.shape[0] >= win:
                 # windows shape: (T, N, N, win) when sliding along time axis only
                 windows = sliding_window_view(padded, window_shape=win, axis=0)
-                pairwise_smooth = np.nanmean(windows, axis=-1)
+                # Chunked nanmean to reduce peak memory usage
+                chunk_size = 1000
+                pairwise_smooth = np.empty((T, N, N), dtype=np.float32)
+                for i in range(0, T, chunk_size):
+                    end = min(i + chunk_size, T)
+                    pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
+                del windows
             else:
                 pairwise_smooth = pairwise
+            del padded, pad_block
         else:
             pairwise_smooth = pairwise
 
         # Prepare input for dp.calculate_gmembership: (T, N, N-1)
         mask = ~np.eye(N, dtype=bool)
         pwdf = pairwise_smooth[:, mask].reshape(T, N, N - 1)
-        groupmembership = _calculate_gmembership(pwdf, nparticles=N, numsteps=T, threshold=distance_cutoff)
+        groupmembership = _calculate_gmembership_numba(pwdf, N, T, distance_cutoff)
 
         # Group sizes per frame/id
         gm = groupmembership.astype(np.int64, copy=False)
