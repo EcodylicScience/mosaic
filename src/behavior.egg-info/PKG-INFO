@@ -13,6 +13,7 @@ Requires-Dist: joblib>=1.3
 Requires-Dist: pyarrow>=11.0
 Requires-Dist: scikit-learn>=1.2
 Requires-Dist: scipy>=1.10
+Requires-Dist: numba>=0.58
 Requires-Dist: seaborn>=0.12
 Requires-Dist: matplotlib>=3.7
 Requires-Dist: openTSNE>=0.6
@@ -22,11 +23,36 @@ Requires-Dist: xgboost>=1.7
 Requires-Dist: networkx>=3.2.1
 Provides-Extra: wavelets
 Requires-Dist: PyWavelets>=1.4; extra == "wavelets"
+Provides-Extra: pose
+Requires-Dist: ultralytics>=8.0; extra == "pose"
+Requires-Dist: albumentations>=1.3; extra == "pose"
+Provides-Extra: remote
+Requires-Dist: requests>=2.31; extra == "remote"
+Requires-Dist: websocket-client>=1.8; extra == "remote"
+Provides-Extra: all
+Requires-Dist: PyWavelets>=1.4; extra == "all"
+Requires-Dist: requests>=2.31; extra == "all"
+Requires-Dist: websocket-client>=1.8; extra == "all"
 Dynamic: license-file
 
 # behavior
 
 Tools for building end-to-end behavioral analysis pipelines: index and standardize tracks/labels, compute reusable features, bundle inputs into inputsets, fit/predict models, and visualize/cluster results.
+
+## Installation
+
+`pyproject.toml` is the canonical Python dependency source for this package.
+
+```bash
+conda create -n behavior python=3.11 -y
+conda activate behavior
+conda install -c conda-forge ffmpeg -y
+pip install -e ".[all]"
+```
+
+Notes:
+- `ffmpeg` provides `ffprobe`, which is used by dataset media indexing.
+- If you want a minimal install, use `pip install -e .` instead of `.[all]`.
 
 ## High-level workflow
 
@@ -81,4 +107,4 @@ The notebook `notebooks/calms21-template.ipynb` walks through a complete CalMS21
 ## Documentation & support
 - Example pipeline: `notebooks/calms21-template.ipynb` (best reference for now).
 - Feature and model docstrings live alongside code in `src/behavior/`.
-- If you add new features/models, keep column names and input signatures stored in run artifacts to simplify downstream prediction.***
+- If you add new features/models, keep column names and input signatures stored in run artifacts to simplify downstream prediction.

@@ -1,0 +1,294 @@
+"""
+Boris Annotator behavior label converter.
+
+BORIS (Behavioral Observation Research Interactive Software) exports
+behavioral observations in CSV/TSV formats. This converter handles
+both event-based and state-based annotations.
+
+Example BORIS CSV format:
+    Time,Subject,Behavior,Status
+    0.0,mouse1,investigation,START
+    2.5,mouse1,investigation,STOP
+    3.0,mouse1,attack,START
+    5.2,mouse1,attack,STOP
+
+To enable this converter:
+1. Rename this file from boris_behavior.py.example to boris_behavior.py
+2. Uncomment the import in label_library/__init__.py
+3. Test with your BORIS data
+"""
+
+from pathlib import Path
+from typing import Optional, Dict, Any
+import pandas as pd
+import numpy as np
+
+from mosaic.core.helpers import to_safe_name
+
+
+def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """Helper to merge user params with defaults."""
+    if not overrides:
+        return dict(defaults)
+    out = dict(defaults)
+    out.update({k: v for k, v in overrides.items() if v is not None})
+    return out
+
+
+class BorisBehaviorConverter:
+    """
+    Convert BORIS behavioral annotations to behavior dataset format.
+
+    Expected BORIS CSV format:
+    - Time: timestamp in seconds
+    - Subject: animal/subject ID (optional, defaults to single sequence)
+    - Behavior: behavior label name
+    - Status: START or STOP (for state-based) or point events
+    - Behavioral category: (optional) category grouping
+
+    Two modes supported:
+    1. State-based: behaviors have START/STOP times
+    2. Event-based: each row is a behavior occurrence at a time point
+
+    Usage
+    -----
+    >>> dataset.convert_all_labels(
+    ...     kind="behavior",
+    ...     source_format="boris_csv",
+    ...     fps=30.0,
+    ...     mode="state",
+    ...     time_col="Time",
+    ...     behavior_col="Behavior",
+    ... )
+    """
+
+    # ============ REGISTRATION ATTRIBUTES ============
+    src_format = "boris_csv"
+    label_kind = "behavior"
+    label_format = "boris_behavior_v1"
+
+    # ============ DEFAULT PARAMETERS ============
+    _defaults = dict(
+        group_from="filename",        # How to determine group name
+        time_col="Time",              # Column name for timestamp
+        behavior_col="Behavior",      # Column name for behavior label
+        subject_col="Subject",        # Column name for subject/animal ID
+        status_col="Status",          # Column name for START/STOP (optional)
+        fps=30.0,                     # Frames per second for time->frame conversion
+        mode="state",                 # "state" (START/STOP) or "event" (point events)
+        background_label="none",      # Default label when no behavior active
+        delimiter=",",                # CSV delimiter
+    )
+
+    def __init__(self, params: Optional[Dict[str, Any]] = None, **kwargs):
+        """Initialize the converter with parameters."""
+        self.params = _merge_params(params, self._defaults)
+        self.params.update(kwargs)
+
+    def convert(self,
+                src_path: Path,
+                raw_row: pd.Series,
+                labels_root: Path,
+                params: dict,
+                overwrite: bool,
+                existing_pairs: set[tuple[str, str]]) -> list[dict]:
+        """Convert BORIS CSV to per-sequence behavior labels."""
+
+        # Load BORIS CSV
+        p = self.params
+        df = pd.read_csv(src_path, delimiter=p["delimiter"])
+
+        # Validate required columns
+        required_cols = [p["time_col"], p["behavior_col"]]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"BORIS CSV missing required columns: {missing}")
+
+        # Get unique behaviors and create label map
+        unique_behaviors = sorted(df[p["behavior_col"]].unique())
+        if p["background_label"] not in unique_behaviors:
+            unique_behaviors = [p["background_label"]] + unique_behaviors
+
+        label_map = {i: name for i, name in enumerate(unique_behaviors)}
+        label_name_to_id = {name: i for i, name in label_map.items()}
+
+        # Determine group name
+        group_val = self._determine_group("", raw_row)
+
+        # Group by subject if available, otherwise treat as single sequence
+        if p["subject_col"] in df.columns:
+            subjects = df[p["subject_col"]].unique()
+        else:
+            subjects = ["default"]
+            df = df.copy()
+            df[p["subject_col"]] = "default"
+
+        rows_out = []
+
+        for subject in subjects:
+            seq_val = str(subject)
+            pair = (group_val, seq_val)
+
+            # Skip if exists
+            if not overwrite and pair in existing_pairs:
+                continue
+
+            # Filter to subject
+            df_subj = df[df[p["subject_col"]] == subject].copy()
+            df_subj = df_subj.sort_values(p["time_col"]).reset_index(drop=True)
+
+            # Convert to frame-by-frame labels
+            if p["mode"] == "state":
+                labels, frames = self._convert_state_based(
+                    df_subj, label_name_to_id, p
+                )
+            else:
+                labels, frames = self._convert_event_based(
+                    df_subj, label_name_to_id, p
+                )
+
+            # Create safe names and output path
+            safe_group = to_safe_name(group_val) if group_val else ""
+            safe_seq = to_safe_name(seq_val)
+            fname = f"{safe_group + '__' if safe_group else ''}{safe_seq}.npz"
+            out_path = labels_root / fname
+
+            # Build payload
+            label_ids = np.array(list(label_map.keys()), dtype=int)
+            label_names = np.array(list(label_map.values()), dtype=object)
+
+            payload = {
+                "group": group_val,
+                "sequence": seq_val,
+                "sequence_key": seq_val,
+                "frames": frames,
+                "labels": labels,
+                "label_ids": label_ids,
+                "label_names": label_names,
+                "source_subject": str(subject),
+            }
+
+            # Save
+            np.savez_compressed(out_path, **payload)
+            existing_pairs.add(pair)
+
+            # Build index row
+            index_row = {
+                "kind": self.label_kind,
+                "label_format": self.label_format,
+                "group": group_val,
+                "sequence": seq_val,
+                "group_safe": safe_group,
+                "sequence_safe": safe_seq,
+                "abs_path": str(out_path.resolve()),
+                "source_abs_path": str(src_path.resolve()),
+                "source_md5": raw_row.get("md5", ""),
+                "n_frames": int(labels.shape[0]),
+                "label_ids": ",".join(map(str, label_map.keys())),
+                "label_names": ",".join(label_map.values()),
+                "source_subject": str(subject),
+            }
+            rows_out.append(index_row)
+
+        return rows_out
+
+    def get_metadata(self) -> dict:
+        """Return metadata for dataset.meta."""
+        return {}
+
+    # ============ HELPER METHODS ============
+
+    def _determine_group(self, source_group: str, raw_row: pd.Series) -> str:
+        """Determine output group name based on group_from parameter."""
+        group_from = self.params.get("group_from", "filename")
+        if group_from == "filename":
+            return str(raw_row.get("group", "") or "")
+        elif group_from == "infile":
+            return source_group
+        elif group_from == "both":
+            return str(raw_row.get("group", "") or "")
+        else:
+            return source_group
+
+    def _convert_state_based(self,
+                            df: pd.DataFrame,
+                            label_map: dict,
+                            params: dict) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Convert state-based BORIS annotations to frame-by-frame labels.
+
+        Assumes rows have START/STOP status.
+        """
+        time_col = params["time_col"]
+        behavior_col = params["behavior_col"]
+        status_col = params.get("status_col", "Status")
+        fps = float(params["fps"])
+        background_id = label_map[params["background_label"]]
+
+        # Determine total duration
+        max_time = df[time_col].max()
+        n_frames = int(np.ceil(max_time * fps)) + 1
+
+        # Initialize with background
+        labels = np.full(n_frames, background_id, dtype=int)
+
+        # Fill in behaviors using START/STOP events
+        active_behaviors = {}  # behavior -> start_frame
+
+        for _, row in df.iterrows():
+            frame = int(row[time_col] * fps)
+            behavior = row[behavior_col]
+            behavior_id = label_map.get(behavior, background_id)
+
+            if status_col in df.columns:
+                status = str(row.get(status_col, "")).upper()
+                if status == "START":
+                    active_behaviors[behavior] = frame
+                elif status == "STOP" and behavior in active_behaviors:
+                    start_frame = active_behaviors.pop(behavior)
+                    labels[start_frame:frame+1] = behavior_id
+            else:
+                # Point event (no status column)
+                labels[frame] = behavior_id
+
+        frames = np.arange(n_frames, dtype=np.int32)
+        return labels, frames
+
+    def _convert_event_based(self,
+                            df: pd.DataFrame,
+                            label_map: dict,
+                            params: dict) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Convert event-based BORIS annotations to frame-by-frame labels.
+
+        Each event is marked at the corresponding frame.
+        """
+        time_col = params["time_col"]
+        behavior_col = params["behavior_col"]
+        fps = float(params["fps"])
+        background_id = label_map[params["background_label"]]
+
+        # Determine total duration
+        max_time = df[time_col].max()
+        n_frames = int(np.ceil(max_time * fps)) + 1
+
+        # Initialize with background
+        labels = np.full(n_frames, background_id, dtype=int)
+
+        # Mark events
+        for _, row in df.iterrows():
+            frame = int(row[time_col] * fps)
+            behavior = row[behavior_col]
+            behavior_id = label_map.get(behavior, background_id)
+            labels[frame] = behavior_id
+
+        frames = np.arange(n_frames, dtype=np.int32)
+        return labels, frames
+
+
+# To enable this converter, add to label_library/__init__.py:
+#
+# from . import boris_behavior
+# boris_behavior.BorisBehaviorConverter = register_label_converter(
+#     boris_behavior.BorisBehaviorConverter
+# )

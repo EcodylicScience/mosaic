@@ -2,6 +2,21 @@
 
 Tools for building end-to-end behavioral analysis pipelines: index and standardize tracks/labels, compute reusable features, bundle inputs into inputsets, fit/predict models, and visualize/cluster results.
 
+## Installation
+
+`pyproject.toml` is the canonical Python dependency source for this package.
+
+```bash
+conda create -n behavior python=3.11 -y
+conda activate behavior
+conda install -c conda-forge ffmpeg -y
+pip install -e ".[all]"
+```
+
+Notes:
+- `ffmpeg` provides `ffprobe`, which is used by dataset media indexing.
+- If you want a minimal install, use `pip install -e .` instead of `.[all]`.
+
 ## High-level workflow
 
 Data flows through a few core concepts (everything is versioned by `run_id`):
@@ -55,4 +70,4 @@ The notebook `notebooks/calms21-template.ipynb` walks through a complete CalMS21
 ## Documentation & support
 - Example pipeline: `notebooks/calms21-template.ipynb` (best reference for now).
 - Feature and model docstrings live alongside code in `src/behavior/`.
-- If you add new features/models, keep column names and input signatures stored in run artifacts to simplify downstream prediction.***
+- If you add new features/models, keep column names and input signatures stored in run artifacts to simplify downstream prediction.

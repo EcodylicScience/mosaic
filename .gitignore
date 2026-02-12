@@ -35,3 +35,10 @@ behavior-guppies.code-workspace
 /src/behavior/__pycache__
 sync-to-remote.ipynb
 /src/behavior/__pycache__
+/.claude
+/src/behavior.egg-info
+/src/behavior.egg-info
+/src/behavior/__pycache__
+/src/mosaic_behavior.egg-info
+src/mosaic/tracking/test_notebook.ipynb
+src/mosaic/media/test_notebook.ipynb
