@@ -482,7 +482,7 @@ class BehaviorXGBoostModel:
             abs_raw = row.get("abs_path", "")
             if not abs_raw:
                 continue
-            abs_path = ds.remap_path(abs_raw)
+            abs_path = ds.resolve_path(abs_raw)
             if not abs_path.exists():
                 continue
             features, cols, frame_indices, pair_ids = self._load_feature_matrix(abs_path, loader)
@@ -771,7 +771,7 @@ class BehaviorXGBoostModel:
             if not safe_seq or not path:
                 continue
             lookup[safe_seq] = {
-                "path": ds.remap_path(path),
+                "path": ds.resolve_path(path),
                 "sequence": row.get("sequence", ""),
                 "group": row.get("group", ""),
             }
@@ -792,11 +792,7 @@ class BehaviorXGBoostModel:
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
-            resolved = ds.remap_path(abs_path)
-            try:
-                resolved = resolved.resolve()
-            except Exception:
-                pass
+            resolved = ds.resolve_path(abs_path)
             mapping[resolved] = row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
         return mapping
 
@@ -821,11 +817,7 @@ class BehaviorXGBoostModel:
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
-            resolved = ds.remap_path(abs_path)
-            try:
-                resolved = resolved.resolve()
-            except Exception:
-                pass
+            resolved = ds.resolve_path(abs_path)
             mapping[resolved] = {
                 "sequence": row.get("sequence", ""),
                 "group": row.get("group", ""),

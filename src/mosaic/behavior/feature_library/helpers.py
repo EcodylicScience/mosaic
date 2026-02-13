@@ -1034,16 +1034,28 @@ def _build_index_row(
     sequence: str,
     output_path: Path,
     n_rows: Optional[int] = None,
+    dataset_root: Optional[Path] = None,
 ) -> dict:
     """
     Build a standard index row dict for get_additional_index_rows().
+
+    When *dataset_root* is provided, ``abs_path`` is stored relative to it
+    (portable).  Otherwise falls back to the resolved absolute path.
     """
     safe_group = to_safe_name(group) if group else ""
+    resolved = output_path.resolve()
+    if dataset_root is not None:
+        try:
+            path_str = str(resolved.relative_to(dataset_root))
+        except ValueError:
+            path_str = str(resolved)
+    else:
+        path_str = str(resolved)
     return {
         "group": group,
         "sequence": sequence,
         "group_safe": safe_group,
         "sequence_safe": safe_seq,
-        "abs_path": str(output_path.resolve()),
+        "abs_path": path_str,
         "n_rows": n_rows,
     }

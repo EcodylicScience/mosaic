@@ -395,7 +395,8 @@ default_roots = {
     "labels": "labels",         # GT annotations, .npy/.csv
     "models": "models",   # trained models, reports, plots
     "tracks": "tracks",
-    "tracks_raw": "tracks_raw"
+    "tracks_raw": "tracks_raw",
+    "frames": "frames",         # extracted video frames (PNGs), can be very large
 }
 
 def new_dataset_manifest(
@@ -419,11 +420,15 @@ def new_dataset_manifest(
     Returns the path to the created YAML.
     """
     base_dir = Path(base_dir).resolve()
-    # Normalize roots -> absolute paths rooted at base_dir
-    norm_roots = {k: str((base_dir / Path(v)).resolve()) for k, v in roots.items()}
-    # Make sure these directories exist
-    for p in norm_roots.values():
-        Path(p).mkdir(parents=True, exist_ok=True)
+    # Normalize roots -> relative paths (portable) when inside base_dir
+    norm_roots = {}
+    for k, v in roots.items():
+        full = (base_dir / Path(v)).resolve()
+        full.mkdir(parents=True, exist_ok=True)
+        try:
+            norm_roots[k] = str(full.relative_to(base_dir))
+        except ValueError:
+            norm_roots[k] = str(full)  # outside base_dir, keep absolute
 
     manifest = {
         "name": name,
@@ -601,7 +606,10 @@ class Dataset:
             print(key)
             print(self.roots)
             raise KeyError(f"Root '{key}' is not set in manifest.")
-        return Path(self.roots[key])
+        p = Path(self.roots[key])
+        if not p.is_absolute():
+            return (_dataset_base_dir(self) / p).resolve()
+        return p
 
     def set_root(self, key: str, path: str | Path) -> None:
         self.roots[key] = str(Path(path))
@@ -610,7 +618,10 @@ class Dataset:
     def _ensure_roots(self) -> None:
         for p in self.roots.values():
             if p:
-                Path(p).mkdir(parents=True, exist_ok=True)
+                path = Path(p)
+                if not path.is_absolute():
+                    path = _dataset_base_dir(self) / path
+                path.mkdir(parents=True, exist_ok=True)
 
     def ensure_roots(self) -> None:
         """Public wrapper so callers can trigger directory creation after mutations."""
@@ -643,6 +654,33 @@ class Dataset:
             return p
         new_value = _remap_single_path(p, self._path_map)
         return new_value if new_value is not None else p
+
+    def resolve_path(self, stored_path: str | Path, anchor: Path | None = None) -> Path:
+        """Resolve a stored path (absolute or relative) to an absolute path.
+
+        Relative paths are resolved against *anchor* (default: dataset root).
+        Absolute paths that exist are returned as-is; absolute paths that don't
+        exist are tried through :meth:`remap_path`.
+        """
+        p = Path(str(stored_path).strip())
+        if not p.is_absolute():
+            base = anchor if anchor is not None else _dataset_base_dir(self)
+            return (base / p).resolve()
+        if p.exists():
+            return p
+        return self.remap_path(p)
+
+    def _relative_to_root(self, abs_path: Path) -> str:
+        """Convert an absolute path to relative-to-dataset-root for storage.
+
+        Internal paths (inside dataset tree) become relative strings.
+        External paths (outside dataset tree) remain absolute.
+        """
+        root = _dataset_base_dir(self)
+        try:
+            return str(abs_path.resolve().relative_to(root))
+        except ValueError:
+            return str(abs_path.resolve())
 
     def rewrite_index_paths(self, path_map: Mapping[str, str], dry_run: bool = False) -> dict[str, int]:
         """
@@ -722,6 +760,173 @@ class Dataset:
                     count = rewrite_index(sub_idx)
                     if count > 0:
                         results[str(sub_idx)] = count
+
+        # Frames: has per-method subdirectories (uniform, kmeans) with their own index.csv
+        frames_root = self.roots.get("frames")
+        if frames_root:
+            frames_path = Path(frames_root)
+            if frames_path.exists():
+                for subdir in frames_path.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = rewrite_index(sub_idx)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        return results
+
+    def make_portable(self, dry_run: bool = False) -> dict[str, int]:
+        """Convert all internal absolute paths to relative (to dataset root).
+
+        Only needed for datasets created before relative-path support.
+        Idempotent — safe to call multiple times. Already-relative paths
+        are left unchanged.
+
+        Args:
+            dry_run: If True, report what would change without writing.
+
+        Returns:
+            Dict of ``{file_path: num_paths_changed}``.
+        """
+        root = _dataset_base_dir(self)
+        results: dict[str, int] = {}
+
+        def _make_rel(abs_str: str) -> tuple[str, bool]:
+            """Try to make *abs_str* relative to dataset root.
+            Returns (new_str, changed)."""
+            p = Path(abs_str)
+            if not p.is_absolute():
+                return abs_str, False  # already relative
+            try:
+                rel = str(p.resolve().relative_to(root))
+                return rel, rel != abs_str
+            except ValueError:
+                return abs_str, False  # external — keep absolute
+
+        # --- 8a. Roots in dataset.yaml ---
+        roots_changed = 0
+        new_roots = {}
+        for k, v in self.roots.items():
+            if not v:
+                new_roots[k] = v
+                continue
+            new_val, changed = _make_rel(v)
+            new_roots[k] = new_val
+            if changed:
+                roots_changed += 1
+        if roots_changed > 0:
+            if not dry_run:
+                self.roots = new_roots
+                self.save()
+            results["dataset.yaml (roots)"] = roots_changed
+
+        # --- 8b. Index CSVs: convert abs_path column ---
+        def _convert_index(idx_path: Path, external_columns: set[str] | None = None) -> int:
+            """Convert abs_path (and optionally other path columns) to relative."""
+            if not idx_path.exists():
+                return 0
+            df = pd.read_csv(idx_path)
+            total_changed = 0
+            for col in ["abs_path"]:
+                if col not in df.columns:
+                    continue
+                new_vals = []
+                for val in df[col]:
+                    if pd.isna(val):
+                        new_vals.append(val)
+                        continue
+                    new_val, changed = _make_rel(str(val))
+                    new_vals.append(new_val)
+                    if changed:
+                        total_changed += 1
+                if total_changed > 0 and not dry_run:
+                    df[col] = new_vals
+            if total_changed > 0 and not dry_run:
+                df.to_csv(idx_path, index=False)
+            return total_changed
+
+        # Walk all roots that have index files
+        for key in ["tracks", "tracks_raw", "media", "models", "inputsets"]:
+            r = self.roots.get(key)
+            if not r:
+                continue
+            rp = self.get_root(key)
+            idx_path = rp / "index.csv"
+            count = _convert_index(idx_path)
+            if count > 0:
+                results[str(idx_path)] = count
+
+        # Labels: per-kind subdirectories
+        labels_root = self.roots.get("labels")
+        if labels_root:
+            lp = self.get_root("labels")
+            idx = lp / "index.csv"
+            count = _convert_index(idx)
+            if count > 0:
+                results[str(idx)] = count
+            if lp.exists():
+                for subdir in lp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # Features: per-feature subdirectories (possibly with run_id subdirs)
+        features_root = self.roots.get("features")
+        if features_root:
+            fp = self.get_root("features")
+            root_idx = fp / "index.csv"
+            count = _convert_index(root_idx)
+            if count > 0:
+                results[str(root_idx)] = count
+            if fp.exists():
+                for subdir in fp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # Frames: per-method subdirectories
+        frames_root = self.roots.get("frames")
+        if frames_root:
+            frp = self.get_root("frames")
+            if frp.exists():
+                for subdir in frp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # --- 8c. run_info.json files (frame extraction manifests) ---
+        if frames_root:
+            frp = self.get_root("frames")
+            if frp.exists():
+                for ri_path in frp.rglob("run_info.json"):
+                    try:
+                        data = json.loads(ri_path.read_text())
+                    except Exception:
+                        continue
+                    changed = 0
+                    # output_dir -> relative to dataset root
+                    if "output_dir" in data:
+                        new_val, did_change = _make_rel(data["output_dir"])
+                        if did_change:
+                            data["output_dir"] = new_val
+                            changed += 1
+                    # files[].path -> filename only (they're siblings of run_info.json)
+                    for f in data.get("files", []):
+                        if "path" in f:
+                            p = Path(f["path"])
+                            if p.is_absolute():
+                                f["path"] = p.name
+                                changed += 1
+                    if changed > 0:
+                        if not dry_run:
+                            ri_path.write_text(json.dumps(data, indent=2, default=str))
+                        results[str(ri_path)] = changed
 
         return results
 
@@ -981,8 +1186,7 @@ class Dataset:
             if len(df_subset) > 1:
                 return None
             row = df_subset.iloc[0]
-            path = Path(row["abs_path"])
-            return self.remap_path(path) if hasattr(self, "remap_path") else path
+            return self.resolve_path(row["abs_path"])
 
         # direct match
         if "group" in df.columns and "sequence" in df.columns:
@@ -1016,8 +1220,7 @@ class Dataset:
         unique_paths = candidates["abs_path"].unique()
         if len(unique_paths) > 1:
             raise RuntimeError(f"Multiple media files match sequence '{sequence}'; disambiguate manually.")
-        path = Path(unique_paths[0])
-        return self.remap_path(path) if hasattr(self, "remap_path") else path
+        return self.resolve_path(unique_paths[0])
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict]]:
         """
@@ -1255,7 +1458,7 @@ class Dataset:
                     "sequence_safe": safe_seq,
                     "collection": raw_collection,
                     "collection_safe": to_safe_name(raw_collection) if raw_collection else "",
-                    "abs_path": str(out_path.resolve()),
+                    "abs_path": self._relative_to_root(out_path),
                     "std_format": std_fmt,
                     "source_abs_path": str(src_path.resolve()),
                     "source_md5": raw_row.get("md5", ""),
@@ -1296,7 +1499,7 @@ class Dataset:
             "sequence_safe": to_safe_name(seq_value),
             "collection": str(raw_row.get("group", "")) if raw_row.get("group") is not None else "",
             "collection_safe": to_safe_name(str(raw_row.get("group", ""))) if raw_row.get("group") else "",
-            "abs_path": str(out_path.resolve()),
+            "abs_path": self._relative_to_root(out_path),
             "std_format": std_fmt,
             "source_abs_path": str(src_path.resolve()),
             "source_md5": raw_row.get("md5", ""),
@@ -1494,7 +1697,7 @@ class Dataset:
                 "sequence_safe": safe_seq,
                 "collection": raw_group_hint,
                 "collection_safe": to_safe_name(raw_group_hint) if raw_group_hint else "",
-                "abs_path": str(out_path.resolve()),
+                "abs_path": self._relative_to_root(out_path),
                 "std_format": "trex_v1",
                 "source_abs_path": str(first_row["abs_path"]),
                 "source_md5": first_row.get("md5", ""),
@@ -1839,7 +2042,7 @@ class Dataset:
             "sequence": sequence,
             "group_safe": safe_group,
             "sequence_safe": safe_seq,
-            "abs_path": str(out_path.resolve()),
+            "abs_path": self._relative_to_root(out_path),
             "source_abs_path": "",
             "source_md5": "",
             "n_frames": len(id_keys),
@@ -2082,8 +2285,8 @@ class Dataset:
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
-            path = self.remap_path(abs_path) if hasattr(self, "remap_path") else Path(abs_path)
-            if not Path(path).exists():
+            path = self.resolve_path(abs_path)
+            if not path.exists():
                 continue
             with np.load(path, allow_pickle=True) as npz:
                 ids = npz["ids"]
@@ -2153,8 +2356,8 @@ class Dataset:
         if not abs_path:
             raise ValueError(f"No abs_path in index for ({group}, {sequence})")
 
-        path = self.remap_path(abs_path) if hasattr(self, "remap_path") else Path(abs_path)
-        if not Path(path).exists():
+        path = self.resolve_path(abs_path)
+        if not path.exists():
             raise FileNotFoundError(f"Label file not found: {path}")
 
         with np.load(path, allow_pickle=True) as npz:
@@ -2920,7 +3123,7 @@ def _yield_sequences(ds: "Dataset",
         g, s = str(row["group"]), str(row["sequence"])
         if allowed_pairs is not None and (g, s) not in allowed_pairs:
             continue
-        p = ds.remap_path(row["abs_path"]) if hasattr(ds, "remap_path") else Path(row["abs_path"])
+        p = ds.resolve_path(row["abs_path"])
         if not p.exists():
             print(f"[feature] missing parquet for ({g},{s}) -> {p}", file=sys.stderr)
             continue
@@ -3004,7 +3207,7 @@ def _yield_sequences_with_overlap(
         """Load a parquet file for (group, sequence), return None on failure."""
         if (group, seq) not in path_lookup:
             return None
-        p = ds.remap_path(path_lookup[(group, seq)]) if hasattr(ds, "remap_path") else Path(path_lookup[(group, seq)])
+        p = ds.resolve_path(path_lookup[(group, seq)])
         if not p.exists():
             return None
         try:
@@ -3118,7 +3321,7 @@ def _yield_feature_frames(ds: "Dataset",
         abs_path_str = str(row.get("abs_path", ""))
         if not abs_path_str.endswith(".parquet"):
             continue  # skip non-parquet entries (e.g. .npz artifacts)
-        p = ds.remap_path(abs_path_str) if hasattr(ds, "remap_path") else Path(abs_path_str)
+        p = ds.resolve_path(abs_path_str)
         if not p.exists():
             print(f"[feature-input] missing parquet for ({g},{s}) -> {p}", file=sys.stderr)
             continue
@@ -3251,7 +3454,7 @@ def _resolve_inputset_scope(ds: "Dataset",
             pair_safe_map.setdefault(pair, seq_safe)
             abs_path = row.get("abs_path")
             if isinstance(abs_path, str) and abs_path and abs_path.endswith(".parquet"):
-                remapped = ds.remap_path(abs_path) if hasattr(ds, "remap_path") else Path(abs_path)
+                remapped = ds.resolve_path(abs_path)
                 path_map[pair] = remapped
         resolved_inputs.append({
             "feature": feat_name, "run_id": run_id, "kind": "feature",
@@ -3367,7 +3570,7 @@ def _yield_inputset_frames(ds: "Dataset",
                 ]
                 if df_idx.empty:
                     continue
-                pth = ds.remap_path(df_idx.iloc[0]["abs_path"]) if hasattr(ds, "remap_path") else Path(df_idx.iloc[0]["abs_path"])
+                pth = ds.resolve_path(df_idx.iloc[0]["abs_path"])
                 if not pth.exists():
                     continue
                 try:
@@ -3484,6 +3687,84 @@ def _append_feature_index(idx_path: Path, rows: list[dict]):
         df = df[~mask]
     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
     df.to_csv(idx_path, index=False)
+
+
+# ─── Frame extraction index helpers ───
+
+def _frames_run_root(ds: "Dataset", method: str, run_id: str) -> Path:
+    return ds.get_root("frames") / method / run_id
+
+def _frames_index_path(ds: "Dataset", method: str) -> Path:
+    return ds.get_root("frames") / method / "index.csv"
+
+_FRAMES_INDEX_COLUMNS = {
+    "method": "string",
+    "run_id": "string",
+    "group": "string",
+    "sequence": "string",
+    "group_safe": "string",
+    "sequence_safe": "string",
+    "abs_path": "string",
+    "n_frames_extracted": "Int64",
+    "n_frames_requested": "Int64",
+    "video_abs_path": "string",
+    "params_hash": "string",
+    "started_at": "string",
+    "finished_at": "string",
+}
+
+def _ensure_frames_index(idx_path: Path):
+    if not idx_path.exists():
+        idx_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {col: pd.Series(dtype=dtype) for col, dtype in _FRAMES_INDEX_COLUMNS.items()}
+        ).to_csv(idx_path, index=False)
+
+def _append_frames_index(idx_path: Path, rows: list[dict]):
+    if not idx_path.exists():
+        _ensure_frames_index(idx_path)
+    df = pd.read_csv(idx_path)
+    for col in _FRAMES_INDEX_COLUMNS:
+        df = _ensure_text_column(df, col, "")
+    new_rows = []
+    for r in rows:
+        r = dict(r)
+        if "group_safe" not in r:
+            r["group_safe"] = to_safe_name(r.get("group", "")) if r.get("group") else ""
+        if "sequence_safe" not in r:
+            r["sequence_safe"] = to_safe_name(r.get("sequence", "")) if r.get("sequence") else ""
+        if "finished_at" not in r:
+            r["finished_at"] = ""
+        new_rows.append(r)
+    # Remove existing entries that match (run_id, group, sequence)
+    for r in new_rows:
+        mask = (
+            (df["run_id"].fillna("") == r.get("run_id", "")) &
+            (df["group"].fillna("") == r.get("group", "")) &
+            (df["sequence"].fillna("") == r.get("sequence", ""))
+        )
+        df = df[~mask]
+    df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+    df.to_csv(idx_path, index=False)
+
+def _list_media_pairs(ds: "Dataset",
+                      groups: Optional[Iterable[str]] = None,
+                      sequences: Optional[Iterable[str]] = None) -> pd.DataFrame:
+    """Return filtered media index DataFrame with (group, sequence, abs_path, ...)."""
+    idx_path = ds.get_root("media") / "index.csv"
+    if not idx_path.exists():
+        raise FileNotFoundError("media/index.csv not found; run index_media() first.")
+    df = pd.read_csv(idx_path)
+    df["group"] = df["group"].fillna("").astype(str)
+    df["sequence"] = df["sequence"].fillna("").astype(str)
+    df["group_safe"] = df["group_safe"].fillna("").astype(str)
+    df["sequence_safe"] = df["sequence_safe"].fillna("").astype(str)
+    mask = pd.Series(True, index=df.index)
+    if groups is not None:
+        mask &= df["group"].isin({str(g) for g in groups})
+    if sequences is not None:
+        mask &= df["sequence"].isin({str(s) for s in sequences})
+    return df[mask].reset_index(drop=True)
 
 
 def _process_transform_worker(payload):
@@ -4292,7 +4573,7 @@ def run_feature(self,
                     "sequence": s,
                     "group_safe": safe_group,
                     "sequence_safe": safe_seq,
-                    "abs_path": str(out_path.resolve()),
+                    "abs_path": self._relative_to_root(out_path),
                     "n_rows": None,
                     "params_hash": params_hash,
                     "started_at": started,
@@ -4448,7 +4729,7 @@ def run_feature(self,
         }
 
     def _append_row(meta, n_rows, abs_path: Optional[str] = None):
-        path_str = abs_path or str(meta["out_path"].resolve())
+        path_str = abs_path or self._relative_to_root(meta["out_path"])
         out_rows.append({
             "feature": storage_feature_name,
             "version": feature.version,
@@ -4480,7 +4761,7 @@ def run_feature(self,
         abs_path = row.get("abs_path")
         if not isinstance(abs_path, str) or not abs_path:
             out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
-            abs_path = str((run_root / out_name).resolve())
+            abs_path = self._relative_to_root(run_root / out_name)
         n_rows = row.get("n_rows")
         if n_rows is not None:
             try:
@@ -4700,7 +4981,7 @@ def run_feature(self,
                     n_rows = int(pd.read_parquet(out_path).shape[0])
                 except Exception:
                     n_rows = None
-                _append_row(meta, n_rows, abs_path=str(out_path.resolve()))
+                _append_row(meta, n_rows, abs_path=self._relative_to_root(out_path))
                 continue
 
             if executor:
@@ -4772,7 +5053,7 @@ def run_feature(self,
         out_rows.append({
             "feature": storage_feature_name, "version": feature.version, "run_id": run_id,
             "group": "", "sequence": marker_seq, "group_safe": "", "sequence_safe": safe_marker_seq,
-            "abs_path": str(marker_path.resolve()),
+            "abs_path": self._relative_to_root(marker_path),
             "n_rows": int(len(marker_df)), "params_hash": params_hash,
             "started_at": started, "finished_at": ""
         })
@@ -4784,6 +5065,386 @@ def run_feature(self,
 
 # Attach to class
 Dataset.run_feature = run_feature
+
+
+# ─── Frame extraction ───
+
+def extract_frames(
+    self,
+    n_frames: int,
+    method: str = "uniform",
+    *,
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    overwrite: bool = False,
+    start_frame: Optional[int] = None,
+    end_frame: Optional[int] = None,
+    candidate_step: int = 1,
+    crop=None,
+    # k-means params
+    kmeans_resize: tuple = (64, 64),
+    kmeans_grayscale: bool = True,
+    kmeans_max_candidates: Optional[int] = 5000,
+    kmeans_batch_size: int = 1024,
+    kmeans_max_iter: int = 100,
+    kmeans_n_init = "auto",
+    random_state: int = 42,
+    # parallelism
+    parallel_workers: Optional[int] = None,
+    parallel_mode: str = "thread",
+) -> str:
+    """
+    Extract representative frames from media files in the dataset.
+
+    Parameters
+    ----------
+    n_frames : int
+        Number of frames to extract per video.
+    method : str
+        "uniform" or "kmeans".
+    groups, sequences : optional iterables
+        Scope filter — only process matching entries in media/index.csv.
+    overwrite : bool
+        If True, re-extract even if the output directory already exists.
+    start_frame, end_frame : optional int
+        Inclusive frame range; defaults to full video.
+    candidate_step : int
+        Frame stride for candidate selection (>=1).
+    crop : optional
+        Crop rectangle as (x, y, w, h) or {"x","y","w","h"}.
+    kmeans_* : various
+        K-means sampling parameters (only used when method="kmeans").
+    random_state : int
+        Random seed for reproducibility.
+    parallel_workers : optional int
+        When >1, process videos in parallel using this many workers.
+    parallel_mode : str
+        "thread" (default) or "process".
+
+    Returns
+    -------
+    str
+        The run_id for this extraction batch.
+    """
+    from mosaic.media.extraction import extract_frames as _extract_frames
+
+    method_norm = str(method).strip().lower()
+    if method_norm not in {"uniform", "kmeans"}:
+        raise ValueError("method must be one of: 'uniform', 'kmeans'")
+
+    # Build params dict for hashing and persistence
+    extraction_params = {
+        "n_frames": int(n_frames),
+        "method": method_norm,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "candidate_step": int(candidate_step),
+        "crop": crop,
+        "random_state": int(random_state),
+    }
+    if method_norm == "kmeans":
+        extraction_params.update({
+            "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
+            "kmeans_grayscale": bool(kmeans_grayscale),
+            "kmeans_max_candidates": kmeans_max_candidates,
+            "kmeans_batch_size": int(kmeans_batch_size),
+            "kmeans_max_iter": int(kmeans_max_iter),
+            "kmeans_n_init": kmeans_n_init,
+        })
+
+    params_hash = _hash_params(extraction_params)
+    run_id = f"{method_norm}-{params_hash}"
+    run_root = _frames_run_root(self, method_norm, run_id)
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    # Persist params
+    params_path = run_root / "run_params.json"
+    try:
+        params_path.write_text(json.dumps(_json_ready(extraction_params), indent=2))
+    except Exception as exc:
+        print(f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
+              file=sys.stderr)
+
+    # Resolve scope from media index
+    media_df = _list_media_pairs(self, groups=groups, sequences=sequences)
+    if media_df.empty:
+        print(f"[extract_frames] No media entries match the given scope.", file=sys.stderr)
+        return run_id
+
+    idx_path = _frames_index_path(self, method_norm)
+    _ensure_frames_index(idx_path)
+    started = _now_iso()
+
+    max_workers = int(parallel_workers) if parallel_workers and int(parallel_workers) > 1 else 1
+    p_mode = (parallel_mode or "thread").lower()
+    if p_mode not in {"thread", "process"}:
+        p_mode = "thread"
+
+    def _extract_one(row):
+        group = str(row["group"])
+        sequence = str(row["sequence"])
+        group_safe = str(row["group_safe"]) if row.get("group_safe") else to_safe_name(group)
+        sequence_safe = str(row["sequence_safe"]) if row.get("sequence_safe") else to_safe_name(sequence)
+        video_path = str(row["abs_path"])
+
+        # When group/sequence are empty (no tracks indexed yet), use video stem
+        if not group_safe and not sequence_safe:
+            video_stem = Path(video_path).stem
+            sequence = video_stem
+            sequence_safe = to_safe_name(video_stem)
+
+        seq_label = f"{group_safe}__{sequence_safe}" if group_safe else sequence_safe
+        seq_dir = run_root / seq_label
+
+        if seq_dir.exists() and not overwrite:
+            print(f"[extract_frames] skip {seq_label} (exists, overwrite=False)")
+            return None
+
+        if overwrite and seq_dir.exists():
+            import shutil
+            shutil.rmtree(seq_dir)
+
+        try:
+            result = _extract_frames(
+                video_path=video_path,
+                n_frames=int(n_frames),
+                method=method_norm,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                candidate_step=int(candidate_step),
+                crop=crop,
+                kmeans_resize=kmeans_resize,
+                kmeans_grayscale=kmeans_grayscale,
+                kmeans_max_candidates=kmeans_max_candidates,
+                kmeans_batch_size=int(kmeans_batch_size),
+                kmeans_max_iter=int(kmeans_max_iter),
+                kmeans_n_init=kmeans_n_init,
+                random_state=int(random_state),
+                run_id=run_id,
+                output_dir=seq_dir,
+            )
+            # Re-write run_info.json with relative output_dir for portability
+            _manifest_path = seq_dir / "run_info.json"
+            if _manifest_path.exists():
+                _mdata = json.loads(_manifest_path.read_text())
+                _mdata["output_dir"] = self._relative_to_root(seq_dir)
+                _manifest_path.write_text(json.dumps(_mdata, indent=2))
+            return {
+                "method": method_norm,
+                "run_id": run_id,
+                "group": group,
+                "sequence": sequence,
+                "group_safe": group_safe,
+                "sequence_safe": sequence_safe,
+                "abs_path": self._relative_to_root(seq_dir),
+                "n_frames_extracted": result.n_extracted,
+                "n_frames_requested": result.n_requested,
+                "video_abs_path": video_path,
+                "params_hash": params_hash,
+                "started_at": started,
+                "finished_at": _now_iso(),
+            }
+        except Exception as exc:
+            print(f"[extract_frames] ERROR processing {seq_label}: {exc}", file=sys.stderr)
+            return None
+
+    # Execute extraction
+    index_rows = []
+    rows_list = media_df.to_dict("records")
+
+    if max_workers > 1:
+        PoolCls = ProcessPoolExecutor if p_mode == "process" else ThreadPoolExecutor
+        with PoolCls(max_workers=max_workers) as pool:
+            futures = {pool.submit(_extract_one, row): row for row in rows_list}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    index_rows.append(result)
+    else:
+        for row in rows_list:
+            result = _extract_one(row)
+            if result is not None:
+                index_rows.append(result)
+
+    # Update index
+    if index_rows:
+        _append_frames_index(idx_path, index_rows)
+
+    print(f"[extract_frames:{method_norm}] completed run_id={run_id} "
+          f"({len(index_rows)}/{len(rows_list)} sequences) -> {run_root}")
+    return run_id
+
+def list_frame_runs(self, method: Optional[str] = None) -> pd.DataFrame:
+    """
+    List all frame extraction runs tracked in the frames index.
+
+    Parameters
+    ----------
+    method : str, optional
+        Filter to a specific method ("uniform" or "kmeans").
+        If None, returns runs across all methods.
+
+    Returns
+    -------
+    pd.DataFrame
+        Index rows for matching extraction runs.
+    """
+    frames_root = self.get_root("frames")
+    if not frames_root.exists():
+        return pd.DataFrame(columns=list(_FRAMES_INDEX_COLUMNS.keys()))
+
+    methods = [method] if method else [d.name for d in frames_root.iterdir() if d.is_dir()]
+    dfs = []
+    for m in methods:
+        idx_path = frames_root / m / "index.csv"
+        if idx_path.exists():
+            dfs.append(pd.read_csv(idx_path))
+    if not dfs:
+        return pd.DataFrame(columns=list(_FRAMES_INDEX_COLUMNS.keys()))
+    return pd.concat(dfs, ignore_index=True)
+
+
+def get_frame_paths(
+    self,
+    method: str,
+    run_id: Optional[str] = None,
+    group: Optional[str] = None,
+    sequence: Optional[str] = None,
+) -> list:
+    """
+    Return paths to extracted frame PNGs for a given scope.
+
+    Parameters
+    ----------
+    method : str
+        Extraction method ("uniform" or "kmeans").
+    run_id : str, optional
+        Specific run_id. If None, uses the latest run.
+    group, sequence : str, optional
+        Filter to a specific (group, sequence).
+
+    Returns
+    -------
+    list[Path]
+        Sorted list of PNG file paths.
+    """
+    frames_root = self.get_root("frames")
+    method_root = frames_root / method
+    if not method_root.exists():
+        return []
+
+    # Resolve run_id
+    if run_id is None:
+        idx_path = method_root / "index.csv"
+        if not idx_path.exists():
+            return []
+        df = pd.read_csv(idx_path)
+        if df.empty:
+            return []
+        run_id = df["run_id"].iloc[-1]
+
+    run_root = method_root / run_id
+    if not run_root.exists():
+        return []
+
+    # Collect PNG paths
+    paths = []
+    if group is not None or sequence is not None:
+        g_safe = to_safe_name(group) if group else ""
+        s_safe = to_safe_name(sequence) if sequence else ""
+        seq_label = f"{g_safe}__{s_safe}" if g_safe else s_safe
+        seq_dir = run_root / seq_label
+        if seq_dir.exists():
+            paths = sorted(seq_dir.glob("*.png"))
+    else:
+        for seq_dir in sorted(run_root.iterdir()):
+            if seq_dir.is_dir():
+                paths.extend(sorted(seq_dir.glob("*.png")))
+    return paths
+
+
+def get_frame_manifests(
+    self,
+    method: str,
+    run_id: Optional[str] = None,
+    group: Optional[str] = None,
+    sequence: Optional[str] = None,
+) -> list:
+    """
+    Load run_info.json manifests from extracted frame directories.
+
+    Parameters
+    ----------
+    method : str
+        Extraction method ("uniform" or "kmeans").
+    run_id : str, optional
+        Specific run_id. If None, uses the latest run.
+    group, sequence : str, optional
+        Filter to a specific (group, sequence).
+
+    Returns
+    -------
+    list[dict]
+        List of manifest dicts loaded from run_info.json files,
+        one per sequence directory. Each dict contains video_path,
+        files, video_meta, selected_frame_indices, etc.
+    """
+    frames_root = self.get_root("frames")
+    method_root = frames_root / method
+    if not method_root.exists():
+        return []
+
+    # Resolve run_id
+    if run_id is None:
+        idx_path = method_root / "index.csv"
+        if not idx_path.exists():
+            return []
+        df = pd.read_csv(idx_path)
+        if df.empty:
+            return []
+        run_id = df["run_id"].iloc[-1]
+
+    run_root = method_root / run_id
+    if not run_root.exists():
+        return []
+
+    # Collect sequence directories
+    if group is not None or sequence is not None:
+        g_safe = to_safe_name(group) if group else ""
+        s_safe = to_safe_name(sequence) if sequence else ""
+        seq_label = f"{g_safe}__{s_safe}" if g_safe else s_safe
+        seq_dirs = [run_root / seq_label]
+    else:
+        seq_dirs = sorted(d for d in run_root.iterdir() if d.is_dir())
+
+    manifests = []
+    for seq_dir in seq_dirs:
+        manifest_path = seq_dir / "run_info.json"
+        if manifest_path.exists():
+            data = json.loads(manifest_path.read_text())
+            # Resolve relative paths so callers always see absolute paths
+            manifest_dir = manifest_path.parent
+            for f in data.get("files", []):
+                if "path" in f:
+                    fp = Path(f["path"])
+                    if not fp.is_absolute():
+                        f["path"] = str((manifest_dir / fp).resolve())
+            if "output_dir" in data:
+                od = Path(data["output_dir"])
+                if not od.is_absolute():
+                    data["output_dir"] = str(self.resolve_path(od))
+            if "video_path" in data:
+                vp = Path(data["video_path"])
+                if not vp.is_absolute():
+                    data["video_path"] = str(self.resolve_path(vp))
+            manifests.append(data)
+    return manifests
+
+
+Dataset.extract_frames = extract_frames
+Dataset.list_frame_runs = list_frame_runs
+Dataset.get_frame_paths = get_frame_paths
+Dataset.get_frame_manifests = get_frame_manifests
 
 
 def train_model(self,

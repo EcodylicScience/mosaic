@@ -63,8 +63,8 @@ def _crop_to_dict(crop_rect: Optional[tuple[int, int, int, int]]) -> Optional[di
 
 def extract_frames(
     video_path: Path | str,
-    output_root: Path | str,
-    n_frames: int,
+    output_root: Path | str | None = None,
+    n_frames: int = 50,
     method: str = "uniform",
     start_frame: Optional[int] = None,
     end_frame: Optional[int] = None,
@@ -78,6 +78,7 @@ def extract_frames(
     kmeans_n_init: int | str = "auto",
     random_state: int = 42,
     run_id: Optional[str] = None,
+    output_dir: Optional[Path | str] = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a single video.
@@ -108,6 +109,11 @@ def extract_frames(
         Random seed for k-means and tie-breaking.
     run_id
         Optional explicit run id. If omitted, generated automatically.
+    output_dir
+        Optional explicit output directory. When provided, frames are written
+        directly into this directory instead of the auto-computed path under
+        output_root. Useful for Dataset integration where the caller controls
+        the directory layout. If set, output_root is ignored.
     """
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:
@@ -164,8 +170,14 @@ def extract_frames(
         }
 
     run = run_id or _make_run_id()
-    out_dir = Path(output_root).expanduser().resolve() / meta.path.stem / method_norm / run
-    out_dir.mkdir(parents=True, exist_ok=False)
+    if output_dir is not None:
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        if output_root is None:
+            raise ValueError("Either output_root or output_dir must be provided.")
+        out_dir = Path(output_root).expanduser().resolve() / meta.path.stem / method_norm / run
+        out_dir.mkdir(parents=True, exist_ok=False)
 
     file_records = save_frames_as_png(
         video_path=meta.path,

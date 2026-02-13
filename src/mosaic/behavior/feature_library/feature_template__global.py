@@ -28,6 +28,7 @@ import joblib
 from mosaic.core.dataset import (
     register_feature,
     _resolve_inputs,
+    _dataset_base_dir,
 )
 from .helpers import (
     StreamingFeatureHelper,
@@ -221,5 +222,6 @@ class MyGlobalFeature:
         df_out.to_parquet(out_path, index=False)
 
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)))
+            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
+                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
         )

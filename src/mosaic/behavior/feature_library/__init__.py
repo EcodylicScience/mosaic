@@ -127,6 +127,10 @@ from . import model_predict
 from . import ffgroups
 from . import ffgroups_metrics
 
+# External features (keypoint-moseq via subprocess)
+from . import kpms_fit
+from . import kpms_apply
+
 # Global fit-transform features
 from . import global_tsne
 from . import global_kmeans
@@ -167,4 +171,7 @@ __all__ = [
     "global_kmeans",
     "global_ward",
     "ward_assign",
+    # External features (keypoint-moseq)
+    "kpms_fit",
+    "kpms_apply",
 ]

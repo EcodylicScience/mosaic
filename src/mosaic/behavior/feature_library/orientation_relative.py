@@ -73,9 +73,7 @@ class OrientationRelativeFeature:
             if not abs_path:
                 continue
             try:
-                p = Path(abs_path)
-                if hasattr(self._ds, "remap_path"):
-                    p = self._ds.remap_path(p)
+                p = self._ds.resolve_path(abs_path)
                 df_scale = pd.read_parquet(p)
                 if "scale" not in df_scale.columns:
                     continue

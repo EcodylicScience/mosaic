@@ -261,7 +261,7 @@ class TemporalStackingFeature:
             abs_path = row.get("abs_path")
             if not seq_safe or not isinstance(abs_path, str) or not abs_path:
                 continue
-            remapped = self._ds.remap_path(abs_path) if hasattr(self._ds, "remap_path") else Path(abs_path)
+            remapped = self._ds.resolve_path(abs_path)
             mapping[seq_safe] = remapped
         return mapping
 

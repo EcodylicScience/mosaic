@@ -139,9 +139,7 @@ def load_tracks_and_labels(
             )
 
         abs_path_raw = df_idx.iloc[0]["abs_path"]
-        path = Path(abs_path_raw)
-        if hasattr(ds, "remap_path"):
-            path = ds.remap_path(path)
+        path = ds.resolve_path(abs_path_raw)
         df_feat = pd.read_parquet(path)
         raw[feature_name] = df_feat
 
@@ -225,9 +223,7 @@ def load_ground_truth_labels(
             f"No GT labels for kind='{label_kind}' group='{group}' sequence='{sequence}'."
         )
 
-    path = Path(hits.iloc[0]["abs_path"])
-    if hasattr(ds, "remap_path"):
-        path = ds.remap_path(path)
+    path = ds.resolve_path(hits.iloc[0]["abs_path"])
     payload = np.load(path, allow_pickle=True)
     frames = payload["frames"]
     label_ids = payload["labels"]

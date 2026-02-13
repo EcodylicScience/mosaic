@@ -31,6 +31,7 @@ from . import egocentric_crop
 
 # Import visualization features (registered via @register_feature)
 from . import viz_global_colored
+from . import viz_timeline
 
 # Re-export common functions for convenience
 from .data_loading import (
@@ -61,6 +62,9 @@ from .egocentric_crop import (
 from .viz_global_colored import (
     VizGlobalColored,
 )
+from .viz_timeline import (
+    TimelinePlot,
+)
 
 __all__ = [
     # Modules
@@ -72,6 +76,7 @@ __all__ = [
     "visual_spec",
     "egocentric_crop",
     "viz_global_colored",
+    "viz_timeline",
     # Functions
     "load_tracks_and_labels",
     "load_ground_truth_labels",
@@ -88,4 +93,5 @@ __all__ = [
     # Classes
     "EgocentricCrop",
     "VizGlobalColored",
+    "TimelinePlot",
 ]

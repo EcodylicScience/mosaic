@@ -109,10 +109,17 @@ def _extract_keypoints_for_frame(
         return None
 
     kps_xyv = []
+    n_visible = 0
     for i in range(n_kps):
         nx, ny = normalize_coords(kps_xy[i, 0], kps_xy[i, 1], img_w, img_h)
         vis = 2 if kps_conf[i] >= confidence_threshold else 0
+        n_visible += vis > 0
         kps_xyv.append((nx, ny, vis))
+
+    # Skip frames where no keypoints pass the confidence threshold —
+    # the bbox is unreliable when computed from low-confidence coordinates.
+    if n_visible == 0:
+        return None
 
     return format_yolo_pose_line(class_id, bbox, kps_xyv)
 

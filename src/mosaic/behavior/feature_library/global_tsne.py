@@ -24,7 +24,7 @@ from .helpers import (
     _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
     _get_feature_run_root, _build_index_row,
 )
-from mosaic.core.dataset import _resolve_inputs
+from mosaic.core.dataset import _resolve_inputs, _dataset_base_dir
 from mosaic.core.helpers import to_safe_name
 
 
@@ -383,7 +383,8 @@ class GlobalTSNE:
             if not (str(r.get("group", "")) == group and str(r.get("sequence", "")) == sequence)
         ]
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, n_rows)
+            _build_index_row(safe_seq, group, sequence, out_path, n_rows,
+                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
         )
 
     def _persist_mapped_coords(self, safe_seq: str, Y: np.ndarray) -> None:
@@ -411,7 +412,8 @@ class GlobalTSNE:
             group, sequence = _resolve_sequence_identity(
                 safe_seq, self._pair_map, self._get_sequence_lookup()
             )
-            rows.append(_build_index_row(safe_seq, group, sequence, fp))
+            rows.append(_build_index_row(safe_seq, group, sequence, fp,
+                                         dataset_root=_dataset_base_dir(self._ds) if self._ds else None))
         return rows
 
     def _map_sequences_streaming(

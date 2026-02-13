@@ -17,7 +17,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from scipy.cluster.hierarchy import fcluster
 
-from mosaic.core.dataset import register_feature, _resolve_inputs
+from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
 from .helpers import (
     StreamingFeatureHelper,
     _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
@@ -188,7 +188,8 @@ class WardAssignClustering:
         })
         df_out.to_parquet(out_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)))
+            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
+                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
         )
         self._processed_sequences.add(safe_seq)
 
@@ -314,7 +315,7 @@ class WardAssignClustering:
             "sequence": marker_seq,
             "group_safe": "",
             "sequence_safe": safe_marker_seq,
-            "abs_path": str(marker_path.resolve()),
+            "abs_path": self._ds._relative_to_root(marker_path) if self._ds else str(marker_path.resolve()),
             "n_rows": int(len(marker_df)),
         })
 

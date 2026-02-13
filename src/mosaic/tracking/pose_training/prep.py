@@ -2,7 +2,7 @@
 
 Adapted from train-custom-YOLO-Colab/utils/prep.py.  Provides dataset
 filtering, label simplification, train/val/test splitting, and data.yaml
-generation — with pose-specific extensions (kpt_shape).
+generation — with extensions for pose (kpt_shape) and POLO (radii).
 
 Tiling and Colab-specific UI code has been removed.
 """
@@ -616,6 +616,70 @@ def make_data_yaml(
         data["test"] = "test/images"
     if kpt_shape is not None:
         data["kpt_shape"] = kpt_shape
+
+    out_path = Path(dataset_root) / yaml_name
+    with out_path.open("w") as stream:
+        yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
+    return str(out_path)
+
+
+def make_polo_data_yaml(
+    dataset_root: str | Path,
+    class_names: Mapping[str, int] | list[str],
+    radii: Mapping[int, float],
+    *,
+    yaml_name: str = "data.yaml",
+    has_test: bool | None = None,
+) -> str:
+    """Write a POLO-style data.yaml with radii instead of kpt_shape.
+
+    Parameters
+    ----------
+    dataset_root : path
+        Root directory of the POLO dataset.
+    class_names : dict or list
+        If dict: mapping from class name -> contiguous integer ID.
+        If list: names in order (index = class ID).
+    radii : dict
+        Mapping from class_id (int) -> radius (float) in pixels.
+    yaml_name : str
+        Output filename.
+    has_test : bool, optional
+        Whether a test split exists.  Auto-detected if None.
+
+    Returns
+    -------
+    str
+        Path to the written YAML file.
+    """
+    # Build ordered name list
+    if isinstance(class_names, dict):
+        max_id = max(class_names.values())
+        names_list: list[str | None] = [None] * (max_id + 1)
+        for name, idx in class_names.items():
+            names_list[idx] = name
+        if any(n is None for n in names_list):
+            raise ValueError("class_names must cover a contiguous 0..N range.")
+    else:
+        names_list = list(class_names)  # type: ignore[assignment]
+
+    if has_test is None:
+        has_test = (Path(dataset_root) / "test" / "images").exists()
+
+    # Validate radii coverage
+    for i in range(len(names_list)):
+        if i not in radii:
+            raise ValueError(f"Missing radius for class {i} ('{names_list[i]}')")
+
+    data: dict = {
+        "path": os.path.abspath(dataset_root),
+        "train": "train/images",
+        "val": "valid/images",
+        "names": {i: name for i, name in enumerate(names_list)},
+        "radii": {int(k): float(v) for k, v in radii.items()},
+    }
+    if has_test:
+        data["test"] = "test/images"
 
     out_path = Path(dataset_root) / yaml_name
     with out_path.open("w") as stream:

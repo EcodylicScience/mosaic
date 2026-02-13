@@ -15,7 +15,7 @@ import joblib
 
 from sklearn.cluster import KMeans
 
-from mosaic.core.dataset import register_feature, _resolve_inputs
+from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
 from .helpers import (
     StreamingFeatureHelper,
     _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
@@ -472,7 +472,8 @@ class GlobalKMeansClustering:
             })
             df_out.to_parquet(out_path, index=False)
             self._additional_index_rows.append(
-                _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)))
+                _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
+                                 dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
             )
             fname = f"global_kmeans_labels_seq={safe_seq}.npz"
             np.savez_compressed(
@@ -490,7 +491,8 @@ class GlobalKMeansClustering:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_marker_seq, "", marker_seq, marker_path, int(len(marker_df)))
+            _build_index_row(safe_marker_seq, "", marker_seq, marker_path, int(len(marker_df)),
+                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
         )
 
     def load_model(self, path: Path) -> None:
