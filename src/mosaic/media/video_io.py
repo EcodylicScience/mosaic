@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import subprocess
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -316,4 +318,361 @@ def save_frames_as_png(
     record_map = {r["frame_index"]: r for r in records}
     records = [record_map[int(i)] for i in frame_indices if int(i) in record_map]
 
+    return records
+
+
+# ─── Multi-video support ───
+
+
+@dataclass(frozen=True)
+class VideoSegment:
+    """Metadata for one video file within a multi-video sequence."""
+
+    path: Path
+    frame_count: int
+    fps: float
+    width: int
+    height: int
+    start_frame: int  # global frame index where this segment starts
+    seekable: bool  # True if container-based (not raw H.264)
+
+
+class MultiVideoReader:
+    """Unified read interface across N ordered video files.
+
+    Provides a single virtual frame index space across N video files.
+    Video 0 has frames [0, N0), video 1 has frames [N0, N0+N1), etc.
+
+    For single-video sequences, accepts a single Path and works as a
+    thin wrapper with minimal overhead.
+
+    Parameters
+    ----------
+    video_paths : list[Path] | Path | str
+        One or more video file paths, in playback order.
+    """
+
+    def __init__(self, video_paths: list[Path] | Path | str):
+        # Set _closed early so __del__ is safe if __init__ fails partway
+        self._closed: bool = False
+        self._current_cap: Optional[cv2.VideoCapture] = None
+
+        if isinstance(video_paths, (str, Path)):
+            video_paths = [Path(video_paths)]
+        else:
+            video_paths = [Path(p) for p in video_paths]
+        if not video_paths:
+            raise ValueError("At least one video path is required.")
+
+        self._segments: list[VideoSegment] = []
+        self._seg_starts: list[int] = []  # for bisect lookup
+        self._build_segments(video_paths)
+
+        self._current_seg_idx: int = 0
+        self._current_local_frame: int = 0
+        self._global_frame: int = 0
+
+    def _build_segments(self, paths: list[Path]) -> None:
+        cumulative = 0
+        for p in paths:
+            meta = get_video_metadata(p)
+            # Check seekability without keeping the capture open
+            cap = cv2.VideoCapture(str(meta.path))
+            seekable = _has_container(cap) if cap.isOpened() else False
+            cap.release()
+            seg = VideoSegment(
+                path=meta.path,
+                frame_count=meta.frame_count,
+                fps=meta.fps,
+                width=meta.width,
+                height=meta.height,
+                start_frame=cumulative,
+                seekable=seekable,
+            )
+            self._segments.append(seg)
+            self._seg_starts.append(cumulative)
+            cumulative += meta.frame_count
+
+        # Validate resolution consistency
+        dims = {(s.width, s.height) for s in self._segments}
+        if len(dims) > 1:
+            raise ValueError(
+                f"Resolution mismatch across videos in sequence: {dims}. "
+                "All videos must have the same resolution."
+            )
+
+        # Warn on fps mismatch
+        fps_vals = {round(s.fps, 4) for s in self._segments}
+        if len(fps_vals) > 1:
+            warnings.warn(
+                f"FPS mismatch across videos in sequence: {fps_vals}. "
+                f"Using first video's fps ({self._segments[0].fps})."
+            )
+
+    # ── Properties ──
+
+    @property
+    def total_frames(self) -> int:
+        return sum(s.frame_count for s in self._segments)
+
+    @property
+    def fps(self) -> float:
+        return self._segments[0].fps if self._segments else 0.0
+
+    @property
+    def width(self) -> int:
+        return self._segments[0].width if self._segments else 0
+
+    @property
+    def height(self) -> int:
+        return self._segments[0].height if self._segments else 0
+
+    @property
+    def video_count(self) -> int:
+        return len(self._segments)
+
+    @property
+    def segments(self) -> list[VideoSegment]:
+        return list(self._segments)
+
+    @property
+    def frame_position(self) -> int:
+        return self._global_frame
+
+    # ── Frame-to-segment mapping ──
+
+    def segment_for_frame(self, global_frame: int) -> tuple[int, int]:
+        """Return (segment_index, local_frame) for a global frame index."""
+        if global_frame < 0 or global_frame >= self.total_frames:
+            raise IndexError(
+                f"Global frame {global_frame} out of range [0, {self.total_frames})"
+            )
+        # bisect_right gives the insertion point; subtract 1 for the segment
+        idx = bisect.bisect_right(self._seg_starts, global_frame) - 1
+        local = global_frame - self._seg_starts[idx]
+        return idx, local
+
+    # ── Open / close helpers ──
+
+    def _open_segment(self, seg_idx: int) -> None:
+        if self._current_cap is not None:
+            self._current_cap.release()
+        seg = self._segments[seg_idx]
+        self._current_cap = cv2.VideoCapture(str(seg.path))
+        if not self._current_cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {seg.path}")
+        self._current_seg_idx = seg_idx
+        self._current_local_frame = 0
+
+    # ── Seeking ──
+
+    def seek(self, global_frame: int) -> None:
+        """Seek to a global frame position.
+
+        For seekable videos, uses CAP_PROP_POS_FRAMES. For non-seekable
+        streams (raw H.264), reopens the segment and skips sequentially.
+        """
+        seg_idx, local_frame = self.segment_for_frame(global_frame)
+        seg = self._segments[seg_idx]
+
+        need_reopen = (
+            self._current_cap is None
+            or seg_idx != self._current_seg_idx
+        )
+
+        if need_reopen:
+            self._open_segment(seg_idx)
+
+        if local_frame == 0:
+            # Already at the start of the segment after open
+            pass
+        elif seg.seekable:
+            self._current_cap.set(cv2.CAP_PROP_POS_FRAMES, local_frame)
+            self._current_local_frame = local_frame
+        else:
+            # Non-seekable: may need to reopen and skip forward
+            if local_frame < self._current_local_frame:
+                self._open_segment(seg_idx)
+            while self._current_local_frame < local_frame:
+                ok, _ = self._current_cap.read()
+                if not ok:
+                    break
+                self._current_local_frame += 1
+
+        self._global_frame = global_frame
+
+    # ── Reading ──
+
+    def read(self) -> tuple[bool, Optional[np.ndarray]]:
+        """Read the next frame, automatically transitioning between videos.
+
+        Returns (success, frame) like cv2.VideoCapture.read().
+        """
+        if self._closed:
+            return False, None
+        if self._global_frame >= self.total_frames:
+            return False, None
+
+        if self._current_cap is None:
+            self._open_segment(self._current_seg_idx)
+
+        ok, frame = self._current_cap.read()
+        if not ok:
+            # Current segment exhausted — try next
+            next_idx = self._current_seg_idx + 1
+            if next_idx >= len(self._segments):
+                return False, None
+            self._open_segment(next_idx)
+            ok, frame = self._current_cap.read()
+            if not ok:
+                return False, None
+
+        self._global_frame += 1
+        self._current_local_frame += 1
+        return True, frame
+
+    # ── Cleanup ──
+
+    def close(self) -> None:
+        if not self._closed:
+            if self._current_cap is not None:
+                self._current_cap.release()
+                self._current_cap = None
+            self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def __len__(self) -> int:
+        return self.total_frames
+
+
+# ─── Multi-video extraction helpers ───
+
+
+def extract_candidate_features_multi(
+    reader: MultiVideoReader,
+    start_frame: int,
+    end_frame: int,
+    candidate_step: int,
+    resize: tuple[int, int],
+    grayscale: bool,
+    crop_rect: Optional[tuple[int, int, int, int]],
+    max_candidates: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract candidate features across a MultiVideoReader.
+
+    Same as ``extract_candidate_features`` but reads from multiple videos
+    via the unified reader. Frame indices are global (virtual).
+    """
+    if candidate_step <= 0:
+        raise ValueError("candidate_step must be > 0")
+    if resize[0] <= 0 or resize[1] <= 0:
+        raise ValueError("resize must be (width>0, height>0)")
+
+    indices: list[int] = []
+    features: list[np.ndarray] = []
+    max_n = None if max_candidates is None else max(1, int(max_candidates))
+
+    reader.seek(start_frame)
+    frame_idx = start_frame
+
+    while frame_idx <= end_frame:
+        ok, frame = reader.read()
+        if not ok:
+            break
+        if (frame_idx - start_frame) % candidate_step == 0:
+            work = apply_crop(frame, crop_rect)
+            work = cv2.resize(work, resize, interpolation=cv2.INTER_AREA)
+            if grayscale:
+                work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+            vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
+            indices.append(frame_idx)
+            features.append(vec)
+            if max_n is not None and len(indices) >= max_n:
+                break
+        frame_idx += 1
+
+    if not indices:
+        raise RuntimeError("No candidate frames available in the requested range.")
+
+    return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(np.float32, copy=False)
+
+
+def save_frames_as_png_multi(
+    reader: MultiVideoReader,
+    frame_indices: np.ndarray,
+    output_dir: Path | str,
+    crop_rect: Optional[tuple[int, int, int, int]],
+) -> list[dict[str, Any]]:
+    """Save selected frames from a MultiVideoReader as PNG files.
+
+    For seekable sequences, seeks to each frame. For non-seekable,
+    reads sequentially and captures target frames.
+    """
+    out_dir = Path(output_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    target_indices = sorted(set(int(i) for i in frame_indices))
+    records: list[dict[str, Any]] = []
+
+    # Check if all segments are seekable
+    all_seekable = all(s.seekable for s in reader.segments)
+
+    if all_seekable:
+        for frame_idx in target_indices:
+            reader.seek(frame_idx)
+            ok, frame = reader.read()
+            if not ok:
+                raise RuntimeError(
+                    f"Failed to decode global frame {frame_idx}"
+                )
+            frame = apply_crop(frame, crop_rect)
+            out_name = f"frame_{frame_idx:06d}.png"
+            out_path = out_dir / out_name
+            ok_write = cv2.imwrite(str(out_path), frame)
+            if not ok_write:
+                raise RuntimeError(f"Failed to write PNG frame: {out_path}")
+            h, w = frame.shape[:2]
+            records.append({
+                "frame_index": frame_idx,
+                "path": out_name,
+                "width": int(w),
+                "height": int(h),
+            })
+    else:
+        # Sequential read through all segments
+        target_set = set(target_indices)
+        max_target = target_indices[-1]
+        reader.seek(0)
+        frame_idx = 0
+        while frame_idx <= max_target:
+            ok, frame = reader.read()
+            if not ok:
+                break
+            if frame_idx in target_set:
+                frame = apply_crop(frame, crop_rect)
+                out_name = f"frame_{frame_idx:06d}.png"
+                out_path = out_dir / out_name
+                ok_write = cv2.imwrite(str(out_path), frame)
+                if not ok_write:
+                    raise RuntimeError(f"Failed to write PNG frame: {out_path}")
+                h, w = frame.shape[:2]
+                records.append({
+                    "frame_index": frame_idx,
+                    "path": out_name,
+                    "width": int(w),
+                    "height": int(h),
+                })
+            frame_idx += 1
+
+    # Restore original order from frame_indices
+    record_map = {r["frame_index"]: r for r in records}
+    records = [record_map[int(i)] for i in frame_indices if int(i) in record_map]
     return records

@@ -32,6 +32,7 @@ wavelets = ["PyWavelets>=1.4"]
 pose = ["ultralytics>=8.0", "albumentations>=1.3"]
 polo = ["ultralytics @ git+https://github.com/mooch443/POLO.git", "albumentations>=1.3"]
 localizer = ["torch>=2.0", "h5py>=3.0"]
+gpu = ["faiss-cpu>=1.7"]  # use faiss-gpu on Linux+CUDA for GPU-accelerated kNN in global-tsne
 remote = [
     "requests>=2.31",
     "websocket-client>=1.8",

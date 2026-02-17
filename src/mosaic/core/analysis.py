@@ -324,9 +324,10 @@ def _load_feature_sequence_index(
         safe_seq = _safe_sequence_name(row)
         if not safe_seq:
             continue
+        resolved = ds.resolve_path(abs_raw)
         mapping[safe_seq] = SequenceBundle(
             sequence_safe=safe_seq,
-            path=Path(abs_raw),
+            path=resolved,
             sequence=str(row.get("sequence", "") or ""),
             group=str(row.get("group", "") or ""),
         )
@@ -348,9 +349,10 @@ def _load_label_sequence_index(ds: Dataset, kind: str) -> Dict[str, SequenceBund
         safe_seq = _safe_sequence_name(row)
         if not safe_seq:
             continue
+        resolved = ds.resolve_path(abs_raw)
         mapping[safe_seq] = SequenceBundle(
             sequence_safe=safe_seq,
-            path=Path(abs_raw),
+            path=resolved,
             sequence=str(row.get("sequence", "") or ""),
             group=str(row.get("group", "") or ""),
         )

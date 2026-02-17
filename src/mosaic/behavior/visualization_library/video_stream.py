@@ -6,10 +6,10 @@ This module contains the video streaming infrastructure:
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Tuple, Optional, Iterable, Any, Dict
+from typing import Tuple, Optional, Iterable, Any, Dict, Union
 import cv2
 
-from .helpers import _open_video_capture, _scaled_size
+from .helpers import _scaled_size
 from .overlay import draw_frame
 
 _ALLOWED_DRAW_OPTIONS = {"show_labels", "point_radius", "bbox_thickness"}
@@ -18,14 +18,14 @@ _ALLOWED_DRAW_OPTIONS = {"show_labels", "point_radius", "bbox_thickness"}
 class _FrameStream:
     """Iterator that yields (frame_index, frame_bgr_with_overlay) tuples."""
 
-    def __init__(self, cap, fps, base_size, scaled_size, per_frame, id_colors,
+    def __init__(self, reader, fps, base_size, scaled_size, per_frame, id_colors,
                  start, end, color_feature=None, color_mode=None,
                  show_individual_bboxes: bool = True,
                  pair_box_feature: Optional[str] = None,
                  pair_box_behaviors: Optional[Iterable[Any]] = None,
                  hide_individual_bboxes_for_pair: bool = False,
                  draw_options: Optional[Dict[str, Any]] = None):
-        self._cap = cap
+        self._reader = reader
         self._fps = fps or 30.0
         self._base_size = base_size
         self._scaled_size = scaled_size
@@ -61,16 +61,15 @@ class _FrameStream:
     def __next__(self):
         if self._released:
             raise StopIteration
-        cap = self._cap
         if not self._started:
             if self._start > 0:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, self._start)
-            self._frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                self._reader.seek(self._start)
+            self._frame_idx = self._start
             self._started = True
         if self._end is not None and self._frame_idx > self._end:
             self.close()
             raise StopIteration
-        ret, frame = cap.read()
+        ret, frame = self._reader.read()
         if not ret:
             self.close()
             raise StopIteration
@@ -93,14 +92,14 @@ class _FrameStream:
 
     def close(self):
         if not self._released:
-            self._cap.release()
+            self._reader.close()
             self._released = True
 
     def __del__(self):
         self.close()
 
 
-def render_stream(video_path: Path | str,
+def render_stream(video_paths: Union[list[Path], Path, str],
                   overlay_data: dict,
                   start: int = 0,
                   end: Optional[int] = None,
@@ -115,8 +114,9 @@ def render_stream(video_path: Path | str,
 
     Parameters
     ----------
-    video_path : Path or str
-        Path to the video file
+    video_paths : list[Path], Path, or str
+        Path(s) to the video file(s). For multi-video sequences, pass an
+        ordered list of Paths. A single Path/str is also accepted.
     overlay_data : dict
         Output from prepare_overlay()
     start : int
@@ -141,7 +141,11 @@ def render_stream(video_path: Path | str,
     _FrameStream
         Iterator yielding (frame_index, frame_bgr) tuples
     """
-    cap, fps, base_size = _open_video_capture(video_path)
+    from mosaic.media.video_io import MultiVideoReader
+
+    reader = MultiVideoReader(video_paths)
+    base_size = (reader.width, reader.height)
+    fps = reader.fps
     scaled_size = _scaled_size(base_size, downscale)
     per_frame = overlay_data.get("per_frame", {})
     id_colors = overlay_data.get("id_colors", {})
@@ -155,7 +159,7 @@ def render_stream(video_path: Path | str,
         merged_draw_options.update({k: v for k, v in draw_options.items() if k in _ALLOWED_DRAW_OPTIONS})
 
     return _FrameStream(
-        cap, fps, base_size, scaled_size, per_frame, id_colors,
+        reader, fps, base_size, scaled_size, per_frame, id_colors,
         start, end, color_feature=color_feature, color_mode=color_mode,
         show_individual_bboxes=show_individual_bboxes,
         pair_box_feature=pair_box_feature,

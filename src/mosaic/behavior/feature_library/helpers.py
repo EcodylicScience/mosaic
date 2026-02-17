@@ -289,7 +289,9 @@ def _build_path_sequence_map(ds, feature_name: str, run_id: str | None) -> dict[
         if not isinstance(abs_raw, str) or not abs_raw:
             continue
         try:
-            abs_path = Path(abs_raw).resolve()
+            # Use dataset's resolve_path to handle relative paths correctly
+            # (relative paths are stored relative to dataset root, not CWD)
+            abs_path = ds.resolve_path(abs_raw) if hasattr(ds, 'resolve_path') else Path(abs_raw).resolve()
         except Exception:
             abs_path = Path(abs_raw)
         seq_val = (
@@ -359,7 +361,7 @@ def _build_nn_lookup(
         return {}
 
     abs_path_str = match.iloc[0].get("abs_path", "")
-    nn_path = Path(abs_path_str)
+    nn_path = ds.resolve_path(abs_path_str) if hasattr(ds, 'resolve_path') else Path(abs_path_str)
     if not nn_path.exists():
         return {}
 

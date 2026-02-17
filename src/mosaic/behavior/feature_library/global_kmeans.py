@@ -13,9 +13,30 @@ import numpy as np
 import pandas as pd
 import joblib
 
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans as _SklearnKMeans
 
 from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
+
+
+def _get_kmeans_class(device: str):
+    """Return the appropriate KMeans class for the requested device.
+
+    When ``device="cuda"``, tries to import cuML's GPU-accelerated KMeans.
+    Falls back to scikit-learn KMeans (with a warning) if cuML is unavailable.
+    """
+    if device == "cuda":
+        try:
+            from cuml.cluster import KMeans as _CumlKMeans
+            return _CumlKMeans
+        except ImportError:
+            print(
+                "[global-kmeans] cuML not available; falling back to sklearn KMeans. "
+                "Install cuml for GPU acceleration.",
+                file=sys.stderr,
+            )
+    return _SklearnKMeans
+
+
 from .helpers import (
     StreamingFeatureHelper,
     _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
@@ -95,6 +116,7 @@ class GlobalKMeansClustering:
             "random_state": 42,
             "n_init": "auto",
             "max_iter": 300,
+            "device": "cpu",       # "cpu" or "cuda" (uses cuML KMeans when available)
             "artifact": {
                 "feature": None,
                 "run_id": None,
@@ -271,7 +293,8 @@ class GlobalKMeansClustering:
         if X.shape[0] < int(self.params["k"]):
             raise ValueError(f"Not enough samples to fit KMeans: n={X.shape[0]} < k={self.params['k']}")
 
-        self._kmeans = KMeans(
+        KMeansCls = _get_kmeans_class(self.params.get("device", "cpu"))
+        self._kmeans = KMeansCls(
             n_clusters=int(self.params["k"]),
             n_init=self.params.get("n_init", "auto"),
             random_state=self.params.get("random_state", 42),

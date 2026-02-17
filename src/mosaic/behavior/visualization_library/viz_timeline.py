@@ -207,7 +207,7 @@ class TimelinePlot:
             abs_raw = row.get("abs_path", "")
             if not isinstance(abs_raw, str) or not abs_raw:
                 continue
-            pth = Path(abs_raw)
+            pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
             seq_safe = str(row.get("sequence_safe") or row.get("sequence") or "").strip()

@@ -10,7 +10,7 @@ Requires optional dependency:
     Localizer:  pip install mosaic-behavior[localizer]
 """
 from . import converters
-from .converters import lightning_pose, coco_keypoints, coco_points, coco_localizer, cvat_points
+from .converters import lightning_pose, coco_keypoints, coco_points, coco_localizer, cvat_points, cvat_localizer
 from .converters.base import KeypointSchema, PointDetectionSchema, LocalizerSchema
 from .prep import prepare_yolo_dataset, make_data_yaml, make_polo_data_yaml, check_dataset
 from .train import (

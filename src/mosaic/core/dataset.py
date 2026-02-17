@@ -1102,12 +1102,34 @@ class Dataset:
                     search_dirs: Iterable[str | Path],
                     extensions: Tuple[str, ...] = (".mp4", ".avi"),
                     index_filename: str = "index.csv",
-                    recursive: bool = True) -> Path:
+                    recursive: bool = True,
+                    sequence_match_mode: str = "exact") -> Path:
         """
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
         - No symlinks created; absolute paths recorded.
-        - Columns: name, abs_path, size_bytes, mtime_iso, group, sequence, group_safe, sequence_safe (when resolvable)
+        - Columns: name, abs_path, size_bytes, mtime_iso, group, sequence, group_safe, sequence_safe, video_order
+
+        Parameters
+        ----------
+        search_dirs : Iterable[str | Path]
+            Directories to scan for media files.
+        extensions : tuple of str
+            File extensions to include.
+        index_filename : str
+            Output CSV filename within media root.
+        recursive : bool
+            Whether to search subdirectories.
+        sequence_match_mode : str
+            How to match video filenames to known sequences from tracks/index.csv.
+            - "exact" (default): video stem must exactly match a sequence name.
+            - "prefix": video stem is matched to the longest sequence name that
+              is a prefix of the stem. This handles split recordings where files
+              are named like ``session01_001.mp4``, ``session01_002.mp4`` mapping
+              to sequence ``session01``.
         """
+        if sequence_match_mode not in {"exact", "prefix"}:
+            raise ValueError(f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'")
+
         media_root = self.get_root("media")
         out_csv = media_root / index_filename
         exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
@@ -1122,17 +1144,27 @@ class Dataset:
             for p in it:
                 if not p.is_file():
                     continue
+                # Skip macOS resource forks (._* files)
+                if p.name.startswith("._"):
+                    continue
                 if p.suffix.lower() in exts:
                     try:
                         st = p.stat()
-                        meta = self._match_media_sequence(seq_key_map, p.stem)
+                        meta = self._match_media_sequence(
+                            seq_key_map, p.stem, mode=sequence_match_mode,
+                        )
                         probe = _probe_video_metadata(p)
+                        # When no track match, use video stem as sequence
+                        # so each video is its own sequence (not all lumped
+                        # together under an empty key).
+                        fallback_seq = p.stem
+                        fallback_safe = to_safe_name(p.stem)
                         rows.append({
                             "name": p.name,
                             "group": meta.get("group", "") if meta else "",
-                            "sequence": meta.get("sequence", "") if meta else "",
+                            "sequence": meta.get("sequence", fallback_seq) if meta else fallback_seq,
                             "group_safe": meta.get("group_safe", "") if meta else "",
-                            "sequence_safe": meta.get("sequence_safe", "") if meta else "",
+                            "sequence_safe": meta.get("sequence_safe", fallback_safe) if meta else fallback_safe,
                             "abs_path": str(p.resolve()),
                             "size_bytes": st.st_size,
                             "mtime_iso": _to_iso(st.st_mtime),
@@ -1149,28 +1181,48 @@ class Dataset:
         dedup = []
         for r in rows:
             k = r["abs_path"]
-            if k in seen: 
+            if k in seen:
                 continue
             seen.add(k)
             dedup.append(r)
 
+        # Assign video_order within each (group, sequence) by filename sort
+        df_out = pd.DataFrame(dedup) if dedup else pd.DataFrame(
+            columns=["name", "group", "sequence", "group_safe", "sequence_safe",
+                      "abs_path", "size_bytes", "mtime_iso", "width", "height",
+                      "fps", "codec"]
+        )
+        df_out["video_order"] = 0
+        if not df_out.empty:
+            for (g, s), sub in df_out.groupby(["group", "sequence"]):
+                if len(sub) > 1:
+                    sorted_idx = sub.sort_values("name").index
+                    for rank, idx in enumerate(sorted_idx):
+                        df_out.loc[idx, "video_order"] = rank
+
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = ["name", "group", "sequence", "group_safe", "sequence_safe",
-                      "abs_path", "size_bytes", "mtime_iso", "width", "height", "fps", "codec"]
-        with out_csv.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(dedup)
+                      "abs_path", "size_bytes", "mtime_iso", "width", "height",
+                      "fps", "codec", "video_order"]
+        df_out[fieldnames].to_csv(out_csv, index=False)
 
-        print(f"[index_media] Wrote {len(dedup)} entries -> {out_csv}")
+        multi_count = 0
+        if not df_out.empty:
+            seq_counts = df_out.groupby(["group", "sequence"]).size()
+            multi_count = int((seq_counts > 1).sum())
+        print(f"[index_media] Wrote {len(df_out)} entries -> {out_csv}"
+              + (f" ({multi_count} multi-video sequences)" if multi_count else ""))
         return out_csv
 
-    def resolve_media_path(self,
-                           group: str,
-                           sequence: str,
-                           index_filename: str = "index.csv") -> Path:
+    def resolve_media_paths(self,
+                            group: str,
+                            sequence: str,
+                            index_filename: str = "index.csv") -> list[Path]:
         """
-        Resolve the media file path for a given (group, sequence).
+        Resolve all media file paths for a given (group, sequence), ordered.
+
+        For multi-video sequences, returns paths sorted by ``video_order``.
+        For single-video sequences, returns a list with one element.
         """
         media_root = self.get_root("media")
         idx_path = media_root / index_filename
@@ -1180,25 +1232,27 @@ class Dataset:
         if df.empty:
             raise FileNotFoundError("Media index is empty.")
 
-        def _match(df_subset):
-            if df_subset.empty:
-                return None
-            if len(df_subset) > 1:
-                return None
-            row = df_subset.iloc[0]
-            return self.resolve_path(row["abs_path"])
+        # Ensure video_order column (backward compat with old indexes)
+        if "video_order" not in df.columns:
+            df["video_order"] = 0
 
-        # direct match
+        def _resolve_matches(df_match):
+            if df_match.empty:
+                return None
+            df_sorted = df_match.sort_values("video_order")
+            return [self.resolve_path(row["abs_path"]) for _, row in df_sorted.iterrows()]
+
+        # Direct match by (group, sequence)
         if "group" in df.columns and "sequence" in df.columns:
             df_match = df[
                 (df["group"].fillna("") == str(group)) &
                 (df["sequence"].fillna("") == str(sequence))
             ]
-            path = _match(df_match)
-            if path:
-                return path
+            paths = _resolve_matches(df_match)
+            if paths:
+                return paths
 
-        # safe-name match
+        # Safe-name fallback
         safe_group = to_safe_name(group) if group else ""
         safe_sequence = to_safe_name(sequence)
         if {"group_safe", "sequence_safe"}.issubset(df.columns):
@@ -1206,21 +1260,40 @@ class Dataset:
                 (df["group_safe"].fillna("") == safe_group) &
                 (df["sequence_safe"].fillna("") == safe_sequence)
             ]
-            path = _match(df_match)
-            if path:
-                return path
+            paths = _resolve_matches(df_match)
+            if paths:
+                return paths
 
-        # fallback: by filename stem
+        # Fallback: by filename stem
         tail = Path(sequence).name
         stem = tail.lower()
         df["name_lower"] = df["name"].astype(str).str.lower()
         candidates = df[df["name_lower"].str.contains(stem, na=False)]
         if candidates.empty:
             raise FileNotFoundError(f"No media file found matching sequence '{sequence}'.")
-        unique_paths = candidates["abs_path"].unique()
-        if len(unique_paths) > 1:
-            raise RuntimeError(f"Multiple media files match sequence '{sequence}'; disambiguate manually.")
-        return self.resolve_path(unique_paths[0])
+        paths = _resolve_matches(candidates)
+        if paths:
+            return paths
+
+        raise FileNotFoundError(f"No media file found matching sequence '{sequence}'.")
+
+    def resolve_media_path(self,
+                           group: str,
+                           sequence: str,
+                           index_filename: str = "index.csv") -> Path:
+        """
+        Resolve a single media file path for a given (group, sequence).
+
+        For multi-video sequences, raises ``RuntimeError`` with a message
+        to use :meth:`resolve_media_paths` instead.
+        """
+        paths = self.resolve_media_paths(group, sequence, index_filename)
+        if len(paths) > 1:
+            raise RuntimeError(
+                f"Sequence '{sequence}' has {len(paths)} video files. "
+                f"Use resolve_media_paths() for multi-video sequences."
+            )
+        return paths[0]
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict]]:
         """
@@ -1263,7 +1336,11 @@ class Dataset:
         return keymap
 
     @staticmethod
-    def _match_media_sequence(seq_key_map: dict[str, list[dict]], stem: str) -> Optional[dict]:
+    def _match_media_sequence(
+        seq_key_map: dict[str, list[dict]],
+        stem: str,
+        mode: str = "exact",
+    ) -> Optional[dict]:
         if not seq_key_map or not stem:
             return None
         candidates = [
@@ -1272,12 +1349,34 @@ class Dataset:
             to_safe_name(stem),
             to_safe_name(stem).lower(),
         ]
+
+        # Exact match: try each candidate key directly
         for key in candidates:
             hits = seq_key_map.get(key)
             if not hits:
                 continue
-            if len(hits) == 1:
-                return hits[0]
+            # Return the first metadata dict (all hits for the same
+            # key originate from the same track entry)
+            return hits[0]
+
+        if mode == "prefix":
+            # Prefix match: find the longest known key that is a prefix
+            # of any candidate form of the stem. Longest wins to avoid
+            # ambiguity (e.g. "session01" vs "session01_special").
+            stem_lc = stem.lower()
+            stem_safe = to_safe_name(stem).lower()
+            best_key: Optional[str] = None
+            best_len = 0
+            for key in seq_key_map:
+                key_lc = key.lower()
+                if len(key_lc) <= best_len:
+                    continue
+                if stem_lc.startswith(key_lc) or stem_safe.startswith(key_lc):
+                    best_key = key
+                    best_len = len(key_lc)
+            if best_key is not None:
+                return seq_key_map[best_key][0]
+
         return None
     
     def index_tracks_raw(self,
@@ -1391,7 +1490,7 @@ class Dataset:
         params = params or {}
         std_fmt = self.meta.get("tracks", {}).get("standard_format", "trex_v1")
         src_format = str(raw_row["src_format"])
-        src_path = Path(raw_row["abs_path"])
+        src_path = self.resolve_path(raw_row["abs_path"])
 
         if src_format not in TRACK_CONVERTERS:
             raise KeyError(f"No converter registered for src_format='{src_format}'")
@@ -1445,6 +1544,10 @@ class Dataset:
                 params_with_hints["sequence"] = canon_seq
 
                 df_std = TRACK_CONVERTERS[src_format](src_path, params_with_hints)
+
+                # Overwrite group column in DataFrame to match policy
+                if "group" in df_std.columns and out_group_canon != canon_group_infile:
+                    df_std["group"] = out_group_canon
 
                 # Ensure schema, then write
                 _, _schema_report = ensure_track_schema(df_std, std_fmt, strict=bool(params.get("strict_schema", False)))
@@ -1651,7 +1754,7 @@ class Dataset:
             dfs = []
             first_row = group_df.iloc[0]
             for _, row in group_df.iterrows():
-                src_path = Path(row["abs_path"])
+                src_path = self.resolve_path(row["abs_path"])
                 hints = {
                     "group": group if group else "",
                     "sequence": sequence if sequence else "",
@@ -1806,7 +1909,7 @@ class Dataset:
         # Convert each raw file using the converter
         new_rows: list[dict] = []
         for _, raw_row in df_raw.iterrows():
-            src_path = Path(raw_row["abs_path"])
+            src_path = self.resolve_path(raw_row["abs_path"])
             created = converter.convert(
                 src_path=src_path,
                 raw_row=raw_row,
@@ -2495,7 +2598,7 @@ class Dataset:
             df_idx = pd.read_csv(idx_std)
             hit = df_idx[(df_idx["group"].fillna("") == group) & (df_idx["sequence"] == sequence)]
             if len(hit) == 1:
-                return pd.read_parquet(Path(hit.iloc[0]["abs_path"]))
+                return pd.read_parquet(self.resolve_path(hit.iloc[0]["abs_path"]))
 
         if prefer != "standard":
             raise FileNotFoundError(f"No non-standard loader implemented for prefer='{prefer}'")
@@ -2614,6 +2717,8 @@ def _calms21_seq_to_trex_df(one_seq_dict: dict,
             "frame": np.arange(T, dtype=int),
             "time":  np.arange(T, dtype=float) / fps,
             "id":    np.full(T, a, dtype=int),
+            "X": cx,
+            "Y": cy,
             "X#wcentroid": cx,
             "Y#wcentroid": cy,
             "VX": VX, "VY": VY,
@@ -3750,7 +3855,7 @@ def _append_frames_index(idx_path: Path, rows: list[dict]):
 def _list_media_pairs(ds: "Dataset",
                       groups: Optional[Iterable[str]] = None,
                       sequences: Optional[Iterable[str]] = None) -> pd.DataFrame:
-    """Return filtered media index DataFrame with (group, sequence, abs_path, ...)."""
+    """Return filtered media index DataFrame with (group, sequence, abs_path, ..., video_order)."""
     idx_path = ds.get_root("media") / "index.csv"
     if not idx_path.exists():
         raise FileNotFoundError("media/index.csv not found; run index_media() first.")
@@ -3759,6 +3864,11 @@ def _list_media_pairs(ds: "Dataset",
     df["sequence"] = df["sequence"].fillna("").astype(str)
     df["group_safe"] = df["group_safe"].fillna("").astype(str)
     df["sequence_safe"] = df["sequence_safe"].fillna("").astype(str)
+    # Ensure video_order column exists (backward compat with old indexes)
+    if "video_order" not in df.columns:
+        df["video_order"] = 0
+    else:
+        df["video_order"] = df["video_order"].fillna(0).astype(int)
     mask = pd.Series(True, index=df.index)
     if groups is not None:
         mask &= df["group"].isin({str(g) for g in groups})
@@ -5090,7 +5200,7 @@ def extract_frames(
     kmeans_n_init = "auto",
     random_state: int = 42,
     # parallelism
-    parallel_workers: Optional[int] = None,
+    parallel_workers: Optional[int] = "auto",
     parallel_mode: str = "thread",
 ) -> str:
     """
@@ -5116,8 +5226,10 @@ def extract_frames(
         K-means sampling parameters (only used when method="kmeans").
     random_state : int
         Random seed for reproducibility.
-    parallel_workers : optional int
-        When >1, process videos in parallel using this many workers.
+    parallel_workers : int, "auto", or None
+        Number of videos to process concurrently. ``"auto"`` (default)
+        uses ``min(cpu_count, 8)`` workers. Set to ``1`` or ``None``
+        to disable parallelism.
     parallel_mode : str
         "thread" (default) or "process".
 
@@ -5127,6 +5239,7 @@ def extract_frames(
         The run_id for this extraction batch.
     """
     from mosaic.media.extraction import extract_frames as _extract_frames
+    from mosaic.media.extraction import extract_frames_multi as _extract_frames_multi
 
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:
@@ -5175,24 +5288,19 @@ def extract_frames(
     _ensure_frames_index(idx_path)
     started = _now_iso()
 
-    max_workers = int(parallel_workers) if parallel_workers and int(parallel_workers) > 1 else 1
+    if parallel_workers == "auto":
+        import os as _os
+        max_workers = min(_os.cpu_count() or 1, 8)
+    elif parallel_workers and int(parallel_workers) > 1:
+        max_workers = int(parallel_workers)
+    else:
+        max_workers = 1
     p_mode = (parallel_mode or "thread").lower()
     if p_mode not in {"thread", "process"}:
         p_mode = "thread"
 
-    def _extract_one(row):
-        group = str(row["group"])
-        sequence = str(row["sequence"])
-        group_safe = str(row["group_safe"]) if row.get("group_safe") else to_safe_name(group)
-        sequence_safe = str(row["sequence_safe"]) if row.get("sequence_safe") else to_safe_name(sequence)
-        video_path = str(row["abs_path"])
-
-        # When group/sequence are empty (no tracks indexed yet), use video stem
-        if not group_safe and not sequence_safe:
-            video_stem = Path(video_path).stem
-            sequence = video_stem
-            sequence_safe = to_safe_name(video_stem)
-
+    # Group media rows by (group, sequence) to handle multi-video sequences
+    def _extract_sequence(group, sequence, group_safe, sequence_safe, video_paths):
         seq_label = f"{group_safe}__{sequence_safe}" if group_safe else sequence_safe
         seq_dir = run_root / seq_label
 
@@ -5205,24 +5313,44 @@ def extract_frames(
             shutil.rmtree(seq_dir)
 
         try:
-            result = _extract_frames(
-                video_path=video_path,
-                n_frames=int(n_frames),
-                method=method_norm,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                candidate_step=int(candidate_step),
-                crop=crop,
-                kmeans_resize=kmeans_resize,
-                kmeans_grayscale=kmeans_grayscale,
-                kmeans_max_candidates=kmeans_max_candidates,
-                kmeans_batch_size=int(kmeans_batch_size),
-                kmeans_max_iter=int(kmeans_max_iter),
-                kmeans_n_init=kmeans_n_init,
-                random_state=int(random_state),
-                run_id=run_id,
-                output_dir=seq_dir,
-            )
+            if len(video_paths) == 1:
+                result = _extract_frames(
+                    video_path=video_paths[0],
+                    n_frames=int(n_frames),
+                    method=method_norm,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    candidate_step=int(candidate_step),
+                    crop=crop,
+                    kmeans_resize=kmeans_resize,
+                    kmeans_grayscale=kmeans_grayscale,
+                    kmeans_max_candidates=kmeans_max_candidates,
+                    kmeans_batch_size=int(kmeans_batch_size),
+                    kmeans_max_iter=int(kmeans_max_iter),
+                    kmeans_n_init=kmeans_n_init,
+                    random_state=int(random_state),
+                    run_id=run_id,
+                    output_dir=seq_dir,
+                )
+            else:
+                result = _extract_frames_multi(
+                    video_paths=video_paths,
+                    n_frames=int(n_frames),
+                    method=method_norm,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    candidate_step=int(candidate_step),
+                    crop=crop,
+                    kmeans_resize=kmeans_resize,
+                    kmeans_grayscale=kmeans_grayscale,
+                    kmeans_max_candidates=kmeans_max_candidates,
+                    kmeans_batch_size=int(kmeans_batch_size),
+                    kmeans_max_iter=int(kmeans_max_iter),
+                    kmeans_n_init=kmeans_n_init,
+                    random_state=int(random_state),
+                    run_id=run_id,
+                    output_dir=seq_dir,
+                )
             # Re-write run_info.json with relative output_dir for portability
             _manifest_path = seq_dir / "run_info.json"
             if _manifest_path.exists():
@@ -5239,7 +5367,7 @@ def extract_frames(
                 "abs_path": self._relative_to_root(seq_dir),
                 "n_frames_extracted": result.n_extracted,
                 "n_frames_requested": result.n_requested,
-                "video_abs_path": video_path,
+                "video_abs_path": json.dumps([str(p) for p in video_paths]) if len(video_paths) > 1 else str(video_paths[0]),
                 "params_hash": params_hash,
                 "started_at": started,
                 "finished_at": _now_iso(),
@@ -5248,21 +5376,40 @@ def extract_frames(
             print(f"[extract_frames] ERROR processing {seq_label}: {exc}", file=sys.stderr)
             return None
 
+    # Build per-sequence work items from (possibly multi-video) media index
+    work_items = []
+    grouped = media_df.groupby(["group", "sequence"])
+    for (g, s), sub in grouped:
+        sub = sub.sort_values("video_order")
+        g_safe = str(sub.iloc[0].get("group_safe") or to_safe_name(g))
+        s_safe = str(sub.iloc[0].get("sequence_safe") or to_safe_name(s))
+        paths = [str(self.resolve_path(r["abs_path"])) for _, r in sub.iterrows()]
+
+        # When group/sequence are empty (no tracks indexed yet), use video stem
+        if not g_safe and not s_safe:
+            video_stem = Path(paths[0]).stem
+            s = video_stem
+            s_safe = to_safe_name(video_stem)
+
+        work_items.append((g, s, g_safe, s_safe, paths))
+
     # Execute extraction
     index_rows = []
-    rows_list = media_df.to_dict("records")
 
     if max_workers > 1:
         PoolCls = ProcessPoolExecutor if p_mode == "process" else ThreadPoolExecutor
         with PoolCls(max_workers=max_workers) as pool:
-            futures = {pool.submit(_extract_one, row): row for row in rows_list}
+            futures = {
+                pool.submit(_extract_sequence, g, s, gs, ss, vp): (g, s)
+                for g, s, gs, ss, vp in work_items
+            }
             for future in as_completed(futures):
                 result = future.result()
                 if result is not None:
                     index_rows.append(result)
     else:
-        for row in rows_list:
-            result = _extract_one(row)
+        for g, s, gs, ss, vp in work_items:
+            result = _extract_sequence(g, s, gs, ss, vp)
             if result is not None:
                 index_rows.append(result)
 
@@ -5271,7 +5418,7 @@ def extract_frames(
         _append_frames_index(idx_path, index_rows)
 
     print(f"[extract_frames:{method_norm}] completed run_id={run_id} "
-          f"({len(index_rows)}/{len(rows_list)} sequences) -> {run_root}")
+          f"({len(index_rows)}/{len(work_items)} sequences) -> {run_root}")
     return run_id
 
 def list_frame_runs(self, method: Optional[str] = None) -> pd.DataFrame:

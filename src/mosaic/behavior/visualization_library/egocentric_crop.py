@@ -16,7 +16,6 @@ from .helpers import (
     safe_crop_with_padding,
     compute_heading_angle,
     create_video_writer,
-    _open_video_capture,
     infer_angle_degrees,
 )
 
@@ -178,8 +177,8 @@ class EgocentricCrop:
         group = str(df[p["group_col"]].iloc[0]) if p["group_col"] in df.columns else ""
         sequence = str(df[p["seq_col"]].iloc[0]) if p["seq_col"] in df.columns else ""
 
-        # Resolve video path
-        video_path = self._ds.resolve_media_path(group, sequence)
+        # Resolve video paths (supports multi-video sequences)
+        video_paths = self._ds.resolve_media_paths(group, sequence)
 
         # Determine which IDs to process
         target_id = p["target_id"]
@@ -191,7 +190,7 @@ class EgocentricCrop:
                 df_target = df[df[p["id_col"]] == uid].copy()
                 if df_target.empty:
                     continue
-                metadata = self._process_single_id(video_path, df_target, group, sequence, uid)
+                metadata = self._process_single_id(video_paths, df_target, group, sequence, uid)
                 all_metadata.append(metadata)
             if all_metadata:
                 return pd.concat(all_metadata, ignore_index=True)
@@ -201,7 +200,7 @@ class EgocentricCrop:
             df_target = df[df[p["id_col"]] == target_id].copy()
             if df_target.empty:
                 raise ValueError(f"No data for target_id={target_id}")
-            return self._process_single_id(video_path, df_target, group, sequence, target_id)
+            return self._process_single_id(video_paths, df_target, group, sequence, target_id)
 
     # ----------------------- Internal methods --------------------
 
@@ -336,25 +335,32 @@ class EgocentricCrop:
 
     def _process_single_id(
         self,
-        video_path: Path,
+        video_paths: list[Path],
         df_target: pd.DataFrame,
         group: str,
         sequence: str,
         target_id: Any,
     ) -> pd.DataFrame:
         """
-        Process video to generate egocentric crops for a single individual.
+        Process video(s) to generate egocentric crops for a single individual.
+
+        Parameters
+        ----------
+        video_paths : list[Path]
+            Ordered list of video paths for this sequence.
 
         Returns metadata DataFrame with crop info per frame.
         """
+        from mosaic.media.video_io import MultiVideoReader
+
         p = self.params
 
         # Sort by frame
         df_target = df_target.sort_values(p["frame_col"]).reset_index(drop=True)
 
-        # Open video
-        cap, fps, (vid_w, vid_h) = _open_video_capture(video_path)
-        output_fps = p["output_fps"] or fps
+        # Open video(s) via MultiVideoReader
+        reader = MultiVideoReader(video_paths)
+        output_fps = p["output_fps"] or reader.fps
 
         # Build frame -> row lookup
         frame_to_row = {int(row[p["frame_col"]]): row for _, row in df_target.iterrows()}
@@ -385,11 +391,11 @@ class EgocentricCrop:
         # Process frames
         metadata_rows = []
         frame_idx = 0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_frames = reader.total_frames
 
         try:
             while True:
-                ret, frame = cap.read()
+                ret, frame = reader.read()
                 if not ret:
                     break
 
@@ -430,7 +436,7 @@ class EgocentricCrop:
                     print(f"  [egocentric-crop] id={target_id}: {frame_idx}/{total_frames} frames")
 
         finally:
-            cap.release()
+            reader.close()
             if writer is not None:
                 writer.release()
 

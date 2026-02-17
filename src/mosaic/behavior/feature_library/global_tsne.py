@@ -28,8 +28,70 @@ from mosaic.core.dataset import _resolve_inputs, _dataset_base_dir
 from mosaic.core.helpers import to_safe_name
 
 
+class _FaissKNNIndex:
+    """FAISS-backed kNN index conforming to the openTSNE KNNIndex protocol.
+
+    Conforms to ``openTSNE.nearest_neighbors.KNNIndex``:
+    - ``__init__(data, k, ...)`` stores training data and k
+    - ``build()`` builds the FAISS index and returns (indices, distances) for the training data
+    - ``query(query, k)`` finds nearest neighbors of new points (used by ``prepare_partial``)
+    - ``.k`` attribute is read by ``PerplexityBasedNN``
+
+    Parameters
+    ----------
+    data : np.ndarray, shape (n, d)
+        Training data points.
+    k : int
+        Number of nearest neighbors.
+    use_gpu : bool
+        If True, use a FAISS GPU index (requires faiss-gpu).
+    """
+
+    VALID_METRICS = ["euclidean"]
+
+    def __init__(self, data, k, use_gpu=False, **kwargs):
+        self.data = np.ascontiguousarray(data, dtype=np.float32)
+        self.k = k
+        self.n_samples = data.shape[0]
+        self._use_gpu = use_gpu
+        self._index = None
+
+    @staticmethod
+    def check_metric(metric):
+        if metric != "euclidean":
+            raise ValueError(f"_FaissKNNIndex only supports euclidean metric, got {metric!r}")
+        return metric
+
+    def build(self):
+        """Build FAISS index and return kNN for the training data."""
+        import faiss
+
+        d = self.data.shape[1]
+        index = faiss.IndexFlatL2(d)
+        if self._use_gpu:
+            res = faiss.StandardGpuResources()
+            index = faiss.index_cpu_to_gpu(res, 0, index)
+        index.add(self.data)
+        self._index = index
+
+        # Query k+1 neighbors (first result is the point itself)
+        sq_dist, idx = index.search(self.data, self.k + 1)
+
+        # Remove self-match (first column)
+        indices = idx[:, 1:].astype(np.int64)
+        distances = np.sqrt(np.maximum(sq_dist[:, 1:], 0)).astype(np.float64)
+
+        return indices, distances
+
+    def query(self, query, k):
+        """Query nearest neighbors for new points against the built index."""
+        query_f32 = np.ascontiguousarray(query, dtype=np.float32)
+        sq_dist, idx = self._index.search(query_f32, k)
+        return idx.astype(np.int64), np.sqrt(np.maximum(sq_dist, 0)).astype(np.float64)
+
+
 @register_feature
-class GlobalTSNE: 
+class GlobalTSNE:
     """
     Global t-SNE over multiple prior features discovered from the dataset's feature indexes.
     - inputs: a list of dicts describing which feature outputs to include.
@@ -78,6 +140,7 @@ class GlobalTSNE:
             total_templates=2000,      # farthest-first target
             pre_quota_per_key=50,      # pre-sample per key
             perplexity=50,
+            knn_method="annoy",        # "annoy" (default) or "faiss" / "faiss-gpu"
             n_jobs=8,
             partial_k=25,
             partial_iters=100,
@@ -217,14 +280,27 @@ class GlobalTSNE:
         del X_pre, d2  # free memory
 
         # 4) Fit openTSNE on templates
-        aff = affinity.PerplexityBasedNN(
-            templates,
-            perplexity=int(self.params["perplexity"]),
-            metric="euclidean",
-            method="annoy",
-            n_jobs=int(self.params["n_jobs"]),
-            random_state=int(self.params["random_state"]),
-        )
+        perp = int(self.params["perplexity"])
+        knn_method = str(self.params.get("knn_method", "annoy")).lower()
+        if knn_method in ("faiss", "faiss-gpu"):
+            use_gpu = knn_method == "faiss-gpu"
+            k_neighbors = min(3 * perp, templates.shape[0] - 1)
+            faiss_knn = _FaissKNNIndex(templates, k_neighbors, use_gpu=use_gpu)
+            # PerplexityBasedNN expects data=None when knn_index is provided
+            aff = affinity.PerplexityBasedNN(
+                knn_index=faiss_knn,
+                perplexity=perp,
+                n_jobs=int(self.params["n_jobs"]),
+            )
+        else:
+            aff = affinity.PerplexityBasedNN(
+                templates,
+                perplexity=perp,
+                metric="euclidean",
+                method="annoy",
+                n_jobs=int(self.params["n_jobs"]),
+                random_state=int(self.params["random_state"]),
+            )
         init = initialization.pca(templates, random_state=int(self.params["random_state"]))
         emb = TSNEEmbedding(
             init, aff,

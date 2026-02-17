@@ -137,10 +137,11 @@ class CalMS21BehaviorConverter:
                 resident_id = self.params["resident_id"]
                 intruder_id = self.params["intruder_id"]
 
-                # Find all frames with non-zero labels (exclude background/none)
-                event_mask = dense_labels != 0  # Assuming 0 is "no behavior"
-                event_frames = np.where(event_mask)[0].astype(np.int32)
-                event_labels = dense_labels[event_mask].astype(np.int32)
+                # All CalMS21 labels are meaningful behaviors (0=attack,
+                # 1=investigation, 2=mount, 3=other_interaction).
+                # Store all frames — there is no "background" label to exclude.
+                event_frames = np.arange(len(dense_labels), dtype=np.int32)
+                event_labels = dense_labels.astype(np.int32)
 
                 # For each event, create directed pair: [resident, intruder]
                 # All CalMS21 behaviors are resident-initiated interactions

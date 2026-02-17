@@ -1,4 +1,4 @@
-"""Frame extraction methods for single-video workflows."""
+"""Frame extraction methods for single- and multi-video workflows."""
 
 from __future__ import annotations
 
@@ -14,11 +14,14 @@ import numpy as np
 
 from .sampling import select_kmeans_frames, select_uniform_frames
 from .video_io import (
+    MultiVideoReader,
     extract_candidate_features,
+    extract_candidate_features_multi,
     get_video_metadata,
     normalize_crop_rect,
     normalize_frame_range,
     save_frames_as_png,
+    save_frames_as_png_multi,
 )
 
 
@@ -210,6 +213,145 @@ def extract_frames(
         "height": int(meta.height),
         "fps": float(meta.fps),
         "frame_count": int(meta.frame_count),
+    }
+    manifest["sampling"] = sampling_details
+    manifest["random_state"] = int(random_state)
+    (out_dir / "run_info.json").write_text(json.dumps(manifest, indent=2))
+    return result
+
+
+def extract_frames_multi(
+    video_paths: list[Path | str],
+    output_root: Path | str | None = None,
+    n_frames: int = 50,
+    method: str = "uniform",
+    start_frame: Optional[int] = None,
+    end_frame: Optional[int] = None,
+    candidate_step: int = 1,
+    crop: Optional[CropSpec] = None,
+    kmeans_resize: tuple[int, int] = (64, 64),
+    kmeans_grayscale: bool = True,
+    kmeans_max_candidates: Optional[int] = 5000,
+    kmeans_batch_size: int = 1024,
+    kmeans_max_iter: int = 100,
+    kmeans_n_init: int | str = "auto",
+    random_state: int = 42,
+    run_id: Optional[str] = None,
+    output_dir: Optional[Path | str] = None,
+) -> FrameExtractionResult:
+    """
+    Extract representative frames from a multi-video sequence.
+
+    Candidates are pooled across all videos using virtual (global) frame
+    indices. The selected frames are then saved as PNGs.
+
+    Parameters are the same as :func:`extract_frames` except:
+
+    Parameters
+    ----------
+    video_paths : list[Path | str]
+        Ordered list of video file paths forming the sequence.
+    """
+    method_norm = str(method).strip().lower()
+    if method_norm not in {"uniform", "kmeans"}:
+        raise ValueError("method must be one of: 'uniform', 'kmeans'")
+    if int(n_frames) <= 0:
+        raise ValueError("n_frames must be > 0")
+    if int(candidate_step) <= 0:
+        raise ValueError("candidate_step must be > 0")
+
+    reader = MultiVideoReader([Path(p) for p in video_paths])
+    total_frames = reader.total_frames
+    start, end = normalize_frame_range(total_frames, start_frame, end_frame)
+    crop_rect = normalize_crop_rect(crop, reader.width, reader.height)
+
+    if method_norm == "uniform":
+        candidates = np.arange(start, end + 1, int(candidate_step), dtype=np.int32)
+        selected = select_uniform_frames(candidates, int(n_frames))
+        sampling_details: dict[str, Any] = {}
+    else:
+        effective_step = int(candidate_step)
+        if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
+            approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
+            if approx_candidates > int(kmeans_max_candidates):
+                stride_mult = int(math.ceil(approx_candidates / float(kmeans_max_candidates)))
+                effective_step = int(candidate_step) * max(1, stride_mult)
+
+        candidates, features = extract_candidate_features_multi(
+            reader=reader,
+            start_frame=start,
+            end_frame=end,
+            candidate_step=int(effective_step),
+            resize=(int(kmeans_resize[0]), int(kmeans_resize[1])),
+            grayscale=bool(kmeans_grayscale),
+            crop_rect=crop_rect,
+            max_candidates=None,
+        )
+        selected = select_kmeans_frames(
+            candidate_indices=candidates,
+            features=features,
+            n_frames=int(n_frames),
+            random_state=int(random_state),
+            batch_size=int(kmeans_batch_size),
+            max_iter=int(kmeans_max_iter),
+            n_init=kmeans_n_init,
+        )
+        sampling_details = {
+            "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
+            "kmeans_grayscale": bool(kmeans_grayscale),
+            "kmeans_max_candidates": None if kmeans_max_candidates is None else int(kmeans_max_candidates),
+            "kmeans_effective_candidate_step": int(effective_step),
+            "kmeans_batch_size": int(kmeans_batch_size),
+            "kmeans_max_iter": int(kmeans_max_iter),
+            "kmeans_n_init": kmeans_n_init,
+            "candidate_count": int(candidates.size),
+        }
+
+    run = run_id or _make_run_id()
+    if output_dir is not None:
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        if output_root is None:
+            raise ValueError("Either output_root or output_dir must be provided.")
+        out_dir = Path(output_root).expanduser().resolve() / "multi" / method_norm / run
+        out_dir.mkdir(parents=True, exist_ok=False)
+
+    # save_frames_as_png_multi seeks internally; no need to reopen
+    file_records = save_frames_as_png_multi(
+        reader=reader,
+        frame_indices=selected,
+        output_dir=out_dir,
+        crop_rect=crop_rect,
+    )
+    reader.close()
+
+    created_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    result = FrameExtractionResult(
+        run_id=run,
+        method=method_norm,
+        video_path=json.dumps([str(p) for p in video_paths]),
+        output_dir=str(out_dir),
+        manifest_path=str(out_dir / "run_info.json"),
+        n_requested=int(n_frames),
+        n_extracted=int(len(file_records)),
+        selected_frame_indices=[int(i) for i in selected.tolist()],
+        start_frame=int(start),
+        end_frame=int(end),
+        candidate_step=int(candidate_step),
+        crop=_crop_to_dict(crop_rect),
+        created_utc=created_utc,
+        files=file_records,
+    )
+
+    manifest = result.to_dict()
+    manifest["video_meta"] = {
+        "width": reader.width,
+        "height": reader.height,
+        "fps": float(reader.fps),
+        "total_frames": total_frames,
+        "video_count": len(video_paths),
+        "video_paths": [str(p) for p in video_paths],
     }
     manifest["sampling"] = sampling_details
     manifest["random_state"] = int(random_state)
