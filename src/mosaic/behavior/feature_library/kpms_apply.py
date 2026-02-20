@@ -52,6 +52,9 @@ class KpmsApply:
         Column prefix for confidence scores.
     num_iters_apply : int
         Number of Gibbs sampling iterations for inference (default: 500).
+    apply_batch_size : int or None
+        Process recordings in batches of this size to avoid OOM (default: 10).
+        Set to None or 0 to process all at once.
     """
 
     name = "kpms-apply"
@@ -75,6 +78,7 @@ class KpmsApply:
 
         # Apply params
         num_iters_apply=500,
+        apply_batch_size=10,  # Process N recordings at a time (None/0=all at once)
 
         # ID handling
         id_col="id",
@@ -87,6 +91,8 @@ class KpmsApply:
         self._ds = None
         self._run_root: Optional[Path] = None
         self._additional_index_rows: list[dict] = []
+        self._scope_filter_dict: Optional[dict] = None
+        self._scope_constraints: Optional[dict] = None
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -97,7 +103,10 @@ class KpmsApply:
         self._run_root = Path(run_root)
 
     def set_scope_filter(self, scope: Optional[dict]) -> None:
-        pass
+        self._scope_filter_dict = scope
+
+    def set_scope_constraints(self, constraints: Optional[dict]) -> None:
+        self._scope_constraints = constraints
 
     def get_additional_index_rows(self) -> list[dict]:
         return list(self._additional_index_rows)
@@ -128,12 +137,17 @@ class KpmsApply:
     def _parse_recording_name(name: str) -> tuple[str, str, Optional[int]]:
         """Parse a recording name back into (group, sequence, id).
 
+        Keys use safe-encoded names (``to_safe_name``), so slashes appear
+        as ``%2F``.  This method decodes them back to canonical form.
+
         Handles formats:
           - "{group}__{sequence}__id{id}"
           - "{group}__{sequence}"
           - "{sequence}__id{id}"
           - "{sequence}"
         """
+        from urllib.parse import unquote
+
         group = ""
         sequence = name
         ind_id = None
@@ -153,10 +167,10 @@ class KpmsApply:
         # Split group__sequence
         if "__" in base:
             parts = base.split("__", 1)
-            group = parts[0]
-            sequence = parts[1]
+            group = unquote(parts[0])
+            sequence = unquote(parts[1])
         else:
-            sequence = base
+            sequence = unquote(base)
 
         return group, sequence, ind_id
 
@@ -208,6 +222,14 @@ class KpmsApply:
 
         # 2. Serialize track data
         data_dir = self._run_root / "_kpms_data"
+
+        # Extract group/sequence scope from constraints set by run_feature
+        scope_groups = None
+        scope_sequences = None
+        if self._scope_constraints:
+            scope_groups = self._scope_constraints.get("groups")
+            scope_sequences = self._scope_constraints.get("sequences")
+
         print("[kpms-apply] Collecting and serializing track data...", file=sys.stderr)
         _collect_and_serialize_tracks(
             self._ds,
@@ -217,6 +239,8 @@ class KpmsApply:
             p["pose_confidence_prefix"],
             p["id_col"],
             p.get("bodypart_names"),
+            groups=scope_groups,
+            sequences=scope_sequences,
         )
 
         # 3. Write apply config JSON
@@ -228,15 +252,20 @@ class KpmsApply:
 
         # 4. Run kpms_runner.py apply in subprocess
         output_dir = self._run_root / "_kpms_output"
+        apply_args = [
+            "--data-dir", str(data_dir),
+            "--output-dir", str(output_dir),
+            "--model-dir", str(model_dir),
+            "--config", str(config_path),
+        ]
+        batch_size = p.get("apply_batch_size")
+        if batch_size and int(batch_size) > 0:
+            apply_args += ["--batch-size", str(int(batch_size))]
+
         _run_kpms_subprocess(
             kpms_python,
             "apply",
-            [
-                "--data-dir", str(data_dir),
-                "--output-dir", str(output_dir),
-                "--model-dir", str(model_dir),
-                "--config", str(config_path),
-            ],
+            apply_args,
             label="kpms-apply",
         )
 

@@ -26,7 +26,7 @@ def _get_behavior_label_map():
 
 def _load_calms21(path: Path):
     """Load a CalMS21 file (.npy or .json)."""
-    from mosaic.core.dataset import load_calms21
+    from mosaic.core.track_library.helpers import load_calms21
     return load_calms21(path)
 
 

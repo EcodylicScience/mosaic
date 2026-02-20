@@ -4,7 +4,6 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import pandas as pd 
 import numpy as np
-import math  # used by _norm_hint
 import uuid, datetime
 import yaml  # pip install pyyaml
 import importlib
@@ -2468,6 +2467,28 @@ class Dataset:
 
         return data
 
+    def get_label_map(self, kind: str = "behavior") -> dict[int, str]:
+        """
+        Get the label map {id: name} for a label kind.
+
+        Reads from the labels index.csv (first row).
+        """
+        idx_path = self.get_root("labels") / kind / "index.csv"
+        if not idx_path.exists():
+            raise FileNotFoundError(f"Labels index not found for kind='{kind}': {idx_path}")
+
+        df = pd.read_csv(idx_path, nrows=1)
+        row = df.iloc[0]
+
+        ids_str = str(row.get("label_ids", "")).strip()
+        names_str = str(row.get("label_names", "")).strip()
+        if not ids_str or not names_str:
+            raise ValueError(f"No label_ids/label_names in index for kind='{kind}'")
+
+        ids = [int(x) for x in ids_str.split(",")]
+        names = names_str.split(",")
+        return dict(zip(ids, names))
+
     def get_labels_for_individual(self,
                                   group: str,
                                   sequence: str,
@@ -2617,214 +2638,9 @@ class Dataset:
         std_path = self.convert_one_track(hit.iloc[0], params=convert_params or {})
         return pd.read_parquet(std_path)
 
-# ===================== CalMS21 -> T-Rex-like converter =====================
-
-def load_calms21(path: Path | str):
-    """
-    Load a single CalMS21 file: either .npy (dict) or the original .json.
-    Returns a nested dict: group -> seq_id -> dict(...)
-    """
-    p = Path(path)
-    if p.suffix.lower() == ".npy":
-        return np.load(p, allow_pickle=True).item()
-    elif p.suffix.lower() == ".json":
-        with open(p, "r") as f:
-            return json.load(f)
-    else:
-        raise ValueError(f"Unsupported CalMS21 path (expect .npy or .json): {p}")
-
-def angle_from_two_points(neck_xy: np.ndarray, tail_xy: np.ndarray) -> np.ndarray:
-    """
-    heading from tail -> neck, angle w.r.t +x (radians)
-    neck_xy, tail_xy: (T,2)
-    """
-    v = neck_xy - tail_xy
-    return np.arctan2(v[:, 1], v[:, 0])
-
-def angle_from_pca(XY: np.ndarray) -> np.ndarray:
-    """
-    PCA-based heading (fallback). XY: (T, L, 2) landmarks for one animal.
-    Uses first principal component per frame; sign is arbitrary.
-    """
-    T = XY.shape[0]
-    ang = np.zeros(T, dtype=float)
-    for t in range(T):
-        pts = XY[t]  # (L,2)
-        mu = pts.mean(axis=0)
-        c = pts - mu
-        cov = c.T @ c
-        vals, vecs = np.linalg.eigh(cov)
-        v = vecs[:, np.argmax(vals)]  # 2-vector
-        ang[t] = np.arctan2(v[1], v[0])
-    return ang
-
-
-############################################################################################################
-#### CALMS 21 ####
-############################################################################################################
-
-def _calms21_seq_to_trex_df(one_seq_dict: dict,
-                            groupname: str,
-                            seq_id: str,
-                            neck_idx: Optional[int] = None,
-                            tail_idx: Optional[int] = None) -> pd.DataFrame:
-    """
-    Convert a single sequence dict to T-Rex-like long DataFrame (rows = frames x animals).
-    """
-    # Pick features: either 'features' present or 'keypoints'
-    use_features = ("features" in one_seq_dict)
-    if use_features:
-        # not used in output columns; could be stored elsewhere if needed
-        _ = np.asarray(one_seq_dict["features"])  # (T, K)
-    keypoints = np.asarray(one_seq_dict["keypoints"])    # (T, 2, 2, L)
-    scores    = np.asarray(one_seq_dict.get("scores", None))       # (T, 2, L) or None
-    ann       = np.asarray(one_seq_dict["annotations"]) if "annotations" in one_seq_dict else None
-    meta      = one_seq_dict.get("metadata", {})
-    fps       = float(meta.get("fps", meta.get("frame_rate", 30.0)))
-
-    T = keypoints.shape[0]
-    n_anim = keypoints.shape[1]
-    n_lm   = keypoints.shape[3]
-
-    rows = []
-    for a in range(n_anim):
-        # Extract XY for this animal: (T, L, 2)
-        X = keypoints[:, a, 0, :]  # (T, L)
-        Y = keypoints[:, a, 1, :]  # (T, L)
-        XY = np.stack([X, Y], axis=-1)  # (T, L, 2)
-
-        # Centroid over landmarks
-        cx = X.mean(axis=1)  # (T,)
-        cy = Y.mean(axis=1)
-
-        # Vel/acc (finite diff)
-        VX = np.gradient(cx) * fps
-        VY = np.gradient(cy) * fps
-        SPEED = np.hypot(VX, VY)
-        AX = np.gradient(VX) * fps
-        AY = np.gradient(VY) * fps
-
-        # Heading angle
-        if (neck_idx is not None) and (tail_idx is not None) and 0 <= neck_idx < n_lm and 0 <= tail_idx < n_lm:
-            neck = XY[:, neck_idx, :]  # (T,2)
-            tail = XY[:, tail_idx, :]
-            ANGLE = angle_from_two_points(neck, tail)
-        else:
-            ANGLE = angle_from_pca(XY)
-
-        # Build a per-frame DataFrame
-        data = {
-            "frame": np.arange(T, dtype=int),
-            "time":  np.arange(T, dtype=float) / fps,
-            "id":    np.full(T, a, dtype=int),
-            "X": cx,
-            "Y": cy,
-            "X#wcentroid": cx,
-            "Y#wcentroid": cy,
-            "VX": VX, "VY": VY,
-            "SPEED": SPEED, "AX": AX, "AY": AY,
-            "ANGLE": ANGLE,
-            "group": np.full(T, groupname),
-            "sequence": np.full(T, seq_id),
-        }
-
-        # Pose columns
-        for k in range(n_lm):
-            data[f"poseX{k}"] = X[:, k]
-            data[f"poseY{k}"] = Y[:, k]
-
-        # Optional: label per frame if present (flatten if multi-dim)
-        if ann is not None:
-            lbl = ann
-            if lbl.ndim > 1:
-                lbl = lbl[:, 0]
-            data["label"] = lbl.astype(int, copy=False)
-
-        # Optional: keypoint scores columns, if provided
-        if scores is not None:
-            S = np.asarray(scores)  # (T, 2, L)
-            S_a = S[:, a, :]        # (T, L)
-            for k in range(n_lm):
-                data[f"poseP{k}"] = S_a[:, k]
-
-        rows.append(pd.DataFrame(data))
-
-    out = pd.concat(rows, ignore_index=True)
-    # Add placeholders often present in T-Rex schema
-    out["missing"] = False
-    out["visual_identification_p"] = 1.0
-    out["timestamp"] = out["time"]
-    for col in ["X","Y","SPEED#pcentroid","SPEED#wcentroid","midline_x","midline_y",
-                "midline_length","midline_segment_length","normalized_midline",
-                "ANGULAR_V#centroid","ANGULAR_A#centroid","BORDER_DISTANCE#pcentroid",
-                "MIDLINE_OFFSET","num_pixels","detection_p"]:
-        if col not in out.columns:
-            out[col] = np.nan
-    return out
-
-def calms21_to_trex_df(path: Path | str,
-                       prefer_group: Optional[str] = None,
-                       prefer_sequence: Optional[str] = None,
-                       neck_idx: Optional[int] = None,
-                       tail_idx: Optional[int] = None) -> pd.DataFrame:
-    """
-    Load a CalMS21 .npy/.json and return a concatenated T-Rex-like DataFrame.
-    Optionally filter to a specific (group, sequence).
-    """
-    nested = load_calms21(path)
-
-    groups_present = set(nested.keys())
-    seq_filter = None
-    direct_group_match_only = True
-    if prefer_group and prefer_group not in groups_present:
-        # interpret dataset-level hint (e.g., calms21_task1_test)
-        seq_filter = _calms21_make_seq_filter_from_hint(prefer_group)
-        if seq_filter is not None:
-            direct_group_match_only = False
-
-    rows = []
-    for groupname, group in nested.items():
-        for seq_id, seq in group.items():
-            # strict sequence filter (exact match) if requested
-            if prefer_sequence and seq_id != prefer_sequence:
-                continue
-            # group filter: either exact top-level match, or sequence-path filter if hint provided
-            if direct_group_match_only:
-                if prefer_group and groupname != prefer_group:
-                    continue
-            else:
-                if seq_filter and not seq_filter(groupname, seq_id):
-                    continue
-
-            # ensure arrays where needed
-            seq = {k: (np.array(v) if isinstance(v, list) else v) for k, v in seq.items()}
-            rows.append(_calms21_seq_to_trex_df(seq, groupname, seq_id,
-                                                neck_idx=neck_idx, tail_idx=tail_idx))
-    if not rows:
-        if prefer_group or prefer_sequence:
-            raise KeyError(f"Requested CalMS21 ({prefer_group}, {prefer_sequence}) not found in {path}")
-        raise RuntimeError(f"No sequences found in CalMS21 file: {path}")
-    return pd.concat(rows, ignore_index=True)
-
-
-def _norm_hint(x: Optional[Any]) -> Optional[str]:
-    # Treat None, NaN, "", "nan", "none" as no-hint
-    if x is None:
-        return None
-    if isinstance(x, float) and math.isnan(x):
-        return None
-    if isinstance(x, str):
-        s = x.strip()
-        if s == "" or s.lower() in ("nan", "none"):
-            return None
-        return s
-    # Pandas NA/NaT, etc.
-    try:
-        if pd.isna(x):
-            return None
-    except Exception:
-        pass
-    return str(x)
+# --- Backward compat: track converter helpers moved to core/track_library ---
+from mosaic.core.track_library.helpers import load_calms21, angle_from_two_points, angle_from_pca
+from mosaic.core.track_library.calms21 import calms21_to_trex_df
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""
@@ -2840,238 +2656,9 @@ def _is_empty_like(x: Optional[Any]) -> bool:
         return s in ("", "nan", "none")
     return False
 
-def _calms21_converter(path: Path, params: dict) -> pd.DataFrame:
-    prefer_group   = _norm_hint(params.get("group"))
-    prefer_sequence= _norm_hint(params.get("sequence"))
-    neck_idx = params.get("neck_idx", None)
-    tail_idx = params.get("tail_idx", None)
-    debug = bool(params.get("debug", False))
-
-    # quick inspect
-    nested = load_calms21(path)
-    if debug:
-        pairs = [(g, s) for g, grp in nested.items() for s in grp.keys()]
-        print(f"[calms21] in-file pairs ({len(pairs)}): {pairs[:10]}{' ...' if len(pairs)>10 else ''}")
-        print(f"[calms21] prefer_group={prefer_group} prefer_sequence={prefer_sequence}")
-
-    # if explicit selection given, return only that
-    if prefer_group or prefer_sequence:
-        return calms21_to_trex_df(
-            path,
-            prefer_group=prefer_group,
-            prefer_sequence=prefer_sequence,
-            neck_idx=neck_idx,
-            tail_idx=tail_idx,
-        )
-
-    # else single-pair inference
-    pairs = [(g, s) for g, grp in nested.items() for s in grp.keys()]
-    if len(pairs) == 1:
-        g, s = pairs[0]
-        return calms21_to_trex_df(
-            path,
-            prefer_group=g,
-            prefer_sequence=s,
-            neck_idx=neck_idx,
-            tail_idx=tail_idx,
-        )
-    raise ValueError(
-        f"Ambiguous CalMS21 file {path}; contains multiple sequences {pairs}. "
-        f"Pass params with group/sequence to disambiguate."
-    )
-
-def _calms21_make_seq_filter_from_hint(hint: Optional[str]):
-    """
-    Return a predicate f(groupname, seq_id)->bool for dataset-level hints like
-    'calms21_task1_train', 'calms21_task1_test', 'calms21_task2_train/test',
-    'calms21_task3_train/test'. If not applicable, return None.
-    """
-    if not hint:
-        return None
-    h = hint.strip().lower()
-
-    def pred_task_split(task_prefix: str, split: str):
-        def _pred(_g, _s):
-            # matches path patterns like taskX/.../<split>/...
-            return _s.startswith(task_prefix) and (f"/{split}/" in _s)
-        return _pred
-
-    # task1
-    if h.startswith("calms21_task1_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
-        if split:
-            return pred_task_split("task1/", split)
-
-    # task2 (note: has an annotator level 'task2/annotator1/<split>/...')
-    if h.startswith("calms21_task2_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
-        if split:
-            def _pred(_g, _s):
-                return _s.startswith("task2/") and (f"/{split}/" in _s)
-            return _pred
-
-    # task3 (behavior level: 'task3/<behavior>/<split>/...')
-    if h.startswith("calms21_task3_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
-        if split:
-            return pred_task_split("task3/", split)
-
-    return None
-
-# Register the converter for both .npy and .json sources (same structure)
-register_track_converter("calms21_npy", _calms21_converter)
-register_track_converter("calms21_json", _calms21_converter)
-
-# Sequence enumerator for CalMS21 files
-def _enumerate_calms21_sequences(path: Path) -> list[tuple[str, str]]:
-    nested = load_calms21(path)
-    pairs: list[tuple[str, str]] = []
-    for g, grp in nested.items():
-        for s in grp.keys():
-            pairs.append((str(g), str(s)))
-    return pairs
-
-register_track_seq_enumerator("calms21_npy", _enumerate_calms21_sequences)
-register_track_seq_enumerator("calms21_json", _enumerate_calms21_sequences)
-
 def _to_iso(ts: float) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-############################################################################################################
-#### TRex ####
-############################################################################################################
-
-# --- TRex per-id NPZ support ---
-# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc.
-_TREX_ID_SUFFIX = re.compile(r"_(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
-
-def _strip_trex_seq(stem: str) -> str:
-    """Return filename stem with trailing individual ID suffix removed, if present.
-
-    Handles patterns like: _id0, _fish2, _bee1, _animal3, _ind0
-    Examples:
-        hex_7_fish2 -> hex_7
-        OCI_1_fish0 -> OCI_1
-        video1_id3 -> video1
-    """
-    m = _TREX_ID_SUFFIX.search(stem)
-    if m:
-        return stem[: m.start()]
-    return stem
-
-
-def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
-    """
-    Flatten a TRex-like NPZ (per-id) into a DataFrame, robust to arrays with
-    slightly different lengths in the same file. We pick the most common length
-    across arrays as the target 'n', and truncate longer arrays to fit.
-    """
-    data = np.load(filepath, allow_pickle=True)
-    keys = list(data.files)
-
-    skip_keys = {} # including all for now.  Could make this a parameter to pass
-
-    # Determine candidate lengths per key
-    lens = []
-    for k in keys:
-        if k in skip_keys:
-            continue
-        v = data[k]
-        if getattr(v, "ndim", 0) > 0:
-            lens.append(int(v.shape[0]))
-    if not lens:
-        raise ValueError(f"No array-like keys with length found in NPZ: {filepath}")
-
-    # Prefer 'time' length if present and 1D; else use the mode length
-    if "time" in data.files and getattr(data["time"], "ndim", 0) == 1:
-        n = int(data["time"].shape[0])
-    else:
-        # mode (most common) length among arrays
-        vals, counts = np.unique(np.array(lens), return_counts=True)
-        n = int(vals[np.argmax(counts)])
-
-    cols: dict[str, np.ndarray] = {}
-
-    for k in sorted(keys):
-        if k in skip_keys:
-            continue
-        v = data[k]
-
-        if np.ndim(v) == 0:
-            # scalar -> broadcast
-            cols[k] = np.repeat(v.item(), n)
-            continue
-
-        # 1D or ND: align first dimension to n by truncation (or pad if you prefer)
-        if v.shape[0] < n:
-            # If you want to pad instead of skip, do it here; for now, we take the shorter n
-            # but to keep a consistent table width we’ll just truncate n down for this column.
-            vi = v  # keep as-is; we will align by slicing [:vi.shape[0]] and then pad
-            # simple pad with NaN to length n
-            pad = np.full((n - vi.shape[0],), np.nan, dtype=float) if v.ndim == 1 else \
-                  np.full((n - vi.shape[0],) + v.shape[1:], np.nan, dtype=float)
-            vi = np.concatenate([vi, pad], axis=0)
-        else:
-            vi = v[:n]
-
-        if vi.ndim == 1:
-            cols[k] = vi
-        else:
-            flat = vi.reshape(n, -1)
-            for i in range(flat.shape[1]):
-                cols[f"{k}_{i}"] = flat[:, i]
-
-    df = pd.DataFrame(cols)
-
-    # id
-    if "id" in data.files and np.ndim(data["id"]) > 0:
-        try:
-            id_val = int(np.array(data["id"]).ravel()[0])
-        except Exception:
-            # fallback for weird dtypes
-            id_val = int(np.array(data["id"]).ravel()[0].astype(np.int64))
-    else:
-        # derive from filename suffix _id<digits>
-        m = _TREX_ID_SUFFIX.search(filepath.stem)
-        id_val = int(m.group(1)) if m else 0
-    df["id"] = id_val
-
-    # frame/time
-    if "frame" not in df.columns:
-        df["frame"] = np.arange(len(df), dtype=int)
-    if "time" not in df.columns:
-        if "frame_rate" in data.files:
-            fr = float(np.array(data["frame_rate"]).ravel()[0])
-            fr = fr if fr > 0 else 1.0
-            df["time"] = df["frame"] / fr
-        else:
-            df["time"] = df["frame"].astype(float)
-
-    return df
-
-
-def _trex_npz_converter(path: Path, params: dict) -> pd.DataFrame:
-    """
-    Convert a per-id TRex NPZ into our standard T-Rex-like DataFrame.
-    Ensures 'group' and 'sequence' columns; derives sequence from stem by
-    stripping '_id\\d+' unless explicitly provided in params.
-    """
-    df = _load_npz_to_df(path)
-
-    group = params.get("group") or ""
-    sequence = params.get("sequence") or _strip_trex_seq(path.stem)
-
-    df["group"] = group
-    df["sequence"] = sequence
-
-    # Validate (non-strict) against trex_v1 schema
-    ensure_track_schema(df, "trex_v1", strict=False)
-    return df
-
-# register converter
-register_track_converter("trex_npz", _trex_npz_converter)
 
 
 # ========================================================================================================= #
@@ -3105,6 +2692,16 @@ def register_feature(cls: type[Feature]):
 def _hash_params(d: dict) -> str:
     s = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha1(s.encode('utf-8')).hexdigest()[:10]
+
+
+def _build_scope_key(groups, sequences):
+    """Normalize scope into a deterministic hashable dict, or None if unrestricted."""
+    scope = {}
+    if groups is not None:
+        scope["groups"] = sorted({str(g) for g in groups})
+    if sequences is not None:
+        scope["sequences"] = sorted({str(s) for s in sequences})
+    return scope if scope else None
 
 # ----------------------------
 # Dataset helpers for tracks
@@ -4564,15 +4161,27 @@ def run_feature(self,
 
     # Prepare run id & root
     feature_params = getattr(feature, "params", {})
-    params_hash = _hash_params(feature_params)
+
+    # Include scope in hash for features whose fit result depends on input scope
+    scope_key = None
+    _nf = feature.needs_fit() if callable(getattr(feature, 'needs_fit', None)) else False
+    _lo = getattr(feature, 'loads_own_data', lambda: False)()
+    if _nf and _lo:
+        scope_key = _build_scope_key(groups, sequences)
+
+    hashable_params = {**feature_params, "_scope": scope_key} if scope_key else feature_params
+    params_hash = _hash_params(hashable_params)
     run_id = f"{feature.version}-{params_hash}"
     run_root = _feature_run_root(self, storage_feature_name, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    # Persist params for discoverability
+    # Persist params (with scope) for discoverability
     params_path = run_root / "params.json"
     try:
-        params_path.write_text(json.dumps(_json_ready(feature_params), indent=2))
+        save_payload = _json_ready(feature_params)
+        if scope_key is not None:
+            save_payload = {**save_payload, "_scope": scope_key}
+        params_path.write_text(json.dumps(save_payload, indent=2))
     except Exception as exc:
         print(f"[feature:{feature.name}] failed to save params.json: {exc}", file=sys.stderr)
 
@@ -5863,7 +5472,15 @@ def run_feature_remote(self,
     FeatureCls = getattr(importlib.import_module(module_path), class_name)
     feature_obj = FeatureCls(params or {})
     feature_params = getattr(feature_obj, "params", params or {})
-    params_hash = _hash_params(feature_params)
+
+    # Mirror scope-aware hashing from run_feature
+    _scope_key = None
+    _nf = feature_obj.needs_fit() if callable(getattr(feature_obj, 'needs_fit', None)) else False
+    _lo = getattr(feature_obj, 'loads_own_data', lambda: False)()
+    if _nf and _lo:
+        _scope_key = _build_scope_key(groups, sequences)
+    _hashable = {**feature_params, "_scope": _scope_key} if _scope_key else feature_params
+    params_hash = _hash_params(_hashable)
     expected_run_id = f"{feature_obj.version}-{params_hash}"
     storage_feature_name = getattr(feature_obj, "storage_feature_name", feature_obj.name)
     use_input_suffix = getattr(feature_obj, "storage_use_input_suffix", True)

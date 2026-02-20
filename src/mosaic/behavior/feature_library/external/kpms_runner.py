@@ -40,6 +40,11 @@ Usage (invoked automatically by mosaic, but can also be run manually)::
 
     /path/to/kpms/python kpms_runner.py fit   --data-dir /path --output-dir /path --config config.json
     /path/to/kpms/python kpms_runner.py apply --data-dir /path --output-dir /path --model-dir /path --config config.json
+
+To find the path, run this after installing:
+
+    conda run -n kpms which python
+    
 """
 
 from __future__ import annotations
@@ -84,6 +89,24 @@ def _load_config(config_path: Path) -> dict:
 # FIT command
 # ---------------------------------------------------------------------------
 
+def _try_load_checkpoint(kpms, output_dir: Path, model_name: str):
+    """Try to load a kpms checkpoint. Returns (model, data, metadata, iter) or None."""
+    checkpoint_path = output_dir / model_name / "checkpoint.h5"
+    if not checkpoint_path.exists():
+        return None
+    try:
+        result = kpms.load_checkpoint(
+            project_dir=str(output_dir),
+            model_name=model_name,
+        )
+        # Returns (model, data, metadata, current_iter)
+        if len(result) >= 4 and result[3] is not None:
+            return result
+    except Exception as e:
+        print(f"[kpms_runner:fit] WARN: failed to load checkpoint: {e}", file=sys.stderr)
+    return None
+
+
 def cmd_fit(args):
     import jax
     jax.config.update("jax_enable_x64", True)
@@ -93,6 +116,7 @@ def cmd_fit(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config = _load_config(Path(args.config))
+    resume = getattr(args, "resume", False)
 
     print("[kpms_runner:fit] Loading data...", file=sys.stderr)
     coordinates, confidences, bodyparts = _load_data(data_dir)
@@ -175,6 +199,18 @@ def cmd_fit(args):
         dtype = getattr(v, 'dtype', '?')
         print(f"[kpms_runner:fit]   data['{k}']: {shape} {dtype}", file=sys.stderr)
 
+    # Fix NaN in padded frames — format_data pads shorter recordings
+    # with NaN.  Replace NaN→0 in Y only (so PCA transform doesn't crash).
+    # Leave conf and mask as-is: NaN conf avoids triggering interpolation
+    # in preprocess_for_pca (jax: NaN < 0.5 → False), and mask=0 correctly
+    # excludes padded frames from PCA fitting and model inference.
+    Y_np = np.array(data['Y'])
+    n_nan_Y = int(np.isnan(Y_np).sum())
+    if n_nan_Y > 0:
+        Y_np = np.nan_to_num(Y_np, nan=0.0)
+        data['Y'] = jnp.array(Y_np, dtype=data['Y'].dtype)
+        print(f"[kpms_runner:fit]   fixed {n_nan_Y} NaN in Y→0 (conf/mask untouched)", file=sys.stderr)
+
     # Fit PCA
     print("[kpms_runner:fit] Fitting PCA...", file=sys.stderr)
     pca = kpms.fit_pca(**data, **kpms_config)
@@ -183,23 +219,51 @@ def cmd_fit(args):
     print("[kpms_runner:fit] Initializing model...", file=sys.stderr)
     model = kpms.init_model(data, pca=pca, **kpms_config)
 
+    # Memory management: split recordings into serial batches
+    mixed_map_iters = config.get("mixed_map_iters")
+    if mixed_map_iters is not None and int(mixed_map_iters) > 1:
+        from jax_moseq.utils import set_mixed_map_iters
+        set_mixed_map_iters(int(mixed_map_iters))
+        print(f"[kpms_runner:fit] set_mixed_map_iters({mixed_map_iters}) — serial batching enabled", file=sys.stderr)
+
+    parallel_mp = config.get("parallel_message_passing")
+
     # Optionally set kappa for AR-HMM
     kappa_ar = config.get("kappa_ar")
     if kappa_ar is not None:
         model = kpms.update_hypparams(model, kappa=kappa_ar)
 
+    # Checkpoint save frequency
+    save_every = int(config.get("save_every_n_iters", 25))
+
     # Fit AR-HMM
     num_ar = int(config.get("num_iters_ar", 50))
     if num_ar > 0:
-        print(f"[kpms_runner:fit] Fitting AR-HMM ({num_ar} iters)...", file=sys.stderr)
-        result = kpms.fit_model(
-            model, data, metadata,
-            project_dir=str(output_dir),
-            ar_only=True,
-            num_iters=num_ar,
-            save_every_n_iters=max(25, num_ar),
-        )
-        model = result[0] if isinstance(result, tuple) else result
+        ar_start_iter = 0
+
+        # Try to resume from checkpoint
+        if resume:
+            ckpt = _try_load_checkpoint(kpms, output_dir, "ar_hmm")
+            if ckpt is not None:
+                model, _, _, ar_start_iter = ckpt
+                print(f"[kpms_runner:fit] Resuming AR-HMM from iteration {ar_start_iter}", file=sys.stderr)
+
+        if ar_start_iter < num_ar:
+            print(f"[kpms_runner:fit] Fitting AR-HMM ({num_ar} iters, start={ar_start_iter})...", file=sys.stderr)
+            result = kpms.fit_model(
+                model, data, metadata,
+                project_dir=str(output_dir),
+                model_name="ar_hmm",
+                ar_only=True,
+                start_iter=ar_start_iter,
+                num_iters=num_ar,
+                save_every_n_iters=save_every,
+                parallel_message_passing=parallel_mp,
+                plot_every_n_iters=0,  # disable plot_progress (crashes with many recordings)
+            )
+            model = result[0] if isinstance(result, tuple) else result
+        else:
+            print(f"[kpms_runner:fit] AR-HMM already complete ({ar_start_iter} >= {num_ar}), skipping.", file=sys.stderr)
 
     # Fit full model
     num_full = int(config.get("num_iters_full", 500))
@@ -208,16 +272,32 @@ def cmd_fit(args):
         if kappa_full is not None:
             model = kpms.update_hypparams(model, kappa=kappa_full)
 
-        print(f"[kpms_runner:fit] Fitting full model ({num_full} iters)...", file=sys.stderr)
-        result = kpms.fit_model(
-            model, data, metadata,
-            project_dir=str(output_dir),
-            ar_only=False,
-            start_iter=num_ar,
-            num_iters=num_ar + num_full,
-            save_every_n_iters=max(25, num_full),
-        )
-        model = result[0] if isinstance(result, tuple) else result
+        full_start_iter = num_ar
+        total_full_iters = num_ar + num_full
+
+        # Try to resume from checkpoint
+        if resume:
+            ckpt = _try_load_checkpoint(kpms, output_dir, "full_model")
+            if ckpt is not None:
+                model, _, _, full_start_iter = ckpt
+                print(f"[kpms_runner:fit] Resuming full model from iteration {full_start_iter}", file=sys.stderr)
+
+        if full_start_iter < total_full_iters:
+            print(f"[kpms_runner:fit] Fitting full model ({num_full} iters, start={full_start_iter})...", file=sys.stderr)
+            result = kpms.fit_model(
+                model, data, metadata,
+                project_dir=str(output_dir),
+                model_name="full_model",
+                ar_only=False,
+                start_iter=full_start_iter,
+                num_iters=total_full_iters,
+                save_every_n_iters=save_every,
+                parallel_message_passing=parallel_mp,
+                plot_every_n_iters=0,  # disable plot_progress (crashes with many recordings)
+            )
+            model = result[0] if isinstance(result, tuple) else result
+        else:
+            print(f"[kpms_runner:fit] Full model already complete ({full_start_iter} >= {total_full_iters}), skipping.", file=sys.stderr)
 
     # Save outputs using joblib (cross-environment compatible)
     import joblib
@@ -236,6 +316,31 @@ def cmd_fit(args):
 # APPLY command
 # ---------------------------------------------------------------------------
 
+def _apply_batch(kpms, model, coordinates_batch, confidences_batch, kpms_config,
+                  output_dir, num_iters, batch_idx):
+    """Apply model to a single batch of recordings and return results dict."""
+    import jax.numpy as jnp
+
+    model_name = f"applied_batch{batch_idx}"
+    (output_dir / model_name).mkdir(parents=True, exist_ok=True)
+
+    data, metadata = kpms.format_data(coordinates_batch, confidences_batch, **kpms_config)
+
+    # Convert data arrays to 64-bit
+    for k in list(data.keys()):
+        if hasattr(data[k], 'dtype') and data[k].dtype != jnp.float64:
+            data[k] = jnp.array(data[k], dtype=jnp.float64) if 'mask' not in k else jnp.array(data[k])
+
+    results = kpms.apply_model(
+        model, data, metadata,
+        project_dir=str(output_dir),
+        model_name=model_name,
+        num_iters=num_iters,
+        **kpms_config,
+    )
+    return results
+
+
 def cmd_apply(args):
     import jax
     jax.config.update("jax_enable_x64", True)
@@ -247,6 +352,8 @@ def cmd_apply(args):
     model_dir = Path(args.model_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config = _load_config(Path(args.config))
+
+    batch_size = int(getattr(args, "batch_size", 0) or 0)
 
     # Load fitted model
     print("[kpms_runner:apply] Loading model...", file=sys.stderr)
@@ -260,27 +367,47 @@ def cmd_apply(args):
     coordinates, confidences, _ = _load_data(data_dir)
     print(f"[kpms_runner:apply] {len(coordinates)} recordings", file=sys.stderr)
 
-    # Format data
-    data, metadata = kpms.format_data(coordinates, confidences, **kpms_config)
-
-    # Convert data arrays to 64-bit (same as in cmd_fit)
-    import jax.numpy as jnp
-    for k in list(data.keys()):
-        if hasattr(data[k], 'dtype') and data[k].dtype != jnp.float64:
-            data[k] = jnp.array(data[k], dtype=jnp.float64) if 'mask' not in k else jnp.array(data[k])
-
-    # Apply model
     num_iters = int(config.get("num_iters_apply", 500))
-    model_name = "applied"
-    (output_dir / model_name).mkdir(parents=True, exist_ok=True)
-    print(f"[kpms_runner:apply] Applying model ({num_iters} iters)...", file=sys.stderr)
-    results = kpms.apply_model(
-        model, data, metadata,
-        project_dir=str(output_dir),
-        model_name=model_name,
-        num_iters=num_iters,
-        **kpms_config,
-    )
+    all_keys = list(coordinates.keys())
+
+    if batch_size > 0 and len(all_keys) > batch_size:
+        # Process in batches to avoid OOM
+        all_results = {}
+        n_batches = (len(all_keys) + batch_size - 1) // batch_size
+        print(f"[kpms_runner:apply] Processing in {n_batches} batches of {batch_size}", file=sys.stderr)
+
+        for i in range(n_batches):
+            batch_keys = all_keys[i * batch_size : (i + 1) * batch_size]
+            print(f"[kpms_runner:apply] Batch {i+1}/{n_batches}: {len(batch_keys)} recordings", file=sys.stderr)
+
+            coords_batch = {k: coordinates[k] for k in batch_keys}
+            conf_batch = {k: confidences[k] for k in batch_keys}
+
+            batch_results = _apply_batch(
+                kpms, model, coords_batch, conf_batch,
+                kpms_config, output_dir, num_iters, i,
+            )
+            all_results.update(batch_results)
+
+        results = all_results
+    else:
+        # Process all at once (original behavior)
+        import jax.numpy as jnp
+        data, metadata = kpms.format_data(coordinates, confidences, **kpms_config)
+        for k in list(data.keys()):
+            if hasattr(data[k], 'dtype') and data[k].dtype != jnp.float64:
+                data[k] = jnp.array(data[k], dtype=jnp.float64) if 'mask' not in k else jnp.array(data[k])
+
+        model_name = "applied"
+        (output_dir / model_name).mkdir(parents=True, exist_ok=True)
+        print(f"[kpms_runner:apply] Applying model ({num_iters} iters)...", file=sys.stderr)
+        results = kpms.apply_model(
+            model, data, metadata,
+            project_dir=str(output_dir),
+            model_name=model_name,
+            num_iters=num_iters,
+            **kpms_config,
+        )
 
     # Save per-recording results as individual npz files
     for recording_name, rec_data in results.items():
@@ -314,6 +441,7 @@ def main():
     p_fit.add_argument("--data-dir", required=True, help="Directory with coordinates.npz, confidences.npz, metadata.json")
     p_fit.add_argument("--output-dir", required=True, help="Directory to save model outputs")
     p_fit.add_argument("--config", required=True, help="Path to config JSON")
+    p_fit.add_argument("--resume", action="store_true", help="Resume from checkpoint if available")
 
     # apply
     p_apply = subparsers.add_parser("apply", help="Apply fitted model")
@@ -321,6 +449,7 @@ def main():
     p_apply.add_argument("--output-dir", required=True, help="Directory to save syllable outputs")
     p_apply.add_argument("--model-dir", required=True, help="Directory containing kpms_model.joblib")
     p_apply.add_argument("--config", required=True, help="Path to config JSON")
+    p_apply.add_argument("--batch-size", type=int, default=0, help="Process recordings in batches of this size (0=all at once)")
 
     args = parser.parse_args()
 

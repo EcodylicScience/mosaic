@@ -233,7 +233,14 @@ class TimelinePlot:
     def _is_filtered_out(self, seq_key: str, allowed: set[str]) -> bool:
         if not allowed:
             return False
-        return seq_key not in allowed and to_safe_name(seq_key) not in allowed
+        if seq_key in allowed or to_safe_name(seq_key) in allowed:
+            return False
+        # seq_key may be "group__sequence" — check just the sequence portion
+        if "__" in seq_key:
+            seq_part = seq_key.split("__", 1)[1]
+            if seq_part in allowed or to_safe_name(seq_part) in allowed:
+                return False
+        return True
 
     # -----------------------------------------------------------------
     # Auto-detection helpers
