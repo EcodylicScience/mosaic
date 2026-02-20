@@ -915,6 +915,12 @@ class Dataset:
                         if did_change:
                             data["output_dir"] = new_val
                             changed += 1
+                    # video_path -> relative to dataset root
+                    if "video_path" in data:
+                        new_val, did_change = _make_rel(data["video_path"])
+                        if did_change:
+                            data["video_path"] = new_val
+                            changed += 1
                     # files[].path -> filename only (they're siblings of run_info.json)
                     for f in data.get("files", []):
                         if "path" in f:
@@ -4960,11 +4966,13 @@ def extract_frames(
                     run_id=run_id,
                     output_dir=seq_dir,
                 )
-            # Re-write run_info.json with relative output_dir for portability
+            # Re-write run_info.json with relative paths for portability
             _manifest_path = seq_dir / "run_info.json"
             if _manifest_path.exists():
                 _mdata = json.loads(_manifest_path.read_text())
                 _mdata["output_dir"] = self._relative_to_root(seq_dir)
+                if "video_path" in _mdata:
+                    _mdata["video_path"] = self._relative_to_root(Path(_mdata["video_path"]))
                 _manifest_path.write_text(json.dumps(_mdata, indent=2))
             return {
                 "method": method_norm,
