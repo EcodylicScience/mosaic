@@ -4,6 +4,9 @@ Adapted from train-custom-YOLO-Colab/utils/prep.py.  Provides dataset
 filtering, label simplification, train/val/test splitting, and data.yaml
 generation — with extensions for pose (kpt_shape) and POLO (radii).
 
+Also provides :func:`tracks_to_yolo_pose` for converting standardized mosaic
+parquet tracks to YOLO pose labels.
+
 Tiling and Colab-specific UI code has been removed.
 """
 from __future__ import annotations
@@ -15,9 +18,14 @@ import shutil
 from collections import Counter
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
+import numpy as np
+import pandas as pd
 import yaml
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 
 # --------------------------------------------------------------------------- #
@@ -685,3 +693,285 @@ def make_polo_data_yaml(
     with out_path.open("w") as stream:
         yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
     return str(out_path)
+
+
+# --------------------------------------------------------------------------- #
+# Track-to-YOLO-pose conversion
+# --------------------------------------------------------------------------- #
+
+def _keypoint_to_yolo_label(
+    pose_x: np.ndarray,
+    pose_y: np.ndarray,
+    img_w: int,
+    img_h: int,
+    class_id: int = 0,
+    bbox_padding: float = 0.15,
+) -> str | None:
+    """Convert one animal's keypoints to a YOLO pose label line.
+
+    Parameters
+    ----------
+    pose_x, pose_y : ndarray, shape (K,)
+        Keypoint x, y coordinates in pixels for one animal.
+    img_w, img_h : int
+        Image dimensions.
+    class_id : int
+        Class index (default 0).
+    bbox_padding : float
+        Fractional padding around the keypoint bounding box.
+
+    Returns
+    -------
+    str or None
+        YOLO pose label line, or None if the keypoints are invalid.
+    """
+    if np.allclose(pose_x, 0) and np.allclose(pose_y, 0):
+        return None
+    if not np.all(np.isfinite(pose_x)) or not np.all(np.isfinite(pose_y)):
+        return None
+
+    x_min, x_max = float(pose_x.min()), float(pose_x.max())
+    y_min, y_max = float(pose_y.min()), float(pose_y.max())
+    pad_x = (x_max - x_min) * bbox_padding
+    pad_y = (y_max - y_min) * bbox_padding
+    x_min_pad = max(0, x_min - pad_x)
+    y_min_pad = max(0, y_min - pad_y)
+    x_max_pad = min(img_w, x_max + pad_x)
+    y_max_pad = min(img_h, y_max + pad_y)
+
+    cx = (x_min_pad + x_max_pad) / 2 / img_w
+    cy = (y_min_pad + y_max_pad) / 2 / img_h
+    w_box = (x_max_pad - x_min_pad) / img_w
+    h_box = (y_max_pad - y_min_pad) / img_h
+
+    parts = [f"{class_id} {cx:.6f} {cy:.6f} {w_box:.6f} {h_box:.6f}"]
+    for k in range(len(pose_x)):
+        parts.append(f"{pose_x[k] / img_w:.6f} {pose_y[k] / img_h:.6f} 2")
+    return " ".join(parts)
+
+
+def tracks_to_yolo_pose(
+    ds: "Dataset",
+    extraction_method: str,
+    n_keypoints: int,
+    output_dir: str | Path,
+    *,
+    class_id: int = 0,
+    bbox_padding: float = 0.15,
+    split: tuple[float, float, float] = (0.8, 0.15, 0.05),
+    seed: int = 42,
+    video_stem_to_sequence: dict[str, str] | None = None,
+) -> Path:
+    """Convert standardized mosaic tracks + extracted frames to a YOLO pose dataset.
+
+    Reads parquet tracks that contain ``poseX0..poseX{K-1}`` and
+    ``poseY0..poseY{K-1}`` columns (the standard mosaic track format),
+    matches them to extracted frames, and writes YOLO pose label files
+    with train/valid/test splits.
+
+    Parameters
+    ----------
+    ds : Dataset
+        Loaded mosaic Dataset with indexed media, extracted frames, and
+        converted tracks.
+    extraction_method : str
+        Frame extraction method name (e.g. ``"kmeans"`` or ``"uniform"``).
+    n_keypoints : int
+        Number of keypoints per animal (e.g. 7 for CalMS21 MARS).
+    output_dir : path
+        Root directory for the output YOLO dataset.  Will contain
+        ``train/``, ``valid/``, ``test/`` subdirectories.
+    class_id : int
+        YOLO class index for all detections (default 0).
+    bbox_padding : float
+        Fractional padding around keypoint bounding box (default 0.15).
+    split : (float, float, float)
+        Train / valid / test fractions (must sum to ~1.0).
+    seed : int
+        Random seed for split assignment.
+    video_stem_to_sequence : dict, optional
+        Explicit mapping from video filename stem to track sequence name.
+        If None, auto-built from ``tracks/index.csv`` using
+        ``Path(sequence).name`` as the video stem.
+
+    Returns
+    -------
+    Path
+        Path to the merged output directory containing the final
+        train/valid/test dataset.
+    """
+    output_dir = Path(output_dir)
+
+    # ── Column names ──
+    pose_x_cols = [f"poseX{k}" for k in range(n_keypoints)]
+    pose_y_cols = [f"poseY{k}" for k in range(n_keypoints)]
+
+    # ── Load tracks index and build mapping ──
+    tracks_root = ds.get_root("tracks")
+    tracks_idx = pd.read_csv(tracks_root / "index.csv")
+
+    if video_stem_to_sequence is None:
+        # Auto-build: video stem == last component of sequence path
+        tracks_idx["_video_stem"] = tracks_idx["sequence"].apply(
+            lambda s: Path(s).name
+        )
+        stem_to_idx: dict[str, int] = {}
+        for i, stem in enumerate(tracks_idx["_video_stem"]):
+            stem_to_idx.setdefault(stem, i)
+    else:
+        # Use explicit mapping — build sequence-name -> row index
+        seq_to_idx = {
+            row["sequence"]: i for i, row in tracks_idx.iterrows()
+        }
+        stem_to_idx = {}
+        for stem, seq_name in video_stem_to_sequence.items():
+            if seq_name in seq_to_idx:
+                stem_to_idx[stem] = seq_to_idx[seq_name]
+
+    # ── Match manifests to tracks ──
+    all_manifests = ds.get_frame_manifests(extraction_method)
+    pairs: list[tuple[dict, Path, str]] = []
+    unmatched: list[str] = []
+
+    for manifest in all_manifests:
+        video_stem = Path(manifest["video_path"]).stem
+        if video_stem in stem_to_idx:
+            row = tracks_idx.iloc[stem_to_idx[video_stem]]
+            track_path = ds.resolve_path(row["abs_path"])
+            pairs.append((manifest, track_path, video_stem))
+        else:
+            unmatched.append(video_stem)
+
+    print(f"[tracks_to_yolo_pose] Matched: {len(pairs)} video-track pairs")
+    if unmatched:
+        print(f"  Unmatched: {len(unmatched)} videos: {unmatched[:5]}")
+
+    if not pairs:
+        raise RuntimeError("No video-track matches found.")
+
+    # ── Per-video conversion ──
+    per_video_dir = output_dir / "_per_video"
+    rng = np.random.RandomState(seed)
+
+    total_labels = 0
+    total_skipped = 0
+
+    for i, (manifest, track_path, video_stem) in enumerate(pairs):
+        video_meta = manifest["video_meta"]
+        img_w, img_h = video_meta["width"], video_meta["height"]
+        df_track = pd.read_parquet(track_path)
+
+        # Verify pose columns exist
+        missing = [c for c in pose_x_cols + pose_y_cols if c not in df_track.columns]
+        if missing:
+            print(f"  [{video_stem}] Missing columns: {missing[:4]}... - skipping")
+            continue
+
+        vid_dir = per_video_dir / video_stem
+        for subset in ("train", "valid", "test"):
+            (vid_dir / subset / "images").mkdir(parents=True, exist_ok=True)
+            (vid_dir / subset / "labels").mkdir(parents=True, exist_ok=True)
+
+        # Assign frames to splits
+        frame_files = manifest["files"]
+        n_frames = len(frame_files)
+        indices = rng.permutation(n_frames)
+        n_train = int(n_frames * split[0])
+        n_valid = int(n_frames * split[1])
+
+        split_map: dict[int, str] = {}
+        for j, idx in enumerate(indices):
+            if j < n_train:
+                split_map[idx] = "train"
+            elif j < n_train + n_valid:
+                split_map[idx] = "valid"
+            else:
+                split_map[idx] = "test"
+
+        video_labels = 0
+        video_skipped = 0
+
+        for j, rec in enumerate(frame_files):
+            frame_idx = rec["frame_index"]
+            img_path = Path(rec["path"])
+            subset = split_map[j]
+
+            df_frame = df_track[df_track["frame"] == frame_idx]
+            if df_frame.empty:
+                video_skipped += 1
+                continue
+
+            label_lines: list[str] = []
+            for animal_id in sorted(df_frame["id"].unique()):
+                row_a = df_frame[df_frame["id"] == animal_id]
+                px = row_a[pose_x_cols].values.ravel()
+                py = row_a[pose_y_cols].values.ravel()
+                line = _keypoint_to_yolo_label(
+                    px, py, img_w, img_h, class_id, bbox_padding
+                )
+                if line:
+                    label_lines.append(line)
+
+            if not label_lines:
+                video_skipped += 1
+                continue
+
+            # Symlink image
+            img_dest = vid_dir / subset / "images" / img_path.name
+            if not img_dest.exists():
+                img_dest.symlink_to(img_path.resolve())
+
+            # Write label
+            lbl_dest = vid_dir / subset / "labels" / (img_path.stem + ".txt")
+            lbl_dest.write_text("\n".join(label_lines) + "\n")
+            video_labels += 1
+
+        total_labels += video_labels
+        total_skipped += video_skipped
+        print(
+            f"  [{i + 1}/{len(pairs)}] {video_stem}: "
+            f"{video_labels} labels, {video_skipped} skipped"
+        )
+
+    print(f"  Total: {total_labels} labels, {total_skipped} skipped")
+
+    # ── Merge per-video into single dataset ──
+    merged_dir = output_dir / "_merged"
+    if merged_dir.exists():
+        shutil.rmtree(merged_dir)
+
+    for subset in ("train", "valid", "test"):
+        (merged_dir / subset / "images").mkdir(parents=True, exist_ok=True)
+        (merged_dir / subset / "labels").mkdir(parents=True, exist_ok=True)
+
+    merged_count = 0
+    for manifest, track_path, video_stem in pairs:
+        src_root = per_video_dir / video_stem
+        if not src_root.exists():
+            continue
+        prefix = video_stem.replace("-", "_").replace(" ", "_")[:30] + "__"
+
+        for subset in ("train", "valid", "test"):
+            src_imgs = src_root / subset / "images"
+            src_lbls = src_root / subset / "labels"
+            if not src_imgs.exists():
+                continue
+            for img_file in src_imgs.iterdir():
+                dest_name = prefix + img_file.name
+                real_src = img_file.resolve() if img_file.is_symlink() else img_file
+                shutil.copy2(real_src, merged_dir / subset / "images" / dest_name)
+                lbl_file = src_lbls / (img_file.stem + ".txt")
+                if lbl_file.exists():
+                    shutil.copy2(
+                        lbl_file,
+                        merged_dir / subset / "labels" / (prefix + img_file.stem + ".txt"),
+                    )
+                merged_count += 1
+
+    # Remove empty test split
+    test_imgs = merged_dir / "test" / "images"
+    if test_imgs.exists() and not any(test_imgs.iterdir()):
+        shutil.rmtree(merged_dir / "test")
+
+    print(f"[tracks_to_yolo_pose] Merged {merged_count} pairs -> {merged_dir}")
+    return merged_dir

@@ -12,7 +12,7 @@ Requires optional dependency:
 from . import converters
 from .converters import lightning_pose, coco_keypoints, coco_points, coco_localizer, cvat_points, cvat_localizer
 from .converters.base import KeypointSchema, PointDetectionSchema, LocalizerSchema
-from .prep import prepare_yolo_dataset, make_data_yaml, make_polo_data_yaml, check_dataset
+from .prep import prepare_yolo_dataset, make_data_yaml, make_polo_data_yaml, check_dataset, tracks_to_yolo_pose
 from .train import (
     train_pose_model,
     train_point_model,
