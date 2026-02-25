@@ -35,3 +35,11 @@ from .localizer_inference import (
     localizer_detections_to_dataframe,
 )
 from .localizer_weights import convert_keras_weights, load_localizer_weights
+from .augmentation import (
+    YOLO_AUGMENTATION_PRESETS,
+    LOCALIZER_AUGMENT_PRESETS,
+    LocalizerAugmentConfig,
+    resolve_augmentation,
+    resolve_localizer_augment,
+    augment_localizer_batch,
+)

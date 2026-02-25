@@ -37,7 +37,7 @@ def train_pose_model(
     project: str | Path | None = None,
     name: str | None = None,
     patience: int = 50,
-    augmentation: dict[str, Any] | None = None,
+    augmentation: str | dict[str, Any] | None = None,
     **extra_args: Any,
 ) -> Any:
     """Train a YOLO pose estimation model.
@@ -62,10 +62,16 @@ def train_pose_model(
         Run name.  Defaults to a timestamp.
     patience : int
         Early stopping patience (0 to disable).
-    augmentation : dict, optional
-        YOLO augmentation overrides. Common keys:
-        degrees, translate, scale, flipud, fliplr, mosaic, mixup,
-        copy_paste, hsv_h, hsv_s, hsv_v, close_mosaic, amp.
+    augmentation : str, dict, or None
+        Augmentation configuration.  Can be:
+
+        - A preset name: ``"none"``, ``"light"``, ``"medium"``, ``"heavy"``.
+        - A dict with a ``"preset"`` key plus overrides, e.g.
+          ``{"preset": "light", "flipud": 0.5}``.
+        - A raw dict of ultralytics augmentation kwargs (degrees, translate,
+          scale, flipud, fliplr, mosaic, mixup, copy_paste, hsv_h, hsv_s,
+          hsv_v, close_mosaic, etc.).
+        - ``None`` to use ultralytics defaults.
     **extra_args
         Additional keyword arguments passed to YOLO.train().
 
@@ -94,8 +100,10 @@ def train_pose_model(
         name=name,
         patience=patience,
     )
-    if augmentation:
-        train_kwargs.update(augmentation)
+    from .augmentation import resolve_augmentation
+    aug_dict = resolve_augmentation(augmentation)
+    if aug_dict:
+        train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
     results = yolo.train(**train_kwargs)
@@ -224,7 +232,7 @@ def train_point_model(
     loc: float = 5.0,
     loc_loss: str = "mse",
     dor: float = 0.8,
-    augmentation: dict[str, Any] | None = None,
+    augmentation: str | dict[str, Any] | None = None,
     backend: str = "polo",
     **extra_args: Any,
 ) -> Any:
@@ -258,8 +266,14 @@ def train_point_model(
         Localization loss type: ``"mse"``, ``"hausdorff"``, etc.
     dor : float
         Distance of Reference threshold for evaluation (POLO-specific).
-    augmentation : dict, optional
-        YOLO augmentation overrides (degrees, translate, scale, etc.).
+    augmentation : str, dict, or None
+        Augmentation configuration.  Can be:
+
+        - A preset name: ``"none"``, ``"light"``, ``"medium"``, ``"heavy"``.
+        - A dict with a ``"preset"`` key plus overrides, e.g.
+          ``{"preset": "light", "flipud": 0.5}``.
+        - A raw dict of ultralytics augmentation kwargs.
+        - ``None`` to use ultralytics defaults.
     backend : str
         Point-detection backend.  Currently only ``"polo"`` is supported.
     **extra_args
@@ -299,8 +313,10 @@ def train_point_model(
         loc_loss=loc_loss,
         dor=dor,
     )
-    if augmentation:
-        train_kwargs.update(augmentation)
+    from .augmentation import resolve_augmentation
+    aug_dict = resolve_augmentation(augmentation)
+    if aug_dict:
+        train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
     results = yolo.train(**train_kwargs)

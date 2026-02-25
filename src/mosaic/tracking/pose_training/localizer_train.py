@@ -72,21 +72,6 @@ def _make_dataloader(dataset_dir: Path, subset: str, batch_size: int, shuffle: b
     )
 
 
-def _augment_batch(patches, rng: np.random.RandomState):
-    """Apply random augmentations to a batch of (B, 1, H, W) tensors."""
-    # Random horizontal flip (per-batch — fast)
-    if rng.random() > 0.5:
-        patches = patches.flip(-1)
-    # Random vertical flip
-    if rng.random() > 0.5:
-        patches = patches.flip(-2)
-    # Random 90° rotation
-    k = rng.randint(0, 4)
-    if k > 0:
-        patches = patches.rot90(k, dims=(-2, -1))
-    return patches
-
-
 def train_localizer(
     dataset_dir: str | Path,
     *,
@@ -104,7 +89,7 @@ def train_localizer(
     device: str = "0",
     project: str | Path | None = None,
     name: str | None = None,
-    augment: bool = True,
+    augment: "bool | str | LocalizerAugmentConfig" = True,
     seed: int = 42,
 ) -> TrainingResult:
     """Train a localizer heatmap model.
@@ -143,8 +128,13 @@ def train_localizer(
         Project directory.  Defaults to ``"./runs/localizer"``.
     name : str, optional
         Run name.  Defaults to a timestamp.
-    augment : bool
-        Apply random flips/rotations during training.
+    augment : bool, str, or LocalizerAugmentConfig
+        Augmentation configuration.  Can be:
+
+        - ``True``: use ``"light"`` preset (flip + rotate, backwards compatible).
+        - ``False``: no augmentation.
+        - A preset name: ``"none"``, ``"light"``, ``"medium"``, ``"heavy"``.
+        - A :class:`~.augmentation.LocalizerAugmentConfig` for full control.
     seed : int
         Random seed.
 
@@ -157,8 +147,10 @@ def train_localizer(
     import torch.nn as nn
     from .localizer_model import LocalizerEncoder, LocalizerTrainWrapper
     from .localizer_weights import load_localizer_weights
+    from .augmentation import resolve_localizer_augment, augment_localizer_batch
 
     dataset_dir = Path(dataset_dir)
+    aug_config = resolve_localizer_augment(augment)
 
     if project is None:
         project = "./runs/localizer"
@@ -235,8 +227,8 @@ def train_localizer(
 
         for patches, labels in train_loader:
             patches, labels = patches.to(dev), labels.to(dev)
-            if augment:
-                patches = _augment_batch(patches, np_rng)
+            if aug_config is not None:
+                patches = augment_localizer_batch(patches, aug_config, np_rng)
 
             preds = wrapper(patches)
             loss = criterion(preds, labels)
@@ -307,17 +299,32 @@ def train_localizer(
         for i in range(len(history["train/loss"])):
             writer.writerow([history[c][i] for c in cols])
 
-    # Save run config
+    # Save run config (all training parameters for reproducibility)
+    if aug_config is not None:
+        from dataclasses import asdict
+        aug_saved: Any = asdict(aug_config)
+    else:
+        aug_saved = None
+
     config = {
+        "dataset_dir": str(dataset_dir),
         "num_classes": num_classes,
         "initial_channels": initial_channels,
+        "weights": str(weights) if weights else None,
+        "freeze_encoder": freeze_encoder,
+        "epochs": epochs,
         "epochs_run": len(history["train/loss"]),
         "best_epoch": best_epoch + 1,
         "best_val_loss": best_val_loss,
-        "lr": lr,
         "batch_size": batch_size,
-        "freeze_encoder": freeze_encoder,
-        "weights": str(weights) if weights else None,
+        "lr": lr,
+        "min_lr": min_lr,
+        "lr_patience": lr_patience,
+        "lr_factor": lr_factor,
+        "early_stopping_patience": early_stopping_patience,
+        "device": device,
+        "augmentation": aug_saved,
+        "seed": seed,
     }
     with open(run_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
