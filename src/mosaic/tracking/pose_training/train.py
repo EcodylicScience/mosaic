@@ -165,6 +165,7 @@ def validate_model(
     device: str = "0",
     imgsz: int = 640,
     split: str = "val",
+    project: str | Path | None = None,
 ) -> Any:
     """Run validation on a trained pose model.
 
@@ -180,12 +181,22 @@ def validate_model(
         Image size.
     split : str
         Dataset split to evaluate on: "val", "test", or "train".
+    project : path, optional
+        Directory where validation results are saved.  Defaults to the
+        training run directory (two levels up from the model weights).
 
     Returns the ultralytics validation results with metrics.
     """
     YOLO = _require_ultralytics()
     yolo = YOLO(str(model_path))
-    results = yolo.val(data=str(data_yaml), device=device, imgsz=imgsz, split=split)
+
+    if project is None:
+        project = str(Path(model_path).resolve().parent.parent)
+
+    results = yolo.val(
+        data=str(data_yaml), device=device, imgsz=imgsz, split=split,
+        project=str(project),
+    )
     return results
 
 
@@ -332,6 +343,7 @@ def validate_point_model(
     split: str = "val",
     dor: float = 0.8,
     radii: dict[int, float] | None = None,
+    project: str | Path | None = None,
 ) -> Any:
     """Run validation on a trained POLO point-detection model.
 
@@ -351,6 +363,9 @@ def validate_point_model(
         Distance of Reference threshold.
     radii : dict, optional
         Override radii from data.yaml.  ``{class_id: radius_px}``.
+    project : path, optional
+        Directory where validation results are saved.  Defaults to the
+        training run directory (two levels up from the model weights).
 
     Returns
     -------
@@ -360,12 +375,16 @@ def validate_point_model(
     YOLO = _require_polo()
     yolo = YOLO(str(model_path))
 
+    if project is None:
+        project = str(Path(model_path).resolve().parent.parent)
+
     val_kwargs: dict[str, Any] = dict(
         data=str(data_yaml),
         device=device,
         imgsz=imgsz,
         split=split,
         dor=dor,
+        project=str(project),
     )
     if radii is not None:
         val_kwargs["radii"] = radii

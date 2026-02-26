@@ -173,17 +173,15 @@ LOCALIZER_AUGMENT_PRESETS: dict[str, LocalizerAugmentConfig] = {
     ),
     "light": LocalizerAugmentConfig(
         flip_h=True, flip_v=True, rotate_90=True,
-        brightness=0.05, contrast=(0.9, 1.1),
     ),
     "medium": LocalizerAugmentConfig(
         flip_h=True, flip_v=True, rotate_90=True,
-        brightness=0.1, contrast=(0.8, 1.2),
-        gaussian_noise_std=0.02,
+        brightness=0.05, contrast=(0.9, 1.1),
     ),
     "heavy": LocalizerAugmentConfig(
         flip_h=True, flip_v=True, rotate_90=True,
-        brightness=0.15, contrast=(0.7, 1.3),
-        gaussian_noise_std=0.04,
+        brightness=0.1, contrast=(0.8, 1.2),
+        gaussian_noise_std=0.02,
     ),
 }
 
