@@ -1,6 +1,7 @@
 # OS / editor
 .DS_Store
 .claude/
+.worktrees/
 
 # Python cache / build
 __pycache__/
