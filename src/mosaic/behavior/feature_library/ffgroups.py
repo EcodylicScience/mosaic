@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Iterable, Optional
 from itertools import groupby, count
 
 import numpy as np
 import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.spatial.distance import cdist
+from pydantic import Field
 
 import numba
 from numba import njit
 import networkx as nx
 from mosaic.core.dataset import register_feature
+from ._param_bases import FeatureParams, PositionColumnsMixin
 
 
 # ===== Numba-accelerated union-find for connected components =====
@@ -89,14 +91,6 @@ def _calculate_gmembership_numba(pwdf, nparticles, numsteps, threshold):
     return groupmembership
 
 
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
-
-
 @register_feature
 class FFGroups:
     """
@@ -114,21 +108,15 @@ class FFGroups:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        id_col="id",
-        x_col="X",
-        y_col="Y",
-        frame_col="frame",
-        time_col="time",
-        group_col="group",
-        seq_col="sequence",
-        distance_cutoff=50.0,   # distance threshold for same-group assignment
-        window_size=5,          # smoothing window (frames); uses nanmean
-        min_event_duration=1,   # frames
-    )
+    class Params(FeatureParams, PositionColumnsMixin):
+        frame_col: str = "frame"
+        time_col: str = "time"
+        distance_cutoff: float = Field(default=50.0, gt=0)
+        window_size: int = Field(default=5, ge=1)
+        min_event_duration: int = Field(default=1, ge=1)
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -154,17 +142,17 @@ class FFGroups:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p["id_col"]
-        x_col, y_col = p["x_col"], p["y_col"]
-        frame_col = p["frame_col"]
-        time_col = p.get("time_col")
-        group_col, seq_col = p["group_col"], p["seq_col"]
-        distance_cutoff = float(p["distance_cutoff"])
-        win = max(1, int(p["window_size"]))
+        id_col = p.id_col
+        x_col, y_col = p.x_col, p.y_col
+        frame_col = p.frame_col
+        time_col = p.time_col
+        group_col, seq_col = p.group_col, p.seq_col
+        distance_cutoff = p.distance_cutoff
+        win = max(1, p.window_size)
         if np.mod(win,2)==0:
             raise ValueError('window_size must be an odd integer')
 
-        min_event = int(p["min_event_duration"])
+        min_event = p.min_event_duration
 
         # Basic ordering and bookkeeping
         order_cols = [c for c in (frame_col, time_col) if c in df.columns]

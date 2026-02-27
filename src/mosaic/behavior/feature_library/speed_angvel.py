@@ -1,17 +1,11 @@
+from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List
+from typing import Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
-
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams, PositionColumnsMixin
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
@@ -47,20 +41,12 @@ class SpeedAngvel:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        time_col="time",
-        order_pref=("frame", "time"),
-        x_col="X",
-        y_col="Y",
-        angle_col="ANGLE",
-        step_size=None,  # if None, skip _step outputs
-    )
+    class Params(FeatureParams, PositionColumnsMixin):
+        time_col: str = "time"
+        step_size: int | None = None
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -103,7 +89,7 @@ class SpeedAngvel:
         p = self.params
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
-        id_col = p["id_col"]
+        id_col = p.id_col
 
         if id_col not in df.columns:
             raise ValueError(f"Missing id column '{id_col}' for per-id speed/angvel.")
@@ -118,7 +104,7 @@ class SpeedAngvel:
 
     # ------------------ Internal helpers ------------------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -146,12 +132,12 @@ class SpeedAngvel:
         dt = self._dt(step, time_arr, len(angle))
         return dtheta / dt
 
-    def _compute_one_id(self, sub: pd.DataFrame, p: dict, order_col: str) -> pd.DataFrame:
+    def _compute_one_id(self, sub: pd.DataFrame, p, order_col: str) -> pd.DataFrame:
         sub = sub.sort_values(order_col).reset_index(drop=True)
-        x = sub[p["x_col"]].to_numpy(dtype=float)
-        y = sub[p["y_col"]].to_numpy(dtype=float)
-        angle = sub[p["angle_col"]].to_numpy(dtype=float) if p["angle_col"] in sub.columns else None
-        time_arr = sub[p["time_col"]].to_numpy(dtype=float) if p["time_col"] in sub.columns else None
+        x = sub[p.x_col].to_numpy(dtype=float)
+        y = sub[p.y_col].to_numpy(dtype=float)
+        angle = sub[p.angle_col].to_numpy(dtype=float) if p.angle_col in sub.columns else None
+        time_arr = sub[p.time_col].to_numpy(dtype=float) if p.time_col in sub.columns else None
 
         out = pd.DataFrame({
             "speed": self._compute_speed(x, y, step=1, time_arr=time_arr),
@@ -159,7 +145,7 @@ class SpeedAngvel:
         if angle is not None:
             out["angvel"] = self._compute_angvel(angle, step=1, time_arr=time_arr)
 
-        step_size = p.get("step_size")
+        step_size = p.step_size
         if step_size:
             step_size = int(step_size)
             out["speed_step"] = self._compute_speed(x, y, step=step_size, time_arr=time_arr)
@@ -167,7 +153,7 @@ class SpeedAngvel:
                 out["angvel_step"] = self._compute_angvel(angle, step=step_size, time_arr=time_arr)
 
         # Attach meta columns from this sub-id
-        for c in ("frame", "time", p["seq_col"], p["group_col"], p["id_col"]):
+        for c in ("frame", "time", p.seq_col, p.group_col, p.id_col):
             if c in sub.columns:
                 out[c] = sub[c].values
         return out

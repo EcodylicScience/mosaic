@@ -5,10 +5,11 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, Iterable, List, Tuple
+from typing import Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 try:
     import pywt
@@ -17,7 +18,7 @@ except Exception:
     _PYWT_OK = False
 
 from mosaic.core.dataset import register_feature
-from .helpers import _merge_params
+from ._param_bases import FeatureParams
 
 
 @register_feature
@@ -45,43 +46,31 @@ class PairWavelet:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        # sampling
-        fps_default=30.0,
+    class Params(FeatureParams):
+        fps_default: float = Field(default=30.0, gt=0)
+        f_min: float = Field(default=0.2, gt=0)
+        f_max: float = Field(default=5.0, gt=0)
+        n_freq: int = Field(default=25, gt=0)
+        wavelet: str = "cmor1.5-1.0"
+        log_floor: float = -3.0
+        pc_prefix: str = "PC"
+        cols: list[str] | None = None
 
-        # wavelet band and resolution
-        f_min=0.2,
-        f_max=5.0,
-        n_freq=25,
-
-        # wavelet family string (PyWavelets)
-        wavelet="cmor1.5-1.0",
-
-        # log power clamp
-        log_floor=-3.0,
-
-        # naming / passthrough
-        pc_prefix="PC",                 # columns like PC0, PC1, ...
-        order_pref=("frame", "time"),   # which column to use as the time base
-        seq_col="sequence",
-        group_col="group",
-        cols=None,  # explicit list of columns to transform; if None, fallback to PC prefix or auto-detect numeric columns
-    )
     def _select_input_columns(self, df: pd.DataFrame) -> List[str]:
         # 1) explicit columns override
-        cols_param = self.params.get("cols", None)
+        cols_param = self.params.cols
         if cols_param:
             cols = [c for c in cols_param if c in df.columns]
             if not cols:
                 raise ValueError("[pair-wavelet] None of the requested 'cols' are present in df.")
             return cols
         # 2) PC-prefixed columns
-        pc_cols = self._pc_columns(df, self.params["pc_prefix"])
+        pc_cols = self._pc_columns(df, self.params.pc_prefix)
         if pc_cols:
             return pc_cols
         # 3) Auto-detect: all numeric columns except known meta
-        meta_like = {self.params.get("seq_col", "sequence"),
-                     self.params.get("group_col", "group"),
+        meta_like = {self.params.seq_col,
+                     self.params.group_col,
                      "frame", "time", "perspective", "id", "fps",
                      "id1", "id2"}
         num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in meta_like]
@@ -89,12 +78,12 @@ class PairWavelet:
             raise ValueError("[pair-wavelet] Could not auto-detect numeric feature columns.")
         return num_cols
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, params: dict[str, object] | None = None):
         if not _PYWT_OK:
             raise ImportError(
                 "PyWavelets (pywt) not available. Install with `pip install PyWavelets`."
             )
-        self.params = _merge_params(params, self._defaults)
+        self.params = self.Params.from_overrides(params)
         # pre-build frequency vector & scales for speed; will recompute if params change
         self._cache_key = None
         self._frequencies = None
@@ -111,7 +100,7 @@ class PairWavelet:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = self._order_col(df)
-        fps = self._infer_fps(df, p["fps_default"])
+        fps = self._infer_fps(df, p.fps_default)
         in_cols = self._select_input_columns(df)
         if "perspective" not in df.columns:
             raise ValueError("[pair-wavelet] Missing 'perspective' column.")
@@ -150,7 +139,7 @@ class PairWavelet:
             # log + clamp
             eps = np.finfo(np.float32).tiny
             log_power = np.log(power + eps)
-            log_power = np.maximum(log_power, float(p["log_floor"]))
+            log_power = np.maximum(log_power, p.log_floor)
 
             # flatten to (T, k*n_freq)
             flat = log_power.reshape(k * len(self._frequencies), T).T  # (T, F_flat)
@@ -171,7 +160,7 @@ class PairWavelet:
                 block["id2"] = cur_id2
 
             # optional passthrough
-            for col in (p["seq_col"], p["group_col"]):
+            for col in (p.seq_col, p.group_col):
                 if col in df.columns:
                     block[col] = df[col].iloc[0]
 
@@ -191,9 +180,9 @@ class PairWavelet:
         try:
             out.attrs["frequencies_hz"] = self._frequencies.tolist() if self._frequencies is not None else []
             out.attrs["scales"] = self._scales.tolist() if self._scales is not None else []
-            out.attrs["wavelet"] = str(self.params.get("wavelet", ""))
+            out.attrs["wavelet"] = str(self.params.wavelet)
             out.attrs["fps"] = float(fps)
-            out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(self.params.get("pc_prefix","PC"))]
+            out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(self.params.pc_prefix)]
             out.attrs["input_columns"] = list(map(str, in_cols))
         except Exception:
             # As a safety net, drop attrs if anything is not serializable
@@ -202,7 +191,7 @@ class PairWavelet:
 
     # ---- internals ----
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column in df.")
@@ -231,13 +220,13 @@ class PairWavelet:
         return pc_cols
 
     def _prepare_band(self, fps: float) -> None:
-        key = (self.params["wavelet"], float(self.params["f_min"]),
-               float(self.params["f_max"]), int(self.params["n_freq"]), float(fps))
+        key = (self.params.wavelet, self.params.f_min,
+               self.params.f_max, self.params.n_freq, float(fps))
         if self._cache_key == key and self._frequencies is not None:
             return
-        f_min = float(self.params["f_min"])
-        f_max = float(self.params["f_max"])
-        n_freq = int(self.params["n_freq"])
+        f_min = self.params.f_min
+        f_max = self.params.f_max
+        n_freq = self.params.n_freq
         # dyadic spacing
         freqs = 2.0 ** np.linspace(np.log2(f_min), np.log2(f_max), n_freq)
         w = self._wavelet_obj()
@@ -249,4 +238,4 @@ class PairWavelet:
         self._cache_key = key
 
     def _wavelet_obj(self):
-        return pywt.ContinuousWavelet(self.params["wavelet"])
+        return pywt.ContinuousWavelet(self.params.wavelet)

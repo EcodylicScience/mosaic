@@ -1,17 +1,12 @@
+from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, Sequence
+from typing import Optional, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from pydantic import Field
 from mosaic.core.dataset import register_feature
-
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams
 
 
 def _binned_mean_fast(xvals: np.ndarray, values: np.ndarray, edges: np.ndarray) -> np.ndarray:
@@ -100,25 +95,22 @@ class NearestNeighborDeltaBins:
     parallelizable = True
     output_type = "summary"
 
-    _defaults = dict(
-        nbins=45,
-        binmax=14.0,
-        max_for_avg=5.0,
-        antisymm=True,
-        focal_category_col="Focal_fish",
-        neighbor_category_col="neighbor_focal",
-        group_size_col="group_size",
-        exp_col="Exp",
-        trial_col="Trial",
-        # optional derived categories
-        category_specs=[],  # list of {source_col,new_col,quantile,op}
-        # optional filter to exclude focal rows from neighbor-role stats
-        nonfocal_flag_col="Focal_fish",
-        nonfocal_flag_value=False,
-    )
+    class Params(FeatureParams):
+        nbins: int = Field(default=45, gt=0)
+        binmax: float = Field(default=14.0, gt=0)
+        max_for_avg: float = Field(default=5.0, gt=0)
+        antisymm: bool = True
+        focal_category_col: str = "Focal_fish"
+        neighbor_category_col: str = "neighbor_focal"
+        group_size_col: str = "group_size"
+        exp_col: str = "Exp"
+        trial_col: str = "Trial"
+        category_specs: list = Field(default_factory=list)
+        nonfocal_flag_col: str = "Focal_fish"
+        nonfocal_flag_value: bool = False
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
@@ -178,9 +170,9 @@ class NearestNeighborDeltaBins:
                 df[base] = series
 
         # Coalesce focal/neighbor/group_size if needed before checks
-        focal_col = p.get("focal_category_col")
-        neighbor_col = p.get("neighbor_category_col")
-        group_size_col = p.get("group_size_col")
+        focal_col = p.focal_category_col
+        neighbor_col = p.neighbor_category_col
+        group_size_col = p.group_size_col
         if focal_col:
             _coalesce_column(focal_col)
         if neighbor_col:
@@ -197,20 +189,20 @@ class NearestNeighborDeltaBins:
             return pd.DataFrame()
 
         # Optionally derive category columns from specs
-        category_specs: Sequence[dict] = p.get("category_specs") or []
+        category_specs: Sequence[dict] = p.category_specs or []
         for spec in category_specs:
             series = _maybe_make_category(df, spec)
             if not series.empty:
                 df[series.name] = series
 
-        nbins = int(p["nbins"])
-        binmax = float(p["binmax"])
-        max_for_avg = float(p["max_for_avg"])
-        antisymm = bool(p["antisymm"])
+        nbins = p.nbins
+        binmax = p.binmax
+        max_for_avg = p.max_for_avg
+        antisymm = p.antisymm
         edges = np.linspace(-binmax, binmax, nbins)
 
-        exp_col = p.get("exp_col") or "group"
-        trial_col = p.get("trial_col") or "sequence"
+        exp_col = p.exp_col
+        trial_col = p.trial_col
 
         # Build identifiers
         exp_val = df[exp_col] if exp_col in df.columns else ""
@@ -354,8 +346,8 @@ class NearestNeighborDeltaBins:
         # when focal_col is present (it duplicates the center=0 rows). Only run it if we lack
         # a focal_col; otherwise skip to avoid duplicate entries.
         if not (focal_col and focal_col in df.columns):
-            nf_flag_col = p.get("nonfocal_flag_col")
-            nf_flag_val = p.get("nonfocal_flag_value")
+            nf_flag_col = p.nonfocal_flag_col
+            nf_flag_val = p.nonfocal_flag_value
             neighbor_df = df
             if nf_flag_col in df.columns:
                 neighbor_df = df[df[nf_flag_col] == nf_flag_val]

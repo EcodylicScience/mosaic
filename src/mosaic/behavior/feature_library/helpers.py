@@ -7,7 +7,7 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Iterator, Callable, TypeVar
+from typing import Optional, Dict, Any, Iterable, List, Tuple, Iterator, Callable, TypeVar
 from collections import defaultdict
 import gc
 import re
@@ -20,27 +20,16 @@ from mosaic.core.helpers import to_safe_name
 T = TypeVar('T')
 
 
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Merge user-provided parameters with defaults.
-
-    Parameters
-    ----------
-    overrides : dict or None
-        User-provided parameters that override defaults
-    defaults : dict
-        Default parameter values
-
-    Returns
-    -------
-    dict
-        Merged parameters with overrides taking precedence
-    """
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+def _pose_column_pairs(columns: Iterable[str]) -> list[Tuple[str, str]]:
+    """Extract (poseX*, poseY*) column pairs from column names."""
+    pose_pairs = []
+    xs = [c for c in columns if c.startswith("poseX")]
+    for x_col in sorted(xs):
+        idx = x_col[5:]
+        y_col = f"poseY{idx}"
+        if y_col in columns:
+            pose_pairs.append((x_col, y_col))
+    return pose_pairs
 
 
 def _load_array_from_spec(

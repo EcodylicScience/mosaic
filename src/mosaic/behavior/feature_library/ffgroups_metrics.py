@@ -1,18 +1,13 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
-
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams, PositionColumnsMixin
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
     return (x + np.pi) % (2 * np.pi) - np.pi
@@ -42,22 +37,16 @@ class FFGroupsMetrics:
     parallelizable = True
     output_type = "summary"
 
-    _defaults = dict(
-        id_col="id",
-        seq_col="sequence",
-        group_col="event",
-        x_col="X",
-        y_col="Y",
-        heading_col="ANGLE",
-        speed_col="speed",
-        order_pref=("frame", "time"),
-        time_chunk_sec=None,
-        frame_chunk=None,
-        centroid_heading_col="centroid_heading",
-    )
+    class Params(FeatureParams, PositionColumnsMixin):
+        group_col: str = "event"
+        heading_col: str = "ANGLE"
+        speed_col: str = "speed"
+        time_chunk_sec: float | None = None
+        frame_chunk: int | None = None
+        centroid_heading_col: str = "centroid_heading"
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -101,7 +90,7 @@ class FFGroupsMetrics:
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
-        required = [p["x_col"], p["y_col"], p["heading_col"], p["speed_col"], p["id_col"]]
+        required = [p.x_col, p.y_col, p.heading_col, p.speed_col, p.id_col]
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"Missing required columns for FFGroupsMetrics: {missing}")
@@ -109,15 +98,15 @@ class FFGroupsMetrics:
         # Split into chunks (default: whole sequence)
         chunks = list(chunk_sequence(
             df,
-            time_chunk_sec=p.get("time_chunk_sec"),
-            frame_chunk=p.get("frame_chunk"),
+            time_chunk_sec=p.time_chunk_sec,
+            frame_chunk=p.frame_chunk,
         ))  
         summaries = []
         for chunk_id, chunk_df, meta in chunks:
             # Group per frame within group_col if present
             group_keys = []
-            if p["group_col"] in chunk_df.columns:
-                group_keys.append(p["group_col"])
+            if p.group_col in chunk_df.columns:
+                group_keys.append(p.group_col)
             frame_key = "frame" if "frame" in chunk_df.columns else "time"
             if frame_key not in chunk_df.columns:
                 raise ValueError("Need either 'frame' or 'time' column.")
@@ -137,21 +126,21 @@ class FFGroupsMetrics:
 
     # ------------------ Internal helpers ------------------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
-    def _compute_per_frame(self, df: pd.DataFrame, p: dict, group_keys: list) -> pd.DataFrame:
+    def _compute_per_frame(self, df: pd.DataFrame, p: Params, group_keys: list) -> pd.DataFrame:
         # Vectorized per-group computations to avoid slow Python loops.
         grouped = df.groupby(group_keys, sort=False)
         agg_dict = {
-            p["x_col"]: "mean",
-            p["y_col"]: "mean",
-            p["speed_col"]: "mean",
+            p.x_col: "mean",
+            p.y_col: "mean",
+            p.speed_col: "mean",
         }
-        if p["centroid_heading_col"] in df.columns:
-            agg_dict[p["centroid_heading_col"]] = [
+        if p.centroid_heading_col in df.columns:
+            agg_dict[p.centroid_heading_col] = [
                 lambda a: np.nanmean(np.sin(a)),
                 lambda a: np.nanmean(np.cos(a)),
             ]
@@ -162,9 +151,9 @@ class FFGroupsMetrics:
         for col in stats.columns:
             if isinstance(col, tuple):
                 base, func = col
-                if base == p["centroid_heading_col"] and func == "<lambda_0>":
+                if base == p.centroid_heading_col and func == "<lambda_0>":
                     flat_cols.append("_sin_mean")
-                elif base == p["centroid_heading_col"] and func == "<lambda_1>":
+                elif base == p.centroid_heading_col and func == "<lambda_1>":
                     flat_cols.append("_cos_mean")
                 else:
                     flat_cols.append(base)
@@ -172,16 +161,16 @@ class FFGroupsMetrics:
                 flat_cols.append(col)
         stats.columns = flat_cols
         stats = stats.rename(columns={
-            p["x_col"]: "_cx",
-            p["y_col"]: "_cy",
-            p["speed_col"]: "_mean_speed",
+            p.x_col: "_cx",
+            p.y_col: "_cy",
+            p.speed_col: "_mean_speed",
         })
 
         df = df.merge(stats, on=group_keys, how="left")
 
-        dx = df[p["x_col"]].to_numpy(dtype=float) - df["_cx"].to_numpy(dtype=float)
-        dy = df[p["y_col"]].to_numpy(dtype=float) - df["_cy"].to_numpy(dtype=float)
-        if p["centroid_heading_col"] in df.columns:
+        dx = df[p.x_col].to_numpy(dtype=float) - df["_cx"].to_numpy(dtype=float)
+        dy = df[p.y_col].to_numpy(dtype=float) - df["_cy"].to_numpy(dtype=float)
+        if p.centroid_heading_col in df.columns:
             chead = np.arctan2(df["_sin_mean"].to_numpy(dtype=float), df["_cos_mean"].to_numpy(dtype=float))
         else:
             chead = 0.0
@@ -189,15 +178,15 @@ class FFGroupsMetrics:
         df["distance_from_centroid"] = np.sqrt(dx * dx + dy * dy)
         df["xrot_to_centroid"] = dx * ct - dy * st
         df["yrot_to_centroid"] = dx * st + dy * ct
-        df["dev_speed_to_mean"] = df[p["speed_col"]] - df["_mean_speed"]
+        df["dev_speed_to_mean"] = df[p.speed_col] - df["_mean_speed"]
 
         drop_cols = ["_cx", "_cy", "_mean_speed"]
-        if p["centroid_heading_col"] in df.columns:
+        if p.centroid_heading_col in df.columns:
             drop_cols.extend(["_sin_mean", "_cos_mean"])
         return df.drop(columns=drop_cols).reset_index(drop=True)
 
-    def _compute_summary(self, df: pd.DataFrame, p: dict) -> pd.DataFrame:
-        id_col = p["id_col"]
+    def _compute_summary(self, df: pd.DataFrame, p: Params) -> pd.DataFrame:
+        id_col = p.id_col
         frame_key = "frame" if "frame" in df.columns else "time"
 
         # Total frames per fish
@@ -239,8 +228,8 @@ class FFGroupsMetrics:
 
         # periphery time: rank by distance, count frames where farthest
         rank_groups = [frame_key]
-        if p["group_col"] in df.columns:
-            rank_groups.insert(0, p["group_col"])
+        if p.group_col in df.columns:
+            rank_groups.insert(0, p.group_col)
         df["rank_centroid_distance"] = df.groupby(rank_groups)["distance_from_centroid"].rank(
             ascending=True, method="max"
         )
@@ -268,7 +257,7 @@ class FFGroupsMetrics:
         out = out.merge(ftime_periphery_norm, on=[id_col, "group_size"], how="left")
 
         # Attach meta
-        for meta_col in (p["seq_col"], p["group_col"]):
+        for meta_col in (p.seq_col, p.group_col):
             if meta_col in df.columns and meta_col not in out.columns:
                 out[meta_col] = df[meta_col].iloc[0]
 

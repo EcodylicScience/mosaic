@@ -6,6 +6,7 @@ Copy this file, rename the class and `name`, and fill in your logic.
 Current patterns this template follows (as of 2026-02):
   - skip_transform_phase = True  (all work in fit/save_model, no per-seq transform)
   - loads_own_data() = True      (skips run_feature pre-loading)
+  - Uses Pydantic FeatureParams for typed, validated parameters
   - Uses StreamingFeatureHelper for manifest building + data loading
   - set_run_root() for streaming writes during fit
   - get_additional_index_rows() to register artifacts in the feature index
@@ -16,14 +17,15 @@ See GlobalTSNE and WardAssignClustering for real examples.
 """
 
 from __future__ import annotations
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
 import gc
 import sys
 
 import numpy as np
 import pandas as pd
 import joblib
+from pydantic import Field
 
 from mosaic.core.dataset import (
     register_feature,
@@ -36,6 +38,7 @@ from .helpers import (
     _build_index_row,
 )
 from mosaic.core.helpers import to_safe_name
+from ._param_bases import FeatureParams
 
 
 # @register_feature   # <-- uncomment when your feature is ready
@@ -60,31 +63,38 @@ class MyGlobalFeature:
     output_type = "global"
     skip_transform_phase = True     # all work in fit/save_model
 
-    def __init__(self, params: Optional[dict] = None):
-        defaults = dict(
-            inputs=[],
-            inputset=None,
-            random_state=42,
-            # Add algorithm-specific params here
-        )
-        self.params = {**defaults, **(params or {})}
-        self._inputs_overridden = bool(params and "inputs" in params)
+    class Params(FeatureParams):
+        """Global feature template parameters.
+
+        Attributes:
+            inputs: Input specifications. Default empty list.
+            inputset: Inputset name to resolve.
+            random_state: Random seed. Default 42.
+        """
+
+        inputs: list[dict[str, object]] = Field(default_factory=list)
+        inputset: str | None = None
+        random_state: int = 42
+
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
+        self._inputs_overridden = self.params.inputs != self.Params().inputs
 
         self._ds = None
-        self._run_root: Optional[Path] = None
-        self._scope_filter: Optional[dict] = None
-        self._allowed_safe_sequences: Optional[set[str]] = None
+        self._run_root: Path | None = None
+        self._scope_filter: dict[str, object] | None = None
+        self._allowed_safe_sequences: set[str] | None = None
         self._pair_map: dict[str, tuple[str, str]] = {}
-        self._sequence_lookup_cache: Optional[dict[str, tuple[str, str]]] = None
-        self._additional_index_rows: list[dict] = []
-        self._artifacts: Dict[str, Any] = {}
+        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
+        self._additional_index_rows: list[dict[str, object]] = []
+        self._artifacts: dict[str, object] = {}
 
     # ----------------------- Dataset hooks -----------------------
 
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
         self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
         self._sequence_lookup_cache = None
@@ -93,7 +103,7 @@ class MyGlobalFeature:
         """Set by run_feature before fit(); use for streaming writes."""
         self._run_root = Path(run_root)
 
-    def get_additional_index_rows(self) -> list[dict]:
+    def get_additional_index_rows(self) -> list[dict[str, object]]:
         """Return index rows for artifacts written during fit/save_model."""
         return list(self._additional_index_rows)
 
@@ -103,6 +113,7 @@ class MyGlobalFeature:
     def supports_partial_fit(self) -> bool: return False
     def loads_own_data(self) -> bool: return True
     def partial_fit(self, X: pd.DataFrame) -> None: raise NotImplementedError
+    def finalize_fit(self) -> None: pass
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(index=[])
@@ -115,9 +126,9 @@ class MyGlobalFeature:
         self._additional_index_rows = []
 
         # 1) Resolve inputs from inputset or explicit list
-        inputset_name = self.params.get("inputset")
+        inputset_name = self.params.inputset
         explicit_inputs = (
-            self.params["inputs"]
+            self.params.inputs
             if (self._inputs_overridden or not inputset_name)
             else None
         )
@@ -169,16 +180,18 @@ class MyGlobalFeature:
         run_root = path.parent
         run_root.mkdir(parents=True, exist_ok=True)
         joblib.dump(
-            {"params": self.params, "meta": self._artifacts.get("inputs_meta", {})},
+            {"params": self.params.model_dump(), "meta": self._artifacts.get("inputs_meta", {})},
             path,
         )
 
     def load_model(self, path: Path) -> None:
         bundle = joblib.load(path)
-        self.params.update(bundle.get("params", {}))
+        saved = bundle.get("params", {})
+        if isinstance(saved, dict):
+            self.params = self.Params.model_validate(saved)
 
     # ----------------------- Internal helpers --------------------
-    # These use shared functions from helpers.py — the same ones used
+    # These use shared functions from helpers.py -- the same ones used
     # by GlobalTSNE, WardAssign, GlobalKMeans, etc.
 
     def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
@@ -191,8 +204,8 @@ class MyGlobalFeature:
         return self._sequence_lookup_cache
 
     def _process_sequence(
-        self, key: str, X: np.ndarray, frames: Optional[np.ndarray]
-    ) -> Optional[np.ndarray]:
+        self, key: str, X: np.ndarray, frames: np.ndarray | None
+    ) -> np.ndarray | None:
         """
         Pure computation for one sequence.  X is (T, D) float32.
 

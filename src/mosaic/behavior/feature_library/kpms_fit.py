@@ -9,7 +9,7 @@ environment whose interpreter path is passed via the ``kpms_python`` param.
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+from typing import Optional, Iterable
 import json
 import os
 import shutil
@@ -20,9 +20,11 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+from pydantic import Field
 from mosaic.core.dataset import register_feature, _dataset_base_dir
 from mosaic.core.helpers import to_safe_name
-from .helpers import _merge_params, _build_index_row
+from .helpers import _build_index_row
+from ._param_bases import FeatureParams
 
 
 # ---------------------------------------------------------------------------
@@ -348,50 +350,33 @@ class KpmsFit:
     output_type = "global"
     skip_transform_phase = True
 
-    _defaults = dict(
-        # Subprocess config
-        kpms_python=None,  # REQUIRED
+    class Params(FeatureParams):
+        kpms_python: str | None = None
+        pose_prefix_x: str = "poseX"
+        pose_prefix_y: str = "poseY"
+        pose_confidence_prefix: str = "poseP"
+        bodypart_names: list[str] | None = None
+        use_bodyparts: list[str] | None = None
+        anterior_bodyparts: list[str] | None = None
+        posterior_bodyparts: list[str] | None = None
+        fps: int = 30
+        num_iters_ar: int = Field(default=50, ge=1)
+        num_iters_full: int = Field(default=500, ge=1)
+        kappa_ar: float | None = None
+        kappa_full: float | None = None
+        latent_dim: int = Field(default=10, ge=1)
+        location_aware: bool = False
+        outlier_scale_factor: float = Field(default=6.0, gt=0)
+        remove_outliers: bool = True
+        mixed_map_iters: int | None = None
+        parallel_message_passing: bool | None = None
+        resume: bool = True
+        fit_sample_sequences: list[str] | None = None
+        downsample_rate: int | None = None
+        save_every_n_iters: int = Field(default=25, ge=1)
 
-        # Column detection
-        pose_prefix_x="poseX",
-        pose_prefix_y="poseY",
-        pose_confidence_prefix="poseP",
-
-        # Keypoint-moseq config
-        bodypart_names=None,
-        use_bodyparts=None,
-        anterior_bodyparts=None,
-        posterior_bodyparts=None,
-        fps=30,
-
-        # Fitting params
-        num_iters_ar=50,
-        num_iters_full=500,
-        kappa_ar=None,
-        kappa_full=None,
-        latent_dim=10,
-        location_aware=False,
-        outlier_scale_factor=6.0,
-        remove_outliers=True,
-
-        # Memory management
-        mixed_map_iters=None,           # Split into N serial batches (reduces VRAM ~N×)
-        parallel_message_passing=None,  # None=auto (GPU→True, CPU→False). False saves 4-6× VRAM
-
-        # Scaling
-        resume=True,                    # Auto-resume from checkpoint if interrupted
-        fit_sample_sequences=None,      # Subsample N recordings for fitting (None=all)
-        downsample_rate=None,           # Temporal downsampling factor (None=no downsampling)
-        save_every_n_iters=25,          # Checkpoint frequency
-
-        # ID handling
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self._run_root: Optional[Path] = None
         self._additional_index_rows: list[dict] = []
@@ -442,7 +427,7 @@ class KpmsFit:
             raise RuntimeError("[kpms-fit] Dataset not bound.")
 
         p = self.params
-        kpms_python = p.get("kpms_python")
+        kpms_python = p.kpms_python
         if not kpms_python:
             raise ValueError(
                 "[kpms-fit] 'kpms_python' param is required. "
@@ -470,35 +455,35 @@ class KpmsFit:
         bodypart_names = _collect_and_serialize_tracks(
             self._ds,
             data_dir,
-            p["pose_prefix_x"],
-            p["pose_prefix_y"],
-            p["pose_confidence_prefix"],
-            p["id_col"],
-            p.get("bodypart_names"),
+            p.pose_prefix_x,
+            p.pose_prefix_y,
+            p.pose_confidence_prefix,
+            p.id_col,
+            p.bodypart_names,
             groups=scope_groups,
             sequences=scope_sequences,
-            fit_sample_sequences=p.get("fit_sample_sequences"),
-            downsample_rate=p.get("downsample_rate"),
+            fit_sample_sequences=p.fit_sample_sequences,
+            downsample_rate=p.downsample_rate,
         )
 
         # 2. Write kpms config JSON
         kpms_config = {
             "bodyparts": bodypart_names,
-            "use_bodyparts": p.get("use_bodyparts") or bodypart_names,
-            "anterior_bodyparts": p.get("anterior_bodyparts") or [],
-            "posterior_bodyparts": p.get("posterior_bodyparts") or [],
-            "fps": p["fps"],
-            "latent_dim": p["latent_dim"],
-            "num_iters_ar": p["num_iters_ar"],
-            "num_iters_full": p["num_iters_full"],
-            "kappa_ar": p.get("kappa_ar"),
-            "kappa_full": p.get("kappa_full"),
-            "location_aware": p.get("location_aware", False),
-            "outlier_scale_factor": p.get("outlier_scale_factor", 6.0),
-            "remove_outliers": p.get("remove_outliers", True),
-            "mixed_map_iters": p.get("mixed_map_iters"),
-            "parallel_message_passing": p.get("parallel_message_passing"),
-            "save_every_n_iters": p.get("save_every_n_iters", 25),
+            "use_bodyparts": p.use_bodyparts or bodypart_names,
+            "anterior_bodyparts": p.anterior_bodyparts or [],
+            "posterior_bodyparts": p.posterior_bodyparts or [],
+            "fps": p.fps,
+            "latent_dim": p.latent_dim,
+            "num_iters_ar": p.num_iters_ar,
+            "num_iters_full": p.num_iters_full,
+            "kappa_ar": p.kappa_ar,
+            "kappa_full": p.kappa_full,
+            "location_aware": p.location_aware,
+            "outlier_scale_factor": p.outlier_scale_factor,
+            "remove_outliers": p.remove_outliers,
+            "mixed_map_iters": p.mixed_map_iters,
+            "parallel_message_passing": p.parallel_message_passing,
+            "save_every_n_iters": p.save_every_n_iters,
         }
         config_path = self._run_root / "kpms_config.json"
         config_path.write_text(json.dumps(kpms_config, indent=2, default=str))
@@ -510,7 +495,7 @@ class KpmsFit:
             "--output-dir", str(output_dir),
             "--config", str(config_path),
         ]
-        if p.get("resume", True):
+        if p.resume:
             fit_args.append("--resume")
 
         _run_kpms_subprocess(
@@ -544,7 +529,7 @@ class KpmsFit:
         else:
             # Write a placeholder so the feature index knows fit completed
             import joblib
-            joblib.dump({"params": self.params, "version": self.version}, path)
+            joblib.dump({"params": self.params.model_dump(), "version": self.version}, path)
 
         # Write marker parquet for index registration
         marker_seq = "__global__"

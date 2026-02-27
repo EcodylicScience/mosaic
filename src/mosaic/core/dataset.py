@@ -2670,6 +2670,11 @@ def _to_iso(ts: float) -> str:
 # ========================================================================================================= #
 # ===================== Feature framework =====================
 # ========================================================================================================= #
+try:
+    from pydantic import BaseModel as _BaseModel
+except ImportError:
+    _BaseModel = None
+
 class Feature(Protocol):
     """Interface for a feature/calculation applied over tracks."""
     name: str
@@ -2695,7 +2700,8 @@ def register_feature(cls: type[Feature]):
     FEATURES[cls.__name__] = cls
     return cls
 
-def _hash_params(d: dict) -> str:
+def _hash_params(d) -> str:
+    d = _json_ready(d)
     s = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha1(s.encode('utf-8')).hexdigest()[:10]
 
@@ -3556,6 +3562,8 @@ def _load_model_config(config: str | Path | dict | None) -> dict:
 
 
 def _json_ready(obj):
+    if _BaseModel is not None and isinstance(obj, _BaseModel):
+        obj = obj.model_dump()
     if isinstance(obj, dict):
         return {str(k): _json_ready(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):

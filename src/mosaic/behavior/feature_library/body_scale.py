@@ -5,12 +5,14 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, Iterable, List, Tuple
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
+from ._param_bases import FeatureParams
+from .helpers import _pose_column_pairs
 
 
 @register_feature
@@ -28,8 +30,15 @@ class BodyScaleFeature:
     parallelizable = True
     output_type = "per_frame"
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = params or {}
+    class Params(FeatureParams):
+        """Body-scale feature parameters.
+
+        No algorithm-specific parameters beyond the base columns.
+        """
+        pass
+
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = False
         self._ds = None

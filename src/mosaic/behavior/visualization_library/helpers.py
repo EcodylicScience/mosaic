@@ -8,7 +8,7 @@ This module contains helper functions used across visualization modules:
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Tuple, Any, Optional, Iterable, Dict
+from typing import Tuple, Any, Optional, Dict
 import numpy as np
 import pandas as pd
 import cv2
@@ -73,18 +73,6 @@ def _color_for_label(label_val: Any) -> Tuple[int, int, int]:
 # =============================================================================
 # Geometry Utilities
 # =============================================================================
-
-def _pose_column_pairs(columns: Iterable[str]) -> list[Tuple[str, str]]:
-    """Extract (poseX*, poseY*) column pairs from column names."""
-    pose_pairs = []
-    xs = [c for c in columns if c.startswith("poseX")]
-    for x_col in sorted(xs):
-        idx = x_col[5:]
-        y_col = f"poseY{idx}"
-        if y_col in columns:
-            pose_pairs.append((x_col, y_col))
-    return pose_pairs
-
 
 def _extract_pose_points(row: pd.Series, pose_pairs: list[Tuple[str, str]]) -> list[Tuple[float, float]]:
     """Extract list of (x, y) coordinates from a DataFrame row."""

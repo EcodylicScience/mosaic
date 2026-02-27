@@ -5,19 +5,22 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List, Tuple
 import gc
 
 import numpy as np
 import pandas as pd
 
+from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
 from mosaic.core.dataset import register_feature
 from .helpers import _load_array_from_spec
 from mosaic.core.dataset import _latest_feature_run_root, _feature_index_path, _resolve_inputs, _feature_run_root
 from mosaic.core.helpers import to_safe_name
+from ._param_bases import FeatureParams
 
 
 @register_feature
@@ -33,32 +36,53 @@ class TemporalStackingFeature:
     parallelizable = True
     output_type = None  # Custom chunked output
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        defaults = {
-            "inputset": None,
-            "inputs": [],
-            "half": 60,
-            "skip": 5,
-            "use_temporal_stack": True,
-            "sigma_stack": 30.0,
-            "add_pool": True,
-            "pool_stats": ("mean",),
-            "sigma_pool": 30.0,
-            "fps": 30.0,
-            "win_sec": 0.5,
-            "group_col": "group",
-            "sequence_col": "sequence",
-            "write_chunk_size": 1000,
-            "stack_chunk_size": 1000,
-        }
-        self.params = dict(defaults)
-        if params:
-            for k, v in params.items():
-                self.params[k] = v
-        pool_stats = self.params.get("pool_stats") or []
-        if isinstance(pool_stats, str):
-            pool_stats = [pool_stats]
-        self.params["pool_stats"] = [str(stat).lower() for stat in pool_stats]
+    class Params(FeatureParams):
+        """Temporal-stacking parameters.
+
+        Attributes:
+            inputset: Inputset name to resolve.
+            inputs: Explicit input specifications.
+            half: Half-window size in frames. Default 60.
+            skip: Step between stacked frames. Default 5.
+            use_temporal_stack: Compute temporal stack. Default True.
+            sigma_stack: Gaussian sigma for temporal stack. Default 30.0.
+            add_pool: Add pooled statistics. Default True.
+            pool_stats: Statistics to pool. Default ("mean",).
+            sigma_pool: Gaussian sigma for pooling. Default 30.0.
+            fps: Frames per second. Default 30.0.
+            win_sec: Window size in seconds. Default 0.5.
+            sequence_col: Sequence column name. Default "sequence".
+            write_chunk_size: Rows per output chunk. Default 1000.
+            stack_chunk_size: Rows per stacking chunk. Default 1000.
+        """
+        inputset: str | None = None
+        inputs: list[dict[str, object]] = Field(default_factory=list)
+        half: int = Field(default=60, ge=0)
+        skip: int = Field(default=5, ge=1)
+        use_temporal_stack: bool = True
+        sigma_stack: float = 30.0
+        add_pool: bool = True
+        pool_stats: tuple[str, ...] = ("mean",)
+        sigma_pool: float = 30.0
+        fps: float = Field(default=30.0, gt=0)
+        win_sec: float = Field(default=0.5, gt=0)
+        sequence_col: str = "sequence"
+        write_chunk_size: int = Field(default=1000, ge=1)
+        stack_chunk_size: int = Field(default=1000, ge=1)
+
+        @model_validator(mode="before")
+        @classmethod
+        def _normalize_pool_stats(cls, data: dict[str, object]) -> dict[str, object]:
+            if isinstance(data, dict):
+                ps = data.get("pool_stats")
+                if isinstance(ps, str):
+                    data["pool_stats"] = (ps.lower(),)
+                elif ps is not None:
+                    data["pool_stats"] = tuple(str(s).lower() for s in ps)
+            return data
+
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
 
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -69,13 +93,13 @@ class TemporalStackingFeature:
         self._inputs_meta: dict = {}
         self._resolved_inputs: list[dict] = []
         self._input_cache_ready = False
-        self._scope_filter: Optional[dict] = None
-        self._allowed_safe_sequences: Optional[set[str]] = None
+        self._scope_filter: dict | None = None
+        self._allowed_safe_sequences: set[str] | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
-        explicit_inputs = self.params.get("inputs") or []
-        inputset_name = self.params.get("inputset")
+        explicit_inputs = self.params.inputs or []
+        inputset_name = self.params.inputset
         if not explicit_inputs and not inputset_name:
             raise ValueError("temporal-stack: provide params['inputset'] or explicit params['inputs'].")
         explicit_override = bool(explicit_inputs)
@@ -90,7 +114,7 @@ class TemporalStackingFeature:
         self._resolved_inputs = []
         self._input_cache_ready = False
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict | None) -> None:
         self._scope_filter = scope or {}
         safe_sequences = scope.get("safe_sequences") if scope else None
         if safe_sequences:
@@ -119,8 +143,8 @@ class TemporalStackingFeature:
             raise RuntimeError("temporal-stack: dataset not bound.")
         self._ensure_inputs_ready()
 
-        seq_col = self.params.get("sequence_col", "sequence")
-        group_col = self.params.get("group_col", "group")
+        seq_col = self.params.sequence_col
+        group_col = self.params.group_col
         sequence = str(df[seq_col].iloc[0]) if seq_col in df.columns and not df.empty else None
         group = str(df[group_col].iloc[0]) if group_col in df.columns and not df.empty else None
         if not sequence:
@@ -155,7 +179,7 @@ class TemporalStackingFeature:
             "frame_indices": frame_indices,
         }
         if pair_ids is not None:
-            # Single pair — store as scalar
+            # Single pair -- store as scalar
             payload["pair_ids"] = (int(pair_ids[0, 0]), int(pair_ids[0, 1]))
         return payload
 
@@ -163,7 +187,7 @@ class TemporalStackingFeature:
         self,
         base_matrix: np.ndarray,
         base_names: list[str],
-        frame_indices: Optional[np.ndarray],
+        frame_indices: np.ndarray | None,
         pair_ids: np.ndarray,
         sequence: str,
         group: str,
@@ -173,7 +197,7 @@ class TemporalStackingFeature:
         all_stacked: list[np.ndarray] = []
         all_frames: list[np.ndarray] = []
         all_pair_ids: list[np.ndarray] = []
-        stacked_names: Optional[list[str]] = None
+        stacked_names: list[str] | None = None
 
         for pid in unique_pairs:
             mask = (pair_ids[:, 0] == pid[0]) & (pair_ids[:, 1] == pid[1])
@@ -242,7 +266,7 @@ class TemporalStackingFeature:
         self._resolved_inputs = resolved
         self._input_cache_ready = True
 
-    def _build_sequence_mapping(self, feature_name: str, run_id: str, allowed: Optional[set[str]]) -> dict[str, Path]:
+    def _build_sequence_mapping(self, feature_name: str, run_id: str, allowed: set[str] | None) -> dict[str, Path]:
         idx_path = _feature_index_path(self._ds, feature_name)
         if not idx_path.exists():
             raise FileNotFoundError(f"temporal-stack: missing index for feature '{feature_name}' -> {idx_path}")
@@ -265,7 +289,7 @@ class TemporalStackingFeature:
             mapping[seq_safe] = remapped
         return mapping
 
-    def _load_sequence_matrix(self, safe_seq: str) -> tuple[Optional[np.ndarray], list[str], Optional[np.ndarray], Optional[np.ndarray]]:
+    def _load_sequence_matrix(self, safe_seq: str) -> tuple[np.ndarray | None, list[str], np.ndarray | None, np.ndarray | None]:
         """
         Load and concatenate feature matrices for a sequence.
 
@@ -276,7 +300,6 @@ class TemporalStackingFeature:
         inputs, non-pair rows are replicated via a (frame, perspective) join to
         match the pair-aware row count.
         """
-        # Phase 1: read all inputs and detect pair structure
         # Build NN pair filter if configured
         df_filter = None
         if self._pair_filter_spec:
@@ -311,7 +334,7 @@ class TemporalStackingFeature:
         any_pairs = any(e["has_pairs"] for e in loaded)
         all_pairs = all(e["has_pairs"] for e in loaded)
 
-        # ---- Homogeneous case: all pair-aware or all non-pair ----
+        # Homogeneous case: all pair-aware or all non-pair
         if not any_pairs or all_pairs:
             mats = [e["arr"] for e in loaded]
             min_len = min(m.shape[0] for m in mats)
@@ -338,7 +361,7 @@ class TemporalStackingFeature:
             base = np.hstack(mats).astype(np.float32, copy=False)
             return base, col_names, frame_indices, pair_ids
 
-        # ---- Mixed case: pair-aware master + non-pair inputs ----
+        # Mixed case: pair-aware master + non-pair inputs
         master_idx = next(i for i, e in enumerate(loaded) if e["has_pairs"])
         master_df = loaded[master_idx]["df"]
         master_arr = loaded[master_idx]["arr"]
@@ -366,7 +389,7 @@ class TemporalStackingFeature:
                 [f"{prefix}__f{idx:04d}" for idx in range(arr.shape[1])]
             )
             if e["has_pairs"]:
-                # Same pair structure — align with master by row
+                # Same pair structure -- align with master by row
                 if arr.shape[0] >= n_master:
                     mats.append(arr[:n_master])
                 else:
@@ -408,14 +431,14 @@ class TemporalStackingFeature:
 
     def _chunked_temporal_features(self, base: np.ndarray, base_names: list[str]) -> tuple[Iterable[tuple[int, np.ndarray]], list[str], int]:
         total_rows = base.shape[0]
-        stack_chunk_size = max(1, int(self.params.get("stack_chunk_size", 20000)))
-        use_stack = self.params.get("use_temporal_stack", True)
-        add_pool = self.params.get("add_pool", True)
+        stack_chunk_size = self.params.stack_chunk_size
+        use_stack = self.params.use_temporal_stack
+        add_pool = self.params.add_pool
 
         # Precompute stacking metadata
-        half = max(0, int(self.params.get("half", 0)))
-        step = max(1, int(self.params.get("skip", 1)))
-        sigma_stack = max(0.0, float(self.params.get("sigma_stack", 0.0)))
+        half = self.params.half
+        step = self.params.skip
+        sigma_stack = self.params.sigma_stack
         offsets = list(range(-half, half + 1, step))
         stack_names = []
         if use_stack:
@@ -493,36 +516,17 @@ class TemporalStackingFeature:
 
         return chunk_iterator(), all_names, total_rows
 
-    def _temporal_stack(self, base: np.ndarray, base_names: list[str]) -> tuple[np.ndarray, list[str]]:
-        half = max(0, int(self.params.get("half", 0)))
-        step = max(1, int(self.params.get("skip", 1)))
-        sigma = max(0.0, float(self.params.get("sigma_stack", 0.0)))
-        if sigma > 0:
-            smoothed = gaussian_filter1d(base, sigma=sigma, axis=0, mode="nearest")
-        else:
-            smoothed = base
-        if half == 0:
-            return smoothed.astype(np.float32, copy=False), [f"{name}__t+0" for name in base_names]
-
-        padded = np.pad(smoothed, ((half, half), (0, 0)), mode="edge")
-        idx = np.arange(smoothed.shape[0]) + half
-        offsets = list(range(-half, half + 1, step))
-        stacks = []
-        names = []
-        for off in offsets:
-            stacks.append(padded[idx + off])
-            names.extend([f"{name}__t{off:+03d}" for name in base_names])
-        stacked = np.hstack(stacks).astype(np.float32, copy=False)
-        return stacked, names
+    # Pre-chunking helpers (_temporal_stack, _pooled_stats) removed;
+    # see _chunked_temporal_features
 
     def _pooled_stats_arrays(self, base: np.ndarray, base_names: list[str]) -> tuple[list[np.ndarray], list[str]]:
-        stats = self.params.get("pool_stats") or []
+        stats = self.params.pool_stats
         if not stats:
             return [], []
-        sigma = max(0.0, float(self.params.get("sigma_pool", 0.0)))
+        sigma = self.params.sigma_pool
         if sigma <= 0:
-            sigma = max(1.0, float(self.params.get("win_sec", 0.5)) * float(self.params.get("fps", 30.0)) / 6.0)
-        win_frames = max(1, int(round(float(self.params.get("win_sec", 0.5)) * float(self.params.get("fps", 30.0)))))
+            sigma = max(1.0, self.params.win_sec * self.params.fps / 6.0)
+        win_frames = max(1, int(round(self.params.win_sec * self.params.fps)))
         truncate = max(1.0, win_frames / (2.0 * sigma)) if sigma > 0 else 4.0
         mean_vals = gaussian_filter1d(base, sigma=sigma, axis=0, mode="nearest", truncate=truncate)
         outputs = []
@@ -540,10 +544,3 @@ class TemporalStackingFeature:
                 outputs.append(np.sqrt(var))
                 names.extend([f"{name}__pool_std" for name in base_names])
         return outputs, names
-
-    def _pooled_stats(self, base: np.ndarray, base_names: list[str]) -> tuple[Optional[np.ndarray], list[str]]:
-        arrays, names = self._pooled_stats_arrays(base, base_names)
-        if not arrays:
-            return None, []
-        pooled = np.hstack([arr.astype(np.float32, copy=False) for arr in arrays])
-        return pooled, names
