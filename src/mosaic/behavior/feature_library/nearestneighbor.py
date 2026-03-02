@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams, PositionColumnsMixin
 
 
@@ -25,6 +28,7 @@ def _ego_rotate(dx: np.ndarray, dy: np.ndarray, heading: np.ndarray) -> tuple:
     return dx_ego, dy_ego
 
 
+@final
 @register_feature
 class NearestNeighbor:
     """
@@ -91,10 +95,9 @@ class NearestNeighbor:
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
-        x = df[p.x_col].to_numpy(dtype=float)
-        y = df[p.y_col].to_numpy(dtype=float)
-        ids = df[p.id_col].to_numpy()
-        angles = df[p.angle_col].to_numpy(dtype=float) if p.angle_col in df.columns else None
+        angles = (
+            df[p.angle_col].to_numpy(dtype=float) if p.angle_col in df.columns else None
+        )
 
         n = len(df)
         nn_id = np.full(n, np.nan, dtype=float)
@@ -111,7 +114,9 @@ class NearestNeighbor:
         elif "time" in df.columns:
             grouper = df.groupby("time", sort=False)
         else:
-            raise ValueError("Need either 'frame' or 'time' column to group rows per timestep.")
+            raise ValueError(
+                "Need either 'frame' or 'time' column to group rows per timestep."
+            )
 
         for _, g in grouper:
             idx = g.index.to_numpy()
@@ -124,7 +129,7 @@ class NearestNeighbor:
 
             dx_matrix = gx[np.newaxis, :] - gx[:, np.newaxis]
             dy_matrix = gy[np.newaxis, :] - gy[:, np.newaxis]
-            dist_matrix = np.sqrt(dx_matrix ** 2 + dy_matrix ** 2)
+            dist_matrix = np.sqrt(dx_matrix**2 + dy_matrix**2)
             np.fill_diagonal(dist_matrix, np.inf)
 
             nn_idx = np.argmin(dist_matrix, axis=1)
@@ -136,18 +141,24 @@ class NearestNeighbor:
             if nn_dangle is not None:
                 nn_dangle[idx] = _wrap_angle(gang[nn_idx] - gang)
 
-            dx_ego, dy_ego = _ego_rotate(nn_dx[idx], nn_dy[idx], gang if angles is not None else np.zeros(len(idx)))
+            dx_ego, dy_ego = _ego_rotate(
+                nn_dx[idx],
+                nn_dy[idx],
+                gang if angles is not None else np.zeros(len(idx)),
+            )
             nn_dx_ego[idx] = dx_ego
             nn_dy_ego[idx] = dy_ego
 
-        out = pd.DataFrame({
-            "nn_id": nn_id,
-            "nn_delta_x": nn_dx,
-            "nn_delta_y": nn_dy,
-            "nn_dist": nn_dist,
-            "nn_delta_x_ego": nn_dx_ego,
-            "nn_delta_y_ego": nn_dy_ego,
-        })
+        out = pd.DataFrame(
+            {
+                "nn_id": nn_id,
+                "nn_delta_x": nn_dx,
+                "nn_delta_y": nn_dy,
+                "nn_dist": nn_dist,
+                "nn_delta_x_ego": nn_dx_ego,
+                "nn_delta_y_ego": nn_dy_ego,
+            }
+        )
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
 

@@ -8,24 +8,24 @@ environment whose interpreter path is passed via the ``kpms_python`` param.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Iterable
+
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+from pathlib import Path
+from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
-
 from pydantic import Field
-from mosaic.core.dataset import register_feature, _dataset_base_dir
-from mosaic.core.helpers import to_safe_name
-from .helpers import _build_index_row
-from ._param_bases import FeatureParams
 
+from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.helpers import to_safe_name
+
+from ._param_bases import FeatureParams
+from .helpers import _build_index_row
 
 # ---------------------------------------------------------------------------
 # Path to the runner script shipped alongside this module
@@ -37,6 +37,7 @@ _RUNNER_SCRIPT = Path(__file__).parent / "external" / "kpms_runner.py"
 # ---------------------------------------------------------------------------
 # Data conversion: mosaic tracks → keypoint-moseq format on disk
 # ---------------------------------------------------------------------------
+
 
 def _tracks_df_to_kpms_arrays(
     df: pd.DataFrame,
@@ -53,9 +54,9 @@ def _tracks_df_to_kpms_arrays(
     """
     x_cols = sorted(
         [c for c in df.columns if c.startswith(pose_prefix_x)],
-        key=lambda c: int(c[len(pose_prefix_x):]),
+        key=lambda c: int(c[len(pose_prefix_x) :]),
     )
-    y_cols = [f"{pose_prefix_y}{c[len(pose_prefix_x):]}" for c in x_cols]
+    y_cols = [f"{pose_prefix_y}{c[len(pose_prefix_x) :]}" for c in x_cols]
     K = len(x_cols)
     T = len(df)
 
@@ -69,7 +70,7 @@ def _tracks_df_to_kpms_arrays(
     coords[:, :, 0] = df[x_cols].to_numpy(dtype=np.float32)
     coords[:, :, 1] = df[y_cols].to_numpy(dtype=np.float32)
 
-    conf_cols = [f"{pose_confidence_prefix}{c[len(pose_prefix_x):]}" for c in x_cols]
+    conf_cols = [f"{pose_confidence_prefix}{c[len(pose_prefix_x) :]}" for c in x_cols]
     if all(c in df.columns for c in conf_cols):
         confidences = df[conf_cols].to_numpy(dtype=np.float32)
     else:
@@ -79,7 +80,7 @@ def _tracks_df_to_kpms_arrays(
     # kpms.format_data will interpolate NaN coordinates and down-weight
     # them using the near-zero confidence values.
     bad_mask = ~np.isfinite(coords)  # (T, K, 2)
-    bad_any = bad_mask.any(axis=2)   # (T, K) — True if either x or y is bad
+    bad_any = bad_mask.any(axis=2)  # (T, K) — True if either x or y is bad
     n_bad = bad_any.sum()
     if n_bad > 0:
         coords[bad_mask] = np.nan
@@ -170,9 +171,15 @@ def _collect_and_serialize_tracks(
 
         if id_col in df.columns:
             for ind_id, sub in df.groupby(id_col, sort=False):
-                sub = sub.sort_values("frame" if "frame" in sub.columns else sub.columns[0])
+                sub = sub.sort_values(
+                    "frame" if "frame" in sub.columns else sub.columns[0]
+                )
                 sub = sub.reset_index(drop=True)
-                key = f"{g_safe}__{s_safe}__id{ind_id}" if g_safe else f"{s_safe}__id{ind_id}"
+                key = (
+                    f"{g_safe}__{s_safe}__id{ind_id}"
+                    if g_safe
+                    else f"{s_safe}__id{ind_id}"
+                )
                 try:
                     coords, conf = _tracks_df_to_kpms_arrays(
                         sub, pose_prefix_x, pose_prefix_y, pose_confidence_prefix
@@ -210,7 +217,9 @@ def _collect_and_serialize_tracks(
         raise RuntimeError("[kpms-fit] No valid track data found.")
 
     # Subsample recordings if requested
-    if fit_sample_sequences is not None and len(coordinates) > int(fit_sample_sequences):
+    if fit_sample_sequences is not None and len(coordinates) > int(
+        fit_sample_sequences
+    ):
         n_sample = int(fit_sample_sequences)
         all_keys = sorted(coordinates.keys())
         rng = np.random.RandomState(42)
@@ -233,12 +242,20 @@ def _collect_and_serialize_tracks(
     np.savez(data_dir / "coordinates.npz", **coordinates)
     np.savez(data_dir / "confidences.npz", **confidences)
     with open(data_dir / "metadata.json", "w") as f:
-        json.dump({
-            "bodyparts": bodypart_names,
-            "recording_keys": list(coordinates.keys()),
-        }, f, indent=2)
+        json.dump(
+            {
+                "bodyparts": bodypart_names,
+                "recording_keys": list(coordinates.keys()),
+            },
+            f,
+            indent=2,
+        )
 
-    ds_msg = f" (downsampled {downsample_rate}x)" if downsample_rate and int(downsample_rate) > 1 else ""
+    ds_msg = (
+        f" (downsampled {downsample_rate}x)"
+        if downsample_rate and int(downsample_rate) > 1
+        else ""
+    )
     print(
         f"[kpms-fit] Serialized {len(coordinates)} recordings, "
         f"{n_keypoints} keypoints, {total_frames:,} total frames{ds_msg}.",
@@ -250,6 +267,7 @@ def _collect_and_serialize_tracks(
 # ---------------------------------------------------------------------------
 # Subprocess invocation
 # ---------------------------------------------------------------------------
+
 
 def _run_kpms_subprocess(
     kpms_python: str,
@@ -297,6 +315,8 @@ def _run_kpms_subprocess(
 # Feature class
 # ---------------------------------------------------------------------------
 
+
+@final
 @register_feature
 class KpmsFit:
     """
@@ -411,7 +431,7 @@ class KpmsFit:
     def loads_own_data(self) -> bool:
         return True
 
-    def partial_fit(self, X: pd.DataFrame) -> None:
+    def partial_fit(self, df: pd.DataFrame) -> None:
         raise NotImplementedError
 
     def finalize_fit(self) -> None:
@@ -491,9 +511,12 @@ class KpmsFit:
         # 3. Run kpms_runner.py fit in subprocess
         output_dir = self._run_root / "_kpms_output"
         fit_args = [
-            "--data-dir", str(data_dir),
-            "--output-dir", str(output_dir),
-            "--config", str(config_path),
+            "--data-dir",
+            str(data_dir),
+            "--output-dir",
+            str(output_dir),
+            "--config",
+            str(config_path),
         ]
         if p.resume:
             fit_args.append("--resume")
@@ -529,7 +552,10 @@ class KpmsFit:
         else:
             # Write a placeholder so the feature index knows fit completed
             import joblib
-            joblib.dump({"params": self.params.model_dump(), "version": self.version}, path)
+
+            joblib.dump(
+                {"params": self.params.model_dump(), "version": self.version}, path
+            )
 
         # Write marker parquet for index registration
         marker_seq = "__global__"
@@ -538,8 +564,14 @@ class KpmsFit:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_marker_seq, "", marker_seq, marker_path, 1,
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_marker_seq,
+                "",
+                marker_seq,
+                marker_path,
+                1,
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
 
     def load_model(self, path: Path) -> None:

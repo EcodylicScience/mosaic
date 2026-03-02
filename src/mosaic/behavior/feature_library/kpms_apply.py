@@ -7,28 +7,31 @@ extracts per-frame syllable labels. Invokes keypoint-moseq in a subprocess
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Iterable
+
 import json
 import sys
+from pathlib import Path
+from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
-
-from mosaic.core.dataset import register_feature, _dataset_base_dir
-from mosaic.core.helpers import to_safe_name
 from pydantic import Field
-from .helpers import (
-    _get_feature_run_root,
-    _build_index_row,
-)
+
+from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.helpers import to_safe_name
+
 from ._param_bases import FeatureParams
+from .helpers import (
+    _build_index_row,
+    _get_feature_run_root,
+)
 from .kpms_fit import (
     _collect_and_serialize_tracks,
     _run_kpms_subprocess,
 )
 
 
+@final
 @register_feature
 class KpmsApply:
     """
@@ -110,7 +113,7 @@ class KpmsApply:
     def loads_own_data(self) -> bool:
         return True
 
-    def partial_fit(self, X: pd.DataFrame) -> None:
+    def partial_fit(self, df: pd.DataFrame) -> None:
         raise NotImplementedError
 
     def finalize_fit(self) -> None:
@@ -241,10 +244,14 @@ class KpmsApply:
         # 4. Run kpms_runner.py apply in subprocess
         output_dir = self._run_root / "_kpms_output"
         apply_args = [
-            "--data-dir", str(data_dir),
-            "--output-dir", str(output_dir),
-            "--model-dir", str(model_dir),
-            "--config", str(config_path),
+            "--data-dir",
+            str(data_dir),
+            "--output-dir",
+            str(output_dir),
+            "--model-dir",
+            str(model_dir),
+            "--config",
+            str(config_path),
         ]
         batch_size = p.apply_batch_size
         if batch_size and batch_size > 0:
@@ -294,16 +301,20 @@ class KpmsApply:
             # Parse recording name back to mosaic identifiers
             group, sequence, ind_id = self._parse_recording_name(recording_name)
 
-            safe_seq = to_safe_name(sequence) if sequence else to_safe_name(recording_name)
+            safe_seq = (
+                to_safe_name(sequence) if sequence else to_safe_name(recording_name)
+            )
             safe_group = to_safe_name(group) if group else ""
 
             # Build output DataFrame
-            df_out = pd.DataFrame({
-                "frame": np.arange(T, dtype=np.int64),
-                "syllable": syllables,
-                "sequence": sequence or recording_name,
-                "group": group,
-            })
+            df_out = pd.DataFrame(
+                {
+                    "frame": np.arange(T, dtype=np.int64),
+                    "syllable": syllables,
+                    "sequence": sequence or recording_name,
+                    "group": group,
+                }
+            )
             if ind_id is not None:
                 df_out["id"] = ind_id
 
@@ -316,8 +327,14 @@ class KpmsApply:
             df_out.to_parquet(out_path, index=False)
 
             self._additional_index_rows.append(
-                _build_index_row(safe_seq, group, sequence or recording_name, out_path, T,
-                                 dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+                _build_index_row(
+                    safe_seq,
+                    group,
+                    sequence or recording_name,
+                    out_path,
+                    T,
+                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+                )
             )
 
     # ----------------------- Save / Load -------------------------
@@ -327,15 +344,20 @@ class KpmsApply:
         run_root.mkdir(parents=True, exist_ok=True)
 
         import joblib
-        joblib.dump({
-            "params": self.params.model_dump(),
-            "kpms_fit_feature": self.params.kpms_fit_feature,
-            "kpms_fit_run_id": self.params.kpms_fit_run_id,
-            "version": self.version,
-        }, path)
+
+        joblib.dump(
+            {
+                "params": self.params.model_dump(),
+                "kpms_fit_feature": self.params.kpms_fit_feature,
+                "kpms_fit_run_id": self.params.kpms_fit_run_id,
+                "version": self.version,
+            },
+            path,
+        )
 
     def load_model(self, path: Path) -> None:
         import joblib
+
         bundle = joblib.load(path)
         saved = bundle.get("params", {})
         if isinstance(saved, dict):

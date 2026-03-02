@@ -1,22 +1,39 @@
 # dataset.py
 from __future__ import annotations
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-import pandas as pd 
-import numpy as np
-import uuid, datetime
-import yaml  # pip install pyyaml
-import importlib
-import multiprocessing as mp
 
-import csv, json, os, sys, re, subprocess, shlex, gc, textwrap
-from urllib.parse import urlparse, parse_qs, urlencode
+import csv
+import datetime
 import fnmatch
-from .helpers import to_safe_name, from_safe_name, filter_time_range
+import gc
+import importlib
+import json
+import multiprocessing as mp
+import os
+import re
+import shlex
+import subprocess
+import sys
+import textwrap
+import uuid
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
+from urllib.parse import parse_qs, urlencode, urlparse
 
-from typing import Protocol, Iterable, Optional, Sequence
+import numpy as np
+import pandas as pd
+import yaml  # pip install pyyaml
+
+from .helpers import filter_time_range, from_safe_name, to_safe_name
+
+if TYPE_CHECKING:
+    from mosaic.behavior.feature_library._param_bases import FeatureParams
+import hashlib
+import json
+import time
 from dataclasses import dataclass
-import json, joblib, hashlib, time
+
+import joblib
 
 
 def _probe_video_metadata(path: Path) -> dict[str, Any]:
@@ -25,10 +42,14 @@ def _probe_video_metadata(path: Path) -> dict[str, Any]:
     """
     cmd = [
         "ffprobe",
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,codec_name",
-        "-of", "json",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,r_frame_rate,codec_name",
+        "-of",
+        "json",
         str(path),
     ]
     try:
@@ -68,6 +89,7 @@ def _parse_ffprobe_rate(rate: Optional[str]) -> Optional[float]:
         return float(rate)
     except Exception:
         return None
+
 
 def _normalize_patterns(pats) -> tuple[str, ...]:
     if pats is None:
@@ -129,7 +151,9 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
     return normalized
 
 
-def _remap_single_path(path: Path, mapping: Sequence[tuple[Path, Path]]) -> Optional[Path]:
+def _remap_single_path(
+    path: Path, mapping: Sequence[tuple[Path, Path]]
+) -> Optional[Path]:
     for src, dst in mapping:
         try:
             rel = path.relative_to(src)
@@ -139,41 +163,48 @@ def _remap_single_path(path: Path, mapping: Sequence[tuple[Path, Path]]) -> Opti
     return None
 
 
-from dataclasses import dataclass, field
-from typing import Iterable, Dict, Any, Tuple, Callable, Optional, Mapping, Sequence
 import hashlib
-
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 # A tiny registry so you can plug converters: src_format -> callable
 TrackConverter = Callable[[Path, dict], pd.DataFrame]
 TRACK_CONVERTERS: dict[str, TrackConverter] = {}
 
+
 def register_track_converter(src_format: str, fn: TrackConverter):
     TRACK_CONVERTERS[src_format] = fn
+
 
 # Optional: per-format sequence enumerators (for multi-sequence files)
 TrackSeqEnumerator = Callable[[Path], list[tuple[str, str]]]
 TRACK_SEQ_ENUM: dict[str, TrackSeqEnumerator] = {}
 
+
 def register_track_seq_enumerator(src_format: str, fn: TrackSeqEnumerator):
     TRACK_SEQ_ENUM[src_format] = fn
+
 
 # ----------- Label converter registry -----------
 from typing import Protocol
 
+
 class LabelConverter(Protocol):
     """Protocol for label converter plugins."""
-    src_format: str              # e.g., "calms21_npy", "boris_csv"
-    label_kind: str              # e.g., "behavior", "id_tags"
-    label_format: str            # e.g., "calms21_behavior_v1"
 
-    def convert(self,
-                src_path: Path,
-                raw_row: pd.Series,
-                labels_root: Path,
-                params: dict,
-                overwrite: bool,
-                existing_pairs: set[tuple[str, str]]) -> list[dict]:
+    src_format: str  # e.g., "calms21_npy", "boris_csv"
+    label_kind: str  # e.g., "behavior", "id_tags"
+    label_format: str  # e.g., "calms21_behavior_v1"
+
+    def convert(
+        self,
+        src_path: Path,
+        raw_row: pd.Series,
+        labels_root: Path,
+        params: dict,
+        overwrite: bool,
+        existing_pairs: set[tuple[str, str]],
+    ) -> list[dict]:
         """
         Convert a source file to label npz files.
 
@@ -185,8 +216,10 @@ class LabelConverter(Protocol):
         """Optional: return format-specific metadata for dataset.meta['labels'][kind]."""
         ...
 
+
 # Registry: (src_format, label_kind) -> converter class
 LABEL_CONVERTERS: dict[tuple[str, str], type] = {}
+
 
 def register_label_converter(cls: type):
     """Decorator to register label converters."""
@@ -194,8 +227,14 @@ def register_label_converter(cls: type):
     LABEL_CONVERTERS[key] = cls
     return cls
 
+
 # ----------- Track schema system (extracted to tracking/schema.py) -----------
-from .schema import TrackSchema, TRACK_SCHEMAS, register_track_schema, ensure_track_schema
+from .schema import (
+    TRACK_SCHEMAS,
+    TrackSchema,
+    ensure_track_schema,
+    register_track_schema,
+)
 
 # --- Standardized label metadata ---
 BEHAVIOR_LABEL_MAP = {
@@ -220,18 +259,21 @@ LABEL_INDEX_COLUMNS = [
     "label_names",
 ]
 
-def _md5(path: Path, chunk=1<<20) -> str:
+
+def _md5(path: Path, chunk=1 << 20) -> str:
     h = hashlib.md5()
-    with path.open('rb') as f:
+    with path.open("rb") as f:
         while True:
             b = f.read(chunk)
-            if not b: break
+            if not b:
+                break
             h.update(b)
     return h.hexdigest()
 
 
 try:
     import yaml
+
     _YAML_OK = True
 except Exception:
     _YAML_OK = False
@@ -267,13 +309,18 @@ def _inputset_path(ds, name: str) -> Path:
     return _inputset_dir(ds) / f"{safe}.json"
 
 
-def save_inputset(ds, name: str, inputs: list[dict], description: Optional[str] = None,
-                  overwrite: bool = False,
-                  filter_start_frame: Optional[int] = None,
-                  filter_end_frame: Optional[int] = None,
-                  filter_start_time: Optional[float] = None,
-                  filter_end_time: Optional[float] = None,
-                  pair_filter: Optional[dict] = None) -> Path:
+def save_inputset(
+    ds,
+    name: str,
+    inputs: list[dict],
+    description: Optional[str] = None,
+    overwrite: bool = False,
+    filter_start_frame: Optional[int] = None,
+    filter_end_frame: Optional[int] = None,
+    filter_start_time: Optional[float] = None,
+    filter_end_time: Optional[float] = None,
+    pair_filter: Optional[dict] = None,
+) -> Path:
     """
     Persist an inputset JSON under <dataset_root>/inputsets/<name>.json.
 
@@ -357,8 +404,12 @@ def _load_inputset(ds, name: str) -> tuple[list[dict], dict]:
     return inputs, meta
 
 
-def _resolve_inputs(ds, explicit_inputs: Optional[list[dict]], inputset_name: Optional[str],
-                    explicit_override: bool = False) -> tuple[list[dict], dict]:
+def _resolve_inputs(
+    ds,
+    explicit_inputs: Optional[list[dict]],
+    inputset_name: Optional[str],
+    explicit_override: bool = False,
+) -> tuple[list[dict], dict]:
     """
     Determine which inputs to use based on explicit params vs. named inputset.
     If inputset_name is provided, it overrides defaults unless explicit_inputs was
@@ -382,7 +433,9 @@ def _resolve_inputs(ds, explicit_inputs: Optional[list[dict]], inputset_name: Op
         }
 
     if not inputs:
-        raise ValueError("No inputs resolved; provide params['inputs'] or params['inputset'].")
+        raise ValueError(
+            "No inputs resolved; provide params['inputs'] or params['inputset']."
+        )
     return inputs, meta
 
 
@@ -390,13 +443,14 @@ def _resolve_inputs(ds, explicit_inputs: Optional[list[dict]], inputset_name: Op
 
 default_roots = {
     "media": "media",
-    "features": "features",     # calculated features (input to models), e.g. wavelets, projections, embeddings
-    "labels": "labels",         # GT annotations, .npy/.csv
-    "models": "models",   # trained models, reports, plots
+    "features": "features",  # calculated features (input to models), e.g. wavelets, projections, embeddings
+    "labels": "labels",  # GT annotations, .npy/.csv
+    "models": "models",  # trained models, reports, plots
     "tracks": "tracks",
     "tracks_raw": "tracks_raw",
-    "frames": "frames",         # extracted video frames (PNGs), can be very large
+    "frames": "frames",  # extracted video frames (PNGs), can be very large
 }
+
 
 def new_dataset_manifest(
     name: str,
@@ -434,9 +488,9 @@ def new_dataset_manifest(
         "version": version,
         "uuid": str(uuid.uuid4()),
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "index_format": index_format,   # recommended: "group/sequence"
-        "roots": norm_roots,            # required minimal roots you actually use now
-        "dataset_type": dataset_type,   # "discrete" (default) or "continuous"
+        "index_format": index_format,  # recommended: "group/sequence"
+        "roots": norm_roots,  # required minimal roots you actually use now
+        "dataset_type": dataset_type,  # "discrete" (default) or "continuous"
         # You can append optional fields later without placeholders
     }
 
@@ -480,7 +534,9 @@ def new_dataset_manifest(
 # ==========================================================
 """
 
-    text = header_comment + yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False)
+    text = header_comment + yaml.safe_dump(
+        manifest, sort_keys=False, default_flow_style=False
+    )
 
     if outfile is None:
         outfile = base_dir / "dataset.yaml"
@@ -491,9 +547,11 @@ def new_dataset_manifest(
     print(f"Wrote dataset manifest -> {outfile}")
     return outfile
 
+
 # --------------------------
 # Dataset manifest + manager
 # --------------------------
+
 
 @dataclass
 class Dataset:
@@ -501,17 +559,21 @@ class Dataset:
     name: str = "unnamed"
     version: str = "0.1"
     format: str = "yaml"
-    roots: Dict[str, str] = field(default_factory=lambda: {
-        "media": "",
-        "tracks_raw": "",
-        "tracks": "",
-        "tracks_raw": "",
-        "features": "",
-        "labels": "",
-        "models": "",
-    })
+    roots: Dict[str, str] = field(
+        default_factory=lambda: {
+            "media": "",
+            "tracks_raw": "",
+            "tracks": "",
+            "tracks_raw": "",
+            "features": "",
+            "labels": "",
+            "models": "",
+        }
+    )
     meta: Dict[str, Any] = field(default_factory=dict)
-    _path_map: list[tuple[Path, Path]] = field(default_factory=list, init=False, repr=False)
+    _path_map: list[tuple[Path, Path]] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     # Continuous dataset support
     dataset_type: str = "discrete"  # "discrete" or "continuous"
@@ -553,11 +615,14 @@ class Dataset:
             # fallback: try yaml then json
             if _YAML_OK:
                 try:
-                    data = yaml.safe_load(mp.read_text()); fmt = "yaml"
+                    data = yaml.safe_load(mp.read_text())
+                    fmt = "yaml"
                 except Exception:
-                    data = json.loads(mp.read_text()); fmt = "json"
+                    data = json.loads(mp.read_text())
+                    fmt = "json"
             else:
-                data = json.loads(mp.read_text()); fmt = "json"
+                data = json.loads(mp.read_text())
+                fmt = "json"
 
         # overwrite instance fields
         self.name = data.get("name", self.name)
@@ -596,7 +661,9 @@ class Dataset:
             self.manifest_path.write_text(json.dumps(payload, indent=2))
         else:
             if not _YAML_OK:
-                raise RuntimeError("pyyaml not installed; set format='json' or install pyyaml.")
+                raise RuntimeError(
+                    "pyyaml not installed; set format='json' or install pyyaml."
+                )
             self.manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     # ---- Helpers ----
@@ -681,7 +748,9 @@ class Dataset:
         except ValueError:
             return str(abs_path.resolve())
 
-    def rewrite_index_paths(self, path_map: Mapping[str, str], dry_run: bool = False) -> dict[str, int]:
+    def rewrite_index_paths(
+        self, path_map: Mapping[str, str], dry_run: bool = False
+    ) -> dict[str, int]:
         """
         Permanently rewrite abs_path in all index CSV files on disk.
 
@@ -820,7 +889,9 @@ class Dataset:
             results["dataset.yaml (roots)"] = roots_changed
 
         # --- 8b. Index CSVs: convert abs_path column ---
-        def _convert_index(idx_path: Path, external_columns: set[str] | None = None) -> int:
+        def _convert_index(
+            idx_path: Path, external_columns: set[str] | None = None
+        ) -> int:
             """Convert abs_path (and optionally other path columns) to relative."""
             if not idx_path.exists():
                 return 0
@@ -1103,12 +1174,14 @@ class Dataset:
     # ----------------------------
     # Media indexing (no symlinks)
     # ----------------------------
-    def index_media(self,
-                    search_dirs: Iterable[str | Path],
-                    extensions: Tuple[str, ...] = (".mp4", ".avi"),
-                    index_filename: str = "index.csv",
-                    recursive: bool = True,
-                    sequence_match_mode: str = "exact") -> Path:
+    def index_media(
+        self,
+        search_dirs: Iterable[str | Path],
+        extensions: Tuple[str, ...] = (".mp4", ".avi"),
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+        sequence_match_mode: str = "exact",
+    ) -> Path:
         """
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
         - No symlinks created; absolute paths recorded.
@@ -1133,7 +1206,9 @@ class Dataset:
               to sequence ``session01``.
         """
         if sequence_match_mode not in {"exact", "prefix"}:
-            raise ValueError(f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'")
+            raise ValueError(
+                f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
+            )
 
         media_root = self.get_root("media")
         out_csv = media_root / index_filename
@@ -1156,7 +1231,9 @@ class Dataset:
                     try:
                         st = p.stat()
                         meta = self._match_media_sequence(
-                            seq_key_map, p.stem, mode=sequence_match_mode,
+                            seq_key_map,
+                            p.stem,
+                            mode=sequence_match_mode,
                         )
                         probe = _probe_video_metadata(p)
                         # When no track match, use video stem as sequence
@@ -1164,20 +1241,30 @@ class Dataset:
                         # together under an empty key).
                         fallback_seq = p.stem
                         fallback_safe = to_safe_name(p.stem)
-                        rows.append({
-                            "name": p.name,
-                            "group": meta.get("group", "") if meta else "",
-                            "sequence": meta.get("sequence", fallback_seq) if meta else fallback_seq,
-                            "group_safe": meta.get("group_safe", "") if meta else "",
-                            "sequence_safe": meta.get("sequence_safe", fallback_safe) if meta else fallback_safe,
-                            "abs_path": str(p.resolve()),
-                            "size_bytes": st.st_size,
-                            "mtime_iso": _to_iso(st.st_mtime),
-                            "width": probe.get("width", ""),
-                            "height": probe.get("height", ""),
-                            "fps": probe.get("fps", ""),
-                            "codec": probe.get("codec", ""),
-                        })
+                        rows.append(
+                            {
+                                "name": p.name,
+                                "group": meta.get("group", "") if meta else "",
+                                "sequence": meta.get("sequence", fallback_seq)
+                                if meta
+                                else fallback_seq,
+                                "group_safe": meta.get("group_safe", "")
+                                if meta
+                                else "",
+                                "sequence_safe": meta.get(
+                                    "sequence_safe", fallback_safe
+                                )
+                                if meta
+                                else fallback_safe,
+                                "abs_path": str(p.resolve()),
+                                "size_bytes": st.st_size,
+                                "mtime_iso": _to_iso(st.st_mtime),
+                                "width": probe.get("width", ""),
+                                "height": probe.get("height", ""),
+                                "fps": probe.get("fps", ""),
+                                "codec": probe.get("codec", ""),
+                            }
+                        )
                     except OSError as e:
                         print(f"[WARN] skip {p}: {e}", file=sys.stderr)
 
@@ -1192,10 +1279,25 @@ class Dataset:
             dedup.append(r)
 
         # Assign video_order within each (group, sequence) by filename sort
-        df_out = pd.DataFrame(dedup) if dedup else pd.DataFrame(
-            columns=["name", "group", "sequence", "group_safe", "sequence_safe",
-                      "abs_path", "size_bytes", "mtime_iso", "width", "height",
-                      "fps", "codec"]
+        df_out = (
+            pd.DataFrame(dedup)
+            if dedup
+            else pd.DataFrame(
+                columns=[
+                    "name",
+                    "group",
+                    "sequence",
+                    "group_safe",
+                    "sequence_safe",
+                    "abs_path",
+                    "size_bytes",
+                    "mtime_iso",
+                    "width",
+                    "height",
+                    "fps",
+                    "codec",
+                ]
+            )
         )
         df_out["video_order"] = 0
         if not df_out.empty:
@@ -1206,23 +1308,36 @@ class Dataset:
                         df_out.loc[idx, "video_order"] = rank
 
         out_csv.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = ["name", "group", "sequence", "group_safe", "sequence_safe",
-                      "abs_path", "size_bytes", "mtime_iso", "width", "height",
-                      "fps", "codec", "video_order"]
+        fieldnames = [
+            "name",
+            "group",
+            "sequence",
+            "group_safe",
+            "sequence_safe",
+            "abs_path",
+            "size_bytes",
+            "mtime_iso",
+            "width",
+            "height",
+            "fps",
+            "codec",
+            "video_order",
+        ]
         df_out[fieldnames].to_csv(out_csv, index=False)
 
         multi_count = 0
         if not df_out.empty:
             seq_counts = df_out.groupby(["group", "sequence"]).size()
             multi_count = int((seq_counts > 1).sum())
-        print(f"[index_media] Wrote {len(df_out)} entries -> {out_csv}"
-              + (f" ({multi_count} multi-video sequences)" if multi_count else ""))
+        print(
+            f"[index_media] Wrote {len(df_out)} entries -> {out_csv}"
+            + (f" ({multi_count} multi-video sequences)" if multi_count else "")
+        )
         return out_csv
 
-    def resolve_media_paths(self,
-                            group: str,
-                            sequence: str,
-                            index_filename: str = "index.csv") -> list[Path]:
+    def resolve_media_paths(
+        self, group: str, sequence: str, index_filename: str = "index.csv"
+    ) -> list[Path]:
         """
         Resolve all media file paths for a given (group, sequence), ordered.
 
@@ -1245,13 +1360,15 @@ class Dataset:
             if df_match.empty:
                 return None
             df_sorted = df_match.sort_values("video_order")
-            return [self.resolve_path(row["abs_path"]) for _, row in df_sorted.iterrows()]
+            return [
+                self.resolve_path(row["abs_path"]) for _, row in df_sorted.iterrows()
+            ]
 
         # Direct match by (group, sequence)
         if "group" in df.columns and "sequence" in df.columns:
             df_match = df[
-                (df["group"].fillna("") == str(group)) &
-                (df["sequence"].fillna("") == str(sequence))
+                (df["group"].fillna("") == str(group))
+                & (df["sequence"].fillna("") == str(sequence))
             ]
             paths = _resolve_matches(df_match)
             if paths:
@@ -1262,8 +1379,8 @@ class Dataset:
         safe_sequence = to_safe_name(sequence)
         if {"group_safe", "sequence_safe"}.issubset(df.columns):
             df_match = df[
-                (df["group_safe"].fillna("") == safe_group) &
-                (df["sequence_safe"].fillna("") == safe_sequence)
+                (df["group_safe"].fillna("") == safe_group)
+                & (df["sequence_safe"].fillna("") == safe_sequence)
             ]
             paths = _resolve_matches(df_match)
             if paths:
@@ -1275,17 +1392,18 @@ class Dataset:
         df["name_lower"] = df["name"].astype(str).str.lower()
         candidates = df[df["name_lower"].str.contains(stem, na=False)]
         if candidates.empty:
-            raise FileNotFoundError(f"No media file found matching sequence '{sequence}'.")
+            raise FileNotFoundError(
+                f"No media file found matching sequence '{sequence}'."
+            )
         paths = _resolve_matches(candidates)
         if paths:
             return paths
 
         raise FileNotFoundError(f"No media file found matching sequence '{sequence}'.")
 
-    def resolve_media_path(self,
-                           group: str,
-                           sequence: str,
-                           index_filename: str = "index.csv") -> Path:
+    def resolve_media_path(
+        self, group: str, sequence: str, index_filename: str = "index.csv"
+    ) -> Path:
         """
         Resolve a single media file path for a given (group, sequence).
 
@@ -1383,18 +1501,20 @@ class Dataset:
                 return seq_key_map[best_key][0]
 
         return None
-    
-    def index_tracks_raw(self,
-                         search_dirs: Iterable[str | Path],
-                         patterns: Iterable[str] | str = ("*.npy", "*.h5", "*.csv"),
-                         src_format: str = "calms21_npy",
-                         index_filename: str = "index.csv",
-                         recursive: bool = True,
-                         multi_sequences_per_file: bool = False,
-                         group_from: Optional[str] = None,
-                         group_pattern: Optional[str] = None,
-                         exclude_patterns: Optional[Iterable[str]] = None,
-                         compute_md5: bool = False) -> Path:
+
+    def index_tracks_raw(
+        self,
+        search_dirs: Iterable[str | Path],
+        patterns: Iterable[str] | str = ("*.npy", "*.h5", "*.csv"),
+        src_format: str = "calms21_npy",
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+        multi_sequences_per_file: bool = False,
+        group_from: Optional[str] = None,
+        group_pattern: Optional[str] = None,
+        exclude_patterns: Optional[Iterable[str]] = None,
+        compute_md5: bool = False,
+    ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
         Columns: group, sequence, abs_path, src_format, size_bytes, mtime_iso, md5
@@ -1465,15 +1585,17 @@ class Dataset:
                         else:
                             grp = ""
 
-                    rows.append({
-                        "group": grp,
-                        "sequence": seq,
-                        "abs_path": str(p.resolve()),
-                        "src_format": src_format,
-                        "size_bytes": st.st_size,
-                        "mtime_iso": _to_iso(st.st_mtime),
-                        "md5": _md5(p) if compute_md5 else "",
-                    })
+                    rows.append(
+                        {
+                            "group": grp,
+                            "sequence": seq,
+                            "abs_path": str(p.resolve()),
+                            "src_format": src_format,
+                            "size_bytes": st.st_size,
+                            "mtime_iso": _to_iso(st.st_mtime),
+                            "md5": _md5(p) if compute_md5 else "",
+                        }
+                    )
 
         df = pd.DataFrame(rows).drop_duplicates(subset=["abs_path"])
         out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -1484,10 +1606,9 @@ class Dataset:
     # ----------------------------
     # Convert one original -> standard (T-Rex-like)
     # ----------------------------
-    def convert_one_track(self,
-                          raw_row: pd.Series,
-                          params: Optional[dict] = None,
-                          overwrite: bool = False) -> Path:
+    def convert_one_track(
+        self, raw_row: pd.Series, params: Optional[dict] = None, overwrite: bool = False
+    ) -> Path:
         """
         Convert a single raw track file (row from tracks_raw/index.csv) to standard trex_v1 parquet.
         Returns path to standardized file, updates tracks/index.csv.
@@ -1513,23 +1634,27 @@ class Dataset:
             if policy not in {"infile", "filename", "both"}:
                 policy = "infile"
 
-            raw_collection = str(raw_row.get("group", "")) if raw_row is not None else ""
+            raw_collection = (
+                str(raw_row.get("group", "")) if raw_row is not None else ""
+            )
             pairs = TRACK_SEQ_ENUM[src_format](src_path)
             if not pairs:
-                raise ValueError(f"No (group, sequence) pairs enumerated for {src_path}")
+                raise ValueError(
+                    f"No (group, sequence) pairs enumerated for {src_path}"
+                )
             produced = []
 
             for g, s in pairs:
                 # canonical (with '/')
                 canon_seq = s
                 # decide output group by policy
-                canon_group_infile = (g or "")
+                canon_group_infile = g or ""
                 out_group_canon = canon_group_infile
                 if policy in {"filename", "both"} and raw_collection:
                     out_group_canon = raw_collection
 
                 # safe names for path
-                safe_seq  = to_safe_name(canon_seq)
+                safe_seq = to_safe_name(canon_seq)
                 safe_group = to_safe_name(out_group_canon) if out_group_canon else ""
 
                 # output path
@@ -1555,7 +1680,9 @@ class Dataset:
                     df_std["group"] = out_group_canon
 
                 # Ensure schema, then write
-                _, _schema_report = ensure_track_schema(df_std, std_fmt, strict=bool(params.get("strict_schema", False)))
+                _, _schema_report = ensure_track_schema(
+                    df_std, std_fmt, strict=bool(params.get("strict_schema", False))
+                )
                 df_std.to_parquet(out_path, index=False)
 
                 # Index row: group follows policy; keep file-level hint as 'collection'
@@ -1565,7 +1692,9 @@ class Dataset:
                     "group_safe": safe_group,
                     "sequence_safe": safe_seq,
                     "collection": raw_collection,
-                    "collection_safe": to_safe_name(raw_collection) if raw_collection else "",
+                    "collection_safe": to_safe_name(raw_collection)
+                    if raw_collection
+                    else "",
                     "abs_path": self._relative_to_root(out_path),
                     "std_format": std_fmt,
                     "source_abs_path": str(src_path.resolve()),
@@ -1578,8 +1707,12 @@ class Dataset:
             return self.get_root("tracks") / "index.csv"
 
         # Normal single-sequence path (default)
-        safe_group = to_safe_name(str(raw_row.get('group', '')) or '') if raw_row.get('group') else ''
-        safe_seq   = to_safe_name(seq_value)
+        safe_group = (
+            to_safe_name(str(raw_row.get("group", "")) or "")
+            if raw_row.get("group")
+            else ""
+        )
+        safe_seq = to_safe_name(seq_value)
         rel_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
         out_path = tracks_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1603,10 +1736,16 @@ class Dataset:
         row = {
             "group": raw_row.get("group", ""),
             "sequence": raw_row["sequence"],
-            "group_safe": to_safe_name(str(raw_row.get("group", ""))) if raw_row.get("group") else "",
+            "group_safe": to_safe_name(str(raw_row.get("group", "")))
+            if raw_row.get("group")
+            else "",
             "sequence_safe": to_safe_name(seq_value),
-            "collection": str(raw_row.get("group", "")) if raw_row.get("group") is not None else "",
-            "collection_safe": to_safe_name(str(raw_row.get("group", ""))) if raw_row.get("group") else "",
+            "collection": str(raw_row.get("group", ""))
+            if raw_row.get("group") is not None
+            else "",
+            "collection_safe": to_safe_name(str(raw_row.get("group", "")))
+            if raw_row.get("group")
+            else "",
             "abs_path": self._relative_to_root(out_path),
             "std_format": std_fmt,
             "source_abs_path": str(src_path.resolve()),
@@ -1624,36 +1763,63 @@ class Dataset:
         # Ensure safe-name columns are present in row
         row = dict(row)
         row["group_safe"] = to_safe_name(row["group"]) if row.get("group") else ""
-        row["sequence_safe"] = to_safe_name(row["sequence"]) if row.get("sequence") else ""
+        row["sequence_safe"] = (
+            to_safe_name(row["sequence"]) if row.get("sequence") else ""
+        )
         if "collection_safe" not in row:
-            row["collection_safe"] = to_safe_name(row.get("collection", "")) if row.get("collection") else ""
+            row["collection_safe"] = (
+                to_safe_name(row.get("collection", "")) if row.get("collection") else ""
+            )
         tracks_root = self.get_root("tracks")
         idx_std = tracks_root / "index.csv"
         columns = [
-            "group", "sequence", "group_safe", "sequence_safe",
-            "collection", "collection_safe",
-            "abs_path", "std_format", "source_abs_path", "source_md5", "n_rows"
+            "group",
+            "sequence",
+            "group_safe",
+            "sequence_safe",
+            "collection",
+            "collection_safe",
+            "abs_path",
+            "std_format",
+            "source_abs_path",
+            "source_md5",
+            "n_rows",
         ]
         if idx_std.exists():
             df_idx = pd.read_csv(idx_std)
             # If missing safe columns, add and fill them
-            for col, canon_col in [("group_safe", "group"), ("sequence_safe", "sequence")]:
+            for col, canon_col in [
+                ("group_safe", "group"),
+                ("sequence_safe", "sequence"),
+            ]:
                 if col not in df_idx.columns:
-                    df_idx[col] = df_idx[canon_col].apply(lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else "")
+                    df_idx[col] = df_idx[canon_col].apply(
+                        lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else ""
+                    )
             # Ensure collection/collection_safe columns exist and are filled appropriately
             if "collection" not in df_idx.columns:
                 df_idx["collection"] = ""
             if "collection_safe" not in df_idx.columns:
                 # derive from collection (which may be empty strings)
-                df_idx["collection_safe"] = df_idx["collection"].apply(lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else "")
+                df_idx["collection_safe"] = df_idx["collection"].apply(
+                    lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else ""
+                )
             # Remove any existing entry with the same (group, sequence)
-            df_idx = df_idx[~((df_idx["group"].fillna("") == row["group"]) & (df_idx["sequence"] == row["sequence"]))]
-            df_idx = pd.concat([df_idx, pd.DataFrame([{k: row.get(k, "") for k in columns}])], ignore_index=True)
+            df_idx = df_idx[
+                ~(
+                    (df_idx["group"].fillna("") == row["group"])
+                    & (df_idx["sequence"] == row["sequence"])
+                )
+            ]
+            df_idx = pd.concat(
+                [df_idx, pd.DataFrame([{k: row.get(k, "") for k in columns}])],
+                ignore_index=True,
+            )
         else:
             # Ensure all columns present in correct order
             df_idx = pd.DataFrame([[row.get(k, "") for k in columns]], columns=columns)
         df_idx.to_csv(idx_std, index=False)
-    
+
     def list_converters(self) -> Dict[str, TrackConverter]:
         """Return registered raw->standard track converters."""
         return dict(TRACK_CONVERTERS)
@@ -1665,11 +1831,13 @@ class Dataset:
     # ----------------------------
     # Bulk convert
     # ----------------------------
-    def convert_all_tracks(self,
-                        params: Optional[dict] = None,
-                        overwrite: bool = False,
-                        merge_per_sequence: Optional[bool] = None,
-                        group_from: Optional[str] = None) -> None:
+    def convert_all_tracks(
+        self,
+        params: Optional[dict] = None,
+        overwrite: bool = False,
+        merge_per_sequence: Optional[bool] = None,
+        group_from: Optional[str] = None,
+    ) -> None:
         """
         Convert all raw track files (from tracks_raw/index.csv) to standard T-Rex-like parquet files.
 
@@ -1697,7 +1865,9 @@ class Dataset:
         """
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
-            raise FileNotFoundError("tracks_raw/index.csv not found; run index_tracks_raw first.")
+            raise FileNotFoundError(
+                "tracks_raw/index.csv not found; run index_tracks_raw first."
+            )
         try:
             df = pd.read_csv(raw_idx)
         except pd.errors.EmptyDataError:
@@ -1709,12 +1879,14 @@ class Dataset:
 
         # Decide merging default for trex
         if merge_per_sequence is None:
-            merge_per_sequence = (len(df) > 0 and (df["src_format"] == "trex_npz").all())
+            merge_per_sequence = len(df) > 0 and (df["src_format"] == "trex_npz").all()
 
         # normalize group_from
         group_from = (group_from or "infile").lower()
         if group_from not in {"infile", "filename", "both"}:
-            raise ValueError(f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}")
+            raise ValueError(
+                f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}"
+            )
 
         if not merge_per_sequence:
             # Convert each row individually
@@ -1750,7 +1922,9 @@ class Dataset:
                     try:
                         call_params = dict(params) if params else {}
                         call_params["group_from"] = group_from
-                        self.convert_one_track(row, params=call_params, overwrite=overwrite)
+                        self.convert_one_track(
+                            row, params=call_params, overwrite=overwrite
+                        )
                     except Exception as e:
                         print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
                 continue
@@ -1791,7 +1965,7 @@ class Dataset:
             # Write output
             tracks_root = self.get_root("tracks")
             safe_group = to_safe_name(out_group) if out_group else ""
-            safe_seq   = to_safe_name(sequence)
+            safe_seq = to_safe_name(sequence)
             rel_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
             out_path = tracks_root / rel_name
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1804,7 +1978,9 @@ class Dataset:
                 "group_safe": safe_group,
                 "sequence_safe": safe_seq,
                 "collection": raw_group_hint,
-                "collection_safe": to_safe_name(raw_group_hint) if raw_group_hint else "",
+                "collection_safe": to_safe_name(raw_group_hint)
+                if raw_group_hint
+                else "",
                 "abs_path": self._relative_to_root(out_path),
                 "std_format": "trex_v1",
                 "source_abs_path": str(first_row["abs_path"]),
@@ -1816,12 +1992,14 @@ class Dataset:
     # ----------------------------
     # Labels: conversion + indexing
     # ----------------------------
-    def convert_all_labels(self,
-                           kind: str = "behavior",
-                           overwrite: bool = False,
-                           params: Optional[dict] = None,
-                           source_format: Optional[str] = None,
-                           **kwargs) -> None:
+    def convert_all_labels(
+        self,
+        kind: str = "behavior",
+        overwrite: bool = False,
+        params: Optional[dict] = None,
+        source_format: Optional[str] = None,
+        **kwargs,
+    ) -> None:
         """
         Convert labels from raw files using registered label converters.
 
@@ -1887,14 +2065,18 @@ class Dataset:
         # Load raw index
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
-            raise FileNotFoundError("tracks_raw/index.csv not found; run index_tracks_raw first.")
+            raise FileNotFoundError(
+                "tracks_raw/index.csv not found; run index_tracks_raw first."
+            )
 
         df_raw = pd.read_csv(raw_idx)
         if "src_format" not in df_raw.columns:
             raise ValueError("tracks_raw/index.csv missing 'src_format' column.")
         df_raw = df_raw[df_raw["src_format"].astype(str) == str(src_format)]
         if df_raw.empty:
-            raise ValueError(f"No rows in tracks_raw/index.csv with src_format='{src_format}'.")
+            raise ValueError(
+                f"No rows in tracks_raw/index.csv with src_format='{src_format}'."
+            )
 
         # Setup output directory
         labels_root = self.get_root("labels") / kind
@@ -1939,7 +2121,7 @@ class Dataset:
             }
 
             # Add format-specific metadata if converter provides it
-            if hasattr(converter, 'get_metadata'):
+            if hasattr(converter, "get_metadata"):
                 labels_meta[kind].update(converter.get_metadata())
 
             try:
@@ -1947,14 +2129,18 @@ class Dataset:
             except Exception:
                 pass
 
-        print(f"[convert_all_labels] kind={kind} wrote {len(new_rows)} sequences using {src_format} converter (overwrite={overwrite}).")
+        print(
+            f"[convert_all_labels] kind={kind} wrote {len(new_rows)} sequences using {src_format} converter (overwrite={overwrite})."
+        )
 
-    def convert_labels_custom(self,
-                               converter_fn: Callable,
-                               kind: str = "behavior",
-                               label_format: str = "individual_pair_v1",
-                               overwrite: bool = False,
-                               **kwargs) -> int:
+    def convert_labels_custom(
+        self,
+        converter_fn: Callable,
+        kind: str = "behavior",
+        label_format: str = "individual_pair_v1",
+        overwrite: bool = False,
+        **kwargs,
+    ) -> int:
         """
         Convert labels using a custom converter function.
 
@@ -2076,7 +2262,7 @@ class Dataset:
             labels_root=labels_root,
             existing_pairs=existing_pairs,
             overwrite=overwrite,
-            **kwargs
+            **kwargs,
         )
 
         # Update index and metadata
@@ -2096,16 +2282,20 @@ class Dataset:
             except Exception:
                 pass
 
-        print(f"[convert_labels_custom] kind={kind} wrote {len(new_rows)} sequences (overwrite={overwrite}).")
+        print(
+            f"[convert_labels_custom] kind={kind} wrote {len(new_rows)} sequences (overwrite={overwrite})."
+        )
         return len(new_rows)
 
-    def save_id_labels(self,
-                       kind: str,
-                       group: str,
-                       sequence: str,
-                       per_id_labels: dict,
-                       metadata: Optional[dict] = None,
-                       overwrite: bool = False) -> Path:
+    def save_id_labels(
+        self,
+        kind: str,
+        group: str,
+        sequence: str,
+        per_id_labels: dict,
+        metadata: Optional[dict] = None,
+        overwrite: bool = False,
+    ) -> Path:
         """
         Persist per-(sequence, id) tags under labels/<kind>.
 
@@ -2123,11 +2313,15 @@ class Dataset:
         fname = f"{safe_group + '__' if safe_group else ''}{safe_seq}.npz"
         out_path = labels_root / fname
         if out_path.exists() and not overwrite:
-            raise FileExistsError(f"ID labels already exist for ({group},{sequence}); set overwrite=True to replace.")
+            raise FileExistsError(
+                f"ID labels already exist for ({group},{sequence}); set overwrite=True to replace."
+            )
 
         id_keys = sorted(per_id_labels.keys(), key=lambda v: str(v))
         ids_array = np.asarray(id_keys, dtype=object)
-        field_names = sorted({field for tags in per_id_labels.values() for field in (tags or {}).keys()})
+        field_names = sorted(
+            {field for tags in per_id_labels.values() for field in (tags or {}).keys()}
+        )
 
         payload: dict[str, np.ndarray] = {"ids": ids_array}
         for field in field_names:
@@ -2259,7 +2453,9 @@ class Dataset:
             if all_ids is None:
                 raise ValueError("all_ids is required for csv_type='focal'")
             if focal_id_column not in df.columns:
-                raise ValueError(f"CSV must have '{focal_id_column}' column for csv_type='focal'")
+                raise ValueError(
+                    f"CSV must have '{focal_id_column}' column for csv_type='focal'"
+                )
 
             for _, row in df.iterrows():
                 group = str(row["group"]) if pd.notna(row["group"]) else ""
@@ -2273,8 +2469,7 @@ class Dataset:
                         focal_id = int(focal_id)
 
                 per_id_labels = {
-                    id_val: {"focal": (id_val == focal_id)}
-                    for id_val in all_ids
+                    id_val: {"focal": (id_val == focal_id)} for id_val in all_ids
                 }
 
                 path = self.save_id_labels(
@@ -2289,9 +2484,13 @@ class Dataset:
         elif csv_type == "category":
             # Category type: per-ID category value
             if id_column not in df.columns:
-                raise ValueError(f"CSV must have '{id_column}' column for csv_type='category'")
+                raise ValueError(
+                    f"CSV must have '{id_column}' column for csv_type='category'"
+                )
             if category_column not in df.columns:
-                raise ValueError(f"CSV must have '{category_column}' column for csv_type='category'")
+                raise ValueError(
+                    f"CSV must have '{category_column}' column for csv_type='category'"
+                )
 
             # Group by (group, sequence)
             for (group, seq), group_df in df.groupby(["group", "sequence"]):
@@ -2324,10 +2523,14 @@ class Dataset:
         elif csv_type == "multi":
             # Multi type: multiple fields per ID
             if id_column not in df.columns:
-                raise ValueError(f"CSV must have '{id_column}' column for csv_type='multi'")
+                raise ValueError(
+                    f"CSV must have '{id_column}' column for csv_type='multi'"
+                )
             if field_columns is None:
                 # Auto-detect: all columns except group, sequence, id
-                field_columns = [c for c in df.columns if c not in ["group", "sequence", id_column]]
+                field_columns = [
+                    c for c in df.columns if c not in ["group", "sequence", id_column]
+                ]
             if not field_columns:
                 raise ValueError("No field columns found for csv_type='multi'")
 
@@ -2341,9 +2544,7 @@ class Dataset:
                     id_val = row[id_column]
                     if isinstance(id_val, float) and id_val.is_integer():
                         id_val = int(id_val)
-                    per_id_labels[id_val] = {
-                        col: row[col] for col in field_columns
-                    }
+                    per_id_labels[id_val] = {col: row[col] for col in field_columns}
 
                 # Add missing IDs with None values if all_ids provided
                 if all_ids is not None:
@@ -2361,15 +2562,19 @@ class Dataset:
                 created.append(path)
 
         else:
-            raise ValueError(f"Unknown csv_type: '{csv_type}'. Must be 'focal', 'category', or 'multi'.")
+            raise ValueError(
+                f"Unknown csv_type: '{csv_type}'. Must be 'focal', 'category', or 'multi'."
+            )
 
         print(f"Created {len(created)} id_tags files from {csv_path.name}")
         return created
 
-    def load_id_labels(self,
-                       kind: str = "id_tags",
-                       groups: Optional[Iterable[str]] = None,
-                       sequences: Optional[Iterable[str]] = None) -> dict[tuple[str, str], dict]:
+    def load_id_labels(
+        self,
+        kind: str = "id_tags",
+        groups: Optional[Iterable[str]] = None,
+        sequences: Optional[Iterable[str]] = None,
+    ) -> dict[tuple[str, str], dict]:
         """
         Load per-id labels for the requested kind.
         Returns {(group, sequence): {"labels": {id: {field: value}}, "sequence_safe": str, "path": str, "metadata": dict}}
@@ -2377,7 +2582,9 @@ class Dataset:
         labels_root = self.get_root("labels") / kind
         idx_path = labels_root / "index.csv"
         if not idx_path.exists():
-            raise FileNotFoundError(f"Labels index not found for kind='{kind}': {idx_path}")
+            raise FileNotFoundError(
+                f"Labels index not found for kind='{kind}': {idx_path}"
+            )
         df = pd.read_csv(idx_path)
         if groups is not None:
             groups = {str(g) for g in groups}
@@ -2427,10 +2634,7 @@ class Dataset:
             }
         return result
 
-    def load_labels(self,
-                    group: str,
-                    sequence: str,
-                    kind: str = "behavior") -> dict:
+    def load_labels(self, group: str, sequence: str, kind: str = "behavior") -> dict:
         """
         Load behavior labels for a specific (group, sequence).
 
@@ -2448,16 +2652,22 @@ class Dataset:
         labels_root = self.get_root("labels") / kind
         idx_path = labels_root / "index.csv"
         if not idx_path.exists():
-            raise FileNotFoundError(f"Labels index not found for kind='{kind}': {idx_path}")
+            raise FileNotFoundError(
+                f"Labels index not found for kind='{kind}': {idx_path}"
+            )
 
         df = pd.read_csv(idx_path)
         df = df[(df["group"].fillna("") == group) & (df["sequence"] == sequence)]
 
         if len(df) == 0:
-            raise ValueError(f"No labels found for group='{group}', sequence='{sequence}', kind='{kind}'")
+            raise ValueError(
+                f"No labels found for group='{group}', sequence='{sequence}', kind='{kind}'"
+            )
 
         if len(df) > 1:
-            print(f"Warning: Multiple label entries found for ({group}, {sequence}). Using first.")
+            print(
+                f"Warning: Multiple label entries found for ({group}, {sequence}). Using first."
+            )
 
         row = df.iloc[0]
         abs_path = str(row.get("abs_path", "")).strip()
@@ -2481,7 +2691,9 @@ class Dataset:
         """
         idx_path = self.get_root("labels") / kind / "index.csv"
         if not idx_path.exists():
-            raise FileNotFoundError(f"Labels index not found for kind='{kind}': {idx_path}")
+            raise FileNotFoundError(
+                f"Labels index not found for kind='{kind}': {idx_path}"
+            )
 
         df = pd.read_csv(idx_path, nrows=1)
         row = df.iloc[0]
@@ -2495,12 +2707,14 @@ class Dataset:
         names = names_str.split(",")
         return dict(zip(ids, names))
 
-    def get_labels_for_individual(self,
-                                  group: str,
-                                  sequence: str,
-                                  individual_id: int,
-                                  kind: str = "behavior",
-                                  frame_range: Optional[tuple[int, int]] = None) -> dict:
+    def get_labels_for_individual(
+        self,
+        group: str,
+        sequence: str,
+        individual_id: int,
+        kind: str = "behavior",
+        frame_range: Optional[tuple[int, int]] = None,
+    ) -> dict:
         """
         Get all label events for a specific individual.
 
@@ -2557,12 +2771,14 @@ class Dataset:
             "individual_ids": ids[mask],
         }
 
-    def get_labels_at_frame(self,
-                           group: str,
-                           sequence: str,
-                           frame: int,
-                           kind: str = "behavior",
-                           individual_id: Optional[int] = None) -> dict:
+    def get_labels_at_frame(
+        self,
+        group: str,
+        sequence: str,
+        frame: int,
+        kind: str = "behavior",
+        individual_id: Optional[int] = None,
+    ) -> dict:
         """
         Get all labels at a specific frame.
 
@@ -2610,12 +2826,14 @@ class Dataset:
     # ----------------------------
     # Load tracks (by group/sequence)
     # ----------------------------
-    def load_tracks(self,
-                    group: str,
-                    sequence: str,
-                    prefer: str = "standard",
-                    auto_convert: bool = True,
-                    convert_params: Optional[dict] = None) -> pd.DataFrame:
+    def load_tracks(
+        self,
+        group: str,
+        sequence: str,
+        prefer: str = "standard",
+        auto_convert: bool = True,
+        convert_params: Optional[dict] = None,
+    ) -> pd.DataFrame:
         """
         Load T-Rex-like standardized tracks if present; otherwise optionally auto-convert from raw.
         """
@@ -2623,30 +2841,48 @@ class Dataset:
         idx_std = self.get_root("tracks") / "index.csv"
         if idx_std.exists():
             df_idx = pd.read_csv(idx_std)
-            hit = df_idx[(df_idx["group"].fillna("") == group) & (df_idx["sequence"] == sequence)]
+            hit = df_idx[
+                (df_idx["group"].fillna("") == group) & (df_idx["sequence"] == sequence)
+            ]
             if len(hit) == 1:
                 return pd.read_parquet(self.resolve_path(hit.iloc[0]["abs_path"]))
 
         if prefer != "standard":
-            raise FileNotFoundError(f"No non-standard loader implemented for prefer='{prefer}'")
+            raise FileNotFoundError(
+                f"No non-standard loader implemented for prefer='{prefer}'"
+            )
 
         # Fallback: find in raw index and convert
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
-            raise FileNotFoundError("tracks_raw/index.csv not found; run index_tracks_raw first.")
+            raise FileNotFoundError(
+                "tracks_raw/index.csv not found; run index_tracks_raw first."
+            )
         df_raw = pd.read_csv(raw_idx)
-        hit = df_raw[(df_raw["group"].fillna("") == group) & (df_raw["sequence"] == sequence)]
+        hit = df_raw[
+            (df_raw["group"].fillna("") == group) & (df_raw["sequence"] == sequence)
+        ]
         if len(hit) == 0:
-            raise FileNotFoundError(f"No raw track for ({group}, {sequence}) found in tracks_raw/index.csv")
+            raise FileNotFoundError(
+                f"No raw track for ({group}, {sequence}) found in tracks_raw/index.csv"
+            )
         if not auto_convert:
-            raise FileNotFoundError(f"Standardized track missing for ({group},{sequence}) and auto_convert=False")
+            raise FileNotFoundError(
+                f"Standardized track missing for ({group},{sequence}) and auto_convert=False"
+            )
 
         std_path = self.convert_one_track(hit.iloc[0], params=convert_params or {})
         return pd.read_parquet(std_path)
 
+
 # --- Backward compat: track converter helpers moved to core/track_library ---
-from mosaic.core.track_library.helpers import load_calms21, angle_from_two_points, angle_from_pca
 from mosaic.core.track_library.calms21 import calms21_to_trex_df
+from mosaic.core.track_library.helpers import (
+    angle_from_pca,
+    angle_from_two_points,
+    load_calms21,
+)
+
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""
@@ -2662,8 +2898,10 @@ def _is_empty_like(x: Optional[Any]) -> bool:
         return s in ("", "nan", "none")
     return False
 
+
 def _to_iso(ts: float) -> str:
     from datetime import datetime, timezone
+
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
@@ -2675,35 +2913,42 @@ try:
 except ImportError:
     _BaseModel = None
 
+
 class Feature(Protocol):
     """Interface for a feature/calculation applied over tracks."""
+
     name: str
     version: str
-    params: dict
+
+    @property
+    def params(self) -> FeatureParams: ...
 
     # Fit/transform contract
     def needs_fit(self) -> bool: ...
     def supports_partial_fit(self) -> bool: ...
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
-    def partial_fit(self, X: pd.DataFrame) -> None: ...
+    def partial_fit(self, df: pd.DataFrame) -> None: ...
     def finalize_fit(self) -> None: ...
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame: ...
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame: ...
 
     # Persistence of model state (if any)
     def save_model(self, path: Path) -> None: ...
     def load_model(self, path: Path) -> None: ...
 
+
 # Simple registry
 FEATURES: dict[str, type[Feature]] = {}
+
 
 def register_feature(cls: type[Feature]):
     FEATURES[cls.__name__] = cls
     return cls
 
+
 def _hash_params(d) -> str:
     d = _json_ready(d)
     s = json.dumps(d, sort_keys=True, default=str)
-    return hashlib.sha1(s.encode('utf-8')).hexdigest()[:10]
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
 
 
 def _build_scope_key(groups, sequences):
@@ -2715,11 +2960,15 @@ def _build_scope_key(groups, sequences):
         scope["sequences"] = sorted({str(s) for s in sequences})
     return scope if scope else None
 
+
 # ----------------------------
 # Dataset helpers for tracks
 # ----------------------------
 
-def _get_sequences_sorted_by_time(ds: "Dataset", group: str | None = None) -> list[tuple[str, str]]:
+
+def _get_sequences_sorted_by_time(
+    ds: "Dataset", group: str | None = None
+) -> list[tuple[str, str]]:
     """
     Get all (group, sequence) pairs sorted by sequence name.
 
@@ -2796,21 +3045,25 @@ def _get_adjacent_sequences(
 
     # Find index of target sequence
     try:
-        idx = next(i for i, (g, s) in enumerate(all_seqs) if g == group and s == sequence)
+        idx = next(
+            i for i, (g, s) in enumerate(all_seqs) if g == group and s == sequence
+        )
     except StopIteration:
         return [], []
 
     # Get adjacent sequences
-    before_seqs = all_seqs[max(0, idx - before):idx]
-    after_seqs = all_seqs[idx + 1:idx + 1 + after]
+    before_seqs = all_seqs[max(0, idx - before) : idx]
+    after_seqs = all_seqs[idx + 1 : idx + 1 + after]
 
     return before_seqs, after_seqs
 
 
-def _yield_sequences(ds: "Dataset",
-                     groups: Optional[Iterable[str]] = None,
-                     sequences: Optional[Iterable[str]] = None,
-                     allowed_pairs: Optional[set[tuple[str, str]]] = None):
+def _yield_sequences(
+    ds: "Dataset",
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    allowed_pairs: Optional[set[tuple[str, str]]] = None,
+):
     """
     Yield (group, sequence, df) for standardized tracks present in tracks/index.csv,
     filtered by groups and/or sequences if provided.
@@ -2973,19 +3226,23 @@ def _yield_sequences_with_overlap(
 # ----------------------------
 # Yield feature outputs as frames (helper)
 # ----------------------------
-def _yield_feature_frames(ds: "Dataset",
-                          feature_name: str,
-                          run_id: Optional[str] = None,
-                          groups: Optional[Iterable[str]] = None,
-                          sequences: Optional[Iterable[str]] = None,
-                          allowed_pairs: Optional[set[tuple[str, str]]] = None):
+def _yield_feature_frames(
+    ds: "Dataset",
+    feature_name: str,
+    run_id: Optional[str] = None,
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    allowed_pairs: Optional[set[tuple[str, str]]] = None,
+):
     """
     Yield (group, sequence, df) from a prior feature's saved outputs.
     If run_id is None, pick the most recent finished run_id for that feature (by finished_at).
     """
     idx_path = _feature_index_path(ds, feature_name)
     if not idx_path.exists():
-        raise FileNotFoundError(f"No index for feature '{feature_name}'. Expected: {idx_path}")
+        raise FileNotFoundError(
+            f"No index for feature '{feature_name}'. Expected: {idx_path}"
+        )
     df_idx = pd.read_csv(idx_path)
 
     # If no run_id specified, choose the latest finished run
@@ -3011,7 +3268,9 @@ def _yield_feature_frames(ds: "Dataset",
 
     df_sel = df_idx[df_idx["run_id"] == run_id].copy()
     if df_sel.empty:
-        raise ValueError(f"No entries for feature '{feature_name}' with run_id '{run_id}'.")
+        raise ValueError(
+            f"No entries for feature '{feature_name}' with run_id '{run_id}'."
+        )
 
     df_sel["group"] = df_sel["group"].fillna("")
     df_sel["sequence"] = df_sel["sequence"].fillna("")
@@ -3037,7 +3296,9 @@ def _yield_feature_frames(ds: "Dataset",
             continue  # skip non-parquet entries (e.g. .npz artifacts)
         p = ds.resolve_path(abs_path_str)
         if not p.exists():
-            print(f"[feature-input] missing parquet for ({g},{s}) -> {p}", file=sys.stderr)
+            print(
+                f"[feature-input] missing parquet for ({g},{s}) -> {p}", file=sys.stderr
+            )
             continue
         try:
             df = pd.read_parquet(p)
@@ -3051,20 +3312,24 @@ def _yield_feature_frames(ds: "Dataset",
             continue
         yield g, s, df
 
+
 # ----------------------------
 # Feature runner on Dataset
 # ----------------------------
 def _feature_run_root(ds: "Dataset", feature_name: str, run_id: str) -> Path:
     return ds.get_root("features") / feature_name / run_id
 
+
 def _feature_index_path(ds: "Dataset", feature_name: str) -> Path:
     return ds.get_root("features") / feature_name / "index.csv"
 
 
-def _resolve_inputset_scope(ds: "Dataset",
-                            inputset_name: str,
-                            groups: Optional[Iterable[str]] = None,
-                            sequences: Optional[Iterable[str]] = None) -> dict:
+def _resolve_inputset_scope(
+    ds: "Dataset",
+    inputset_name: str,
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+) -> dict:
     inputs, meta = _load_inputset(ds, inputset_name)
     if not inputs:
         raise ValueError(f"Inputset '{inputset_name}' has no inputs defined.")
@@ -3081,7 +3346,9 @@ def _resolve_inputset_scope(ds: "Dataset",
         if kind == "tracks":
             idx_path = ds.get_root("tracks") / "index.csv"
             if not idx_path.exists():
-                raise FileNotFoundError("tracks/index.csv not found; run conversion first.")
+                raise FileNotFoundError(
+                    "tracks/index.csv not found; run conversion first."
+                )
             df_idx = pd.read_csv(idx_path)
             df_idx["group"] = df_idx["group"].fillna("")
             df_idx["sequence"] = df_idx["sequence"].fillna("")
@@ -3094,7 +3361,10 @@ def _resolve_inputset_scope(ds: "Dataset",
 
             pairs = set(zip(df_scope["group"], df_scope["sequence"]))
             if not pairs:
-                print(f"[inputset:{inputset_name}] WARN: tracks spec has no data matching the requested scope.", file=sys.stderr)
+                print(
+                    f"[inputset:{inputset_name}] WARN: tracks spec has no data matching the requested scope.",
+                    file=sys.stderr,
+                )
             per_feature_pairs.append(pairs)
             resolved_inputs.append({"kind": "tracks", "columns": spec.get("columns")})
 
@@ -3112,11 +3382,15 @@ def _resolve_inputset_scope(ds: "Dataset",
             try:
                 run_id, _ = _latest_feature_run_root(ds, feat_name)
             except Exception as exc:
-                raise RuntimeError(f"Unable to resolve latest run for feature '{feat_name}': {exc}") from exc
+                raise RuntimeError(
+                    f"Unable to resolve latest run for feature '{feat_name}': {exc}"
+                ) from exc
         else:
             run_root = _feature_run_root(ds, feat_name, run_id)
             if not run_root.exists():
-                raise FileNotFoundError(f"Feature '{feat_name}' run '{run_id}' not found at {run_root}")
+                raise FileNotFoundError(
+                    f"Feature '{feat_name}' run '{run_id}' not found at {run_root}"
+                )
 
         idx_path = _feature_index_path(ds, feat_name)
         if not idx_path.exists():
@@ -3124,14 +3398,21 @@ def _resolve_inputset_scope(ds: "Dataset",
         df = pd.read_csv(idx_path)
         df = df[df["run_id"].astype(str) == str(run_id)]
         if df.empty:
-            print(f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no indexed rows.", file=sys.stderr)
+            print(
+                f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no indexed rows.",
+                file=sys.stderr,
+            )
             per_feature_pairs.append(set())
-            resolved_inputs.append({"feature": feat_name, "run_id": run_id, "kind": "feature"})
+            resolved_inputs.append(
+                {"feature": feat_name, "run_id": run_id, "kind": "feature"}
+            )
             continue
         df["group"] = df["group"].fillna("").astype(str)
         df["sequence"] = df["sequence"].fillna("").astype(str)
         if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(lambda v: to_safe_name(v) if v else "")
+            df["sequence_safe"] = df["sequence"].apply(
+                lambda v: to_safe_name(v) if v else ""
+            )
 
         # drop marker/global rows
         df = df[df["sequence"].str.strip() != ""]
@@ -3143,11 +3424,17 @@ def _resolve_inputset_scope(ds: "Dataset",
         if groups_set:
             missing_groups = sorted(groups_set - avail_groups)
             if missing_groups:
-                print(f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested groups {missing_groups}; continuing with overlap.", file=sys.stderr)
+                print(
+                    f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested groups {missing_groups}; continuing with overlap.",
+                    file=sys.stderr,
+                )
         if seq_set:
             missing_seq = sorted(seq_set - avail_sequences)
             if missing_seq:
-                print(f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested sequences {missing_seq}; continuing with overlap.", file=sys.stderr)
+                print(
+                    f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested sequences {missing_seq}; continuing with overlap.",
+                    file=sys.stderr,
+                )
 
         df_scope = df
         if groups_set:
@@ -3157,7 +3444,10 @@ def _resolve_inputset_scope(ds: "Dataset",
 
         pairs = set(zip(df_scope["group"], df_scope["sequence"]))
         if not pairs:
-            print(f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no data matching the requested scope.", file=sys.stderr)
+            print(
+                f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no data matching the requested scope.",
+                file=sys.stderr,
+            )
         per_feature_pairs.append(pairs)
         path_map: dict[tuple[str, str], Path] = {}
         for _, row in df_scope.iterrows():
@@ -3170,19 +3460,28 @@ def _resolve_inputset_scope(ds: "Dataset",
             if isinstance(abs_path, str) and abs_path and abs_path.endswith(".parquet"):
                 remapped = ds.resolve_path(abs_path)
                 path_map[pair] = remapped
-        resolved_inputs.append({
-            "feature": feat_name, "run_id": run_id, "kind": "feature",
-            "path_map": path_map, "columns": spec.get("columns"),
-        })
+        resolved_inputs.append(
+            {
+                "feature": feat_name,
+                "run_id": run_id,
+                "kind": "feature",
+                "path_map": path_map,
+                "columns": spec.get("columns"),
+            }
+        )
 
     if not per_feature_pairs:
         raise ValueError(f"Inputset '{inputset_name}' resolved no usable feature runs.")
 
     allowed_pairs = set.intersection(*per_feature_pairs) if per_feature_pairs else set()
     if not allowed_pairs:
-        raise ValueError(f"Inputset '{inputset_name}' has no overlapping sequences for the requested scope.")
+        raise ValueError(
+            f"Inputset '{inputset_name}' has no overlapping sequences for the requested scope."
+        )
 
-    safe_sequences = {pair_safe_map.get(pair, to_safe_name(pair[1])) for pair in allowed_pairs}
+    safe_sequences = {
+        pair_safe_map.get(pair, to_safe_name(pair[1])) for pair in allowed_pairs
+    }
 
     return {
         "inputset": inputset_name,
@@ -3190,18 +3489,23 @@ def _resolve_inputset_scope(ds: "Dataset",
         "groups": sorted(groups_set) if groups_set else None,
         "sequences": sorted(seq_set) if seq_set else None,
         "pairs": allowed_pairs,
-        "pair_safe_map": {pair: pair_safe_map.get(pair, to_safe_name(pair[1])) for pair in allowed_pairs},
+        "pair_safe_map": {
+            pair: pair_safe_map.get(pair, to_safe_name(pair[1]))
+            for pair in allowed_pairs
+        },
         "safe_sequences": safe_sequences,
         "resolved_inputs": resolved_inputs,
     }
 
 
-def _yield_inputset_frames(ds: "Dataset",
-                           inputset_name: str,
-                           groups: Optional[Iterable[str]] = None,
-                           sequences: Optional[Iterable[str]] = None,
-                           scope: Optional[dict] = None,
-                           metadata_only: bool = False):
+def _yield_inputset_frames(
+    ds: "Dataset",
+    inputset_name: str,
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    scope: Optional[dict] = None,
+    metadata_only: bool = False,
+):
     scope = scope or _resolve_inputset_scope(ds, inputset_name, groups, sequences)
     allowed_pairs = scope.get("pairs") or set()
     if not allowed_pairs:
@@ -3211,13 +3515,25 @@ def _yield_inputset_frames(ds: "Dataset",
     # Lightweight path: yield only routing columns (group, sequence, frame)
     # for features that load their own data and don't need the full merge.
     if metadata_only:
-        for g, s, df_tracks in _yield_sequences(ds, groups, sequences, allowed_pairs=allowed_pairs):
-            routing_cols = [c for c in ("frame", "time", "group", "sequence", "id") if c in df_tracks.columns]
+        for g, s, df_tracks in _yield_sequences(
+            ds, groups, sequences, allowed_pairs=allowed_pairs
+        ):
+            routing_cols = [
+                c
+                for c in ("frame", "time", "group", "sequence", "id")
+                if c in df_tracks.columns
+            ]
             yield g, s, df_tracks[routing_cols]
         return
 
-    track_specs = [spec for spec in resolved_inputs if str(spec.get("kind")) == "tracks"]
-    feat_specs = [spec for spec in resolved_inputs if str(spec.get("kind", "feature")) == "feature"]
+    track_specs = [
+        spec for spec in resolved_inputs if str(spec.get("kind")) == "tracks"
+    ]
+    feat_specs = [
+        spec
+        for spec in resolved_inputs
+        if str(spec.get("kind", "feature")) == "feature"
+    ]
 
     # Pre-compute time/frame filter kwargs once (used to filter early, before merge)
     _meta = scope.get("meta") or {}
@@ -3229,7 +3545,9 @@ def _yield_inputset_frames(ds: "Dataset",
     }
     _has_time_filter = any(v is not None for v in _time_filter_kw.values())
 
-    for g, s, df_tracks in _yield_sequences(ds, groups, sequences, allowed_pairs=allowed_pairs):
+    for g, s, df_tracks in _yield_sequences(
+        ds, groups, sequences, allowed_pairs=allowed_pairs
+    ):
         df = df_tracks
         # Apply track column filter if provided
         if track_specs:
@@ -3254,10 +3572,19 @@ def _yield_inputset_frames(ds: "Dataset",
                     feat_columns = spec.get("columns")
                     if feat_columns:
                         # Always include merge-key columns alongside requested columns
-                        merge_keys = {"frame", "time", "id", "group", "sequence", "id1", "id2"}
+                        merge_keys = {
+                            "frame",
+                            "time",
+                            "id",
+                            "group",
+                            "sequence",
+                            "id1",
+                            "id2",
+                        }
                         read_cols = list(set(feat_columns) | merge_keys)
                         try:
                             import pyarrow.parquet as pq
+
                             available = set(pq.read_schema(pth).names)
                             read_cols = [c for c in read_cols if c in available]
                         except Exception:
@@ -3278,9 +3605,9 @@ def _yield_inputset_frames(ds: "Dataset",
                     continue
                 df_idx = pd.read_csv(idx_path)
                 df_idx = df_idx[
-                    (df_idx["run_id"].astype(str) == str(run_id)) &
-                    (df_idx["group"].astype(str) == str(g)) &
-                    (df_idx["sequence"].astype(str) == str(s))
+                    (df_idx["run_id"].astype(str) == str(run_id))
+                    & (df_idx["group"].astype(str) == str(g))
+                    & (df_idx["sequence"].astype(str) == str(s))
                 ]
                 if df_idx.empty:
                     continue
@@ -3299,12 +3626,22 @@ def _yield_inputset_frames(ds: "Dataset",
                 if df_feat.empty:
                     continue
             # Merge on shared meta columns
-            on_cols = [c for c in ("frame", "time", "id", "group", "sequence") if c in df.columns and c in df_feat.columns]
+            on_cols = [
+                c
+                for c in ("frame", "time", "id", "group", "sequence")
+                if c in df.columns and c in df_feat.columns
+            ]
             if not on_cols:
-                on_cols = [c for c in ("frame", "time") if c in df.columns and c in df_feat.columns]
+                on_cols = [
+                    c
+                    for c in ("frame", "time")
+                    if c in df.columns and c in df_feat.columns
+                ]
             if not on_cols:
                 # fallback to cartesian concat
-                df = pd.concat([df.reset_index(drop=True), df_feat.reset_index(drop=True)], axis=1)
+                df = pd.concat(
+                    [df.reset_index(drop=True), df_feat.reset_index(drop=True)], axis=1
+                )
             else:
                 df = df.merge(df_feat, how="left", on=on_cols)
 
@@ -3322,6 +3659,7 @@ def _yield_inputset_frames(ds: "Dataset",
 
         yield g, s, df
 
+
 @dataclass
 class FeatureRunInfo:
     feature: str
@@ -3332,26 +3670,31 @@ class FeatureRunInfo:
     started_at: str
     finished_at: Optional[str] = None
 
+
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
 
 def _ensure_feature_index(idx_path: Path):
     if not idx_path.exists():
         idx_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({
-            "feature": pd.Series(dtype="string"),
-            "version": pd.Series(dtype="string"),
-            "run_id": pd.Series(dtype="string"),
-            "group": pd.Series(dtype="string"),
-            "group_safe": pd.Series(dtype="string"),
-            "sequence": pd.Series(dtype="string"),
-            "sequence_safe": pd.Series(dtype="string"),
-            "abs_path": pd.Series(dtype="string"),
-            "n_rows": pd.Series(dtype="Int64"),
-            "params_hash": pd.Series(dtype="string"),
-            "started_at": pd.Series(dtype="string"),
-            "finished_at": pd.Series(dtype="string"),
-        }).to_csv(idx_path, index=False)
+        pd.DataFrame(
+            {
+                "feature": pd.Series(dtype="string"),
+                "version": pd.Series(dtype="string"),
+                "run_id": pd.Series(dtype="string"),
+                "group": pd.Series(dtype="string"),
+                "group_safe": pd.Series(dtype="string"),
+                "sequence": pd.Series(dtype="string"),
+                "sequence_safe": pd.Series(dtype="string"),
+                "abs_path": pd.Series(dtype="string"),
+                "n_rows": pd.Series(dtype="Int64"),
+                "params_hash": pd.Series(dtype="string"),
+                "started_at": pd.Series(dtype="string"),
+                "finished_at": pd.Series(dtype="string"),
+            }
+        ).to_csv(idx_path, index=False)
+
 
 def _ensure_text_column(df: pd.DataFrame, column: str, fill: str = "") -> pd.DataFrame:
     """
@@ -3366,13 +3709,24 @@ def _ensure_text_column(df: pd.DataFrame, column: str, fill: str = "") -> pd.Dat
             df.loc[df[column].isna(), column] = fill
     return df
 
+
 def _append_feature_index(idx_path: Path, rows: list[dict]):
     if not idx_path.exists():
         _ensure_feature_index(idx_path)
     df = pd.read_csv(idx_path)
-    for col in ["feature", "version", "run_id", "group", "sequence",
-                "group_safe", "sequence_safe", "abs_path",
-                "params_hash", "started_at", "finished_at"]:
+    for col in [
+        "feature",
+        "version",
+        "run_id",
+        "group",
+        "sequence",
+        "group_safe",
+        "sequence_safe",
+        "abs_path",
+        "params_hash",
+        "started_at",
+        "finished_at",
+    ]:
         df = _ensure_text_column(df, col, "")
     # Ensure group_safe/sequence_safe and finished_at in new rows
     new_rows = []
@@ -3381,22 +3735,26 @@ def _append_feature_index(idx_path: Path, rows: list[dict]):
         if "group_safe" not in r:
             r["group_safe"] = to_safe_name(r.get("group", "")) if r.get("group") else ""
         if "sequence_safe" not in r:
-            r["sequence_safe"] = to_safe_name(r.get("sequence", "")) if r.get("sequence") else ""
+            r["sequence_safe"] = (
+                to_safe_name(r.get("sequence", "")) if r.get("sequence") else ""
+            )
         if "finished_at" not in r:
             r["finished_at"] = ""
         new_rows.append(r)
     # If index missing group_safe/sequence_safe, add and fill them
     for col, canon_col in [("group_safe", "group"), ("sequence_safe", "sequence")]:
         if col not in df.columns:
-            df[col] = df[canon_col].apply(lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else "")
+            df[col] = df[canon_col].apply(
+                lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else ""
+            )
     if "finished_at" not in df.columns:
         df["finished_at"] = ""
     # Remove existing entries that match (run_id, group, sequence) from incoming rows
     for r in new_rows:
         mask = (
-            (df["run_id"].fillna("") == r.get("run_id", "")) &
-            (df["group"].fillna("") == r.get("group", "")) &
-            (df["sequence"].fillna("") == r.get("sequence", ""))
+            (df["run_id"].fillna("") == r.get("run_id", ""))
+            & (df["group"].fillna("") == r.get("group", ""))
+            & (df["sequence"].fillna("") == r.get("sequence", ""))
         )
         df = df[~mask]
     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
@@ -3405,11 +3763,14 @@ def _append_feature_index(idx_path: Path, rows: list[dict]):
 
 # ─── Frame extraction index helpers ───
 
+
 def _frames_run_root(ds: "Dataset", method: str, run_id: str) -> Path:
     return ds.get_root("frames") / method / run_id
 
+
 def _frames_index_path(ds: "Dataset", method: str) -> Path:
     return ds.get_root("frames") / method / "index.csv"
+
 
 _FRAMES_INDEX_COLUMNS = {
     "method": "string",
@@ -3427,12 +3788,17 @@ _FRAMES_INDEX_COLUMNS = {
     "finished_at": "string",
 }
 
+
 def _ensure_frames_index(idx_path: Path):
     if not idx_path.exists():
         idx_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(
-            {col: pd.Series(dtype=dtype) for col, dtype in _FRAMES_INDEX_COLUMNS.items()}
+            {
+                col: pd.Series(dtype=dtype)
+                for col, dtype in _FRAMES_INDEX_COLUMNS.items()
+            }
         ).to_csv(idx_path, index=False)
+
 
 def _append_frames_index(idx_path: Path, rows: list[dict]):
     if not idx_path.exists():
@@ -3446,24 +3812,29 @@ def _append_frames_index(idx_path: Path, rows: list[dict]):
         if "group_safe" not in r:
             r["group_safe"] = to_safe_name(r.get("group", "")) if r.get("group") else ""
         if "sequence_safe" not in r:
-            r["sequence_safe"] = to_safe_name(r.get("sequence", "")) if r.get("sequence") else ""
+            r["sequence_safe"] = (
+                to_safe_name(r.get("sequence", "")) if r.get("sequence") else ""
+            )
         if "finished_at" not in r:
             r["finished_at"] = ""
         new_rows.append(r)
     # Remove existing entries that match (run_id, group, sequence)
     for r in new_rows:
         mask = (
-            (df["run_id"].fillna("") == r.get("run_id", "")) &
-            (df["group"].fillna("") == r.get("group", "")) &
-            (df["sequence"].fillna("") == r.get("sequence", ""))
+            (df["run_id"].fillna("") == r.get("run_id", ""))
+            & (df["group"].fillna("") == r.get("group", ""))
+            & (df["sequence"].fillna("") == r.get("sequence", ""))
         )
         df = df[~mask]
     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
     df.to_csv(idx_path, index=False)
 
-def _list_media_pairs(ds: "Dataset",
-                      groups: Optional[Iterable[str]] = None,
-                      sequences: Optional[Iterable[str]] = None) -> pd.DataFrame:
+
+def _list_media_pairs(
+    ds: "Dataset",
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+) -> pd.DataFrame:
     """Return filtered media index DataFrame with (group, sequence, abs_path, ..., video_order)."""
     idx_path = ds.get_root("media") / "index.csv"
     if not idx_path.exists():
@@ -3520,26 +3891,38 @@ def _model_index_path(ds: "Dataset", model_name: str) -> Path:
 def _ensure_model_index(idx_path: Path):
     if not idx_path.exists():
         idx_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({
-            "model": pd.Series(dtype="string"),
-            "version": pd.Series(dtype="string"),
-            "run_id": pd.Series(dtype="string"),
-            "config_path": pd.Series(dtype="string"),
-            "config_hash": pd.Series(dtype="string"),
-            "metrics_path": pd.Series(dtype="string"),
-            "status": pd.Series(dtype="string"),
-            "notes": pd.Series(dtype="string"),
-            "started_at": pd.Series(dtype="string"),
-            "finished_at": pd.Series(dtype="string"),
-        }).to_csv(idx_path, index=False)
+        pd.DataFrame(
+            {
+                "model": pd.Series(dtype="string"),
+                "version": pd.Series(dtype="string"),
+                "run_id": pd.Series(dtype="string"),
+                "config_path": pd.Series(dtype="string"),
+                "config_hash": pd.Series(dtype="string"),
+                "metrics_path": pd.Series(dtype="string"),
+                "status": pd.Series(dtype="string"),
+                "notes": pd.Series(dtype="string"),
+                "started_at": pd.Series(dtype="string"),
+                "finished_at": pd.Series(dtype="string"),
+            }
+        ).to_csv(idx_path, index=False)
 
 
 def _append_model_index(idx_path: Path, rows: list[dict]):
     if not idx_path.exists():
         _ensure_model_index(idx_path)
     df = pd.read_csv(idx_path)
-    for col in ["model", "version", "run_id", "config_path", "config_hash",
-                "metrics_path", "status", "notes", "started_at", "finished_at"]:
+    for col in [
+        "model",
+        "version",
+        "run_id",
+        "config_path",
+        "config_hash",
+        "metrics_path",
+        "status",
+        "notes",
+        "started_at",
+        "finished_at",
+    ]:
         df = _ensure_text_column(df, col, "")
     df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
     df.to_csv(idx_path, index=False)
@@ -3600,10 +3983,12 @@ def _validate_remote_cfg(remote_cfg: dict) -> dict:
     return out
 
 
-def _rsync_remote(direction: str,
-                  remote_cfg: dict,
-                  include: Optional[Sequence[str]] = None,
-                  exclude: Optional[Sequence[str]] = None):
+def _rsync_remote(
+    direction: str,
+    remote_cfg: dict,
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+):
     cfg = _validate_remote_cfg(remote_cfg)
     remote_cfg["remote_only_patterns"] = cfg.get("remote_only_patterns", [])
     _refresh_remote_only_patterns(cfg)
@@ -3648,18 +4033,22 @@ def _rsync_remote(direction: str,
     subprocess.run(cmd, check=True)
 
 
-def sync_to_remote(remote_cfg: dict,
-                   include: Optional[Sequence[str]] = None,
-                   exclude: Optional[Sequence[str]] = None):
+def sync_to_remote(
+    remote_cfg: dict,
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+):
     """
     Rsync local_root -> remote_root based on remote_cfg (ssh_host, paths).
     """
     _rsync_remote("to", remote_cfg, include, exclude)
 
 
-def sync_from_remote(remote_cfg: dict,
-                     include: Optional[Sequence[str]] = None,
-                     exclude: Optional[Sequence[str]] = None):
+def sync_from_remote(
+    remote_cfg: dict,
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+):
     """
     Rsync remote_root -> local_root (pull results back).
     """
@@ -3679,23 +4068,39 @@ def _ensure_relative_to(path: Path, root: Path) -> Path:
 def _import_requests_for_jupyter():
     try:
         import requests  # type: ignore
+
         return requests
     except ImportError as exc:
-        raise RuntimeError("Jupyter-based remote execution requires the 'requests' package.") from exc
+        raise RuntimeError(
+            "Jupyter-based remote execution requires the 'requests' package."
+        ) from exc
 
 
 def _import_websocket_for_jupyter():
     try:
-        from websocket import create_connection, WebSocketTimeoutException, WebSocketConnectionClosedException  # type: ignore
-        return create_connection, WebSocketTimeoutException, WebSocketConnectionClosedException
+        from websocket import (
+            WebSocketConnectionClosedException,
+            WebSocketTimeoutException,
+            create_connection,
+        )  # type: ignore
+
+        return (
+            create_connection,
+            WebSocketTimeoutException,
+            WebSocketConnectionClosedException,
+        )
     except ImportError as exc:
-        raise RuntimeError("Jupyter-based remote execution requires the 'websocket-client' package.") from exc
+        raise RuntimeError(
+            "Jupyter-based remote execution requires the 'websocket-client' package."
+        ) from exc
 
 
 def _parse_jupyter_endpoint(remote_cfg: dict) -> dict:
     raw_url = remote_cfg.get("jupyter_url")
     if not raw_url:
-        raise ValueError("remote_cfg missing 'jupyter_url' but Jupyter execution was requested.")
+        raise ValueError(
+            "remote_cfg missing 'jupyter_url' but Jupyter execution was requested."
+        )
     parsed = urlparse(raw_url)
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(f"Invalid jupyter_url: {raw_url}")
@@ -3743,10 +4148,14 @@ def _build_jupyter_message(msg_type: str, content: dict, session_id: str) -> dic
     }
 
 
-def _run_remote_python_via_jupyter(remote_cfg: dict, script: str) -> tuple[str, str, str]:
+def _run_remote_python_via_jupyter(
+    remote_cfg: dict, script: str
+) -> tuple[str, str, str]:
     endpoint = _parse_jupyter_endpoint(remote_cfg)
     requests = _import_requests_for_jupyter()
-    create_connection, WebSocketTimeoutException, WebSocketConnectionClosedException = _import_websocket_for_jupyter()
+    create_connection, WebSocketTimeoutException, WebSocketConnectionClosedException = (
+        _import_websocket_for_jupyter()
+    )
 
     params = {}
     if endpoint["token"]:
@@ -3774,7 +4183,9 @@ def _run_remote_python_via_jupyter(remote_cfg: dict, script: str) -> tuple[str, 
         resp.raise_for_status()
         kernel_id = resp.json().get("id")
         if not kernel_id:
-            raise RuntimeError("Failed to create remote kernel via Jupyter API (missing id).")
+            raise RuntimeError(
+                "Failed to create remote kernel via Jupyter API (missing id)."
+            )
         ws_url = f"{endpoint['ws_base']}/api/kernels/{kernel_id}/channels"
         if params:
             ws_url = f"{ws_url}?{urlencode(params)}"
@@ -3782,8 +4193,11 @@ def _run_remote_python_via_jupyter(remote_cfg: dict, script: str) -> tuple[str, 
         sslopt = None
         if ws_url.startswith("wss://") and not verify:
             import ssl  # lazy import
+
             sslopt = {"cert_reqs": ssl.CERT_NONE}
-        ws = create_connection(ws_url, header=ws_headers, sslopt=sslopt, timeout=ws_timeout)
+        ws = create_connection(
+            ws_url, header=ws_headers, sslopt=sslopt, timeout=ws_timeout
+        )
         try:
             session_id = str(uuid.uuid4())
             execute_msg = _build_jupyter_message(
@@ -3808,9 +4222,13 @@ def _run_remote_python_via_jupyter(remote_cfg: dict, script: str) -> tuple[str, 
                 try:
                     raw = ws.recv()
                 except WebSocketTimeoutException as exc:
-                    raise RuntimeError("Timed out waiting for output from remote Jupyter kernel.") from exc
+                    raise RuntimeError(
+                        "Timed out waiting for output from remote Jupyter kernel."
+                    ) from exc
                 except WebSocketConnectionClosedException as exc:
-                    raise RuntimeError("Remote Jupyter kernel connection closed unexpectedly.") from exc
+                    raise RuntimeError(
+                        "Remote Jupyter kernel connection closed unexpectedly."
+                    ) from exc
                 if raw is None:
                     continue
                 try:
@@ -3832,7 +4250,10 @@ def _run_remote_python_via_jupyter(remote_cfg: dict, script: str) -> tuple[str, 
                         tb = "\n".join(content.get("traceback") or [])
                         if tb:
                             stderr_parts.append(tb + "\n")
-                    elif msg_type == "status" and content.get("execution_state") == "idle":
+                    elif (
+                        msg_type == "status"
+                        and content.get("execution_state") == "idle"
+                    ):
                         idle_seen = True
                     elif msg_type in ("execute_result", "display_data"):
                         data = content.get("data") or {}
@@ -3887,8 +4308,7 @@ def _run_remote_python(remote_cfg: dict, script: str) -> tuple[str, str, str]:
     if remote_cfg.get("jupyter_url"):
         return _run_remote_python_via_jupyter(remote_cfg, script)
     remote_cmd = (
-        f"cd {shlex.quote(remote_root)} && "
-        f"{python_cmd} - <<'PY'\n{script}\nPY\n"
+        f"cd {shlex.quote(remote_root)} && {python_cmd} - <<'PY'\n{script}\nPY\n"
     )
     print(f"[remote-run] executing on {ssh_host}")
     ssh_command = ["ssh", ssh_host, remote_cmd]
@@ -3954,11 +4374,13 @@ finally:
     return template
 
 
-def _submit_remote_detached_job(remote_cfg: dict,
-                                job_kind: str,
-                                work_code: str,
-                                result_expr: str = "{}",
-                                meta_extra: Optional[dict] = None) -> str:
+def _submit_remote_detached_job(
+    remote_cfg: dict,
+    job_kind: str,
+    work_code: str,
+    result_expr: str = "{}",
+    meta_extra: Optional[dict] = None,
+) -> str:
     cfg = _validate_remote_cfg(remote_cfg)
     remote_root = cfg["remote_root"]
     python_cmd = remote_cfg.get("python_cmd", "python3")
@@ -4015,7 +4437,9 @@ print("REMOTE_JOB_ID=" + job_id)
             job_id = line.split("=", 1)[1].strip()
             break
     if job_id is None:
-        raise RuntimeError(f"Failed to submit remote {job_kind} job. STDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+        raise RuntimeError(
+            f"Failed to submit remote {job_kind} job. STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+        )
     return job_id
 
 
@@ -4030,32 +4454,39 @@ def _maybe_apply_remote_only_pattern(remote_cfg: dict, job_meta: dict) -> Option
     _record_remote_only_pattern(remote_cfg, pattern)
     return pattern
 
+
 def _update_finished_times(idx_path: Path, run_id: str, finished_at: str):
     df = pd.read_csv(idx_path)
     df = _ensure_text_column(df, "run_id", "")
     df = _ensure_text_column(df, "finished_at", "")
-    sel = (df["run_id"] == str(run_id)) & ((df["finished_at"].isna()) | (df["finished_at"] == ""))
+    sel = (df["run_id"] == str(run_id)) & (
+        (df["finished_at"].isna()) | (df["finished_at"] == "")
+    )
     if sel.any():
         df.loc[sel, "finished_at"] = str(finished_at)
         df.to_csv(idx_path, index=False)
 
+
 def _ensure_labels_index(idx_path: Path):
     if not idx_path.exists():
         idx_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({
-            "kind": pd.Series(dtype="string"),
-            "label_format": pd.Series(dtype="string"),
-            "group": pd.Series(dtype="string"),
-            "sequence": pd.Series(dtype="string"),
-            "group_safe": pd.Series(dtype="string"),
-            "sequence_safe": pd.Series(dtype="string"),
-            "abs_path": pd.Series(dtype="string"),
-            "source_abs_path": pd.Series(dtype="string"),
-            "source_md5": pd.Series(dtype="string"),
-            "n_frames": pd.Series(dtype="Int64"),
-            "label_ids": pd.Series(dtype="string"),
-            "label_names": pd.Series(dtype="string"),
-        }).to_csv(idx_path, index=False)
+        pd.DataFrame(
+            {
+                "kind": pd.Series(dtype="string"),
+                "label_format": pd.Series(dtype="string"),
+                "group": pd.Series(dtype="string"),
+                "sequence": pd.Series(dtype="string"),
+                "group_safe": pd.Series(dtype="string"),
+                "sequence_safe": pd.Series(dtype="string"),
+                "abs_path": pd.Series(dtype="string"),
+                "source_abs_path": pd.Series(dtype="string"),
+                "source_md5": pd.Series(dtype="string"),
+                "n_frames": pd.Series(dtype="Int64"),
+                "label_ids": pd.Series(dtype="string"),
+                "label_names": pd.Series(dtype="string"),
+            }
+        ).to_csv(idx_path, index=False)
+
 
 def _append_labels_index(idx_path: Path, rows: list[dict]):
     if not idx_path.exists():
@@ -4074,7 +4505,9 @@ def _append_labels_index(idx_path: Path, rows: list[dict]):
         if "group_safe" not in row:
             row["group_safe"] = to_safe_name(row["group"]) if row["group"] else ""
         if "sequence_safe" not in row:
-            row["sequence_safe"] = to_safe_name(row["sequence"]) if row["sequence"] else ""
+            row["sequence_safe"] = (
+                to_safe_name(row["sequence"]) if row["sequence"] else ""
+            )
         row.setdefault("abs_path", "")
         row.setdefault("source_abs_path", "")
         row.setdefault("source_md5", "")
@@ -4082,7 +4515,9 @@ def _append_labels_index(idx_path: Path, rows: list[dict]):
             row["n_frames"] = ""
         row.setdefault("label_ids", "")
         row.setdefault("label_names", "")
-        mask = (updated["group"].fillna("") == row["group"]) & (updated["sequence"].fillna("") == row["sequence"])
+        mask = (updated["group"].fillna("") == row["group"]) & (
+            updated["sequence"].fillna("") == row["sequence"]
+        )
         updated = updated[~mask]
         updated = pd.concat([updated, pd.DataFrame([row])], ignore_index=True)
     updated.to_csv(idx_path, index=False)
@@ -4097,36 +4532,45 @@ def _coerce_np(obj):
 def _list_feature_runs(ds: "Dataset", feature_name: str) -> pd.DataFrame:
     idx = _feature_index_path(ds, feature_name)
     if not idx.exists():
-        raise FileNotFoundError(f"No index for feature '{feature_name}'. Expected: {idx}")
+        raise FileNotFoundError(
+            f"No index for feature '{feature_name}'. Expected: {idx}"
+        )
     df = pd.read_csv(idx)
     # prefer finished runs, newest first
     if "finished_at" in df.columns:
         cand = df[df["finished_at"].fillna("").astype(str) != ""]
         base = cand if len(cand) else df
-        base = base.sort_values(by=["finished_at" if len(cand) else "started_at"],
-                                ascending=False, kind="stable")
+        base = base.sort_values(
+            by=["finished_at" if len(cand) else "started_at"],
+            ascending=False,
+            kind="stable",
+        )
     else:
         base = df.sort_values(by=["started_at"], ascending=False, kind="stable")
     return base
+
 
 def _latest_feature_run_root(ds: "Dataset", feature_name: str) -> tuple[str, Path]:
     base = _list_feature_runs(ds, feature_name)
     if base.empty:
         raise ValueError(f"No runs found for feature '{feature_name}'.")
     run_id = str(base.iloc[0]["run_id"])
-    return run_id, _feature_run_root(ds, feature_name, run_id)        
+    return run_id, _feature_run_root(ds, feature_name, run_id)
 
-def run_feature(self,
-                feature: Feature,
-                groups: Optional[Iterable[str]] = None,
-                sequences: Optional[Iterable[str]] = None,
-                overwrite: bool = False,
-                input_kind: str = "tracks",
-                input_feature: Optional[str] = None,
-                input_run_id: Optional[str] = None,
-                parallel_workers: Optional[int] = None,
-                parallel_mode: Optional[str] = "thread",
-                overlap_frames: int = 0):
+
+def run_feature(
+    self,
+    feature: Feature,
+    groups: Optional[Iterable[str]] = None,
+    sequences: Optional[Iterable[str]] = None,
+    overwrite: bool = False,
+    input_kind: str = "tracks",
+    input_feature: Optional[str] = None,
+    input_run_id: Optional[str] = None,
+    parallel_workers: Optional[int] = None,
+    parallel_mode: Optional[str] = "thread",
+    overlap_frames: int = 0,
+):
     """
     Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -4178,12 +4622,16 @@ def run_feature(self,
 
     # Include scope in hash for features whose fit result depends on input scope
     scope_key = None
-    _nf = feature.needs_fit() if callable(getattr(feature, 'needs_fit', None)) else False
-    _lo = getattr(feature, 'loads_own_data', lambda: False)()
+    _nf = (
+        feature.needs_fit() if callable(getattr(feature, "needs_fit", None)) else False
+    )
+    _lo = getattr(feature, "loads_own_data", lambda: False)()
     if _nf and _lo:
         scope_key = _build_scope_key(groups, sequences)
 
-    hashable_params = {**feature_params, "_scope": scope_key} if scope_key else feature_params
+    hashable_params = (
+        {**feature_params, "_scope": scope_key} if scope_key else feature_params
+    )
     params_hash = _hash_params(hashable_params)
     run_id = f"{feature.version}-{params_hash}"
     run_root = _feature_run_root(self, storage_feature_name, run_id)
@@ -4197,20 +4645,27 @@ def run_feature(self,
             save_payload = {**save_payload, "_scope": scope_key}
         params_path.write_text(json.dumps(save_payload, indent=2))
     except Exception as exc:
-        print(f"[feature:{feature.name}] failed to save params.json: {exc}", file=sys.stderr)
+        print(
+            f"[feature:{feature.name}] failed to save params.json: {exc}",
+            file=sys.stderr,
+        )
 
     idx_path = _feature_index_path(self, storage_feature_name)
     _ensure_feature_index(idx_path)
     started = _now_iso()
 
-    max_workers = int(parallel_workers) if parallel_workers and int(parallel_workers) > 1 else 1
+    max_workers = (
+        int(parallel_workers) if parallel_workers and int(parallel_workers) > 1 else 1
+    )
     parallel_mode = (parallel_mode or "thread").lower()
     if parallel_mode not in {"thread", "process"}:
         parallel_mode = "thread"
     parallel_allowed = bool(getattr(feature, "parallelizable", False))
     if max_workers > 1 and not parallel_allowed:
-        print(f"[feature:{feature.name}] parallel_workers requested but feature is not parallelizable; running sequentially.",
-              file=sys.stderr)
+        print(
+            f"[feature:{feature.name}] parallel_workers requested but feature is not parallelizable; running sequentially.",
+            file=sys.stderr,
+        )
         max_workers = 1
 
     # Helpers to enumerate pairs without loading full data (to skip upfront)
@@ -4231,7 +4686,9 @@ def run_feature(self,
     def _resolve_feature_run_and_pairs(feat_name: str, run_id_opt: Optional[str]):
         idx_path = _feature_index_path(self, feat_name)
         if not idx_path.exists():
-            raise FileNotFoundError(f"No index for feature '{feat_name}'. Expected: {idx_path}")
+            raise FileNotFoundError(
+                f"No index for feature '{feat_name}'. Expected: {idx_path}"
+            )
         df_idx = pd.read_csv(idx_path)
         df_idx["group"] = df_idx["group"].fillna("").astype(str)
         df_idx["sequence"] = df_idx["sequence"].fillna("").astype(str)
@@ -4240,10 +4697,15 @@ def run_feature(self,
             if "finished_at" in df_idx.columns:
                 cand = df_idx[df_idx["finished_at"].fillna("").astype(str) != ""]
                 base = cand if len(cand) else df_idx
-                base = base.sort_values(by=["finished_at" if len(cand) else "started_at"],
-                                        ascending=False, kind="stable")
+                base = base.sort_values(
+                    by=["finished_at" if len(cand) else "started_at"],
+                    ascending=False,
+                    kind="stable",
+                )
             else:
-                base = df_idx.sort_values(by=["started_at"], ascending=False, kind="stable")
+                base = df_idx.sort_values(
+                    by=["started_at"], ascending=False, kind="stable"
+                )
             if base.empty:
                 raise ValueError(f"No runs found for feature '{feat_name}'.")
             resolved_run_id = str(base.iloc[0]["run_id"])
@@ -4279,10 +4741,14 @@ def run_feature(self,
     elif input_kind == "feature":
         if not input_feature:
             raise ValueError("input_feature must be provided when input_kind='feature'")
-        resolved_input_run_id, pairs_all = _resolve_feature_run_and_pairs(input_feature, input_run_id)
+        resolved_input_run_id, pairs_all = _resolve_feature_run_and_pairs(
+            input_feature, input_run_id
+        )
     elif input_kind == "inputset":
         if not input_feature:
-            raise ValueError("input_feature (inputset name) must be provided when input_kind='inputset'")
+            raise ValueError(
+                "input_feature (inputset name) must be provided when input_kind='inputset'"
+            )
         input_scope = _resolve_inputset_scope(self, input_feature, groups, sequences)
         pairs_all = input_scope.get("pairs") or set()
 
@@ -4298,20 +4764,22 @@ def run_feature(self,
                 s = "" if s is None else str(s)
                 safe_group = to_safe_name(g) if g else ""
                 safe_seq = to_safe_name(s)
-                preexisting_rows.append({
-                    "feature": storage_feature_name,
-                    "version": feature.version,
-                    "run_id": run_id,
-                    "group": g,
-                    "sequence": s,
-                    "group_safe": safe_group,
-                    "sequence_safe": safe_seq,
-                    "abs_path": self._relative_to_root(out_path),
-                    "n_rows": None,
-                    "params_hash": params_hash,
-                    "started_at": started,
-                    "finished_at": "",
-                })
+                preexisting_rows.append(
+                    {
+                        "feature": storage_feature_name,
+                        "version": feature.version,
+                        "run_id": run_id,
+                        "group": g,
+                        "sequence": s,
+                        "group_safe": safe_group,
+                        "sequence_safe": safe_seq,
+                        "abs_path": self._relative_to_root(out_path),
+                        "n_rows": None,
+                        "params_hash": params_hash,
+                        "started_at": started,
+                        "finished_at": "",
+                    }
+                )
             else:
                 pairs_to_compute.add(pair)
 
@@ -4319,29 +4787,50 @@ def run_feature(self,
     use_overlap = overlap_frames > 0 and input_kind == "tracks"
 
     if input_kind == "feature":
-        iter_inputs = lambda: _yield_feature_frames(self, input_feature, resolved_input_run_id, groups, sequences,
-                                                    allowed_pairs=pairs_to_compute)
+        iter_inputs = lambda: _yield_feature_frames(
+            self,
+            input_feature,
+            resolved_input_run_id,
+            groups,
+            sequences,
+            allowed_pairs=pairs_to_compute,
+        )
     elif input_kind == "inputset":
         scope_for_iter = input_scope or {}
         if pairs_to_compute is not None:
             scope_for_iter = dict(scope_for_iter)
             scope_for_iter["pairs"] = pairs_to_compute
-        _meta_only = hasattr(feature, "wants_full_inputset_data") and not feature.wants_full_inputset_data()
-        iter_inputs = lambda: _yield_inputset_frames(self, input_feature, groups, sequences, scope_for_iter,
-                                                      metadata_only=_meta_only)
+        _meta_only = (
+            hasattr(feature, "wants_full_inputset_data")
+            and not feature.wants_full_inputset_data()
+        )
+        iter_inputs = lambda: _yield_inputset_frames(
+            self,
+            input_feature,
+            groups,
+            sequences,
+            scope_for_iter,
+            metadata_only=_meta_only,
+        )
         input_scope = scope_for_iter
     elif use_overlap:
         # Use overlap-aware iterator for continuous datasets
-        iter_inputs = lambda: _yield_sequences_with_overlap(self, groups, sequences,
-                                                            allowed_pairs=pairs_to_compute,
-                                                            overlap_frames=overlap_frames)
+        iter_inputs = lambda: _yield_sequences_with_overlap(
+            self,
+            groups,
+            sequences,
+            allowed_pairs=pairs_to_compute,
+            overlap_frames=overlap_frames,
+        )
     else:
-        iter_inputs = lambda: _yield_sequences(self, groups, sequences, allowed_pairs=pairs_to_compute)
+        iter_inputs = lambda: _yield_sequences(
+            self, groups, sequences, allowed_pairs=pairs_to_compute
+        )
 
     # ===== FIT PHASE =====
     if hasattr(feature, "bind_dataset"):
         try:
-            feature.bind_dataset(self)   # allow feature to read feature indexes & roots
+            feature.bind_dataset(self)  # allow feature to read feature indexes & roots
         except Exception as e:
             print(f"[feature:{feature.name}] bind_dataset failed: {e}", file=sys.stderr)
 
@@ -4355,20 +4844,27 @@ def run_feature(self,
         norm_groups = sorted({str(g) for g in groups})
         if norm_groups:
             scope_constraints["groups"] = norm_groups
-            scope_constraints["safe_groups"] = sorted({to_safe_name(g) for g in norm_groups})
+            scope_constraints["safe_groups"] = sorted(
+                {to_safe_name(g) for g in norm_groups}
+            )
     if sequences is not None:
         norm_sequences = sorted({str(s) for s in sequences})
         if norm_sequences:
             scope_constraints["sequences"] = norm_sequences
             if not scope_constraints.get("safe_sequences"):
-                scope_constraints["safe_sequences"] = sorted({to_safe_name(s) for s in norm_sequences})
+                scope_constraints["safe_sequences"] = sorted(
+                    {to_safe_name(s) for s in norm_sequences}
+                )
     if scope_constraints:
         setattr(feature, "_scope_constraints", scope_constraints)
         if hasattr(feature, "set_scope_constraints"):
             try:
                 feature.set_scope_constraints(scope_constraints)
             except Exception as e:
-                print(f"[feature:{feature.name}] set_scope_constraints failed: {e}", file=sys.stderr)
+                print(
+                    f"[feature:{feature.name}] set_scope_constraints failed: {e}",
+                    file=sys.stderr,
+                )
 
     if input_scope is not None:
         setattr(feature, "_scope_filter", input_scope)
@@ -4376,7 +4872,11 @@ def run_feature(self,
             try:
                 feature.set_scope_filter(input_scope)
             except Exception as e:
-                print(f"[feature:{feature.name}] set_scope_filter failed: {e}", file=sys.stderr)
+                print(
+                    f"[feature:{feature.name}] set_scope_filter failed: {e}",
+                    file=sys.stderr,
+                )
+
     # Helper to extract DataFrame from iterator items (handles both 3-tuple and 5-tuple)
     def _extract_df_from_item(item):
         """Extract DataFrame from iterator item, handling both overlap and non-overlap modes."""
@@ -4391,7 +4891,10 @@ def run_feature(self,
             try:
                 feature.set_run_root(run_root)
             except Exception as e:
-                print(f"[feature:{feature.name}] set_run_root failed: {e}", file=sys.stderr)
+                print(
+                    f"[feature:{feature.name}] set_run_root failed: {e}",
+                    file=sys.stderr,
+                )
 
         # Check if fit phase can be skipped (for global features with existing outputs)
         loads_own = getattr(feature, "loads_own_data", lambda: False)()
@@ -4402,14 +4905,20 @@ def run_feature(self,
 
         skip_fit = not overwrite and loads_own and fit_complete
         if skip_fit:
-            print(f"[feature:{feature.name}] fit phase skipped (overwrite=False, outputs exist)", file=sys.stderr)
+            print(
+                f"[feature:{feature.name}] fit phase skipped (overwrite=False, outputs exist)",
+                file=sys.stderr,
+            )
         elif feature.supports_partial_fit():
             for item in iter_inputs():
                 df = _extract_df_from_item(item)
                 try:
                     feature.partial_fit(df)
                 except Exception as e:
-                    print(f"[feature:{feature.name}] partial_fit failed: {e}", file=sys.stderr)
+                    print(
+                        f"[feature:{feature.name}] partial_fit failed: {e}",
+                        file=sys.stderr,
+                    )
             try:
                 feature.finalize_fit()
             except Exception:
@@ -4433,7 +4942,9 @@ def run_feature(self,
                 try:
                     feature.fit()  # type: ignore
                 except Exception as e:
-                    print(f"[feature:{feature.name}] fit() failed: {e}", file=sys.stderr)
+                    print(
+                        f"[feature:{feature.name}] fit() failed: {e}", file=sys.stderr
+                    )
 
         # Save model state if any (only if fit was actually run)
         if not skip_fit:
@@ -4463,20 +4974,22 @@ def run_feature(self,
 
     def _append_row(meta, n_rows, abs_path: Optional[str] = None):
         path_str = abs_path or self._relative_to_root(meta["out_path"])
-        out_rows.append({
-            "feature": storage_feature_name,
-            "version": feature.version,
-            "run_id": run_id,
-            "group": meta["group"],
-            "sequence": meta["sequence"],
-            "group_safe": meta["safe_group"],
-            "sequence_safe": meta["safe_seq"],
-            "abs_path": path_str,
-            "n_rows": n_rows,
-            "params_hash": params_hash,
-            "started_at": started,
-            "finished_at": "",
-        })
+        out_rows.append(
+            {
+                "feature": storage_feature_name,
+                "version": feature.version,
+                "run_id": run_id,
+                "group": meta["group"],
+                "sequence": meta["sequence"],
+                "group_safe": meta["safe_group"],
+                "sequence_safe": meta["safe_seq"],
+                "abs_path": path_str,
+                "n_rows": n_rows,
+                "params_hash": params_hash,
+                "started_at": started,
+                "finished_at": "",
+            }
+        )
 
     def _append_external_row(row: dict):
         if not isinstance(row, dict):
@@ -4502,34 +5015,39 @@ def run_feature(self,
             except Exception:
                 n_rows = None
         out_rows[:] = [
-            r for r in out_rows
+            r
+            for r in out_rows
             if not (
                 str(r.get("run_id", "")) == str(run_id)
                 and str(r.get("group", "")) == group
                 and str(r.get("sequence", "")) == sequence
             )
         ]
-        out_rows.append({
-            "feature": storage_feature_name,
-            "version": feature.version,
-            "run_id": run_id,
-            "group": group,
-            "sequence": sequence,
-            "group_safe": safe_group,
-            "sequence_safe": safe_seq,
-            "abs_path": abs_path,
-            "n_rows": n_rows,
-            "params_hash": params_hash,
-            "started_at": started,
-            "finished_at": "",
-        })
+        out_rows.append(
+            {
+                "feature": storage_feature_name,
+                "version": feature.version,
+                "run_id": run_id,
+                "group": group,
+                "sequence": sequence,
+                "group_safe": safe_group,
+                "sequence_safe": safe_seq,
+                "abs_path": abs_path,
+                "n_rows": n_rows,
+                "params_hash": params_hash,
+                "started_at": started,
+                "finished_at": "",
+            }
+        )
 
     def _write_parquet_chunks(meta, payload: dict):
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
         except ImportError as exc:
-            raise RuntimeError("pyarrow is required for chunked parquet writes; install pyarrow to continue.") from exc
+            raise RuntimeError(
+                "pyarrow is required for chunked parquet writes; install pyarrow to continue."
+            ) from exc
         data = payload["parquet_data"]
         columns = payload["columns"]
         sequence = payload.get("sequence", "")
@@ -4563,7 +5081,9 @@ def run_feature(self,
             import pyarrow as pa
             import pyarrow.parquet as pq
         except ImportError as exc:
-            raise RuntimeError("pyarrow is required for chunked parquet writes; install pyarrow to continue.") from exc
+            raise RuntimeError(
+                "pyarrow is required for chunked parquet writes; install pyarrow to continue."
+            ) from exc
         columns = payload["columns"]
         sequence = payload.get("sequence", "")
         group = payload.get("group")
@@ -4584,15 +5104,19 @@ def run_feature(self,
         for start, chunk in chunk_iter:
             chunk_len = chunk.shape[0]
             if source_frame_indices is not None:
-                frame_arr = source_frame_indices[start:start + chunk_len]
+                frame_arr = source_frame_indices[start : start + chunk_len]
             else:
                 frame_arr = np.arange(start, start + chunk_len, dtype=np.int32)
             arrays = {"frame": pa.array(frame_arr)}
             for idx, name in enumerate(columns):
                 arrays[name] = pa.array(chunk[:, idx])
             if pair_ids is not None:
-                arrays["id1"] = pa.array(np.full(chunk_len, pair_ids[0], dtype=np.int32))
-                arrays["id2"] = pa.array(np.full(chunk_len, pair_ids[1], dtype=np.int32))
+                arrays["id1"] = pa.array(
+                    np.full(chunk_len, pair_ids[0], dtype=np.int32)
+                )
+                arrays["id2"] = pa.array(
+                    np.full(chunk_len, pair_ids[1], dtype=np.int32)
+                )
             arrays["sequence"] = pa.array([sequence] * chunk_len)
             if group:
                 arrays["group"] = pa.array([group] * chunk_len)
@@ -4650,7 +5174,11 @@ def run_feature(self,
 
     def _trim_feature_output(df_feat, core_start: int, core_end: int):
         """Trim feature output to original segment bounds (removing overlap regions)."""
-        if core_start == 0 and core_end >= len(df_feat) if hasattr(df_feat, '__len__') else True:
+        if (
+            core_start == 0 and core_end >= len(df_feat)
+            if hasattr(df_feat, "__len__")
+            else True
+        ):
             return df_feat  # No trimming needed
 
         # Handle dict-based outputs (chunked parquet, etc.)
@@ -4667,8 +5195,10 @@ def run_feature(self,
                 return df_feat
             elif "parquet_chunk_iter" in df_feat:
                 # Can't easily trim streaming output - warn and return as-is
-                print(f"[feature:{feature.name}] warning: overlap trimming not supported for chunk_iter outputs",
-                      file=sys.stderr)
+                print(
+                    f"[feature:{feature.name}] warning: overlap trimming not supported for chunk_iter outputs",
+                    file=sys.stderr,
+                )
                 return df_feat
             return df_feat
 
@@ -4677,7 +5207,7 @@ def run_feature(self,
             return df_feat.iloc[core_start:core_end].reset_index(drop=True)
 
         # Handle numpy array
-        if hasattr(df_feat, '__getitem__') and hasattr(df_feat, 'shape'):
+        if hasattr(df_feat, "__getitem__") and hasattr(df_feat, "shape"):
             return df_feat[core_start:core_end]
 
         return df_feat
@@ -4687,7 +5217,9 @@ def run_feature(self,
         executor = None
         if max_workers > 1:
             if parallel_mode == "process":
-                executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn"))
+                executor = ProcessPoolExecutor(
+                    max_workers=max_workers, mp_context=mp.get_context("spawn")
+                )
             else:
                 executor = ThreadPoolExecutor(max_workers=max_workers)
         futures = {}
@@ -4703,7 +5235,7 @@ def run_feature(self,
                 g, s, df, core_start, core_end = item
             else:
                 g, s, df = item
-                core_start, core_end = 0, len(df) if hasattr(df, '__len__') else 0
+                core_start, core_end = 0, len(df) if hasattr(df, "__len__") else 0
             had_transform_inputs = True
             meta = _make_meta(g, s)
             out_path = meta["out_path"]
@@ -4721,15 +5253,33 @@ def run_feature(self,
                 if parallel_mode == "process":
                     model_path = run_root / "model.joblib"
                     model_path_str = str(model_path) if model_path.exists() else None
-                    payload = (feature.__module__, feature.__class__.__name__, getattr(feature, "params", {}), df, extra_attrs, model_path_str)
-                    futures[executor.submit(_process_transform_worker, payload)] = (meta, core_start, core_end)
+                    payload = (
+                        feature.__module__,
+                        feature.__class__.__name__,
+                        getattr(feature, "params", {}),
+                        df,
+                        extra_attrs,
+                        model_path_str,
+                    )
+                    futures[executor.submit(_process_transform_worker, payload)] = (
+                        meta,
+                        core_start,
+                        core_end,
+                    )
                 else:
-                    futures[executor.submit(feature.transform, df)] = (meta, core_start, core_end)
+                    futures[executor.submit(feature.transform, df)] = (
+                        meta,
+                        core_start,
+                        core_end,
+                    )
             else:
                 try:
                     df_feat = feature.transform(df)
                 except Exception as e:
-                    print(f"[feature:{feature.name}] transform failed for ({g},{s}): {e}", file=sys.stderr)
+                    print(
+                        f"[feature:{feature.name}] transform failed for ({g},{s}): {e}",
+                        file=sys.stderr,
+                    )
                     continue
                 # Trim output to original segment bounds if overlap was used
                 if use_overlap and (core_start > 0 or core_end < len(df)):
@@ -4748,11 +5298,17 @@ def run_feature(self,
                     try:
                         df_feat = future.result()
                     except Exception as e:
-                        print(f"[feature:{feature.name}] transform failed for ({meta['group']},{meta['sequence']}): {e}",
-                              file=sys.stderr)
+                        print(
+                            f"[feature:{feature.name}] transform failed for ({meta['group']},{meta['sequence']}): {e}",
+                            file=sys.stderr,
+                        )
                         continue
                     # Trim output to original segment bounds if overlap was used
-                    if use_overlap and (core_start > 0 or core_end < len(df_feat) if hasattr(df_feat, '__len__') else False):
+                    if use_overlap and (
+                        core_start > 0 or core_end < len(df_feat)
+                        if hasattr(df_feat, "__len__")
+                        else False
+                    ):
                         df_feat = _trim_feature_output(df_feat, core_start, core_end)
                     _write_output(meta, df_feat)
                     try:
@@ -4767,7 +5323,10 @@ def run_feature(self,
         try:
             extra_rows = feature.get_additional_index_rows()
         except Exception as e:
-            print(f"[feature:{feature.name}] get_additional_index_rows failed: {e}", file=sys.stderr)
+            print(
+                f"[feature:{feature.name}] get_additional_index_rows failed: {e}",
+                file=sys.stderr,
+            )
             extra_rows = []
         if extra_rows:
             for row in extra_rows:
@@ -4783,24 +5342,35 @@ def run_feature(self,
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_path.parent.mkdir(parents=True, exist_ok=True)
         marker_df.to_parquet(marker_path, index=False)
-        out_rows.append({
-            "feature": storage_feature_name, "version": feature.version, "run_id": run_id,
-            "group": "", "sequence": marker_seq, "group_safe": "", "sequence_safe": safe_marker_seq,
-            "abs_path": self._relative_to_root(marker_path),
-            "n_rows": int(len(marker_df)), "params_hash": params_hash,
-            "started_at": started, "finished_at": ""
-        })
+        out_rows.append(
+            {
+                "feature": storage_feature_name,
+                "version": feature.version,
+                "run_id": run_id,
+                "group": "",
+                "sequence": marker_seq,
+                "group_safe": "",
+                "sequence_safe": safe_marker_seq,
+                "abs_path": self._relative_to_root(marker_path),
+                "n_rows": int(len(marker_df)),
+                "params_hash": params_hash,
+                "started_at": started,
+                "finished_at": "",
+            }
+        )
 
     _append_feature_index(idx_path, out_rows)
     _update_finished_times(idx_path, run_id, _now_iso())
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return run_id
 
+
 # Attach to class
 Dataset.run_feature = run_feature
 
 
 # ─── Frame extraction ───
+
 
 def extract_frames(
     self,
@@ -4820,7 +5390,7 @@ def extract_frames(
     kmeans_max_candidates: Optional[int] = 5000,
     kmeans_batch_size: int = 1024,
     kmeans_max_iter: int = 100,
-    kmeans_n_init = "auto",
+    kmeans_n_init="auto",
     random_state: int = 42,
     # parallelism
     parallel_workers: Optional[int] = "auto",
@@ -4879,14 +5449,16 @@ def extract_frames(
         "random_state": int(random_state),
     }
     if method_norm == "kmeans":
-        extraction_params.update({
-            "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
-            "kmeans_grayscale": bool(kmeans_grayscale),
-            "kmeans_max_candidates": kmeans_max_candidates,
-            "kmeans_batch_size": int(kmeans_batch_size),
-            "kmeans_max_iter": int(kmeans_max_iter),
-            "kmeans_n_init": kmeans_n_init,
-        })
+        extraction_params.update(
+            {
+                "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
+                "kmeans_grayscale": bool(kmeans_grayscale),
+                "kmeans_max_candidates": kmeans_max_candidates,
+                "kmeans_batch_size": int(kmeans_batch_size),
+                "kmeans_max_iter": int(kmeans_max_iter),
+                "kmeans_n_init": kmeans_n_init,
+            }
+        )
 
     params_hash = _hash_params(extraction_params)
     run_id = f"{method_norm}-{params_hash}"
@@ -4898,13 +5470,17 @@ def extract_frames(
     try:
         params_path.write_text(json.dumps(_json_ready(extraction_params), indent=2))
     except Exception as exc:
-        print(f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
-              file=sys.stderr)
+        print(
+            f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
+            file=sys.stderr,
+        )
 
     # Resolve scope from media index
     media_df = _list_media_pairs(self, groups=groups, sequences=sequences)
     if media_df.empty:
-        print(f"[extract_frames] No media entries match the given scope.", file=sys.stderr)
+        print(
+            f"[extract_frames] No media entries match the given scope.", file=sys.stderr
+        )
         return run_id
 
     idx_path = _frames_index_path(self, method_norm)
@@ -4913,6 +5489,7 @@ def extract_frames(
 
     if parallel_workers == "auto":
         import os as _os
+
         max_workers = min(_os.cpu_count() or 1, 8)
     elif parallel_workers and int(parallel_workers) > 1:
         max_workers = int(parallel_workers)
@@ -4933,6 +5510,7 @@ def extract_frames(
 
         if overwrite and seq_dir.exists():
             import shutil
+
             shutil.rmtree(seq_dir)
 
         try:
@@ -4980,7 +5558,9 @@ def extract_frames(
                 _mdata = json.loads(_manifest_path.read_text())
                 _mdata["output_dir"] = self._relative_to_root(seq_dir)
                 if "video_path" in _mdata:
-                    _mdata["video_path"] = self._relative_to_root(Path(_mdata["video_path"]))
+                    _mdata["video_path"] = self._relative_to_root(
+                        Path(_mdata["video_path"])
+                    )
                 _manifest_path.write_text(json.dumps(_mdata, indent=2))
             return {
                 "method": method_norm,
@@ -4992,13 +5572,17 @@ def extract_frames(
                 "abs_path": self._relative_to_root(seq_dir),
                 "n_frames_extracted": result.n_extracted,
                 "n_frames_requested": result.n_requested,
-                "video_abs_path": json.dumps([str(p) for p in video_paths]) if len(video_paths) > 1 else str(video_paths[0]),
+                "video_abs_path": json.dumps([str(p) for p in video_paths])
+                if len(video_paths) > 1
+                else str(video_paths[0]),
                 "params_hash": params_hash,
                 "started_at": started,
                 "finished_at": _now_iso(),
             }
         except Exception as exc:
-            print(f"[extract_frames] ERROR processing {seq_label}: {exc}", file=sys.stderr)
+            print(
+                f"[extract_frames] ERROR processing {seq_label}: {exc}", file=sys.stderr
+            )
             return None
 
     # Build per-sequence work items from (possibly multi-video) media index
@@ -5042,9 +5626,12 @@ def extract_frames(
     if index_rows:
         _append_frames_index(idx_path, index_rows)
 
-    print(f"[extract_frames:{method_norm}] completed run_id={run_id} "
-          f"({len(index_rows)}/{len(work_items)} sequences) -> {run_root}")
+    print(
+        f"[extract_frames:{method_norm}] completed run_id={run_id} "
+        f"({len(index_rows)}/{len(work_items)} sequences) -> {run_root}"
+    )
     return run_id
+
 
 def list_frame_runs(self, method: Optional[str] = None) -> pd.DataFrame:
     """
@@ -5065,7 +5652,9 @@ def list_frame_runs(self, method: Optional[str] = None) -> pd.DataFrame:
     if not frames_root.exists():
         return pd.DataFrame(columns=list(_FRAMES_INDEX_COLUMNS.keys()))
 
-    methods = [method] if method else [d.name for d in frames_root.iterdir() if d.is_dir()]
+    methods = (
+        [method] if method else [d.name for d in frames_root.iterdir() if d.is_dir()]
+    )
     dfs = []
     for m in methods:
         idx_path = frames_root / m / "index.csv"
@@ -5219,10 +5808,9 @@ Dataset.get_frame_paths = get_frame_paths
 Dataset.get_frame_manifests = get_frame_manifests
 
 
-def train_model(self,
-                model,
-                config: str | Path | dict | None = None,
-                overwrite: bool = False) -> str:
+def train_model(
+    self, model, config: str | Path | dict | None = None, overwrite: bool = False
+) -> str:
     """
     Train a registered model using a JSON (or dict) configuration.
 
@@ -5240,7 +5828,9 @@ def train_model(self,
     overwrite : bool
         Reserved for future use (run_ids are hash-based, so reruns overwrite same folder).
     """
-    storage_model_name = getattr(model, "storage_model_name", getattr(model, "name", None))
+    storage_model_name = getattr(
+        model, "storage_model_name", getattr(model, "name", None)
+    )
     if not storage_model_name:
         raise ValueError("Model must define 'name' or 'storage_model_name'.")
     config_dict = _load_model_config(config)
@@ -5260,7 +5850,10 @@ def train_model(self,
         try:
             model.bind_dataset(self)
         except Exception as exc:
-            print(f"[model:{storage_model_name}] bind_dataset failed: {exc}", file=sys.stderr)
+            print(
+                f"[model:{storage_model_name}] bind_dataset failed: {exc}",
+                file=sys.stderr,
+            )
 
     if hasattr(model, "configure"):
         model.configure(config_dict, run_root)
@@ -5278,18 +5871,20 @@ def train_model(self,
         status = "failed"
         notes = str(exc)
         finished = _now_iso()
-        rows = [{
-            "model": storage_model_name,
-            "version": model.version,
-            "run_id": run_id,
-            "config_path": str(config_path),
-            "config_hash": config_hash,
-            "metrics_path": "",
-            "status": status,
-            "notes": notes[:500],
-            "started_at": started,
-            "finished_at": finished,
-        }]
+        rows = [
+            {
+                "model": storage_model_name,
+                "version": model.version,
+                "run_id": run_id,
+                "config_path": str(config_path),
+                "config_hash": config_hash,
+                "metrics_path": "",
+                "status": status,
+                "notes": notes[:500],
+                "started_at": started,
+                "finished_at": finished,
+            }
+        ]
         _append_model_index(idx_path, rows)
         raise
 
@@ -5300,18 +5895,22 @@ def train_model(self,
         if metrics_path.exists():
             metrics_path.unlink()
 
-    rows = [{
-        "model": storage_model_name,
-        "version": model.version,
-        "run_id": run_id,
-        "config_path": str(config_path),
-        "config_hash": config_hash,
-        "metrics_path": str(metrics_path) if metrics and metrics_path.exists() else "",
-        "status": status,
-        "notes": notes[:500],
-        "started_at": started,
-        "finished_at": finished,
-    }]
+    rows = [
+        {
+            "model": storage_model_name,
+            "version": model.version,
+            "run_id": run_id,
+            "config_path": str(config_path),
+            "config_hash": config_hash,
+            "metrics_path": str(metrics_path)
+            if metrics and metrics_path.exists()
+            else "",
+            "status": status,
+            "notes": notes[:500],
+            "started_at": started,
+            "finished_at": finished,
+        }
+    ]
     _append_model_index(idx_path, rows)
     print(f"[model:{storage_model_name}] completed run_id={run_id} -> {run_root}")
     return run_id
@@ -5320,15 +5919,17 @@ def train_model(self,
 Dataset.train_model = train_model
 
 
-def train_model_remote(self,
-                       model_class: str,
-                       config: str | Path | dict | None,
-                       remote_cfg: dict,
-                       sync_before: bool = True,
-                       sync_after: bool = True,
-                       include: Optional[Sequence[str]] = None,
-                       exclude: Optional[Sequence[str]] = None,
-                       detached: bool = False) -> str | dict:
+def train_model_remote(
+    self,
+    model_class: str,
+    config: str | Path | dict | None,
+    remote_cfg: dict,
+    sync_before: bool = True,
+    sync_after: bool = True,
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+    detached: bool = False,
+) -> str | dict:
     """
     Sync the project to a remote server, run Dataset.train_model there, then pull results back.
 
@@ -5360,10 +5961,14 @@ def train_model_remote(self,
     include / exclude : Optional sequences of rsync patterns.
     """
     if detached and sync_after:
-        raise ValueError("sync_after cannot be used when detached; wait for job completion to sync artifacts.")
+        raise ValueError(
+            "sync_after cannot be used when detached; wait for job completion to sync artifacts."
+        )
 
     if detached and sync_after:
-        raise ValueError("sync_after cannot be used when detached; wait for job completion to sync artifacts.")
+        raise ValueError(
+            "sync_after cannot be used when detached; wait for job completion to sync artifacts."
+        )
 
     if sync_before:
         sync_to_remote(remote_cfg, include=include, exclude=exclude)
@@ -5451,27 +6056,33 @@ print("REMOTE_RUN_ID=" + run_id)
 
 
 Dataset.train_model_remote = train_model_remote
-Dataset.sync_to_remote = lambda self, remote_cfg, include=None, exclude=None: sync_to_remote(remote_cfg, include, exclude)
-Dataset.sync_from_remote = lambda self, remote_cfg, include=None, exclude=None: sync_from_remote(remote_cfg, include, exclude)
+Dataset.sync_to_remote = lambda self, remote_cfg, include=None, exclude=None: (
+    sync_to_remote(remote_cfg, include, exclude)
+)
+Dataset.sync_from_remote = lambda self, remote_cfg, include=None, exclude=None: (
+    sync_from_remote(remote_cfg, include, exclude)
+)
 
 
-def run_feature_remote(self,
-                       feature_class: str,
-                       params: Optional[dict],
-                       remote_cfg: dict,
-                       groups: Optional[Sequence[str]] = None,
-                       sequences: Optional[Sequence[str]] = None,
-                       overwrite: bool = False,
-                       input_kind: str = "tracks",
-                       input_feature: Optional[str] = None,
-                       input_run_id: Optional[str] = None,
-                       parallel_workers: Optional[int] = None,
-                       sync_before: bool = True,
-                       sync_after: bool = False,
-                       include: Optional[Sequence[str]] = None,
-                       exclude: Optional[Sequence[str]] = None,
-                       remote_only: bool = True,
-                       detached: bool = False) -> str | dict:
+def run_feature_remote(
+    self,
+    feature_class: str,
+    params: Optional[dict],
+    remote_cfg: dict,
+    groups: Optional[Sequence[str]] = None,
+    sequences: Optional[Sequence[str]] = None,
+    overwrite: bool = False,
+    input_kind: str = "tracks",
+    input_feature: Optional[str] = None,
+    input_run_id: Optional[str] = None,
+    parallel_workers: Optional[int] = None,
+    sync_before: bool = True,
+    sync_after: bool = False,
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+    remote_only: bool = True,
+    detached: bool = False,
+) -> str | dict:
     """
     Run Dataset.run_feature on a remote machine via SSH or Jupyter kernel, leaving heavy artifacts remote.
     """
@@ -5491,14 +6102,22 @@ def run_feature_remote(self,
 
     # Mirror scope-aware hashing from run_feature
     _scope_key = None
-    _nf = feature_obj.needs_fit() if callable(getattr(feature_obj, 'needs_fit', None)) else False
-    _lo = getattr(feature_obj, 'loads_own_data', lambda: False)()
+    _nf = (
+        feature_obj.needs_fit()
+        if callable(getattr(feature_obj, "needs_fit", None))
+        else False
+    )
+    _lo = getattr(feature_obj, "loads_own_data", lambda: False)()
     if _nf and _lo:
         _scope_key = _build_scope_key(groups, sequences)
-    _hashable = {**feature_params, "_scope": _scope_key} if _scope_key else feature_params
+    _hashable = (
+        {**feature_params, "_scope": _scope_key} if _scope_key else feature_params
+    )
     params_hash = _hash_params(_hashable)
     expected_run_id = f"{feature_obj.version}-{params_hash}"
-    storage_feature_name = getattr(feature_obj, "storage_feature_name", feature_obj.name)
+    storage_feature_name = getattr(
+        feature_obj, "storage_feature_name", feature_obj.name
+    )
     use_input_suffix = getattr(feature_obj, "storage_use_input_suffix", True)
     if input_kind in {"feature", "inputset"} and input_feature and use_input_suffix:
         storage_feature_name = f"{storage_feature_name}__from__{input_feature}"
@@ -5516,7 +6135,9 @@ def run_feature_remote(self,
     overwrite_literal = "True" if overwrite else "False"
     input_feature_literal = repr(input_feature)
     input_run_id_literal = repr(input_run_id)
-    parallel_literal = "None" if parallel_workers is None else str(int(parallel_workers))
+    parallel_literal = (
+        "None" if parallel_workers is None else str(int(parallel_workers))
+    )
     work_code = f"""
 import os, sys, json, importlib
 os.chdir(r"{remote_cwd}")
@@ -5602,7 +6223,9 @@ print("REMOTE_STORAGE_FEATURE=" + {json.dumps(storage_feature_name)})
 Dataset.run_feature_remote = run_feature_remote
 
 
-def _fetch_remote_jobs(remote_cfg: dict, job_id: Optional[str] = None) -> list[dict] | dict | None:
+def _fetch_remote_jobs(
+    remote_cfg: dict, job_id: Optional[str] = None
+) -> list[dict] | dict | None:
     cfg = _validate_remote_cfg(remote_cfg)
     remote_root = cfg["remote_root"]
     if job_id:
@@ -5651,10 +6274,9 @@ def _refresh_remote_only_patterns(remote_cfg: dict) -> None:
             _maybe_apply_remote_only_pattern(remote_cfg, job)
 
 
-def list_remote_jobs(self,
-                     remote_cfg: dict,
-                     job_kind: Optional[str] = None,
-                     status: Optional[str] = None) -> list[dict]:
+def list_remote_jobs(
+    self, remote_cfg: dict, job_kind: Optional[str] = None, status: Optional[str] = None
+) -> list[dict]:
     jobs = _fetch_remote_jobs(remote_cfg) or []
     job_kind = job_kind.lower() if job_kind else None
     status = status.lower() if status else None
@@ -5684,7 +6306,9 @@ Dataset.list_remote_jobs = list_remote_jobs
 Dataset.remote_job_status = remote_job_status
 
 
-def _stop_remote_job(remote_cfg: dict, job_id: str, sig: str = "TERM") -> Optional[dict]:
+def _stop_remote_job(
+    remote_cfg: dict, job_id: str, sig: str = "TERM"
+) -> Optional[dict]:
     job = _fetch_remote_jobs(remote_cfg, job_id=job_id)
     if not isinstance(job, dict):
         return None
@@ -5720,7 +6344,9 @@ if os.path.exists(meta_path):
     return _fetch_remote_jobs(remote_cfg, job_id=job_id)
 
 
-def remote_job_stop(self, remote_cfg: dict, job_id: str, sig: str = "TERM") -> Optional[dict]:
+def remote_job_stop(
+    self, remote_cfg: dict, job_id: str, sig: str = "TERM"
+) -> Optional[dict]:
     return _stop_remote_job(remote_cfg, job_id, sig=sig.upper())
 
 

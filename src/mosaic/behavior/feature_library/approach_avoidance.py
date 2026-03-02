@@ -23,20 +23,22 @@ Output columns (per frame × pair):
 """
 
 from __future__ import annotations
+
 from itertools import combinations
-from math import cos, radians
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
 from mosaic.core.dataset import register_feature
-from ._param_bases import FeatureParams, PositionColumnsMixin, InterpolationMixin
+
+from ._param_bases import FeatureParams, InterpolationMixin, PositionColumnsMixin
 
 
 def _contiguous_runs(
-    binary: np.ndarray, frames: np.ndarray,
+    binary: np.ndarray,
+    frames: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Find start/end frame numbers for contiguous runs of 1s."""
     if len(binary) == 0:
@@ -47,6 +49,7 @@ def _contiguous_runs(
     return frames[starts], frames[ends]
 
 
+@final
 @register_feature
 class ApproachAvoidance:
     """
@@ -157,10 +160,8 @@ class ApproachAvoidance:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(clean_animal, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            clean_animal, include_groups=False
         )
 
         # Build all pairs for each sequence
@@ -176,10 +177,17 @@ class ApproachAvoidance:
                     out_frames.append(pair_df)
 
         if not out_frames:
-            return pd.DataFrame(columns=[
-                "frame", "id1", "id2",
-                "label_id", "aa_event", "aa_event_12", "aa_event_21",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "frame",
+                    "id1",
+                    "id2",
+                    "label_id",
+                    "aa_event",
+                    "aa_event_12",
+                    "aa_event_21",
+                ]
+            )
 
         out = pd.concat(out_frames, ignore_index=True)
         out = out.sort_values(["id1", "id2", "frame"]).reset_index(drop=True)
@@ -266,7 +274,7 @@ class ApproachAvoidance:
         # Canonical pair order: id1 = min, id2 = max
         id1 = min(id_a, id_b)
         id2 = max(id_a, id_b)
-        a_is_id1 = (id_a == id1)
+        a_is_id1 = id_a == id1
 
         if a_is_id1:
             dx12 = dx_ab
@@ -291,7 +299,9 @@ class ApproachAvoidance:
         cos_avoid_12 = (v2x * dx12 + v2y * dy12) / (np.maximum(dist * speed2, eps))
         # direction 21: id2 approaches id1, id1 avoids id2 (flip direction vector)
         cos_app_21 = (v2x * (-dx12) + v2y * (-dy12)) / (np.maximum(dist * speed2, eps))
-        cos_avoid_21 = (v1x * (-dx12) + v1y * (-dy12)) / (np.maximum(dist * speed1, eps))
+        cos_avoid_21 = (v1x * (-dx12) + v1y * (-dy12)) / (
+            np.maximum(dist * speed1, eps)
+        )
 
         # Optional approacher orientation gate (trajognize v7 behavior)
         use_ori_gate = p.use_approacher_orientation_gate
@@ -311,7 +321,10 @@ class ApproachAvoidance:
                 th1 = np.deg2rad(th1)
                 th2 = np.deg2rad(th2)
             elif unit_mode == "auto":
-                if np.nanmax(np.abs(th1)) > 2 * np.pi or np.nanmax(np.abs(th2)) > 2 * np.pi:
+                if (
+                    np.nanmax(np.abs(th1)) > 2 * np.pi
+                    or np.nanmax(np.abs(th2)) > 2 * np.pi
+                ):
                     th1 = np.deg2rad(th1)
                     th2 = np.deg2rad(th2)
             o1x, o1y = np.cos(th1), np.sin(th1)
@@ -488,15 +501,17 @@ class ApproachAvoidance:
 
         if not events:
             cols = group_cols + [
-                "start_frame", "end_frame", "duration",
-                "direction", "approacher_id", "avoider_id",
+                "start_frame",
+                "end_frame",
+                "duration",
+                "direction",
+                "approacher_id",
+                "avoider_id",
             ]
             return pd.DataFrame(columns=cols)
 
         out = pd.DataFrame(events)
-        out = out.sort_values(
-            group_cols + ["start_frame"]
-        ).reset_index(drop=True)
+        out = out.sort_values(group_cols + ["start_frame"]).reset_index(drop=True)
         return out
 
     # ----------------------- Helpers -----------------------------
@@ -508,7 +523,10 @@ class ApproachAvoidance:
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
     def _clean_one_animal(
-        self, g: pd.DataFrame, data_cols: List[str], order_col: str,
+        self,
+        g: pd.DataFrame,
+        data_cols: List[str],
+        order_col: str,
     ) -> pd.DataFrame:
         p = self.params
         g = g.sort_values(order_col).copy()

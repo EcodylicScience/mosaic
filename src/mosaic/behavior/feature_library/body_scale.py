@@ -5,16 +5,21 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
+
 from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams
 from .helpers import _pose_column_pairs
 
 
+@final
 @register_feature
 class BodyScaleFeature:
     """
@@ -35,6 +40,7 @@ class BodyScaleFeature:
 
         No algorithm-specific parameters beyond the base columns.
         """
+
         pass
 
     def __init__(self, params: dict[str, object] | None = None):
@@ -46,10 +52,26 @@ class BodyScaleFeature:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def fit(self, X: Iterable[pd.DataFrame]):
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]):
         return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
@@ -60,7 +82,9 @@ class BodyScaleFeature:
         if not pose_pairs:
             return pd.DataFrame()
         group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
-        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        sequence = (
+            str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        )
         rows = []
         for frame_val, g in df.groupby("frame", sort=True):
             for id_val, sub in g.groupby("id"):
@@ -68,7 +92,12 @@ class BodyScaleFeature:
                 for x_col, y_col in pose_pairs:
                     x = sub.iloc[0].get(x_col)
                     y = sub.iloc[0].get(y_col)
-                    if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
+                    if (
+                        x is None
+                        or y is None
+                        or not np.isfinite(x)
+                        or not np.isfinite(y)
+                    ):
                         continue
                     pts.append((float(x), float(y)))
                 if len(pts) < 2:
@@ -79,11 +108,13 @@ class BodyScaleFeature:
                 if dists.size == 0:
                     continue
                 med = float(np.median(dists))
-                rows.append({
-                    "frame": int(frame_val),
-                    "id": id_val,
-                    "scale": med,
-                    "sequence": sequence,
-                    "group": group,
-                })
+                rows.append(
+                    {
+                        "frame": int(frame_val),
+                        "id": id_val,
+                        "scale": med,
+                        "sequence": sequence,
+                        "group": group,
+                    }
+                )
         return pd.DataFrame(rows)

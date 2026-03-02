@@ -14,16 +14,19 @@ Current patterns this template follows (as of 2026-02):
 """
 
 from __future__ import annotations
+
 from collections.abc import Iterable
 from pathlib import Path
+from typing import final
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
+# from mosaic.core.dataset import register_feature  # <-- uncomment when ready
 from ._param_bases import FeatureParams
 
 
+@final
 # @register_feature   # <-- uncomment when your feature is ready
 class MyPerSequenceFeature:
     """
@@ -46,8 +49,8 @@ class MyPerSequenceFeature:
     # Stored under dataset_root/features/<name>/
     name = "my-new-feature"
     version = "0.1"
-    parallelizable = True       # safe if transform(df) only depends on df
-    output_type = "per_frame"   # "per_frame" | "summary" | "global"
+    parallelizable = True  # safe if transform(df) only depends on df
+    output_type = "per_frame"  # "per_frame" | "summary" | "global"
 
     class Params(FeatureParams):
         """Per-sequence feature template parameters.
@@ -64,8 +67,8 @@ class MyPerSequenceFeature:
 
         # Storage overrides (set before run_feature processes the feature)
         self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True    # appends "__from__<input>" to run dir
-        self.skip_existing_outputs = False      # set True if idempotent + expensive
+        self.storage_use_input_suffix = True  # appends "__from__<input>" to run dir
+        self.skip_existing_outputs = False  # set True if idempotent + expensive
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -127,12 +130,19 @@ class MyPerSequenceFeature:
 
         # Select numeric input columns (exclude metadata)
         meta_like = {
-            p.seq_col, p.group_col,
-            "frame", "time", "id", "perspective", "fps",
-            "id1", "id2",
+            p.seq_col,
+            p.group_col,
+            "frame",
+            "time",
+            "id",
+            "perspective",
+            "fps",
+            "id1",
+            "id2",
         }
         numeric_cols = [
-            c for c in df.select_dtypes(include=[np.number]).columns
+            c
+            for c in df.select_dtypes(include=[np.number]).columns
             if c not in meta_like
         ]
         if not numeric_cols:

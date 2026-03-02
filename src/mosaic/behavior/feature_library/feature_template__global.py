@@ -17,30 +17,36 @@ See GlobalTSNE and WardAssignClustering for real examples.
 """
 
 from __future__ import annotations
-from collections.abc import Iterable
-from pathlib import Path
+
 import gc
 import sys
+from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
 from pydantic import Field
 
+# from mosaic.core.dataset import register_feature  # <-- uncomment when ready
 from mosaic.core.dataset import (
-    register_feature,
-    _resolve_inputs,
     _dataset_base_dir,
-)
-from .helpers import (
-    StreamingFeatureHelper,
-    _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
-    _build_index_row,
+    _resolve_inputs,
 )
 from mosaic.core.helpers import to_safe_name
+
 from ._param_bases import FeatureParams
+from .helpers import (
+    StreamingFeatureHelper,
+    _build_index_row,
+    _build_sequence_lookup,
+    _parse_scope_filter,
+    _resolve_sequence_identity,
+)
 
 
+@final
 # @register_feature   # <-- uncomment when your feature is ready
 class MyGlobalFeature:
     """
@@ -61,7 +67,7 @@ class MyGlobalFeature:
     version = "0.1"
     parallelizable = False
     output_type = "global"
-    skip_transform_phase = True     # all work in fit/save_model
+    skip_transform_phase = True  # all work in fit/save_model
 
     class Params(FeatureParams):
         """Global feature template parameters.
@@ -109,11 +115,20 @@ class MyGlobalFeature:
 
     # ----------------------- Feature protocol --------------------
 
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return False
-    def loads_own_data(self) -> bool: return True
-    def partial_fit(self, X: pd.DataFrame) -> None: raise NotImplementedError
-    def finalize_fit(self) -> None: pass
+    def needs_fit(self) -> bool:
+        return True
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
+        return True
+
+    def partial_fit(self, X: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(index=[])
@@ -133,7 +148,9 @@ class MyGlobalFeature:
             else None
         )
         inputs, inputs_meta = _resolve_inputs(
-            self._ds, explicit_inputs, inputset_name,
+            self._ds,
+            explicit_inputs,
+            inputset_name,
             explicit_override=self._inputs_overridden,
         )
 
@@ -143,7 +160,8 @@ class MyGlobalFeature:
             helper.set_pair_filter(inputs_meta["pair_filter"])
         scope_filter = (
             {"safe_sequences": self._allowed_safe_sequences}
-            if self._allowed_safe_sequences else None
+            if self._allowed_safe_sequences
+            else None
         )
         manifest = helper.build_manifest(inputs, scope_filter=scope_filter)
         if not manifest:
@@ -153,7 +171,9 @@ class MyGlobalFeature:
         keys = list(manifest.keys())
         for i, key in enumerate(keys):
             X, frames = helper.load_key_data(
-                manifest[key], extract_frames=True, key=key,
+                manifest[key],
+                extract_frames=True,
+                key=key,
             )
             if X is None or X.shape[0] == 0:
                 continue
@@ -169,8 +189,10 @@ class MyGlobalFeature:
             gc.collect()
 
             if (i + 1) % 10 == 0 or i == len(keys) - 1:
-                print(f"[{self.name}] Processed {i + 1}/{len(keys)} sequences",
-                      file=sys.stderr)
+                print(
+                    f"[{self.name}] Processed {i + 1}/{len(keys)} sequences",
+                    file=sys.stderr,
+                )
 
         self._artifacts["inputs_meta"] = inputs_meta
 
@@ -180,7 +202,10 @@ class MyGlobalFeature:
         run_root = path.parent
         run_root.mkdir(parents=True, exist_ok=True)
         joblib.dump(
-            {"params": self.params.model_dump(), "meta": self._artifacts.get("inputs_meta", {})},
+            {
+                "params": self.params.model_dump(),
+                "meta": self._artifacts.get("inputs_meta", {}),
+            },
             path,
         )
 
@@ -235,6 +260,12 @@ class MyGlobalFeature:
         df_out.to_parquet(out_path, index=False)
 
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_seq,
+                group,
+                sequence,
+                out_path,
+                int(len(df_out)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )

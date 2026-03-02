@@ -6,23 +6,29 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Iterable
 from pathlib import Path
-import gc
+from typing import final
 
 import numpy as np
 import pandas as pd
-
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
-from mosaic.core.dataset import register_feature
-from .helpers import _load_array_from_spec
-from mosaic.core.dataset import _latest_feature_run_root, _feature_index_path, _resolve_inputs, _feature_run_root
+from mosaic.core.dataset import (
+    _feature_index_path,
+    _latest_feature_run_root,
+    _resolve_inputs,
+    register_feature,
+)
 from mosaic.core.helpers import to_safe_name
+
 from ._param_bases import FeatureParams
+from .helpers import _load_array_from_spec
 
 
+@final
 @register_feature
 class TemporalStackingFeature:
     """
@@ -55,6 +61,7 @@ class TemporalStackingFeature:
             write_chunk_size: Rows per output chunk. Default 1000.
             stack_chunk_size: Rows per stacking chunk. Default 1000.
         """
+
         inputset: str | None = None
         inputs: list[dict[str, object]] = Field(default_factory=list)
         half: int = Field(default=60, ge=0)
@@ -101,7 +108,9 @@ class TemporalStackingFeature:
         explicit_inputs = self.params.inputs or []
         inputset_name = self.params.inputset
         if not explicit_inputs and not inputset_name:
-            raise ValueError("temporal-stack: provide params['inputset'] or explicit params['inputs'].")
+            raise ValueError(
+                "temporal-stack: provide params['inputset'] or explicit params['inputs']."
+            )
         explicit_override = bool(explicit_inputs)
         self._inputs, self._inputs_meta = _resolve_inputs(
             ds,
@@ -122,17 +131,36 @@ class TemporalStackingFeature:
         else:
             self._allowed_safe_sequences = None
 
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def wants_full_inputset_data(self) -> bool: return False
-    def fit(self, X: Iterable[pd.DataFrame]): pass
-    def save_model(self, path: Path) -> None: raise NotImplementedError("stateless feature")
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def wants_full_inputset_data(self) -> bool:
+        return False
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]):
+        pass
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError("stateless feature")
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def _get_or_build_nn_lookup(self, safe_seq: str) -> dict:
         """Build and cache the nearest-neighbor lookup for a sequence."""
         if safe_seq in self._nn_lookup_cache:
             return self._nn_lookup_cache[safe_seq]
         from .helpers import _build_nn_lookup
+
         lookup = _build_nn_lookup(self._ds, safe_seq, self._pair_filter_spec)
         self._nn_lookup_cache[safe_seq] = lookup
         return lookup
@@ -145,31 +173,54 @@ class TemporalStackingFeature:
 
         seq_col = self.params.sequence_col
         group_col = self.params.group_col
-        sequence = str(df[seq_col].iloc[0]) if seq_col in df.columns and not df.empty else None
-        group = str(df[group_col].iloc[0]) if group_col in df.columns and not df.empty else None
+        sequence = (
+            str(df[seq_col].iloc[0]) if seq_col in df.columns and not df.empty else None
+        )
+        group = (
+            str(df[group_col].iloc[0])
+            if group_col in df.columns and not df.empty
+            else None
+        )
         if not sequence:
-            raise ValueError("temporal-stack: unable to infer sequence from dataframe; ensure 'sequence' column exists.")
+            raise ValueError(
+                "temporal-stack: unable to infer sequence from dataframe; ensure 'sequence' column exists."
+            )
 
         safe_seq = to_safe_name(sequence)
         # If scope_filter provides canonical mapping, prefer it
         if self._scope_filter:
             pair_map = self._scope_filter.get("pair_safe_map") or {}
             safe_seq = pair_map.get((group, sequence), safe_seq)
-        if self._allowed_safe_sequences and safe_seq not in self._allowed_safe_sequences:
-            raise ValueError(f"temporal-stack: sequence '{sequence}' not present in resolved inputset scope.")
+        if (
+            self._allowed_safe_sequences
+            and safe_seq not in self._allowed_safe_sequences
+        ):
+            raise ValueError(
+                f"temporal-stack: sequence '{sequence}' not present in resolved inputset scope."
+            )
 
-        base_matrix, base_names, frame_indices, pair_ids = self._load_sequence_matrix(safe_seq)
+        base_matrix, base_names, frame_indices, pair_ids = self._load_sequence_matrix(
+            safe_seq
+        )
         if base_matrix is None or base_matrix.size == 0:
-            raise ValueError(f"temporal-stack: missing inputs for sequence '{sequence}'.")
+            raise ValueError(
+                f"temporal-stack: missing inputs for sequence '{sequence}'."
+            )
 
         if pair_ids is not None and len(np.unique(pair_ids, axis=0)) > 1:
             # Multi-pair: process each pair independently to avoid mixing temporal context
             return self._transform_multi_pair(
-                base_matrix, base_names, frame_indices, pair_ids,
-                sequence, group,
+                base_matrix,
+                base_names,
+                frame_indices,
+                pair_ids,
+                sequence,
+                group,
             )
 
-        chunk_iter, stacked_names, total_rows = self._chunked_temporal_features(base_matrix, base_names)
+        chunk_iter, stacked_names, total_rows = self._chunked_temporal_features(
+            base_matrix, base_names
+        )
         payload = {
             "parquet_chunk_iter": chunk_iter,
             "columns": stacked_names,
@@ -204,7 +255,9 @@ class TemporalStackingFeature:
             sub_matrix = base_matrix[mask]
             sub_frames = frame_indices[mask] if frame_indices is not None else None
 
-            chunk_iter, names, total_rows = self._chunked_temporal_features(sub_matrix, base_names)
+            chunk_iter, names, total_rows = self._chunked_temporal_features(
+                sub_matrix, base_names
+            )
             if stacked_names is None:
                 stacked_names = names
 
@@ -217,8 +270,10 @@ class TemporalStackingFeature:
             pair_stacked = np.vstack(chunks)
             all_stacked.append(pair_stacked)
             if sub_frames is not None:
-                all_frames.append(sub_frames[:pair_stacked.shape[0]])
-            all_pair_ids.append(np.broadcast_to(pid[None, :], (pair_stacked.shape[0], 2)).copy())
+                all_frames.append(sub_frames[: pair_stacked.shape[0]])
+            all_pair_ids.append(
+                np.broadcast_to(pid[None, :], (pair_stacked.shape[0], 2)).copy()
+            )
 
         if not all_stacked:
             raise ValueError("temporal-stack: no data produced for any pair.")
@@ -254,28 +309,41 @@ class TemporalStackingFeature:
             mapping = self._build_sequence_mapping(feat_name, run_id, allowed)
             if not mapping:
                 continue
-            resolved.append({
-                "feature": feat_name,
-                "run_id": run_id,
-                "load": spec.get("load") or {"kind": "parquet", "numeric_only": True},
-                "name": spec.get("name") or feat_name,
-                "mapping": mapping,
-            })
+            resolved.append(
+                {
+                    "feature": feat_name,
+                    "run_id": run_id,
+                    "load": spec.get("load")
+                    or {"kind": "parquet", "numeric_only": True},
+                    "name": spec.get("name") or feat_name,
+                    "mapping": mapping,
+                }
+            )
         if not resolved:
-            raise RuntimeError("temporal-stack: no overlapping inputs found for the requested scope.")
+            raise RuntimeError(
+                "temporal-stack: no overlapping inputs found for the requested scope."
+            )
         self._resolved_inputs = resolved
         self._input_cache_ready = True
 
-    def _build_sequence_mapping(self, feature_name: str, run_id: str, allowed: set[str] | None) -> dict[str, Path]:
+    def _build_sequence_mapping(
+        self, feature_name: str, run_id: str, allowed: set[str] | None
+    ) -> dict[str, Path]:
         idx_path = _feature_index_path(self._ds, feature_name)
         if not idx_path.exists():
-            raise FileNotFoundError(f"temporal-stack: missing index for feature '{feature_name}' -> {idx_path}")
+            raise FileNotFoundError(
+                f"temporal-stack: missing index for feature '{feature_name}' -> {idx_path}"
+            )
         df = pd.read_csv(idx_path)
         df = df[df["run_id"].astype(str) == str(run_id)]
         if df.empty:
-            raise ValueError(f"temporal-stack: feature '{feature_name}' run_id='{run_id}' has no rows.")
+            raise ValueError(
+                f"temporal-stack: feature '{feature_name}' run_id='{run_id}' has no rows."
+            )
         if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
+            df["sequence_safe"] = (
+                df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
+            )
         df = df[df["sequence_safe"].astype(str).str.strip() != ""]
         if allowed:
             df = df[df["sequence_safe"].isin(allowed)]
@@ -289,7 +357,9 @@ class TemporalStackingFeature:
             mapping[seq_safe] = remapped
         return mapping
 
-    def _load_sequence_matrix(self, safe_seq: str) -> tuple[np.ndarray | None, list[str], np.ndarray | None, np.ndarray | None]:
+    def _load_sequence_matrix(
+        self, safe_seq: str
+    ) -> tuple[np.ndarray | None, list[str], np.ndarray | None, np.ndarray | None]:
         """
         Load and concatenate feature matrices for a sequence.
 
@@ -304,8 +374,10 @@ class TemporalStackingFeature:
         df_filter = None
         if self._pair_filter_spec:
             from .helpers import _nn_pair_mask
+
             nn_lookup = self._get_or_build_nn_lookup(safe_seq)
             if nn_lookup:
+
                 def df_filter(df: pd.DataFrame) -> pd.DataFrame:
                     mask = _nn_pair_mask(df, nn_lookup)
                     return df.loc[mask].reset_index(drop=True)
@@ -324,10 +396,14 @@ class TemporalStackingFeature:
             arr, _ = _load_array_from_spec(path, entry["load"], df=df_full)
             if arr is None or arr.size == 0:
                 return None, [], None, None
-            loaded.append({
-                "arr": arr, "entry": entry,
-                "has_pairs": has_pairs, "df": df_full,
-            })
+            loaded.append(
+                {
+                    "arr": arr,
+                    "entry": entry,
+                    "has_pairs": has_pairs,
+                    "df": df_full,
+                }
+            )
         if not loaded:
             return None, [], None, None
 
@@ -344,14 +420,17 @@ class TemporalStackingFeature:
             df0 = loaded[0]["df"]
             frame_indices = (
                 df0["frame"].to_numpy(dtype=np.int32)[:min_len]
-                if "frame" in df0.columns else None
+                if "frame" in df0.columns
+                else None
             )
             pair_ids = None
             if any_pairs:
-                pair_ids = np.column_stack([
-                    df0["id1"].to_numpy(dtype=np.int32)[:min_len],
-                    df0["id2"].to_numpy(dtype=np.int32)[:min_len],
-                ])
+                pair_ids = np.column_stack(
+                    [
+                        df0["id1"].to_numpy(dtype=np.int32)[:min_len],
+                        df0["id2"].to_numpy(dtype=np.int32)[:min_len],
+                    ]
+                )
             col_names: list[str] = []
             for e in loaded:
                 prefix = e["entry"]["name"]
@@ -369,15 +448,19 @@ class TemporalStackingFeature:
 
         master_frames = (
             master_df["frame"].to_numpy(dtype=np.int32)
-            if "frame" in master_df.columns else None
+            if "frame" in master_df.columns
+            else None
         )
-        pair_ids = np.column_stack([
-            master_df["id1"].to_numpy(dtype=np.int32),
-            master_df["id2"].to_numpy(dtype=np.int32),
-        ])
+        pair_ids = np.column_stack(
+            [
+                master_df["id1"].to_numpy(dtype=np.int32),
+                master_df["id2"].to_numpy(dtype=np.int32),
+            ]
+        )
         master_persp = (
             master_df["perspective"].to_numpy()
-            if "perspective" in master_df.columns else None
+            if "perspective" in master_df.columns
+            else None
         )
 
         mats: list[np.ndarray] = []
@@ -385,9 +468,7 @@ class TemporalStackingFeature:
         for i, e in enumerate(loaded):
             arr = e["arr"]
             prefix = e["entry"]["name"]
-            col_names.extend(
-                [f"{prefix}__f{idx:04d}" for idx in range(arr.shape[1])]
-            )
+            col_names.extend([f"{prefix}__f{idx:04d}" for idx in range(arr.shape[1])])
             if e["has_pairs"]:
                 # Same pair structure -- align with master by row
                 if arr.shape[0] >= n_master:
@@ -400,10 +481,7 @@ class TemporalStackingFeature:
                 # Non-pair: replicate rows via (frame, perspective) join
                 df_np = e["df"]
                 expanded = np.zeros((n_master, arr.shape[1]), dtype=np.float32)
-                use_persp = (
-                    master_persp is not None
-                    and "perspective" in df_np.columns
-                )
+                use_persp = master_persp is not None and "perspective" in df_np.columns
                 if master_frames is not None and "frame" in df_np.columns:
                     np_frames = df_np["frame"].to_numpy()
                     if use_persp:
@@ -429,7 +507,9 @@ class TemporalStackingFeature:
         base = np.hstack(mats).astype(np.float32, copy=False)
         return base, col_names, master_frames, pair_ids
 
-    def _chunked_temporal_features(self, base: np.ndarray, base_names: list[str]) -> tuple[Iterable[tuple[int, np.ndarray]], list[str], int]:
+    def _chunked_temporal_features(
+        self, base: np.ndarray, base_names: list[str]
+    ) -> tuple[Iterable[tuple[int, np.ndarray]], list[str], int]:
         total_rows = base.shape[0]
         stack_chunk_size = self.params.stack_chunk_size
         use_stack = self.params.use_temporal_stack
@@ -450,7 +530,9 @@ class TemporalStackingFeature:
         # Precompute smoothing arrays
         smoothed = base
         if sigma_stack > 0 and use_stack:
-            smoothed = gaussian_filter1d(base, sigma=sigma_stack, axis=0, mode="nearest")
+            smoothed = gaussian_filter1d(
+                base, sigma=sigma_stack, axis=0, mode="nearest"
+            )
         padded = None
         if use_stack and half > 0:
             padded = np.pad(smoothed, ((half, half), (0, 0)), mode="edge")
@@ -519,7 +601,9 @@ class TemporalStackingFeature:
     # Pre-chunking helpers (_temporal_stack, _pooled_stats) removed;
     # see _chunked_temporal_features
 
-    def _pooled_stats_arrays(self, base: np.ndarray, base_names: list[str]) -> tuple[list[np.ndarray], list[str]]:
+    def _pooled_stats_arrays(
+        self, base: np.ndarray, base_names: list[str]
+    ) -> tuple[list[np.ndarray], list[str]]:
         stats = self.params.pool_stats
         if not stats:
             return [], []
@@ -528,15 +612,19 @@ class TemporalStackingFeature:
             sigma = max(1.0, self.params.win_sec * self.params.fps / 6.0)
         win_frames = max(1, int(round(self.params.win_sec * self.params.fps)))
         truncate = max(1.0, win_frames / (2.0 * sigma)) if sigma > 0 else 4.0
-        mean_vals = gaussian_filter1d(base, sigma=sigma, axis=0, mode="nearest", truncate=truncate)
+        mean_vals = gaussian_filter1d(
+            base, sigma=sigma, axis=0, mode="nearest", truncate=truncate
+        )
         outputs = []
         names = []
         if "mean" in stats:
             outputs.append(mean_vals)
             names.extend([f"{name}__pool_mean" for name in base_names])
         if "std" in stats or "variance" in stats:
-            second = gaussian_filter1d(base ** 2, sigma=sigma, axis=0, mode="nearest", truncate=truncate)
-            var = np.clip(second - mean_vals ** 2, 0.0, None)
+            second = gaussian_filter1d(
+                base**2, sigma=sigma, axis=0, mode="nearest", truncate=truncate
+            )
+            var = np.clip(second - mean_vals**2, 0.0, None)
             if "variance" in stats:
                 outputs.append(var)
                 names.extend([f"{name}__pool_var" for name in base_names])

@@ -114,9 +114,7 @@ class ParquetLoadSpec(DictModel):
     frame_column: str | None = None
 
 
-LoadSpec = Annotated[
-    NpzLoadSpec | ParquetLoadSpec, Field(discriminator="kind")
-]
+LoadSpec = Annotated[NpzLoadSpec | ParquetLoadSpec, Field(discriminator="kind")]
 
 
 class FeatureRef(DictModel):

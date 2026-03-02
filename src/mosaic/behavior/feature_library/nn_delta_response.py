@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Iterable, Optional, final
+
 import numpy as np
 import pandas as pd
-
 from pydantic import Field
+
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams
 
 
@@ -14,7 +17,9 @@ def _wrap_angle(x: np.ndarray) -> np.ndarray:
     return (x + np.pi) % (2 * np.pi) - np.pi
 
 
-def _ego_rotate(dx: np.ndarray, dy: np.ndarray, heading: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _ego_rotate(
+    dx: np.ndarray, dy: np.ndarray, heading: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Rotate world-frame deltas into the ego frame of the focal (heading aligned with +x).
     """
@@ -25,6 +30,7 @@ def _ego_rotate(dx: np.ndarray, dy: np.ndarray, heading: np.ndarray) -> tuple[np
     return dx_ego, dy_ego
 
 
+@final
 @register_feature
 class NearestNeighborDelta:
     """
@@ -116,14 +122,31 @@ class NearestNeighborDelta:
         id_col = p.id_col
         frame_col = p.frame_col
         angle_col = p.angle_col
-        speed_col = p.speed_col if p.speed_col in df.columns else ("speed" if "speed" in df.columns else None)
-        nn_id_col = p.nn_id_col if p.nn_id_col in df.columns else ("nn_fishID" if "nn_fishID" in df.columns else None)
-        if speed_col is None or nn_id_col is None or frame_col not in df or id_col not in df:
+        speed_col = (
+            p.speed_col
+            if p.speed_col in df.columns
+            else ("speed" if "speed" in df.columns else None)
+        )
+        nn_id_col = (
+            p.nn_id_col
+            if p.nn_id_col in df.columns
+            else ("nn_fishID" if "nn_fishID" in df.columns else None)
+        )
+        if (
+            speed_col is None
+            or nn_id_col is None
+            or frame_col not in df
+            or id_col not in df
+        ):
             # Missing critical inputs; nothing to compute.
             return pd.DataFrame()
 
         # Order for reproducibility
-        order_col = frame_col if frame_col in df.columns else (p.time_col if p.time_col in df else None)
+        order_col = (
+            frame_col
+            if frame_col in df.columns
+            else (p.time_col if p.time_col in df else None)
+        )
         if order_col is None:
             return pd.DataFrame()
         df = df.sort_values([order_col, id_col]).reset_index(drop=True)
@@ -145,7 +168,9 @@ class NearestNeighborDelta:
         for focal_id, g in df.groupby(id_col, sort=False):
             g = g.sort_values(order_col)
             # Future samples diff_numframes ahead
-            future = g[[p.x_col, p.y_col, angle_col, speed_col, frame_col]].shift(-diff_n)
+            future = g[[p.x_col, p.y_col, angle_col, speed_col, frame_col]].shift(
+                -diff_n
+            )
             delta = future - g[[p.x_col, p.y_col, angle_col, speed_col, frame_col]]
 
             valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
@@ -183,7 +208,9 @@ class NearestNeighborDelta:
 
             # Neighbor focal flag (if available)
             if focal_lookup is not None:
-                neighbor_meta = rows[[frame_col, nn_id_col]].rename(columns={nn_id_col: "_nid"})
+                neighbor_meta = rows[[frame_col, nn_id_col]].rename(
+                    columns={nn_id_col: "_nid"}
+                )
                 rows["neighbor_focal"] = neighbor_meta.merge(
                     focal_lookup, on=[frame_col, "_nid"], how="left"
                 )["neighbor_focal"].to_numpy()
@@ -209,11 +236,25 @@ class NearestNeighborDelta:
         out_df = pd.concat(outputs, ignore_index=True)
         # Ensure stable column order: meta first, then deltas and neighbor info
         col_order = [
-            c for c in (frame_col, p.time_col, p.group_col, p.sequence_col, id_col, "nn_id")
+            c
+            for c in (
+                frame_col,
+                p.time_col,
+                p.group_col,
+                p.sequence_col,
+                id_col,
+                "nn_id",
+            )
             if c in out_df.columns
         ]
-        col_order += [c for c in ("neighbor_x", "neighbor_y", "neighbor_focal") if c in out_df.columns]
-        col_order += [c for c in ("dx", "dy", "dt", "dangle", "dspeed") if c in out_df.columns]
+        col_order += [
+            c
+            for c in ("neighbor_x", "neighbor_y", "neighbor_focal")
+            if c in out_df.columns
+        ]
+        col_order += [
+            c for c in ("dx", "dy", "dt", "dangle", "dspeed") if c in out_df.columns
+        ]
         for c in ("group_size", "event", p.focal_col):
             if c in out_df.columns and c not in col_order:
                 col_order.append(c)

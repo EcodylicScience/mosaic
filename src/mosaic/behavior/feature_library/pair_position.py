@@ -10,16 +10,25 @@ downstream features like PairWavelet.
 """
 
 from __future__ import annotations
-from typing import List, Optional, Tuple
+
 from itertools import combinations
+from pathlib import Path
+from typing import List, Optional, Tuple, final
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
-from ._param_bases import FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin
+
+from ._param_bases import (
+    FeatureParams,
+    InterpolationMixin,
+    PositionColumnsMixin,
+    SamplingMixin,
+)
 
 
+@final
 @register_feature
 class PairPositionFeatures:
     """
@@ -49,7 +58,9 @@ class PairPositionFeatures:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin):
+    class Params(
+        FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin
+    ):
         pass
 
     def __init__(self, params: dict[str, object] | None = None):
@@ -70,6 +81,12 @@ class PairPositionFeatures:
 
     def partial_fit(self, df: pd.DataFrame) -> None:
         return
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
@@ -100,10 +117,8 @@ class PairPositionFeatures:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(clean_animal, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            clean_animal, include_groups=False
         )
 
         # Build all pairs for each sequence
@@ -122,28 +137,54 @@ class PairPositionFeatures:
 
         if not out_frames:
             # Return empty DataFrame with expected columns
-            return pd.DataFrame(columns=[
-                "frame", "perspective", "id_A", "id_B",
-                "A_speed", "A_v_para", "A_v_perp", "A_ang_speed",
-                "A_heading_cos", "A_heading_sin",
-                "AB_dist", "AB_dx_egoA", "AB_dy_egoA",
-                "rel_heading_cos", "rel_heading_sin",
-                "B_speed", "B_v_para", "B_v_perp", "B_ang_speed",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "frame",
+                    "perspective",
+                    "id_A",
+                    "id_B",
+                    "A_speed",
+                    "A_v_para",
+                    "A_v_perp",
+                    "A_ang_speed",
+                    "A_heading_cos",
+                    "A_heading_sin",
+                    "AB_dist",
+                    "AB_dx_egoA",
+                    "AB_dy_egoA",
+                    "rel_heading_cos",
+                    "rel_heading_sin",
+                    "B_speed",
+                    "B_v_para",
+                    "B_v_perp",
+                    "B_ang_speed",
+                ]
+            )
 
         out = pd.concat(out_frames, ignore_index=True)
-        out = out.sort_values(["id_A", "id_B", "perspective", "frame"]).reset_index(drop=True)
+        out = out.sort_values(["id_A", "id_B", "perspective", "frame"]).reset_index(
+            drop=True
+        )
         return out
 
     def _compute_pair_features(
-        self, gseq: pd.DataFrame, idA: int, idB: int, order_col: str, orig_df: pd.DataFrame
+        self,
+        gseq: pd.DataFrame,
+        idA: int,
+        idB: int,
+        order_col: str,
+        orig_df: pd.DataFrame,
     ) -> Optional[pd.DataFrame]:
         """Compute features for a single pair (A, B) with both perspectives."""
         p = self.params
 
         # Extract data for each animal
-        A = gseq[gseq[p.id_col] == idA][[order_col, p.x_col, p.y_col, p.angle_col]].copy()
-        B = gseq[gseq[p.id_col] == idB][[order_col, p.x_col, p.y_col, p.angle_col]].copy()
+        A = gseq[gseq[p.id_col] == idA][
+            [order_col, p.x_col, p.y_col, p.angle_col]
+        ].copy()
+        B = gseq[gseq[p.id_col] == idB][
+            [order_col, p.x_col, p.y_col, p.angle_col]
+        ].copy()
 
         if A.empty or B.empty:
             return None
@@ -264,30 +305,64 @@ class PairPositionFeatures:
 
         # Feature names (matching PairEgocentricFeatures)
         names = [
-            "A_speed", "A_v_para", "A_v_perp", "A_ang_speed",
-            "A_heading_cos", "A_heading_sin",
-            "AB_dist", "AB_dx_egoA", "AB_dy_egoA",
-            "rel_heading_cos", "rel_heading_sin",
-            "B_speed", "B_v_para", "B_v_perp", "B_ang_speed",
+            "A_speed",
+            "A_v_para",
+            "A_v_perp",
+            "A_ang_speed",
+            "A_heading_cos",
+            "A_heading_sin",
+            "AB_dist",
+            "AB_dx_egoA",
+            "AB_dy_egoA",
+            "rel_heading_cos",
+            "rel_heading_sin",
+            "B_speed",
+            "B_v_para",
+            "B_v_perp",
+            "B_ang_speed",
         ]
 
         # A→B perspective
-        AtoB = np.vstack([
-            speedA, vA_para, vA_perp, angspeedA,
-            np.cos(thA), np.sin(thA),
-            distAB, dxA, dyA,
-            rel_cos, rel_sin,
-            speedB, vB_para, vB_perp, angspeedB,
-        ]).astype(np.float32)
+        AtoB = np.vstack(
+            [
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+                np.cos(thA),
+                np.sin(thA),
+                distAB,
+                dxA,
+                dyA,
+                rel_cos,
+                rel_sin,
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+            ]
+        ).astype(np.float32)
 
         # B→A perspective (swap roles)
-        BtoA = np.vstack([
-            speedB, vB_para, vB_perp, angspeedB,
-            np.cos(thB), np.sin(thB),
-            distAB, dxB, dyB,
-            np.cos(-dth), np.sin(-dth),
-            speedA, vA_para, vA_perp, angspeedA,
-        ]).astype(np.float32)
+        BtoA = np.vstack(
+            [
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+                np.cos(thB),
+                np.sin(thB),
+                distAB,
+                dxB,
+                dyB,
+                np.cos(-dth),
+                np.sin(-dth),
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+            ]
+        ).astype(np.float32)
 
         return frames, AtoB, BtoA, names
 
@@ -311,9 +386,7 @@ class PairPositionFeatures:
 
         # Interpolate
         g[data_cols] = g[data_cols].interpolate(
-            method="linear",
-            limit=p.linear_interp_limit,
-            limit_direction="both"
+            method="linear", limit=p.linear_interp_limit, limit_direction="both"
         )
 
         # Edge fill

@@ -6,32 +6,37 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from pathlib import Path
 import gc
 import sys
+from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-
+from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
-
 from sklearn.preprocessing import StandardScaler
 
-from openTSNE import TSNEEmbedding, affinity, initialization
+from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
 
-from mosaic.core.dataset import register_feature
 from ._param_bases import (
-    FeatureParams, FeatureRef, ArtifactSpec, NpzLoadSpec, InputSpec,
+    ArtifactSpec,
+    FeatureParams,
+    FeatureRef,
+    InputSpec,
+    NpzLoadSpec,
 )
 from .helpers import (
-    StreamingFeatureHelper, _load_array_from_spec,
-    _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
-    _get_feature_run_root, _build_index_row,
+    StreamingFeatureHelper,
+    _build_index_row,
+    _build_sequence_lookup,
+    _get_feature_run_root,
+    _load_array_from_spec,
+    _parse_scope_filter,
+    _resolve_sequence_identity,
 )
-from mosaic.core.dataset import _resolve_inputs, _dataset_base_dir
-from mosaic.core.helpers import to_safe_name
 
 
 class _FaissKNNIndex:
@@ -55,7 +60,9 @@ class _FaissKNNIndex:
 
     VALID_METRICS = ["euclidean"]
 
-    def __init__(self, data: np.ndarray, k: int, use_gpu: bool = False, **kwargs: object) -> None:
+    def __init__(
+        self, data: np.ndarray, k: int, use_gpu: bool = False, **kwargs: object
+    ) -> None:
         self.data = np.ascontiguousarray(data, dtype=np.float32)
         self.k = k
         self.n_samples = data.shape[0]
@@ -65,7 +72,9 @@ class _FaissKNNIndex:
     @staticmethod
     def check_metric(metric: str) -> str:
         if metric != "euclidean":
-            raise ValueError(f"_FaissKNNIndex only supports euclidean metric, got {metric!r}")
+            raise ValueError(
+                f"_FaissKNNIndex only supports euclidean metric, got {metric!r}"
+            )
         return metric
 
     def build(self) -> tuple[np.ndarray, np.ndarray]:
@@ -96,6 +105,7 @@ class _FaissKNNIndex:
         return idx.astype(np.int64), np.sqrt(np.maximum(sq_dist, 0)).astype(np.float64)
 
 
+@final
 @register_feature
 class GlobalTSNE:
     """
@@ -113,6 +123,7 @@ class GlobalTSNE:
 
     Heavy work happens in fit(); transform() returns a tiny stub DF.
     """
+
     name: str = "global-tsne"
     version: str = "0.2"
     output_type: str = "global"
@@ -142,18 +153,20 @@ class GlobalTSNE:
             map_chunk: Chunk size for streaming. Default 50000.
         """
 
-        inputs: list[InputSpec] = Field(default_factory=lambda: [
-            InputSpec(
-                feature="pair-wavelet",
-                pattern="wavelet_social_seq=*persp=*.npz",
-                load=NpzLoadSpec(key="spectrogram", transpose=True),
-            ),
-            InputSpec(
-                feature="pair-egocentric-wavelet",
-                pattern="wavelet_ego_seq=*persp=*.npz",
-                load=NpzLoadSpec(key="spectrogram", transpose=True),
-            ),
-        ])
+        inputs: list[InputSpec] = Field(
+            default_factory=lambda: [
+                InputSpec(
+                    feature="pair-wavelet",
+                    pattern="wavelet_social_seq=*persp=*.npz",
+                    load=NpzLoadSpec(key="spectrogram", transpose=True),
+                ),
+                InputSpec(
+                    feature="pair-egocentric-wavelet",
+                    pattern="wavelet_ego_seq=*persp=*.npz",
+                    load=NpzLoadSpec(key="spectrogram", transpose=True),
+                ),
+            ]
+        )
         inputset: str | None = None
         map_existing_inputs: bool = False
         reuse_embedding: FeatureRef | None = None
@@ -207,23 +220,41 @@ class GlobalTSNE:
 
     # --- Feature protocol ---
 
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return False
-    def partial_fit(self, X: pd.DataFrame) -> None: raise NotImplementedError
-    def loads_own_data(self) -> bool: return True
+    def needs_fit(self) -> bool:
+        return True
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def loads_own_data(self) -> bool:
+        return True
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         if self._ds is None:
-            raise RuntimeError("GlobalTSNE requires dataset binding. Ensure Dataset.run_feature calls bind_dataset().")
+            raise RuntimeError(
+                "GlobalTSNE requires dataset binding. Ensure Dataset.run_feature calls bind_dataset()."
+            )
         self._artifacts = {}
         self._additional_index_rows = []
 
         # 0) Gather inputs from feature indexes
         inputset_name = self.params.inputset
-        explicit_inputs = self.params.inputs if (self._inputs_overridden or not inputset_name) else None
+        explicit_inputs = (
+            self.params.inputs
+            if (self._inputs_overridden or not inputset_name)
+            else None
+        )
         inputs, inputs_meta = _resolve_inputs(
-            self._ds, explicit_inputs, inputset_name,
-            explicit_override=self._inputs_overridden
+            self._ds,
+            explicit_inputs,
+            inputset_name,
+            explicit_override=self._inputs_overridden,
         )
         self._resolved_inputs = inputs
         self._inputs_meta = inputs_meta
@@ -232,11 +263,17 @@ class GlobalTSNE:
         helper = StreamingFeatureHelper(self._ds, "global-tsne")
         if inputs_meta.get("pair_filter"):
             helper.set_pair_filter(inputs_meta["pair_filter"])
-        scope_filter = {"safe_sequences": self._allowed_safe_sequences} if self._allowed_safe_sequences else None
+        scope_filter = (
+            {"safe_sequences": self._allowed_safe_sequences}
+            if self._allowed_safe_sequences
+            else None
+        )
         key_file_manifest = helper.build_manifest(inputs, scope_filter=scope_filter)
 
         if not key_file_manifest:
-            raise RuntimeError("GlobalTSNE found no usable inputs from the specified prior features.")
+            raise RuntimeError(
+                "GlobalTSNE found no usable inputs from the specified prior features."
+            )
 
         keys = list(key_file_manifest.keys())
 
@@ -260,7 +297,9 @@ class GlobalTSNE:
         template_samples = []
 
         for ki, key in enumerate(keys):
-            X, _ = helper.load_key_data(key_file_manifest[key], extract_frames=False, key=key)
+            X, _ = helper.load_key_data(
+                key_file_manifest[key], extract_frames=False, key=key
+            )
             if X is None or X.shape[0] == 0:
                 continue
 
@@ -297,11 +336,11 @@ class GlobalTSNE:
         del template_samples
 
         sel = [int(self._rng.integers(0, X_pre.shape[0]))]
-        d2 = np.sum((X_pre - X_pre[sel[0]])**2, axis=1)
+        d2 = np.sum((X_pre - X_pre[sel[0]]) ** 2, axis=1)
         while len(sel) < min(T_target, X_pre.shape[0]):
             i = int(np.argmax(d2))
             sel.append(i)
-            d2 = np.minimum(d2, np.sum((X_pre - X_pre[i])**2, axis=1))
+            d2 = np.minimum(d2, np.sum((X_pre - X_pre[i]) ** 2, axis=1))
         templates = X_pre[np.array(sel)]
         del X_pre, d2
 
@@ -328,12 +367,15 @@ class GlobalTSNE:
             )
         init = initialization.pca(templates, random_state=self.params.random_state)
         emb = TSNEEmbedding(
-            init, aff,
+            init,
+            aff,
             negative_gradient_method="fft",
             n_jobs=self.params.n_jobs,
             random_state=self.params.random_state,
         )
-        emb.optimize(n_iter=250, exaggeration=12, momentum=0.5, inplace=True, verbose=False)
+        emb.optimize(
+            n_iter=250, exaggeration=12, momentum=0.5, inplace=True, verbose=False
+        )
         emb.optimize(n_iter=750, momentum=0.8, inplace=True, verbose=False)
         self._embedding = emb
 
@@ -347,7 +389,7 @@ class GlobalTSNE:
         self._artifacts["mapped_coords"] = mapped if self._run_root is None else {}
         self._artifacts["inputs_meta"] = inputs_meta
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # Just a stub so Dataset.run_feature can index a parquet per (group,sequence)
         return pd.DataFrame({"global_tsne_done": [True]})
 
@@ -358,13 +400,18 @@ class GlobalTSNE:
         # Save templates
         templates = self._artifacts.get("templates")
         if templates is not None:
-            np.savez_compressed(run_root / "global_templates_features.npz", templates=templates)
+            np.savez_compressed(
+                run_root / "global_templates_features.npz", templates=templates
+            )
 
         # Save tsne coords of templates + selection indices
         if self._embedding is not None:
             Y_templates = np.asarray(self._embedding)
-            np.savez_compressed(run_root / "global_tsne_templates.npz",
-                                Y=Y_templates, sel=self._artifacts.get("template_indices", np.array([], int)))
+            np.savez_compressed(
+                run_root / "global_tsne_templates.npz",
+                Y=Y_templates,
+                sel=self._artifacts.get("template_indices", np.array([], int)),
+            )
 
         # Save embedding + scaler
         joblib.dump(
@@ -373,7 +420,7 @@ class GlobalTSNE:
                 "scaler": self._scaler,
                 "params": self.params.model_dump(),
             },
-            run_root / "global_opentsne_embedding.joblib"
+            run_root / "global_opentsne_embedding.joblib",
         )
 
         # Save per-key coords
@@ -394,16 +441,22 @@ class GlobalTSNE:
         feature = spec.feature
         if not feature:
             raise ValueError("reuse_embedding spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(self._ds, feature, spec.run_id)
+        resolved_run_id, run_root = _get_feature_run_root(
+            self._ds, feature, spec.run_id
+        )
         pattern = spec.pattern or "global_opentsne_embedding.joblib"
         files = sorted(run_root.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"reuse_embedding: no files matching '{pattern}' in {run_root}")
+            raise FileNotFoundError(
+                f"reuse_embedding: no files matching '{pattern}' in {run_root}"
+            )
         bundle = joblib.load(files[0])
         embedding = bundle.get("embedding")
         scaler = bundle.get("scaler")
         if embedding is None:
-            raise ValueError(f"reuse_embedding bundle missing 'embedding' object: {files[0]}")
+            raise ValueError(
+                f"reuse_embedding bundle missing 'embedding' object: {files[0]}"
+            )
         self._artifacts.setdefault("reuse_sources", {})["embedding"] = {
             "feature": feature,
             "run_id": resolved_run_id,
@@ -415,11 +468,15 @@ class GlobalTSNE:
         feature = spec.feature
         if not feature:
             raise ValueError("scaler spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(self._ds, feature, spec.run_id)
+        resolved_run_id, run_root = _get_feature_run_root(
+            self._ds, feature, spec.run_id
+        )
         pattern = spec.pattern or "global_opentsne_embedding.joblib"
         files = sorted(run_root.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"scaler spec: no files matching '{pattern}' in {run_root}")
+            raise FileNotFoundError(
+                f"scaler spec: no files matching '{pattern}' in {run_root}"
+            )
         obj = joblib.load(files[0])
         # FeatureRef doesn't have a 'key' field, so load the object directly
         scaler = obj
@@ -434,11 +491,15 @@ class GlobalTSNE:
         feature = spec.feature
         if not feature:
             raise ValueError("artifact spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(self._ds, feature, spec.run_id)
+        resolved_run_id, run_root = _get_feature_run_root(
+            self._ds, feature, spec.run_id
+        )
         pattern = spec.pattern or "global_templates_features.npz"
         files = sorted(run_root.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"artifact spec: no files matching '{pattern}' in {run_root}")
+            raise FileNotFoundError(
+                f"artifact spec: no files matching '{pattern}' in {run_root}"
+            )
         arr, _ = _load_array_from_spec(files[0], spec.load)
         if arr is None:
             return None
@@ -454,7 +515,9 @@ class GlobalTSNE:
     def _prepare_reuse_artifacts(self) -> None:
         emb_spec = self.params.reuse_embedding
         if not emb_spec:
-            raise ValueError("map_existing_inputs=True requires params['reuse_embedding'].")
+            raise ValueError(
+                "map_existing_inputs=True requires params['reuse_embedding']."
+            )
         embedding, scaler = self._load_embedding_from_spec(emb_spec)
         self._embedding = embedding
         self._scaler = scaler
@@ -462,7 +525,9 @@ class GlobalTSNE:
         if scaler_override:
             self._scaler = self._load_scaler_from_spec(scaler_override)
         if self._scaler is None:
-            raise ValueError("Reusable embedding bundle missing scaler; provide params['scaler'].")
+            raise ValueError(
+                "Reusable embedding bundle missing scaler; provide params['scaler']."
+            )
         art_spec = self.params.artifact
         if art_spec:
             templates = self._load_templates_from_spec(art_spec)
@@ -477,17 +542,29 @@ class GlobalTSNE:
         )
         return self._sequence_lookup_cache
 
-    def _append_index_row(self, safe_seq: str, out_path: Path, n_rows: int | None) -> None:
+    def _append_index_row(
+        self, safe_seq: str, out_path: Path, n_rows: int | None
+    ) -> None:
         group, sequence = _resolve_sequence_identity(
             safe_seq, self._pair_map, self._get_sequence_lookup()
         )
         self._additional_index_rows = [
-            r for r in self._additional_index_rows
-            if not (str(r.get("group", "")) == group and str(r.get("sequence", "")) == sequence)
+            r
+            for r in self._additional_index_rows
+            if not (
+                str(r.get("group", "")) == group
+                and str(r.get("sequence", "")) == sequence
+            )
         ]
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, n_rows,
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_seq,
+                group,
+                sequence,
+                out_path,
+                n_rows,
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
 
     def _persist_mapped_coords(self, safe_seq: str, Y: np.ndarray) -> None:
@@ -515,14 +592,21 @@ class GlobalTSNE:
             group, sequence = _resolve_sequence_identity(
                 safe_seq, self._pair_map, self._get_sequence_lookup()
             )
-            rows.append(_build_index_row(safe_seq, group, sequence, fp,
-                                         dataset_root=_dataset_base_dir(self._ds) if self._ds else None))
+            rows.append(
+                _build_index_row(
+                    safe_seq,
+                    group,
+                    sequence,
+                    fp,
+                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+                )
+            )
         return rows
 
     def _map_sequences_streaming(
         self,
         key_file_manifest: dict[str, list[tuple[Path, dict[str, object]]]],
-        helper: StreamingFeatureHelper
+        helper: StreamingFeatureHelper,
     ) -> dict[str, np.ndarray]:
         """Map sequences one at a time to minimize memory usage."""
         if self._embedding is None or self._scaler is None:
@@ -537,7 +621,9 @@ class GlobalTSNE:
         Lr = self.params.partial_lr
 
         def map_chunk_block(X_chunk_std: np.ndarray) -> np.ndarray:
-            part = embedding.prepare_partial(X_chunk_std, initialization="median", k=Kp, perplexity=Pp)
+            part = embedding.prepare_partial(
+                X_chunk_std, initialization="median", k=Kp, perplexity=Pp
+            )
             # Use inplace=True to avoid creating extra objects
             part.optimize(
                 n_iter=It,
@@ -553,22 +639,25 @@ class GlobalTSNE:
                 coords = coords.astype(np.float32, copy=False)
             coords = coords.copy()
             # Explicitly delete partial embedding internals to free openTSNE memory
-            if hasattr(part, 'affinities'):
+            if hasattr(part, "affinities"):
                 del part.affinities
-            if hasattr(part, '_P'):
+            if hasattr(part, "_P"):
                 del part._P
             del part
             gc.collect()
             return coords
 
         import pyarrow as pa
+
         mapped: dict[str, np.ndarray] = {}
         keys = list(key_file_manifest.keys())
         n_keys = len(keys)
 
         # Use load_key_data directly (NOT iter_sequences generator) to avoid holding extra references
         for i, key in enumerate(keys):
-            X, _ = helper.load_key_data(key_file_manifest[key], extract_frames=False, key=key)
+            X, _ = helper.load_key_data(
+                key_file_manifest[key], extract_frames=False, key=key
+            )
             if X is None or X.shape[0] == 0:
                 continue
 
@@ -582,8 +671,8 @@ class GlobalTSNE:
 
             Y_seq = np.empty((Xs.shape[0], 2), dtype=np.float32)
             for j in range(0, Xs.shape[0], CHUNK):
-                block = map_chunk_block(Xs[j:j + CHUNK])
-                Y_seq[j:j + block.shape[0], :] = block
+                block = map_chunk_block(Xs[j : j + CHUNK])
+                Y_seq[j : j + block.shape[0], :] = block
                 del block
                 # Aggressive gc every few chunks to prevent openTSNE memory buildup
                 if (j // CHUNK) % 5 == 4:
@@ -601,6 +690,8 @@ class GlobalTSNE:
             pa.default_memory_pool().release_unused()
 
             if (i + 1) % 10 == 0 or i == n_keys - 1:
-                print(f"[global-tsne] Mapped {i + 1}/{n_keys} sequences", file=sys.stderr)
+                print(
+                    f"[global-tsne] Mapped {i + 1}/{n_keys} sequences", file=sys.stderr
+                )
 
         return mapped

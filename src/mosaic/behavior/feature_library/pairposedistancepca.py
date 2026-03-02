@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, final
 
 import joblib
 import numpy as np
@@ -11,10 +11,11 @@ from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams, InterpolationMixin
-from mosaic.core.helpers import to_safe_name
 
 
+@final
 @register_feature
 class PairPoseDistancePCA:
     """
@@ -51,9 +52,14 @@ class PairPoseDistancePCA:
         self._feat_len: Optional[int] = None
 
     # ---------- Feature protocol ----------
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return True
-    def finalize_fit(self) -> None: pass
+    def needs_fit(self) -> bool:
+        return True
+
+    def supports_partial_fit(self) -> bool:
+        return True
+
+    def finalize_fit(self) -> None:
+        pass
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         for df in X_iter:
@@ -68,7 +74,9 @@ class PairPoseDistancePCA:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self._fitted:
-            raise RuntimeError("pair-posedistance-pca: not fitted yet; run fit/partial_fit first.")
+            raise RuntimeError(
+                "pair-posedistance-pca: not fitted yet; run fit/partial_fit first."
+            )
 
         pcs: List[pd.DataFrame] = []
         for Xb, meta_frames, meta_persp in self._feature_batches(df, for_fit=False):
@@ -91,7 +99,10 @@ class PairPoseDistancePCA:
             pcs.append(out)
 
         if not pcs:
-            return pd.DataFrame(columns=["perspective"] + [f"PC{i}" for i in range(self.params.n_components)])
+            return pd.DataFrame(
+                columns=["perspective"]
+                + [f"PC{i}" for i in range(self.params.n_components)]
+            )
 
         out_df = pd.concat(pcs, ignore_index=True)
         sort_keys = []
@@ -151,7 +162,9 @@ class PairPoseDistancePCA:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
-    def _clean_one_animal(self, g: pd.DataFrame, pose_cols: List[str], order_col: str) -> pd.DataFrame:
+    def _clean_one_animal(
+        self, g: pd.DataFrame, pose_cols: List[str], order_col: str
+    ) -> pd.DataFrame:
         p = self.params
         g = g.sort_values(order_col).copy()
         g = g.set_index(order_col)
@@ -169,7 +182,9 @@ class PairPoseDistancePCA:
         g = g.reset_index()
         return g
 
-    def _prep_pairs(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
+    def _prep_pairs(
+        self, df: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
         order_col = self._order_col(df)
@@ -194,10 +209,8 @@ class PairPoseDistancePCA:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(wrapped_func, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            wrapped_func, include_groups=False
         )
 
         pairs: List[Tuple[Any, Any, Any]] = []
@@ -209,7 +222,9 @@ class PairPoseDistancePCA:
                 pairs.append((seq, idA, idB))
 
         if not pairs:
-            raise ValueError("[pair-posedistance-pca] No sequence with at least two IDs found.")
+            raise ValueError(
+                "[pair-posedistance-pca] No sequence with at least two IDs found."
+            )
 
         if self._tri_i is None or self._tri_j is None or self._feat_len is None:
             N = self._effective_pose_n()
@@ -236,9 +251,13 @@ class PairPoseDistancePCA:
             parts.append(self._intra_lower_tri(B))
         if self.params.include_inter:
             parts.append(self._inter_all(A, B))
-        return np.concatenate(parts, axis=0) if parts else np.empty((0,), dtype=np.float32)
+        return (
+            np.concatenate(parts, axis=0) if parts else np.empty((0,), dtype=np.float32)
+        )
 
-    def _feature_batches(self, df: pd.DataFrame, for_fit: bool) -> Iterable[Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
+    def _feature_batches(
+        self, df: pd.DataFrame, for_fit: bool
+    ) -> Iterable[Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
         order_col = self._order_col(df)
@@ -251,7 +270,8 @@ class PairPoseDistancePCA:
             gseq = df_small[df_small[self.params.seq_col] == seq]
             A = gseq[gseq[self.params.id_col] == idA][[order_col] + pose_cols].copy()
             B = gseq[gseq[self.params.id_col] == idB][[order_col] + pose_cols].copy()
-            A = A.sort_values(order_col); B = B.sort_values(order_col)
+            A = A.sort_values(order_col)
+            B = B.sort_values(order_col)
             AB = A.merge(B, on=order_col, suffixes=("_A", "_B"))
             if AB.empty:
                 continue
@@ -276,25 +296,32 @@ class PairPoseDistancePCA:
                     feats2 = [self._build_pair_feat(b, a) for a, b in zip(XA, XB)]
                     X2 = np.vstack(feats2).astype(np.float32, copy=False)
                     X = np.vstack([X, X2])
-                    persp = np.concatenate([persp, np.ones(X2.shape[0], dtype=np.int8)], axis=0)
+                    persp = np.concatenate(
+                        [persp, np.ones(X2.shape[0], dtype=np.int8)], axis=0
+                    )
                     if "frame" in frames_meta:
-                        frames_meta["frame"] = np.concatenate([frames_meta["frame"], frames_meta["frame"]], axis=0)
+                        frames_meta["frame"] = np.concatenate(
+                            [frames_meta["frame"], frames_meta["frame"]], axis=0
+                        )
 
                 if self._feat_len is not None and X.shape[1] != self._feat_len:
-                    raise ValueError(f"Feature length mismatch: got {X.shape[1]}, expected {self._feat_len}")
+                    raise ValueError(
+                        f"Feature length mismatch: got {X.shape[1]}, expected {self._feat_len}"
+                    )
 
                 yield X, frames_meta, persp
 
     def _pose_to_points(self, row_vals: np.ndarray) -> np.ndarray:
         N = self._effective_pose_n()
-        xs = row_vals[:N]; ys = row_vals[N:]
+        xs = row_vals[:N]
+        ys = row_vals[N:]
         return np.stack([xs, ys], axis=1)
 
     def _intra_lower_tri(self, pts: np.ndarray) -> np.ndarray:
         dif = pts[self._tri_i] - pts[self._tri_j]
-        return np.sqrt((dif ** 2).sum(axis=1))
+        return np.sqrt((dif**2).sum(axis=1))
 
     def _inter_all(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         dif = A[:, None, :] - B[None, :, :]
-        d = np.sqrt((dif ** 2).sum(axis=2))
+        d = np.sqrt((dif**2).sum(axis=2))
         return d.ravel()

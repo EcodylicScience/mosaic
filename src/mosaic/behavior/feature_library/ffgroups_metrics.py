@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
+
 from ._param_bases import FeatureParams, PositionColumnsMixin
+
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
     return (x + np.pi) % (2 * np.pi) - np.pi
@@ -17,6 +20,7 @@ def _mean_angle(angles: np.ndarray) -> float:
     return float(np.arctan2(np.nanmean(np.sin(angles)), np.nanmean(np.cos(angles))))
 
 
+@final
 @register_feature
 class FFGroupsMetrics:
     """
@@ -96,11 +100,13 @@ class FFGroupsMetrics:
             raise ValueError(f"Missing required columns for FFGroupsMetrics: {missing}")
 
         # Split into chunks (default: whole sequence)
-        chunks = list(chunk_sequence(
-            df,
-            time_chunk_sec=p.time_chunk_sec,
-            frame_chunk=p.frame_chunk,
-        ))  
+        chunks = list(
+            chunk_sequence(
+                df,
+                time_chunk_sec=p.time_chunk_sec,
+                frame_chunk=p.frame_chunk,
+            )
+        )
         summaries = []
         for chunk_id, chunk_df, meta in chunks:
             # Group per frame within group_col if present
@@ -131,7 +137,9 @@ class FFGroupsMetrics:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
-    def _compute_per_frame(self, df: pd.DataFrame, p: Params, group_keys: list) -> pd.DataFrame:
+    def _compute_per_frame(
+        self, df: pd.DataFrame, p: Params, group_keys: list
+    ) -> pd.DataFrame:
         # Vectorized per-group computations to avoid slow Python loops.
         grouped = df.groupby(group_keys, sort=False)
         agg_dict = {
@@ -160,18 +168,23 @@ class FFGroupsMetrics:
             else:
                 flat_cols.append(col)
         stats.columns = flat_cols
-        stats = stats.rename(columns={
-            p.x_col: "_cx",
-            p.y_col: "_cy",
-            p.speed_col: "_mean_speed",
-        })
+        stats = stats.rename(
+            columns={
+                p.x_col: "_cx",
+                p.y_col: "_cy",
+                p.speed_col: "_mean_speed",
+            }
+        )
 
         df = df.merge(stats, on=group_keys, how="left")
 
         dx = df[p.x_col].to_numpy(dtype=float) - df["_cx"].to_numpy(dtype=float)
         dy = df[p.y_col].to_numpy(dtype=float) - df["_cy"].to_numpy(dtype=float)
         if p.centroid_heading_col in df.columns:
-            chead = np.arctan2(df["_sin_mean"].to_numpy(dtype=float), df["_cos_mean"].to_numpy(dtype=float))
+            chead = np.arctan2(
+                df["_sin_mean"].to_numpy(dtype=float),
+                df["_cos_mean"].to_numpy(dtype=float),
+            )
         else:
             chead = 0.0
         ct, st = np.cos(-chead), np.sin(-chead)
@@ -193,15 +206,17 @@ class FFGroupsMetrics:
         total_frames = df.groupby(id_col)[frame_key].count()
 
         # fractime_norm2: fraction of frames in each group_size (computed as count of frames sharing group in frame)
-        if "group_size" in df.columns:
-            gsize = df["group_size"]
-        else:
+        if "group_size" not in df.columns:
             # infer group_size per frame group
             df["group_size"] = df.groupby(frame_key)[id_col].transform("count")
-            gsize = df["group_size"]
 
         frame_counts = df.groupby([id_col, "group_size"])[frame_key].count()
-        fractime_norm2 = (frame_counts / total_frames.reindex(frame_counts.index.get_level_values(id_col)).to_numpy())
+        fractime_norm2 = (
+            frame_counts
+            / total_frames.reindex(
+                frame_counts.index.get_level_values(id_col)
+            ).to_numpy()
+        )
         fractime_norm2 = fractime_norm2.reset_index(name="fractime_norm2")
 
         # durations of contiguous group_size runs per fish
@@ -222,21 +237,29 @@ class FFGroupsMetrics:
         if durations.empty:
             durations["avg_duration_frame"] = []
             durations["med_duration_frame"] = []
-        agg_dur = durations.groupby([id_col, "group_size"])["duration"].agg(
-            avg_duration_frame="mean", med_duration_frame="median"
-        ).reset_index()
+        agg_dur = (
+            durations.groupby([id_col, "group_size"])["duration"]
+            .agg(avg_duration_frame="mean", med_duration_frame="median")
+            .reset_index()
+        )
 
         # periphery time: rank by distance, count frames where farthest
         rank_groups = [frame_key]
         if p.group_col in df.columns:
             rank_groups.insert(0, p.group_col)
-        df["rank_centroid_distance"] = df.groupby(rank_groups)["distance_from_centroid"].rank(
-            ascending=True, method="max"
-        )
+        df["rank_centroid_distance"] = df.groupby(rank_groups)[
+            "distance_from_centroid"
+        ].rank(ascending=True, method="max")
         farthest = df["rank_centroid_distance"] == df["group_size"]
-        ftime_counts = df.loc[farthest].groupby([id_col, "group_size"])[frame_key].count()
+        ftime_counts = (
+            df.loc[farthest].groupby([id_col, "group_size"])[frame_key].count()
+        )
         # Normalize by frames spent in that group_size; fill missing combos with 0
-        ftime_periphery = (ftime_counts / frame_counts).reindex(frame_counts.index, fill_value=0).reset_index()
+        ftime_periphery = (
+            (ftime_counts / frame_counts)
+            .reindex(frame_counts.index, fill_value=0)
+            .reset_index()
+        )
         ftime_periphery = ftime_periphery.rename(columns={frame_key: "ftime_periphery"})
 
         ftime_periphery_norm_counts = (

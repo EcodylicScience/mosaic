@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams, PositionColumnsMixin
 
 
@@ -24,6 +27,7 @@ def _angular_diff(arr: np.ndarray, step: int) -> np.ndarray:
     return raw
 
 
+@final
 @register_feature
 class SpeedAngvel:
     """
@@ -120,14 +124,18 @@ class SpeedAngvel:
         dt[dt == 0] = np.nan
         return dt
 
-    def _compute_speed(self, x: np.ndarray, y: np.ndarray, step: int, time_arr: Optional[np.ndarray]) -> np.ndarray:
+    def _compute_speed(
+        self, x: np.ndarray, y: np.ndarray, step: int, time_arr: Optional[np.ndarray]
+    ) -> np.ndarray:
         dx = _diff_with_step(x, step)
         dy = _diff_with_step(y, step)
-        dist = np.sqrt(dx ** 2 + dy ** 2)
+        dist = np.sqrt(dx**2 + dy**2)
         dt = self._dt(step, time_arr, len(x))
         return dist / dt
 
-    def _compute_angvel(self, angle: np.ndarray, step: int, time_arr: Optional[np.ndarray]) -> np.ndarray:
+    def _compute_angvel(
+        self, angle: np.ndarray, step: int, time_arr: Optional[np.ndarray]
+    ) -> np.ndarray:
         dtheta = _angular_diff(angle, step)
         dt = self._dt(step, time_arr, len(angle))
         return dtheta / dt
@@ -136,21 +144,33 @@ class SpeedAngvel:
         sub = sub.sort_values(order_col).reset_index(drop=True)
         x = sub[p.x_col].to_numpy(dtype=float)
         y = sub[p.y_col].to_numpy(dtype=float)
-        angle = sub[p.angle_col].to_numpy(dtype=float) if p.angle_col in sub.columns else None
-        time_arr = sub[p.time_col].to_numpy(dtype=float) if p.time_col in sub.columns else None
+        angle = (
+            sub[p.angle_col].to_numpy(dtype=float)
+            if p.angle_col in sub.columns
+            else None
+        )
+        time_arr = (
+            sub[p.time_col].to_numpy(dtype=float) if p.time_col in sub.columns else None
+        )
 
-        out = pd.DataFrame({
-            "speed": self._compute_speed(x, y, step=1, time_arr=time_arr),
-        })
+        out = pd.DataFrame(
+            {
+                "speed": self._compute_speed(x, y, step=1, time_arr=time_arr),
+            }
+        )
         if angle is not None:
             out["angvel"] = self._compute_angvel(angle, step=1, time_arr=time_arr)
 
         step_size = p.step_size
         if step_size:
             step_size = int(step_size)
-            out["speed_step"] = self._compute_speed(x, y, step=step_size, time_arr=time_arr)
+            out["speed_step"] = self._compute_speed(
+                x, y, step=step_size, time_arr=time_arr
+            )
             if angle is not None:
-                out["angvel_step"] = self._compute_angvel(angle, step=step_size, time_arr=time_arr)
+                out["angvel_step"] = self._compute_angvel(
+                    angle, step=step_size, time_arr=time_arr
+                )
 
         # Attach meta columns from this sub-id
         for c in ("frame", "time", p.seq_col, p.group_col, p.id_col):

@@ -5,7 +5,9 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
-from typing import Iterable, List, Tuple
+
+from pathlib import Path
+from typing import Iterable, List, final
 
 import numpy as np
 import pandas as pd
@@ -13,14 +15,17 @@ from pydantic import Field
 
 try:
     import pywt
+
     _PYWT_OK = True
 except Exception:
     _PYWT_OK = False
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams
 
 
+@final
 @register_feature
 class PairWavelet:
     """
@@ -62,20 +67,35 @@ class PairWavelet:
         if cols_param:
             cols = [c for c in cols_param if c in df.columns]
             if not cols:
-                raise ValueError("[pair-wavelet] None of the requested 'cols' are present in df.")
+                raise ValueError(
+                    "[pair-wavelet] None of the requested 'cols' are present in df."
+                )
             return cols
         # 2) PC-prefixed columns
         pc_cols = self._pc_columns(df, self.params.pc_prefix)
         if pc_cols:
             return pc_cols
         # 3) Auto-detect: all numeric columns except known meta
-        meta_like = {self.params.seq_col,
-                     self.params.group_col,
-                     "frame", "time", "perspective", "id", "fps",
-                     "id1", "id2"}
-        num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in meta_like]
+        meta_like = {
+            self.params.seq_col,
+            self.params.group_col,
+            "frame",
+            "time",
+            "perspective",
+            "id",
+            "fps",
+            "id1",
+            "id2",
+        }
+        num_cols = [
+            c
+            for c in df.select_dtypes(include=[np.number]).columns
+            if c not in meta_like
+        ]
         if not num_cols:
-            raise ValueError("[pair-wavelet] Could not auto-detect numeric feature columns.")
+            raise ValueError(
+                "[pair-wavelet] Could not auto-detect numeric feature columns."
+            )
         return num_cols
 
     def __init__(self, params: dict[str, object] | None = None):
@@ -91,11 +111,26 @@ class PairWavelet:
         self._central_f = None
 
     # ---- feature protocol ----
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def finalize_fit(self) -> None: pass
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: return
-    def partial_fit(self, df: pd.DataFrame) -> None: return
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
+        return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        return
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
@@ -117,7 +152,9 @@ class PairWavelet:
             if has_pair_ids:
                 cur_id1, cur_id2, persp = group_vals
             else:
-                persp = group_vals if not isinstance(group_vals, tuple) else group_vals[0]
+                persp = (
+                    group_vals if not isinstance(group_vals, tuple) else group_vals[0]
+                )
                 cur_id1 = cur_id2 = None
 
             g = g.sort_values(order_col)
@@ -178,11 +215,17 @@ class PairWavelet:
 
         # Attach JSON-serializable metadata only (so parquet writers won't error)
         try:
-            out.attrs["frequencies_hz"] = self._frequencies.tolist() if self._frequencies is not None else []
-            out.attrs["scales"] = self._scales.tolist() if self._scales is not None else []
+            out.attrs["frequencies_hz"] = (
+                self._frequencies.tolist() if self._frequencies is not None else []
+            )
+            out.attrs["scales"] = (
+                self._scales.tolist() if self._scales is not None else []
+            )
             out.attrs["wavelet"] = str(self.params.wavelet)
             out.attrs["fps"] = float(fps)
-            out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(self.params.pc_prefix)]
+            out.attrs["pc_cols"] = [
+                c for c in in_cols if c.startswith(self.params.pc_prefix)
+            ]
             out.attrs["input_columns"] = list(map(str, in_cols))
         except Exception:
             # As a safety net, drop attrs if anything is not serializable
@@ -220,8 +263,13 @@ class PairWavelet:
         return pc_cols
 
     def _prepare_band(self, fps: float) -> None:
-        key = (self.params.wavelet, self.params.f_min,
-               self.params.f_max, self.params.n_freq, float(fps))
+        key = (
+            self.params.wavelet,
+            self.params.f_min,
+            self.params.f_max,
+            self.params.n_freq,
+            float(fps),
+        )
         if self._cache_key == key and self._frequencies is not None:
             return
         f_min = self.params.f_min

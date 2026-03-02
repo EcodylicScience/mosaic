@@ -5,19 +5,27 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
+
 from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import register_feature
-from mosaic.core.dataset import _latest_feature_run_root, _feature_index_path, _feature_run_root
+from mosaic.core.dataset import (
+    _feature_index_path,
+    _latest_feature_run_root,
+    register_feature,
+)
 from mosaic.core.helpers import to_safe_name
+
 from ._param_bases import FeatureParams
 from .helpers import _pose_column_pairs
 
 
+@final
 @register_feature
 class OrientationRelativeFeature:
     """
@@ -47,6 +55,7 @@ class OrientationRelativeFeature:
             quantiles: Distance distribution quantiles to compute.
                 Default [0.25, 0.5, 0.75].
         """
+
         scale_feature: str = "body-scale"
         scale_run_id: str | None = None
         nearest_k: int = Field(default=3, ge=1)
@@ -97,21 +106,43 @@ class OrientationRelativeFeature:
             except Exception:
                 continue
 
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def fit(self, X: Iterable[pd.DataFrame]):
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]):
         return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame()
-        if "frame" not in df.columns or "id" not in df.columns or "angle" not in df.columns:
+        if (
+            "frame" not in df.columns
+            or "id" not in df.columns
+            or "angle" not in df.columns
+        ):
             return pd.DataFrame()
         pose_pairs = _pose_column_pairs(df.columns)
         if not pose_pairs:
             return pd.DataFrame()
         group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
-        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        sequence = (
+            str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        )
         seq_safe = to_safe_name(sequence)
         global_scale = self._scale_lookup.get(seq_safe, None)
         quantiles = self.params.quantiles
@@ -168,14 +199,14 @@ class OrientationRelativeFeature:
                     rel_centroid = (rot @ (centroid_B - centroid_A)) / scale
                     dtheta = self._wrap_angle(angle_B - angle_A)
 
-                    dists = np.sqrt((rel ** 2).sum(axis=1))
+                    dists = np.sqrt((rel**2).sum(axis=1))
                     if dists.size == 0:
                         continue
                     q_vals = np.quantile(dists, quantiles).tolist() if quantiles else []
                     dmin = float(np.min(dists))
                     dmax = float(np.max(dists))
                     dmed = float(np.median(dists))
-                    d_near = np.sort(dists)[:max(0, nearest_k)].tolist()
+                    d_near = np.sort(dists)[: max(0, nearest_k)].tolist()
                     d_near += [np.nan] * (max(0, nearest_k) - len(d_near))
 
                     x_vals = rel[:, 0]
@@ -194,7 +225,7 @@ class OrientationRelativeFeature:
                         "dist_max": dmax,
                     }
                     for idx, qv in enumerate(q_vals):
-                        feats[f"dist_q{int(quantiles[idx]*100):02d}"] = float(qv)
+                        feats[f"dist_q{int(quantiles[idx] * 100):02d}"] = float(qv)
                     feats["x_min"] = float(np.nanmin(x_vals))
                     feats["x_median"] = float(np.nanmedian(x_vals))
                     feats["x_max"] = float(np.nanmax(x_vals))

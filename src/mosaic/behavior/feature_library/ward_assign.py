@@ -6,33 +6,41 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from pathlib import Path
-import sys
+from typing import final
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-
 from pydantic import Field
-
+from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from scipy.cluster.hierarchy import fcluster
+from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
+from mosaic.core.helpers import to_safe_name
 
-from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
 from ._param_bases import (
-    FeatureParams, FeatureRef, ArtifactSpec, NpzLoadSpec, InputSpec,
+    ArtifactSpec,
+    FeatureParams,
+    FeatureRef,
+    InputSpec,
+    NpzLoadSpec,
 )
 from .helpers import (
     StreamingFeatureHelper,
-    _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
-    _get_feature_run_root, _load_joblib_artifact, _load_artifact_matrix,
     _build_index_row,
+    _build_sequence_lookup,
+    _get_feature_run_root,
+    _load_artifact_matrix,
+    _load_joblib_artifact,
+    _parse_scope_filter,
+    _resolve_sequence_identity,
 )
-from mosaic.core.helpers import to_safe_name
 
 
+@final
 @register_feature
 class WardAssignClustering:
     """
@@ -75,15 +83,19 @@ class WardAssignClustering:
             recalc: Force recomputation. Default False.
         """
 
-        ward_model: FeatureRef = Field(default_factory=lambda: FeatureRef(
-            feature="global-ward__from__global-tsne",
-            pattern="model.joblib",
-        ))
-        artifact: ArtifactSpec = Field(default_factory=lambda: ArtifactSpec(
-            feature="global-tsne",
-            pattern="global_templates_features.npz",
-            load=NpzLoadSpec(key="templates"),
-        ))
+        ward_model: FeatureRef = Field(
+            default_factory=lambda: FeatureRef(
+                feature="global-ward__from__global-tsne",
+                pattern="model.joblib",
+            )
+        )
+        artifact: ArtifactSpec = Field(
+            default_factory=lambda: ArtifactSpec(
+                feature="global-tsne",
+                pattern="global_templates_features.npz",
+                load=NpzLoadSpec(key="templates"),
+            )
+        )
         scaler: FeatureRef | None = None
         inputs: list[InputSpec] = Field(default_factory=list)
         inputset: str | None = None
@@ -94,7 +106,9 @@ class WardAssignClustering:
         self.params = self.Params.from_overrides(params)
         self._inputs_overridden = self.params.inputs != self.Params().inputs
 
-        self.storage_feature_name = f"ward-assign__from__{self.params.ward_model.feature}"
+        self.storage_feature_name = (
+            f"ward-assign__from__{self.params.ward_model.feature}"
+        )
         self.storage_use_input_suffix = False
         self.skip_existing_outputs = False
 
@@ -126,10 +140,23 @@ class WardAssignClustering:
         self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
         self._sequence_lookup_cache = None
 
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return False
-    def loads_own_data(self) -> bool: return True
-    def partial_fit(self, X: pd.DataFrame) -> None: raise NotImplementedError
+    def needs_fit(self) -> bool:
+        return True
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
+        return True
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     # --- helpers ---
 
@@ -151,10 +178,15 @@ class WardAssignClustering:
         entity_level: str = "global",
     ) -> None:
         if self._run_root is None:
-            print(f"[ward-assign] WARN: _run_root not set, labels for {safe_seq} not written", file=sys.stderr)
+            print(
+                f"[ward-assign] WARN: _run_root not set, labels for {safe_seq} not written",
+                file=sys.stderr,
+            )
             return
         labels_arr = np.asarray(labels, dtype=np.int32).ravel()
-        frame_arr = None if frames is None else np.asarray(frames, dtype=np.int64).ravel()
+        frame_arr = (
+            None if frames is None else np.asarray(frames, dtype=np.int64).ravel()
+        )
         if frame_arr is None or len(frame_arr) != len(labels_arr):
             frame_arr = np.arange(len(labels_arr), dtype=np.int64)
         if id1_vals is None or len(id1_vals) != len(labels_arr):
@@ -180,33 +212,49 @@ class WardAssignClustering:
         safe_group = to_safe_name(group) if group else ""
         out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
         out_path = self._run_root / out_name
-        df_out = pd.DataFrame({
-            "frame": frame_arr.astype(np.int64, copy=False),
-            "cluster": labels_arr,
-            "id1": pd.array(id1_vals, dtype="Int64"),
-            "id2": pd.array(id2_vals, dtype="Int64"),
-            "entity_level": np.full(len(labels_arr), str(entity_level or "global"), dtype=object),
-            "sequence": sequence,
-            "group": group,
-        })
+        df_out = pd.DataFrame(
+            {
+                "frame": frame_arr.astype(np.int64, copy=False),
+                "cluster": labels_arr,
+                "id1": pd.array(id1_vals, dtype="Int64"),
+                "id2": pd.array(id2_vals, dtype="Int64"),
+                "entity_level": np.full(
+                    len(labels_arr), str(entity_level or "global"), dtype=object
+                ),
+                "sequence": sequence,
+                "group": group,
+            }
+        )
         df_out.to_parquet(out_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_seq,
+                group,
+                sequence,
+                out_path,
+                int(len(df_out)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
         self._processed_sequences.add(safe_seq)
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         import gc
+
         import pyarrow as pa
+
         if self._ds is None:
-            raise RuntimeError("[ward-assign] Dataset not bound. Use dataset.run_feature(...).")
+            raise RuntimeError(
+                "[ward-assign] Dataset not bound. Use dataset.run_feature(...)."
+            )
         self._processed_sequences = set()
         self._additional_index_rows = []
 
         inputs = self.params.inputs
         inputset_name = self.params.inputset
-        explicit_inputs = inputs if (self._inputs_overridden or not inputset_name) else None
+        explicit_inputs = (
+            inputs if (self._inputs_overridden or not inputset_name) else None
+        )
         self._inputs, self._inputs_meta = _resolve_inputs(
             self._ds,
             explicit_inputs,
@@ -216,11 +264,15 @@ class WardAssignClustering:
 
         # Load Ward linkage
         ward_spec = self.params.ward_model
-        _, ward_root = _get_feature_run_root(self._ds, ward_spec.feature, ward_spec.run_id)
+        _, ward_root = _get_feature_run_root(
+            self._ds, ward_spec.feature, ward_spec.run_id
+        )
         pattern = ward_spec.pattern
         files = sorted(ward_root.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"[ward-assign] No Ward model '{pattern}' in {ward_root}")
+            raise FileNotFoundError(
+                f"[ward-assign] No Ward model '{pattern}' in {ward_root}"
+            )
         bundle = joblib.load(files[0])
         self._Z = bundle.get("linkage_matrix")
         if self._Z is None:
@@ -249,13 +301,19 @@ class WardAssignClustering:
 
         # optional scaler
         scaler_spec = self.params.scaler
-        self._scaler = _load_joblib_artifact(self._ds, scaler_spec) if scaler_spec else None
+        self._scaler = (
+            _load_joblib_artifact(self._ds, scaler_spec) if scaler_spec else None
+        )
 
         # Use StreamingFeatureHelper for manifest building and data loading
         helper = StreamingFeatureHelper(self._ds, "ward-assign")
         if self._inputs_meta.get("pair_filter"):
             helper.set_pair_filter(self._inputs_meta["pair_filter"])
-        scope_filter = {"safe_sequences": self._allowed_safe_sequences} if self._allowed_safe_sequences else None
+        scope_filter = (
+            {"safe_sequences": self._allowed_safe_sequences}
+            if self._allowed_safe_sequences
+            else None
+        )
         manifest = helper.build_manifest(self._inputs, scope_filter=scope_filter)
         if not manifest:
             raise RuntimeError("[ward-assign] No usable inputs found for assignment.")
@@ -264,10 +322,12 @@ class WardAssignClustering:
         keys = list(manifest.keys())
         n_keys = len(keys)
         for i, safe_seq in enumerate(keys):
-            X_full, frames, id1_vals, id2_vals, entity_level = helper.load_key_data_with_identity(
-                manifest[safe_seq],
-                extract_frames=True,
-                key=safe_seq,
+            X_full, frames, id1_vals, id2_vals, entity_level = (
+                helper.load_key_data_with_identity(
+                    manifest[safe_seq],
+                    extract_frames=True,
+                    key=safe_seq,
+                )
             )
             if X_full is None:
                 continue
@@ -297,7 +357,10 @@ class WardAssignClustering:
             pa.default_memory_pool().release_unused()
 
             if (i + 1) % 10 == 0 or i == n_keys - 1:
-                print(f"[ward-assign] Processed {i + 1}/{n_keys} sequences", file=sys.stderr)
+                print(
+                    f"[ward-assign] Processed {i + 1}/{n_keys} sequences",
+                    file=sys.stderr,
+                )
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # Outputs are generated during fit(); transform is intentionally skipped.
@@ -312,15 +375,24 @@ class WardAssignClustering:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_marker_seq, "", marker_seq, marker_path, int(len(marker_df)),
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_marker_seq,
+                "",
+                marker_seq,
+                marker_path,
+                int(len(marker_df)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
 
         # Labels are already written to disk during fit(); just save model params
-        joblib.dump({
-            "params": self.params.model_dump(),
-            "processed_sequences": list(self._processed_sequences),
-        }, path)
+        joblib.dump(
+            {
+                "params": self.params.model_dump(),
+                "processed_sequences": list(self._processed_sequences),
+            },
+            path,
+        )
 
     def get_additional_index_rows(self) -> list[dict[str, object]]:
         return list(self._additional_index_rows)

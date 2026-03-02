@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
+
 from ._param_bases import FeatureParams
 
 
+@final
 @register_feature
 class IdTagColumns:
     """
@@ -86,8 +89,16 @@ class IdTagColumns:
         group_col = p.group_col
         sequence_col = p.sequence_col
 
-        group_val = str(df[group_col].iloc[0]) if group_col in df.columns and not df.empty else ""
-        sequence_val = str(df[sequence_col].iloc[0]) if sequence_col in df.columns and not df.empty else ""
+        group_val = (
+            str(df[group_col].iloc[0])
+            if group_col in df.columns and not df.empty
+            else ""
+        )
+        sequence_val = (
+            str(df[sequence_col].iloc[0])
+            if sequence_col in df.columns and not df.empty
+            else ""
+        )
         labels = self._labels.get((group_val, sequence_val))
         if not labels:
             return pd.DataFrame()  # nothing to attach
@@ -123,7 +134,8 @@ class IdTagColumns:
         ids_series = out[id_col]
         for field in fields:
             col_name = rename_map.get(field, field)
-            out[col_name] = ids_series.map(lambda i: labels.get(i, {}).get(field, np.nan))
+            out[col_name] = ids_series.map(
+                lambda i: labels.get(i, {}).get(field, np.nan)
+            )
 
         return out
-

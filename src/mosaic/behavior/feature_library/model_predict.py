@@ -6,17 +6,20 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-import json
 import importlib
+import json
+from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
-from mosaic.core.dataset import _model_run_root
+from mosaic.core.dataset import _model_run_root, register_feature
+
 from ._param_bases import FeatureParams
 
 
+@final
 @register_feature
 class ModelPredictFeature:
     """
@@ -38,6 +41,7 @@ class ModelPredictFeature:
             model_name: Override for model storage name.
             output_feature_name: Override for the output feature name.
         """
+
         model_class: str | None = None
         model_params: dict[str, object] | None = None
         model_run_id: str | None = None
@@ -77,7 +81,9 @@ class ModelPredictFeature:
         if not run_root.exists():
             raise FileNotFoundError(f"Model artifacts not found: {run_root}")
         if not hasattr(self._model, "load_trained_model"):
-            raise RuntimeError(f"Model '{model_class_path}' lacks load_trained_model().")
+            raise RuntimeError(
+                f"Model '{model_class_path}' lacks load_trained_model()."
+            )
         self._model.load_trained_model(run_root)
         self._model_name = storage_model_name
         self._model_run_id = run_id
@@ -94,15 +100,31 @@ class ModelPredictFeature:
     def supports_partial_fit(self) -> bool:
         return False
 
-    def fit(self, X: Iterable[pd.DataFrame]) -> None:
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if self._model is None:
-            raise RuntimeError("ModelPredictFeature has no model loaded; call bind_dataset first.")
+            raise RuntimeError(
+                "ModelPredictFeature has no model loaded; call bind_dataset first."
+            )
         if df is None or df.empty:
             return pd.DataFrame()
-        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        sequence = (
+            str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        )
         group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
         meta = {
             "sequence": sequence,

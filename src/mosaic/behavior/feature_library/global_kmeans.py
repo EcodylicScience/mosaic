@@ -6,19 +6,30 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from pathlib import Path
-import sys
+from typing import final
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
 from pydantic import Field
-
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
-from ._param_bases import FeatureParams, ArtifactSpec, DictModel
+from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
+from mosaic.core.helpers import to_safe_name
+
+from ._param_bases import ArtifactSpec, FeatureParams, ParquetLoadSpec
+from .helpers import (
+    StreamingFeatureHelper,
+    _build_index_row,
+    _build_sequence_lookup,
+    _get_feature_run_root,
+    _load_joblib_artifact,
+    _parse_scope_filter,
+    _resolve_sequence_identity,
+)
 
 
 def _get_kmeans_class(device: str) -> type:
@@ -30,6 +41,7 @@ def _get_kmeans_class(device: str) -> type:
     if device == "cuda":
         try:
             from cuml.cluster import KMeans as _CumlKMeans
+
             return _CumlKMeans
         except ImportError:
             print(
@@ -40,14 +52,7 @@ def _get_kmeans_class(device: str) -> type:
     return _SklearnKMeans
 
 
-from .helpers import (
-    StreamingFeatureHelper,
-    _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
-    _get_feature_run_root, _load_joblib_artifact, _build_index_row,
-)
-from mosaic.core.helpers import to_safe_name
-
-
+@final
 @register_feature
 class GlobalKMeansClustering:
     """
@@ -127,14 +132,23 @@ class GlobalKMeansClustering:
         return self._sequence_lookup_cache
 
     # Dataset binding
-    def needs_fit(self) -> bool: return True
-    def supports_partial_fit(self) -> bool: return False
-    def loads_own_data(self) -> bool: return True
-    def bind_dataset(self, ds: object) -> None: self._ds = ds
+    def needs_fit(self) -> bool:
+        return True
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
+        return True
+
+    def bind_dataset(self, ds: object) -> None:
+        self._ds = ds
 
     # --- Fit helpers ---
 
-    def _load_npz_matrix(self, files: list[Path], key: str, transpose: bool) -> tuple[np.ndarray, dict[str, object]]:
+    def _load_npz_matrix(
+        self, files: list[Path], key: str, transpose: bool
+    ) -> tuple[np.ndarray, dict[str, object]]:
         mats = []
         for p in files:
             npz = np.load(p, allow_pickle=True)
@@ -147,15 +161,23 @@ class GlobalKMeansClustering:
             A = A.T if transpose else A
             mats.append(A)
         if not mats:
-            raise FileNotFoundError(f"No NPZ containing key '{key}' among: {[p.name for p in files]}")
+            raise FileNotFoundError(
+                f"No NPZ containing key '{key}' among: {[p.name for p in files]}"
+            )
         X = np.vstack(mats)
-        meta: dict[str, object] = {"loader_kind": "npz", "key": key, "transpose": bool(transpose)}
+        meta: dict[str, object] = {
+            "loader_kind": "npz",
+            "key": key,
+            "transpose": bool(transpose),
+        }
         return X, meta
 
-    def _load_parquet_matrix(self, files: list[Path], spec: DictModel) -> tuple[np.ndarray, dict[str, object], list[str]]:
-        cols: list[str] | None = spec.get("columns")
-        drop_cols = set(spec.get("drop_columns") or [])
-        numeric_only = bool(spec.get("numeric_only", True))
+    def _load_parquet_matrix(
+        self, files: list[Path], spec: ParquetLoadSpec
+    ) -> tuple[np.ndarray, dict[str, object], list[str]]:
+        cols = spec.columns
+        drop_cols = set(spec.drop_columns or [])
+        numeric_only = spec.numeric_only
 
         def load_df(p: Path) -> pd.DataFrame:
             df = pd.read_parquet(p)
@@ -169,7 +191,17 @@ class GlobalKMeansClustering:
             else:
                 if numeric_only:
                     df = df.select_dtypes(include=["number"])
-                    for mc in ("frame", "time", "id", "id1", "id2", "id_a", "id_b", "id_A", "id_B"):
+                    for mc in (
+                        "frame",
+                        "time",
+                        "id",
+                        "id1",
+                        "id2",
+                        "id_a",
+                        "id_b",
+                        "id_A",
+                        "id_B",
+                    ):
                         if mc in df.columns:
                             df = df.drop(columns=[mc])
                 else:
@@ -189,7 +221,9 @@ class GlobalKMeansClustering:
             dfs.append(df)
 
         if not dfs:
-            raise FileNotFoundError(f"No Parquet files with usable numeric columns among: {[p.name for p in files]}")
+            raise FileNotFoundError(
+                f"No Parquet files with usable numeric columns among: {[p.name for p in files]}"
+            )
 
         D = pd.concat(dfs, ignore_index=True)
         A = D.to_numpy(dtype=np.float32, copy=False)
@@ -234,7 +268,10 @@ class GlobalKMeansClustering:
 
     # --- Fit / Transform / Save ---
 
-    def fit(self, _X_iter_unused: Iterable[pd.DataFrame]) -> None:
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         self._assign_labels = {}
         self._assign_frames = {}
         self._assign_id1 = {}
@@ -246,7 +283,9 @@ class GlobalKMeansClustering:
         self._fit_dim = X.shape[1]
 
         if X.shape[0] < self.params.k:
-            raise ValueError(f"Not enough samples to fit KMeans: n={X.shape[0]} < k={self.params.k}")
+            raise ValueError(
+                f"Not enough samples to fit KMeans: n={X.shape[0]} < k={self.params.k}"
+            )
 
         KMeansCls = _get_kmeans_class(self.params.device)
         self._kmeans = KMeansCls(
@@ -262,6 +301,7 @@ class GlobalKMeansClustering:
         assign = self.params.assign
         if assign:
             import gc
+
             import pyarrow as pa
 
             scaler = None
@@ -269,7 +309,11 @@ class GlobalKMeansClustering:
                 scaler = _load_joblib_artifact(self._ds, assign["scaler"])
 
             assign_inputset = assign.get("inputset")
-            explicit_assign_inputs = assign.get("inputs") if (self._assign_inputs_override or not assign_inputset) else None
+            explicit_assign_inputs = (
+                assign.get("inputs")
+                if (self._assign_inputs_override or not assign_inputset)
+                else None
+            )
             resolved_assign_inputs, assign_inputs_meta = _resolve_inputs(
                 self._ds,
                 explicit_assign_inputs,
@@ -281,16 +325,24 @@ class GlobalKMeansClustering:
             helper = StreamingFeatureHelper(self._ds, "global-kmeans")
             if assign_inputs_meta.get("pair_filter"):
                 helper.set_pair_filter(assign_inputs_meta["pair_filter"])
-            scope_filter = {"safe_sequences": self._allowed_safe_sequences} if self._allowed_safe_sequences else None
-            manifest = helper.build_manifest(resolved_assign_inputs, scope_filter=scope_filter)
+            scope_filter = (
+                {"safe_sequences": self._allowed_safe_sequences}
+                if self._allowed_safe_sequences
+                else None
+            )
+            manifest = helper.build_manifest(
+                resolved_assign_inputs, scope_filter=scope_filter
+            )
 
             keys = list(manifest.keys())
             n_keys = len(keys)
             for i, key in enumerate(keys):
-                X_full, frames, id1_vals, id2_vals, entity_level = helper.load_key_data_with_identity(
-                    manifest[key],
-                    extract_frames=True,
-                    key=key,
+                X_full, frames, id1_vals, id2_vals, entity_level = (
+                    helper.load_key_data_with_identity(
+                        manifest[key],
+                        extract_frames=True,
+                        key=key,
+                    )
                 )
                 if X_full is None:
                     continue
@@ -298,7 +350,9 @@ class GlobalKMeansClustering:
 
                 if scaler is not None:
                     if not hasattr(scaler, "n_features_in_"):
-                        raise ValueError("Scaler object must have n_features_in_ (e.g. sklearn StandardScaler)")
+                        raise ValueError(
+                            "Scaler object must have n_features_in_ (e.g. sklearn StandardScaler)"
+                        )
                     if scaler.n_features_in_ != D_total:
                         raise ValueError(
                             f"Scaler expects n_features_in_={getattr(scaler, 'n_features_in_', None)}, "
@@ -308,7 +362,9 @@ class GlobalKMeansClustering:
                     del X_full
                 else:
                     if self._fit_dim is None:
-                        raise RuntimeError("GlobalKMeansClustering internal error: fit_dim is None before assignment.")
+                        raise RuntimeError(
+                            "GlobalKMeansClustering internal error: fit_dim is None before assignment."
+                        )
                     if D_total != self._fit_dim:
                         raise ValueError(
                             f"Assign-without-scaler requires feature dim {self._fit_dim}, "
@@ -318,11 +374,19 @@ class GlobalKMeansClustering:
 
                 labels = self._kmeans.predict(X_use)
                 self._assign_labels[key] = labels.astype(np.int32)
-                self._assign_frames[key] = None if frames is None else np.asarray(frames, dtype=np.int64).ravel()
+                self._assign_frames[key] = (
+                    None
+                    if frames is None
+                    else np.asarray(frames, dtype=np.int64).ravel()
+                )
                 if id1_vals is not None:
-                    self._assign_id1[key] = np.asarray(id1_vals, dtype=np.float64).ravel()
+                    self._assign_id1[key] = np.asarray(
+                        id1_vals, dtype=np.float64
+                    ).ravel()
                 if id2_vals is not None:
-                    self._assign_id2[key] = np.asarray(id2_vals, dtype=np.float64).ravel()
+                    self._assign_id2[key] = np.asarray(
+                        id2_vals, dtype=np.float64
+                    ).ravel()
                 self._assign_entity_level[key] = str(entity_level or "global")
 
                 del X_use, labels
@@ -330,7 +394,10 @@ class GlobalKMeansClustering:
                 pa.default_memory_pool().release_unused()
 
                 if (i + 1) % 10 == 0 or i == n_keys - 1:
-                    print(f"[global-kmeans] Processed {i + 1}/{n_keys} sequences", file=sys.stderr)
+                    print(
+                        f"[global-kmeans] Processed {i + 1}/{n_keys} sequences",
+                        file=sys.stderr,
+                    )
 
             if self._fit_artifact_info is None:
                 self._fit_artifact_info = {}
@@ -339,7 +406,7 @@ class GlobalKMeansClustering:
     def finalize_fit(self) -> None:
         pass
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """Assign clusters to an input DataFrame.
 
         Only succeeds if columns can be aligned to the fitted feature space:
@@ -351,13 +418,23 @@ class GlobalKMeansClustering:
             raise RuntimeError("GlobalKMeansClustering not fitted yet.")
 
         if self._fit_columns:
-            missing = [c for c in self._fit_columns if c not in X.columns]
+            missing = [c for c in self._fit_columns if c not in df.columns]
             if missing:
                 return pd.DataFrame(columns=["frame", "cluster"])
-            A = X[self._fit_columns].to_numpy(dtype=np.float32, copy=False)
+            A = df[self._fit_columns].to_numpy(dtype=np.float32, copy=False)
         else:
-            num = X.select_dtypes(include=["number"])
-            for mc in ("frame", "time", "id", "id1", "id2", "id_a", "id_b", "id_A", "id_B"):
+            num = df.select_dtypes(include=["number"])
+            for mc in (
+                "frame",
+                "time",
+                "id",
+                "id1",
+                "id2",
+                "id_a",
+                "id_b",
+                "id_A",
+                "id_B",
+            ):
                 if mc in num.columns:
                     num = num.drop(columns=[mc])
             if num.shape[1] != self._fit_dim:
@@ -369,10 +446,14 @@ class GlobalKMeansClustering:
         if mask.any():
             labels[mask] = self._kmeans.predict(A[mask])
 
-        out = pd.DataFrame({
-            "frame": X["frame"].astype(int, errors="ignore") if "frame" in X.columns else np.arange(len(X), dtype=int),
-            "cluster": labels,
-        })
+        out = pd.DataFrame(
+            {
+                "frame": df["frame"].astype(int, errors="ignore")
+                if "frame" in df.columns
+                else np.arange(len(df), dtype=int),
+                "cluster": labels,
+            }
+        )
         return out
 
     def save_model(self, path: Path) -> None:
@@ -380,23 +461,29 @@ class GlobalKMeansClustering:
         run_root.mkdir(parents=True, exist_ok=True)
         self._additional_index_rows = []
 
-        joblib.dump({
-            "kmeans": self._kmeans,
-            "fit_dim": int(self._fit_dim or 0),
-            "fit_columns": self._fit_columns,
-            "artifact_info": self._fit_artifact_info,
-            "version": self.version,
-            "params": self.params.model_dump(),
-        }, path)
+        joblib.dump(
+            {
+                "kmeans": self._kmeans,
+                "fit_dim": int(self._fit_dim or 0),
+                "fit_columns": self._fit_columns,
+                "artifact_info": self._fit_artifact_info,
+                "version": self.version,
+                "params": self.params.model_dump(),
+            },
+            path,
+        )
 
         centers = np.asarray(self._kmeans.cluster_centers_, dtype=np.float32)
         np.save(run_root / "cluster_centers.npy", centers)
 
         if self._artifact_labels is not None:
-            np.savez_compressed(run_root / "artifact_labels.npz", labels=self._artifact_labels)
+            np.savez_compressed(
+                run_root / "artifact_labels.npz", labels=self._artifact_labels
+            )
             uniq, cnt = np.unique(self._artifact_labels, return_counts=True)
-            pd.DataFrame({"cluster": uniq.astype(int), "count": cnt.astype(int)}) \
-              .to_csv(run_root / "cluster_sizes.csv", index=False)
+            pd.DataFrame(
+                {"cluster": uniq.astype(int), "count": cnt.astype(int)}
+            ).to_csv(run_root / "cluster_sizes.csv", index=False)
 
         for safe_seq, labels in self._assign_labels.items():
             labels_arr = np.asarray(labels, dtype=np.int32).ravel()
@@ -418,19 +505,29 @@ class GlobalKMeansClustering:
             safe_group = to_safe_name(group) if group else ""
             out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
             out_path = run_root / out_name
-            df_out = pd.DataFrame({
-                "frame": frames.astype(np.int64, copy=False),
-                "cluster": labels_arr,
-                "id1": pd.array(id1_vals, dtype="Int64"),
-                "id2": pd.array(id2_vals, dtype="Int64"),
-                "entity_level": np.full(len(labels_arr), entity_level, dtype=object),
-                "sequence": sequence,
-                "group": group,
-            })
+            df_out = pd.DataFrame(
+                {
+                    "frame": frames.astype(np.int64, copy=False),
+                    "cluster": labels_arr,
+                    "id1": pd.array(id1_vals, dtype="Int64"),
+                    "id2": pd.array(id2_vals, dtype="Int64"),
+                    "entity_level": np.full(
+                        len(labels_arr), entity_level, dtype=object
+                    ),
+                    "sequence": sequence,
+                    "group": group,
+                }
+            )
             df_out.to_parquet(out_path, index=False)
             self._additional_index_rows.append(
-                _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
-                                 dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+                _build_index_row(
+                    safe_seq,
+                    group,
+                    sequence,
+                    out_path,
+                    int(len(df_out)),
+                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+                )
             )
             fname = f"global_kmeans_labels_seq={safe_seq}.npz"
             np.savez_compressed(
@@ -448,8 +545,14 @@ class GlobalKMeansClustering:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_marker_seq, "", marker_seq, marker_path, int(len(marker_df)),
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_marker_seq,
+                "",
+                marker_seq,
+                marker_path,
+                int(len(marker_df)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
 
     def load_model(self, path: Path) -> None:
