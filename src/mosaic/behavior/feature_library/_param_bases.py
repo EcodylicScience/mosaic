@@ -87,12 +87,12 @@ class PositionColumns(DictModel):
     Attributes:
         x_col: X-coordinate column name. Default "X".
         y_col: Y-coordinate column name. Default "Y".
-        angle_col: Body-orientation angle column name. Default "ANGLE".
+        orientation_col: Body-orientation angle column name. Default "ANGLE".
     """
 
     x_col: str = "X"
     y_col: str = "Y"
-    angle_col: str = "ANGLE"
+    orientation_col: str = "ANGLE"
 
 
 class InterpolationConfig(DictModel):

@@ -140,8 +140,8 @@ class SpeedAngvel:
         x = sub[p.position.x_col].to_numpy(dtype=float)
         y = sub[p.position.y_col].to_numpy(dtype=float)
         angle = (
-            sub[p.position.angle_col].to_numpy(dtype=float)
-            if p.position.angle_col in sub.columns
+            sub[p.position.orientation_col].to_numpy(dtype=float)
+            if p.position.orientation_col in sub.columns
             else None
         )
         time_arr = (

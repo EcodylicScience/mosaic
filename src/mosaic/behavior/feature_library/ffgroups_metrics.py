@@ -47,7 +47,6 @@ class FFGroupsMetrics:
             default_factory=lambda: ColumnConfig(group_col="event")
         )
         position: PositionColumns = Field(default_factory=PositionColumns)
-        heading_col: str = "ANGLE"
         speed_col: str = "speed"
         time_chunk_sec: float | None = None
         frame_chunk: int | None = None
@@ -98,7 +97,7 @@ class FFGroupsMetrics:
         order_col = resolve_order_col(p.columns, df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
-        required = [p.position.x_col, p.position.y_col, p.heading_col, p.speed_col, p.columns.id_col]
+        required = [p.position.x_col, p.position.y_col, p.position.orientation_col, p.speed_col, p.columns.id_col]
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"Missing required columns for FFGroupsMetrics: {missing}")

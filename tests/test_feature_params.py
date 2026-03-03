@@ -363,7 +363,7 @@ def test_from_overrides_partial_group_merge() -> None:
     )
     assert p.position.x_col == "X#wcentroid"
     assert p.position.y_col == "Y"
-    assert p.position.angle_col == "ANGLE"
+    assert p.position.orientation_col == "ANGLE"
 
 
 def test_from_overrides_nested_group_merge() -> None:

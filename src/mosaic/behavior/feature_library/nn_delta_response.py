@@ -116,7 +116,7 @@ class NearestNeighborDelta:
         # Resolve required columns with a few fallbacks
         id_col = p.columns.id_col
         frame_col = p.columns.frame_col
-        angle_col = p.position.angle_col
+        angle_col = p.position.orientation_col
         speed_col = (
             p.speed_col
             if p.speed_col in df.columns

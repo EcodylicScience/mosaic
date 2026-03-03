@@ -97,8 +97,8 @@ class NearestNeighbor:
         df = df.sort_values(order_col).reset_index(drop=True)
 
         angles = (
-            df[p.position.angle_col].to_numpy(dtype=float)
-            if p.position.angle_col in df.columns
+            df[p.position.orientation_col].to_numpy(dtype=float)
+            if p.position.orientation_col in df.columns
             else None
         )
 
@@ -128,7 +128,7 @@ class NearestNeighbor:
             gx = g[p.position.x_col].to_numpy(dtype=float)
             gy = g[p.position.y_col].to_numpy(dtype=float)
             gids = g[p.columns.id_col].to_numpy()
-            gang = g[p.position.angle_col].to_numpy(dtype=float) if angles is not None else None
+            gang = g[p.position.orientation_col].to_numpy(dtype=float) if angles is not None else None
 
             dx_matrix = gx[np.newaxis, :] - gx[:, np.newaxis]
             dy_matrix = gy[np.newaxis, :] - gy[:, np.newaxis]

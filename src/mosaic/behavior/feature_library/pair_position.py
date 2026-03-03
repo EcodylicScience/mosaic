@@ -101,7 +101,7 @@ class PairPositionFeatures:
             order_col,
             p.position.x_col,
             p.position.y_col,
-            p.position.angle_col,
+            p.position.orientation_col,
         ]
         missing = [c for c in need if c not in df.columns]
         if missing:
@@ -115,7 +115,7 @@ class PairPositionFeatures:
 
         # Clean per-animal, per-sequence
         group_cols = [p.columns.seq_col, p.columns.id_col]
-        data_cols = [p.position.x_col, p.position.y_col, p.position.angle_col]
+        data_cols = [p.position.x_col, p.position.y_col, p.position.orientation_col]
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -189,10 +189,10 @@ class PairPositionFeatures:
 
         # Extract data for each animal
         A = gseq[gseq[p.columns.id_col] == idA][
-            [order_col, p.position.x_col, p.position.y_col, p.position.angle_col]
+            [order_col, p.position.x_col, p.position.y_col, p.position.orientation_col]
         ].copy()
         B = gseq[gseq[p.columns.id_col] == idB][
-            [order_col, p.position.x_col, p.position.y_col, p.position.angle_col]
+            [order_col, p.position.x_col, p.position.y_col, p.position.orientation_col]
         ].copy()
 
         if A.empty or B.empty:
@@ -254,8 +254,8 @@ class PairPositionFeatures:
         cyA = j[f"{p.position.y_col}_A"].to_numpy()
         cxB = j[f"{p.position.x_col}_B"].to_numpy()
         cyB = j[f"{p.position.y_col}_B"].to_numpy()
-        thA = j[f"{p.position.angle_col}_A"].to_numpy()
-        thB = j[f"{p.position.angle_col}_B"].to_numpy()
+        thA = j[f"{p.position.orientation_col}_A"].to_numpy()
+        thB = j[f"{p.position.orientation_col}_B"].to_numpy()
         frames = j["frame"].to_numpy().astype(int)
 
         # Optional smoothing
