@@ -67,7 +67,7 @@ class ApproachAvoidance:
     """
 
     name = "approach-avoidance"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     output_type = "per_frame"
 
@@ -75,7 +75,6 @@ class ApproachAvoidance:
         position: PositionColumns = Field(default_factory=PositionColumns)
         interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        orientation_col: str = "ANGLE"
         velocity_units: Literal["per_frame", "per_second"] = "per_frame"
         angle_units: Literal["radians", "degrees", "auto"] = "radians"
         consecutive_frame_delta: float = 1.0
@@ -86,10 +85,8 @@ class ApproachAvoidance:
         cos_avoider_threshold: float = Field(default=0.5, ge=-1, le=1)
         min_event_length: int = Field(default=10, ge=1)
         min_event_count: int = Field(default=5, ge=1)
-        use_approacher_orientation_gate: bool = True
-        approacher_forward_cos_threshold: float = 0.8660254037844386
-        use_sliding_window: bool = False
-        window_sec: float = Field(default=0.4, gt=0)
+        orientation_gate_cos: float | None = Field(default=0.8660254037844386, ge=0, le=1)
+        smooth_window_sec: float | None = Field(default=None, gt=0)
 
     def __init__(self, params: dict[str, object] | None = None):
         self.params = self.Params.from_overrides(params)
@@ -137,8 +134,6 @@ class ApproachAvoidance:
 
         p = self.params
         order_col = resolve_order_col(p.columns, df)
-        use_ori_gate = p.use_approacher_orientation_gate
-
         need = [
             p.columns.id_col,
             p.columns.seq_col,
@@ -148,8 +143,8 @@ class ApproachAvoidance:
         ]
         if p.columns.group_col in df.columns:
             need.append(p.columns.group_col)
-        if use_ori_gate:
-            need.append(p.orientation_col)
+        if p.orientation_gate_cos is not None:
+            need.append(p.position.orientation_col)
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[approach-avoidance] Missing columns: {missing}")
@@ -162,8 +157,8 @@ class ApproachAvoidance:
         # Clean per-animal, per-sequence
         group_cols = [p.columns.seq_col, p.columns.id_col]
         data_cols = [p.position.x_col, p.position.y_col]
-        if p.orientation_col in df_small.columns:
-            data_cols.append(p.orientation_col)
+        if p.position.orientation_col in df_small.columns:
+            data_cols.append(p.position.orientation_col)
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -219,10 +214,10 @@ class ApproachAvoidance:
     ) -> pd.DataFrame | None:
         p = self.params
 
-        use_ori_gate = p.use_approacher_orientation_gate
+        ori_gate_cos = p.orientation_gate_cos
         cols = [order_col, p.position.x_col, p.position.y_col]
-        if use_ori_gate and p.orientation_col in gseq.columns:
-            cols.append(p.orientation_col)
+        if ori_gate_cos is not None and p.position.orientation_col in gseq.columns:
+            cols.append(p.position.orientation_col)
         A = gseq[gseq[p.columns.id_col] == id_a][cols].copy()
         B = gseq[gseq[p.columns.id_col] == id_b][cols].copy()
 
@@ -296,16 +291,16 @@ class ApproachAvoidance:
             v1x, v1y = v_ax, v_ay
             v2x, v2y = v_bx, v_by
             speed1, speed2 = speed_a, speed_b
-            ori1 = j.get(f"{p.orientation_col}_A")
-            ori2 = j.get(f"{p.orientation_col}_B")
+            ori1 = j.get(f"{p.position.orientation_col}_A")
+            ori2 = j.get(f"{p.position.orientation_col}_B")
         else:
             dx12 = -dx_ab
             dy12 = -dy_ab
             v1x, v1y = v_bx, v_by
             v2x, v2y = v_ax, v_ay
             speed1, speed2 = speed_b, speed_a
-            ori1 = j.get(f"{p.orientation_col}_B")
-            ori2 = j.get(f"{p.orientation_col}_A")
+            ori1 = j.get(f"{p.position.orientation_col}_B")
+            ori2 = j.get(f"{p.position.orientation_col}_A")
 
         # Cosine metrics equivalent to trajognize:
         # direction 12: id1 approaches id2, id2 avoids id1
@@ -317,16 +312,18 @@ class ApproachAvoidance:
             np.maximum(dist * speed1, eps)
         )
 
-        # Optional approacher orientation gate (trajognize v7 behavior)
-        use_ori_gate = p.use_approacher_orientation_gate
-        forward_thr = p.approacher_forward_cos_threshold
-        cos_ori_vel_1 = np.ones(n, dtype=np.float64)
-        cos_ori_vel_2 = np.ones(n, dtype=np.float64)
-        if use_ori_gate:
+        # Approacher orientation gate (trajognize v7 behavior).
+        # When enabled (threshold is not None), requires the approacher's
+        # velocity direction to align with its body orientation
+        # (cos >= threshold). When None, the candidate masks below
+        # simply omit the orientation term.
+        cos_ori_vel_1: np.ndarray | None = None
+        cos_ori_vel_2: np.ndarray | None = None
+        if ori_gate_cos is not None:
             if ori1 is None or ori2 is None:
                 raise ValueError(
                     "[approach-avoidance] Orientation gate enabled but orientation column "
-                    f"'{p.orientation_col}' not available for merged pair."
+                    f"'{p.position.orientation_col}' not available for merged pair."
                 )
             th1 = ori1.to_numpy(dtype=np.float64)
             th2 = ori2.to_numpy(dtype=np.float64)
@@ -346,10 +343,10 @@ class ApproachAvoidance:
             cos_ori_vel_1 = (v1x * o1x + v1y * o1y) / np.maximum(speed1, eps)
             cos_ori_vel_2 = (v2x * o2x + v2y * o2y) / np.maximum(speed2, eps)
 
-        # Optional smoothing extension (disabled by default).
-        use_sliding = p.use_sliding_window
-        if use_sliding:
-            win_frames = max(1, int(round(p.window_sec * fps)))
+        # Optional sliding-window smoothing (window_sec not None enables).
+        window_sec = p.smooth_window_sec
+        if window_sec is not None:
+            win_frames = max(1, int(round(window_sec * fps)))
             dist_eval = self._sliding_nanmean(dist, win_frames)
             speed1_eval = self._sliding_nanmean(speed1, win_frames)
             speed2_eval = self._sliding_nanmean(speed2, win_frames)
@@ -357,8 +354,6 @@ class ApproachAvoidance:
             cos_avoid_12_eval = self._sliding_nanmean(cos_avoid_12, win_frames)
             cos_app_21_eval = self._sliding_nanmean(cos_app_21, win_frames)
             cos_avoid_21_eval = self._sliding_nanmean(cos_avoid_21, win_frames)
-            cos_ori_vel_1_eval = self._sliding_nanmean(cos_ori_vel_1, win_frames)
-            cos_ori_vel_2_eval = self._sliding_nanmean(cos_ori_vel_2, win_frames)
         else:
             dist_eval = dist
             speed1_eval = speed1
@@ -367,8 +362,18 @@ class ApproachAvoidance:
             cos_avoid_12_eval = cos_avoid_12
             cos_app_21_eval = cos_app_21
             cos_avoid_21_eval = cos_avoid_21
-            cos_ori_vel_1_eval = cos_ori_vel_1
-            cos_ori_vel_2_eval = cos_ori_vel_2
+
+        # Orientation eval: None when gate is off, optionally smoothed when on
+        cos_ori_vel_1_eval: np.ndarray | None = None
+        cos_ori_vel_2_eval: np.ndarray | None = None
+        if cos_ori_vel_1 is not None and cos_ori_vel_2 is not None:
+            if window_sec is not None:
+                wf = max(1, int(round(window_sec * fps)))
+                cos_ori_vel_1_eval = self._sliding_nanmean(cos_ori_vel_1, wf)
+                cos_ori_vel_2_eval = self._sliding_nanmean(cos_ori_vel_2, wf)
+            else:
+                cos_ori_vel_1_eval = cos_ori_vel_1
+                cos_ori_vel_2_eval = cos_ori_vel_2
 
         # Thresholds
         dist_thr = p.distance_threshold
@@ -398,7 +403,6 @@ class ApproachAvoidance:
             & (speed2_eval >= vb_thr)
             & (cos_app_12_eval >= cos_app_thr)
             & (cos_avoid_12_eval >= cos_avoid_thr)
-            & (cos_ori_vel_1_eval >= forward_thr)
         )
 
         cand_21 = (
@@ -407,8 +411,11 @@ class ApproachAvoidance:
             & (speed1_eval >= vb_thr)
             & (cos_app_21_eval >= cos_app_thr)
             & (cos_avoid_21_eval >= cos_avoid_thr)
-            & (cos_ori_vel_2_eval >= forward_thr)
         )
+
+        if ori_gate_cos is not None and cos_ori_vel_1_eval is not None and cos_ori_vel_2_eval is not None:
+            cand_12 &= cos_ori_vel_1_eval >= ori_gate_cos
+            cand_21 &= cos_ori_vel_2_eval >= ori_gate_cos
 
         min_event_length = max(1, p.min_event_length)
         min_event_count = max(1, p.min_event_count)
