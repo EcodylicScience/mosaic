@@ -130,8 +130,8 @@ class MyPerSequenceFeature:
 
         # Select numeric input columns (exclude metadata)
         meta_like = {
-            p.seq_col,
-            p.group_col,
+            p.columns.seq_col,
+            p.columns.group_col,
             "frame",
             "time",
             "id",
@@ -171,8 +171,8 @@ class MyPerSequenceFeature:
     ) -> pd.DataFrame:
         """Process a single block (one pair or one sequence)."""
         p = params
-        seq_col = p.seq_col
-        group_col = p.group_col
+        seq_col = p.columns.seq_col
+        group_col = p.columns.group_col
 
         df = df.sort_values(order_col).reset_index(drop=True)
         X = df[numeric_cols].to_numpy(dtype=np.float32, copy=False)
@@ -209,7 +209,7 @@ class MyPerSequenceFeature:
     # ----------------------- Internal helpers --------------------
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")

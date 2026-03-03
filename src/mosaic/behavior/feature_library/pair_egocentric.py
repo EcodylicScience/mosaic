@@ -16,7 +16,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationMixin
+from ._param_bases import FeatureParams, InterpolationConfig, SamplingConfig
 
 
 @final
@@ -41,7 +41,9 @@ class PairEgocentricFeatures:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, InterpolationMixin):
+    class Params(FeatureParams):
+        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
+        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         pose_n: int = 7
         pose_indices: list[int] | None = None
         x_prefix: str = "poseX"
@@ -49,8 +51,6 @@ class PairEgocentricFeatures:
         neck_idx: int = 3
         tail_base_idx: int = 6
         center_mode: str = "mean"
-        fps_default: float = Field(default=30.0, gt=0)
-        smooth_win: int = Field(default=0, ge=0)
 
     def __init__(self, params: dict[str, object] | None = None):
         self.params = self.Params.from_overrides(params)
@@ -84,7 +84,7 @@ class PairEgocentricFeatures:
         order_col = self._order_col(df)
         p = self.params
 
-        need = [p.id_col, p.seq_col, order_col] + pose_cols
+        need = [p.columns.id_col, p.columns.seq_col, order_col] + pose_cols
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-egocentric] Missing cols: {missing}")
@@ -94,7 +94,7 @@ class PairEgocentricFeatures:
         if order_col == "frame":
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
-        group_cols = [p.seq_col, p.id_col]
+        group_cols = [p.columns.seq_col, p.columns.id_col]
 
         def wrapped_func(g):
             result = self._clean_one_animal(g, pose_cols, order_col)
@@ -112,8 +112,8 @@ class PairEgocentricFeatures:
 
         # Build dyads (all C(n,2) pairs per sequence)
         pairs = []
-        for seq, gseq in df_small.groupby(p.seq_col):
-            ids = sorted(gseq[p.id_col].unique())
+        for seq, gseq in df_small.groupby(p.columns.seq_col):
+            ids = sorted(gseq[p.columns.id_col].unique())
             if len(ids) >= 2:
                 for idA, idB in combinations(ids, 2):
                     pairs.append((seq, idA, idB))
@@ -125,9 +125,9 @@ class PairEgocentricFeatures:
 
         out_frames: List[pd.DataFrame] = []
         for seq, idA, idB in pairs:
-            gseq = df_small[df_small[p.seq_col] == seq]
-            A = gseq[gseq[p.id_col] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[p.id_col] == idB][[order_col] + pose_cols].copy()
+            gseq = df_small[df_small[p.columns.seq_col] == seq]
+            A = gseq[gseq[p.columns.id_col] == idA][[order_col] + pose_cols].copy()
+            B = gseq[gseq[p.columns.id_col] == idB][[order_col] + pose_cols].copy()
             if A.empty or B.empty:
                 continue
 
@@ -138,7 +138,7 @@ class PairEgocentricFeatures:
                 continue
 
             # fps heuristic: prefer df['fps'] if present and constant; else default
-            fps = p.fps_default
+            fps = p.sampling.fps_default
             if "fps" in df.columns:
                 try:
                     c = df["fps"].dropna().unique()
@@ -165,7 +165,7 @@ class PairEgocentricFeatures:
             dfB["id2"] = idA
 
             # optional pass-through for convenience (constant per call)
-            for col in (p.seq_col, p.group_col):
+            for col in (p.columns.seq_col, p.columns.group_col):
                 if col in df.columns:
                     dfA[col] = df[col].iloc[0]
                     dfB[col] = df[col].iloc[0]
@@ -217,7 +217,7 @@ class PairEgocentricFeatures:
         return xs, ys
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -230,12 +230,12 @@ class PairEgocentricFeatures:
         g = g.set_index(order_col)
         g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
         g[pose_cols] = g[pose_cols].interpolate(
-            method="linear", limit=p.linear_interp_limit, limit_direction="both"
+            method="linear", limit=p.interpolation.linear_interp_limit, limit_direction="both"
         )
-        g[pose_cols] = g[pose_cols].ffill(limit=p.edge_fill_limit)
-        g[pose_cols] = g[pose_cols].bfill(limit=p.edge_fill_limit)
+        g[pose_cols] = g[pose_cols].ffill(limit=p.interpolation.edge_fill_limit)
+        g[pose_cols] = g[pose_cols].bfill(limit=p.interpolation.edge_fill_limit)
         miss_frac = g[pose_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
+        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
         if g[pose_cols].isna().any().any():
             med = g[pose_cols].median()
             g[pose_cols] = g[pose_cols].fillna(med)
@@ -278,7 +278,7 @@ class PairEgocentricFeatures:
         N = len(indices)
         neck = self._map_anatomical_idx("neck_idx")
         tail = self._map_anatomical_idx("tail_base_idx")
-        win = self.params.smooth_win
+        win = self.params.sampling.smooth_win
         mode = self.params.center_mode
 
         XA = j[[f"{self.params.x_prefix}{k}_A" for k in indices]].to_numpy()

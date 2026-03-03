@@ -13,18 +13,19 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import List, Optional, Tuple, final
+from typing import List, Tuple, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
 from ._param_bases import (
     FeatureParams,
-    InterpolationMixin,
-    PositionColumnsMixin,
-    SamplingMixin,
+    InterpolationConfig,
+    PositionColumns,
+    SamplingConfig,
 )
 
 
@@ -58,10 +59,10 @@ class PairPositionFeatures:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(
-        FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin
-    ):
-        pass
+    class Params(FeatureParams):
+        position: PositionColumns = Field(default_factory=PositionColumns)
+        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
+        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
 
     def __init__(self, params: dict[str, object] | None = None):
         self.params = self.Params.from_overrides(params)
@@ -93,7 +94,14 @@ class PairPositionFeatures:
         order_col = self._order_col(df)
 
         # Required columns
-        need = [p.id_col, p.seq_col, order_col, p.x_col, p.y_col, p.angle_col]
+        need = [
+            p.columns.id_col,
+            p.columns.seq_col,
+            order_col,
+            p.position.x_col,
+            p.position.y_col,
+            p.position.angle_col,
+        ]
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-position] Missing columns: {missing}")
@@ -105,8 +113,8 @@ class PairPositionFeatures:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p.seq_col, p.id_col]
-        data_cols = [p.x_col, p.y_col, p.angle_col]
+        group_cols = [p.columns.seq_col, p.columns.id_col]
+        data_cols = [p.position.x_col, p.position.y_col, p.position.angle_col]
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -124,8 +132,8 @@ class PairPositionFeatures:
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p.seq_col):
-            ids = sorted(gseq[p.id_col].unique())
+        for seq, gseq in df_small.groupby(p.columns.seq_col):
+            ids = sorted(gseq[p.columns.id_col].unique())
             if len(ids) < 2:
                 continue
 
@@ -174,16 +182,16 @@ class PairPositionFeatures:
         idB: int,
         order_col: str,
         orig_df: pd.DataFrame,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         """Compute features for a single pair (A, B) with both perspectives."""
         p = self.params
 
         # Extract data for each animal
-        A = gseq[gseq[p.id_col] == idA][
-            [order_col, p.x_col, p.y_col, p.angle_col]
+        A = gseq[gseq[p.columns.id_col] == idA][
+            [order_col, p.position.x_col, p.position.y_col, p.position.angle_col]
         ].copy()
-        B = gseq[gseq[p.id_col] == idB][
-            [order_col, p.x_col, p.y_col, p.angle_col]
+        B = gseq[gseq[p.columns.id_col] == idB][
+            [order_col, p.position.x_col, p.position.y_col, p.position.angle_col]
         ].copy()
 
         if A.empty or B.empty:
@@ -199,7 +207,7 @@ class PairPositionFeatures:
             return None
 
         # Get fps
-        fps = float(p.fps_default)
+        fps = float(p.sampling.fps_default)
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()
@@ -225,7 +233,7 @@ class PairPositionFeatures:
         dfB["id_B"] = idA
 
         # Pass through group/sequence
-        for col in (p.seq_col, p.group_col):
+        for col in (p.columns.seq_col, p.columns.group_col):
             if col in orig_df.columns:
                 val = orig_df[col].iloc[0]
                 dfA[col] = val
@@ -238,15 +246,15 @@ class PairPositionFeatures:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
         """Build egocentric features from joined pair data."""
         p = self.params
-        win = p.smooth_win
+        win = p.sampling.smooth_win
 
         # Extract positions and angles
-        cxA = j[f"{p.x_col}_A"].to_numpy()
-        cyA = j[f"{p.y_col}_A"].to_numpy()
-        cxB = j[f"{p.x_col}_B"].to_numpy()
-        cyB = j[f"{p.y_col}_B"].to_numpy()
-        thA = j[f"{p.angle_col}_A"].to_numpy()
-        thB = j[f"{p.angle_col}_B"].to_numpy()
+        cxA = j[f"{p.position.x_col}_A"].to_numpy()
+        cyA = j[f"{p.position.y_col}_A"].to_numpy()
+        cxB = j[f"{p.position.x_col}_B"].to_numpy()
+        cyB = j[f"{p.position.y_col}_B"].to_numpy()
+        thA = j[f"{p.position.angle_col}_A"].to_numpy()
+        thB = j[f"{p.position.angle_col}_B"].to_numpy()
         frames = j["frame"].to_numpy().astype(int)
 
         # Optional smoothing
@@ -368,7 +376,7 @@ class PairPositionFeatures:
 
     # ------------- Helpers -------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -386,16 +394,18 @@ class PairPositionFeatures:
 
         # Interpolate
         g[data_cols] = g[data_cols].interpolate(
-            method="linear", limit=p.linear_interp_limit, limit_direction="both"
+            method="linear",
+            limit=p.interpolation.linear_interp_limit,
+            limit_direction="both",
         )
 
         # Edge fill
-        g[data_cols] = g[data_cols].ffill(limit=p.edge_fill_limit)
-        g[data_cols] = g[data_cols].bfill(limit=p.edge_fill_limit)
+        g[data_cols] = g[data_cols].ffill(limit=p.interpolation.edge_fill_limit)
+        g[data_cols] = g[data_cols].bfill(limit=p.interpolation.edge_fill_limit)
 
         # Drop rows with too much missing data
         miss_frac = g[data_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
+        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
 
         # Fill remaining with median
         if g[data_cols].isna().any().any():

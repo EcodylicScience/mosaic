@@ -36,15 +36,15 @@ class DictModel(BaseModel):
         return self.__class__.model_fields.keys()
 
 
-class FeatureParams(DictModel):
-    """Base for all feature parameter models.
-
-    Provides from_overrides() constructor for user-config dicts.
+class ColumnConfig(DictModel):
+    """Common identity and ordering columns.
 
     Attributes:
         id_col: Animal/subject identifier column. Default "id".
         seq_col: Sequence identifier column. Default "sequence".
         group_col: Group/session identifier column. Default "group".
+        frame_col: Frame number column name. Default "frame".
+        time_col: Timestamp column name. Default "time".
         order_pref: Column names to use for temporal ordering, tried in order.
             Default ("frame", "time").
     """
@@ -52,7 +52,69 @@ class FeatureParams(DictModel):
     id_col: str = "id"
     seq_col: str = "sequence"
     group_col: str = "group"
+    frame_col: str = "frame"
+    time_col: str = "time"
     order_pref: tuple[str, ...] = ("frame", "time")
+
+
+class PositionColumns(DictModel):
+    """Spatial position column names.
+
+    Attributes:
+        x_col: X-coordinate column name. Default "X".
+        y_col: Y-coordinate column name. Default "Y".
+        angle_col: Body-orientation angle column name. Default "ANGLE".
+    """
+
+    x_col: str = "X"
+    y_col: str = "Y"
+    angle_col: str = "ANGLE"
+
+
+class InterpolationConfig(DictModel):
+    """Interpolation parameters for missing pose/position data.
+
+    Attributes:
+        linear_interp_limit: Max consecutive NaN frames to fill via linear
+            interpolation. Default 10, must be >= 1.
+        edge_fill_limit: Max frames to forward/backward fill at sequence edges.
+            Default 3, must be >= 0.
+        max_missing_fraction: Rows with a higher fraction of NaN columns are
+            dropped entirely. Default 0.10, range [0, 1].
+    """
+
+    linear_interp_limit: int = Field(default=10, ge=1)
+    edge_fill_limit: int = Field(default=3, ge=0)
+    max_missing_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
+
+
+class SamplingConfig(DictModel):
+    """Frame rate and temporal smoothing parameters.
+
+    Attributes:
+        fps_default: Fallback frames-per-second when the data does not carry an
+            fps column. Default 30.0, must be > 0.
+        smooth_win: Moving-average window size applied to pose coordinates
+            before feature computation. 0 disables smoothing. Default 0.
+    """
+
+    fps_default: float = Field(default=30.0, gt=0)
+    smooth_win: int = Field(default=0, ge=0)
+
+
+class FeatureParams(DictModel):
+    """Base for all feature parameter models.
+
+    Provides from_overrides() constructor for user-config dicts.
+    Every subclass inherits the `columns` group. Subclasses opt into
+    additional groups (position, interpolation, sampling) by declaring
+    them as fields with default_factory.
+
+    Attributes:
+        columns: Common identity and ordering column configuration.
+    """
+
+    columns: ColumnConfig = Field(default_factory=ColumnConfig)
 
     @classmethod
     def from_overrides(cls, overrides: dict[str, object] | None = None) -> Self:
@@ -151,49 +213,3 @@ class InputSpec(ArtifactSpec):
     name: str | None = None
 
 
-# --- Mixins ---
-
-
-class PositionColumnsMixin(BaseModel):
-    """Mixin for features that use spatial position columns.
-
-    Attributes:
-        x_col: X-coordinate column name. Default "X".
-        y_col: Y-coordinate column name. Default "Y".
-        angle_col: Body-orientation angle column name. Default "ANGLE".
-    """
-
-    x_col: str = "X"
-    y_col: str = "Y"
-    angle_col: str = "ANGLE"
-
-
-class InterpolationMixin(BaseModel):
-    """Mixin for features that interpolate missing pose/position data.
-
-    Attributes:
-        linear_interp_limit: Max consecutive NaN frames to fill via linear
-            interpolation. Default 10, must be >= 1.
-        edge_fill_limit: Max frames to forward/backward fill at sequence edges.
-            Default 3, must be >= 0.
-        max_missing_fraction: Rows with a higher fraction of NaN columns are
-            dropped entirely. Default 0.10, range [0, 1].
-    """
-
-    linear_interp_limit: int = Field(default=10, ge=1)
-    edge_fill_limit: int = Field(default=3, ge=0)
-    max_missing_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
-
-
-class SamplingMixin(BaseModel):
-    """Mixin for features that depend on frame rate or temporal smoothing.
-
-    Attributes:
-        fps_default: Fallback frames-per-second when the data does not carry an
-            fps column. Default 30.0, must be > 0.
-        smooth_win: Moving-average window size applied to pose coordinates
-            before feature computation. 0 disables smoothing. Default 0.
-    """
-
-    fps_default: float = Field(default=30.0, gt=0)
-    smooth_win: int = Field(default=0, ge=0)

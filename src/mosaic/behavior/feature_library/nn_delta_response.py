@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import Iterable, final
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams
+from ._param_bases import FeatureParams, PositionColumns, SamplingConfig
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -55,11 +55,8 @@ class NearestNeighborDelta:
     output_type = "per_frame"
 
     class Params(FeatureParams):
-        frame_col: str = "frame"
-        time_col: str = "time"
-        x_col: str = "X"
-        y_col: str = "Y"
-        angle_col: str = "ANGLE"
+        position: PositionColumns = Field(default_factory=PositionColumns)
+        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         speed_col: str = "SPEED#wcentroid"
         nn_id_col: str = "nn_id"
         nn_dx_ego_col: str = "nn_delta_x_ego"
@@ -67,12 +64,10 @@ class NearestNeighborDelta:
         nn_dx_world_col: str = "nn_delta_x"
         nn_dy_world_col: str = "nn_delta_y"
         focal_col: str = "Focal_fish"
-        sequence_col: str = "sequence"
         diff_numframes: int = Field(default=4, ge=1)
         wrap_angle: bool = True
         divide_dangle_by_frames: bool = True
         scale_dangle_by_fps: bool = True
-        fps: float = Field(default=30.0, gt=0)
 
     def __init__(self, params: dict[str, object] | None = None):
         self.params = self.Params.from_overrides(params)
@@ -80,13 +75,13 @@ class NearestNeighborDelta:
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
         self._ds = None
-        self._scope_filter: Optional[dict] = None
+        self._scope_filter: dict[str, object] | None = None
 
     # ----------------------- Dataset hooks -----------------------
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -119,9 +114,9 @@ class NearestNeighborDelta:
         p = self.params
 
         # Resolve required columns with a few fallbacks
-        id_col = p.id_col
-        frame_col = p.frame_col
-        angle_col = p.angle_col
+        id_col = p.columns.id_col
+        frame_col = p.columns.frame_col
+        angle_col = p.position.angle_col
         speed_col = (
             p.speed_col
             if p.speed_col in df.columns
@@ -145,7 +140,7 @@ class NearestNeighborDelta:
         order_col = (
             frame_col
             if frame_col in df.columns
-            else (p.time_col if p.time_col in df else None)
+            else (p.columns.time_col if p.columns.time_col in df else None)
         )
         if order_col is None:
             return pd.DataFrame()
@@ -155,7 +150,7 @@ class NearestNeighborDelta:
         wrap_angles = p.wrap_angle
         divide_by_frames = p.divide_dangle_by_frames
         scale_by_fps = p.scale_dangle_by_fps
-        fps = p.fps
+        fps = p.sampling.fps_default
 
         # Optional neighbor focal lookup (frame + id -> focal flag)
         focal_lookup = None
@@ -168,18 +163,18 @@ class NearestNeighborDelta:
         for focal_id, g in df.groupby(id_col, sort=False):
             g = g.sort_values(order_col)
             # Future samples diff_numframes ahead
-            future = g[[p.x_col, p.y_col, angle_col, speed_col, frame_col]].shift(
+            future = g[[p.position.x_col, p.position.y_col, angle_col, speed_col, frame_col]].shift(
                 -diff_n
             )
-            delta = future - g[[p.x_col, p.y_col, angle_col, speed_col, frame_col]]
+            delta = future - g[[p.position.x_col, p.position.y_col, angle_col, speed_col, frame_col]]
 
             valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
             if not valid_mask.any():
                 continue
 
             rows = g.loc[valid_mask].copy()
-            rows["dx"] = delta.loc[valid_mask, p.x_col].to_numpy()
-            rows["dy"] = delta.loc[valid_mask, p.y_col].to_numpy()
+            rows["dx"] = delta.loc[valid_mask, p.position.x_col].to_numpy()
+            rows["dy"] = delta.loc[valid_mask, p.position.y_col].to_numpy()
             rows["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
             dangle = delta.loc[valid_mask, angle_col].to_numpy()
             if wrap_angles:
@@ -218,12 +213,12 @@ class NearestNeighborDelta:
             # Pass through meta columns
             rows["nn_id"] = g.loc[valid_mask, nn_id_col].to_numpy()
             rows[id_col] = focal_id
-            if p.group_col in g.columns:
-                rows[p.group_col] = g.loc[valid_mask, p.group_col].to_numpy()
-            if p.sequence_col in g.columns:
-                rows[p.sequence_col] = g.loc[valid_mask, p.sequence_col].to_numpy()
-            if p.time_col in g.columns:
-                rows[p.time_col] = g.loc[valid_mask, p.time_col].to_numpy()
+            if p.columns.group_col in g.columns:
+                rows[p.columns.group_col] = g.loc[valid_mask, p.columns.group_col].to_numpy()
+            if p.columns.seq_col in g.columns:
+                rows[p.columns.seq_col] = g.loc[valid_mask, p.columns.seq_col].to_numpy()
+            if p.columns.time_col in g.columns:
+                rows[p.columns.time_col] = g.loc[valid_mask, p.columns.time_col].to_numpy()
             for passthrough in ("group_size", "event", p.focal_col):
                 if passthrough in g.columns and passthrough not in rows.columns:
                     rows[passthrough] = g.loc[valid_mask, passthrough].to_numpy()
@@ -239,9 +234,9 @@ class NearestNeighborDelta:
             c
             for c in (
                 frame_col,
-                p.time_col,
-                p.group_col,
-                p.sequence_col,
+                p.columns.time_col,
+                p.columns.group_col,
+                p.columns.seq_col,
                 id_col,
                 "nn_id",
             )

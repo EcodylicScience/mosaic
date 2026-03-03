@@ -31,9 +31,6 @@ class IdTagColumns:
         label_kind: str = "id_tags"
         fields: list[str] | None = None
         field_renames: dict[str, str] | None = None
-        frame_col: str = "frame"
-        time_col: str = "time"
-        sequence_col: str = "sequence"
 
     def __init__(self, params: dict[str, object] | None = None):
         self.params = self.Params.from_overrides(params)
@@ -83,11 +80,11 @@ class IdTagColumns:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p.id_col
-        frame_col = p.frame_col
-        time_col = p.time_col
-        group_col = p.group_col
-        sequence_col = p.sequence_col
+        id_col = p.columns.id_col
+        frame_col = p.columns.frame_col
+        time_col = p.columns.time_col
+        group_col = p.columns.group_col
+        sequence_col = p.columns.seq_col
 
         group_val = (
             str(df[group_col].iloc[0])

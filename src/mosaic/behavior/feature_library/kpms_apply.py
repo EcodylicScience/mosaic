@@ -228,7 +228,7 @@ class KpmsApply:
             p.pose_prefix_x,
             p.pose_prefix_y,
             p.pose_confidence_prefix,
-            p.id_col,
+            p.columns.id_col,
             None,
             groups=scope_groups,
             sequences=scope_sequences,

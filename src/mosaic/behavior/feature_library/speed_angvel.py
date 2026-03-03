@@ -5,10 +5,11 @@ from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumnsMixin
+from ._param_bases import FeatureParams, PositionColumns
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
@@ -45,8 +46,8 @@ class SpeedAngvel:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, PositionColumnsMixin):
-        time_col: str = "time"
+    class Params(FeatureParams):
+        position: PositionColumns = Field(default_factory=PositionColumns)
         step_size: int | None = None
 
     def __init__(self, params: dict[str, object] | None = None):
@@ -93,7 +94,7 @@ class SpeedAngvel:
         p = self.params
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
-        id_col = p.id_col
+        id_col = p.columns.id_col
 
         if id_col not in df.columns:
             raise ValueError(f"Missing id column '{id_col}' for per-id speed/angvel.")
@@ -108,7 +109,7 @@ class SpeedAngvel:
 
     # ------------------ Internal helpers ------------------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -142,15 +143,17 @@ class SpeedAngvel:
 
     def _compute_one_id(self, sub: pd.DataFrame, p, order_col: str) -> pd.DataFrame:
         sub = sub.sort_values(order_col).reset_index(drop=True)
-        x = sub[p.x_col].to_numpy(dtype=float)
-        y = sub[p.y_col].to_numpy(dtype=float)
+        x = sub[p.position.x_col].to_numpy(dtype=float)
+        y = sub[p.position.y_col].to_numpy(dtype=float)
         angle = (
-            sub[p.angle_col].to_numpy(dtype=float)
-            if p.angle_col in sub.columns
+            sub[p.position.angle_col].to_numpy(dtype=float)
+            if p.position.angle_col in sub.columns
             else None
         )
         time_arr = (
-            sub[p.time_col].to_numpy(dtype=float) if p.time_col in sub.columns else None
+            sub[p.columns.time_col].to_numpy(dtype=float)
+            if p.columns.time_col in sub.columns
+            else None
         )
 
         out = pd.DataFrame(
@@ -173,7 +176,7 @@ class SpeedAngvel:
                 )
 
         # Attach meta columns from this sub-id
-        for c in ("frame", "time", p.seq_col, p.group_col, p.id_col):
+        for c in ("frame", "time", p.columns.seq_col, p.columns.group_col, p.columns.id_col):
             if c in sub.columns:
                 out[c] = sub[c].values
         return out

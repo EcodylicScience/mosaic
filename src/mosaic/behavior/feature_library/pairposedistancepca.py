@@ -12,7 +12,7 @@ from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationMixin
+from ._param_bases import FeatureParams, InterpolationConfig
 
 
 @final
@@ -28,7 +28,8 @@ class PairPoseDistancePCA:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, InterpolationMixin):
+    class Params(FeatureParams):
+        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
         pose_n: int = 7
         pose_indices: list[int] | None = None
         x_prefix: str = "poseX"
@@ -93,7 +94,7 @@ class PairPoseDistancePCA:
                 out["id1"] = meta_frames["id1"]
             if "id2" in meta_frames:
                 out["id2"] = meta_frames["id2"]
-            for col in (self.params.seq_col, self.params.group_col):
+            for col in (self.params.columns.seq_col, self.params.columns.group_col):
                 if col in df.columns:
                     out[col] = df[col].iloc[0]
             pcs.append(out)
@@ -157,7 +158,7 @@ class PairPoseDistancePCA:
         return xs, ys
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -170,12 +171,12 @@ class PairPoseDistancePCA:
         g = g.set_index(order_col)
         g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
         g[pose_cols] = g[pose_cols].interpolate(
-            method="linear", limit=p.linear_interp_limit, limit_direction="both"
+            method="linear", limit=p.interpolation.linear_interp_limit, limit_direction="both"
         )
-        g[pose_cols] = g[pose_cols].ffill(limit=p.edge_fill_limit)
-        g[pose_cols] = g[pose_cols].bfill(limit=p.edge_fill_limit)
+        g[pose_cols] = g[pose_cols].ffill(limit=p.interpolation.edge_fill_limit)
+        g[pose_cols] = g[pose_cols].bfill(limit=p.interpolation.edge_fill_limit)
         miss_frac = g[pose_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
+        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
         if g[pose_cols].isna().any().any():
             med = g[pose_cols].median()
             g[pose_cols] = g[pose_cols].fillna(med)
@@ -189,7 +190,7 @@ class PairPoseDistancePCA:
         pose_cols = x_cols + y_cols
         order_col = self._order_col(df)
 
-        need = [self.params.id_col, self.params.seq_col, order_col] + pose_cols
+        need = [self.params.columns.id_col, self.params.columns.seq_col, order_col] + pose_cols
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-posedistance-pca] Missing cols: {missing}")
@@ -198,7 +199,7 @@ class PairPoseDistancePCA:
         if order_col == "frame":
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
-        group_cols = [self.params.seq_col, self.params.id_col]
+        group_cols = [self.params.columns.seq_col, self.params.columns.id_col]
 
         def wrapped_func(g):
             result = self._clean_one_animal(g, pose_cols, order_col)
@@ -214,8 +215,8 @@ class PairPoseDistancePCA:
         )
 
         pairs: List[Tuple[Any, Any, Any]] = []
-        for seq, gseq in df_small.groupby(self.params.seq_col):
-            ids = sorted(gseq[self.params.id_col].unique())
+        for seq, gseq in df_small.groupby(self.params.columns.seq_col):
+            ids = sorted(gseq[self.params.columns.id_col].unique())
             if len(ids) < 2:
                 continue
             for idA, idB in combinations(ids, 2):
@@ -267,9 +268,9 @@ class PairPoseDistancePCA:
         dup = self.params.duplicate_perspective
 
         for seq, idA, idB in pairs:
-            gseq = df_small[df_small[self.params.seq_col] == seq]
-            A = gseq[gseq[self.params.id_col] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[self.params.id_col] == idB][[order_col] + pose_cols].copy()
+            gseq = df_small[df_small[self.params.columns.seq_col] == seq]
+            A = gseq[gseq[self.params.columns.id_col] == idA][[order_col] + pose_cols].copy()
+            B = gseq[gseq[self.params.columns.id_col] == idB][[order_col] + pose_cols].copy()
             A = A.sort_values(order_col)
             B = B.sort_values(order_col)
             AB = A.merge(B, on=order_col, suffixes=("_A", "_B"))

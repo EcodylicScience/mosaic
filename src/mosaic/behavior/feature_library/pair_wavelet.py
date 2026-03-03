@@ -22,7 +22,7 @@ except Exception:
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams
+from ._param_bases import FeatureParams, SamplingConfig
 
 
 @final
@@ -52,7 +52,7 @@ class PairWavelet:
     output_type = "per_frame"
 
     class Params(FeatureParams):
-        fps_default: float = Field(default=30.0, gt=0)
+        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         f_min: float = Field(default=0.2, gt=0)
         f_max: float = Field(default=5.0, gt=0)
         n_freq: int = Field(default=25, gt=0)
@@ -77,8 +77,8 @@ class PairWavelet:
             return pc_cols
         # 3) Auto-detect: all numeric columns except known meta
         meta_like = {
-            self.params.seq_col,
-            self.params.group_col,
+            self.params.columns.seq_col,
+            self.params.columns.group_col,
             "frame",
             "time",
             "perspective",
@@ -135,7 +135,7 @@ class PairWavelet:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = self._order_col(df)
-        fps = self._infer_fps(df, p.fps_default)
+        fps = self._infer_fps(df, p.sampling.fps_default)
         in_cols = self._select_input_columns(df)
         if "perspective" not in df.columns:
             raise ValueError("[pair-wavelet] Missing 'perspective' column.")
@@ -197,7 +197,7 @@ class PairWavelet:
                 block["id2"] = cur_id2
 
             # optional passthrough
-            for col in (p.seq_col, p.group_col):
+            for col in (p.columns.seq_col, p.columns.group_col):
                 if col in df.columns:
                     block[col] = df[col].iloc[0]
 
@@ -234,7 +234,7 @@ class PairWavelet:
 
     # ---- internals ----
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column in df.")

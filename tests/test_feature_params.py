@@ -7,10 +7,11 @@ from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
 from mosaic.behavior.feature_library._param_bases import (
+    ColumnConfig,
     FeatureParams,
-    InterpolationMixin,
-    PositionColumnsMixin,
-    SamplingMixin,
+    InterpolationConfig,
+    PositionColumns,
+    SamplingConfig,
 )
 
 
@@ -19,66 +20,69 @@ from mosaic.behavior.feature_library._param_bases import (
 
 def test_defaults() -> None:
     p = FeatureParams()
-    assert p.id_col == "id"
-    assert p.seq_col == "sequence"
-    assert p.group_col == "group"
-    assert p.order_pref == ("frame", "time")
+    assert p.columns.id_col == "id"
+    assert p.columns.seq_col == "sequence"
+    assert p.columns.group_col == "group"
+    assert p.columns.order_pref == ("frame", "time")
 
 
 def test_getitem() -> None:
     p = FeatureParams()
-    assert p["id_col"] == "id"
+    assert p["columns"] == ColumnConfig()
     with pytest.raises(KeyError):
         p["nonexistent"]
 
 
 def test_get_with_default() -> None:
     p = FeatureParams()
-    assert p.get("id_col") == "id"
+    assert p.get("columns") == ColumnConfig()
     assert p.get("nonexistent", "fallback") == "fallback"
     assert p.get("nonexistent") is None
 
 
 def test_contains() -> None:
     p = FeatureParams()
-    assert "id_col" in p
+    assert "columns" in p
+    assert "id_col" not in p
     assert "nonexistent" not in p
 
 
 def test_keys() -> None:
     p = FeatureParams()
-    assert set(p.keys()) == {"id_col", "seq_col", "group_col", "order_pref"}
+    assert set(p.keys()) == {"columns"}
 
 
 def test_dict_spread() -> None:
     p = FeatureParams()
     d = {**p}
-    assert d == {"id_col": "id", "seq_col": "sequence", "group_col": "group",
-                 "order_pref": ("frame", "time")}
+    assert "columns" in d
+    assert isinstance(d["columns"], ColumnConfig)
 
 
 def test_dict_spread_with_extra_key() -> None:
     p = FeatureParams()
     d = {**p, "_scope": None}
     assert "_scope" in d
-    assert d["id_col"] == "id"
+    assert "columns" in d
 
 
 def test_from_overrides_empty() -> None:
     p = FeatureParams.from_overrides(None)
-    assert p.id_col == "id"
+    assert p.columns.id_col == "id"
     p2 = FeatureParams.from_overrides({})
-    assert p2.id_col == "id"
+    assert p2.columns.id_col == "id"
 
 
 def test_from_overrides_rejects_none_for_str_field() -> None:
     with pytest.raises(ValidationError):
-        FeatureParams.from_overrides({"id_col": None, "seq_col": "seq"})
+        FeatureParams.from_overrides(
+            {"columns": {"id_col": None, "seq_col": "seq"}}
+        )
 
 
 def test_from_overrides_applies_values() -> None:
-    p = FeatureParams.from_overrides({"id_col": "animal_id"})
-    assert p.id_col == "animal_id"
+    p = FeatureParams.from_overrides({"columns": {"id_col": "animal_id"}})
+    assert p.columns.id_col == "animal_id"
 
 
 class _InnerModel(_PydanticBaseModel):
@@ -107,40 +111,45 @@ def test_extra_forbid() -> None:
         FeatureParams(bogus="x")
 
 
-# --- Mixins ---
+# --- Composition ---
 
 
-class _MixedParams(FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin):
-    pass
+class _ComposedParams(FeatureParams):
+    position: PositionColumns = Field(default_factory=PositionColumns)
+    interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
+    sampling: SamplingConfig = Field(default_factory=SamplingConfig)
 
 
-def test_mixin_constraints() -> None:
+def test_group_constraints() -> None:
     with pytest.raises(ValidationError):
-        _MixedParams(linear_interp_limit=0)
+        _ComposedParams(interpolation=InterpolationConfig(linear_interp_limit=0))
     with pytest.raises(ValidationError):
-        _MixedParams(max_missing_fraction=1.5)
+        _ComposedParams(interpolation=InterpolationConfig(max_missing_fraction=1.5))
     with pytest.raises(ValidationError):
-        _MixedParams(fps_default=-1.0)
+        _ComposedParams(sampling=SamplingConfig(fps_default=-1.0))
 
 
-def test_mixin_keys_in_spread() -> None:
-    p = _MixedParams()
+def test_group_keys_in_spread() -> None:
+    p = _ComposedParams()
     d = {**p}
-    assert "x_col" in d
-    assert "fps_default" in d
-    assert "linear_interp_limit" in d
+    assert "position" in d
+    assert "sampling" in d
+    assert "interpolation" in d
+    assert "columns" in d
 
 
 # --- Subclass override ---
 
 
 class _OverrideParams(FeatureParams):
-    group_col: str = "event"
+    columns: ColumnConfig = Field(
+        default_factory=lambda: ColumnConfig(group_col="event")
+    )
 
 
 def test_subclass_can_override_base_default() -> None:
     p = _OverrideParams()
-    assert p.group_col == "event"
+    assert p.columns.group_col == "event"
 
 
 # --- dataset.py integration ---
@@ -149,13 +158,13 @@ def test_subclass_can_override_base_default() -> None:
 def test_hash_params_with_model() -> None:
     from mosaic.core.dataset import _hash_params
     p = FeatureParams()
-    d = {**p}
+    d = p.model_dump()
     assert _hash_params(p) == _hash_params(d)
 
 
 def test_hash_params_deterministic() -> None:
     from mosaic.core.dataset import _hash_params
-    p = FeatureParams(id_col="x")
+    p = FeatureParams(columns=ColumnConfig(id_col="x"))
     assert _hash_params(p) == _hash_params(p)
 
 
@@ -164,8 +173,8 @@ def test_json_ready_with_model() -> None:
     p = FeatureParams()
     result = _json_ready(p)
     assert isinstance(result, dict)
-    assert result["id_col"] == "id"
-    # must be JSON-serializable
+    assert isinstance(result["columns"], dict)
+    assert result["columns"]["id_col"] == "id"
     json.dumps(result)
 
 
@@ -312,3 +321,42 @@ def test_inputs_overridden_same_as_default() -> None:
     default_inputs_dump = [inp.model_dump() for inp in GlobalTSNE.Params().inputs]
     gt = GlobalTSNE({"inputs": default_inputs_dump})
     assert gt._inputs_overridden is False
+
+
+# --- Composition merge tests ---
+
+
+def test_from_overrides_partial_group_merge() -> None:
+    """Partial override of a group model merges with defaults."""
+    p = _ComposedParams.from_overrides(
+        {"position": {"x_col": "X#wcentroid"}}
+    )
+    assert p.position.x_col == "X#wcentroid"
+    assert p.position.y_col == "Y"
+    assert p.position.angle_col == "ANGLE"
+
+
+def test_from_overrides_nested_group_merge() -> None:
+    """Partial override of ColumnConfig merges with defaults."""
+    p = FeatureParams.from_overrides(
+        {"columns": {"id_col": "animal_id"}}
+    )
+    assert p.columns.id_col == "animal_id"
+    assert p.columns.seq_col == "sequence"
+
+
+def test_per_feature_default_override() -> None:
+    """Feature can override individual group defaults via lambda factory."""
+
+    class _CustomParams(FeatureParams):
+        position: PositionColumns = Field(
+            default_factory=lambda: PositionColumns(x_col="X#wcentroid")
+        )
+
+    p = _CustomParams()
+    assert p.position.x_col == "X#wcentroid"
+    assert p.position.y_col == "Y"
+
+    # User can still override at runtime
+    p2 = _CustomParams.from_overrides({"position": {"x_col": "custom"}})
+    assert p2.position.x_col == "custom"

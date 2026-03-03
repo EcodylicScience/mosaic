@@ -14,7 +14,7 @@ from scipy.spatial.distance import cdist
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumnsMixin
+from ._param_bases import FeatureParams, PositionColumns
 
 # ===== Numba-accelerated union-find for connected components =====
 
@@ -109,9 +109,8 @@ class FFGroups:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, PositionColumnsMixin):
-        frame_col: str = "frame"
-        time_col: str = "time"
+    class Params(FeatureParams):
+        position: PositionColumns = Field(default_factory=PositionColumns)
         distance_cutoff: float = Field(default=50.0, gt=0)
         window_size: int = Field(default=5, ge=1)
         min_event_duration: int = Field(default=1, ge=1)
@@ -158,11 +157,11 @@ class FFGroups:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p.id_col
-        x_col, y_col = p.x_col, p.y_col
-        frame_col = p.frame_col
-        time_col = p.time_col
-        group_col, seq_col = p.group_col, p.seq_col
+        id_col = p.columns.id_col
+        x_col, y_col = p.position.x_col, p.position.y_col
+        frame_col = p.columns.frame_col
+        time_col = p.columns.time_col
+        group_col, seq_col = p.columns.group_col, p.columns.seq_col
         distance_cutoff = p.distance_cutoff
         win = max(1, p.window_size)
         if np.mod(win, 2) == 0:

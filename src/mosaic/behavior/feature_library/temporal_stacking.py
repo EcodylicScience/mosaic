@@ -57,7 +57,6 @@ class TemporalStackingFeature:
             sigma_pool: Gaussian sigma for pooling. Default 30.0.
             fps: Frames per second. Default 30.0.
             win_sec: Window size in seconds. Default 0.5.
-            sequence_col: Sequence column name. Default "sequence".
             write_chunk_size: Rows per output chunk. Default 1000.
             stack_chunk_size: Rows per stacking chunk. Default 1000.
         """
@@ -73,7 +72,6 @@ class TemporalStackingFeature:
         sigma_pool: float = 30.0
         fps: float = Field(default=30.0, gt=0)
         win_sec: float = Field(default=0.5, gt=0)
-        sequence_col: str = "sequence"
         write_chunk_size: int = Field(default=1000, ge=1)
         stack_chunk_size: int = Field(default=1000, ge=1)
 
@@ -171,8 +169,8 @@ class TemporalStackingFeature:
             raise RuntimeError("temporal-stack: dataset not bound.")
         self._ensure_inputs_ready()
 
-        seq_col = self.params.sequence_col
-        group_col = self.params.group_col
+        seq_col = self.params.columns.seq_col
+        group_col = self.params.columns.group_col
         sequence = (
             str(df[seq_col].iloc[0]) if seq_col in df.columns and not df.empty else None
         )

@@ -478,7 +478,7 @@ class KpmsFit:
             p.pose_prefix_x,
             p.pose_prefix_y,
             p.pose_confidence_prefix,
-            p.id_col,
+            p.columns.id_col,
             p.bodypart_names,
             groups=scope_groups,
             sequences=scope_sequences,

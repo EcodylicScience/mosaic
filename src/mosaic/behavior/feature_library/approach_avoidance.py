@@ -25,7 +25,7 @@ Output columns (per frame × pair):
 from __future__ import annotations
 
 from itertools import combinations
-from typing import List, Literal, Optional, final
+from typing import List, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,12 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationMixin, PositionColumnsMixin
+from ._param_bases import (
+    FeatureParams,
+    InterpolationConfig,
+    PositionColumns,
+    SamplingConfig,
+)
 
 
 def _contiguous_runs(
@@ -65,9 +70,11 @@ class ApproachAvoidance:
     parallelizable = True
     output_type = "per_frame"
 
-    class Params(FeatureParams, PositionColumnsMixin, InterpolationMixin):
+    class Params(FeatureParams):
+        position: PositionColumns = Field(default_factory=PositionColumns)
+        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
+        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         orientation_col: str = "ANGLE"
-        fps_default: float = Field(default=30.0, gt=0)
         velocity_units: Literal["per_frame", "per_second"] = "per_frame"
         angle_units: Literal["radians", "degrees", "auto"] = "radians"
         consecutive_frame_delta: float = 1.0
@@ -95,7 +102,7 @@ class ApproachAvoidance:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -131,9 +138,15 @@ class ApproachAvoidance:
         order_col = self._order_col(df)
         use_ori_gate = p.use_approacher_orientation_gate
 
-        need = [p.id_col, p.seq_col, order_col, p.x_col, p.y_col]
-        if p.group_col in df.columns:
-            need.append(p.group_col)
+        need = [
+            p.columns.id_col,
+            p.columns.seq_col,
+            order_col,
+            p.position.x_col,
+            p.position.y_col,
+        ]
+        if p.columns.group_col in df.columns:
+            need.append(p.columns.group_col)
         if use_ori_gate:
             need.append(p.orientation_col)
         missing = [c for c in need if c not in df.columns]
@@ -146,8 +159,8 @@ class ApproachAvoidance:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p.seq_col, p.id_col]
-        data_cols = [p.x_col, p.y_col]
+        group_cols = [p.columns.seq_col, p.columns.id_col]
+        data_cols = [p.position.x_col, p.position.y_col]
         if p.orientation_col in df_small.columns:
             data_cols.append(p.orientation_col)
 
@@ -167,8 +180,8 @@ class ApproachAvoidance:
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p.seq_col):
-            ids = sorted(gseq[p.id_col].unique())
+        for seq, gseq in df_small.groupby(p.columns.seq_col):
+            ids = sorted(gseq[p.columns.id_col].unique())
             if len(ids) < 2:
                 continue
             for id_a, id_b in combinations(ids, 2):
@@ -202,15 +215,15 @@ class ApproachAvoidance:
         id_b: int,
         order_col: str,
         orig_df: pd.DataFrame,
-    ) -> Optional[pd.DataFrame]:
+    ) -> pd.DataFrame | None:
         p = self.params
 
         use_ori_gate = p.use_approacher_orientation_gate
-        cols = [order_col, p.x_col, p.y_col]
+        cols = [order_col, p.position.x_col, p.position.y_col]
         if use_ori_gate and p.orientation_col in gseq.columns:
             cols.append(p.orientation_col)
-        A = gseq[gseq[p.id_col] == id_a][cols].copy()
-        B = gseq[gseq[p.id_col] == id_b][cols].copy()
+        A = gseq[gseq[p.columns.id_col] == id_a][cols].copy()
+        B = gseq[gseq[p.columns.id_col] == id_b][cols].copy()
 
         if A.empty or B.empty:
             return None
@@ -223,7 +236,7 @@ class ApproachAvoidance:
             return None
 
         # Get fps
-        fps = p.fps_default
+        fps = p.sampling.fps_default
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()
@@ -233,10 +246,10 @@ class ApproachAvoidance:
                 pass
 
         # Extract positions
-        x_a = j[f"{p.x_col}_A"].to_numpy(dtype=np.float64)
-        y_a = j[f"{p.y_col}_A"].to_numpy(dtype=np.float64)
-        x_b = j[f"{p.x_col}_B"].to_numpy(dtype=np.float64)
-        y_b = j[f"{p.y_col}_B"].to_numpy(dtype=np.float64)
+        x_a = j[f"{p.position.x_col}_A"].to_numpy(dtype=np.float64)
+        y_a = j[f"{p.position.y_col}_A"].to_numpy(dtype=np.float64)
+        x_b = j[f"{p.position.x_col}_B"].to_numpy(dtype=np.float64)
+        y_b = j[f"{p.position.y_col}_B"].to_numpy(dtype=np.float64)
         frames = j["frame"].to_numpy().astype(int)
         n = len(frames)
         eps = 1e-12
@@ -423,7 +436,7 @@ class ApproachAvoidance:
             }
         )
 
-        for col in (p.seq_col, p.group_col):
+        for col in (p.columns.seq_col, p.columns.group_col):
             if col in gseq.columns:
                 out[col] = gseq[col].iloc[0]
             elif col in orig_df.columns:
@@ -517,7 +530,7 @@ class ApproachAvoidance:
     # ----------------------- Helpers -----------------------------
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.order_pref:
+        for c in self.params.columns.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -535,14 +548,14 @@ class ApproachAvoidance:
         g[data_cols] = g[data_cols].replace([np.inf, -np.inf], np.nan)
         g[data_cols] = g[data_cols].interpolate(
             method="linear",
-            limit=p.linear_interp_limit,
+            limit=p.interpolation.linear_interp_limit,
             limit_direction="both",
         )
-        g[data_cols] = g[data_cols].ffill(limit=p.edge_fill_limit)
-        g[data_cols] = g[data_cols].bfill(limit=p.edge_fill_limit)
+        g[data_cols] = g[data_cols].ffill(limit=p.interpolation.edge_fill_limit)
+        g[data_cols] = g[data_cols].bfill(limit=p.interpolation.edge_fill_limit)
 
         miss_frac = g[data_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
+        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
 
         if g[data_cols].isna().any().any():
             med = g[data_cols].median()
