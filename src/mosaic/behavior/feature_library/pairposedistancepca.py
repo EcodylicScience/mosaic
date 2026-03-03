@@ -12,7 +12,7 @@ from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationConfig
+from ._param_bases import FeatureParams, InterpolationConfig, resolve_order_col
 
 
 @final
@@ -157,12 +157,6 @@ class PairPoseDistancePCA:
         ys = [f"{self.params.y_prefix}{i}" for i in indices]
         return xs, ys
 
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
-
     def _clean_one_animal(
         self, g: pd.DataFrame, pose_cols: List[str], order_col: str
     ) -> pd.DataFrame:
@@ -188,7 +182,7 @@ class PairPoseDistancePCA:
     ) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(self.params.columns, df)
 
         need = [self.params.columns.id_col, self.params.columns.seq_col, order_col] + pose_cols
         missing = [c for c in need if c not in df.columns]
@@ -261,7 +255,7 @@ class PairPoseDistancePCA:
     ) -> Iterable[Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(self.params.columns, df)
 
         df_small, pairs = self._prep_pairs(df)
         bs = self.params.batch_size

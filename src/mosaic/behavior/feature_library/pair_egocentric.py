@@ -16,7 +16,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationConfig, SamplingConfig
+from ._param_bases import FeatureParams, InterpolationConfig, SamplingConfig, resolve_order_col
 
 
 @final
@@ -81,7 +81,7 @@ class PairEgocentricFeatures:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(self.params.columns, df)
         p = self.params
 
         need = [p.columns.id_col, p.columns.seq_col, order_col] + pose_cols
@@ -215,12 +215,6 @@ class PairEgocentricFeatures:
         xs = [f"{self.params.x_prefix}{i}" for i in indices]
         ys = [f"{self.params.y_prefix}{i}" for i in indices]
         return xs, ys
-
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
     def _clean_one_animal(
         self, g: pd.DataFrame, pose_cols: List[str], order_col: str

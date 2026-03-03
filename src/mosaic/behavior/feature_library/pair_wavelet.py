@@ -22,7 +22,7 @@ except Exception:
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, SamplingConfig
+from ._param_bases import FeatureParams, SamplingConfig, resolve_order_col
 
 
 @final
@@ -134,7 +134,7 @@ class PairWavelet:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
         fps = self._infer_fps(df, p.sampling.fps_default)
         in_cols = self._select_input_columns(df)
         if "perspective" not in df.columns:
@@ -233,12 +233,6 @@ class PairWavelet:
         return out
 
     # ---- internals ----
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column in df.")
-
     def _infer_fps(self, df: pd.DataFrame, default: float) -> float:
         if "fps" in df.columns:
             vals = pd.Series(df["fps"]).dropna().unique()

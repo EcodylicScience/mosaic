@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 # from mosaic.core.dataset import register_feature  # <-- uncomment when ready
-from ._param_bases import FeatureParams
+from ._param_bases import FeatureParams, resolve_order_col
 
 
 @final
@@ -119,7 +119,7 @@ class MyPerSequenceFeature:
             return pd.DataFrame()
 
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
 
         # Detect pair structure
         has_pairs = "id1" in df.columns and "id2" in df.columns
@@ -207,12 +207,6 @@ class MyPerSequenceFeature:
         return out
 
     # ----------------------- Internal helpers --------------------
-
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
     def _compute(self, X: np.ndarray, params: Params) -> np.ndarray:
         """

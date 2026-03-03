@@ -30,6 +30,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pandas-stubs>=2.2.2.240807",
     "pytest>=8.0",
     "ruff>=0.15.4",
 ]

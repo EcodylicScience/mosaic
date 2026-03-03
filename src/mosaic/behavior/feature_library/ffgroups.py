@@ -14,7 +14,7 @@ from scipy.spatial.distance import cdist
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns
+from ._param_bases import FeatureParams, PositionColumns, resolve_order_col
 
 # ===== Numba-accelerated union-find for connected components =====
 
@@ -170,9 +170,10 @@ class FFGroups:
         min_event = p.min_event_duration
 
         # Basic ordering and bookkeeping
-        order_cols = [c for c in (frame_col, time_col) if c in df.columns]
-        if order_cols:
-            df = df.sort_values(order_cols).reset_index(drop=True)
+        try:
+            df = df.sort_values(resolve_order_col(p.columns, df)).reset_index(drop=True)
+        except ValueError:
+            pass
         group_val = str(df[group_col].iloc[0]) if group_col in df.columns else ""
         seq_val = str(df[seq_col].iloc[0]) if seq_col in df.columns else ""
 

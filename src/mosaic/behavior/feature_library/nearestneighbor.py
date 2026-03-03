@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns
+from ._param_bases import FeatureParams, PositionColumns, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -93,7 +93,7 @@ class NearestNeighbor:
             return pd.DataFrame()
 
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
         angles = (
@@ -173,8 +173,3 @@ class NearestNeighbor:
         return out
 
     # ------------------ Internal helpers ------------------------
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")

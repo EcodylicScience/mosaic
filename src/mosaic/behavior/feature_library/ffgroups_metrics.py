@@ -10,7 +10,7 @@ from pydantic import Field
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
 
-from ._param_bases import ColumnConfig, FeatureParams, PositionColumns
+from ._param_bases import ColumnConfig, FeatureParams, PositionColumns, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -95,7 +95,7 @@ class FFGroupsMetrics:
             return pd.DataFrame()
 
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
         required = [p.position.x_col, p.position.y_col, p.heading_col, p.speed_col, p.columns.id_col]
@@ -135,12 +135,6 @@ class FFGroupsMetrics:
         return pd.concat(summaries, ignore_index=True)
 
     # ------------------ Internal helpers ------------------------
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
-
     def _compute_per_frame(
         self, df: pd.DataFrame, p: Params, group_keys: list
     ) -> pd.DataFrame:

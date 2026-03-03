@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns, SamplingConfig
+from ._param_bases import FeatureParams, PositionColumns, SamplingConfig, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -137,12 +137,9 @@ class NearestNeighborDelta:
             return pd.DataFrame()
 
         # Order for reproducibility
-        order_col = (
-            frame_col
-            if frame_col in df.columns
-            else (p.columns.time_col if p.columns.time_col in df else None)
-        )
-        if order_col is None:
+        try:
+            order_col = resolve_order_col(p.columns, df)
+        except ValueError:
             return pd.DataFrame()
         df = df.sort_values([order_col, id_col]).reset_index(drop=True)
 

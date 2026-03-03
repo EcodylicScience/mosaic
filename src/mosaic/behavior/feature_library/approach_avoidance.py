@@ -38,6 +38,7 @@ from ._param_bases import (
     InterpolationConfig,
     PositionColumns,
     SamplingConfig,
+    resolve_order_col,
 )
 
 
@@ -135,7 +136,7 @@ class ApproachAvoidance:
             return pd.DataFrame()
 
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
         use_ori_gate = p.use_approacher_orientation_gate
 
         need = [
@@ -528,12 +529,6 @@ class ApproachAvoidance:
         return out
 
     # ----------------------- Helpers -----------------------------
-
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
     def _clean_one_animal(
         self,

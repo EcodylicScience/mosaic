@@ -12,6 +12,7 @@ from mosaic.behavior.feature_library._param_bases import (
     InterpolationConfig,
     PositionColumns,
     SamplingConfig,
+    resolve_order_col,
 )
 
 
@@ -23,7 +24,36 @@ def test_defaults() -> None:
     assert p.columns.id_col == "id"
     assert p.columns.seq_col == "sequence"
     assert p.columns.group_col == "group"
-    assert p.columns.order_pref == ("frame", "time")
+    assert p.columns.order_by == "frames"
+
+
+def test_resolve_order_col_frames_first() -> None:
+    import pandas as pd
+    cols = ColumnConfig()  # order_by="frames"
+    df = pd.DataFrame({"frame": [1, 2], "time": [0.0, 0.1]})
+    assert resolve_order_col(cols, df) == "frame"
+
+
+def test_resolve_order_col_time_first() -> None:
+    import pandas as pd
+    cols = ColumnConfig(order_by="time")
+    df = pd.DataFrame({"frame": [1, 2], "time": [0.0, 0.1]})
+    assert resolve_order_col(cols, df) == "time"
+
+
+def test_resolve_order_col_fallback() -> None:
+    import pandas as pd
+    cols = ColumnConfig(order_by="time")
+    df = pd.DataFrame({"frame": [1, 2]})  # no time column
+    assert resolve_order_col(cols, df) == "frame"
+
+
+def test_resolve_order_col_missing_both() -> None:
+    import pandas as pd
+    cols = ColumnConfig()
+    df = pd.DataFrame({"x": [1]})
+    with pytest.raises(ValueError, match="Need"):
+        resolve_order_col(cols, df)
 
 
 def test_getitem() -> None:

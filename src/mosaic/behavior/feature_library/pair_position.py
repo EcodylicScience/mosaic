@@ -26,6 +26,7 @@ from ._param_bases import (
     InterpolationConfig,
     PositionColumns,
     SamplingConfig,
+    resolve_order_col,
 )
 
 
@@ -91,7 +92,7 @@ class PairPositionFeatures:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        order_col = self._order_col(df)
+        order_col = resolve_order_col(p.columns, df)
 
         # Required columns
         need = [
@@ -375,12 +376,6 @@ class PairPositionFeatures:
         return frames, AtoB, BtoA, names
 
     # ------------- Helpers -------------
-    def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params.columns.order_pref:
-            if c in df.columns:
-                return c
-        raise ValueError("Need either 'frame' or 'time' column to order rows.")
-
     def _clean_one_animal(
         self, g: pd.DataFrame, data_cols: List[str], order_col: str
     ) -> pd.DataFrame:

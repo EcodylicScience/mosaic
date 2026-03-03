@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import KeysView
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,17 +17,19 @@ class DictModel(BaseModel):
     transparently with typed models.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
     def __getitem__(self, key: str) -> object:
         try:
-            return getattr(self, key)
+            val: object = getattr(self, key)  # pyright: ignore[reportAny]
+            return val
         except AttributeError:
             raise KeyError(key)
 
     def get(self, key: str, default: object = None) -> object:
         try:
-            return getattr(self, key)
+            val: object = getattr(self, key)  # pyright: ignore[reportAny]
+            return val
         except AttributeError:
             return default
 
@@ -45,8 +50,8 @@ class ColumnConfig(DictModel):
         group_col: Group/session identifier column. Default "group".
         frame_col: Frame number column name. Default "frame".
         time_col: Timestamp column name. Default "time".
-        order_pref: Column names to use for temporal ordering, tried in order.
-            Default ("frame", "time").
+        order_by: Preferred temporal ordering column. "frames" tries frame_col
+            first, "time" tries time_col first. Default "frames".
     """
 
     id_col: str = "id"
@@ -54,7 +59,26 @@ class ColumnConfig(DictModel):
     group_col: str = "group"
     frame_col: str = "frame"
     time_col: str = "time"
-    order_pref: tuple[str, ...] = ("frame", "time")
+    order_by: Literal["frames", "time"] = "frames"
+
+
+def resolve_order_col(columns: ColumnConfig, df: pd.DataFrame) -> str:
+    """Pick the best ordering column present in *df*.
+
+    Checks ``columns.order_by`` preference first, then falls back to the
+    other option.  Raises ``ValueError`` when neither column exists.
+    """
+    if columns.order_by == "frames":
+        first, second = columns.frame_col, columns.time_col
+    else:
+        first, second = columns.time_col, columns.frame_col
+    if first in df.columns:
+        return first
+    if second in df.columns:
+        return second
+    raise ValueError(
+        f"Need '{columns.frame_col}' or '{columns.time_col}' column to order rows."
+    )
 
 
 class PositionColumns(DictModel):
@@ -133,7 +157,7 @@ class FeatureParams(DictModel):
             field_info = cls.model_fields.get(key)
             if field_info is None or field_info.default_factory is None:
                 continue
-            default_obj = field_info.get_default(call_default_factory=True)
+            default_obj: object = field_info.get_default(call_default_factory=True)  # pyright: ignore[reportAny]
             if isinstance(default_obj, BaseModel):
                 merged[key] = {**default_obj.model_dump(), **value}
         return cls.model_validate(merged)
