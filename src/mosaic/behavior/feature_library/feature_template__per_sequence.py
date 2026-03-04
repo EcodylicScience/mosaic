@@ -4,7 +4,7 @@ Template for a per-sequence feature.
 Copy this file, rename the class and `name`, and fill in your logic.
 
 Current patterns this template follows (as of 2026-02):
-  - Uses _merge_params from helpers (not a local copy)
+  - Uses Pydantic FeatureParams for typed, validated parameters
   - Declares output_type for feature registry
   - Handles pair-aware (id1/id2) and single-individual inputs
   - Includes id1/id2 columns in output when present
@@ -14,17 +14,19 @@ Current patterns this template follows (as of 2026-02):
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List
+from typing import final
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
-from .helpers import _merge_params
-from mosaic.core.helpers import to_safe_name
+# from mosaic.core.dataset import register_feature  # <-- uncomment when ready
+from ._param_bases import FeatureParams
 
 
+@final
 # @register_feature   # <-- uncomment when your feature is ready
 class MyPerSequenceFeature:
     """
@@ -47,27 +49,26 @@ class MyPerSequenceFeature:
     # Stored under dataset_root/features/<name>/
     name = "my-new-feature"
     version = "0.1"
-    parallelizable = True       # safe if transform(df) only depends on df
-    output_type = "per_frame"   # "per_frame" | "summary" | "global"
+    parallelizable = True  # safe if transform(df) only depends on df
+    output_type = "per_frame"  # "per_frame" | "summary" | "global"
 
-    _defaults = dict(
-        # Column conventions
-        seq_col="sequence",
-        group_col="group",
-        order_pref=("frame", "time"),
+    class Params(FeatureParams):
+        """Per-sequence feature template parameters.
 
-        # Algorithm-specific parameters:
-        window_size=15,
-    )
+        Attributes:
+            window_size: Sliding window size. Default 15.
+        """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+        window_size: int = 15
+
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
 
         # Storage overrides (set before run_feature processes the feature)
         self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True    # appends "__from__<input>" to run dir
-        self.skip_existing_outputs = False      # set True if idempotent + expensive
+        self.storage_use_input_suffix = True  # appends "__from__<input>" to run dir
+        self.skip_existing_outputs = False  # set True if idempotent + expensive
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -75,7 +76,7 @@ class MyPerSequenceFeature:
         """Called by Dataset.run_feature before any fit/transform."""
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         """Restrict which sequences are processed (used by inputset path)."""
         self._scope_filter = scope or {}
 
@@ -127,22 +128,29 @@ class MyPerSequenceFeature:
         else:
             group_keys = None
 
-        # --- Select numeric input columns (exclude metadata) ---
+        # Select numeric input columns (exclude metadata)
         meta_like = {
-            p["seq_col"], p["group_col"],
-            "frame", "time", "id", "perspective", "fps",
-            "id1", "id2",
+            p.seq_col,
+            p.group_col,
+            "frame",
+            "time",
+            "id",
+            "perspective",
+            "fps",
+            "id1",
+            "id2",
         }
         numeric_cols = [
-            c for c in df.select_dtypes(include=[np.number]).columns
+            c
+            for c in df.select_dtypes(include=[np.number]).columns
             if c not in meta_like
         ]
         if not numeric_cols:
             return pd.DataFrame()
 
-        # --- Process per-pair (or whole df if no pairs) ---
+        # Process per-pair (or whole df if no pairs)
         if group_keys:
-            blocks: List[pd.DataFrame] = []
+            blocks: list[pd.DataFrame] = []
             for group_vals, g in df.groupby(group_keys, sort=False):
                 cur_id1, cur_id2 = group_vals
                 block_out = self._process_block(g, numeric_cols, order_col, p)
@@ -157,14 +165,14 @@ class MyPerSequenceFeature:
     def _process_block(
         self,
         df: pd.DataFrame,
-        numeric_cols: List[str],
+        numeric_cols: list[str],
         order_col: str,
-        params: dict,
+        params: Params,
     ) -> pd.DataFrame:
         """Process a single block (one pair or one sequence)."""
         p = params
-        seq_col = p["seq_col"]
-        group_col = p["group_col"]
+        seq_col = p.seq_col
+        group_col = p.group_col
 
         df = df.sort_values(order_col).reset_index(drop=True)
         X = df[numeric_cols].to_numpy(dtype=np.float32, copy=False)
@@ -201,12 +209,12 @@ class MyPerSequenceFeature:
     # ----------------------- Internal helpers --------------------
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
-    def _compute(self, X: np.ndarray, params: dict) -> np.ndarray:
+    def _compute(self, X: np.ndarray, params: Params) -> np.ndarray:
         """
         Pure computational logic.  X is (T, D) float32 for one block.
 
@@ -214,7 +222,7 @@ class MyPerSequenceFeature:
         touch DataFrames, dataset, or file I/O.
         """
         # EXAMPLE: sliding-window mean
-        win = int(params["window_size"])
+        win = params.window_size
         if win <= 1:
             return X
         T, D = X.shape

@@ -5,16 +5,21 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
+
 from itertools import combinations
-from typing import Optional, Dict, Any, Iterable, List, Tuple
+from pathlib import Path
+from typing import Any, Iterable, List, Tuple, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
-from .helpers import _merge_params
+
+from ._param_bases import FeatureParams, InterpolationMixin
 
 
+@final
 @register_feature
 class PairEgocentricFeatures:
     """
@@ -31,53 +36,47 @@ class PairEgocentricFeatures:
     chosen order column, and computes A→B and B→A features for each pair.
     """
 
-    name    = "pair-egocentric"
+    name = "pair-egocentric"
     version = "0.1"
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        # pose / columns
-        pose_n=7,
-        pose_indices=None,  # list of pose point indices to use, or None for all 0..pose_n-1
-        x_prefix="poseX", y_prefix="poseY",   # TRex-ish
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        order_pref=("frame", "time"),
+    class Params(FeatureParams, InterpolationMixin):
+        pose_n: int = 7
+        pose_indices: list[int] | None = None
+        x_prefix: str = "poseX"
+        y_prefix: str = "poseY"
+        neck_idx: int = 3
+        tail_base_idx: int = 6
+        center_mode: str = "mean"
+        fps_default: float = Field(default=30.0, gt=0)
+        smooth_win: int = Field(default=0, ge=0)
 
-        # required anatomical indices (must be provided by user if different)
-        neck_idx=None,           # REQUIRED (int) unless your skeleton matches defaults
-        tail_base_idx=None,      # REQUIRED (int) unless your skeleton matches defaults
-        center_mode="mean",      # "mean" or an int landmark index
-
-        # sampling / smoothing
-        fps_default=30.0,
-        smooth_win=0,            # 0 disables box smoothing before differencing
-
-        # cleaning / interpolation per animal
-        linear_interp_limit=10,
-        edge_fill_limit=3,
-        max_missing_fraction=0.10,
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
-        # Enforce required indices if user didn't pass them
-        if self.params["neck_idx"] is None:
-            # sensible default matching your earlier snippet
-            self.params["neck_idx"] = 3
-        if self.params["tail_base_idx"] is None:
-            self.params["tail_base_idx"] = 6
-
-        self._tri_ready = False  # not used, but kept for symmetry with other feature
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
+        self._tri_ready = False
 
     # ------------- Feature protocol -------------
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def finalize_fit(self) -> None: pass
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: return
-    def partial_fit(self, df: pd.DataFrame) -> None: return
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
+        return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        return
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         x_cols, y_cols = self._column_names()
@@ -85,7 +84,7 @@ class PairEgocentricFeatures:
         order_col = self._order_col(df)
         p = self.params
 
-        need = [p["id_col"], p["seq_col"], order_col] + pose_cols
+        need = [p.id_col, p.seq_col, order_col] + pose_cols
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-egocentric] Missing cols: {missing}")
@@ -95,7 +94,7 @@ class PairEgocentricFeatures:
         if order_col == "frame":
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
-        group_cols = [p["seq_col"], p["id_col"]]
+        group_cols = [p.seq_col, p.id_col]
 
         def wrapped_func(g):
             result = self._clean_one_animal(g, pose_cols, order_col)
@@ -107,28 +106,28 @@ class PairEgocentricFeatures:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(wrapped_func, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            wrapped_func, include_groups=False
         )
 
         # Build dyads (all C(n,2) pairs per sequence)
         pairs = []
-        for seq, gseq in df_small.groupby(p["seq_col"]):
-            ids = sorted(gseq[p["id_col"]].unique())
+        for seq, gseq in df_small.groupby(p.seq_col):
+            ids = sorted(gseq[p.id_col].unique())
             if len(ids) >= 2:
                 for idA, idB in combinations(ids, 2):
                     pairs.append((seq, idA, idB))
 
         if not pairs:
-            raise ValueError("[pair-egocentric] No sequence with at least two IDs found.")
+            raise ValueError(
+                "[pair-egocentric] No sequence with at least two IDs found."
+            )
 
         out_frames: List[pd.DataFrame] = []
         for seq, idA, idB in pairs:
-            gseq = df_small[df_small[p["seq_col"]] == seq]
-            A = gseq[gseq[p["id_col"]] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[p["id_col"]] == idB][[order_col] + pose_cols].copy()
+            gseq = df_small[df_small[p.seq_col] == seq]
+            A = gseq[gseq[p.id_col] == idA][[order_col] + pose_cols].copy()
+            B = gseq[gseq[p.id_col] == idB][[order_col] + pose_cols].copy()
             if A.empty or B.empty:
                 continue
 
@@ -139,7 +138,7 @@ class PairEgocentricFeatures:
                 continue
 
             # fps heuristic: prefer df['fps'] if present and constant; else default
-            fps = float(p["fps_default"])
+            fps = p.fps_default
             if "fps" in df.columns:
                 try:
                     c = df["fps"].dropna().unique()
@@ -148,7 +147,9 @@ class PairEgocentricFeatures:
                 except Exception:
                     pass
 
-            frames, AtoB, BtoA, names = self._build_ego_block_for_joined(j, fps, pose_cols)
+            frames, AtoB, BtoA, names = self._build_ego_block_for_joined(
+                j, fps, pose_cols
+            )
 
             # produce row-wise DataFrames
             dfA = pd.DataFrame(AtoB.T, columns=names)
@@ -164,7 +165,7 @@ class PairEgocentricFeatures:
             dfB["id2"] = idA
 
             # optional pass-through for convenience (constant per call)
-            for col in (p["seq_col"], p["group_col"]):
+            for col in (p.seq_col, p.group_col):
                 if col in df.columns:
                     dfA[col] = df[col].iloc[0]
                     dfB[col] = df[col].iloc[0]
@@ -181,9 +182,9 @@ class PairEgocentricFeatures:
     # ------------- Internals -------------
     def _get_pose_indices(self) -> List[int]:
         """Return the list of pose point indices to use."""
-        indices = self.params.get("pose_indices")
+        indices = self.params.pose_indices
         if indices is None:
-            return list(range(int(self.params["pose_n"])))
+            return list(range(self.params.pose_n))
         return list(indices)
 
     def _effective_pose_n(self) -> int:
@@ -197,8 +198,8 @@ class PairEgocentricFeatures:
         and mapped to its position in pose_indices. If pose_indices is None, returns the
         value directly as an index into the full array.
         """
-        val = int(self.params[param_name])
-        indices = self.params.get("pose_indices")
+        val = int(getattr(self.params, param_name))
+        indices = self.params.pose_indices
         if indices is None:
             return val
         try:
@@ -211,28 +212,30 @@ class PairEgocentricFeatures:
 
     def _column_names(self) -> Tuple[List[str], List[str]]:
         indices = self._get_pose_indices()
-        xs = [f"{self.params['x_prefix']}{i}" for i in indices]
-        ys = [f"{self.params['y_prefix']}{i}" for i in indices]
+        xs = [f"{self.params.x_prefix}{i}" for i in indices]
+        ys = [f"{self.params.y_prefix}{i}" for i in indices]
         return xs, ys
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
-    def _clean_one_animal(self, g: pd.DataFrame, pose_cols: List[str], order_col: str) -> pd.DataFrame:
+    def _clean_one_animal(
+        self, g: pd.DataFrame, pose_cols: List[str], order_col: str
+    ) -> pd.DataFrame:
         p = self.params
         g = g.sort_values(order_col).copy()
         g = g.set_index(order_col)
         g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
         g[pose_cols] = g[pose_cols].interpolate(
-            method="linear", limit=int(p["linear_interp_limit"]), limit_direction="both"
+            method="linear", limit=p.linear_interp_limit, limit_direction="both"
         )
-        g[pose_cols] = g[pose_cols].ffill(limit=int(p["edge_fill_limit"]))
-        g[pose_cols] = g[pose_cols].bfill(limit=int(p["edge_fill_limit"]))
+        g[pose_cols] = g[pose_cols].ffill(limit=p.edge_fill_limit)
+        g[pose_cols] = g[pose_cols].bfill(limit=p.edge_fill_limit)
         miss_frac = g[pose_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= float(p["max_missing_fraction"])].copy()
+        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
         if g[pose_cols].isna().any().any():
             med = g[pose_cols].median()
             g[pose_cols] = g[pose_cols].fillna(med)
@@ -248,7 +251,9 @@ class PairEgocentricFeatures:
         ker = np.ones(win, dtype=float) / float(win)
         return np.convolve(xp, ker, mode="valid")
 
-    def _safe_unit(self, vx: np.ndarray, vy: np.ndarray, eps: float = 1e-8) -> Tuple[np.ndarray, np.ndarray]:
+    def _safe_unit(
+        self, vx: np.ndarray, vy: np.ndarray, eps: float = 1e-8
+    ) -> Tuple[np.ndarray, np.ndarray]:
         n = np.sqrt(vx * vx + vy * vy) + eps
         return vx / n, vy / n
 
@@ -259,23 +264,27 @@ class PairEgocentricFeatures:
         d = np.gradient(np.unwrap(theta), edge_order=1)
         return d * float(fps)
 
-    def _center_from_points(self, xs: np.ndarray, ys: np.ndarray, mode: Any) -> Tuple[np.ndarray, np.ndarray]:
+    def _center_from_points(
+        self, xs: np.ndarray, ys: np.ndarray, mode: Any
+    ) -> Tuple[np.ndarray, np.ndarray]:
         if isinstance(mode, (int, np.integer)):
             return xs[:, int(mode)], ys[:, int(mode)]
         return xs.mean(axis=1), ys.mean(axis=1)
 
-    def _build_ego_block_for_joined(self, j: pd.DataFrame, fps: float, pose_cols: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    def _build_ego_block_for_joined(
+        self, j: pd.DataFrame, fps: float, pose_cols: List[str]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
         indices = self._get_pose_indices()
         N = len(indices)
         neck = self._map_anatomical_idx("neck_idx")
         tail = self._map_anatomical_idx("tail_base_idx")
-        win  = int(self.params["smooth_win"])
-        mode = self.params["center_mode"]
+        win = self.params.smooth_win
+        mode = self.params.center_mode
 
-        XA = j[[f"{self.params['x_prefix']}{k}_A" for k in indices]].to_numpy()
-        YA = j[[f"{self.params['y_prefix']}{k}_A" for k in indices]].to_numpy()
-        XB = j[[f"{self.params['x_prefix']}{k}_B" for k in indices]].to_numpy()
-        YB = j[[f"{self.params['y_prefix']}{k}_B" for k in indices]].to_numpy()
+        XA = j[[f"{self.params.x_prefix}{k}_A" for k in indices]].to_numpy()
+        YA = j[[f"{self.params.y_prefix}{k}_A" for k in indices]].to_numpy()
+        XB = j[[f"{self.params.x_prefix}{k}_B" for k in indices]].to_numpy()
+        YB = j[[f"{self.params.y_prefix}{k}_B" for k in indices]].to_numpy()
         frames = j["frame"].to_numpy().astype(int)
 
         # optional smoothing
@@ -303,8 +312,8 @@ class PairEgocentricFeatures:
         vAy = np.gradient(cyA) * float(fps)
         vBx = np.gradient(cxB) * float(fps)
         vBy = np.gradient(cyB) * float(fps)
-        speedA = np.sqrt(vAx*vAx + vAy*vAy)
-        speedB = np.sqrt(vBx*vBx + vBy*vBy)
+        speedA = np.sqrt(vAx * vAx + vAy * vAy)
+        speedB = np.sqrt(vBx * vBx + vBy * vBy)
 
         # heading angles + angular speed
         thA = self._angle(uhxA, uhyA)
@@ -321,7 +330,7 @@ class PairEgocentricFeatures:
         # displacement A→B in world + A-centric ego coords of B
         dx = cxB - cxA
         dy = cyB - cyA
-        distAB = np.sqrt(dx*dx + dy*dy)
+        distAB = np.sqrt(dx * dx + dy * dy)
 
         dxA = dx * uhxA + dy * uhyA
         dyA = dx * uoxA + dy * uoyA
@@ -336,28 +345,62 @@ class PairEgocentricFeatures:
         rel_sin = np.sin(dth)
 
         names = [
-            "A_speed", "A_v_para", "A_v_perp", "A_ang_speed",
-            "A_heading_cos", "A_heading_sin",
-            "AB_dist", "AB_dx_egoA", "AB_dy_egoA",
-            "rel_heading_cos", "rel_heading_sin",
-            "B_speed", "B_v_para", "B_v_perp", "B_ang_speed",
+            "A_speed",
+            "A_v_para",
+            "A_v_perp",
+            "A_ang_speed",
+            "A_heading_cos",
+            "A_heading_sin",
+            "AB_dist",
+            "AB_dx_egoA",
+            "AB_dy_egoA",
+            "rel_heading_cos",
+            "rel_heading_sin",
+            "B_speed",
+            "B_v_para",
+            "B_v_perp",
+            "B_ang_speed",
         ]
 
-        AtoB = np.vstack([
-            speedA, vA_para, vA_perp, angspeedA,
-            np.cos(thA), np.sin(thA),
-            distAB, dxA, dyA,
-            rel_cos, rel_sin,
-            speedB, vB_para, vB_perp, angspeedB,
-        ]).astype(np.float32)
+        AtoB = np.vstack(
+            [
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+                np.cos(thA),
+                np.sin(thA),
+                distAB,
+                dxA,
+                dyA,
+                rel_cos,
+                rel_sin,
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+            ]
+        ).astype(np.float32)
 
         # For B→A, swap roles but keep same semantic ordering (B is 'self')
-        BtoA = np.vstack([
-            speedB, vB_para, vB_perp, angspeedB,
-            np.cos(thB), np.sin(thB),
-            distAB, dxB, dyB,
-            np.cos(-dth), np.sin(-dth),
-            speedA, vA_para, vA_perp, angspeedA,
-        ]).astype(np.float32)
+        BtoA = np.vstack(
+            [
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+                np.cos(thB),
+                np.sin(thB),
+                distAB,
+                dxB,
+                dyB,
+                np.cos(-dth),
+                np.sin(-dth),
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+            ]
+        ).astype(np.float32)
 
         return frames, AtoB, BtoA, names

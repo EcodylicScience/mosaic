@@ -10,8 +10,8 @@ import pandas as pd
 import numpy as np
 import cv2
 
+from mosaic.behavior.feature_library.helpers import _pose_column_pairs
 from .helpers import (
-    _pose_column_pairs,
     _extract_pose_points,
     _compute_bbox,
     _extract_centroid,

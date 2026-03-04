@@ -1,20 +1,20 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, Sequence
+from typing import Iterable, Optional, Sequence, final
+
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams
 
 
-def _binned_mean_fast(xvals: np.ndarray, values: np.ndarray, edges: np.ndarray) -> np.ndarray:
+def _binned_mean_fast(
+    xvals: np.ndarray, values: np.ndarray, edges: np.ndarray
+) -> np.ndarray:
     if len(xvals) == 0:
         return np.full(len(edges) - 1, np.nan)
     bins = np.digitize(xvals, edges) - 1
@@ -31,7 +31,9 @@ def _binned_mean_fast(xvals: np.ndarray, values: np.ndarray, edges: np.ndarray) 
     return means
 
 
-def _mean_binned_force(dfsel: pd.DataFrame, edges: np.ndarray, max_for_avg: float, antisymm: bool):
+def _mean_binned_force(
+    dfsel: pd.DataFrame, edges: np.ndarray, max_for_avg: float, antisymm: bool
+):
     """
     Compute 1D binned means for turn (dangle) and speed (dspeed) responses.
     Mirrors the original get1Dhists behavior with symmetry handling.
@@ -43,8 +45,12 @@ def _mean_binned_force(dfsel: pd.DataFrame, edges: np.ndarray, max_for_avg: floa
     # Turn (front/back symmetry)
     dfturn = dfsel[(dfsel["neighbor_x"] >= 0) & (dfsel["neighbor_x"] <= max_for_avg)]
     if antisymm:
-        y_data_turn = np.concatenate([dfturn["neighbor_y"].to_numpy(), -dfturn["neighbor_y"].to_numpy()])
-        dangle_values_turn = np.concatenate([dfturn["dangle"].to_numpy(), -dfturn["dangle"].to_numpy()])
+        y_data_turn = np.concatenate(
+            [dfturn["neighbor_y"].to_numpy(), -dfturn["neighbor_y"].to_numpy()]
+        )
+        dangle_values_turn = np.concatenate(
+            [dfturn["dangle"].to_numpy(), -dfturn["dangle"].to_numpy()]
+        )
     else:
         y_data_turn = dfturn["neighbor_y"].to_numpy()
         dangle_values_turn = dfturn["dangle"].to_numpy()
@@ -83,6 +89,7 @@ def _maybe_make_category(df: pd.DataFrame, spec: dict) -> pd.Series:
     return series.rename(new_col)
 
 
+@final
 @register_feature
 class NearestNeighborDeltaBins:
     """
@@ -100,25 +107,22 @@ class NearestNeighborDeltaBins:
     parallelizable = True
     output_type = "summary"
 
-    _defaults = dict(
-        nbins=45,
-        binmax=14.0,
-        max_for_avg=5.0,
-        antisymm=True,
-        focal_category_col="Focal_fish",
-        neighbor_category_col="neighbor_focal",
-        group_size_col="group_size",
-        exp_col="Exp",
-        trial_col="Trial",
-        # optional derived categories
-        category_specs=[],  # list of {source_col,new_col,quantile,op}
-        # optional filter to exclude focal rows from neighbor-role stats
-        nonfocal_flag_col="Focal_fish",
-        nonfocal_flag_value=False,
-    )
+    class Params(FeatureParams):
+        nbins: int = Field(default=45, gt=0)
+        binmax: float = Field(default=14.0, gt=0)
+        max_for_avg: float = Field(default=5.0, gt=0)
+        antisymm: bool = True
+        focal_category_col: str = "Focal_fish"
+        neighbor_category_col: str = "neighbor_focal"
+        group_size_col: str = "group_size"
+        exp_col: str = "Exp"
+        trial_col: str = "Trial"
+        category_specs: list = Field(default_factory=list)
+        nonfocal_flag_col: str = "Focal_fish"
+        nonfocal_flag_value: bool = False
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
@@ -161,6 +165,7 @@ class NearestNeighborDeltaBins:
 
         p = self.params
         required = ["neighbor_x", "neighbor_y", "dangle", "dspeed"]
+
         # helper to coalesce suffix-split columns (e.g., focal_fish_x, focal_fish_y)
         def _coalesce_column(base: str):
             if base in df.columns:
@@ -178,9 +183,9 @@ class NearestNeighborDeltaBins:
                 df[base] = series
 
         # Coalesce focal/neighbor/group_size if needed before checks
-        focal_col = p.get("focal_category_col")
-        neighbor_col = p.get("neighbor_category_col")
-        group_size_col = p.get("group_size_col")
+        focal_col = p.focal_category_col
+        neighbor_col = p.neighbor_category_col
+        group_size_col = p.group_size_col
         if focal_col:
             _coalesce_column(focal_col)
         if neighbor_col:
@@ -197,20 +202,20 @@ class NearestNeighborDeltaBins:
             return pd.DataFrame()
 
         # Optionally derive category columns from specs
-        category_specs: Sequence[dict] = p.get("category_specs") or []
+        category_specs: Sequence[dict] = p.category_specs or []
         for spec in category_specs:
             series = _maybe_make_category(df, spec)
             if not series.empty:
                 df[series.name] = series
 
-        nbins = int(p["nbins"])
-        binmax = float(p["binmax"])
-        max_for_avg = float(p["max_for_avg"])
-        antisymm = bool(p["antisymm"])
+        nbins = p.nbins
+        binmax = p.binmax
+        max_for_avg = p.max_for_avg
+        antisymm = p.antisymm
         edges = np.linspace(-binmax, binmax, nbins)
 
-        exp_col = p.get("exp_col") or "group"
-        trial_col = p.get("trial_col") or "sequence"
+        exp_col = p.exp_col
+        trial_col = p.trial_col
 
         # Build identifiers
         exp_val = df[exp_col] if exp_col in df.columns else ""
@@ -220,7 +225,9 @@ class NearestNeighborDeltaBins:
         if group_size_col not in df.columns:
             group_sizes = ["all"]
         else:
-            group_sizes = sorted([g for g in df[group_size_col].dropna().unique().tolist() if g != ""])
+            group_sizes = sorted(
+                [g for g in df[group_size_col].dropna().unique().tolist() if g != ""]
+            )
             group_sizes = ["all"] + group_sizes
 
         results = []
@@ -256,35 +263,49 @@ class NearestNeighborDeltaBins:
                 return int(val)
             return val
 
-        def _hist2d_sum_count(xvals, yvals, weights, x_edges: np.ndarray, y_edges: np.ndarray):
+        def _hist2d_sum_count(
+            xvals, yvals, weights, x_edges: np.ndarray, y_edges: np.ndarray
+        ):
             xvals = np.asarray(xvals, dtype=float)
             yvals = np.asarray(yvals, dtype=float)
             weights = np.asarray(weights, dtype=float)
-            w_sum, _, _ = np.histogram2d(xvals, yvals, bins=[x_edges, y_edges], weights=weights)
+            w_sum, _, _ = np.histogram2d(
+                xvals, yvals, bins=[x_edges, y_edges], weights=weights
+            )
             count, _, _ = np.histogram2d(xvals, yvals, bins=[x_edges, y_edges])
             return w_sum, count
 
         def _append_rows(subdf: pd.DataFrame, role: str, center_cat, neighbor_cat):
-            turnforces, speedforces = _mean_binned_force(subdf, edges, max_for_avg, antisymm)
+            turnforces, speedforces = _mean_binned_force(
+                subdf, edges, max_for_avg, antisymm
+            )
             cat_center = _clean_cat(center_cat)
             cat_neighbor = _clean_neighbor(neighbor_cat)
             for metric, forces in (("turn", turnforces), ("speed", speedforces)):
                 for bin_idx, val in enumerate(forces):
-                    results.append({
-                        "dim": "1d",
-                        exp_col: exp_val.iloc[0] if isinstance(exp_val, pd.Series) and not exp_val.empty else "",
-                        trial_col: trial_val.iloc[0] if isinstance(trial_val, pd.Series) and not trial_val.empty else "",
-                        "center_category": cat_center,
-                        "neighbor_category": cat_neighbor,
-                        group_size_col if group_size_col else "group_size": _clean_group_size(current_group_size),
-                        "metric": metric,
-                        "bin_idx": bin_idx,
-                        "value": val,
-                        "bin_x": np.nan,
-                        "bin_y": np.nan,
-                        "sum_value": np.nan,
-                        "count": np.nan,
-                    })
+                    results.append(
+                        {
+                            "dim": "1d",
+                            exp_col: exp_val.iloc[0]
+                            if isinstance(exp_val, pd.Series) and not exp_val.empty
+                            else "",
+                            trial_col: trial_val.iloc[0]
+                            if isinstance(trial_val, pd.Series) and not trial_val.empty
+                            else "",
+                            "center_category": cat_center,
+                            "neighbor_category": cat_neighbor,
+                            group_size_col
+                            if group_size_col
+                            else "group_size": _clean_group_size(current_group_size),
+                            "metric": metric,
+                            "bin_idx": bin_idx,
+                            "value": val,
+                            "bin_x": np.nan,
+                            "bin_y": np.nan,
+                            "sum_value": np.nan,
+                            "count": np.nan,
+                        }
+                    )
             # 2D bins (sum and count, no normalization)
             x_edges = np.linspace(-binmax, binmax, nbins)
             y_edges = np.linspace(-binmax, binmax, nbins + 1)
@@ -305,48 +326,75 @@ class NearestNeighborDeltaBins:
                 w_turn = np.concatenate([dangle, -dangle])
             else:
                 x_turn, y_turn, w_turn = x_base, y_base, dangle
-            turn_sum, turn_count = _hist2d_sum_count(x_turn, y_turn, w_turn, x_edges, y_edges)
+            turn_sum, turn_count = _hist2d_sum_count(
+                x_turn, y_turn, w_turn, x_edges, y_edges
+            )
 
             # speed (symmetric duplication)
             x_speed = np.concatenate([x_base, x_base])
             y_speed = np.concatenate([y_base, -y_base])
             w_speed = np.concatenate([dspeed, dspeed])
-            speed_sum, speed_count = _hist2d_sum_count(x_speed, y_speed, w_speed, x_edges, y_edges)
+            speed_sum, speed_count = _hist2d_sum_count(
+                x_speed, y_speed, w_speed, x_edges, y_edges
+            )
 
-            for metric, sum_arr, cnt_arr in (("turn", turn_sum, turn_count), ("speed", speed_sum, speed_count)):
+            for metric, sum_arr, cnt_arr in (
+                ("turn", turn_sum, turn_count),
+                ("speed", speed_sum, speed_count),
+            ):
                 for ix in range(sum_arr.shape[0]):
                     for iy in range(sum_arr.shape[1]):
-                        results.append({
-                            "dim": "2d",
-                            exp_col: exp_val.iloc[0] if isinstance(exp_val, pd.Series) and not exp_val.empty else "",
-                            trial_col: trial_val.iloc[0] if isinstance(trial_val, pd.Series) and not trial_val.empty else "",
-                            "center_category": cat_center,
-                            "neighbor_category": cat_neighbor,
-                            group_size_col if group_size_col else "group_size": _clean_group_size(current_group_size),
-                            "metric": metric,
-                            "bin_idx": np.nan,
-                            "value": np.nan,
-                            "bin_x": ix,
-                            "bin_y": iy,
-                            "sum_value": sum_arr[ix, iy],
-                            "count": cnt_arr[ix, iy],
-                        })
+                        results.append(
+                            {
+                                "dim": "2d",
+                                exp_col: exp_val.iloc[0]
+                                if isinstance(exp_val, pd.Series) and not exp_val.empty
+                                else "",
+                                trial_col: trial_val.iloc[0]
+                                if isinstance(trial_val, pd.Series)
+                                and not trial_val.empty
+                                else "",
+                                "center_category": cat_center,
+                                "neighbor_category": cat_neighbor,
+                                group_size_col
+                                if group_size_col
+                                else "group_size": _clean_group_size(
+                                    current_group_size
+                                ),
+                                "metric": metric,
+                                "bin_idx": np.nan,
+                                "value": np.nan,
+                                "bin_x": ix,
+                                "bin_y": iy,
+                                "sum_value": sum_arr[ix, iy],
+                                "count": cnt_arr[ix, iy],
+                            }
+                        )
 
         # Focal role
         if focal_col and focal_col in df.columns:
-            grouped_center = df.groupby([focal_col, group_size_col], dropna=False) if group_size_col in df.columns else df.groupby(focal_col, dropna=False)
+            grouped_center = (
+                df.groupby([focal_col, group_size_col], dropna=False)
+                if group_size_col in df.columns
+                else df.groupby(focal_col, dropna=False)
+            )
             for keys, df_group in grouped_center:
                 if group_size_col in df.columns:
                     center_cat, current_group_size = keys
                 else:
                     center_cat, current_group_size = keys, "all"
-                if current_group_size != "all" and current_group_size not in group_sizes:
+                if (
+                    current_group_size != "all"
+                    and current_group_size not in group_sizes
+                ):
                     continue
                 # all neighbors (None to keep dtype numeric/nullable)
                 _append_rows(df_group, "focal", center_cat, None)
                 # per-neighbor category
                 if neighbor_col in df_group.columns:
-                    for neighbor_cat, df_neigh in df_group.groupby(neighbor_col, dropna=False):
+                    for neighbor_cat, df_neigh in df_group.groupby(
+                        neighbor_col, dropna=False
+                    ):
                         _append_rows(df_neigh, "focal", center_cat, neighbor_cat)
 
         # Neighbor-role binning was originally used to represent "nonfocal response" separately.
@@ -354,32 +402,52 @@ class NearestNeighborDeltaBins:
         # when focal_col is present (it duplicates the center=0 rows). Only run it if we lack
         # a focal_col; otherwise skip to avoid duplicate entries.
         if not (focal_col and focal_col in df.columns):
-            nf_flag_col = p.get("nonfocal_flag_col")
-            nf_flag_val = p.get("nonfocal_flag_value")
+            nf_flag_col = p.nonfocal_flag_col
+            nf_flag_val = p.nonfocal_flag_value
             neighbor_df = df
             if nf_flag_col in df.columns:
                 neighbor_df = df[df[nf_flag_col] == nf_flag_val]
 
             if neighbor_col in neighbor_df.columns:
                 if focal_col and focal_col in neighbor_df.columns:
-                    grouped_n = neighbor_df.groupby([focal_col, neighbor_col, group_size_col], dropna=False) if group_size_col in neighbor_df.columns else neighbor_df.groupby([focal_col, neighbor_col], dropna=False)
+                    grouped_n = (
+                        neighbor_df.groupby(
+                            [focal_col, neighbor_col, group_size_col], dropna=False
+                        )
+                        if group_size_col in neighbor_df.columns
+                        else neighbor_df.groupby(
+                            [focal_col, neighbor_col], dropna=False
+                        )
+                    )
                     for keys, df_group in grouped_n:
                         if group_size_col in neighbor_df.columns:
                             center_cat, neighbor_cat, current_group_size = keys
                         else:
                             center_cat, neighbor_cat = keys
                             current_group_size = "all"
-                        if current_group_size != "all" and current_group_size not in group_sizes:
+                        if (
+                            current_group_size != "all"
+                            and current_group_size not in group_sizes
+                        ):
                             continue
                         _append_rows(df_group, "neighbor", center_cat, neighbor_cat)
                 else:
-                    grouped_n = neighbor_df.groupby([neighbor_col, group_size_col], dropna=False) if group_size_col in neighbor_df.columns else neighbor_df.groupby(neighbor_col, dropna=False)
+                    grouped_n = (
+                        neighbor_df.groupby(
+                            [neighbor_col, group_size_col], dropna=False
+                        )
+                        if group_size_col in neighbor_df.columns
+                        else neighbor_df.groupby(neighbor_col, dropna=False)
+                    )
                     for keys, df_group in grouped_n:
                         if group_size_col in neighbor_df.columns:
                             neighbor_cat, current_group_size = keys
                         else:
                             neighbor_cat, current_group_size = keys, "all"
-                        if current_group_size != "all" and current_group_size not in group_sizes:
+                        if (
+                            current_group_size != "all"
+                            and current_group_size not in group_sizes
+                        ):
                             continue
                         _append_rows(df_group, "neighbor", None, neighbor_cat)
 
@@ -391,13 +459,19 @@ class NearestNeighborDeltaBins:
             out_df["neighbor_category"] = (
                 out_df["neighbor_category"]
                 .fillna("all")
-                .astype("string")  # keep homogeneous type for parquet (mix of ints/strings otherwise fails)
+                .astype(
+                    "string"
+                )  # keep homogeneous type for parquet (mix of ints/strings otherwise fails)
             )
         # Normalize category dtypes to nullable ints where possible
         if "center_category" in out_df.columns:
-            out_df["center_category"] = pd.to_numeric(out_df["center_category"], errors="coerce").astype("Int64")
+            out_df["center_category"] = pd.to_numeric(
+                out_df["center_category"], errors="coerce"
+            ).astype("Int64")
         # Add sequence/group if present
         for meta_col in ("group", "sequence"):
             if meta_col in df.columns and meta_col not in out_df.columns:
-                out_df[meta_col] = df[meta_col].iloc[0] if not df[meta_col].empty else ""
+                out_df[meta_col] = (
+                    df[meta_col].iloc[0] if not df[meta_col].empty else ""
+                )
         return out_df

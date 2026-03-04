@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+from itertools import count, groupby
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
-from itertools import groupby, count
+from typing import Iterable, Optional, final
 
+import networkx as nx
 import numpy as np
 import pandas as pd
+from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
+from pydantic import Field
 from scipy.spatial.distance import cdist
 
-import numba
-from numba import njit
-import networkx as nx
 from mosaic.core.dataset import register_feature
 
+from ._param_bases import FeatureParams, PositionColumnsMixin
 
 # ===== Numba-accelerated union-find for connected components =====
+
 
 @njit
 def _union_find_root(parent, i):
@@ -89,14 +91,7 @@ def _calculate_gmembership_numba(pwdf, nparticles, numsteps, threshold):
     return groupmembership
 
 
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
-
-
+@final
 @register_feature
 class FFGroups:
     """
@@ -114,21 +109,15 @@ class FFGroups:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        id_col="id",
-        x_col="X",
-        y_col="Y",
-        frame_col="frame",
-        time_col="time",
-        group_col="group",
-        seq_col="sequence",
-        distance_cutoff=50.0,   # distance threshold for same-group assignment
-        window_size=5,          # smoothing window (frames); uses nanmean
-        min_event_duration=1,   # frames
-    )
+    class Params(FeatureParams, PositionColumnsMixin):
+        frame_col: str = "frame"
+        time_col: str = "time"
+        distance_cutoff: float = Field(default=50.0, gt=0)
+        window_size: int = Field(default=5, ge=1)
+        min_event_duration: int = Field(default=1, ge=1)
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -142,11 +131,26 @@ class FFGroups:
         self._scope_filter = scope or {}
 
     # ---- Fit/transform contract ----
-    def needs_fit(self) -> bool: return False
-    def supports_partial_fit(self) -> bool: return False
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: return None
-    def save_model(self, path: Path) -> None: return None
-    def load_model(self, path: Path) -> None: return None
+    def needs_fit(self) -> bool:
+        return False
+
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
+        return None
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        return None
+
+    def load_model(self, path: Path) -> None:
+        return None
 
     # ---- Core logic ----
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -154,17 +158,17 @@ class FFGroups:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p["id_col"]
-        x_col, y_col = p["x_col"], p["y_col"]
-        frame_col = p["frame_col"]
-        time_col = p.get("time_col")
-        group_col, seq_col = p["group_col"], p["seq_col"]
-        distance_cutoff = float(p["distance_cutoff"])
-        win = max(1, int(p["window_size"]))
-        if np.mod(win,2)==0:
-            raise ValueError('window_size must be an odd integer')
+        id_col = p.id_col
+        x_col, y_col = p.x_col, p.y_col
+        frame_col = p.frame_col
+        time_col = p.time_col
+        group_col, seq_col = p.group_col, p.seq_col
+        distance_cutoff = p.distance_cutoff
+        win = max(1, p.window_size)
+        if np.mod(win, 2) == 0:
+            raise ValueError("window_size must be an odd integer")
 
-        min_event = int(p["min_event_duration"])
+        min_event = p.min_event_duration
 
         # Basic ordering and bookkeeping
         order_cols = [c for c in (frame_col, time_col) if c in df.columns]
@@ -194,13 +198,17 @@ class FFGroups:
             coords = coords.dropna(subset=[id_col, x_col, y_col])
             if coords.empty:
                 continue
-            coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(id_col)
+            coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(
+                id_col
+            )
             ids_present = coords.index.to_numpy()
             xy = coords[[x_col, y_col]].to_numpy(dtype=np.float32, copy=False)
 
             if len(ids_present) == N and set(ids_present) == all_ids_set:
                 # Fast path: all IDs present; reorder positions to global id order and assign directly
-                order = np.argsort([id_to_idx.get(i, N + idx) for idx, i in enumerate(ids_present)])
+                order = np.argsort(
+                    [id_to_idx.get(i, N + idx) for idx, i in enumerate(ids_present)]
+                )
                 xy_full = xy[order]
                 dmat = cdist(xy_full, xy_full).astype(np.float32)
                 np.fill_diagonal(dmat, np.nan)
@@ -224,7 +232,9 @@ class FFGroups:
                 global_idx = np.asarray(global_idx, dtype=int)
                 local_idx = np.asarray(local_idx, dtype=int)
                 pairwise[t_idx] = np.nan  # reset row in case of partial fill
-                pairwise[t_idx][np.ix_(global_idx, global_idx)] = dmat[np.ix_(local_idx, local_idx)]
+                pairwise[t_idx][np.ix_(global_idx, global_idx)] = dmat[
+                    np.ix_(local_idx, local_idx)
+                ]
 
         # Smooth along time axis with centered window
         if win > 1 and T > 0:
@@ -263,12 +273,14 @@ class FFGroups:
             group_sizes = np.zeros_like(gm, dtype=np.int32)
 
         # Build base output
-        out = pd.DataFrame({
-            frame_col: np.repeat(frames, N),
-            id_col: np.tile(ids, T),
-            "group_membership": groupmembership.reshape(-1),
-            "group_size": group_sizes.reshape(-1),
-        })
+        out = pd.DataFrame(
+            {
+                frame_col: np.repeat(frames, N),
+                id_col: np.tile(ids, T),
+                "group_membership": groupmembership.reshape(-1),
+                "group_size": group_sizes.reshape(-1),
+            }
+        )
 
         if time_col and time_col in df.columns:
             time_map = df.groupby(frame_col)[time_col].first()
@@ -285,10 +297,15 @@ class FFGroups:
         # Event detection (dp.get_events_info expects 'FishID')
         event_input = out.rename(columns={id_col: "FishID"})
         try:
-            df_events, _ = _get_events_info(event_input, threshold_ev_duration=min_event)
+            df_events, _ = _get_events_info(
+                event_input, threshold_ev_duration=min_event
+            )
             df_events = df_events[["frame", "FishID", "event"]]
-            out = out.merge(df_events.rename(columns={"FishID": id_col, "event": "event"}),
-                            how="left", on=[frame_col, id_col])
+            out = out.merge(
+                df_events.rename(columns={"FishID": id_col, "event": "event"}),
+                how="left",
+                on=[frame_col, id_col],
+            )
         except Exception:
             # If event detection fails, still return membership/size
             out["event"] = np.nan
@@ -298,6 +315,7 @@ class FFGroups:
 
 
 # ===== Embedded helpers (from data_processing.py) =====
+
 
 def _getcomponents(Aij_single: np.ndarray, numfish: int):
     G = nx.Graph(Aij_single)
@@ -327,19 +345,27 @@ def _calculate_gmembership(pwdf, nparticles, numsteps, threshold):
 def _find_events(df, minimal_length):
     finalized = []
     all_data = []
-    for _, g in groupby(np.unique(df.frame.astype(int)), key=lambda n, c=count(): n - next(c)):
-        l = list(g)
-        all_data.append((l[0], l[-1], l))
-    for i, (start, end, l) in enumerate(all_data):
+    for _, g in groupby(
+        np.unique(df.frame.astype(int)), key=lambda n, c=count(): n - next(c)
+    ):
+        frames = list(g)
+        all_data.append((frames[0], frames[-1], frames))
+    for i, (start, end, frames) in enumerate(all_data):
         if end - start >= minimal_length:
             data = df.loc[(df.frame >= start) & (df.frame <= end)]
             clusters = {}
 
-            for frame in l:
+            for frame in frames:
                 found = {c: False for c in clusters}
                 sub = data.loc[data.frame == frame]
                 for clusterid in sub.group_membership.unique():
-                    ids = tuple(set(sub.FishID[sub.group_membership == clusterid].values.astype(int)))
+                    ids = tuple(
+                        set(
+                            sub.FishID[sub.group_membership == clusterid].values.astype(
+                                int
+                            )
+                        )
+                    )
                     if ids in clusters:
                         clusters[ids]["end"] = frame
                     else:
@@ -349,7 +375,9 @@ def _find_events(df, minimal_length):
                 for c in list(found):
                     if not found[c]:
                         if clusters[c]["end"] - clusters[c]["start"] >= minimal_length:
-                            finalized.append((c, (clusters[c]["start"], clusters[c]["end"])))
+                            finalized.append(
+                                (c, (clusters[c]["start"], clusters[c]["end"]))
+                            )
                         del clusters[c]
     return finalized
 

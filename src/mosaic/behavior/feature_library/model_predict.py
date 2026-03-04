@@ -5,16 +5,21 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, Iterable, List, Tuple
-import json
+
 import importlib
+import json
+from collections.abc import Iterable
+from pathlib import Path
+from typing import final
 
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
-from mosaic.core.dataset import _model_run_root
+from mosaic.core.dataset import _model_run_root, register_feature
+
+from ._param_bases import FeatureParams
 
 
+@final
 @register_feature
 class ModelPredictFeature:
     """
@@ -26,40 +31,48 @@ class ModelPredictFeature:
     parallelizable = True
     output_type = None  # Output depends on the model
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        defaults = {
-            "model_class": None,
-            "model_params": None,
-            "model_run_id": None,
-            "model_name": None,
-            "output_feature_name": None,
-        }
-        self.params = dict(defaults)
-        if params:
-            self.params.update(params)
+    class Params(FeatureParams):
+        """Model-predict parameters.
+
+        Attributes:
+            model_class: Fully-qualified Python class path for the model.
+            model_params: Kwargs dict for the model constructor.
+            model_run_id: Run ID of the trained model to load.
+            model_name: Override for model storage name.
+            output_feature_name: Override for the output feature name.
+        """
+
+        model_class: str | None = None
+        model_params: dict[str, object] | None = None
+        model_run_id: str | None = None
+        model_name: str | None = None
+        output_feature_name: str | None = None
+
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self._model = None
-        self._model_name: Optional[str] = None
-        self._model_run_id: Optional[str] = None
-        self.storage_feature_name = self.params.get("output_feature_name") or self.name
+        self._model_name: str | None = None
+        self._model_run_id: str | None = None
+        self.storage_feature_name = self.params.output_feature_name or self.name
         self.storage_use_input_suffix = True
-        self._input_signature: Optional[dict] = None
+        self._input_signature: dict[str, object] | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
-        model_class_path = self.params.get("model_class")
+        model_class_path = self.params.model_class
         if not model_class_path:
             raise ValueError("ModelPredictFeature params must include 'model_class'.")
         module_path, class_name = model_class_path.rsplit(".", 1)
         ModelCls = getattr(importlib.import_module(module_path), class_name)
-        model_kwargs = self.params.get("model_params")
+        model_kwargs = self.params.model_params
         self._model = ModelCls(model_kwargs) if model_kwargs else ModelCls()
         if hasattr(self._model, "bind_dataset"):
             self._model.bind_dataset(ds)
-        run_id = str(self.params.get("model_run_id") or "").strip()
+        run_id = str(self.params.model_run_id or "").strip()
         if not run_id:
             raise ValueError("ModelPredictFeature params must include 'model_run_id'.")
-        storage_model_name = self.params.get("model_name") or getattr(
+        storage_model_name = self.params.model_name or getattr(
             self._model, "storage_model_name", getattr(self._model, "name", None)
         )
         if not storage_model_name:
@@ -68,11 +81,13 @@ class ModelPredictFeature:
         if not run_root.exists():
             raise FileNotFoundError(f"Model artifacts not found: {run_root}")
         if not hasattr(self._model, "load_trained_model"):
-            raise RuntimeError(f"Model '{model_class_path}' lacks load_trained_model().")
+            raise RuntimeError(
+                f"Model '{model_class_path}' lacks load_trained_model()."
+            )
         self._model.load_trained_model(run_root)
         self._model_name = storage_model_name
         self._model_run_id = run_id
-        output_name = self.params.get("output_feature_name") or f"{storage_model_name}-pred"
+        output_name = self.params.output_feature_name or f"{storage_model_name}-pred"
         self.storage_feature_name = output_name
         self.storage_use_input_suffix = True
         sig_fn = getattr(self._model, "get_prediction_input_signature", None)
@@ -85,15 +100,31 @@ class ModelPredictFeature:
     def supports_partial_fit(self) -> bool:
         return False
 
-    def fit(self, X: Iterable[pd.DataFrame]) -> None:
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         return
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if self._model is None:
-            raise RuntimeError("ModelPredictFeature has no model loaded; call bind_dataset first.")
+            raise RuntimeError(
+                "ModelPredictFeature has no model loaded; call bind_dataset first."
+            )
         if df is None or df.empty:
             return pd.DataFrame()
-        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        sequence = (
+            str(df["sequence"].iloc[0]) if "sequence" in df.columns and len(df) else ""
+        )
         group = str(df["group"].iloc[0]) if "group" in df.columns and len(df) else ""
         meta = {
             "sequence": sequence,
@@ -118,7 +149,7 @@ class ModelPredictFeature:
             result["model_run_id"] = self._model_run_id
         return result
 
-    def default_input_signature(self) -> Optional[dict]:
+    def default_input_signature(self) -> dict[str, object] | None:
         """
         Returns the input specification (input_kind, feature/inputset, resolved run_ids)
         captured when the model was trained, if available.
@@ -126,5 +157,3 @@ class ModelPredictFeature:
         if self._input_signature is None:
             return None
         return json.loads(json.dumps(self._input_signature))
-
-# === Orientation-aware features ===# === Orientation-aware features ===

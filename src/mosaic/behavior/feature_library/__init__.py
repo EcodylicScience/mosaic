@@ -41,7 +41,38 @@ Usage
 
 from typing import Optional
 
-from mosaic.core.dataset import register_feature, FEATURES
+from mosaic.core.dataset import FEATURES, register_feature
+
+# Import all submodules to trigger @register_feature auto-registration
+from . import (
+    approach_avoidance,
+    body_scale,
+    ffgroups,
+    ffgroups_metrics,
+    global_kmeans,
+    global_tsne,
+    global_ward,
+    helpers,
+    id_tag_columns,
+    kpms_apply,
+    kpms_fit,
+    model_predict,
+    nearestneighbor,
+    nn_delta_bins,
+    nn_delta_response,
+    orientation_relative,
+    pair_egocentric,
+    pair_position,
+    pair_wavelet,
+    pairposedistancepca,
+    speed_angvel,
+    temporal_stacking,
+    ward_assign,
+)
+
+# Note: Templates are not imported (they're just examples)
+# from . import feature_template__per_sequence
+# from . import feature_template__global
 
 
 def list_features_by_type(output_type: Optional[str] = None) -> list[str]:
@@ -101,48 +132,10 @@ def get_feature_output_type(feature_name: str) -> Optional[str]:
 
     return None
 
-# Import shared helpers (used by multiple features)
-from . import helpers
-
-# Import all features to trigger auto-registration
-# Per-sequence features
-from . import speed_angvel
-from . import body_scale
-from . import orientation_relative
-from . import nearestneighbor
-from . import pair_egocentric
-from . import pair_position
-from . import pair_wavelet
-from . import pairposedistancepca
-from . import approach_avoidance
-from . import id_tag_columns
-from . import nn_delta_response
-from . import nn_delta_bins
-
-# Transformation/context features
-from . import temporal_stacking
-from . import model_predict
-
-# Group/social features
-from . import ffgroups
-from . import ffgroups_metrics
-
-# External features (keypoint-moseq via subprocess)
-from . import kpms_fit
-from . import kpms_apply
-
-# Global fit-transform features
-from . import global_tsne
-from . import global_kmeans
-from . import global_ward
-from . import ward_assign
-
-
-# Note: Templates are not imported (they're just examples)
-# from . import feature_template__per_sequence
-# from . import feature_template__global
 
 __all__ = [
+    # Registry
+    "register_feature",
     # Helper functions
     "list_features_by_type",
     "get_feature_output_type",

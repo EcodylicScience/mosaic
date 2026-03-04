@@ -5,28 +5,42 @@ Extracted from features.py as part of feature_library modularization.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
-import sys
 
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+from typing import final
+
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-
+from pydantic import Field
+from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from scipy.cluster.hierarchy import fcluster
-
-from mosaic.core.dataset import register_feature, _resolve_inputs, _dataset_base_dir
-from .helpers import (
-    StreamingFeatureHelper,
-    _parse_scope_filter, _build_sequence_lookup, _resolve_sequence_identity,
-    _get_feature_run_root, _load_joblib_artifact, _load_artifact_matrix,
-    _build_index_row,
-)
+from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
 from mosaic.core.helpers import to_safe_name
 
+from ._param_bases import (
+    ArtifactSpec,
+    FeatureParams,
+    FeatureRef,
+    InputSpec,
+    NpzLoadSpec,
+)
+from .helpers import (
+    StreamingFeatureHelper,
+    _build_index_row,
+    _build_sequence_lookup,
+    _get_feature_run_root,
+    _load_artifact_matrix,
+    _load_joblib_artifact,
+    _parse_scope_filter,
+    _resolve_sequence_identity,
+)
 
+
+@final
 @register_feature
 class WardAssignClustering:
     """
@@ -36,24 +50,18 @@ class WardAssignClustering:
 
     Params
     ------
-    ward_model : dict
-        { "feature": "global-ward__from__global-tsne",
-          "run_id": None,
-          "pattern": "model.joblib" }
-    artifact : dict
-        Same structure as GlobalWardClustering.artifact (used to reload the template matrix).
-    scaler : optional dict
+    ward_model : FeatureRef
+        Reference to Ward model for linkage matrix.
+    artifact : ArtifactSpec
+        Template artifact specification.
+    scaler : optional FeatureRef
         Same contract as GlobalKMeans.assign.scaler (joblib w/ StandardScaler).
-    inputs : list[dict]
-        Feature specs to concatenate per sequence. All inputs are loaded from disk
-        (typically resolved via an inputset) and aligned per sequence before assignment.
-        To retain real frame indices in the outputs, set `load.frame_column` (defaults
-        to "frame" when present) for at least one input.
+    inputs : list[InputSpec]
+        Feature specs to concatenate per sequence.
     n_clusters : int
         Desired Ward cut.
     recalc : bool
-        If True, force recomputation even if outputs already exist (pass overwrite=True to
-        dataset.run_feature when rerunning). Defaults to False.
+        If True, force recomputation even if outputs already exist.
     """
 
     name = "ward-assign"
@@ -62,74 +70,96 @@ class WardAssignClustering:
     output_type = "global"
     skip_transform_phase = True
 
-    def __init__(self, params: Optional[dict] = None):
-        self.params = {
-            "ward_model": {
-                "feature": "global-ward__from__global-tsne",
-                "run_id": None,
-                "pattern": "model.joblib",
-            },
-            "artifact": {
-                "feature": "global-tsne",
-                "run_id": None,
-                "pattern": "global_templates_features.npz",
-                "load": {"kind": "npz", "key": "templates", "transpose": False},
-            },
-            "scaler": None,
-            "inputs": [],
-            "inputset": None,
-            "n_clusters": 20,
-            "recalc": False,
-        }
-        if params:
-            for k, v in params.items():
-                if isinstance(v, dict) and isinstance(self.params.get(k), dict):
-                    d = dict(self.params[k])
-                    d.update(v)
-                    self.params[k] = d
-                else:
-                    self.params[k] = v
+    class Params(FeatureParams):
+        """Ward-assign clustering parameters.
 
-        ward_feat_name = self.params["ward_model"].get("feature", "global-ward")
-        self.storage_feature_name = f"ward-assign__from__{ward_feat_name}"
+        Attributes:
+            ward_model: Ward model to load for linkage matrix.
+            artifact: Template artifact specification.
+            scaler: Optional scaler specification.
+            inputs: Explicit input specifications.
+            inputset: Inputset name to resolve.
+            n_clusters: Number of clusters to cut. Default 20.
+            recalc: Force recomputation. Default False.
+        """
+
+        ward_model: FeatureRef = Field(
+            default_factory=lambda: FeatureRef(
+                feature="global-ward__from__global-tsne",
+                pattern="model.joblib",
+            )
+        )
+        artifact: ArtifactSpec = Field(
+            default_factory=lambda: ArtifactSpec(
+                feature="global-tsne",
+                pattern="global_templates_features.npz",
+                load=NpzLoadSpec(key="templates"),
+            )
+        )
+        scaler: FeatureRef | None = None
+        inputs: list[InputSpec] = Field(default_factory=list)
+        inputset: str | None = None
+        n_clusters: int = Field(default=20, ge=1)
+        recalc: bool = False
+
+    def __init__(self, params: dict[str, object] | None = None) -> None:
+        self.params = self.Params.from_overrides(params)
+        self._inputs_overridden = self.params.inputs != self.Params().inputs
+
+        self.storage_feature_name = (
+            f"ward-assign__from__{self.params.ward_model.feature}"
+        )
         self.storage_use_input_suffix = False
         self.skip_existing_outputs = False
 
-        self._ds = None
-        self._Z = None
-        self._templates = None
-        self._cluster_ids = None
-        self._assign_nn = None
-        self._scaler = None
-        self._inputs = []
-        self._processed_sequences: set[str] = set()  # Track which sequences were written
-        self._run_root: Optional[Path] = None  # Set by dataset.run_feature before fit()
-        self._allowed_safe_sequences: Optional[set[str]] = None
+        self._ds: object = None
+        self._Z: np.ndarray | None = None
+        self._templates: np.ndarray | None = None
+        self._cluster_ids: np.ndarray | None = None
+        self._assign_nn: NearestNeighbors | None = None
+        self._scaler: object = None
+        self._inputs: list[object] = []
+        self._processed_sequences: set[str] = set()
+        self._run_root: Path | None = None
+        self._allowed_safe_sequences: set[str] | None = None
         self._pair_map: dict[str, tuple[str, str]] = {}
-        self._scope_filter: Optional[dict] = None
-        self._inputs_overridden = bool(params and "inputs" in params)
-        self._inputs_meta: Dict[str, Any] = {}
-        self._sequence_lookup_cache: Optional[dict[str, tuple[str, str]]] = None
-        self._additional_index_rows: list[dict] = []
+        self._scope_filter: dict[str, object] | None = None
+        self._inputs_meta: dict[str, object] = {}
+        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
+        self._additional_index_rows: list[dict[str, object]] = []
 
-    def bind_dataset(self, ds):
+    def bind_dataset(self, ds: object) -> None:
         self._ds = ds
 
     def set_run_root(self, path: Path) -> None:
         """Set the output directory for immediate file writes during fit()."""
         self._run_root = path
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
         self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
         self._sequence_lookup_cache = None
 
-    def needs_fit(self): return True
-    def supports_partial_fit(self): return False
-    def loads_own_data(self): return True  # Skip run_feature pre-loading; we load from artifacts
-    def partial_fit(self, X): raise NotImplementedError
+    def needs_fit(self) -> bool:
+        return True
 
-    # ---------- helpers ----------
+    def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
+        return True
+
+    def partial_fit(self, df: pd.DataFrame) -> None:
+        raise NotImplementedError
+
+    def finalize_fit(self) -> None:
+        pass
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    # --- helpers ---
+
     def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
         if self._sequence_lookup_cache is not None:
             return self._sequence_lookup_cache
@@ -142,16 +172,21 @@ class WardAssignClustering:
         self,
         safe_seq: str,
         labels: np.ndarray,
-        frames: Optional[np.ndarray],
-        id1_vals: Optional[np.ndarray] = None,
-        id2_vals: Optional[np.ndarray] = None,
+        frames: np.ndarray | None,
+        id1_vals: np.ndarray | None = None,
+        id2_vals: np.ndarray | None = None,
         entity_level: str = "global",
     ) -> None:
         if self._run_root is None:
-            print(f"[ward-assign] WARN: _run_root not set, labels for {safe_seq} not written", file=sys.stderr)
+            print(
+                f"[ward-assign] WARN: _run_root not set, labels for {safe_seq} not written",
+                file=sys.stderr,
+            )
             return
         labels_arr = np.asarray(labels, dtype=np.int32).ravel()
-        frame_arr = None if frames is None else np.asarray(frames, dtype=np.int64).ravel()
+        frame_arr = (
+            None if frames is None else np.asarray(frames, dtype=np.int64).ravel()
+        )
         if frame_arr is None or len(frame_arr) != len(labels_arr):
             frame_arr = np.arange(len(labels_arr), dtype=np.int64)
         if id1_vals is None or len(id1_vals) != len(labels_arr):
@@ -177,33 +212,49 @@ class WardAssignClustering:
         safe_group = to_safe_name(group) if group else ""
         out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
         out_path = self._run_root / out_name
-        df_out = pd.DataFrame({
-            "frame": frame_arr.astype(np.int64, copy=False),
-            "cluster": labels_arr,
-            "id1": pd.array(id1_vals, dtype="Int64"),
-            "id2": pd.array(id2_vals, dtype="Int64"),
-            "entity_level": np.full(len(labels_arr), str(entity_level or "global"), dtype=object),
-            "sequence": sequence,
-            "group": group,
-        })
+        df_out = pd.DataFrame(
+            {
+                "frame": frame_arr.astype(np.int64, copy=False),
+                "cluster": labels_arr,
+                "id1": pd.array(id1_vals, dtype="Int64"),
+                "id2": pd.array(id2_vals, dtype="Int64"),
+                "entity_level": np.full(
+                    len(labels_arr), str(entity_level or "global"), dtype=object
+                ),
+                "sequence": sequence,
+                "group": group,
+            }
+        )
         df_out.to_parquet(out_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(safe_seq, group, sequence, out_path, int(len(df_out)),
-                             dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+            _build_index_row(
+                safe_seq,
+                group,
+                sequence,
+                out_path,
+                int(len(df_out)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
         )
         self._processed_sequences.add(safe_seq)
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         import gc
+
         import pyarrow as pa
+
         if self._ds is None:
-            raise RuntimeError("[ward-assign] Dataset not bound. Use dataset.run_feature(...).")
+            raise RuntimeError(
+                "[ward-assign] Dataset not bound. Use dataset.run_feature(...)."
+            )
         self._processed_sequences = set()
         self._additional_index_rows = []
 
-        inputs = self.params.get("inputs") or []
-        inputset_name = self.params.get("inputset")
-        explicit_inputs = inputs if (self._inputs_overridden or not inputset_name) else None
+        inputs = self.params.inputs
+        inputset_name = self.params.inputset
+        explicit_inputs = (
+            inputs if (self._inputs_overridden or not inputset_name) else None
+        )
         self._inputs, self._inputs_meta = _resolve_inputs(
             self._ds,
             explicit_inputs,
@@ -212,20 +263,24 @@ class WardAssignClustering:
         )
 
         # Load Ward linkage
-        ward_spec = self.params["ward_model"]
-        _, ward_root = _get_feature_run_root(self._ds, ward_spec["feature"], ward_spec.get("run_id"))
-        pattern = ward_spec.get("pattern", "model.joblib")
+        ward_spec = self.params.ward_model
+        _, ward_root = _get_feature_run_root(
+            self._ds, ward_spec.feature, ward_spec.run_id
+        )
+        pattern = ward_spec.pattern
         files = sorted(ward_root.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"[ward-assign] No Ward model '{pattern}' in {ward_root}")
+            raise FileNotFoundError(
+                f"[ward-assign] No Ward model '{pattern}' in {ward_root}"
+            )
         bundle = joblib.load(files[0])
         self._Z = bundle.get("linkage_matrix")
         if self._Z is None:
             raise ValueError("[ward-assign] Ward model missing linkage_matrix.")
 
         # Reload artifact matrix (templates) to derive centroids
-        self._templates = _load_artifact_matrix(self._ds, self.params.get("artifact", {}))
-        n_clusters = int(self.params.get("n_clusters", 20))
+        self._templates = _load_artifact_matrix(self._ds, self.params.artifact)
+        n_clusters = self.params.n_clusters
         labels_templates = fcluster(self._Z, n_clusters, criterion="maxclust")
         uniq = np.unique(labels_templates)
         centroids = []
@@ -245,27 +300,34 @@ class WardAssignClustering:
         gc.collect()
 
         # optional scaler
-        scaler_spec = self.params.get("scaler")
-        self._scaler = _load_joblib_artifact(self._ds, scaler_spec) if scaler_spec else None
+        scaler_spec = self.params.scaler
+        self._scaler = (
+            _load_joblib_artifact(self._ds, scaler_spec) if scaler_spec else None
+        )
 
         # Use StreamingFeatureHelper for manifest building and data loading
         helper = StreamingFeatureHelper(self._ds, "ward-assign")
         if self._inputs_meta.get("pair_filter"):
             helper.set_pair_filter(self._inputs_meta["pair_filter"])
-        scope_filter = {"safe_sequences": self._allowed_safe_sequences} if self._allowed_safe_sequences else None
+        scope_filter = (
+            {"safe_sequences": self._allowed_safe_sequences}
+            if self._allowed_safe_sequences
+            else None
+        )
         manifest = helper.build_manifest(self._inputs, scope_filter=scope_filter)
         if not manifest:
             raise RuntimeError("[ward-assign] No usable inputs found for assignment.")
 
         # Process sequences one at a time using direct loading
-        # (avoids generator pattern which holds extra reference to data)
         keys = list(manifest.keys())
         n_keys = len(keys)
         for i, safe_seq in enumerate(keys):
-            X_full, frames, id1_vals, id2_vals, entity_level = helper.load_key_data_with_identity(
-                manifest[safe_seq],
-                extract_frames=True,
-                key=safe_seq,
+            X_full, frames, id1_vals, id2_vals, entity_level = (
+                helper.load_key_data_with_identity(
+                    manifest[safe_seq],
+                    extract_frames=True,
+                    key=safe_seq,
+                )
             )
             if X_full is None:
                 continue
@@ -274,10 +336,9 @@ class WardAssignClustering:
                 if not hasattr(self._scaler, "transform"):
                     raise ValueError("[ward-assign] scaler object missing transform().")
                 X_use = self._scaler.transform(X_full)
-                del X_full  # free raw data immediately
+                del X_full
             else:
                 X_use = X_full
-                # Note: X_use IS X_full here, so don't delete
 
             idxs = self._assign_nn.kneighbors(X_use, return_distance=False)
             labels = self._cluster_ids[idxs.ravel()]
@@ -296,7 +357,10 @@ class WardAssignClustering:
             pa.default_memory_pool().release_unused()
 
             if (i + 1) % 10 == 0 or i == n_keys - 1:
-                print(f"[ward-assign] Processed {i + 1}/{n_keys} sequences", file=sys.stderr)
+                print(
+                    f"[ward-assign] Processed {i + 1}/{n_keys} sequences",
+                    file=sys.stderr,
+                )
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # Outputs are generated during fit(); transform is intentionally skipped.
@@ -310,23 +374,27 @@ class WardAssignClustering:
         marker_path = run_root / f"{safe_marker_seq}.parquet"
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
-        self._additional_index_rows.append({
-            "group": "",
-            "sequence": marker_seq,
-            "group_safe": "",
-            "sequence_safe": safe_marker_seq,
-            "abs_path": self._ds._relative_to_root(marker_path) if self._ds else str(marker_path.resolve()),
-            "n_rows": int(len(marker_df)),
-        })
+        self._additional_index_rows.append(
+            _build_index_row(
+                safe_marker_seq,
+                "",
+                marker_seq,
+                marker_path,
+                int(len(marker_df)),
+                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+            )
+        )
 
         # Labels are already written to disk during fit(); just save model params
-        joblib.dump({
-            "params": self.params,
-            "n_clusters": int(self.params.get("n_clusters", 20)),
-            "processed_sequences": list(self._processed_sequences),
-        }, path)
+        joblib.dump(
+            {
+                "params": self.params.model_dump(),
+                "processed_sequences": list(self._processed_sequences),
+            },
+            path,
+        )
 
-    def get_additional_index_rows(self) -> list[dict]:
+    def get_additional_index_rows(self) -> list[dict[str, object]]:
         return list(self._additional_index_rows)
 
 

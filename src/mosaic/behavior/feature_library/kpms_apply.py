@@ -7,20 +7,23 @@ extracts per-frame syllable labels. Invokes keypoint-moseq in a subprocess
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+
 import json
 import sys
+from pathlib import Path
+from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
-from mosaic.core.dataset import register_feature, _dataset_base_dir
+from mosaic.core.dataset import _dataset_base_dir, register_feature
 from mosaic.core.helpers import to_safe_name
+
+from ._param_bases import FeatureParams
 from .helpers import (
-    _merge_params,
-    _get_feature_run_root,
     _build_index_row,
+    _get_feature_run_root,
 )
 from .kpms_fit import (
     _collect_and_serialize_tracks,
@@ -28,6 +31,7 @@ from .kpms_fit import (
 )
 
 
+@final
 @register_feature
 class KpmsApply:
     """
@@ -63,31 +67,18 @@ class KpmsApply:
     output_type = "per_frame"
     skip_transform_phase = True
 
-    _defaults = dict(
-        # Subprocess config
-        kpms_python=None,  # REQUIRED
+    class Params(FeatureParams):
+        kpms_python: str | None = None
+        kpms_fit_feature: str = "kpms-fit"
+        kpms_fit_run_id: str | None = None
+        pose_prefix_x: str = "poseX"
+        pose_prefix_y: str = "poseY"
+        pose_confidence_prefix: str = "poseP"
+        num_iters_apply: int = Field(default=500, ge=1)
+        apply_batch_size: int = Field(default=10, ge=1)
 
-        # Reference to fitted model
-        kpms_fit_feature="kpms-fit",
-        kpms_fit_run_id=None,
-
-        # Column detection (same as kpms-fit)
-        pose_prefix_x="poseX",
-        pose_prefix_y="poseY",
-        pose_confidence_prefix="poseP",
-
-        # Apply params
-        num_iters_apply=500,
-        apply_batch_size=10,  # Process N recordings at a time (None/0=all at once)
-
-        # ID handling
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self._run_root: Optional[Path] = None
         self._additional_index_rows: list[dict] = []
@@ -122,7 +113,7 @@ class KpmsApply:
     def loads_own_data(self) -> bool:
         return True
 
-    def partial_fit(self, X: pd.DataFrame) -> None:
+    def partial_fit(self, df: pd.DataFrame) -> None:
         raise NotImplementedError
 
     def finalize_fit(self) -> None:
@@ -181,7 +172,7 @@ class KpmsApply:
             raise RuntimeError("[kpms-apply] Dataset not bound.")
 
         p = self.params
-        kpms_python = p.get("kpms_python")
+        kpms_python = p.kpms_python
         if not kpms_python:
             raise ValueError(
                 "[kpms-apply] 'kpms_python' param is required. "
@@ -196,8 +187,8 @@ class KpmsApply:
             raise RuntimeError("[kpms-apply] run_root not set.")
 
         # 1. Locate the fitted model from kpms-fit
-        fit_feature = p["kpms_fit_feature"]
-        fit_run_id = p.get("kpms_fit_run_id")
+        fit_feature = p.kpms_fit_feature
+        fit_run_id = p.kpms_fit_run_id
 
         resolved_run_id, fit_run_root = _get_feature_run_root(
             self._ds, fit_feature, fit_run_id
@@ -234,18 +225,18 @@ class KpmsApply:
         _collect_and_serialize_tracks(
             self._ds,
             data_dir,
-            p["pose_prefix_x"],
-            p["pose_prefix_y"],
-            p["pose_confidence_prefix"],
-            p["id_col"],
-            p.get("bodypart_names"),
+            p.pose_prefix_x,
+            p.pose_prefix_y,
+            p.pose_confidence_prefix,
+            p.id_col,
+            None,
             groups=scope_groups,
             sequences=scope_sequences,
         )
 
         # 3. Write apply config JSON
         apply_config = {
-            "num_iters_apply": p["num_iters_apply"],
+            "num_iters_apply": p.num_iters_apply,
         }
         config_path = self._run_root / "kpms_apply_config.json"
         config_path.write_text(json.dumps(apply_config, indent=2, default=str))
@@ -253,14 +244,18 @@ class KpmsApply:
         # 4. Run kpms_runner.py apply in subprocess
         output_dir = self._run_root / "_kpms_output"
         apply_args = [
-            "--data-dir", str(data_dir),
-            "--output-dir", str(output_dir),
-            "--model-dir", str(model_dir),
-            "--config", str(config_path),
+            "--data-dir",
+            str(data_dir),
+            "--output-dir",
+            str(output_dir),
+            "--model-dir",
+            str(model_dir),
+            "--config",
+            str(config_path),
         ]
-        batch_size = p.get("apply_batch_size")
-        if batch_size and int(batch_size) > 0:
-            apply_args += ["--batch-size", str(int(batch_size))]
+        batch_size = p.apply_batch_size
+        if batch_size and batch_size > 0:
+            apply_args += ["--batch-size", str(batch_size)]
 
         _run_kpms_subprocess(
             kpms_python,
@@ -306,16 +301,20 @@ class KpmsApply:
             # Parse recording name back to mosaic identifiers
             group, sequence, ind_id = self._parse_recording_name(recording_name)
 
-            safe_seq = to_safe_name(sequence) if sequence else to_safe_name(recording_name)
+            safe_seq = (
+                to_safe_name(sequence) if sequence else to_safe_name(recording_name)
+            )
             safe_group = to_safe_name(group) if group else ""
 
             # Build output DataFrame
-            df_out = pd.DataFrame({
-                "frame": np.arange(T, dtype=np.int64),
-                "syllable": syllables,
-                "sequence": sequence or recording_name,
-                "group": group,
-            })
+            df_out = pd.DataFrame(
+                {
+                    "frame": np.arange(T, dtype=np.int64),
+                    "syllable": syllables,
+                    "sequence": sequence or recording_name,
+                    "group": group,
+                }
+            )
             if ind_id is not None:
                 df_out["id"] = ind_id
 
@@ -328,8 +327,14 @@ class KpmsApply:
             df_out.to_parquet(out_path, index=False)
 
             self._additional_index_rows.append(
-                _build_index_row(safe_seq, group, sequence or recording_name, out_path, T,
-                                 dataset_root=_dataset_base_dir(self._ds) if self._ds else None)
+                _build_index_row(
+                    safe_seq,
+                    group,
+                    sequence or recording_name,
+                    out_path,
+                    T,
+                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
+                )
             )
 
     # ----------------------- Save / Load -------------------------
@@ -338,16 +343,25 @@ class KpmsApply:
         run_root = path.parent
         run_root.mkdir(parents=True, exist_ok=True)
 
-        # Save a lightweight marker (actual outputs are per-sequence parquets)
         import joblib
-        joblib.dump({
-            "params": self.params,
-            "kpms_fit_feature": self.params["kpms_fit_feature"],
-            "kpms_fit_run_id": self.params.get("kpms_fit_run_id"),
-            "version": self.version,
-        }, path)
+
+        joblib.dump(
+            {
+                "params": self.params.model_dump(),
+                "kpms_fit_feature": self.params.kpms_fit_feature,
+                "kpms_fit_run_id": self.params.kpms_fit_run_id,
+                "version": self.version,
+            },
+            path,
+        )
 
     def load_model(self, path: Path) -> None:
         import joblib
+
         bundle = joblib.load(path)
-        self.params.update(bundle.get("params", {}))
+        saved = bundle.get("params", {})
+        if isinstance(saved, dict):
+            merged = {**self.params.model_dump(), **saved}
+            self.params = self.Params.from_overrides(merged)
+        elif hasattr(saved, "model_dump"):
+            self.params = saved

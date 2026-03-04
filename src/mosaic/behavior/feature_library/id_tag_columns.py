@@ -1,19 +1,17 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+from typing import Iterable, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
 
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams
 
 
+@final
 @register_feature
 class IdTagColumns:
     """
@@ -29,19 +27,16 @@ class IdTagColumns:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        label_kind="id_tags",
-        fields=None,                # list of fields to include; None -> all fields found
-        field_renames=None,         # optional mapping {field: new_column_name}
-        id_col="id",
-        frame_col="frame",
-        time_col="time",
-        group_col="group",
-        sequence_col="sequence",
-    )
+    class Params(FeatureParams):
+        label_kind: str = "id_tags"
+        fields: list[str] | None = None
+        field_renames: dict[str, str] | None = None
+        frame_col: str = "frame"
+        time_col: str = "time"
+        sequence_col: str = "sequence"
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
@@ -52,7 +47,7 @@ class IdTagColumns:
     def bind_dataset(self, ds):
         self._ds = ds
         try:
-            loaded = ds.load_id_labels(kind=self.params["label_kind"])
+            loaded = ds.load_id_labels(kind=self.params.label_kind)
         except Exception:
             loaded = {}
         # Normalize: {(group, sequence): labels dict}
@@ -88,20 +83,28 @@ class IdTagColumns:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p["id_col"]
-        frame_col = p["frame_col"]
-        time_col = p["time_col"]
-        group_col = p["group_col"]
-        sequence_col = p["sequence_col"]
+        id_col = p.id_col
+        frame_col = p.frame_col
+        time_col = p.time_col
+        group_col = p.group_col
+        sequence_col = p.sequence_col
 
-        group_val = str(df[group_col].iloc[0]) if group_col in df.columns and not df.empty else ""
-        sequence_val = str(df[sequence_col].iloc[0]) if sequence_col in df.columns and not df.empty else ""
+        group_val = (
+            str(df[group_col].iloc[0])
+            if group_col in df.columns and not df.empty
+            else ""
+        )
+        sequence_val = (
+            str(df[sequence_col].iloc[0])
+            if sequence_col in df.columns and not df.empty
+            else ""
+        )
         labels = self._labels.get((group_val, sequence_val))
         if not labels:
             return pd.DataFrame()  # nothing to attach
 
         # Determine fields
-        fields = p["fields"]
+        fields = p.fields
         if fields is None:
             # union of all fields in labels
             field_set = set()
@@ -109,7 +112,7 @@ class IdTagColumns:
                 if tags:
                     field_set.update(tags.keys())
             fields = sorted(field_set)
-        rename_map = p.get("field_renames") or {}
+        rename_map = p.field_renames or {}
 
         # Build output columns
         out = pd.DataFrame()
@@ -131,7 +134,8 @@ class IdTagColumns:
         ids_series = out[id_col]
         for field in fields:
             col_name = rename_map.get(field, field)
-            out[col_name] = ids_series.map(lambda i: labels.get(i, {}).get(field, np.nan))
+            out[col_name] = ids_series.map(
+                lambda i: labels.get(i, {}).get(field, np.nan)
+            )
 
         return out
-

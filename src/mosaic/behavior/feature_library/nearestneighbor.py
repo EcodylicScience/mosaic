@@ -1,17 +1,14 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+from typing import Iterable, Optional, final
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
 
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from ._param_bases import FeatureParams, PositionColumnsMixin
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -31,6 +28,7 @@ def _ego_rotate(dx: np.ndarray, dy: np.ndarray, heading: np.ndarray) -> tuple:
     return dx_ego, dy_ego
 
 
+@final
 @register_feature
 class NearestNeighbor:
     """
@@ -49,18 +47,11 @@ class NearestNeighbor:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        x_col="X",
-        y_col="Y",
-        angle_col="ANGLE",
-        order_pref=("frame", "time"),
-    )
+    class Params(FeatureParams, PositionColumnsMixin):
+        pass
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -104,10 +95,9 @@ class NearestNeighbor:
         order_col = self._order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
-        x = df[p["x_col"]].to_numpy(dtype=float)
-        y = df[p["y_col"]].to_numpy(dtype=float)
-        ids = df[p["id_col"]].to_numpy()
-        angles = df[p["angle_col"]].to_numpy(dtype=float) if p["angle_col"] in df.columns else None
+        angles = (
+            df[p.angle_col].to_numpy(dtype=float) if p.angle_col in df.columns else None
+        )
 
         n = len(df)
         nn_id = np.full(n, np.nan, dtype=float)
@@ -124,20 +114,22 @@ class NearestNeighbor:
         elif "time" in df.columns:
             grouper = df.groupby("time", sort=False)
         else:
-            raise ValueError("Need either 'frame' or 'time' column to group rows per timestep.")
+            raise ValueError(
+                "Need either 'frame' or 'time' column to group rows per timestep."
+            )
 
         for _, g in grouper:
             idx = g.index.to_numpy()
             if len(idx) < 2:
                 continue
-            gx = g[p["x_col"]].to_numpy(dtype=float)
-            gy = g[p["y_col"]].to_numpy(dtype=float)
-            gids = g[p["id_col"]].to_numpy()
-            gang = g[p["angle_col"]].to_numpy(dtype=float) if angles is not None else None
+            gx = g[p.x_col].to_numpy(dtype=float)
+            gy = g[p.y_col].to_numpy(dtype=float)
+            gids = g[p.id_col].to_numpy()
+            gang = g[p.angle_col].to_numpy(dtype=float) if angles is not None else None
 
             dx_matrix = gx[np.newaxis, :] - gx[:, np.newaxis]
             dy_matrix = gy[np.newaxis, :] - gy[:, np.newaxis]
-            dist_matrix = np.sqrt(dx_matrix ** 2 + dy_matrix ** 2)
+            dist_matrix = np.sqrt(dx_matrix**2 + dy_matrix**2)
             np.fill_diagonal(dist_matrix, np.inf)
 
             nn_idx = np.argmin(dist_matrix, axis=1)
@@ -149,23 +141,29 @@ class NearestNeighbor:
             if nn_dangle is not None:
                 nn_dangle[idx] = _wrap_angle(gang[nn_idx] - gang)
 
-            dx_ego, dy_ego = _ego_rotate(nn_dx[idx], nn_dy[idx], gang if angles is not None else np.zeros(len(idx)))
+            dx_ego, dy_ego = _ego_rotate(
+                nn_dx[idx],
+                nn_dy[idx],
+                gang if angles is not None else np.zeros(len(idx)),
+            )
             nn_dx_ego[idx] = dx_ego
             nn_dy_ego[idx] = dy_ego
 
-        out = pd.DataFrame({
-            "nn_id": nn_id,
-            "nn_delta_x": nn_dx,
-            "nn_delta_y": nn_dy,
-            "nn_dist": nn_dist,
-            "nn_delta_x_ego": nn_dx_ego,
-            "nn_delta_y_ego": nn_dy_ego,
-        })
+        out = pd.DataFrame(
+            {
+                "nn_id": nn_id,
+                "nn_delta_x": nn_dx,
+                "nn_delta_y": nn_dy,
+                "nn_dist": nn_dist,
+                "nn_delta_x_ego": nn_dx_ego,
+                "nn_delta_y_ego": nn_dy_ego,
+            }
+        )
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
 
         # Attach meta columns
-        for c in ("frame", "time", p["seq_col"], p["group_col"], p["id_col"]):
+        for c in ("frame", "time", p.seq_col, p.group_col, p.id_col):
             if c in df.columns:
                 out[c] = df[c].values
 
@@ -173,7 +171,7 @@ class NearestNeighbor:
 
     # ------------------ Internal helpers ------------------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")

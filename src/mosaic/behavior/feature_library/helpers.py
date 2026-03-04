@@ -6,41 +6,42 @@ feature_library to avoid code duplication.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Iterator, Callable, TypeVar
-from collections import defaultdict
+
 import gc
 import re
 import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+)
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.helpers import to_safe_name
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Merge user-provided parameters with defaults.
-
-    Parameters
-    ----------
-    overrides : dict or None
-        User-provided parameters that override defaults
-    defaults : dict
-        Default parameter values
-
-    Returns
-    -------
-    dict
-        Merged parameters with overrides taking precedence
-    """
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+def _pose_column_pairs(columns: Iterable[str]) -> list[Tuple[str, str]]:
+    """Extract (poseX*, poseY*) column pairs from column names."""
+    pose_pairs = []
+    xs = [c for c in columns if c.startswith("poseX")]
+    for x_col in sorted(xs):
+        idx = x_col[5:]
+        y_col = f"poseY{idx}"
+        if y_col in columns:
+            pose_pairs.append((x_col, y_col))
+    return pose_pairs
 
 
 def _load_array_from_spec(
@@ -81,6 +82,7 @@ def _load_array_from_spec(
         (features array as float32, frame indices or None)
     """
     import pyarrow as pa
+
     kind = str(load_spec.get("kind", "parquet")).lower()
     transpose = bool(load_spec.get("transpose", False))
     frames: Optional[np.ndarray] = None
@@ -117,14 +119,26 @@ def _load_array_from_spec(
 
         drop_cols = load_spec.get("drop_columns")
         if drop_cols:
-            df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+            df = df.drop(
+                columns=[c for c in drop_cols if c in df.columns], errors="ignore"
+            )
         cols = load_spec.get("columns")
         if cols:
             df = df[[c for c in cols if c in df.columns]]
         elif load_spec.get("numeric_only", True):
             df = df.select_dtypes(include=[np.number])
             # Drop metadata columns that are numeric but not features
-            for mc in ("frame", "time", "id", "id1", "id2", "id_a", "id_b", "id_A", "id_B"):
+            for mc in (
+                "frame",
+                "time",
+                "id",
+                "id1",
+                "id2",
+                "id_a",
+                "id_b",
+                "id_A",
+                "id_B",
+            ):
                 if mc in df.columns:
                     df = df.drop(columns=[mc])
         else:
@@ -196,7 +210,9 @@ def _collect_sequence_blocks(
     return blocks
 
 
-def _normalize_identity_columns(df: pd.DataFrame) -> tuple[Optional[pd.Series], Optional[pd.Series], str]:
+def _normalize_identity_columns(
+    df: pd.DataFrame,
+) -> tuple[Optional[pd.Series], Optional[pd.Series], str]:
     """
     Extract canonical identity columns from a frame-aligned DataFrame.
 
@@ -235,7 +251,9 @@ def _normalize_identity_columns(df: pd.DataFrame) -> tuple[Optional[pd.Series], 
     return None, None, "global"
 
 
-def _build_path_sequence_map(ds, feature_name: str, run_id: str | None) -> dict[Path, str]:
+def _build_path_sequence_map(
+    ds, feature_name: str, run_id: str | None
+) -> dict[Path, str]:
     """
     Build mapping from absolute file paths to sequence_safe names.
 
@@ -280,8 +298,10 @@ def _build_path_sequence_map(ds, feature_name: str, run_id: str | None) -> dict[
         return mapping
 
     if "sequence_safe" not in df.columns:
-        df["sequence_safe"] = df["sequence"].fillna("").apply(
-            lambda v: to_safe_name(str(v)) if str(v).strip() else ""
+        df["sequence_safe"] = (
+            df["sequence"]
+            .fillna("")
+            .apply(lambda v: to_safe_name(str(v)) if str(v).strip() else "")
         )
 
     for _, row in df.iterrows():
@@ -291,7 +311,11 @@ def _build_path_sequence_map(ds, feature_name: str, run_id: str | None) -> dict[
         try:
             # Use dataset's resolve_path to handle relative paths correctly
             # (relative paths are stored relative to dataset root, not CWD)
-            abs_path = ds.resolve_path(abs_raw) if hasattr(ds, 'resolve_path') else Path(abs_raw).resolve()
+            abs_path = (
+                ds.resolve_path(abs_raw)
+                if hasattr(ds, "resolve_path")
+                else Path(abs_raw).resolve()
+            )
         except Exception:
             abs_path = Path(abs_raw)
         seq_val = (
@@ -312,6 +336,7 @@ def _build_path_sequence_map(ds, feature_name: str, run_id: str | None) -> dict[
 # Nearest-neighbor pair filtering utilities
 # -----------------------------------------------------------------------------
 
+
 def _build_nn_lookup(
     ds,
     sequence_safe: str,
@@ -324,16 +349,20 @@ def _build_nn_lookup(
     feature parquet.  Returns an empty dict when the NN feature has not been
     computed for this sequence (fail-open).
     """
-    from mosaic.core.dataset import _feature_index_path, _latest_feature_run_root, _feature_run_root
+    from mosaic.core.dataset import (
+        _feature_index_path,
+        _feature_run_root,
+        _latest_feature_run_root,
+    )
 
     feat_name = pair_filter_spec.get("feature", "nearest-neighbor")
     run_id = pair_filter_spec.get("run_id")
 
     try:
         if run_id is None:
-            run_id, run_root = _latest_feature_run_root(ds, feat_name)
+            run_id, _ = _latest_feature_run_root(ds, feat_name)
         else:
-            run_root = _feature_run_root(ds, feat_name, str(run_id))
+            _feature_run_root(ds, feat_name, str(run_id))
     except (ValueError, FileNotFoundError):
         return {}
 
@@ -352,8 +381,10 @@ def _build_nn_lookup(
 
     if "sequence_safe" not in df_idx.columns:
         df_idx = df_idx.copy()
-        df_idx["sequence_safe"] = df_idx["sequence"].fillna("").apply(
-            lambda v: to_safe_name(str(v)) if str(v).strip() else ""
+        df_idx["sequence_safe"] = (
+            df_idx["sequence"]
+            .fillna("")
+            .apply(lambda v: to_safe_name(str(v)) if str(v).strip() else "")
         )
 
     match = df_idx[df_idx["sequence_safe"] == sequence_safe]
@@ -361,7 +392,11 @@ def _build_nn_lookup(
         return {}
 
     abs_path_str = match.iloc[0].get("abs_path", "")
-    nn_path = ds.resolve_path(abs_path_str) if hasattr(ds, 'resolve_path') else Path(abs_path_str)
+    nn_path = (
+        ds.resolve_path(abs_path_str)
+        if hasattr(ds, "resolve_path")
+        else Path(abs_path_str)
+    )
     if not nn_path.exists():
         return {}
 
@@ -370,7 +405,11 @@ def _build_nn_lookup(
     except Exception:
         return {}
 
-    frame_col = "frame" if "frame" in df_nn.columns else ("time" if "time" in df_nn.columns else None)
+    frame_col = (
+        "frame"
+        if "frame" in df_nn.columns
+        else ("time" if "time" in df_nn.columns else None)
+    )
     if frame_col is None or "id" not in df_nn.columns or "nn_id" not in df_nn.columns:
         return {}
 
@@ -401,7 +440,9 @@ def _nn_pair_mask(
     Returns all-True when the DataFrame lacks the required columns or
     when *nn_lookup* is empty (fail-open).
     """
-    frame_col = "frame" if "frame" in df.columns else ("time" if "time" in df.columns else None)
+    frame_col = (
+        "frame" if "frame" in df.columns else ("time" if "time" in df.columns else None)
+    )
     if (
         not nn_lookup
         or frame_col is None
@@ -428,6 +469,7 @@ def _nn_pair_mask(
 # -----------------------------------------------------------------------------
 # StreamingFeatureHelper - Unified streaming processor for global features
 # -----------------------------------------------------------------------------
+
 
 class StreamingFeatureHelper:
     """
@@ -472,11 +514,17 @@ class StreamingFeatureHelper:
         """Build and cache the NN lookup for a sequence key."""
         if key in self._nn_lookup_cache:
             return self._nn_lookup_cache[key]
-        lookup = _build_nn_lookup(self.ds, key, self._pair_filter_spec) if self._pair_filter_spec else {}
+        lookup = (
+            _build_nn_lookup(self.ds, key, self._pair_filter_spec)
+            if self._pair_filter_spec
+            else {}
+        )
         self._nn_lookup_cache[key] = lookup
         return lookup
 
-    def _make_df_filter(self, key: str) -> Optional[Callable[[pd.DataFrame], pd.DataFrame]]:
+    def _make_df_filter(
+        self, key: str
+    ) -> Optional[Callable[[pd.DataFrame], pd.DataFrame]]:
         """Return a DataFrame filter callable for the given sequence, or None."""
         if self._pair_filter_spec is None:
             return None
@@ -517,7 +565,7 @@ class StreamingFeatureHelper:
         Dict[str, List[Tuple[Path, dict]]]
             Mapping from sequence key to list of (path, load_spec) tuples
         """
-        from mosaic.core.dataset import _latest_feature_run_root, _feature_run_root
+        from mosaic.core.dataset import _feature_run_root, _latest_feature_run_root
 
         manifest: Dict[str, List[Tuple[Path, dict]]] = {}
 
@@ -541,8 +589,10 @@ class StreamingFeatureHelper:
             files = sorted(run_root.glob(pattern))
 
             if not files:
-                print(f"[{self.feature_name}] WARN: no files for {feat_name} ({run_id}) pattern={pattern}",
-                      file=sys.stderr)
+                print(
+                    f"[{self.feature_name}] WARN: no files for {feat_name} ({run_id}) pattern={pattern}",
+                    file=sys.stderr,
+                )
                 continue
 
             seq_map = self._get_seq_map(feat_name, run_id)
@@ -586,7 +636,9 @@ class StreamingFeatureHelper:
 
         n_keys = len(manifest)
         for i, (key, file_specs) in enumerate(manifest.items()):
-            X, frames = self.load_key_data(file_specs, extract_frames=extract_frames, key=key)
+            X, frames = self.load_key_data(
+                file_specs, extract_frames=extract_frames, key=key
+            )
             if X is None:
                 continue
 
@@ -600,7 +652,10 @@ class StreamingFeatureHelper:
             pa.default_memory_pool().release_unused()
 
             if (i + 1) % progress_interval == 0 or i == n_keys - 1:
-                print(f"[{self.feature_name}] Processed {i + 1}/{n_keys} sequences", file=sys.stderr)
+                print(
+                    f"[{self.feature_name}] Processed {i + 1}/{n_keys} sequences",
+                    file=sys.stderr,
+                )
 
     def load_key_data(
         self,
@@ -634,7 +689,9 @@ class StreamingFeatureHelper:
 
         for pth, load_spec in file_specs:
             frame_col = "frame" if extract_frames else None
-            arr, frame_vals = _load_array_from_spec(pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter)
+            arr, frame_vals = _load_array_from_spec(
+                pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter
+            )
             if arr is None or arr.size == 0:
                 continue
             mats.append(arr)
@@ -687,7 +744,11 @@ class StreamingFeatureHelper:
         if id1 is None:
             return None, None, "global"
         id1_vals = id1.to_numpy(dtype=np.float64, copy=True)
-        id2_vals = id2.to_numpy(dtype=np.float64, copy=True) if id2 is not None else np.full(len(df), np.nan, dtype=np.float64)
+        id2_vals = (
+            id2.to_numpy(dtype=np.float64, copy=True)
+            if id2 is not None
+            else np.full(len(df), np.nan, dtype=np.float64)
+        )
         return id1_vals, id2_vals, level
 
     def load_key_data_with_identity(
@@ -695,7 +756,13 @@ class StreamingFeatureHelper:
         file_specs: List[Tuple[Path, dict]],
         extract_frames: bool = False,
         key: Optional[str] = None,
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], str]:
+    ) -> Tuple[
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        str,
+    ]:
         """
         Load and concatenate data for a key, preserving identity metadata.
 
@@ -715,12 +782,16 @@ class StreamingFeatureHelper:
 
         for pth, load_spec in file_specs:
             frame_col = "frame" if extract_frames else None
-            arr, frame_vals = _load_array_from_spec(pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter)
+            arr, frame_vals = _load_array_from_spec(
+                pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter
+            )
             if arr is None or arr.size == 0:
                 continue
 
             if id1_vals is None:
-                cur_id1, cur_id2, cur_level = self._load_identity_from_spec(pth, load_spec, df_filter=df_filter)
+                cur_id1, cur_id2, cur_level = self._load_identity_from_spec(
+                    pth, load_spec, df_filter=df_filter
+                )
                 if cur_id1 is not None:
                     id1_vals = cur_id1
                     id2_vals = cur_id2
@@ -899,7 +970,8 @@ def _get_feature_run_root(
 
     If run_id is None, picks the latest finished run.
     """
-    from mosaic.core.dataset import _latest_feature_run_root, _feature_run_root
+    from mosaic.core.dataset import _feature_run_root, _latest_feature_run_root
+
     if run_id is None:
         run_id, run_root = _latest_feature_run_root(ds, feature_name)
     else:
@@ -928,6 +1000,7 @@ def _load_joblib_artifact(ds, spec: dict) -> Any:
         The loaded object, or obj[key] if key is specified
     """
     import joblib
+
     feature = spec.get("feature")
     if not feature:
         raise ValueError("Artifact spec requires 'feature'.")
@@ -971,7 +1044,9 @@ def _load_artifact_matrix(ds, artifact_spec: dict) -> np.ndarray:
         raise ValueError("artifact.feature required.")
     _, run_root = _get_feature_run_root(ds, feature, artifact_spec.get("run_id"))
     pattern = artifact_spec.get("pattern", "*.npz")
-    loader = artifact_spec.get("load", {"kind": "npz", "key": "templates", "transpose": False})
+    loader = artifact_spec.get(
+        "load", {"kind": "npz", "key": "templates", "transpose": False}
+    )
     files = sorted(run_root.glob(pattern))
     if not files:
         raise FileNotFoundError(f"No files matching '{pattern}' in {run_root}")
@@ -1008,8 +1083,17 @@ def _load_artifact_matrix(ds, artifact_spec: dict) -> np.ndarray:
                 df = df[[c for c in cols if c in df.columns]]
             elif loader.get("numeric_only", True):
                 df = df.select_dtypes(include=[np.number])
-                for mc in ("frame", "time", "id", "id1", "id2",
-                           "id_a", "id_b", "id_A", "id_B"):
+                for mc in (
+                    "frame",
+                    "time",
+                    "id",
+                    "id1",
+                    "id2",
+                    "id_a",
+                    "id_b",
+                    "id_A",
+                    "id_B",
+                ):
                     if mc in df.columns:
                         df = df.drop(columns=[mc])
             else:

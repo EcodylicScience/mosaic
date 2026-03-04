@@ -23,19 +23,22 @@ Output columns (per frame × pair):
 """
 
 from __future__ import annotations
+
 from itertools import combinations
-from math import cos, radians
-from typing import Optional, Dict, Any, List
+from typing import List, Literal, Optional, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
-from .helpers import _merge_params
+
+from ._param_bases import FeatureParams, InterpolationMixin, PositionColumnsMixin
 
 
 def _contiguous_runs(
-    binary: np.ndarray, frames: np.ndarray,
+    binary: np.ndarray,
+    frames: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Find start/end frame numbers for contiguous runs of 1s."""
     if len(binary) == 0:
@@ -46,6 +49,7 @@ def _contiguous_runs(
     return frames[starts], frames[ends]
 
 
+@final
 @register_feature
 class ApproachAvoidance:
     """
@@ -61,50 +65,26 @@ class ApproachAvoidance:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        # Column conventions
-        x_col="X",
-        y_col="Y",
-        orientation_col="ANGLE",
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        order_pref=("frame", "time"),
+    class Params(FeatureParams, PositionColumnsMixin, InterpolationMixin):
+        orientation_col: str = "ANGLE"
+        fps_default: float = Field(default=30.0, gt=0)
+        velocity_units: Literal["per_frame", "per_second"] = "per_frame"
+        angle_units: Literal["radians", "degrees", "auto"] = "radians"
+        consecutive_frame_delta: float = 1.0
+        distance_threshold: float = Field(default=200.0, gt=0)
+        approacher_velocity_threshold: float = Field(default=5.0, ge=0)
+        avoider_velocity_threshold: float = Field(default=5.0, ge=0)
+        cos_approacher_threshold: float = Field(default=0.8, ge=-1, le=1)
+        cos_avoider_threshold: float = Field(default=0.5, ge=-1, le=1)
+        min_event_length: int = Field(default=10, ge=1)
+        min_event_count: int = Field(default=5, ge=1)
+        use_approacher_orientation_gate: bool = True
+        approacher_forward_cos_threshold: float = 0.8660254037844386
+        use_sliding_window: bool = False
+        window_sec: float = Field(default=0.4, gt=0)
 
-        # Sampling
-        fps_default=30.0,
-        velocity_units="per_frame",  # "per_frame" (trajognize-like) | "per_second"
-        angle_units="radians",       # "radians" | "degrees" | "auto"
-        consecutive_frame_delta=1.0,  # expected delta for consecutive samples
-
-        # Cleaning / interpolation (per-animal)
-        linear_interp_limit=10,
-        edge_fill_limit=3,
-        max_missing_fraction=0.10,
-
-        # trajognize-style AA thresholds (position units/frame for velocity,
-        # position units for distance). Example rat config used 200px / 5px/frame.
-        distance_threshold=200.0,
-        approacher_velocity_threshold=5.0,
-        avoider_velocity_threshold=5.0,
-        cos_approacher_threshold=0.8,
-        cos_avoider_threshold=0.5,
-
-        # Continuity gate (trajognize min-count-in-window)
-        min_event_length=10,
-        min_event_count=5,
-
-        # Approacher body orientation gate (trajognize version >=7 behavior)
-        use_approacher_orientation_gate=True,
-        approacher_forward_cos_threshold=0.8660254037844386,  # cos(30 deg)
-
-        # Optional smoothing extension (disabled by default)
-        use_sliding_window=False,
-        window_sec=0.4,
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -149,13 +129,13 @@ class ApproachAvoidance:
 
         p = self.params
         order_col = self._order_col(df)
-        use_ori_gate = bool(p.get("use_approacher_orientation_gate", True))
+        use_ori_gate = p.use_approacher_orientation_gate
 
-        need = [p["id_col"], p["seq_col"], order_col, p["x_col"], p["y_col"]]
-        if p["group_col"] in df.columns:
-            need.append(p["group_col"])
+        need = [p.id_col, p.seq_col, order_col, p.x_col, p.y_col]
+        if p.group_col in df.columns:
+            need.append(p.group_col)
         if use_ori_gate:
-            need.append(p["orientation_col"])
+            need.append(p.orientation_col)
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[approach-avoidance] Missing columns: {missing}")
@@ -166,10 +146,10 @@ class ApproachAvoidance:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p["seq_col"], p["id_col"]]
-        data_cols = [p["x_col"], p["y_col"]]
-        if p["orientation_col"] in df_small.columns:
-            data_cols.append(p["orientation_col"])
+        group_cols = [p.seq_col, p.id_col]
+        data_cols = [p.x_col, p.y_col]
+        if p.orientation_col in df_small.columns:
+            data_cols.append(p.orientation_col)
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -180,17 +160,15 @@ class ApproachAvoidance:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(clean_animal, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            clean_animal, include_groups=False
         )
 
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p["seq_col"]):
-            ids = sorted(gseq[p["id_col"]].unique())
+        for seq, gseq in df_small.groupby(p.seq_col):
+            ids = sorted(gseq[p.id_col].unique())
             if len(ids) < 2:
                 continue
             for id_a, id_b in combinations(ids, 2):
@@ -199,10 +177,17 @@ class ApproachAvoidance:
                     out_frames.append(pair_df)
 
         if not out_frames:
-            return pd.DataFrame(columns=[
-                "frame", "id1", "id2",
-                "label_id", "aa_event", "aa_event_12", "aa_event_21",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "frame",
+                    "id1",
+                    "id2",
+                    "label_id",
+                    "aa_event",
+                    "aa_event_12",
+                    "aa_event_21",
+                ]
+            )
 
         out = pd.concat(out_frames, ignore_index=True)
         out = out.sort_values(["id1", "id2", "frame"]).reset_index(drop=True)
@@ -220,12 +205,12 @@ class ApproachAvoidance:
     ) -> Optional[pd.DataFrame]:
         p = self.params
 
-        use_ori_gate = bool(p.get("use_approacher_orientation_gate", True))
-        cols = [order_col, p["x_col"], p["y_col"]]
-        if use_ori_gate and p["orientation_col"] in gseq.columns:
-            cols.append(p["orientation_col"])
-        A = gseq[gseq[p["id_col"]] == id_a][cols].copy()
-        B = gseq[gseq[p["id_col"]] == id_b][cols].copy()
+        use_ori_gate = p.use_approacher_orientation_gate
+        cols = [order_col, p.x_col, p.y_col]
+        if use_ori_gate and p.orientation_col in gseq.columns:
+            cols.append(p.orientation_col)
+        A = gseq[gseq[p.id_col] == id_a][cols].copy()
+        B = gseq[gseq[p.id_col] == id_b][cols].copy()
 
         if A.empty or B.empty:
             return None
@@ -238,7 +223,7 @@ class ApproachAvoidance:
             return None
 
         # Get fps
-        fps = float(p["fps_default"])
+        fps = p.fps_default
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()
@@ -248,14 +233,14 @@ class ApproachAvoidance:
                 pass
 
         # Extract positions
-        x_a = j[f"{p['x_col']}_A"].to_numpy(dtype=np.float64)
-        y_a = j[f"{p['y_col']}_A"].to_numpy(dtype=np.float64)
-        x_b = j[f"{p['x_col']}_B"].to_numpy(dtype=np.float64)
-        y_b = j[f"{p['y_col']}_B"].to_numpy(dtype=np.float64)
+        x_a = j[f"{p.x_col}_A"].to_numpy(dtype=np.float64)
+        y_a = j[f"{p.y_col}_A"].to_numpy(dtype=np.float64)
+        x_b = j[f"{p.x_col}_B"].to_numpy(dtype=np.float64)
+        y_b = j[f"{p.y_col}_B"].to_numpy(dtype=np.float64)
         frames = j["frame"].to_numpy().astype(int)
         n = len(frames)
         eps = 1e-12
-        expected_delta = float(p.get("consecutive_frame_delta", 1.0))
+        expected_delta = p.consecutive_frame_delta
 
         # Trajognize-style velocity: frame-to-frame difference (not centered gradient).
         v_ax = np.full(n, np.nan, dtype=np.float64)
@@ -271,7 +256,7 @@ class ApproachAvoidance:
             v_bx[idx] = x_b[idx] - x_b[idx - 1]
             v_by[idx] = y_b[idx] - y_b[idx - 1]
 
-        if str(p.get("velocity_units", "per_frame")).lower() == "per_second":
+        if p.velocity_units == "per_second":
             v_ax *= fps
             v_ay *= fps
             v_bx *= fps
@@ -289,7 +274,7 @@ class ApproachAvoidance:
         # Canonical pair order: id1 = min, id2 = max
         id1 = min(id_a, id_b)
         id2 = max(id_a, id_b)
-        a_is_id1 = (id_a == id1)
+        a_is_id1 = id_a == id1
 
         if a_is_id1:
             dx12 = dx_ab
@@ -297,16 +282,16 @@ class ApproachAvoidance:
             v1x, v1y = v_ax, v_ay
             v2x, v2y = v_bx, v_by
             speed1, speed2 = speed_a, speed_b
-            ori1 = j.get(f"{p['orientation_col']}_A")
-            ori2 = j.get(f"{p['orientation_col']}_B")
+            ori1 = j.get(f"{p.orientation_col}_A")
+            ori2 = j.get(f"{p.orientation_col}_B")
         else:
             dx12 = -dx_ab
             dy12 = -dy_ab
             v1x, v1y = v_bx, v_by
             v2x, v2y = v_ax, v_ay
             speed1, speed2 = speed_b, speed_a
-            ori1 = j.get(f"{p['orientation_col']}_B")
-            ori2 = j.get(f"{p['orientation_col']}_A")
+            ori1 = j.get(f"{p.orientation_col}_B")
+            ori2 = j.get(f"{p.orientation_col}_A")
 
         # Cosine metrics equivalent to trajognize:
         # direction 12: id1 approaches id2, id2 avoids id1
@@ -314,27 +299,32 @@ class ApproachAvoidance:
         cos_avoid_12 = (v2x * dx12 + v2y * dy12) / (np.maximum(dist * speed2, eps))
         # direction 21: id2 approaches id1, id1 avoids id2 (flip direction vector)
         cos_app_21 = (v2x * (-dx12) + v2y * (-dy12)) / (np.maximum(dist * speed2, eps))
-        cos_avoid_21 = (v1x * (-dx12) + v1y * (-dy12)) / (np.maximum(dist * speed1, eps))
+        cos_avoid_21 = (v1x * (-dx12) + v1y * (-dy12)) / (
+            np.maximum(dist * speed1, eps)
+        )
 
         # Optional approacher orientation gate (trajognize v7 behavior)
-        use_ori_gate = bool(p.get("use_approacher_orientation_gate", True))
-        forward_thr = float(p.get("approacher_forward_cos_threshold", cos(radians(30.0))))
+        use_ori_gate = p.use_approacher_orientation_gate
+        forward_thr = p.approacher_forward_cos_threshold
         cos_ori_vel_1 = np.ones(n, dtype=np.float64)
         cos_ori_vel_2 = np.ones(n, dtype=np.float64)
         if use_ori_gate:
             if ori1 is None or ori2 is None:
                 raise ValueError(
                     "[approach-avoidance] Orientation gate enabled but orientation column "
-                    f"'{p['orientation_col']}' not available for merged pair."
+                    f"'{p.orientation_col}' not available for merged pair."
                 )
             th1 = ori1.to_numpy(dtype=np.float64)
             th2 = ori2.to_numpy(dtype=np.float64)
-            unit_mode = str(p.get("angle_units", "radians")).lower()
+            unit_mode = p.angle_units
             if unit_mode == "degrees":
                 th1 = np.deg2rad(th1)
                 th2 = np.deg2rad(th2)
             elif unit_mode == "auto":
-                if np.nanmax(np.abs(th1)) > 2 * np.pi or np.nanmax(np.abs(th2)) > 2 * np.pi:
+                if (
+                    np.nanmax(np.abs(th1)) > 2 * np.pi
+                    or np.nanmax(np.abs(th2)) > 2 * np.pi
+                ):
                     th1 = np.deg2rad(th1)
                     th2 = np.deg2rad(th2)
             o1x, o1y = np.cos(th1), np.sin(th1)
@@ -343,9 +333,9 @@ class ApproachAvoidance:
             cos_ori_vel_2 = (v2x * o2x + v2y * o2y) / np.maximum(speed2, eps)
 
         # Optional smoothing extension (disabled by default).
-        use_sliding = bool(p.get("use_sliding_window", False))
+        use_sliding = p.use_sliding_window
         if use_sliding:
-            win_frames = max(1, int(round(float(p["window_sec"]) * fps)))
+            win_frames = max(1, int(round(p.window_sec * fps)))
             dist_eval = self._sliding_nanmean(dist, win_frames)
             speed1_eval = self._sliding_nanmean(speed1, win_frames)
             speed2_eval = self._sliding_nanmean(speed2, win_frames)
@@ -367,11 +357,11 @@ class ApproachAvoidance:
             cos_ori_vel_2_eval = cos_ori_vel_2
 
         # Thresholds
-        dist_thr = float(p["distance_threshold"])
-        va_thr = float(p["approacher_velocity_threshold"])
-        vb_thr = float(p["avoider_velocity_threshold"])
-        cos_app_thr = float(p["cos_approacher_threshold"])
-        cos_avoid_thr = float(p["cos_avoider_threshold"])
+        dist_thr = p.distance_threshold
+        va_thr = p.approacher_velocity_threshold
+        vb_thr = p.avoider_velocity_threshold
+        cos_app_thr = p.cos_approacher_threshold
+        cos_avoid_thr = p.cos_avoider_threshold
 
         base_valid = np.isfinite(speed1) & np.isfinite(speed2)
 
@@ -406,8 +396,8 @@ class ApproachAvoidance:
             & (cos_ori_vel_2_eval >= forward_thr)
         )
 
-        min_event_length = max(1, int(p.get("min_event_length", 1)))
-        min_event_count = max(1, int(p.get("min_event_count", 1)))
+        min_event_length = max(1, p.min_event_length)
+        min_event_count = max(1, p.min_event_count)
         if min_event_count > min_event_length:
             min_event_count = min_event_length
 
@@ -433,7 +423,7 @@ class ApproachAvoidance:
             }
         )
 
-        for col in (p["seq_col"], p["group_col"]):
+        for col in (p.seq_col, p.group_col):
             if col in gseq.columns:
                 out[col] = gseq[col].iloc[0]
             elif col in orig_df.columns:
@@ -511,27 +501,32 @@ class ApproachAvoidance:
 
         if not events:
             cols = group_cols + [
-                "start_frame", "end_frame", "duration",
-                "direction", "approacher_id", "avoider_id",
+                "start_frame",
+                "end_frame",
+                "duration",
+                "direction",
+                "approacher_id",
+                "avoider_id",
             ]
             return pd.DataFrame(columns=cols)
 
         out = pd.DataFrame(events)
-        out = out.sort_values(
-            group_cols + ["start_frame"]
-        ).reset_index(drop=True)
+        out = out.sort_values(group_cols + ["start_frame"]).reset_index(drop=True)
         return out
 
     # ----------------------- Helpers -----------------------------
 
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
 
     def _clean_one_animal(
-        self, g: pd.DataFrame, data_cols: List[str], order_col: str,
+        self,
+        g: pd.DataFrame,
+        data_cols: List[str],
+        order_col: str,
     ) -> pd.DataFrame:
         p = self.params
         g = g.sort_values(order_col).copy()
@@ -540,14 +535,14 @@ class ApproachAvoidance:
         g[data_cols] = g[data_cols].replace([np.inf, -np.inf], np.nan)
         g[data_cols] = g[data_cols].interpolate(
             method="linear",
-            limit=int(p["linear_interp_limit"]),
+            limit=p.linear_interp_limit,
             limit_direction="both",
         )
-        g[data_cols] = g[data_cols].ffill(limit=int(p["edge_fill_limit"]))
-        g[data_cols] = g[data_cols].bfill(limit=int(p["edge_fill_limit"]))
+        g[data_cols] = g[data_cols].ffill(limit=p.edge_fill_limit)
+        g[data_cols] = g[data_cols].bfill(limit=p.edge_fill_limit)
 
         miss_frac = g[data_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= float(p["max_missing_fraction"])].copy()
+        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
 
         if g[data_cols].isna().any().any():
             med = g[data_cols].median()

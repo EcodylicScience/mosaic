@@ -10,16 +10,25 @@ downstream features like PairWavelet.
 """
 
 from __future__ import annotations
-from typing import Optional, Dict, Any, List, Tuple
+
 from itertools import combinations
+from pathlib import Path
+from typing import List, Optional, Tuple, final
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import register_feature
-from .helpers import _merge_params
+
+from ._param_bases import (
+    FeatureParams,
+    InterpolationMixin,
+    PositionColumnsMixin,
+    SamplingMixin,
+)
 
 
+@final
 @register_feature
 class PairPositionFeatures:
     """
@@ -49,28 +58,13 @@ class PairPositionFeatures:
     parallelizable = True
     output_type = "per_frame"
 
-    _defaults = dict(
-        # column names
-        x_col="X",
-        y_col="Y",
-        angle_col="ANGLE",  # heading in radians
-        id_col="id",
-        seq_col="sequence",
-        group_col="group",
-        order_pref=("frame", "time"),
+    class Params(
+        FeatureParams, PositionColumnsMixin, InterpolationMixin, SamplingMixin
+    ):
+        pass
 
-        # sampling
-        fps_default=30.0,
-        smooth_win=0,  # 0 disables smoothing
-
-        # cleaning / interpolation
-        linear_interp_limit=10,
-        edge_fill_limit=3,
-        max_missing_fraction=0.10,
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        self.params = _merge_params(params, self._defaults)
+    def __init__(self, params: dict[str, object] | None = None):
+        self.params = self.Params.from_overrides(params)
 
     # ------------- Feature protocol -------------
     def needs_fit(self) -> bool:
@@ -88,12 +82,18 @@ class PairPositionFeatures:
     def partial_fit(self, df: pd.DataFrame) -> None:
         return
 
+    def save_model(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def load_model(self, path: Path) -> None:
+        raise NotImplementedError
+
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = self._order_col(df)
 
         # Required columns
-        need = [p["id_col"], p["seq_col"], order_col, p["x_col"], p["y_col"], p["angle_col"]]
+        need = [p.id_col, p.seq_col, order_col, p.x_col, p.y_col, p.angle_col]
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-position] Missing columns: {missing}")
@@ -105,8 +105,8 @@ class PairPositionFeatures:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p["seq_col"], p["id_col"]]
-        data_cols = [p["x_col"], p["y_col"], p["angle_col"]]
+        group_cols = [p.seq_col, p.id_col]
+        data_cols = [p.x_col, p.y_col, p.angle_col]
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -117,17 +117,15 @@ class PairPositionFeatures:
                 result[group_cols[0]] = g.name
             return result
 
-        df_small = (
-            df_small
-            .groupby(group_cols, group_keys=False)
-            .apply(clean_animal, include_groups=False)
+        df_small = df_small.groupby(group_cols, group_keys=False).apply(
+            clean_animal, include_groups=False
         )
 
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p["seq_col"]):
-            ids = sorted(gseq[p["id_col"]].unique())
+        for seq, gseq in df_small.groupby(p.seq_col):
+            ids = sorted(gseq[p.id_col].unique())
             if len(ids) < 2:
                 continue
 
@@ -139,28 +137,54 @@ class PairPositionFeatures:
 
         if not out_frames:
             # Return empty DataFrame with expected columns
-            return pd.DataFrame(columns=[
-                "frame", "perspective", "id_A", "id_B",
-                "A_speed", "A_v_para", "A_v_perp", "A_ang_speed",
-                "A_heading_cos", "A_heading_sin",
-                "AB_dist", "AB_dx_egoA", "AB_dy_egoA",
-                "rel_heading_cos", "rel_heading_sin",
-                "B_speed", "B_v_para", "B_v_perp", "B_ang_speed",
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "frame",
+                    "perspective",
+                    "id_A",
+                    "id_B",
+                    "A_speed",
+                    "A_v_para",
+                    "A_v_perp",
+                    "A_ang_speed",
+                    "A_heading_cos",
+                    "A_heading_sin",
+                    "AB_dist",
+                    "AB_dx_egoA",
+                    "AB_dy_egoA",
+                    "rel_heading_cos",
+                    "rel_heading_sin",
+                    "B_speed",
+                    "B_v_para",
+                    "B_v_perp",
+                    "B_ang_speed",
+                ]
+            )
 
         out = pd.concat(out_frames, ignore_index=True)
-        out = out.sort_values(["id_A", "id_B", "perspective", "frame"]).reset_index(drop=True)
+        out = out.sort_values(["id_A", "id_B", "perspective", "frame"]).reset_index(
+            drop=True
+        )
         return out
 
     def _compute_pair_features(
-        self, gseq: pd.DataFrame, idA: int, idB: int, order_col: str, orig_df: pd.DataFrame
+        self,
+        gseq: pd.DataFrame,
+        idA: int,
+        idB: int,
+        order_col: str,
+        orig_df: pd.DataFrame,
     ) -> Optional[pd.DataFrame]:
         """Compute features for a single pair (A, B) with both perspectives."""
         p = self.params
 
         # Extract data for each animal
-        A = gseq[gseq[p["id_col"]] == idA][[order_col, p["x_col"], p["y_col"], p["angle_col"]]].copy()
-        B = gseq[gseq[p["id_col"]] == idB][[order_col, p["x_col"], p["y_col"], p["angle_col"]]].copy()
+        A = gseq[gseq[p.id_col] == idA][
+            [order_col, p.x_col, p.y_col, p.angle_col]
+        ].copy()
+        B = gseq[gseq[p.id_col] == idB][
+            [order_col, p.x_col, p.y_col, p.angle_col]
+        ].copy()
 
         if A.empty or B.empty:
             return None
@@ -175,7 +199,7 @@ class PairPositionFeatures:
             return None
 
         # Get fps
-        fps = float(p["fps_default"])
+        fps = float(p.fps_default)
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()
@@ -201,7 +225,7 @@ class PairPositionFeatures:
         dfB["id_B"] = idA
 
         # Pass through group/sequence
-        for col in (p["seq_col"], p["group_col"]):
+        for col in (p.seq_col, p.group_col):
             if col in orig_df.columns:
                 val = orig_df[col].iloc[0]
                 dfA[col] = val
@@ -214,15 +238,15 @@ class PairPositionFeatures:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
         """Build egocentric features from joined pair data."""
         p = self.params
-        win = int(p["smooth_win"])
+        win = p.smooth_win
 
         # Extract positions and angles
-        cxA = j[f"{p['x_col']}_A"].to_numpy()
-        cyA = j[f"{p['y_col']}_A"].to_numpy()
-        cxB = j[f"{p['x_col']}_B"].to_numpy()
-        cyB = j[f"{p['y_col']}_B"].to_numpy()
-        thA = j[f"{p['angle_col']}_A"].to_numpy()
-        thB = j[f"{p['angle_col']}_B"].to_numpy()
+        cxA = j[f"{p.x_col}_A"].to_numpy()
+        cyA = j[f"{p.y_col}_A"].to_numpy()
+        cxB = j[f"{p.x_col}_B"].to_numpy()
+        cyB = j[f"{p.y_col}_B"].to_numpy()
+        thA = j[f"{p.angle_col}_A"].to_numpy()
+        thB = j[f"{p.angle_col}_B"].to_numpy()
         frames = j["frame"].to_numpy().astype(int)
 
         # Optional smoothing
@@ -281,36 +305,70 @@ class PairPositionFeatures:
 
         # Feature names (matching PairEgocentricFeatures)
         names = [
-            "A_speed", "A_v_para", "A_v_perp", "A_ang_speed",
-            "A_heading_cos", "A_heading_sin",
-            "AB_dist", "AB_dx_egoA", "AB_dy_egoA",
-            "rel_heading_cos", "rel_heading_sin",
-            "B_speed", "B_v_para", "B_v_perp", "B_ang_speed",
+            "A_speed",
+            "A_v_para",
+            "A_v_perp",
+            "A_ang_speed",
+            "A_heading_cos",
+            "A_heading_sin",
+            "AB_dist",
+            "AB_dx_egoA",
+            "AB_dy_egoA",
+            "rel_heading_cos",
+            "rel_heading_sin",
+            "B_speed",
+            "B_v_para",
+            "B_v_perp",
+            "B_ang_speed",
         ]
 
         # A→B perspective
-        AtoB = np.vstack([
-            speedA, vA_para, vA_perp, angspeedA,
-            np.cos(thA), np.sin(thA),
-            distAB, dxA, dyA,
-            rel_cos, rel_sin,
-            speedB, vB_para, vB_perp, angspeedB,
-        ]).astype(np.float32)
+        AtoB = np.vstack(
+            [
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+                np.cos(thA),
+                np.sin(thA),
+                distAB,
+                dxA,
+                dyA,
+                rel_cos,
+                rel_sin,
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+            ]
+        ).astype(np.float32)
 
         # B→A perspective (swap roles)
-        BtoA = np.vstack([
-            speedB, vB_para, vB_perp, angspeedB,
-            np.cos(thB), np.sin(thB),
-            distAB, dxB, dyB,
-            np.cos(-dth), np.sin(-dth),
-            speedA, vA_para, vA_perp, angspeedA,
-        ]).astype(np.float32)
+        BtoA = np.vstack(
+            [
+                speedB,
+                vB_para,
+                vB_perp,
+                angspeedB,
+                np.cos(thB),
+                np.sin(thB),
+                distAB,
+                dxB,
+                dyB,
+                np.cos(-dth),
+                np.sin(-dth),
+                speedA,
+                vA_para,
+                vA_perp,
+                angspeedA,
+            ]
+        ).astype(np.float32)
 
         return frames, AtoB, BtoA, names
 
     # ------------- Helpers -------------
     def _order_col(self, df: pd.DataFrame) -> str:
-        for c in self.params["order_pref"]:
+        for c in self.params.order_pref:
             if c in df.columns:
                 return c
         raise ValueError("Need either 'frame' or 'time' column to order rows.")
@@ -328,18 +386,16 @@ class PairPositionFeatures:
 
         # Interpolate
         g[data_cols] = g[data_cols].interpolate(
-            method="linear",
-            limit=int(p["linear_interp_limit"]),
-            limit_direction="both"
+            method="linear", limit=p.linear_interp_limit, limit_direction="both"
         )
 
         # Edge fill
-        g[data_cols] = g[data_cols].ffill(limit=int(p["edge_fill_limit"]))
-        g[data_cols] = g[data_cols].bfill(limit=int(p["edge_fill_limit"]))
+        g[data_cols] = g[data_cols].ffill(limit=p.edge_fill_limit)
+        g[data_cols] = g[data_cols].bfill(limit=p.edge_fill_limit)
 
         # Drop rows with too much missing data
         miss_frac = g[data_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= float(p["max_missing_fraction"])].copy()
+        g = g.loc[miss_frac <= p.max_missing_fraction].copy()
 
         # Fill remaining with median
         if g[data_cols].isna().any().any():
