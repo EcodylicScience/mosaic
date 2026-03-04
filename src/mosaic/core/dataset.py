@@ -2647,6 +2647,7 @@ class Dataset:
 # --- Backward compat: track converter helpers moved to core/track_library ---
 from mosaic.core.track_library.helpers import load_calms21, angle_from_two_points, angle_from_pca
 from mosaic.core.track_library.calms21 import calms21_to_trex_df
+from mosaic.core.track_library.trex import _strip_trex_seq
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""

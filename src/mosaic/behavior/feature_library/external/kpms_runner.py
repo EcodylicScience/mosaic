@@ -429,6 +429,123 @@ def cmd_apply(args):
 
 
 # ---------------------------------------------------------------------------
+# VISUALIZE command
+# ---------------------------------------------------------------------------
+
+def cmd_visualize(args):
+    """Generate syllable grid movies and trajectory plots using kpms built-ins.
+
+    Loads the fitted model and existing syllable arrays (from a previous apply
+    run), constructs the results dict, and calls kpms.generate_grid_movies and
+    kpms.generate_trajectory_plots with keypoints_only=True (no raw video needed).
+    """
+    import keypoint_moseq as kpms
+    import joblib
+
+    model_dir = Path(args.model_dir)
+    data_dir = Path(args.data_dir)
+    apply_dir = Path(args.apply_output_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load model bundle
+    print("[kpms_runner:visualize] Loading model...", file=sys.stderr)
+    bundle = joblib.load(model_dir / "kpms_model.joblib")
+    kpms_config = bundle["kpms_config"]
+    bodyparts = bundle["bodyparts"]
+    use_bodyparts = kpms_config["use_bodyparts"]
+    skeleton = kpms_config.get("skeleton", [])
+    fps = args.fps if args.fps is not None else kpms_config.get("fps", 30)
+
+    # Load coordinates
+    print("[kpms_runner:visualize] Loading coordinates...", file=sys.stderr)
+    coordinates, _, _ = _load_data(data_dir)
+    print(f"[kpms_runner:visualize] {len(coordinates)} recordings", file=sys.stderr)
+
+    # Load syllables from saved npz files and build results dict
+    processed_path = apply_dir / "processed_recordings.json"
+    if not processed_path.exists():
+        raise FileNotFoundError(
+            f"[kpms_runner:visualize] No processed_recordings.json in {apply_dir}. "
+            "Run kpms-apply first."
+        )
+    with open(processed_path) as f:
+        processed = json.load(f)
+
+    results = {}
+    for rec in processed:
+        npz_path = apply_dir / f"syllables__{rec}.npz"
+        if not npz_path.exists():
+            print(f"[kpms_runner:visualize] WARN: missing {npz_path}, skipping", file=sys.stderr)
+            continue
+        npz = np.load(npz_path)
+        results[rec] = {"syllable": npz["syllables"]}
+
+    # Filter coordinates to only recordings present in results
+    coordinates = {k: v for k, v in coordinates.items() if k in results}
+    print(
+        f"[kpms_runner:visualize] {len(results)} recordings with syllables, "
+        f"{len(coordinates)} with coordinates",
+        file=sys.stderr,
+    )
+
+    # Compute centroids and headings — required by generate_grid_movies and
+    # generate_trajectory_plots (both pull v["centroid"]/v["heading"] from results).
+    from keypoint_moseq.util import get_centroids_headings
+    print("[kpms_runner:visualize] Computing centroids and headings...", file=sys.stderr)
+    centroids, headings = get_centroids_headings(
+        coordinates,
+        anterior_idxs=kpms_config["anterior_idxs"],
+        posterior_idxs=kpms_config["posterior_idxs"],
+        bodyparts=bodyparts,
+        use_bodyparts=use_bodyparts,
+    )
+    for k in results:
+        if k in centroids:
+            results[k]["centroid"] = centroids[k]
+            results[k]["heading"] = headings[k]
+
+    if not args.skip_grid_movies:
+        grid_dir = output_dir / "grid_movies"
+        grid_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[kpms_runner:visualize] Generating grid movies -> {grid_dir}", file=sys.stderr)
+        kpms.generate_grid_movies(
+            results,
+            coordinates=coordinates,
+            keypoints_only=True,
+            bodyparts=bodyparts,
+            use_bodyparts=use_bodyparts,
+            skeleton=skeleton,
+            fps=fps,
+            output_dir=str(grid_dir),
+            rows=args.rows,
+            cols=args.cols,
+            pre=args.pre,
+            post=args.post,
+            min_frequency=args.min_frequency,
+        )
+        print("[kpms_runner:visualize] Grid movies done.", file=sys.stderr)
+
+    if not args.skip_trajectories:
+        traj_dir = output_dir / "trajectory_plots"
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[kpms_runner:visualize] Generating trajectory plots -> {traj_dir}", file=sys.stderr)
+        kpms.generate_trajectory_plots(
+            coordinates,
+            results,
+            bodyparts=bodyparts,
+            use_bodyparts=use_bodyparts,
+            skeleton=skeleton,
+            fps=fps,
+            output_dir=str(traj_dir),
+            min_frequency=args.min_frequency,
+        )
+        print("[kpms_runner:visualize] Trajectory plots done.", file=sys.stderr)
+
+    print("[kpms_runner:visualize] All done.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -451,12 +568,29 @@ def main():
     p_apply.add_argument("--config", required=True, help="Path to config JSON")
     p_apply.add_argument("--batch-size", type=int, default=0, help="Process recordings in batches of this size (0=all at once)")
 
+    # visualize
+    p_viz = subparsers.add_parser("visualize", help="Generate syllable grid movies and trajectory plots")
+    p_viz.add_argument("--model-dir", required=True, help="Directory containing kpms_model.joblib (from kpms-fit)")
+    p_viz.add_argument("--data-dir", required=True, help="Directory with coordinates.npz (from kpms-apply _kpms_data)")
+    p_viz.add_argument("--apply-output-dir", required=True, help="Directory with syllables__*.npz files (from kpms-apply _kpms_output)")
+    p_viz.add_argument("--output-dir", required=True, help="Directory to save visualization outputs")
+    p_viz.add_argument("--fps", type=float, default=None, help="Frame rate (default: from model config)")
+    p_viz.add_argument("--min-frequency", type=float, default=0.005, help="Minimum syllable frequency to visualize (default: 0.005)")
+    p_viz.add_argument("--rows", type=int, default=4, help="Grid movie rows (default: 4)")
+    p_viz.add_argument("--cols", type=int, default=6, help="Grid movie columns (default: 6)")
+    p_viz.add_argument("--pre", type=float, default=1.0, help="Seconds before syllable onset in grid movie (default: 1.0)")
+    p_viz.add_argument("--post", type=float, default=2.0, help="Seconds after syllable onset in grid movie (default: 2.0)")
+    p_viz.add_argument("--skip-grid-movies", action="store_true", help="Skip grid movie generation")
+    p_viz.add_argument("--skip-trajectories", action="store_true", help="Skip trajectory plot generation")
+
     args = parser.parse_args()
 
     if args.command == "fit":
         cmd_fit(args)
     elif args.command == "apply":
         cmd_apply(args)
+    elif args.command == "visualize":
+        cmd_visualize(args)
 
 
 if __name__ == "__main__":
