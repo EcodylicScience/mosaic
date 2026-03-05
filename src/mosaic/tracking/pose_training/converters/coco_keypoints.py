@@ -13,9 +13,9 @@ COCO visibility: 0 = not labeled, 1 = labeled not visible, 2 = labeled visible.
 from __future__ import annotations
 
 import json
-import random
 import shutil
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -28,6 +28,7 @@ from .base import (
     normalize_coords,
     write_yolo_label,
 )
+from .cvat_points import _default_group_key, _print_split_summary, split_filenames
 
 
 def _load_coco(
@@ -146,6 +147,8 @@ def convert_coco_keypoints(
     bbox_margin: float = 0.1,
     symlink_images: bool = True,
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> KeypointSchema:
     """Convert COCO Keypoints JSON to YOLO pose labels.
 
@@ -179,6 +182,12 @@ def convert_coco_keypoints(
         If True, create symlinks to source images.  If False, copy them.
     seed : int
         Random seed for train/valid/test assignment.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -242,20 +251,11 @@ def convert_coco_keypoints(
         return schema
 
     # Assign to splits
-    rng = random.Random(seed)
-    shuffled = list(usable)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
-
-    split_assignment: dict[str, str] = {}
-    for img_rec, _, _ in shuffled[:n_train]:
-        split_assignment[img_rec["file_name"]] = "train"
-    for img_rec, _, _ in shuffled[n_train : n_train + n_valid]:
-        split_assignment[img_rec["file_name"]] = "valid"
-    for img_rec, _, _ in shuffled[n_train + n_valid :]:
-        split_assignment[img_rec["file_name"]] = "test"
+    filenames = [img_rec["file_name"] for img_rec, _, _ in usable]
+    split_assignment, n_train, n_valid = split_filenames(
+        filenames, split, seed, split_by=split_by, group_key=group_key,
+    )
+    n = len(usable)
 
     # Create output directories
     for subset in ("train", "valid", "test"):
@@ -311,6 +311,9 @@ def convert_coco_keypoints(
         + (f"  (skipped {skipped} with no valid keypoints)" if skipped else "")
     )
     print(f"  Category: '{category['name']}', keypoints: {len(selected_names)}")
-    print(f"  Splits: train={n_train}, valid={n_valid}, test={n - n_train - n_valid}")
+    _print_split_summary(
+        split_assignment, n_train, n_valid, n, split_by,
+        group_key or _default_group_key,
+    )
 
     return schema

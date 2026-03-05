@@ -10,8 +10,8 @@ the same ``patches.npy`` / ``labels.npy`` output as :mod:`coco_localizer`.
 from __future__ import annotations
 
 import json
-import random
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -20,7 +20,7 @@ import numpy as np
 
 from .base import LocalizerSchema
 from .coco_localizer import _extract_patch
-from .cvat_points import _parse_cvat_xml
+from .cvat_points import _assign_splits, _default_group_key, _parse_cvat_xml, _print_split_summary
 
 
 def convert_cvat_localizer(
@@ -36,6 +36,8 @@ def convert_cvat_localizer(
     min_negative_dist: float = 64.0,
     split: tuple[float, float, float] = (0.8, 0.15, 0.05),
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> LocalizerSchema:
     """Convert CVAT XML to patch dataset for localizer training.
 
@@ -83,6 +85,12 @@ def convert_cvat_localizer(
         Fraction of *images* per split.  Must sum to ~1.0.
     seed : int
         Random seed for reproducible splits and sampling.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -135,20 +143,9 @@ def convert_cvat_localizer(
         return schema
 
     # ── Assign images to splits ──
-    rng = random.Random(seed)
-    shuffled = list(usable)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
-
-    split_map: dict[str, str] = {}
-    for rec, _ in shuffled[:n_train]:
-        split_map[rec["name"]] = "train"
-    for rec, _ in shuffled[n_train : n_train + n_valid]:
-        split_map[rec["name"]] = "valid"
-    for rec, _ in shuffled[n_train + n_valid :]:
-        split_map[rec["name"]] = "test"
+    split_map, n_train, n_valid = _assign_splits(
+        usable, split, seed, split_by=split_by, group_key=group_key,
+    )
 
     # ── Collect patches per split ──
     half = patch_size // 2
@@ -259,10 +256,14 @@ def convert_cvat_localizer(
     print(f"[cvat_localizer] Saved {total_saved} patches to {output_dir}")
     print(f"  Classes: {resolved_names}")
     print(
-        f"  Splits: "
+        f"  Patches: "
         + ", ".join(
             f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test")
         )
+    )
+    _print_split_summary(
+        split_map, n_train, n_valid, len(usable), split_by,
+        group_key or _default_group_key,
     )
 
     return schema

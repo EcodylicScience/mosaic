@@ -22,12 +22,11 @@ from __future__ import annotations
 import random
 import shutil
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
-
-from typing import Mapping
 
 from .base import (
     KeypointSchema,
@@ -110,6 +109,8 @@ def convert_cvat_points(
     split: tuple[float, float, float] = (0.8, 0.15, 0.05),
     symlink_images: bool = True,
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> KeypointSchema:
     """Convert CVAT XML point annotations to YOLO pose labels.
 
@@ -140,6 +141,12 @@ def convert_cvat_points(
         If True, create symlinks to source images; if False, copy them.
     seed : int
         Random seed for train/valid/test assignment.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -184,20 +191,10 @@ def convert_cvat_points(
         return schema
 
     # Assign to splits
-    rng = random.Random(seed)
-    shuffled = list(usable)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
-
-    split_assignment: dict[str, str] = {}
-    for rec, _ in shuffled[:n_train]:
-        split_assignment[rec["name"]] = "train"
-    for rec, _ in shuffled[n_train: n_train + n_valid]:
-        split_assignment[rec["name"]] = "valid"
-    for rec, _ in shuffled[n_train + n_valid:]:
-        split_assignment[rec["name"]] = "test"
+    split_assignment, n_train, n_valid = _assign_splits(
+        usable, split, seed, split_by=split_by, group_key=group_key,
+    )
+    n = len(usable)
 
     # Create output directories
     for subset in ("train", "valid", "test"):
@@ -274,7 +271,10 @@ def convert_cvat_points(
         print(f"  Classes: {resolved_names}")
     if class_counts:
         print(f"  Counts: {class_counts}")
-    print(f"  Splits: train={n_train}, valid={n_valid}, test={n - n_train - n_valid}")
+    _print_split_summary(
+        split_assignment, n_train, n_valid, n, split_by,
+        group_key or _default_group_key,
+    )
 
     return schema
 
@@ -295,6 +295,33 @@ def _resolve_classes(
     return {}
 
 
+def _print_split_summary(
+    assignment: dict[str, str],
+    n_train: int,
+    n_valid: int,
+    n_total: int,
+    split_by: str,
+    key_fn: Callable[[str], str],
+) -> None:
+    """Print split counts, with group counts when ``split_by="group"``."""
+    n_test = n_total - n_train - n_valid
+    if split_by == "group":
+        groups_per_split: dict[str, set[str]] = {
+            "train": set(), "valid": set(), "test": set(),
+        }
+        for fname, subset in assignment.items():
+            groups_per_split[subset].add(key_fn(fname))
+        gt = len(groups_per_split["train"])
+        gv = len(groups_per_split["valid"])
+        gte = len(groups_per_split["test"])
+        print(
+            f"  Splits (by group): train={n_train} ({gt} groups), "
+            f"valid={n_valid} ({gv} groups), test={n_test} ({gte} groups)"
+        )
+    else:
+        print(f"  Splits: train={n_train}, valid={n_valid}, test={n_test}")
+
+
 def _find_usable_images(
     all_images: list[dict],
     images_dir: Path,
@@ -310,27 +337,122 @@ def _find_usable_images(
     return usable
 
 
+def _default_group_key(filename: str) -> str:
+    """Extract video stem from ``{stem}__frame_{N}.ext`` naming convention.
+
+    Falls back to the full stem (each image is its own group) if no
+    ``__frame`` delimiter is found.
+    """
+    base = Path(filename).stem
+    idx = base.find("__frame")
+    return base[:idx] if idx >= 0 else base
+
+
 def _assign_splits(
     usable: list[tuple[dict, Path]],
     split: tuple[float, float, float],
     seed: int,
+    *,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> tuple[dict[str, str], int, int]:
-    """Shuffle and assign images to train/valid/test splits."""
+    """Shuffle and assign images to train/valid/test splits.
+
+    Thin wrapper around :func:`split_filenames` for converters that use
+    ``(img_rec, path)`` tuples.
+
+    Parameters
+    ----------
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same *group_key* are kept
+        together in the same split (e.g. all frames from one video).
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Defaults to
+        :func:`_default_group_key` which splits on ``__frame``.
+    """
+    filenames = [rec["name"] for rec, _ in usable]
+    return split_filenames(
+        filenames, split, seed, split_by=split_by, group_key=group_key,
+    )
+
+
+def split_filenames(
+    filenames: list[str],
+    split: tuple[float, float, float],
+    seed: int,
+    *,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
+) -> tuple[dict[str, str], int, int]:
+    """Assign filenames to train/valid/test splits.
+
+    This is the low-level helper used by all converters.  It works on
+    plain filename strings so it is agnostic to the converter's data
+    structures.
+
+    Parameters
+    ----------
+    filenames : list[str]
+        Image filenames (or any string identifiers).
+    split : (train, valid, test) floats
+        Target fractions per split.
+    seed : int
+        Random seed.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all filenames sharing the same *group_key* are
+        kept together in the same split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Defaults to
+        :func:`_default_group_key` (splits on ``__frame``).
+
+    Returns
+    -------
+    assignment : dict[str, str]
+        Mapping ``filename -> "train" | "valid" | "test"``.
+    n_train, n_valid : int
+        Number of items assigned to train / valid.
+    """
     rng = random.Random(seed)
-    shuffled = list(usable)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
 
-    assignment: dict[str, str] = {}
-    for rec, _ in shuffled[:n_train]:
-        assignment[rec["name"]] = "train"
-    for rec, _ in shuffled[n_train: n_train + n_valid]:
-        assignment[rec["name"]] = "valid"
-    for rec, _ in shuffled[n_train + n_valid:]:
-        assignment[rec["name"]] = "test"
+    if split_by == "group":
+        key_fn = group_key or _default_group_key
+        groups: dict[str, list[str]] = {}
+        for fn in filenames:
+            groups.setdefault(key_fn(fn), []).append(fn)
 
+        group_names = list(groups.keys())
+        rng.shuffle(group_names)
+        n_groups = len(group_names)
+        n_train_g = int(n_groups * split[0])
+        n_valid_g = int(n_groups * split[1])
+
+        assignment: dict[str, str] = {}
+        for gname in group_names[:n_train_g]:
+            for fn in groups[gname]:
+                assignment[fn] = "train"
+        for gname in group_names[n_train_g: n_train_g + n_valid_g]:
+            for fn in groups[gname]:
+                assignment[fn] = "valid"
+        for gname in group_names[n_train_g + n_valid_g:]:
+            for fn in groups[gname]:
+                assignment[fn] = "test"
+    else:
+        shuffled = list(filenames)
+        rng.shuffle(shuffled)
+        n = len(shuffled)
+        n_items_train = int(n * split[0])
+        n_items_valid = int(n * split[1])
+
+        assignment = {}
+        for fn in shuffled[:n_items_train]:
+            assignment[fn] = "train"
+        for fn in shuffled[n_items_train: n_items_train + n_items_valid]:
+            assignment[fn] = "valid"
+        for fn in shuffled[n_items_train + n_items_valid:]:
+            assignment[fn] = "test"
+
+    n_train = sum(1 for v in assignment.values() if v == "train")
+    n_valid = sum(1 for v in assignment.values() if v == "valid")
     return assignment, n_train, n_valid
 
 
@@ -408,6 +530,8 @@ def convert_cvat_points_polo(
     split: tuple[float, float, float] = (0.8, 0.15, 0.05),
     symlink_images: bool = True,
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> PointDetectionSchema:
     """Convert CVAT XML point annotations to POLO point-detection labels.
 
@@ -436,6 +560,12 @@ def convert_cvat_points_polo(
         If True, create symlinks to source images; if False, copy them.
     seed : int
         Random seed for split assignment.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -472,7 +602,9 @@ def convert_cvat_points_polo(
         )
         return schema
 
-    split_assignment, n_train, n_valid = _assign_splits(usable, split, seed)
+    split_assignment, n_train, n_valid = _assign_splits(
+        usable, split, seed, split_by=split_by, group_key=group_key,
+    )
     n = len(usable)
 
     def _make_line(img_rec, x, y, class_name):
@@ -496,6 +628,9 @@ def convert_cvat_points_polo(
     if class_counts:
         print(f"  Counts: {class_counts}")
     print(f"  Radii: {radii_by_id}")
-    print(f"  Splits: train={n_train}, valid={n_valid}, test={n - n_train - n_valid}")
+    _print_split_summary(
+        split_assignment, n_train, n_valid, n, split_by,
+        group_key or _default_group_key,
+    )
 
     return schema
