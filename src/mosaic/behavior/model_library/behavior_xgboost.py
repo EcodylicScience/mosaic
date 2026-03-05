@@ -239,6 +239,11 @@ class BehaviorXGBoostModel:
                     eval_set=[(X_test, y_test_bin)],
                     verbose=bool(cfg.get("xgb_verbose", False)),
                 )
+                # Move model to CPU for prediction to avoid GPU OOM —
+                # training consumes GPU memory, leaving insufficient room
+                # for the prediction allocation.
+                if params.get("device") == "cuda":
+                    clf.set_params(device="cpu")
                 y_prob = clf.predict_proba(X_test)[:, 1]
                 y_pred = (y_prob >= threshold).astype(int)
 

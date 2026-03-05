@@ -15,7 +15,13 @@ import subprocess
 import sys
 import textwrap
 import uuid
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -2883,6 +2889,7 @@ from mosaic.core.track_library.helpers import (
     load_calms21,
 )
 
+from mosaic.core.track_library.trex import _strip_trex_seq
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""
@@ -5222,13 +5229,39 @@ def run_feature(
                 )
             else:
                 executor = ThreadPoolExecutor(max_workers=max_workers)
-        futures = {}
         extra_attrs = {}
         for attr in ("_scope_filter", "_scope_constraints"):
             if hasattr(feature, attr):
                 extra_attrs[attr] = getattr(feature, attr)
 
+        def _collect_completed(pending):
+            """Wait for at least one future to finish; write results and free memory."""
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                meta, core_start, core_end = pending.pop(future)
+                try:
+                    df_feat = future.result()
+                except Exception as e:
+                    print(
+                        f"[feature:{feature.name}] transform failed for ({meta['group']},{meta['sequence']}): {e}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if use_overlap and (
+                    core_start > 0 or core_end < len(df_feat)
+                    if hasattr(df_feat, "__len__")
+                    else False
+                ):
+                    df_feat = _trim_feature_output(df_feat, core_start, core_end)
+                _write_output(meta, df_feat)
+                try:
+                    del df_feat
+                except Exception:
+                    pass
+                gc.collect()
+
         # Transform loop - handle both 3-tuple and 5-tuple from iterators
+        pending = {}
         for item in iter_inputs():
             # Unpack based on overlap mode
             if use_overlap:
@@ -5250,6 +5283,11 @@ def run_feature(
                 continue
 
             if executor:
+                # Bounded submission: drain completed futures before submitting
+                # more, keeping at most max_workers tasks in flight.
+                while len(pending) >= max_workers:
+                    _collect_completed(pending)
+
                 if parallel_mode == "process":
                     model_path = run_root / "model.joblib"
                     model_path_str = str(model_path) if model_path.exists() else None
@@ -5261,13 +5299,13 @@ def run_feature(
                         extra_attrs,
                         model_path_str,
                     )
-                    futures[executor.submit(_process_transform_worker, payload)] = (
+                    pending[executor.submit(_process_transform_worker, payload)] = (
                         meta,
                         core_start,
                         core_end,
                     )
                 else:
-                    futures[executor.submit(feature.transform, df)] = (
+                    pending[executor.submit(feature.transform, df)] = (
                         meta,
                         core_start,
                         core_end,
@@ -5291,31 +5329,10 @@ def run_feature(
                     pass
                 gc.collect()
 
+        # Drain remaining in-flight futures
         if executor:
-            if futures:
-                for future in as_completed(futures):
-                    meta, core_start, core_end = futures[future]
-                    try:
-                        df_feat = future.result()
-                    except Exception as e:
-                        print(
-                            f"[feature:{feature.name}] transform failed for ({meta['group']},{meta['sequence']}): {e}",
-                            file=sys.stderr,
-                        )
-                        continue
-                    # Trim output to original segment bounds if overlap was used
-                    if use_overlap and (
-                        core_start > 0 or core_end < len(df_feat)
-                        if hasattr(df_feat, "__len__")
-                        else False
-                    ):
-                        df_feat = _trim_feature_output(df_feat, core_start, core_end)
-                    _write_output(meta, df_feat)
-                    try:
-                        del df_feat
-                    except Exception:
-                        pass
-                    gc.collect()
+            while pending:
+                _collect_completed(pending)
             executor.shutdown(wait=True)
 
     # Features may emit outputs during fit()/save_model() and provide explicit index rows.

@@ -12,8 +12,8 @@ manifest, avoiding redundant video decoding.
 """
 from __future__ import annotations
 
-import random
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -27,6 +27,7 @@ from .base import (
     normalize_coords,
     write_yolo_label,
 )
+from .cvat_points import _default_group_key, _print_split_summary, split_filenames
 
 # Default 27-keypoint mouse schema from Lightning Pose
 MOUSE_LP_27 = KeypointSchema(
@@ -138,6 +139,8 @@ def convert_lightning_pose(
     bbox_margin: float = 0.1,
     symlink_images: bool = True,
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> KeypointSchema:
     """Convert LP CSV to YOLO pose labels using pre-extracted frames.
 
@@ -177,6 +180,13 @@ def convert_lightning_pose(
         images.  If False, copy them.
     seed : int
         Random seed for train/valid/test assignment.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all frames sharing the same group key are kept
+        together in one split.  Note: Lightning Pose data is typically
+        single-video, so grouping has limited effect here.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -210,21 +220,17 @@ def convert_lightning_pose(
               f"and LP CSV ({csv_path.name}).  0 labels written.")
         return schema
 
-    # Assign frames to splits
-    rng = random.Random(seed)
-    shuffled = list(usable_frames)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
+    # Assign frames to splits (use path basenames as filenames for grouping)
+    frame_filenames = [Path(rec["path"]).name for rec in usable_frames]
+    filename_assignment, n_train, n_valid = split_filenames(
+        frame_filenames, split, seed, split_by=split_by, group_key=group_key,
+    )
+    n = len(usable_frames)
 
+    # Map back to frame index for lookup during processing
     split_assignment: dict[int, str] = {}
-    for rec in shuffled[:n_train]:
-        split_assignment[int(rec["frame_index"])] = "train"
-    for rec in shuffled[n_train:n_train + n_valid]:
-        split_assignment[int(rec["frame_index"])] = "valid"
-    for rec in shuffled[n_train + n_valid:]:
-        split_assignment[int(rec["frame_index"])] = "test"
+    for rec, fname in zip(usable_frames, frame_filenames):
+        split_assignment[int(rec["frame_index"])] = filename_assignment[fname]
 
     # Create output directories
     for subset in ("train", "valid", "test"):
@@ -273,6 +279,9 @@ def convert_lightning_pose(
     print(f"[lightning_pose] Wrote {written} labels to {output_dir}"
           + (f"  (skipped {skipped} degenerate)" if skipped else ""))
     print(f"  Keypoints: {len(selected_bodyparts)} ({', '.join(selected_bodyparts[:5])}...)")
-    print(f"  Splits: train={n_train}, valid={n_valid}, test={n - n_train - n_valid}")
+    _print_split_summary(
+        filename_assignment, n_train, n_valid, n, split_by,
+        group_key or _default_group_key,
+    )
 
     return schema

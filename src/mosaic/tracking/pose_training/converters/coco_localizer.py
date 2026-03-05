@@ -9,9 +9,9 @@ Supports COCO keypoints (1-node skeleton from CVAT) or bbox centers.
 from __future__ import annotations
 
 import json
-import random
 import shutil
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from .base import LocalizerSchema
+from .cvat_points import _default_group_key, _print_split_summary, split_filenames
 
 
 def _load_coco(
@@ -137,6 +138,8 @@ def convert_coco_localizer(
     min_negative_dist: float = 64.0,
     split: tuple[float, float, float] = (0.8, 0.15, 0.05),
     seed: int = 42,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> LocalizerSchema:
     """Convert COCO JSON to patch dataset for localizer training.
 
@@ -182,6 +185,12 @@ def convert_coco_localizer(
         Fraction of *images* per split.  Must sum to ~1.0.
     seed : int
         Random seed for reproducible splits and sampling.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Only used when
+        ``split_by="group"``.  Defaults to splitting on ``__frame``.
 
     Returns
     -------
@@ -228,20 +237,10 @@ def convert_coco_localizer(
         return schema
 
     # Assign images to splits
-    rng = random.Random(seed)
-    shuffled = list(usable)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_train = int(n * split[0])
-    n_valid = int(n * split[1])
-
-    split_map: dict[int, str] = {}
-    for img_rec, _, _ in shuffled[:n_train]:
-        split_map[img_rec["id"]] = "train"
-    for img_rec, _, _ in shuffled[n_train : n_train + n_valid]:
-        split_map[img_rec["id"]] = "valid"
-    for img_rec, _, _ in shuffled[n_train + n_valid :]:
-        split_map[img_rec["id"]] = "test"
+    filenames = [img_rec["file_name"] for img_rec, _, _ in usable]
+    split_map, n_train, n_valid = split_filenames(
+        filenames, split, seed, split_by=split_by, group_key=group_key,
+    )
 
     # Collect patches per split
     half = patch_size // 2
@@ -254,8 +253,7 @@ def convert_coco_localizer(
     np_rng = np.random.RandomState(seed)
 
     for img_record, img_path, annotations in usable:
-        img_id = img_record["id"]
-        subset = split_map[img_id]
+        subset = split_map[img_record["file_name"]]
         img_w = int(img_record["width"])
         img_h = int(img_record["height"])
 
@@ -357,10 +355,14 @@ def convert_coco_localizer(
     print(f"[coco_localizer] Saved {total_saved} patches to {output_dir}")
     print(f"  Classes: {class_names}")
     print(
-        f"  Splits: "
+        f"  Patches: "
         + ", ".join(
             f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test")
         )
+    )
+    _print_split_summary(
+        split_map, n_train, n_valid, len(usable), split_by,
+        group_key or _default_group_key,
     )
 
     return schema

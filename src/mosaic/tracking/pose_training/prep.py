@@ -16,6 +16,7 @@ import os
 import random
 import shutil
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import TYPE_CHECKING, Mapping, Sequence
@@ -26,6 +27,11 @@ import yaml
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+
+from mosaic.tracking.pose_training.converters.cvat_points import (
+    _default_group_key,
+    split_filenames,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +133,8 @@ def prepare_yolo_dataset(
     remove_test: bool = False,
     seed: int = 0,
     clear_output: bool = True,
+    split_by: str = "image",
+    group_key: Callable[[str], str] | None = None,
 ) -> None:
     """End-to-end pipeline to prepare a YOLO dataset.
 
@@ -148,6 +156,12 @@ def prepare_yolo_dataset(
         If True, redistribute into train/valid/test splits.
     split : tuple
         (train, valid, test) fractions.
+    split_by : ``"image"`` or ``"group"``
+        When ``"group"``, all images sharing the same group key (e.g.
+        frames from the same video) are kept together in one split.
+    group_key : callable, optional
+        Function ``filename -> group_name``.  Defaults to splitting
+        on ``__frame``.
     """
     # Canonicalise label-mapping parameters
     collapse_keys = set(collapse_map.keys()) if collapse_map else set()
@@ -276,10 +290,11 @@ def prepare_yolo_dataset(
         split_: tuple[float, float, float],
         remove_test_: bool,
         seed_: int,
+        split_by_: str = "image",
+        group_key_: Callable[[str], str] | None = None,
     ) -> None:
         assert math.isclose(sum(split_), 1.0, abs_tol=1e-6), "split must sum to 1.0"
-        rng = random.Random(seed_)
-        all_images = []
+        all_images: list[tuple[str, str]] = []
         for subset in ("train", "valid", "test"):
             img_dir = os.path.join(dataset_root, subset, "images")
             lbl_dir = os.path.join(dataset_root, subset, "labels")
@@ -294,19 +309,22 @@ def prepare_yolo_dataset(
         if remove_test_:
             split_ = (split_[0], split_[1], 0.0)
 
-        rng.shuffle(all_images)
         total = len(all_images)
         if total == 0:
             raise RuntimeError(f"No paired image/label files found under {dataset_root}")
 
-        n_train = int(total * split_[0])
-        n_valid = int(total * split_[1])
+        # Use split_filenames for consistent splitting logic
+        filenames = [os.path.basename(img) for img, _ in all_images]
+        assignment, n_train, n_valid = split_filenames(
+            filenames, split_, seed_, split_by=split_by_, group_key=group_key_,
+        )
+        fname_to_pair = {os.path.basename(img): (img, lbl) for img, lbl in all_images}
 
-        train_pairs = all_images[:n_train]
-        valid_pairs = all_images[n_train:n_train + n_valid]
-        test_pairs = all_images[n_train + n_valid:]
+        train_pairs = [fname_to_pair[f] for f, s in assignment.items() if s == "train"]
+        valid_pairs = [fname_to_pair[f] for f, s in assignment.items() if s == "valid"]
+        test_pairs = [fname_to_pair[f] for f, s in assignment.items() if s == "test"]
 
-        def _copy(batch, subset: str):
+        def _copy(batch: list[tuple[str, str]], subset: str) -> None:
             img_out = os.path.join(output_path, subset, "images")
             lbl_out = os.path.join(output_path, subset, "labels")
             os.makedirs(img_out, exist_ok=True)
@@ -320,10 +338,21 @@ def prepare_yolo_dataset(
         if split_[2] > 0:
             _copy(test_pairs, "test")
 
-        print(
-            f"  split counts: train={len(train_pairs)} valid={len(valid_pairs)}"
-            + (f" test={len(test_pairs)}" if split_[2] > 0 else "")
-        )
+        key_fn = group_key_ or _default_group_key
+        if split_by_ == "group":
+            groups_t = len({key_fn(f) for f, s in assignment.items() if s == "train"})
+            groups_v = len({key_fn(f) for f, s in assignment.items() if s == "valid"})
+            groups_te = len({key_fn(f) for f, s in assignment.items() if s == "test"})
+            print(
+                f"  split counts (by group): train={len(train_pairs)} ({groups_t} groups) "
+                f"valid={len(valid_pairs)} ({groups_v} groups)"
+                + (f" test={len(test_pairs)} ({groups_te} groups)" if split_[2] > 0 else "")
+            )
+        else:
+            print(
+                f"  split counts: train={len(train_pairs)} valid={len(valid_pairs)}"
+                + (f" test={len(test_pairs)}" if split_[2] > 0 else "")
+            )
 
     # --- Main pipeline ---
     dataset_abs = os.path.abspath(dataset_path)
@@ -381,6 +410,8 @@ def prepare_yolo_dataset(
             split_=split,
             remove_test_=remove_test,
             seed_=seed,
+            split_by_=split_by,
+            group_key_=group_key,
         )
     else:
         print("Exporting single unsplit pool...")

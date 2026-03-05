@@ -184,57 +184,41 @@ class FFGroups:
 
         id_to_idx = {v: i for i, v in enumerate(ids)}
         T, N = len(frames), len(ids)
-
-        # Build pairwise distance tensor (T, N, N) with nan for missing individuals
-        pairwise = np.full((T, N, N), np.nan, dtype=np.float32)
         frame_to_pos = {f: i for i, f in enumerate(frames)}
-        all_ids_set = set(ids.tolist())
 
-        for f, sub in df.groupby(frame_col):
-            if f not in frame_to_pos:
-                continue
-            t_idx = frame_to_pos[f]
-            coords = sub[[id_col, x_col, y_col]].replace([np.inf, -np.inf], np.nan)
-            coords = coords.dropna(subset=[id_col, x_col, y_col])
-            if coords.empty:
-                continue
-            coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(
-                id_col
-            )
-            ids_present = coords.index.to_numpy()
-            xy = coords[[x_col, y_col]].to_numpy(dtype=np.float32, copy=False)
+        # --- Vectorized pairwise distance tensor (T, N, N) ---
+        # Clean data once instead of per-frame groupby
+        df_clean = df[[frame_col, id_col, x_col, y_col]].copy()
+        df_clean[[x_col, y_col]] = df_clean[[x_col, y_col]].replace(
+            [np.inf, -np.inf], np.nan
+        )
+        df_clean = df_clean.dropna(subset=[id_col, x_col, y_col])
+        df_clean = df_clean.drop_duplicates(
+            subset=[frame_col, id_col], keep="last"
+        )
 
-            if len(ids_present) == N and set(ids_present) == all_ids_set:
-                # Fast path: all IDs present; reorder positions to global id order and assign directly
-                order = np.argsort(
-                    [id_to_idx.get(i, N + idx) for idx, i in enumerate(ids_present)]
-                )
-                xy_full = xy[order]
-                dmat = cdist(xy_full, xy_full).astype(np.float32)
-                np.fill_diagonal(dmat, np.nan)
-                pairwise[t_idx] = dmat
-            else:
-                # Distance matrix for present ids only
-                dmat = cdist(xy, xy).astype(np.float32)
-                np.fill_diagonal(dmat, np.nan)
+        # Build (T, N, 2) position tensor via direct index assignment
+        fidx = df_clean[frame_col].map(frame_to_pos)
+        iidx = df_clean[id_col].map(id_to_idx)
+        valid = fidx.notna() & iidx.notna()
+        fidx = fidx[valid].to_numpy(dtype=int)
+        iidx = iidx[valid].to_numpy(dtype=int)
+        x_vals = df_clean.loc[valid.values, x_col].to_numpy(dtype=np.float32)
+        y_vals = df_clean.loc[valid.values, y_col].to_numpy(dtype=np.float32)
 
-                # Map into full (N x N) slots
-                global_idx = []
-                local_idx = []
-                for local_i, id_i in enumerate(ids_present):
-                    gi = id_to_idx.get(id_i)
-                    if gi is None:
-                        continue
-                    global_idx.append(gi)
-                    local_idx.append(local_i)
-                if not global_idx:
-                    continue
-                global_idx = np.asarray(global_idx, dtype=int)
-                local_idx = np.asarray(local_idx, dtype=int)
-                pairwise[t_idx] = np.nan  # reset row in case of partial fill
-                pairwise[t_idx][np.ix_(global_idx, global_idx)] = dmat[
-                    np.ix_(local_idx, local_idx)
-                ]
+        pos = np.full((T, N, 2), np.nan, dtype=np.float32)
+        pos[fidx, iidx, 0] = x_vals
+        pos[fidx, iidx, 1] = y_vals
+
+        # Pairwise Euclidean distances via broadcasting
+        # diff shape: (T, N, N, 2); NaN positions propagate naturally
+        diff = pos[:, :, np.newaxis, :] - pos[:, np.newaxis, :, :]
+        pairwise = np.linalg.norm(diff, axis=-1).astype(np.float32)
+        del diff
+
+        # Self-distance → NaN
+        diag_idx = np.arange(N)
+        pairwise[:, diag_idx, diag_idx] = np.nan
 
         # Smooth along time axis with centered window
         if win > 1 and T > 0:
@@ -308,6 +292,154 @@ class FFGroups:
             )
         except Exception:
             # If event detection fails, still return membership/size
+            out["event"] = np.nan
+
+        out["event"] = out["event"].fillna(-1).astype(int)
+        return out
+
+    def _transform_reference(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Original per-frame groupby implementation, kept for regression testing."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        p = self.params
+        id_col = p.id_col
+        x_col, y_col = p.x_col, p.y_col
+        frame_col = p.frame_col
+        time_col = p.time_col
+        group_col, seq_col = p.group_col, p.seq_col
+        distance_cutoff = p.distance_cutoff
+        win = max(1, p.window_size)
+        if np.mod(win, 2) == 0:
+            raise ValueError("window_size must be an odd integer")
+
+        min_event = p.min_event_duration
+
+        order_cols = [c for c in (frame_col, time_col) if c in df.columns]
+        if order_cols:
+            df = df.sort_values(order_cols).reset_index(drop=True)
+        group_val = str(df[group_col].iloc[0]) if group_col in df.columns else ""
+        seq_val = str(df[seq_col].iloc[0]) if seq_col in df.columns else ""
+
+        frames = np.asarray(sorted(df[frame_col].dropna().unique()), dtype=int)
+        ids = np.asarray(sorted(df[id_col].dropna().unique()))
+        if frames.size == 0 or ids.size == 0:
+            return pd.DataFrame()
+
+        id_to_idx = {v: i for i, v in enumerate(ids)}
+        T, N = len(frames), len(ids)
+
+        pairwise = np.full((T, N, N), np.nan, dtype=np.float32)
+        frame_to_pos = {f: i for i, f in enumerate(frames)}
+        all_ids_set = set(ids.tolist())
+
+        for f, sub in df.groupby(frame_col):
+            if f not in frame_to_pos:
+                continue
+            t_idx = frame_to_pos[f]
+            coords = sub[[id_col, x_col, y_col]].replace([np.inf, -np.inf], np.nan)
+            coords = coords.dropna(subset=[id_col, x_col, y_col])
+            if coords.empty:
+                continue
+            coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(
+                id_col
+            )
+            ids_present = coords.index.to_numpy()
+            xy = coords[[x_col, y_col]].to_numpy(dtype=np.float32, copy=False)
+
+            if len(ids_present) == N and set(ids_present) == all_ids_set:
+                order = np.argsort(
+                    [id_to_idx.get(i, N + idx) for idx, i in enumerate(ids_present)]
+                )
+                xy_full = xy[order]
+                dmat = cdist(xy_full, xy_full).astype(np.float32)
+                np.fill_diagonal(dmat, np.nan)
+                pairwise[t_idx] = dmat
+            else:
+                dmat = cdist(xy, xy).astype(np.float32)
+                np.fill_diagonal(dmat, np.nan)
+
+                global_idx = []
+                local_idx = []
+                for local_i, id_i in enumerate(ids_present):
+                    gi = id_to_idx.get(id_i)
+                    if gi is None:
+                        continue
+                    global_idx.append(gi)
+                    local_idx.append(local_i)
+                if not global_idx:
+                    continue
+                global_idx = np.asarray(global_idx, dtype=int)
+                local_idx = np.asarray(local_idx, dtype=int)
+                pairwise[t_idx] = np.nan
+                pairwise[t_idx][np.ix_(global_idx, global_idx)] = dmat[
+                    np.ix_(local_idx, local_idx)
+                ]
+
+        if win > 1 and T > 0:
+            pad = win // 2
+            pad_block = np.full((pad, N, N), np.nan, dtype=np.float32)
+            padded = np.concatenate([pad_block, pairwise, pad_block], axis=0)
+            if padded.shape[0] >= win:
+                windows = sliding_window_view(padded, window_shape=win, axis=0)
+                chunk_size = 1000
+                pairwise_smooth = np.empty((T, N, N), dtype=np.float32)
+                for i in range(0, T, chunk_size):
+                    end = min(i + chunk_size, T)
+                    pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
+                del windows
+            else:
+                pairwise_smooth = pairwise
+            del padded, pad_block
+        else:
+            pairwise_smooth = pairwise
+
+        mask = ~np.eye(N, dtype=bool)
+        pwdf = pairwise_smooth[:, mask].reshape(T, N, N - 1)
+        groupmembership = _calculate_gmembership_numba(pwdf, N, T, distance_cutoff)
+
+        gm = groupmembership.astype(np.int64, copy=False)
+        if gm.size:
+            max_label = int(gm.max(initial=0))
+            counts = np.zeros((T, max_label + 1), dtype=np.int32)
+            np.add.at(counts, (np.arange(T)[:, None], gm), 1)
+            group_sizes = counts[np.arange(T)[:, None], gm]
+        else:
+            group_sizes = np.zeros_like(gm, dtype=np.int32)
+
+        out = pd.DataFrame(
+            {
+                frame_col: np.repeat(frames, N),
+                id_col: np.tile(ids, T),
+                "group_membership": groupmembership.reshape(-1),
+                "group_size": group_sizes.reshape(-1),
+            }
+        )
+
+        if time_col and time_col in df.columns:
+            time_map = df.groupby(frame_col)[time_col].first()
+            out[time_col] = out[frame_col].map(time_map)
+        if seq_col in df.columns:
+            out[seq_col] = seq_val
+        else:
+            out[seq_col] = seq_val
+        if group_col in df.columns:
+            out[group_col] = group_val
+        else:
+            out[group_col] = group_val
+
+        event_input = out.rename(columns={id_col: "FishID"})
+        try:
+            df_events, _ = _get_events_info(
+                event_input, threshold_ev_duration=min_event
+            )
+            df_events = df_events[["frame", "FishID", "event"]]
+            out = out.merge(
+                df_events.rename(columns={"FishID": id_col, "event": "event"}),
+                how="left",
+                on=[frame_col, id_col],
+            )
+        except Exception:
             out["event"] = np.nan
 
         out["event"] = out["event"].fillna(-1).astype(int)
