@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
 
-from .helpers import filter_time_range, to_safe_name
+from .helpers import filter_time_range, resolve_frame_range, to_safe_name
 
 if TYPE_CHECKING:
     from mosaic.behavior.feature_library.params import (
@@ -3606,16 +3606,6 @@ def _yield_inputset_frames(
         if str(spec.get("kind", "feature")) == "feature"
     ]
 
-    # Pre-compute time/frame filter kwargs once (used to filter early, before merge)
-    _meta = scope.get("meta") or {}
-    _time_filter_kw = {
-        "filter_start_frame": _meta.get("filter_start_frame"),
-        "filter_end_frame": _meta.get("filter_end_frame"),
-        "filter_start_time": _meta.get("filter_start_time"),
-        "filter_end_time": _meta.get("filter_end_time"),
-    }
-    _has_time_filter = any(v is not None for v in _time_filter_kw.values())
-
     for g, s, df_tracks in _yield_sequences(
         ds, groups, sequences, allowed_pairs=allowed_pairs
     ):
@@ -3626,11 +3616,6 @@ def _yield_inputset_frames(
             if cols:
                 keep = [c for c in cols if c in df.columns]
                 df = df[keep]
-        # Early time/frame filtering on tracks (before merging features)
-        if _has_time_filter:
-            df = filter_time_range(df, **_time_filter_kw)
-            if df.empty:
-                continue
         # Merge in feature specs if any
         for spec in feat_specs:
             # Use cached path_map from _resolve_inputset_scope (avoids re-reading index.csv)
@@ -3691,11 +3676,6 @@ def _yield_inputset_frames(
                     continue
             if df_feat is None or df_feat.empty:
                 continue
-            # Early time/frame filtering on feature data (before merge)
-            if _has_time_filter:
-                df_feat = filter_time_range(df_feat, **_time_filter_kw)
-                if df_feat.empty:
-                    continue
             # Merge on shared meta columns
             on_cols = [
                 c
@@ -3715,18 +3695,6 @@ def _yield_inputset_frames(
                 )
             else:
                 df = df.merge(df_feat, how="left", on=on_cols)
-
-        # Apply inputset-level time/frame filtering
-        meta = scope.get("meta") or {}
-        df = filter_time_range(
-            df,
-            filter_start_frame=meta.get("filter_start_frame"),
-            filter_end_frame=meta.get("filter_end_frame"),
-            filter_start_time=meta.get("filter_start_time"),
-            filter_end_time=meta.get("filter_end_time"),
-        )
-        if df.empty:
-            continue
 
         yield g, s, df
 
@@ -4638,6 +4606,10 @@ def run_feature(
     parallel_workers: Optional[int] = None,
     parallel_mode: Optional[str] = "thread",
     overlap_frames: int = 0,
+    filter_start_frame: int | None = None,
+    filter_end_frame: int | None = None,
+    filter_start_time: float | None = None,
+    filter_end_time: float | None = None,
 ):
     """
     Apply a Feature over a chosen scope (default: whole dataset).
@@ -4664,6 +4636,14 @@ def run_feature(
         For continuous datasets, load this many frames from adjacent segments to handle
         edge effects in rolling windows, smoothing, etc. Only applies when inputs are tracks.
         When > 0, the transform receives data with overlap but output is trimmed to original bounds.
+    filter_start_frame : int | None
+        If set, only include frames >= this value.
+    filter_end_frame : int | None
+        If set, only include frames < this value.
+    filter_start_time : float | None
+        If set, converted to start frame via fps_default from dataset metadata.
+    filter_end_time : float | None
+        If set, converted to end frame via fps_default from dataset metadata.
 
     Behavior
     --------
@@ -4692,12 +4672,21 @@ def run_feature(
     if _nf and _lo:
         scope_key = _build_scope_key(groups, sequences)
 
+    frame_start, frame_end = resolve_frame_range(
+        self.meta.get("fps_default"),
+        filter_start_frame, filter_end_frame,
+        filter_start_time, filter_end_time,
+    )
+    _has_frame_filter = frame_start is not None or frame_end is not None
+
     hashable_params = {
         "_params": feature.params.model_dump(),
         "_inputs": feature.inputs.model_dump(),
     }
     if scope_key:
         hashable_params["_scope"] = scope_key
+    if _has_frame_filter:
+        hashable_params["_frame_range"] = [frame_start, frame_end]
     params_hash = _hash_params(hashable_params)
     run_id = f"{feature.version}-{params_hash}"
     run_root = _feature_run_root(self, storage_feature_name, run_id)
@@ -4712,6 +4701,8 @@ def run_feature(
         }
         if scope_key is not None:
             save_payload["_scope"] = scope_key
+        if _has_frame_filter:
+            save_payload["_frame_range"] = [frame_start, frame_end]
         params_path.write_text(json.dumps(save_payload, indent=2))
     except Exception as exc:
         print(
@@ -4877,22 +4868,12 @@ def run_feature(
             hasattr(feature, "wants_full_inputset_data")
             and not feature.wants_full_inputset_data()
         )
-        if _meta_only:
-            _scope_meta = (scope_for_iter.get("meta") or {})
-            if isinstance(_scope_meta, dict) and any(
-                _scope_meta.get(k) is not None
-                for k in (
-                    "filter_start_frame",
-                    "filter_end_frame",
-                    "filter_start_time",
-                    "filter_end_time",
-                )
-            ):
-                raise RuntimeError(
-                    f"[feature:{feature.name}] Time/frame filters are set but "
-                    f"this feature uses metadata-only iteration and cannot "
-                    f"apply them."
-                )
+        if _meta_only and _has_frame_filter:
+            raise RuntimeError(
+                f"[feature:{feature.name}] Time/frame filters are set but "
+                f"this feature uses metadata-only iteration and cannot "
+                f"apply them."
+            )
         _inputset_name = None
         iter_inputs = lambda: _yield_inputset_frames(
             self,
@@ -4915,6 +4896,20 @@ def run_feature(
         iter_inputs = lambda: _yield_sequences(
             self, groups, sequences, allowed_pairs=pairs_to_compute
         )
+
+    if _has_frame_filter:
+        _raw_iter = iter_inputs
+        def iter_inputs(_inner=_raw_iter):
+            for item in _inner():
+                g, s, df = item[0], item[1], item[2]
+                # time already resolved to frames by resolve_frame_range()
+                df = filter_time_range(df, filter_start_frame=frame_start, filter_end_frame=frame_end)
+                if df.empty:
+                    continue
+                if len(item) > 3:
+                    yield (g, s, df, *item[3:])
+                else:
+                    yield (g, s, df)
 
     # ===== FIT PHASE =====
     feature.bind_dataset(self)
@@ -4940,6 +4935,9 @@ def run_feature(
                 scope_constraints["safe_sequences"] = sorted(
                     {to_safe_name(s) for s in norm_sequences}
                 )
+    if _has_frame_filter:
+        scope_constraints["frame_start"] = frame_start
+        scope_constraints["frame_end"] = frame_end
     if scope_constraints:
         setattr(feature, "_scope_constraints", scope_constraints)
         if hasattr(feature, "set_scope_constraints"):
@@ -4955,26 +4953,13 @@ def run_feature(
         feature.set_scope_filter(input_scope)
 
     # Validate time/frame filters against self-loading features
-    if input_scope is not None:
-        _meta = (input_scope.get("meta") or {})
-        _has_time_filter = isinstance(_meta, dict) and any(
-            _meta.get(k) is not None
-            for k in (
-                "filter_start_frame",
-                "filter_end_frame",
-                "filter_start_time",
-                "filter_end_time",
-            )
+    if _has_frame_filter and feature.loads_own_data():
+        raise RuntimeError(
+            f"[feature:{feature.name}] Time/frame filters are set but "
+            f"this feature loads its own data and cannot apply them. "
+            f"Remove the filters or use a feature that processes data "
+            f"from the sequence iterator."
         )
-        if _has_time_filter:
-            _loads_own = feature.loads_own_data()
-            if _loads_own:
-                raise RuntimeError(
-                    f"[feature:{feature.name}] Time/frame filters are set in "
-                    f"scope but this feature loads its own data and cannot "
-                    f"apply them. Remove the filters or use a feature that "
-                    f"processes data from the sequence iterator."
-                )
 
     # Helper to extract DataFrame from iterator items (handles both 3-tuple and 5-tuple)
     def _extract_df_from_item(item):
@@ -6189,6 +6174,10 @@ def run_feature_remote(
     include: Optional[Sequence[str]] = None,
     exclude: Optional[Sequence[str]] = None,
     remote_only: bool = True,
+    filter_start_frame: int | None = None,
+    filter_end_frame: int | None = None,
+    filter_start_time: float | None = None,
+    filter_end_time: float | None = None,
     detached: bool = False,
 ) -> str | dict:
     """
@@ -6225,6 +6214,14 @@ def run_feature_remote(
     }
     if _scope_key:
         _hashable["_scope"] = _scope_key
+    frame_start, frame_end = resolve_frame_range(
+        self.meta.get("fps_default"),
+        filter_start_frame, filter_end_frame,
+        filter_start_time, filter_end_time,
+    )
+    _has_frame_filter = frame_start is not None or frame_end is not None
+    if _has_frame_filter:
+        _hashable["_frame_range"] = [frame_start, frame_end]
     params_hash = _hash_params(_hashable)
     expected_run_id = f"{feature_obj.version}-{params_hash}"
     storage_feature_name = feature_obj.storage_feature_name
@@ -6277,7 +6274,11 @@ result = dataset.run_feature(
     groups=groups,
     sequences=sequences,
     overwrite={overwrite_literal},
-    parallel_workers={parallel_literal}
+    parallel_workers={parallel_literal},
+    filter_start_frame={filter_start_frame!r},
+    filter_end_frame={filter_end_frame!r},
+    filter_start_time={filter_start_time!r},
+    filter_end_time={filter_end_time!r},
 )
 print("REMOTE_FEATURE_RUN_ID=" + result.run_id)
 print("REMOTE_STORAGE_FEATURE=" + {json.dumps(storage_feature_name)})

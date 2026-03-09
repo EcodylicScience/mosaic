@@ -446,6 +446,36 @@ def filter_time_range(
     return df.loc[mask].reset_index(drop=True)
 
 
+def resolve_frame_range(
+    fps: float | None,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+    start_time: float | None = None,
+    end_time: float | None = None,
+) -> tuple[int | None, int | None]:
+    """Validate mutual exclusivity and convert to frame range.
+
+    Raises ValueError if both frame and time are set for the same boundary,
+    or if time-based filters are used without fps.
+    """
+    if start_frame is not None and start_time is not None:
+        raise ValueError("Cannot set both start_frame and start_time")
+    if end_frame is not None and end_time is not None:
+        raise ValueError("Cannot set both end_frame and end_time")
+    if (start_time is not None or end_time is not None) and fps is None:
+        raise ValueError("Time-based filters require fps")
+
+    start = start_frame
+    if start_time is not None:
+        start = int(start_time * fps)
+
+    end = end_frame
+    if end_time is not None:
+        end = int(end_time * fps)
+
+    return (start, end)
+
+
 # =============================================================================
 # Hierarchical Naming Helpers
 # =============================================================================

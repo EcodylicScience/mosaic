@@ -175,6 +175,69 @@ result.run_id   # "0.1-b1933f9f3d"
 
 Results can be passed directly to `Inputs()` and `from_result()`.
 
+## Frame/time filtering is now on run_feature()
+
+The old `save_inputset()` accepted `filter_start_frame`, `filter_end_frame`,
+`filter_start_time`, `filter_end_time` kwargs that were stored in the inputset
+JSON. These filters are now direct parameters on `run_feature()`:
+
+```python
+# before -- filters embedded in inputset metadata
+save_inputset(dataset, "social+ego", [...],
+              filter_start_frame=100, filter_end_frame=5000)
+run = dataset.run_feature(tsne, input_kind="inputset",
+                          input_feature="social+ego", ...)
+
+# after -- direct params on run_feature()
+result = dataset.run_feature(feat, groups=GROUP_SCOPE,
+                             filter_start_frame=100,
+                             filter_end_frame=5000)
+```
+
+Time-based filters work the same way and require `fps_default` in the dataset
+manifest metadata:
+
+```python
+result = dataset.run_feature(feat,
+                             filter_start_time=1.0,
+                             filter_end_time=50.0)
+```
+
+Frame and time filters are mutually exclusive per boundary -- you can't set both
+`filter_start_frame` and `filter_start_time` (raises `ValueError`). Mixing is
+fine: `filter_start_frame=100, filter_end_time=50.0`.
+
+Semantics: `start` is inclusive (`>=`), `end` is exclusive (`<`).
+
+### Nearest-neighbor pair filter moved to params
+
+The `pair_filter` dict that was stored in inputset metadata is now a typed
+parameter on feature `Params`. Unlike frame/time filters (which set data
+scope), pair filtering controls *which* pairs are used in the embedding -- an
+algorithmic choice, not a data range, so it belongs in feature params.
+
+Features with `pair_filter: NNResult | None` on their `Params`:
+`GlobalTSNE`, `GlobalKMeansClustering`, `GlobalWard`, `WardAssign`,
+`TemporalStacking`.
+
+```python
+# before -- pair_filter in inputset JSON metadata
+save_inputset(dataset, "social+ego", [...],
+              pair_filter={"type": "nearest_neighbor",
+                           "feature": "nearest-neighbor",
+                           "run_id": nn_run})
+
+# after -- typed NNResult on feature params
+from mosaic.behavior.feature_library import NNResult
+
+tsne = GlobalTSNE(
+    Inputs((social_wave_result, ego_wave_result)),
+    params={
+        "pair_filter": NNResult(run_id=nn_result.run_id),
+    },
+)
+```
+
 ## XGBoost model: undersample changes
 
 `use_undersample` is removed. Use `foreground_samples` and `undersample_ratio`:
