@@ -20,7 +20,6 @@ from pydantic import Field
 from mosaic.core.dataset import _dataset_base_dir, register_feature
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import FeatureParams
 from .helpers import (
     _build_index_row,
     _get_feature_run_root,
@@ -29,6 +28,7 @@ from .kpms_fit import (
     _collect_and_serialize_tracks,
     _run_kpms_subprocess,
 )
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput
 
 
 @final
@@ -64,10 +64,13 @@ class KpmsApply:
     name = "kpms-apply"
     version = "0.1"
     parallelizable = False
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
     skip_transform_phase = True
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         kpms_python: str | None = None
         kpms_fit_feature: str = "kpms-fit"
         kpms_fit_run_id: str | None = None
@@ -77,8 +80,15 @@ class KpmsApply:
         num_iters_apply: int = Field(default=500, ge=1)
         apply_batch_size: int = Field(default=10, ge=1)
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: KpmsApply.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
         self._ds = None
         self._run_root: Optional[Path] = None
         self._additional_index_rows: list[dict] = []
@@ -93,7 +103,7 @@ class KpmsApply:
     def set_run_root(self, run_root: Path) -> None:
         self._run_root = Path(run_root)
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter_dict = scope
 
     def set_scope_constraints(self, constraints: Optional[dict]) -> None:
@@ -228,7 +238,7 @@ class KpmsApply:
             p.pose_prefix_x,
             p.pose_prefix_y,
             p.pose_confidence_prefix,
-            p.columns.id_col,
+            COLUMNS.id_col,
             None,
             groups=scope_groups,
             sequences=scope_sequences,

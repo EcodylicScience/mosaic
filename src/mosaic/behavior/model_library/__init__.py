@@ -22,8 +22,10 @@ from . import helpers
 
 # Import all models
 from . import behavior_xgboost
+from .behavior_xgboost import BehaviorXGBoostModel
 
 __all__ = [
     "helpers",
     "behavior_xgboost",
+    "BehaviorXGBoostModel",
 ]

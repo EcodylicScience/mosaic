@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 import joblib
 import numpy as np
@@ -17,10 +17,9 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
+from mosaic.core.dataset import _dataset_base_dir, register_feature
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import ArtifactSpec, FeatureParams, ParquetLoadSpec
 from .helpers import (
     StreamingFeatureHelper,
     _build_index_row,
@@ -29,6 +28,20 @@ from .helpers import (
     _load_joblib_artifact,
     _parse_scope_filter,
     _resolve_sequence_identity,
+)
+from .global_tsne import GlobalTSNE
+from .params import (
+    ArtifactSpec,
+    FeatureLabelsSource,
+    Inputs,
+    JoblibLoadSpec,
+    LoadSpec,
+    NNResult,
+    NpzLoadSpec,
+    OutputType,
+    Params,
+    ParquetLoadSpec,
+    Result,
 )
 
 
@@ -56,24 +69,55 @@ def _get_kmeans_class(device: str) -> type:
 @register_feature
 class GlobalKMeansClustering:
     """
-    Global K-Means that fits **only** on an artifact matrix resolved from the dataset's
-    feature index (no frame-stream fitting). This avoids fit/transform shape mismatch.
-
-    Fit-time artifacts saved in run folder:
-      - kmeans.joblib
-      - artifact_meta.json (fit provenance + columns + feature_dim)
-      - cluster_centers.npy
-      - artifact_labels.npz (labels over the artifact matrix, if computed)
-      - cluster_sizes.csv (label,count) if labels computed
-      - (if assign) global_kmeans_labels_seq=<safe_seq>.npz (per key)
+    Global K-Means that fits on an artifact matrix resolved from the dataset's
+    feature index. Optional assign phase uses Result-based inputs to label
+    per-frame features with the fitted cluster IDs.
     """
 
     name: str = "global-kmeans"
-    version: str = "0.3"
-    output_type: str = "global"
+    version: str = "0.4"
+    output_type: OutputType = "global"
+    parallelizable = False
     skip_transform_phase: bool = True
 
-    class Params(FeatureParams):
+    class ModelArtifact(ArtifactSpec):
+        """KMeans model (model.joblib)."""
+
+        feature: str = "global-kmeans"
+        pattern: str = "model.joblib"
+        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+
+    class ClusterCentersArtifact(ArtifactSpec):
+        """Cluster center vectors (cluster_centers.npz)."""
+
+        feature: str = "global-kmeans"
+        pattern: str = "cluster_centers.npz"
+        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="centers"))
+
+    class ClusterSizesArtifact(ArtifactSpec):
+        """Per-cluster sample counts (cluster_sizes.parquet)."""
+
+        feature: str = "global-kmeans"
+        pattern: str = "cluster_sizes.parquet"
+        load: LoadSpec = Field(default_factory=ParquetLoadSpec)
+
+    class ArtifactLabelsArtifact(ArtifactSpec):
+        """Labels for the artifact points used in fitting (artifact_labels.npz)."""
+
+        feature: str = "global-kmeans"
+        pattern: str = "artifact_labels.npz"
+        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+
+    class SeqLabelsArtifact(FeatureLabelsSource):
+        """Per-sequence cluster labels (global_kmeans_labels_seq=*.npz)."""
+
+        feature: str = "global-kmeans"
+        pattern: str = "global_kmeans_labels_seq=*.npz"
+
+    class Inputs(Inputs[Result]):
+        _empty_only: ClassVar[bool] = True
+
+    class Params(Params):
         """Global K-means clustering parameters.
 
         Attributes:
@@ -82,9 +126,10 @@ class GlobalKMeansClustering:
             n_init: KMeans initializations. Default "auto".
             max_iter: Max iterations per run. Default 300.
             device: Compute device. Default "cpu".
-            artifact: Feature artifact specification.
+            templates: Templates artifact to fit on.
             label_artifact_points: Label points used for fitting. Default True.
-            assign: Optional assignment block.
+            scaler: Optional scaler for assign phase.
+            pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
         k: int = Field(default=100, ge=1)
@@ -92,12 +137,20 @@ class GlobalKMeansClustering:
         n_init: str | int = "auto"
         max_iter: int = Field(default=300, ge=1)
         device: str = "cpu"
-        artifact: ArtifactSpec
+        templates: GlobalTSNE.TemplatesArtifact
         label_artifact_points: bool = True
-        assign: dict[str, object] | None = None
+        scaler: GlobalTSNE.ScalerArtifact | None = None
+        pair_filter: NNResult | None = None
 
-    def __init__(self, params: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: GlobalKMeansClustering.Inputs = Inputs(()),
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
 
         self._ds: object = None
         self._kmeans: object = None
@@ -113,10 +166,11 @@ class GlobalKMeansClustering:
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
         self._additional_index_rows: list[dict[str, object]] = []
-        assign_config = self.params.assign or {}
-        self._assign_inputs_override = "inputs" in assign_config
-        self._assign_inputs_meta: dict[str, object] = {}
         self._allowed_safe_sequences: set[str] | None = None
+        self._scope_filter: dict[str, object] = {}
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
 
     def set_scope_constraints(self, scope: dict[str, object] | None) -> None:
         """Capture dataset-level sequence filters so assignment can respect them."""
@@ -139,6 +193,9 @@ class GlobalKMeansClustering:
         return False
 
     def loads_own_data(self) -> bool:
+        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
+        # applied when loading own data. run_feature() raises RuntimeError
+        # if these filters are set. Future work: apply them during loading.
         return True
 
     def bind_dataset(self, ds: object) -> None:
@@ -237,7 +294,7 @@ class GlobalKMeansClustering:
         return A, meta, first_cols
 
     def _load_artifact_matrix(self) -> np.ndarray:
-        art = self.params.artifact
+        art = self.params.templates
         feature = art.feature
         resolved_run_id, run_root = _get_feature_run_root(self._ds, feature, art.run_id)
         pattern = art.pattern
@@ -298,40 +355,28 @@ class GlobalKMeansClustering:
         if self.params.label_artifact_points:
             self._artifact_labels = self._kmeans.predict(X)
 
-        assign = self.params.assign
-        if assign:
+        # Assign phase: label per-frame features if inputs provided
+        feature_inputs = self.inputs.feature_inputs
+        if feature_inputs:
             import gc
 
             import pyarrow as pa
 
             scaler = None
-            if "scaler" in assign and assign["scaler"]:
-                scaler = _load_joblib_artifact(self._ds, assign["scaler"])
-
-            assign_inputset = assign.get("inputset")
-            explicit_assign_inputs = (
-                assign.get("inputs")
-                if (self._assign_inputs_override or not assign_inputset)
-                else None
-            )
-            resolved_assign_inputs, assign_inputs_meta = _resolve_inputs(
-                self._ds,
-                explicit_assign_inputs,
-                assign_inputset,
-                explicit_override=self._assign_inputs_override,
-            )
-            self._assign_inputs_meta = assign_inputs_meta
+            scaler_spec = self.params.scaler
+            if scaler_spec is not None:
+                scaler = _load_joblib_artifact(self._ds, scaler_spec)
 
             helper = StreamingFeatureHelper(self._ds, "global-kmeans")
-            if assign_inputs_meta.get("pair_filter"):
-                helper.set_pair_filter(assign_inputs_meta["pair_filter"])
+            if self.params.pair_filter:
+                helper.set_pair_filter(self.params.pair_filter)
             scope_filter = (
                 {"safe_sequences": self._allowed_safe_sequences}
                 if self._allowed_safe_sequences
                 else None
             )
-            manifest = helper.build_manifest(
-                resolved_assign_inputs, scope_filter=scope_filter
+            manifest = helper.build_manifest_from_results(
+                feature_inputs, scope_filter=scope_filter
             )
 
             keys = list(manifest.keys())
@@ -398,10 +443,6 @@ class GlobalKMeansClustering:
                         f"[global-kmeans] Processed {i + 1}/{n_keys} sequences",
                         file=sys.stderr,
                     )
-
-            if self._fit_artifact_info is None:
-                self._fit_artifact_info = {}
-            self._fit_artifact_info["assign_inputs_meta"] = assign_inputs_meta
 
     def finalize_fit(self) -> None:
         pass
@@ -474,7 +515,7 @@ class GlobalKMeansClustering:
         )
 
         centers = np.asarray(self._kmeans.cluster_centers_, dtype=np.float32)
-        np.save(run_root / "cluster_centers.npy", centers)
+        np.savez_compressed(run_root / "cluster_centers.npz", centers=centers)
 
         if self._artifact_labels is not None:
             np.savez_compressed(
@@ -483,7 +524,7 @@ class GlobalKMeansClustering:
             uniq, cnt = np.unique(self._artifact_labels, return_counts=True)
             pd.DataFrame(
                 {"cluster": uniq.astype(int), "count": cnt.astype(int)}
-            ).to_csv(run_root / "cluster_sizes.csv", index=False)
+            ).to_parquet(run_root / "cluster_sizes.parquet", index=False)
 
         for safe_seq, labels in self._assign_labels.items():
             labels_arr = np.asarray(labels, dtype=np.int32).ravel()

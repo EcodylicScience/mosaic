@@ -4,7 +4,7 @@ Template for a per-sequence feature.
 Copy this file, rename the class and `name`, and fill in your logic.
 
 Current patterns this template follows (as of 2026-02):
-  - Uses Pydantic FeatureParams for typed, validated parameters
+  - Uses Pydantic Params for typed, validated parameters
   - Declares output_type for feature registry
   - Handles pair-aware (id1/id2) and single-individual inputs
   - Includes id1/id2 columns in output when present
@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 # from mosaic.core.dataset import register_feature  # <-- uncomment when ready
-from ._param_bases import FeatureParams, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 @final
@@ -50,9 +50,12 @@ class MyPerSequenceFeature:
     name = "my-new-feature"
     version = "0.1"
     parallelizable = True  # safe if transform(df) only depends on df
-    output_type = "per_frame"  # "per_frame" | "summary" | "global"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         """Per-sequence feature template parameters.
 
         Attributes:
@@ -61,7 +64,12 @@ class MyPerSequenceFeature:
 
         window_size: int = 15
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: MyPerSequenceFeature.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
 
@@ -119,7 +127,7 @@ class MyPerSequenceFeature:
             return pd.DataFrame()
 
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
 
         # Detect pair structure
         has_pairs = "id1" in df.columns and "id2" in df.columns
@@ -130,8 +138,8 @@ class MyPerSequenceFeature:
 
         # Select numeric input columns (exclude metadata)
         meta_like = {
-            p.columns.seq_col,
-            p.columns.group_col,
+            COLUMNS.seq_col,
+            COLUMNS.group_col,
             "frame",
             "time",
             "id",
@@ -171,8 +179,8 @@ class MyPerSequenceFeature:
     ) -> pd.DataFrame:
         """Process a single block (one pair or one sequence)."""
         p = params
-        seq_col = p.columns.seq_col
-        group_col = p.columns.group_col
+        seq_col = COLUMNS.seq_col
+        group_col = COLUMNS.group_col
 
         df = df.sort_values(order_col).reset_index(drop=True)
         X = df[numeric_cols].to_numpy(dtype=np.float32, copy=False)

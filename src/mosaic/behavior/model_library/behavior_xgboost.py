@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
+import xgboost as xgb
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -21,16 +21,16 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
-import xgboost as xgb
 
+from mosaic.behavior.feature_library.params import Inputs, Result
 from mosaic.core.dataset import (
     _feature_index_path,
     _feature_run_root,
     _latest_feature_run_root,
     _resolve_inputs,
-    _yield_feature_frames,
 )
-from mosaic.core.helpers import to_safe_name, load_labels_for_feature_frames
+from mosaic.core.helpers import load_labels_for_feature_frames, to_safe_name
+
 from .helpers import XGB_PARAM_PRESETS, to_jsonable, undersample_then_smote
 
 
@@ -59,8 +59,8 @@ class BehaviorXGBoostModel:
       - random_state: int (default 42) for shuffling/splits
       - classes: optional list[int] (defaults to unique labels in train split)
       - standardize: bool (default True) -> StandardScaler fit on train, applied to both splits
-      - use_undersample: bool (default True)
-      - undersample_ratio: float (default 3.0)
+      - foreground_samples: int | None (cap minority class; None keeps all)
+      - undersample_ratio: float (majority/minority ratio; 1.0 = no undersampling)
       - use_smote: bool (default False)
       - xgb_params: dict (overrides)
       - xgb_params_preset: str referencing XGB_PARAM_PRESETS (default "xgb_v0")
@@ -74,7 +74,7 @@ class BehaviorXGBoostModel:
     def __init__(self, params: Optional[dict] = None):
         defaults = {
             "standardize": True,
-            "use_undersample": True,
+            "foreground_samples": None,
             "undersample_ratio": 3.0,
             "use_smote": False,
             "train_fraction": 0.8,
@@ -94,11 +94,13 @@ class BehaviorXGBoostModel:
         self._predict_classes: list[int] = []
         self._predict_label_map: dict = {}
         self._predict_feature_columns: Optional[List[str]] = None
-        self._predict_threshold: float = float(self.params.get("decision_threshold", 0.5))
+        self._predict_threshold: float = float(
+            self.params.get("decision_threshold", 0.5)
+        )
         self._predict_run_root: Optional[Path] = None
         self._predict_config: dict = {}
-        self._training_input_signature: Optional[dict] = None
-        self._predict_input_signature: Optional[dict] = None
+        self._training_input_signature: Inputs | None = None
+        self._predict_input_signature: Inputs | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
@@ -107,7 +109,9 @@ class BehaviorXGBoostModel:
         cfg = dict(self.params)
         cfg.update(config or {})
         if not (cfg.get("feature") or cfg.get("inputset") or cfg.get("inputs")):
-            raise ValueError("BehaviorXGBoostModel config requires 'feature' or 'inputset/inputs'.")
+            raise ValueError(
+                "BehaviorXGBoostModel config requires 'feature' or 'inputset/inputs'."
+            )
         self._config = cfg
         self._run_root = Path(run_root)
 
@@ -115,7 +119,9 @@ class BehaviorXGBoostModel:
         if self._ds is None:
             raise RuntimeError("BehaviorXGBoostModel requires dataset binding.")
         if self._run_root is None:
-            raise RuntimeError("BehaviorXGBoostModel.configure must be called before train().")
+            raise RuntimeError(
+                "BehaviorXGBoostModel.configure must be called before train()."
+            )
 
         ds = self._ds
         cfg = self._config
@@ -127,10 +133,16 @@ class BehaviorXGBoostModel:
             raise RuntimeError("No aligned feature/label sequences found for training.")
 
         split_info = self._split_sequences(payloads, cfg)
-        train_payloads = [p for p in payloads if p["sequence_safe"] in split_info["train_sequences"]]
-        test_payloads = [p for p in payloads if p["sequence_safe"] in split_info["test_sequences"]]
+        train_payloads = [
+            p for p in payloads if p["sequence_safe"] in split_info["train_sequences"]
+        ]
+        test_payloads = [
+            p for p in payloads if p["sequence_safe"] in split_info["test_sequences"]
+        ]
         if not train_payloads or not test_payloads:
-            raise RuntimeError("Train/test splits are empty. Check sequence lists or train_fraction.")
+            raise RuntimeError(
+                "Train/test splits are empty. Check sequence lists or train_fraction."
+            )
 
         use_external = bool(cfg.get("use_external_memory", False))
         if use_external:
@@ -159,12 +171,16 @@ class BehaviorXGBoostModel:
 
         if use_external:
             cache_dir = self._prepare_external_cache(run_root, cfg)
-            (dtrain_path,
-             dtest_path,
-             groups_train,
-             groups_test,
-             n_train_samples,
-             n_test_samples) = self._build_external_cache(cache_dir, train_payloads, test_payloads, cfg)
+            (
+                dtrain_path,
+                dtest_path,
+                groups_train,
+                groups_test,
+                n_train_samples,
+                n_test_samples,
+            ) = self._build_external_cache(
+                cache_dir, train_payloads, test_payloads, cfg
+            )
             dtrain_base = xgb.DMatrix(f"{dtrain_path}#dtrain.cache")
             dtest_base = xgb.DMatrix(f"{dtest_path}#dtest.cache")
             base_train_labels = dtrain_base.get_label().astype(int)
@@ -187,13 +203,19 @@ class BehaviorXGBoostModel:
                 y_test_bin = (y_test_base == beh).astype(int)
                 pos = int(y_train_bin.sum())
                 if pos == 0:
-                    print(f"[behavior-xgb] WARN: no positives for class {beh}; skipping.")
+                    print(
+                        f"[behavior-xgb] WARN: no positives for class {beh}; skipping."
+                    )
                     continue
                 neg = max(1, len(y_train_bin) - pos)
                 spw = float(neg) / float(pos)
                 params_core = dict(xgb_params)
                 params_core.setdefault("scale_pos_weight", spw)
-                num_round = int(params_core.pop("n_estimators", params_core.pop("num_boost_round", 100)))
+                num_round = int(
+                    params_core.pop(
+                        "n_estimators", params_core.pop("num_boost_round", 100)
+                    )
+                )
                 if params_core.get("device") == "cuda":
                     params_core.setdefault("tree_method", "gpu_hist")
                     params_core.setdefault("predictor", "gpu_predictor")
@@ -215,19 +237,22 @@ class BehaviorXGBoostModel:
                 y_test_bin = (y_test == beh).astype(int)
                 pos = int(y_train_bin.sum())
                 if pos == 0:
-                    print(f"[behavior-xgb] WARN: no positives for class {beh}; skipping.")
+                    print(
+                        f"[behavior-xgb] WARN: no positives for class {beh}; skipping."
+                    )
                     continue
                 Xt, yt = undersample_then_smote(
                     X_train,
                     y_train_bin,
-                    cfg.get("use_undersample", True),
-                    cfg.get("undersample_ratio", 3.0),
-                    cfg.get("use_smote", False),
+                    foreground_samples=cfg.get("foreground_samples"),
+                    undersample_ratio=cfg.get("undersample_ratio", 3.0),
+                    use_smote=cfg.get("use_smote", False),
                     random_state=random_state,
                 )
-                neg = max(1, int((y_train_bin == 0).sum()))
-                spw = float(neg) / float(pos)
-                if cfg.get("use_undersample") or cfg.get("use_smote"):
+                neg = max(1, int((yt == 0).sum()))
+                spw = float(neg) / max(1, float((yt == 1).sum()))
+                resampled = cfg.get("foreground_samples") is not None or cfg.get("undersample_ratio", 3.0) != 1.0 or cfg.get("use_smote")
+                if resampled:
                     spw = 1.0
                 params = dict(xgb_params)
                 params["scale_pos_weight"] = spw
@@ -269,14 +294,16 @@ class BehaviorXGBoostModel:
             }
             pos_key = str(beh)
             if pos_key in rep:
-                summary_rows.append({
-                    "behavior": int(beh),
-                    "precision": rep[pos_key].get("precision", np.nan),
-                    "recall": rep[pos_key].get("recall", np.nan),
-                    "f1": rep[pos_key].get("f1-score", np.nan),
-                    "support": rep[pos_key].get("support", np.nan),
-                    "average_precision": float(ap) if np.isfinite(ap) else None,
-                })
+                summary_rows.append(
+                    {
+                        "behavior": int(beh),
+                        "precision": rep[pos_key].get("precision", np.nan),
+                        "recall": rep[pos_key].get("recall", np.nan),
+                        "f1": rep[pos_key].get("f1-score", np.nan),
+                        "support": rep[pos_key].get("support", np.nan),
+                        "average_precision": float(ap) if np.isfinite(ap) else None,
+                    }
+                )
 
         if not models:
             raise RuntimeError("No classifiers were trained (all classes skipped).")
@@ -313,7 +340,9 @@ class BehaviorXGBoostModel:
                 "train_groups": groups_train,
                 "test_groups": groups_test,
                 "sequence_splits": split_info["sequence_meta"],
-                "input_signature": self._training_input_signature,
+                "input_signature": self._training_input_signature.model_dump()
+                if self._training_input_signature
+                else None,
             },
             models_joblib_path,
         )
@@ -376,7 +405,9 @@ class BehaviorXGBoostModel:
             elif frame_indices is not None:
                 # Frame-aware alignment (no pair info): use load_labels_for_feature_frames
                 labels = load_labels_for_feature_frames(
-                    label_path, frame_indices, default_label=0,
+                    label_path,
+                    frame_indices,
+                    default_label=0,
                     deduplicate_symmetric=True,
                 )
             else:
@@ -402,18 +433,22 @@ class BehaviorXGBoostModel:
             labels = labels[mask].astype(np.int32, copy=False)
             if features.size == 0:
                 continue
-            payloads.append({
-                "sequence_safe": safe_seq,
-                "sequence": feat_data.get("sequence") or label_info["sequence"],
-                "group": feat_data.get("group") or label_info["group"],
-                "features": features,
-                "labels": labels,
-            })
+            payloads.append(
+                {
+                    "sequence_safe": safe_seq,
+                    "sequence": feat_data.get("sequence") or label_info["sequence"],
+                    "group": feat_data.get("group") or label_info["group"],
+                    "features": features,
+                    "labels": labels,
+                }
+            )
         if not payloads:
             raise RuntimeError("No sequences had overlapping features and labels.")
         payloads.sort(key=lambda p: p["sequence_safe"])
         if self._feature_columns is None and payloads:
-            self._feature_columns = [f"f{i}" for i in range(payloads[0]["features"].shape[1])]
+            self._feature_columns = [
+                f"f{i}" for i in range(payloads[0]["features"].shape[1])
+            ]
         return payloads
 
     def _align_labels_pair_aware(
@@ -458,7 +493,9 @@ class BehaviorXGBoostModel:
             else:
                 # Dense or unknown format — fall back to frame-only alignment
                 return load_labels_for_feature_frames(
-                    label_path, frame_indices, default_label=0,
+                    label_path,
+                    frame_indices,
+                    default_label=0,
                     deduplicate_symmetric=True,
                 )
 
@@ -476,12 +513,16 @@ class BehaviorXGBoostModel:
         df["sequence"] = df["sequence"].fillna("").astype(str)
         df["group"] = df["group"].fillna("").astype(str)
         if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(lambda v: to_safe_name(v) if v else "")
+            df["sequence_safe"] = df["sequence"].apply(
+                lambda v: to_safe_name(v) if v else ""
+            )
 
         feature_columns: Optional[List[str]] = None
         payloads: Dict[str, dict] = {}
         for _, row in df.iterrows():
-            safe_seq = str(row.get("sequence_safe") or to_safe_name(row.get("sequence", "")))
+            safe_seq = str(
+                row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
+            )
             if not safe_seq:
                 continue
             abs_raw = row.get("abs_path", "")
@@ -490,14 +531,18 @@ class BehaviorXGBoostModel:
             abs_path = ds.resolve_path(abs_raw)
             if not abs_path.exists():
                 continue
-            features, cols, frame_indices, pair_ids = self._load_feature_matrix(abs_path, loader)
+            features, cols, frame_indices, pair_ids = self._load_feature_matrix(
+                abs_path, loader
+            )
             if features.size == 0:
                 continue
             if feature_columns is None:
                 if cols:
                     feature_columns = cols
                 else:
-                    feature_columns = self._capture_columns(None, features.shape[1], loader, prefix="")
+                    feature_columns = self._capture_columns(
+                        None, features.shape[1], loader, prefix=""
+                    )
             payloads[safe_seq] = {
                 "features": features.astype(np.float32, copy=False),
                 "sequence": row.get("sequence", ""),
@@ -508,18 +553,18 @@ class BehaviorXGBoostModel:
         if not payloads:
             raise RuntimeError("No sequences had usable feature outputs.")
         self._feature_columns = feature_columns
-        self._training_input_signature = {
-            "input_kind": "feature",
-            "input_feature": feature,
-            "input_run_id": run_id,
-        }
+        self._training_input_signature = Inputs(
+            (Result(feature=feature, run_id=run_id),)
+        )
         return payloads
 
     def _collect_inputset_features(self, ds, cfg: dict) -> Dict[str, dict]:
         explicit_inputs = cfg.get("inputs")
         inputset_name = cfg.get("inputset")
         explicit_override = bool(explicit_inputs)
-        inputs, meta = _resolve_inputs(ds, explicit_inputs, inputset_name, explicit_override=explicit_override)
+        inputs, meta = _resolve_inputs(
+            ds, explicit_inputs, inputset_name, explicit_override=explicit_override
+        )
         pair_filter_spec = meta.get("pair_filter")
         nn_lookup_cache: Dict[str, dict] = {}
         n_inputs = len(inputs)
@@ -542,10 +587,14 @@ class BehaviorXGBoostModel:
             pattern = spec.get("pattern", "*.parquet")
             files = sorted(run_root.glob(pattern))
             if not files:
-                print(f"[behavior-xgb] WARN: no files for {feat_name} ({run_id}) pattern={pattern}")
+                print(
+                    f"[behavior-xgb] WARN: no files for {feat_name} ({run_id}) pattern={pattern}"
+                )
                 continue
             seq_map = self._feature_sequence_map(ds, feat_name, run_id)
-            meta_map = self._feature_metadata_map(ds, feat_name, run_id, cache=meta_cache)
+            meta_map = self._feature_metadata_map(
+                ds, feat_name, run_id, cache=meta_cache
+            )
             load_spec = spec.get("load", {"kind": "parquet", "transpose": False})
             for pth in files:
                 try:
@@ -557,15 +606,26 @@ class BehaviorXGBoostModel:
                 df_filter = None
                 if pair_filter_spec:
                     if safe_seq not in nn_lookup_cache:
-                        from mosaic.behavior.feature_library.helpers import _build_nn_lookup
-                        nn_lookup_cache[safe_seq] = _build_nn_lookup(ds, safe_seq, pair_filter_spec)
+                        from mosaic.behavior.feature_library.helpers import (
+                            _build_nn_lookup,
+                        )
+
+                        nn_lookup_cache[safe_seq] = _build_nn_lookup(
+                            ds, safe_seq, pair_filter_spec
+                        )
                     nn_lookup = nn_lookup_cache[safe_seq]
                     if nn_lookup:
-                        from mosaic.behavior.feature_library.helpers import _nn_pair_mask
+                        from mosaic.behavior.feature_library.helpers import (
+                            _nn_pair_mask,
+                        )
+
                         def df_filter(df, _nn=nn_lookup):
                             mask = _nn_pair_mask(df, _nn)
                             return df.loc[mask].reset_index(drop=True)
-                arr, cols, frame_indices, pair_ids = self._load_feature_matrix(resolved, load_spec, df_filter=df_filter)
+
+                arr, cols, frame_indices, pair_ids = self._load_feature_matrix(
+                    resolved, load_spec, df_filter=df_filter
+                )
                 if arr is None or arr.size == 0:
                     continue
                 if columns_by_input[idx] is None:
@@ -574,7 +634,9 @@ class BehaviorXGBoostModel:
                     if cols:
                         columns_by_input[idx] = [f"{prefix}{c}" for c in cols]
                     else:
-                        columns_by_input[idx] = self._derive_columns_from_loader(load_spec, arr.shape[1], prefix=prefix)
+                        columns_by_input[idx] = self._derive_columns_from_loader(
+                            load_spec, arr.shape[1], prefix=prefix
+                        )
                 entry = per_seq.setdefault(
                     safe_seq,
                     {
@@ -609,7 +671,9 @@ class BehaviorXGBoostModel:
                         spec = inputs[idx]
                         prefix = spec.get("name") or spec.get("feature", f"input{idx}")
                         prefix = f"{prefix}::"
-                        cols = self._derive_columns_from_loader(spec.get("load") or {}, mat.shape[1], prefix=prefix)
+                        cols = self._derive_columns_from_loader(
+                            spec.get("load") or {}, mat.shape[1], prefix=prefix
+                        )
                     col_names.extend(cols)
                 first_columns = col_names
             fi = bundle.get("frame_indices")
@@ -629,13 +693,18 @@ class BehaviorXGBoostModel:
         if first_columns is not None:
             self._feature_columns = first_columns
         if not feature_payloads:
-            raise RuntimeError("No sequences retained after aligning inputset features.")
-        self._training_input_signature = {
-            "input_kind": "inputset",
-            "input_feature": inputset_name,
-            "inputs": resolved_specs,
-            "inputs_meta": meta,
-        }
+            raise RuntimeError(
+                "No sequences retained after aligning inputset features."
+            )
+        self._training_input_signature = Inputs(
+            *(
+                Result(
+                    feature=str(s["feature"]),
+                    run_id=s.get("resolved_run_id") or s.get("run_id"),
+                )
+                for s in resolved_specs
+            )
+        )
         return feature_payloads
 
     def _capture_columns(self, existing, width: int, loader: dict, prefix: str):
@@ -644,7 +713,9 @@ class BehaviorXGBoostModel:
         cols = self._derive_columns_from_loader(loader, width, prefix=prefix)
         return cols
 
-    def _derive_columns_from_loader(self, loader: dict, width: int, prefix: str) -> List[str]:
+    def _derive_columns_from_loader(
+        self, loader: dict, width: int, prefix: str
+    ) -> List[str]:
         cols = loader.get("columns") if isinstance(loader, dict) else None
         if cols:
             cols = [c for c in cols if c]
@@ -652,7 +723,11 @@ class BehaviorXGBoostModel:
                 return [f"{prefix}{c}" for c in cols]
         return [f"{prefix}f{i}" for i in range(width)]
 
-    def _load_feature_matrix(self, path: Path, loader: dict, df_filter=None) -> tuple[np.ndarray, Optional[List[str]], Optional[np.ndarray], Optional[np.ndarray]]:
+    def _load_feature_matrix(
+        self, path: Path, loader: dict, df_filter=None
+    ) -> tuple[
+        np.ndarray, Optional[List[str]], Optional[np.ndarray], Optional[np.ndarray]
+    ]:
         """Returns (features, column_names, frame_indices_or_None, pair_ids_or_None).
 
         pair_ids is a (N, 2) int32 array of per-row [id1, id2] or None.
@@ -673,20 +748,37 @@ class BehaviorXGBoostModel:
             pair_ids = None
             if "id1" in df.columns:
                 id1 = pd.to_numeric(df["id1"], errors="coerce")
-                id2 = pd.to_numeric(df["id2"], errors="coerce") if "id2" in df.columns else pd.Series(np.nan, index=df.index)
+                id2 = (
+                    pd.to_numeric(df["id2"], errors="coerce")
+                    if "id2" in df.columns
+                    else pd.Series(np.nan, index=df.index)
+                )
                 has_pair = id1.notna() & id2.notna()
                 if bool(has_pair.all()) and len(df) > 0:
-                    pair_ids = np.column_stack([
-                        id1.to_numpy(dtype=np.int32),
-                        id2.to_numpy(dtype=np.int32),
-                    ])
+                    pair_ids = np.column_stack(
+                        [
+                            id1.to_numpy(dtype=np.int32),
+                            id2.to_numpy(dtype=np.int32),
+                        ]
+                    )
             # Always drop identity/meta columns from numeric feature matrix
-            for meta_col in ("id", "id1", "id2", "id_a", "id_b", "id_A", "id_B", "entity_level"):
+            for meta_col in (
+                "id",
+                "id1",
+                "id2",
+                "id_a",
+                "id_b",
+                "id_A",
+                "id_B",
+                "entity_level",
+            ):
                 if meta_col in df.columns:
                     df = df.drop(columns=[meta_col])
             drop_cols = loader.get("drop_columns")
             if drop_cols:
-                df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+                df = df.drop(
+                    columns=[c for c in drop_cols if c in df.columns], errors="ignore"
+                )
             columns = loader.get("columns")
             if columns:
                 df = df[[c for c in columns if c in df.columns]]
@@ -694,7 +786,12 @@ class BehaviorXGBoostModel:
                 df = df.select_dtypes(include=[np.number])
             else:
                 df = df.apply(pd.to_numeric, errors="coerce")
-            return df.to_numpy(dtype=np.float32, copy=False), list(df.columns), frame_indices, pair_ids
+            return (
+                df.to_numpy(dtype=np.float32, copy=False),
+                list(df.columns),
+                frame_indices,
+                pair_ids,
+            )
         if kind == "npz":
             key = loader.get("key")
             if not key:
@@ -733,7 +830,9 @@ class BehaviorXGBoostModel:
                 if label_format == "individual_pair_v1":
                     # Sparse format: need to convert to dense
                     if "frames" not in npz.files:
-                        raise KeyError(f"'frames' key missing in individual_pair_v1 format: {path.name}")
+                        raise KeyError(
+                            f"'frames' key missing in individual_pair_v1 format: {path.name}"
+                        )
 
                     frames = np.asarray(npz["frames"], dtype=np.int32)
 
@@ -752,7 +851,9 @@ class BehaviorXGBoostModel:
                         frame_idx = int(frame_idx)
                         if frame_idx < n_frames:
                             # Take max to handle multiple events per frame
-                            dense_labels[frame_idx] = max(dense_labels[frame_idx], label_id)
+                            dense_labels[frame_idx] = max(
+                                dense_labels[frame_idx], label_id
+                            )
 
                     return dense_labels
 
@@ -768,10 +869,14 @@ class BehaviorXGBoostModel:
         df["sequence"] = df["sequence"].fillna("").astype(str)
         df["group"] = df["group"].fillna("").astype(str)
         if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(lambda v: to_safe_name(v) if v else "")
+            df["sequence_safe"] = df["sequence"].apply(
+                lambda v: to_safe_name(v) if v else ""
+            )
         lookup = {}
         for _, row in df.iterrows():
-            safe_seq = str(row.get("sequence_safe") or to_safe_name(row.get("sequence", "")))
+            safe_seq = str(
+                row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
+            )
             path = str(row.get("abs_path", "")).strip()
             if not safe_seq or not path:
                 continue
@@ -782,7 +887,9 @@ class BehaviorXGBoostModel:
             }
         return lookup
 
-    def _feature_sequence_map(self, ds, feature_name: str, run_id: str) -> Dict[Path, str]:
+    def _feature_sequence_map(
+        self, ds, feature_name: str, run_id: str
+    ) -> Dict[Path, str]:
         idx_path = _feature_index_path(ds, feature_name)
         if not idx_path.exists():
             return {}
@@ -791,14 +898,18 @@ class BehaviorXGBoostModel:
         if df.empty:
             return {}
         if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
+            df["sequence_safe"] = (
+                df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
+            )
         mapping = {}
         for _, row in df.iterrows():
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
             resolved = ds.resolve_path(abs_path)
-            mapping[resolved] = row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
+            mapping[resolved] = row.get("sequence_safe") or to_safe_name(
+                row.get("sequence", "")
+            )
         return mapping
 
     def _feature_metadata_map(
@@ -844,12 +955,17 @@ class BehaviorXGBoostModel:
             rng = np.random.default_rng(cfg.get("random_state", 42))
             shuffled = all_safe[:]
             rng.shuffle(shuffled)
-            split_idx = max(1, int(len(shuffled) * float(cfg.get("train_fraction", 0.8))))
+            split_idx = max(
+                1, int(len(shuffled) * float(cfg.get("train_fraction", 0.8)))
+            )
             split_idx = min(split_idx, len(shuffled) - 1)
             train_safe = shuffled[:split_idx]
             test_safe = shuffled[split_idx:]
         if not train_safe or not test_safe:
-            raise RuntimeError("Train/test split produced empty sets; adjust train_fraction or provide sequences.")
+            raise RuntimeError(
+                "Train/test split produced empty sets; adjust train_fraction or provide sequences."
+            )
+
         def _meta(seq_list):
             return [
                 {
@@ -881,10 +997,15 @@ class BehaviorXGBoostModel:
             safe.add(to_safe_name(item))
         return safe
 
-    def _stack_payloads(self, payloads: List[dict]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _stack_payloads(
+        self, payloads: List[dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         features = [p["features"] for p in payloads]
         labels = [p["labels"] for p in payloads]
-        groups = [np.full(len(p["labels"]), p["sequence_safe"], dtype=object) for p in payloads]
+        groups = [
+            np.full(len(p["labels"]), p["sequence_safe"], dtype=object)
+            for p in payloads
+        ]
         X = np.vstack(features)
         y = np.concatenate(labels)
         g = np.concatenate(groups)
@@ -895,18 +1016,27 @@ class BehaviorXGBoostModel:
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
-    def _build_external_cache(self,
-                              cache_dir: Path,
-                              train_payloads: List[dict],
-                              test_payloads: List[dict],
-                              cfg: dict) -> tuple[str, str, list[str], list[str], int, int]:
+    def _build_external_cache(
+        self,
+        cache_dir: Path,
+        train_payloads: List[dict],
+        test_payloads: List[dict],
+        cfg: dict,
+    ) -> tuple[str, str, list[str], list[str], int, int]:
         train_path = cache_dir / "train.libsvm"
         test_path = cache_dir / "test.libsvm"
         n_train = self._write_libsvm(train_payloads, train_path)
         n_test = self._write_libsvm(test_payloads, test_path)
         groups_train = [p["sequence_safe"] for p in train_payloads]
         groups_test = [p["sequence_safe"] for p in test_payloads]
-        return str(train_path), str(test_path), groups_train, groups_test, n_train, n_test
+        return (
+            str(train_path),
+            str(test_path),
+            groups_train,
+            groups_test,
+            n_train,
+            n_test,
+        )
 
     def _write_libsvm(self, payloads: List[dict], path: Path) -> int:
         total = 0
@@ -988,18 +1118,26 @@ class BehaviorXGBoostModel:
         if thresh is None:
             thresh = self.params.get("decision_threshold", 0.5)
         self._predict_threshold = float(thresh)
-        self._predict_input_signature = bundle.get("input_signature")
+        raw_sig = bundle.get("input_signature")
+        self._predict_input_signature = (
+            Inputs.model_validate(raw_sig) if raw_sig is not None else None
+        )
+
+    def get_prediction_input_signature(self) -> Inputs | None:
+        return self._predict_input_signature
 
     def predict_sequence(self, df_feat: pd.DataFrame, meta: dict) -> pd.DataFrame:
         if self._predict_models is None:
             raise RuntimeError("BehaviorXGBoostModel is not loaded for prediction.")
         features, frames = self._prepare_features_from_df(df_feat)
         if features.size == 0:
-            return pd.DataFrame({
-                "frame": frames,
-                "sequence": meta.get("sequence", ""),
-                "group": meta.get("group", ""),
-            })
+            return pd.DataFrame(
+                {
+                    "frame": frames,
+                    "sequence": meta.get("sequence", ""),
+                    "group": meta.get("group", ""),
+                }
+            )
         if self._predict_scaler is not None:
             features = self._predict_scaler.transform(features)
         prob_arrays: Dict[int, np.ndarray] = {}
@@ -1010,17 +1148,21 @@ class BehaviorXGBoostModel:
             scores = self._predict_scores(model, features)
             prob_arrays[int(cls)] = scores
         if not prob_arrays:
-            return pd.DataFrame({
-                "frame": frames,
-                "sequence": meta.get("sequence", ""),
-                "group": meta.get("group", ""),
-            })
+            return pd.DataFrame(
+                {
+                    "frame": frames,
+                    "sequence": meta.get("sequence", ""),
+                    "group": meta.get("group", ""),
+                }
+            )
         ordered_classes = [cls for cls in self._predict_classes if cls in prob_arrays]
         probs_stack = np.vstack([prob_arrays[cls] for cls in ordered_classes]).T
         best_idx = np.argmax(probs_stack, axis=1)
         best_scores = probs_stack[np.arange(len(best_idx)), best_idx]
         best_labels = [int(ordered_classes[i]) for i in best_idx]
-        label_names = [self._predict_label_map.get(lbl, str(lbl)) for lbl in best_labels]
+        label_names = [
+            self._predict_label_map.get(lbl, str(lbl)) for lbl in best_labels
+        ]
         data = {
             "frame": frames,
             "sequence": meta.get("sequence", ""),
@@ -1034,7 +1176,9 @@ class BehaviorXGBoostModel:
             data[f"prob_{cls}"] = prob_arrays[cls]
         return pd.DataFrame(data)
 
-    def _prepare_features_from_df(self, df_feat: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    def _prepare_features_from_df(
+        self, df_feat: pd.DataFrame
+    ) -> tuple[np.ndarray, np.ndarray]:
         if "frame" in df_feat.columns:
             frames = df_feat["frame"].to_numpy(dtype=np.int64, copy=False)
         else:
@@ -1050,14 +1194,19 @@ class BehaviorXGBoostModel:
             else:
                 # No overlapping names (e.g., training used positional f0.. while inputs carry full names).
                 numeric = df_feat.select_dtypes(include=[np.number]).copy()
-                numeric = numeric.drop(columns=[c for c in ("frame",) if c in numeric.columns], errors="ignore")
+                numeric = numeric.drop(
+                    columns=[c for c in ("frame",) if c in numeric.columns],
+                    errors="ignore",
+                )
                 arr = numeric.to_numpy(dtype=np.float32, copy=False)
                 # Match expected width by padding/truncating.
                 target_w = len(cols)
                 if arr.shape[1] > target_w:
                     arr = arr[:, :target_w]
                 elif arr.shape[1] < target_w:
-                    pad = np.zeros((arr.shape[0], target_w - arr.shape[1]), dtype=np.float32)
+                    pad = np.zeros(
+                        (arr.shape[0], target_w - arr.shape[1]), dtype=np.float32
+                    )
                     arr = np.hstack([arr, pad])
                 matrix = arr
         else:

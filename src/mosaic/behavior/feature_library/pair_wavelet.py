@@ -7,7 +7,7 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, final
+from typing import TYPE_CHECKING, Iterable, List, final
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,18 @@ except Exception:
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, SamplingConfig, resolve_order_col
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
+from .params import (
+    COLUMNS,
+    Inputs,
+    OutputType,
+    Params,
+    SamplingConfig,
+    TrackInput,
+    resolve_order_col,
+)
 
 
 @final
@@ -49,9 +60,9 @@ class PairWavelet:
     name = "pair-wavelet"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
+    class Params(Params):
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         f_min: float = Field(default=0.2, gt=0)
         f_max: float = Field(default=5.0, gt=0)
@@ -77,8 +88,8 @@ class PairWavelet:
             return pc_cols
         # 3) Auto-detect: all numeric columns except known meta
         meta_like = {
-            self.params.columns.seq_col,
-            self.params.columns.group_col,
+            COLUMNS.seq_col,
+            COLUMNS.group_col,
             "frame",
             "time",
             "perspective",
@@ -98,23 +109,43 @@ class PairWavelet:
             )
         return num_cols
 
-    def __init__(self, params: dict[str, object] | None = None):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    def __init__(
+        self,
+        inputs: PairWavelet.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
         if not _PYWT_OK:
             raise ImportError(
                 "PyWavelets (pywt) not available. Install with `pip install PyWavelets`."
             )
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
         # pre-build frequency vector & scales for speed; will recompute if params change
         self._cache_key = None
         self._frequencies = None
         self._scales = None
         self._central_f = None
+        self._scope_filter: dict[str, object] = {}
 
     # ---- feature protocol ----
+    def bind_dataset(self, ds: Dataset) -> None:
+        pass
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
+
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def finalize_fit(self) -> None:
@@ -134,7 +165,7 @@ class PairWavelet:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
         fps = self._infer_fps(df, p.sampling.fps_default)
         in_cols = self._select_input_columns(df)
         if "perspective" not in df.columns:
@@ -197,7 +228,7 @@ class PairWavelet:
                 block["id2"] = cur_id2
 
             # optional passthrough
-            for col in (p.columns.seq_col, p.columns.group_col):
+            for col in (COLUMNS.seq_col, COLUMNS.group_col):
                 if col in df.columns:
                     block[col] = df[col].iloc[0]
 

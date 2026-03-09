@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import Iterable, final
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
 
-from ._param_bases import ColumnConfig, FeatureParams, PositionColumns, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -40,19 +39,24 @@ class FFGroupsMetrics:
     name = "ffgroups-metrics"
     version = "0.1"
     parallelizable = True
-    output_type = "summary"
+    output_type: OutputType = "summary"
 
-    class Params(FeatureParams):
-        columns: ColumnConfig = Field(
-            default_factory=lambda: ColumnConfig(group_col="event")
-        )
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
+        group_col: str = "event"
         speed_col: str = "speed"
         time_chunk_sec: float | None = None
         frame_chunk: int | None = None
         centroid_heading_col: str = "centroid_heading"
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: FFGroupsMetrics.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
@@ -63,7 +67,7 @@ class FFGroupsMetrics:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -71,6 +75,9 @@ class FFGroupsMetrics:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -94,10 +101,16 @@ class FFGroupsMetrics:
             return pd.DataFrame()
 
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
-        required = [p.position.x_col, p.position.y_col, p.position.orientation_col, p.speed_col, p.columns.id_col]
+        required = [
+            COLUMNS.x_col,
+            COLUMNS.y_col,
+            COLUMNS.orientation_col,
+            p.speed_col,
+            COLUMNS.id_col,
+        ]
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"Missing required columns for FFGroupsMetrics: {missing}")
@@ -114,8 +127,8 @@ class FFGroupsMetrics:
         for chunk_id, chunk_df, meta in chunks:
             # Group per frame within group_col if present
             group_keys = []
-            if p.columns.group_col in chunk_df.columns:
-                group_keys.append(p.columns.group_col)
+            if p.group_col in chunk_df.columns:
+                group_keys.append(p.group_col)
             frame_key = "frame" if "frame" in chunk_df.columns else "time"
             if frame_key not in chunk_df.columns:
                 raise ValueError("Need either 'frame' or 'time' column.")
@@ -140,8 +153,8 @@ class FFGroupsMetrics:
         # Vectorized per-group computations to avoid slow Python loops.
         grouped = df.groupby(group_keys, sort=False)
         agg_dict = {
-            p.position.x_col: "mean",
-            p.position.y_col: "mean",
+            COLUMNS.x_col: "mean",
+            COLUMNS.y_col: "mean",
             p.speed_col: "mean",
         }
         if p.centroid_heading_col in df.columns:
@@ -167,16 +180,16 @@ class FFGroupsMetrics:
         stats.columns = flat_cols
         stats = stats.rename(
             columns={
-                p.position.x_col: "_cx",
-                p.position.y_col: "_cy",
+                COLUMNS.x_col: "_cx",
+                COLUMNS.y_col: "_cy",
                 p.speed_col: "_mean_speed",
             }
         )
 
         df = df.merge(stats, on=group_keys, how="left")
 
-        dx = df[p.position.x_col].to_numpy(dtype=float) - df["_cx"].to_numpy(dtype=float)
-        dy = df[p.position.y_col].to_numpy(dtype=float) - df["_cy"].to_numpy(dtype=float)
+        dx = df[COLUMNS.x_col].to_numpy(dtype=float) - df["_cx"].to_numpy(dtype=float)
+        dy = df[COLUMNS.y_col].to_numpy(dtype=float) - df["_cy"].to_numpy(dtype=float)
         if p.centroid_heading_col in df.columns:
             chead = np.arctan2(
                 df["_sin_mean"].to_numpy(dtype=float),
@@ -196,7 +209,7 @@ class FFGroupsMetrics:
         return df.drop(columns=drop_cols).reset_index(drop=True)
 
     def _compute_summary(self, df: pd.DataFrame, p: Params) -> pd.DataFrame:
-        id_col = p.columns.id_col
+        id_col = COLUMNS.id_col
         frame_key = "frame" if "frame" in df.columns else "time"
 
         # Total frames per fish
@@ -242,8 +255,8 @@ class FFGroupsMetrics:
 
         # periphery time: rank by distance, count frames where farthest
         rank_groups = [frame_key]
-        if p.columns.group_col in df.columns:
-            rank_groups.insert(0, p.columns.group_col)
+        if p.group_col in df.columns:
+            rank_groups.insert(0, p.group_col)
         df["rank_centroid_distance"] = df.groupby(rank_groups)[
             "distance_from_centroid"
         ].rank(ascending=True, method="max")
@@ -277,7 +290,7 @@ class FFGroupsMetrics:
         out = out.merge(ftime_periphery_norm, on=[id_col, "group_size"], how="left")
 
         # Attach meta
-        for meta_col in (p.columns.seq_col, p.columns.group_col):
+        for meta_col in (COLUMNS.seq_col, p.group_col):
             if meta_col in df.columns and meta_col not in out.columns:
                 out[meta_col] = df[meta_col].iloc[0]
 

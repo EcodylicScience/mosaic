@@ -19,35 +19,44 @@ from scipy.ndimage import gaussian_filter1d
 from mosaic.core.dataset import (
     _feature_index_path,
     _latest_feature_run_root,
-    _resolve_inputs,
     register_feature,
 )
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import FeatureParams
 from .helpers import _load_array_from_spec
+from .params import (
+    COLUMNS,
+    ArtifactSpec,
+    Inputs,
+    NNResult,
+    OutputType,
+    Params,
+    ParquetLoadSpec,
+    Result,
+)
 
 
 @final
 @register_feature
 class TemporalStackingFeature:
     """
-    Build temporal context windows over an inputset of per-sequence feature files by stacking
+    Build temporal context windows over per-sequence feature files by stacking
     Gaussian-smoothed frames and optional pooled statistics, then saving the result as a new
-    feature under features/temporal-stack__from__<inputset>/run_id.
+    feature under features/temporal-stack__from__<inputs>/run_id.
     """
 
     name = "temporal-stack"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
-    output_type = None  # Custom chunked output
+    output_type: OutputType = None
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
         """Temporal-stacking parameters.
 
         Attributes:
-            inputset: Inputset name to resolve.
-            inputs: Explicit input specifications.
             half: Half-window size in frames. Default 60.
             skip: Step between stacked frames. Default 5.
             use_temporal_stack: Compute temporal stack. Default True.
@@ -61,8 +70,6 @@ class TemporalStackingFeature:
             stack_chunk_size: Rows per stacking chunk. Default 1000.
         """
 
-        inputset: str | None = None
-        inputs: list[dict[str, object]] = Field(default_factory=list)
         half: int = Field(default=60, ge=0)
         skip: int = Field(default=5, ge=1)
         use_temporal_stack: bool = True
@@ -74,6 +81,7 @@ class TemporalStackingFeature:
         win_sec: float = Field(default=0.5, gt=0)
         write_chunk_size: int = Field(default=1000, ge=1)
         stack_chunk_size: int = Field(default=1000, ge=1)
+        pair_filter: NNResult | None = None
 
         @model_validator(mode="before")
         @classmethod
@@ -86,7 +94,12 @@ class TemporalStackingFeature:
                     data["pool_stats"] = tuple(str(s).lower() for s in ps)
             return data
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: TemporalStackingFeature.Inputs,
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
 
         self.storage_feature_name = self.name
@@ -94,34 +107,27 @@ class TemporalStackingFeature:
         self.skip_existing_outputs = False
 
         self._ds = None
-        self._inputs: list[dict] = []
-        self._inputs_meta: dict = {}
-        self._resolved_inputs: list[dict] = []
+        self._inputs: list[ArtifactSpec] = []
+        self._resolved_inputs: list[tuple[ArtifactSpec, dict[str, Path]]] = []
         self._input_cache_ready = False
         self._scope_filter: dict | None = None
         self._allowed_safe_sequences: set[str] | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
-        explicit_inputs = self.params.inputs or []
-        inputset_name = self.params.inputset
-        if not explicit_inputs and not inputset_name:
-            raise ValueError(
-                "temporal-stack: provide params['inputset'] or explicit params['inputs']."
+        self._inputs = [
+            ArtifactSpec(
+                feature=r.feature,
+                run_id=r.run_id,
+                load=ParquetLoadSpec(numeric_only=True),
             )
-        explicit_override = bool(explicit_inputs)
-        self._inputs, self._inputs_meta = _resolve_inputs(
-            ds,
-            explicit_inputs,
-            inputset_name,
-            explicit_override=explicit_override,
-        )
-        self._pair_filter_spec = self._inputs_meta.get("pair_filter")
+            for r in self.inputs.feature_inputs
+        ]
         self._nn_lookup_cache: dict[str, dict] = {}
         self._resolved_inputs = []
         self._input_cache_ready = False
 
-    def set_scope_filter(self, scope: dict | None) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
         safe_sequences = scope.get("safe_sequences") if scope else None
         if safe_sequences:
@@ -135,7 +141,13 @@ class TemporalStackingFeature:
     def supports_partial_fit(self) -> bool:
         return False
 
+    def loads_own_data(self) -> bool:
+        return False
+
     def wants_full_inputset_data(self) -> bool:
+        # NOTE: returning False means _yield_inputset_frames uses metadata_only
+        # mode, which skips time/frame filtering. run_feature() raises if
+        # these filters are set. Future work: apply them in _load_sequence_matrix.
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]):
@@ -159,7 +171,7 @@ class TemporalStackingFeature:
             return self._nn_lookup_cache[safe_seq]
         from .helpers import _build_nn_lookup
 
-        lookup = _build_nn_lookup(self._ds, safe_seq, self._pair_filter_spec)
+        lookup = _build_nn_lookup(self._ds, safe_seq, self.params.pair_filter)
         self._nn_lookup_cache[safe_seq] = lookup
         return lookup
 
@@ -169,8 +181,8 @@ class TemporalStackingFeature:
             raise RuntimeError("temporal-stack: dataset not bound.")
         self._ensure_inputs_ready()
 
-        seq_col = self.params.columns.seq_col
-        group_col = self.params.columns.group_col
+        seq_col = COLUMNS.seq_col
+        group_col = COLUMNS.group_col
         sequence = (
             str(df[seq_col].iloc[0]) if seq_col in df.columns and not df.empty else None
         )
@@ -293,13 +305,13 @@ class TemporalStackingFeature:
     def _ensure_inputs_ready(self) -> None:
         if self._input_cache_ready:
             return
-        resolved = []
+        resolved: list[tuple[ArtifactSpec, dict[str, Path]]] = []
         allowed = self._allowed_safe_sequences
         for spec in self._inputs:
-            feat_name = spec.get("feature")
+            feat_name = spec.feature
             if not feat_name:
                 continue
-            run_id = spec.get("run_id")
+            run_id = spec.run_id
             if run_id is None:
                 run_id, _ = _latest_feature_run_root(self._ds, feat_name)
             else:
@@ -307,16 +319,7 @@ class TemporalStackingFeature:
             mapping = self._build_sequence_mapping(feat_name, run_id, allowed)
             if not mapping:
                 continue
-            resolved.append(
-                {
-                    "feature": feat_name,
-                    "run_id": run_id,
-                    "load": spec.get("load")
-                    or {"kind": "parquet", "numeric_only": True},
-                    "name": spec.get("name") or feat_name,
-                    "mapping": mapping,
-                }
-            )
+            resolved.append((spec, mapping))
         if not resolved:
             raise RuntimeError(
                 "temporal-stack: no overlapping inputs found for the requested scope."
@@ -370,7 +373,7 @@ class TemporalStackingFeature:
         """
         # Build NN pair filter if configured
         df_filter = None
-        if self._pair_filter_spec:
+        if self.params.pair_filter:
             from .helpers import _nn_pair_mask
 
             nn_lookup = self._get_or_build_nn_lookup(safe_seq)
@@ -381,8 +384,8 @@ class TemporalStackingFeature:
                     return df.loc[mask].reset_index(drop=True)
 
         loaded: list[dict] = []
-        for entry in self._resolved_inputs:
-            path = entry["mapping"].get(safe_seq)
+        for artifact, mapping in self._resolved_inputs:
+            path = mapping.get(safe_seq)
             if not path or not path.exists():
                 return None, [], None, None
             df_full = pd.read_parquet(path)
@@ -391,13 +394,13 @@ class TemporalStackingFeature:
                 if df_full.empty:
                     return None, [], None, None
             has_pairs = "id1" in df_full.columns and "id2" in df_full.columns
-            arr, _ = _load_array_from_spec(path, entry["load"], df=df_full)
+            arr, _ = _load_array_from_spec(path, artifact.load, df=df_full)
             if arr is None or arr.size == 0:
                 return None, [], None, None
             loaded.append(
                 {
                     "arr": arr,
-                    "entry": entry,
+                    "name": artifact.feature,
                     "has_pairs": has_pairs,
                     "df": df_full,
                 }
@@ -431,7 +434,7 @@ class TemporalStackingFeature:
                 )
             col_names: list[str] = []
             for e in loaded:
-                prefix = e["entry"]["name"]
+                prefix = e["name"]
                 col_names.extend(
                     [f"{prefix}__f{idx:04d}" for idx in range(e["arr"].shape[1])]
                 )

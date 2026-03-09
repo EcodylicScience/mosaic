@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, final
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, final
 
 import joblib
 import numpy as np
@@ -12,7 +12,19 @@ from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, InterpolationConfig, resolve_order_col
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
+from .params import (
+    COLUMNS,
+    Inputs,
+    InterpolationConfig,
+    OutputType,
+    Params,
+    PoseConfig,
+    TrackInput,
+    resolve_order_col,
+)
 
 
 @final
@@ -26,14 +38,14 @@ class PairPoseDistancePCA:
     name = "pair-posedistance-pca"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
-        pose_n: int = 7
-        pose_indices: list[int] | None = None
-        x_prefix: str = "poseX"
-        y_prefix: str = "poseY"
+        pose: PoseConfig = Field(default_factory=PoseConfig)
         include_intra_A: bool = True
         include_intra_B: bool = True
         include_inter: bool = True
@@ -41,9 +53,16 @@ class PairPoseDistancePCA:
         n_components: int = 6
         batch_size: int = Field(default=5000, gt=0)
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: PairPoseDistancePCA.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ipca: Optional[IncrementalPCA] = IncrementalPCA(
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
+        self._ipca: IncrementalPCA = IncrementalPCA(
             n_components=self.params.n_components,
             batch_size=self.params.batch_size,
         )
@@ -51,13 +70,23 @@ class PairPoseDistancePCA:
         self._tri_i: Optional[np.ndarray] = None
         self._tri_j: Optional[np.ndarray] = None
         self._feat_len: Optional[int] = None
+        self._scope_filter: dict[str, object] = {}
 
     # ---------- Feature protocol ----------
+    def bind_dataset(self, ds: Dataset) -> None:
+        pass
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
+
     def needs_fit(self) -> bool:
         return True
 
     def supports_partial_fit(self) -> bool:
         return True
+
+    def loads_own_data(self) -> bool:
+        return False
 
     def finalize_fit(self) -> None:
         pass
@@ -94,7 +123,7 @@ class PairPoseDistancePCA:
                 out["id1"] = meta_frames["id1"]
             if "id2" in meta_frames:
                 out["id2"] = meta_frames["id2"]
-            for col in (self.params.columns.seq_col, self.params.columns.group_col):
+            for col in (COLUMNS.seq_col, COLUMNS.group_col):
                 if col in df.columns:
                     out[col] = df[col].iloc[0]
             pcs.append(out)
@@ -142,9 +171,9 @@ class PairPoseDistancePCA:
     # ---------- Internals ----------
     def _get_pose_indices(self) -> List[int]:
         """Return the list of pose point indices to use."""
-        indices = self.params.pose_indices
+        indices = self.params.pose.pose_indices
         if indices is None:
-            return list(range(self.params.pose_n))
+            return list(range(self.params.pose.pose_n))
         return list(indices)
 
     def _effective_pose_n(self) -> int:
@@ -153,8 +182,8 @@ class PairPoseDistancePCA:
 
     def _column_names(self) -> Tuple[List[str], List[str]]:
         indices = self._get_pose_indices()
-        xs = [f"{self.params.x_prefix}{i}" for i in indices]
-        ys = [f"{self.params.y_prefix}{i}" for i in indices]
+        xs = [f"{self.params.pose.x_prefix}{i}" for i in indices]
+        ys = [f"{self.params.pose.y_prefix}{i}" for i in indices]
         return xs, ys
 
     def _clean_one_animal(
@@ -165,7 +194,9 @@ class PairPoseDistancePCA:
         g = g.set_index(order_col)
         g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
         g[pose_cols] = g[pose_cols].interpolate(
-            method="linear", limit=p.interpolation.linear_interp_limit, limit_direction="both"
+            method="linear",
+            limit=p.interpolation.linear_interp_limit,
+            limit_direction="both",
         )
         g[pose_cols] = g[pose_cols].ffill(limit=p.interpolation.edge_fill_limit)
         g[pose_cols] = g[pose_cols].bfill(limit=p.interpolation.edge_fill_limit)
@@ -182,9 +213,9 @@ class PairPoseDistancePCA:
     ) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
-        order_col = resolve_order_col(self.params.columns, df)
+        order_col = resolve_order_col(df)
 
-        need = [self.params.columns.id_col, self.params.columns.seq_col, order_col] + pose_cols
+        need = [COLUMNS.id_col, COLUMNS.seq_col, order_col] + pose_cols
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[pair-posedistance-pca] Missing cols: {missing}")
@@ -193,7 +224,7 @@ class PairPoseDistancePCA:
         if order_col == "frame":
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
-        group_cols = [self.params.columns.seq_col, self.params.columns.id_col]
+        group_cols = [COLUMNS.seq_col, COLUMNS.id_col]
 
         def wrapped_func(g):
             result = self._clean_one_animal(g, pose_cols, order_col)
@@ -209,8 +240,8 @@ class PairPoseDistancePCA:
         )
 
         pairs: List[Tuple[Any, Any, Any]] = []
-        for seq, gseq in df_small.groupby(self.params.columns.seq_col):
-            ids = sorted(gseq[self.params.columns.id_col].unique())
+        for seq, gseq in df_small.groupby(COLUMNS.seq_col):
+            ids = sorted(gseq[COLUMNS.id_col].unique())
             if len(ids) < 2:
                 continue
             for idA, idB in combinations(ids, 2):
@@ -255,16 +286,16 @@ class PairPoseDistancePCA:
     ) -> Iterable[Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
-        order_col = resolve_order_col(self.params.columns, df)
+        order_col = resolve_order_col(df)
 
         df_small, pairs = self._prep_pairs(df)
         bs = self.params.batch_size
         dup = self.params.duplicate_perspective
 
         for seq, idA, idB in pairs:
-            gseq = df_small[df_small[self.params.columns.seq_col] == seq]
-            A = gseq[gseq[self.params.columns.id_col] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[self.params.columns.id_col] == idB][[order_col] + pose_cols].copy()
+            gseq = df_small[df_small[COLUMNS.seq_col] == seq]
+            A = gseq[gseq[COLUMNS.id_col] == idA][[order_col] + pose_cols].copy()
+            B = gseq[gseq[COLUMNS.id_col] == idB][[order_col] + pose_cols].copy()
             A = A.sort_values(order_col)
             B = B.sort_values(order_col)
             AB = A.merge(B, on=order_col, suffixes=("_A", "_B"))

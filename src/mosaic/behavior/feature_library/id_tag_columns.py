@@ -8,7 +8,7 @@ import pandas as pd
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput
 
 
 @final
@@ -25,20 +25,29 @@ class IdTagColumns:
     name = "id-tag-columns"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         label_kind: str = "id_tags"
         fields: list[str] | None = None
         field_renames: dict[str, str] | None = None
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: IdTagColumns.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
         self._ds = None
         self._labels: dict[tuple[str, str], dict] = {}
+        self._scope_filter: dict[str, object] = {}
 
     # ----------------------- Dataset hooks -----------------------
     def bind_dataset(self, ds):
@@ -52,11 +61,17 @@ class IdTagColumns:
             labels = payload.get("labels") or {}
             self._labels[key] = labels
 
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
+
     # ----------------------- Fit protocol ------------------------
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -80,11 +95,11 @@ class IdTagColumns:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p.columns.id_col
-        frame_col = p.columns.frame_col
-        time_col = p.columns.time_col
-        group_col = p.columns.group_col
-        sequence_col = p.columns.seq_col
+        id_col = COLUMNS.id_col
+        frame_col = COLUMNS.frame_col
+        time_col = COLUMNS.time_col
+        group_col = COLUMNS.group_col
+        sequence_col = COLUMNS.seq_col
 
         group_val = (
             str(df[group_col].iloc[0])

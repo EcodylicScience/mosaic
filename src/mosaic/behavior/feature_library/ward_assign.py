@@ -18,16 +18,9 @@ from pydantic import Field
 from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
+from mosaic.core.dataset import _dataset_base_dir, register_feature
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import (
-    ArtifactSpec,
-    FeatureParams,
-    FeatureRef,
-    InputSpec,
-    NpzLoadSpec,
-)
 from .helpers import (
     StreamingFeatureHelper,
     _build_index_row,
@@ -37,6 +30,19 @@ from .helpers import (
     _load_joblib_artifact,
     _parse_scope_filter,
     _resolve_sequence_identity,
+)
+from .global_tsne import GlobalTSNE
+from .global_ward import GlobalWardClustering
+from .params import (
+    ArtifactSpec,
+    Inputs,
+    JoblibLoadSpec,
+    LoadSpec,
+    NNResult,
+    NpzLoadSpec,
+    OutputType,
+    Params,
+    Result,
 )
 
 
@@ -48,68 +54,68 @@ class WardAssignClustering:
     multiple prior features (e.g., pair-wavelet social + ego) and reusing the scaler
     from GlobalTSNE.
 
-    Params
-    ------
-    ward_model : FeatureRef
-        Reference to Ward model for linkage matrix.
-    artifact : ArtifactSpec
-        Template artifact specification.
-    scaler : optional FeatureRef
-        Same contract as GlobalKMeans.assign.scaler (joblib w/ StandardScaler).
-    inputs : list[InputSpec]
-        Feature specs to concatenate per sequence.
-    n_clusters : int
-        Desired Ward cut.
-    recalc : bool
-        If True, force recomputation even if outputs already exist.
+    Data inputs are specified via constructor ``inputs`` (Result-based).
+    Artifact references (ward model, templates, scaler) are in Params.
     """
 
     name = "ward-assign"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
-    output_type = "global"
+    output_type: OutputType = "global"
     skip_transform_phase = True
 
-    class Params(FeatureParams):
+    class ModelArtifact(ArtifactSpec):
+        """Params dump (model.joblib)."""
+
+        feature: str = "ward-assign"
+        pattern: str = "model.joblib"
+        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+
+    class SeqLabelsArtifact(ArtifactSpec):
+        """Per-sequence cluster labels (global_ward_labels_seq=*.npz)."""
+
+        feature: str = "ward-assign"
+        pattern: str = "global_ward_labels_seq=*.npz"
+        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
         """Ward-assign clustering parameters.
 
         Attributes:
-            ward_model: Ward model to load for linkage matrix.
-            artifact: Template artifact specification.
+            ward: Ward model to load for linkage matrix.
+            templates: Templates artifact for centroid computation.
             scaler: Optional scaler specification.
-            inputs: Explicit input specifications.
-            inputset: Inputset name to resolve.
             n_clusters: Number of clusters to cut. Default 20.
             recalc: Force recomputation. Default False.
+            pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
-        ward_model: FeatureRef = Field(
-            default_factory=lambda: FeatureRef(
-                feature="global-ward__from__global-tsne",
-                pattern="model.joblib",
-            )
+        ward: GlobalWardClustering.ModelArtifact = Field(
+            default_factory=GlobalWardClustering.ModelArtifact
         )
-        artifact: ArtifactSpec = Field(
-            default_factory=lambda: ArtifactSpec(
-                feature="global-tsne",
-                pattern="global_templates_features.npz",
-                load=NpzLoadSpec(key="templates"),
-            )
+        templates: GlobalTSNE.TemplatesArtifact | None = Field(
+            default_factory=GlobalTSNE.TemplatesArtifact
         )
-        scaler: FeatureRef | None = None
-        inputs: list[InputSpec] = Field(default_factory=list)
-        inputset: str | None = None
+        scaler: GlobalTSNE.ScalerArtifact | None = None
         n_clusters: int = Field(default=20, ge=1)
         recalc: bool = False
+        pair_filter: NNResult | None = None
 
-    def __init__(self, params: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: WardAssignClustering.Inputs,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._inputs_overridden = self.params.inputs != self.Params().inputs
 
         self.storage_feature_name = (
-            f"ward-assign__from__{self.params.ward_model.feature}"
+            f"ward-assign__from__{self.params.ward.feature}"
         )
-        self.storage_use_input_suffix = False
+        self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
 
         self._ds: object = None
@@ -118,13 +124,11 @@ class WardAssignClustering:
         self._cluster_ids: np.ndarray | None = None
         self._assign_nn: NearestNeighbors | None = None
         self._scaler: object = None
-        self._inputs: list[object] = []
         self._processed_sequences: set[str] = set()
         self._run_root: Path | None = None
         self._allowed_safe_sequences: set[str] | None = None
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._scope_filter: dict[str, object] | None = None
-        self._inputs_meta: dict[str, object] = {}
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
         self._additional_index_rows: list[dict[str, object]] = []
 
@@ -147,6 +151,9 @@ class WardAssignClustering:
         return False
 
     def loads_own_data(self) -> bool:
+        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
+        # applied when loading own data. run_feature() raises RuntimeError
+        # if these filters are set. Future work: apply them during loading.
         return True
 
     def partial_fit(self, df: pd.DataFrame) -> None:
@@ -250,20 +257,8 @@ class WardAssignClustering:
         self._processed_sequences = set()
         self._additional_index_rows = []
 
-        inputs = self.params.inputs
-        inputset_name = self.params.inputset
-        explicit_inputs = (
-            inputs if (self._inputs_overridden or not inputset_name) else None
-        )
-        self._inputs, self._inputs_meta = _resolve_inputs(
-            self._ds,
-            explicit_inputs,
-            inputset_name,
-            explicit_override=self._inputs_overridden,
-        )
-
         # Load Ward linkage
-        ward_spec = self.params.ward_model
+        ward_spec = self.params.ward
         _, ward_root = _get_feature_run_root(
             self._ds, ward_spec.feature, ward_spec.run_id
         )
@@ -279,7 +274,7 @@ class WardAssignClustering:
             raise ValueError("[ward-assign] Ward model missing linkage_matrix.")
 
         # Reload artifact matrix (templates) to derive centroids
-        self._templates = _load_artifact_matrix(self._ds, self.params.artifact)
+        self._templates = _load_artifact_matrix(self._ds, self.params.templates)
         n_clusters = self.params.n_clusters
         labels_templates = fcluster(self._Z, n_clusters, criterion="maxclust")
         uniq = np.unique(labels_templates)
@@ -305,16 +300,18 @@ class WardAssignClustering:
             _load_joblib_artifact(self._ds, scaler_spec) if scaler_spec else None
         )
 
-        # Use StreamingFeatureHelper for manifest building and data loading
+        # Build manifest from Result-based inputs
         helper = StreamingFeatureHelper(self._ds, "ward-assign")
-        if self._inputs_meta.get("pair_filter"):
-            helper.set_pair_filter(self._inputs_meta["pair_filter"])
+        if self.params.pair_filter:
+            helper.set_pair_filter(self.params.pair_filter)
         scope_filter = (
             {"safe_sequences": self._allowed_safe_sequences}
             if self._allowed_safe_sequences
             else None
         )
-        manifest = helper.build_manifest(self._inputs, scope_filter=scope_filter)
+        manifest = helper.build_manifest_from_results(
+            self.inputs.feature_inputs, scope_filter=scope_filter
+        )
         if not manifest:
             raise RuntimeError("[ward-assign] No usable inputs found for assignment.")
 

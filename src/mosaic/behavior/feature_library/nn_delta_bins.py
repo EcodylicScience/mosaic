@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, final
+from typing import Iterable, Sequence, final
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams
+from .params import Inputs, OutputType, Params, TrackInput
 
 
 def _binned_mean_fast(
@@ -105,9 +105,12 @@ class NearestNeighborDeltaBins:
     name = "nn-delta-bins"
     version = "0.1"
     parallelizable = True
-    output_type = "summary"
+    output_type: OutputType = "summary"
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         nbins: int = Field(default=45, gt=0)
         binmax: float = Field(default=14.0, gt=0)
         max_for_avg: float = Field(default=5.0, gt=0)
@@ -121,19 +124,24 @@ class NearestNeighborDeltaBins:
         nonfocal_flag_col: str = "Focal_fish"
         nonfocal_flag_value: bool = False
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: NearestNeighborDeltaBins.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
         self._ds = None
-        self._scope_filter: Optional[dict] = None
+        self._scope_filter: dict[str, object] = {}
 
     # ----------------------- Dataset hooks -----------------------
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -141,6 +149,9 @@ class NearestNeighborDeltaBins:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:

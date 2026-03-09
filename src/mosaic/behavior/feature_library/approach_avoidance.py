@@ -33,11 +33,14 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import (
-    FeatureParams,
+from .params import (
+    COLUMNS,
+    Inputs,
     InterpolationConfig,
-    PositionColumns,
+    OutputType,
+    Params,
     SamplingConfig,
+    TrackInput,
     resolve_order_col,
 )
 
@@ -69,10 +72,12 @@ class ApproachAvoidance:
     name = "approach-avoidance"
     version = "0.2"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         velocity_units: Literal["per_frame", "per_second"] = "per_frame"
@@ -85,10 +90,17 @@ class ApproachAvoidance:
         cos_avoider_threshold: float = Field(default=0.5, ge=-1, le=1)
         min_event_length: int = Field(default=10, ge=1)
         min_event_count: int = Field(default=5, ge=1)
-        orientation_gate_cos: float | None = Field(default=0.8660254037844386, ge=0, le=1)
+        orientation_gate_cos: float | None = Field(
+            default=0.8660254037844386, ge=0, le=1
+        )
         smooth_window_sec: float | None = Field(default=None, gt=0)
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: ApproachAvoidance.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
@@ -100,7 +112,7 @@ class ApproachAvoidance:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict | None) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -109,6 +121,9 @@ class ApproachAvoidance:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter) -> None:
@@ -133,18 +148,18 @@ class ApproachAvoidance:
             return pd.DataFrame()
 
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
         need = [
-            p.columns.id_col,
-            p.columns.seq_col,
+            COLUMNS.id_col,
+            COLUMNS.seq_col,
             order_col,
-            p.position.x_col,
-            p.position.y_col,
+            COLUMNS.x_col,
+            COLUMNS.y_col,
         ]
-        if p.columns.group_col in df.columns:
-            need.append(p.columns.group_col)
+        if COLUMNS.group_col in df.columns:
+            need.append(COLUMNS.group_col)
         if p.orientation_gate_cos is not None:
-            need.append(p.position.orientation_col)
+            need.append(COLUMNS.orientation_col)
         missing = [c for c in need if c not in df.columns]
         if missing:
             raise ValueError(f"[approach-avoidance] Missing columns: {missing}")
@@ -155,10 +170,10 @@ class ApproachAvoidance:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p.columns.seq_col, p.columns.id_col]
-        data_cols = [p.position.x_col, p.position.y_col]
-        if p.position.orientation_col in df_small.columns:
-            data_cols.append(p.position.orientation_col)
+        group_cols = [COLUMNS.seq_col, COLUMNS.id_col]
+        data_cols = [COLUMNS.x_col, COLUMNS.y_col]
+        if COLUMNS.orientation_col in df_small.columns:
+            data_cols.append(COLUMNS.orientation_col)
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -176,8 +191,8 @@ class ApproachAvoidance:
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p.columns.seq_col):
-            ids = sorted(gseq[p.columns.id_col].unique())
+        for seq, gseq in df_small.groupby(COLUMNS.seq_col):
+            ids = sorted(gseq[COLUMNS.id_col].unique())
             if len(ids) < 2:
                 continue
             for id_a, id_b in combinations(ids, 2):
@@ -215,11 +230,11 @@ class ApproachAvoidance:
         p = self.params
 
         ori_gate_cos = p.orientation_gate_cos
-        cols = [order_col, p.position.x_col, p.position.y_col]
-        if ori_gate_cos is not None and p.position.orientation_col in gseq.columns:
-            cols.append(p.position.orientation_col)
-        A = gseq[gseq[p.columns.id_col] == id_a][cols].copy()
-        B = gseq[gseq[p.columns.id_col] == id_b][cols].copy()
+        cols = [order_col, COLUMNS.x_col, COLUMNS.y_col]
+        if ori_gate_cos is not None and COLUMNS.orientation_col in gseq.columns:
+            cols.append(COLUMNS.orientation_col)
+        A = gseq[gseq[COLUMNS.id_col] == id_a][cols].copy()
+        B = gseq[gseq[COLUMNS.id_col] == id_b][cols].copy()
 
         if A.empty or B.empty:
             return None
@@ -242,10 +257,10 @@ class ApproachAvoidance:
                 pass
 
         # Extract positions
-        x_a = j[f"{p.position.x_col}_A"].to_numpy(dtype=np.float64)
-        y_a = j[f"{p.position.y_col}_A"].to_numpy(dtype=np.float64)
-        x_b = j[f"{p.position.x_col}_B"].to_numpy(dtype=np.float64)
-        y_b = j[f"{p.position.y_col}_B"].to_numpy(dtype=np.float64)
+        x_a = j[f"{COLUMNS.x_col}_A"].to_numpy(dtype=np.float64)
+        y_a = j[f"{COLUMNS.y_col}_A"].to_numpy(dtype=np.float64)
+        x_b = j[f"{COLUMNS.x_col}_B"].to_numpy(dtype=np.float64)
+        y_b = j[f"{COLUMNS.y_col}_B"].to_numpy(dtype=np.float64)
         frames = j["frame"].to_numpy().astype(int)
         n = len(frames)
         eps = 1e-12
@@ -291,16 +306,16 @@ class ApproachAvoidance:
             v1x, v1y = v_ax, v_ay
             v2x, v2y = v_bx, v_by
             speed1, speed2 = speed_a, speed_b
-            ori1 = j.get(f"{p.position.orientation_col}_A")
-            ori2 = j.get(f"{p.position.orientation_col}_B")
+            ori1 = j.get(f"{COLUMNS.orientation_col}_A")
+            ori2 = j.get(f"{COLUMNS.orientation_col}_B")
         else:
             dx12 = -dx_ab
             dy12 = -dy_ab
             v1x, v1y = v_bx, v_by
             v2x, v2y = v_ax, v_ay
             speed1, speed2 = speed_b, speed_a
-            ori1 = j.get(f"{p.position.orientation_col}_B")
-            ori2 = j.get(f"{p.position.orientation_col}_A")
+            ori1 = j.get(f"{COLUMNS.orientation_col}_B")
+            ori2 = j.get(f"{COLUMNS.orientation_col}_A")
 
         # Cosine metrics equivalent to trajognize:
         # direction 12: id1 approaches id2, id2 avoids id1
@@ -323,7 +338,7 @@ class ApproachAvoidance:
             if ori1 is None or ori2 is None:
                 raise ValueError(
                     "[approach-avoidance] Orientation gate enabled but orientation column "
-                    f"'{p.position.orientation_col}' not available for merged pair."
+                    f"'{COLUMNS.orientation_col}' not available for merged pair."
                 )
             th1 = ori1.to_numpy(dtype=np.float64)
             th2 = ori2.to_numpy(dtype=np.float64)
@@ -413,7 +428,11 @@ class ApproachAvoidance:
             & (cos_avoid_21_eval >= cos_avoid_thr)
         )
 
-        if ori_gate_cos is not None and cos_ori_vel_1_eval is not None and cos_ori_vel_2_eval is not None:
+        if (
+            ori_gate_cos is not None
+            and cos_ori_vel_1_eval is not None
+            and cos_ori_vel_2_eval is not None
+        ):
             cand_12 &= cos_ori_vel_1_eval >= ori_gate_cos
             cand_21 &= cos_ori_vel_2_eval >= ori_gate_cos
 
@@ -444,7 +463,7 @@ class ApproachAvoidance:
             }
         )
 
-        for col in (p.columns.seq_col, p.columns.group_col):
+        for col in (COLUMNS.seq_col, COLUMNS.group_col):
             if col in gseq.columns:
                 out[col] = gseq[col].iloc[0]
             elif col in orig_df.columns:

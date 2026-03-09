@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import Iterable, final
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -46,12 +45,20 @@ class NearestNeighbor:
     name = "nearest-neighbor"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
 
-    def __init__(self, params: dict[str, object] | None = None):
+    class Params(Params):
+        pass
+
+    def __init__(
+        self,
+        inputs: NearestNeighbor.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
@@ -62,7 +69,7 @@ class NearestNeighbor:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -70,6 +77,9 @@ class NearestNeighbor:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -93,12 +103,12 @@ class NearestNeighbor:
             return pd.DataFrame()
 
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
 
         angles = (
-            df[p.position.orientation_col].to_numpy(dtype=float)
-            if p.position.orientation_col in df.columns
+            df[COLUMNS.orientation_col].to_numpy(dtype=float)
+            if COLUMNS.orientation_col in df.columns
             else None
         )
 
@@ -125,10 +135,14 @@ class NearestNeighbor:
             idx = g.index.to_numpy()
             if len(idx) < 2:
                 continue
-            gx = g[p.position.x_col].to_numpy(dtype=float)
-            gy = g[p.position.y_col].to_numpy(dtype=float)
-            gids = g[p.columns.id_col].to_numpy()
-            gang = g[p.position.orientation_col].to_numpy(dtype=float) if angles is not None else None
+            gx = g[COLUMNS.x_col].to_numpy(dtype=float)
+            gy = g[COLUMNS.y_col].to_numpy(dtype=float)
+            gids = g[COLUMNS.id_col].to_numpy()
+            gang = (
+                g[COLUMNS.orientation_col].to_numpy(dtype=float)
+                if angles is not None
+                else None
+            )
 
             dx_matrix = gx[np.newaxis, :] - gx[:, np.newaxis]
             dy_matrix = gy[np.newaxis, :] - gy[:, np.newaxis]
@@ -166,7 +180,7 @@ class NearestNeighbor:
             out["nn_delta_angle"] = nn_dangle
 
         # Attach meta columns
-        for c in ("frame", "time", p.columns.seq_col, p.columns.group_col, p.columns.id_col):
+        for c in ("frame", "time", COLUMNS.seq_col, COLUMNS.group_col, COLUMNS.id_col):
             if c in df.columns:
                 out[c] = df[c].values
 

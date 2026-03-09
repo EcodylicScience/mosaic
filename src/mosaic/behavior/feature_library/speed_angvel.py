@@ -5,11 +5,10 @@ from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
@@ -44,13 +43,20 @@ class SpeedAngvel:
     name = "speed-angvel"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         step_size: int | None = None
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: SpeedAngvel.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
@@ -61,7 +67,7 @@ class SpeedAngvel:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ----------------------- Fit protocol ------------------------
@@ -69,6 +75,9 @@ class SpeedAngvel:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -92,9 +101,9 @@ class SpeedAngvel:
             return pd.DataFrame()
 
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
-        id_col = p.columns.id_col
+        id_col = COLUMNS.id_col
 
         if id_col not in df.columns:
             raise ValueError(f"Missing id column '{id_col}' for per-id speed/angvel.")
@@ -137,16 +146,16 @@ class SpeedAngvel:
 
     def _compute_one_id(self, sub: pd.DataFrame, p, order_col: str) -> pd.DataFrame:
         sub = sub.sort_values(order_col).reset_index(drop=True)
-        x = sub[p.position.x_col].to_numpy(dtype=float)
-        y = sub[p.position.y_col].to_numpy(dtype=float)
+        x = sub[COLUMNS.x_col].to_numpy(dtype=float)
+        y = sub[COLUMNS.y_col].to_numpy(dtype=float)
         angle = (
-            sub[p.position.orientation_col].to_numpy(dtype=float)
-            if p.position.orientation_col in sub.columns
+            sub[COLUMNS.orientation_col].to_numpy(dtype=float)
+            if COLUMNS.orientation_col in sub.columns
             else None
         )
         time_arr = (
-            sub[p.columns.time_col].to_numpy(dtype=float)
-            if p.columns.time_col in sub.columns
+            sub[COLUMNS.time_col].to_numpy(dtype=float)
+            if COLUMNS.time_col in sub.columns
             else None
         )
 
@@ -170,7 +179,7 @@ class SpeedAngvel:
                 )
 
         # Attach meta columns from this sub-id
-        for c in ("frame", "time", p.columns.seq_col, p.columns.group_col, p.columns.id_col):
+        for c in ("frame", "time", COLUMNS.seq_col, COLUMNS.group_col, COLUMNS.id_col):
             if c in sub.columns:
                 out[c] = sub[c].values
         return out

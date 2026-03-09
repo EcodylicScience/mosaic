@@ -18,28 +18,25 @@ Features have an `output_type` attribute indicating their output structure:
 
 Usage
 -----
->>> from mosaic.core import Dataset
->>> from mosaic.core.dataset import FEATURES
+>>> from mosaic.behavior.feature_library import Inputs, Result
+>>> from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 >>>
->>> # Features are auto-registered and available by name
->>> dataset.run_feature(feature="speed-angvel", params={...})
+>>> # Track-only feature (default inputs)
+>>> feat = SpeedAngvel()
+>>> dataset.run_feature(feat)
 >>>
->>> # Or by class
->>> from mosaic.behavior import feature_library
->>> dataset.run_feature(
-...     feature=feature_library.speed_angvel.SpeedAngvel,
-...     params={...}
-... )
+>>> # Feature consuming another feature's output
+>>> feat = SpeedAngvel(inputs=Inputs((Result(feature="nn"),)))
+>>> dataset.run_feature(feat)
 >>>
 >>> # List all registered features
+>>> from mosaic.core.dataset import FEATURES
 >>> print(list(FEATURES.keys()))
 >>>
 >>> # List features by output type
 >>> from mosaic.behavior.feature_library import list_features_by_type
 >>> print(list_features_by_type("per_frame"))
 """
-
-from typing import Optional
 
 from mosaic.core.dataset import FEATURES, register_feature
 
@@ -69,13 +66,46 @@ from . import (
     temporal_stacking,
     ward_assign,
 )
+from .approach_avoidance import ApproachAvoidance
+from .body_scale import BodyScaleFeature
+from .ffgroups import FFGroups
+from .ffgroups_metrics import FFGroupsMetrics
+from .global_kmeans import GlobalKMeansClustering
+from .global_tsne import GlobalTSNE
+from .global_ward import GlobalWardClustering
+from .id_tag_columns import IdTagColumns
+from .kpms_apply import KpmsApply
+from .kpms_fit import KpmsFit
+from .model_predict import ModelPredictFeature
+from .nearestneighbor import NearestNeighbor
+from .nn_delta_bins import NearestNeighborDeltaBins
+from .nn_delta_response import NearestNeighborDelta
+from .orientation_relative import OrientationRelativeFeature
+from .pair_egocentric import PairEgocentricFeatures
+from .pair_position import PairPositionFeatures
+from .pair_wavelet import PairWavelet
+from .pairposedistancepca import PairPoseDistancePCA
+from .params import (
+    COLUMNS,
+    ArtifactSpec,
+    FeatureLabelsSource,
+    GroundTruthLabelsSource,
+    Inputs,
+    InputsLike,
+    OutputType,
+    Result,
+    TrackInput,
+)
+from .speed_angvel import SpeedAngvel
+from .temporal_stacking import TemporalStackingFeature
+from .ward_assign import WardAssignClustering
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
 # from . import feature_template__global
 
 
-def list_features_by_type(output_type: Optional[str] = None) -> list[str]:
+def list_features_by_type(output_type: OutputType = None) -> list[str]:
     """
     Return feature names filtered by output_type.
 
@@ -97,17 +127,16 @@ def list_features_by_type(output_type: Optional[str] = None) -> list[str]:
     """
     result = []
     for cls in FEATURES.values():
-        feat_output_type = getattr(cls, "output_type", None)
-        feat_name = getattr(cls, "name", cls.__name__)
+        feat_output_type = cls.output_type
+        feat_name = cls.name
         if output_type is None:
-            # No filter - return all
             result.append(feat_name)
         elif feat_output_type == output_type:
             result.append(feat_name)
     return sorted(result)
 
 
-def get_feature_output_type(feature_name: str) -> Optional[str]:
+def get_feature_output_type(feature_name: str) -> OutputType:
     """
     Return the output_type for a registered feature.
 
@@ -118,17 +147,17 @@ def get_feature_output_type(feature_name: str) -> Optional[str]:
 
     Returns
     -------
-    str or None
-        The output_type attribute, or None if not set or feature not found
+    OutputType
+        The output_type attribute, or None if feature not found
     """
     # Try direct class name lookup
     if feature_name in FEATURES:
-        return getattr(FEATURES[feature_name], "output_type", None)
+        return FEATURES[feature_name].output_type
 
     # Try matching by .name attribute
     for cls in FEATURES.values():
-        if getattr(cls, "name", None) == feature_name:
-            return getattr(cls, "output_type", None)
+        if cls.name == feature_name:
+            return cls.output_type
 
     return None
 
@@ -136,35 +165,64 @@ def get_feature_output_type(feature_name: str) -> Optional[str]:
 __all__ = [
     # Registry
     "register_feature",
+    # Types and params
+    "ArtifactSpec",
+    "COLUMNS",
+    "FeatureLabelsSource",
+    "GroundTruthLabelsSource",
+    "Inputs",
+    "InputsLike",
+    "OutputType",
+    "Result",
+    "TrackInput",
     # Helper functions
     "list_features_by_type",
     "get_feature_output_type",
     "helpers",
-    # Per-sequence features
-    "speed_angvel",
+    # Feature classes
+    "ApproachAvoidance",
+    "BodyScaleFeature",
+    "FFGroups",
+    "FFGroupsMetrics",
+    "GlobalKMeansClustering",
+    "GlobalTSNE",
+    "GlobalWardClustering",
+    "IdTagColumns",
+    "KpmsApply",
+    "KpmsFit",
+    "ModelPredictFeature",
+    "NearestNeighbor",
+    "NearestNeighborDelta",
+    "NearestNeighborDeltaBins",
+    "OrientationRelativeFeature",
+    "PairEgocentricFeatures",
+    "PairPositionFeatures",
+    "PairPoseDistancePCA",
+    "PairWavelet",
+    "SpeedAngvel",
+    "TemporalStackingFeature",
+    "WardAssignClustering",
+    # Submodules
+    "approach_avoidance",
     "body_scale",
-    "orientation_relative",
+    "ffgroups",
+    "ffgroups_metrics",
+    "global_kmeans",
+    "global_tsne",
+    "global_ward",
+    "id_tag_columns",
+    "kpms_apply",
+    "kpms_fit",
+    "model_predict",
     "nearestneighbor",
+    "nn_delta_bins",
+    "nn_delta_response",
+    "orientation_relative",
     "pair_egocentric",
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
-    "approach_avoidance",
-    "id_tag_columns",
-    "nn_delta_response",
-    "nn_delta_bins",
-    # Transformation features
+    "speed_angvel",
     "temporal_stacking",
-    "model_predict",
-    # Group features
-    "ffgroups",
-    "ffgroups_metrics",
-    # Global features
-    "global_tsne",
-    "global_kmeans",
-    "global_ward",
     "ward_assign",
-    # External features (keypoint-moseq)
-    "kpms_fit",
-    "kpms_apply",
 ]

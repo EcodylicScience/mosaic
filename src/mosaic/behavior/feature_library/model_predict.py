@@ -7,7 +7,6 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 import importlib
-import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import final
@@ -16,7 +15,7 @@ import pandas as pd
 
 from mosaic.core.dataset import _model_run_root, register_feature
 
-from ._param_bases import FeatureParams
+from .params import Inputs, OutputType, Params, Result
 
 
 @final
@@ -29,9 +28,12 @@ class ModelPredictFeature:
     name = "model-predict"
     version = "0.1"
     parallelizable = True
-    output_type = None  # Output depends on the model
+    output_type: OutputType = None
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
         """Model-predict parameters.
 
         Attributes:
@@ -48,7 +50,12 @@ class ModelPredictFeature:
         model_name: str | None = None
         output_feature_name: str | None = None
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: ModelPredictFeature.Inputs,
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self._model = None
@@ -56,7 +63,10 @@ class ModelPredictFeature:
         self._model_run_id: str | None = None
         self.storage_feature_name = self.params.output_feature_name or self.name
         self.storage_use_input_suffix = True
-        self._input_signature: dict[str, object] | None = None
+        self._scope_filter: dict[str, object] = {}
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
 
     def bind_dataset(self, ds):
         self._ds = ds
@@ -90,14 +100,14 @@ class ModelPredictFeature:
         output_name = self.params.output_feature_name or f"{storage_model_name}-pred"
         self.storage_feature_name = output_name
         self.storage_use_input_suffix = True
-        sig_fn = getattr(self._model, "get_prediction_input_signature", None)
-        if callable(sig_fn):
-            self._input_signature = sig_fn()
 
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -148,12 +158,3 @@ class ModelPredictFeature:
         if self._model_run_id and "model_run_id" not in result.columns:
             result["model_run_id"] = self._model_run_id
         return result
-
-    def default_input_signature(self) -> dict[str, object] | None:
-        """
-        Returns the input specification (input_kind, feature/inputset, resolved run_ids)
-        captured when the model was trained, if available.
-        """
-        if self._input_signature is None:
-            return None
-        return json.loads(json.dumps(self._input_signature))

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import List, Tuple, final
+from typing import TYPE_CHECKING, List, Tuple, final
 
 import numpy as np
 import pandas as pd
@@ -21,11 +21,17 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import (
-    FeatureParams,
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
+from .params import (
+    COLUMNS,
+    Inputs,
     InterpolationConfig,
-    PositionColumns,
+    OutputType,
+    Params,
     SamplingConfig,
+    TrackInput,
     resolve_order_col,
 )
 
@@ -58,21 +64,40 @@ class PairPositionFeatures:
     name = "pair-position"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: PairPositionFeatures.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
+        self._scope_filter: dict[str, object] = {}
 
     # ------------- Feature protocol -------------
+    def bind_dataset(self, ds: Dataset) -> None:
+        pass
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
+
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def finalize_fit(self) -> None:
@@ -92,16 +117,16 @@ class PairPositionFeatures:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        order_col = resolve_order_col(p.columns, df)
+        order_col = resolve_order_col(df)
 
         # Required columns
         need = [
-            p.columns.id_col,
-            p.columns.seq_col,
+            COLUMNS.id_col,
+            COLUMNS.seq_col,
             order_col,
-            p.position.x_col,
-            p.position.y_col,
-            p.position.orientation_col,
+            COLUMNS.x_col,
+            COLUMNS.y_col,
+            COLUMNS.orientation_col,
         ]
         missing = [c for c in need if c not in df.columns]
         if missing:
@@ -114,8 +139,8 @@ class PairPositionFeatures:
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
         # Clean per-animal, per-sequence
-        group_cols = [p.columns.seq_col, p.columns.id_col]
-        data_cols = [p.position.x_col, p.position.y_col, p.position.orientation_col]
+        group_cols = [COLUMNS.seq_col, COLUMNS.id_col]
+        data_cols = [COLUMNS.x_col, COLUMNS.y_col, COLUMNS.orientation_col]
 
         def clean_animal(g):
             result = self._clean_one_animal(g, data_cols, order_col)
@@ -133,8 +158,8 @@ class PairPositionFeatures:
         # Build all pairs for each sequence
         out_frames: List[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(p.columns.seq_col):
-            ids = sorted(gseq[p.columns.id_col].unique())
+        for seq, gseq in df_small.groupby(COLUMNS.seq_col):
+            ids = sorted(gseq[COLUMNS.id_col].unique())
             if len(ids) < 2:
                 continue
 
@@ -188,11 +213,11 @@ class PairPositionFeatures:
         p = self.params
 
         # Extract data for each animal
-        A = gseq[gseq[p.columns.id_col] == idA][
-            [order_col, p.position.x_col, p.position.y_col, p.position.orientation_col]
+        A = gseq[gseq[COLUMNS.id_col] == idA][
+            [order_col, COLUMNS.x_col, COLUMNS.y_col, COLUMNS.orientation_col]
         ].copy()
-        B = gseq[gseq[p.columns.id_col] == idB][
-            [order_col, p.position.x_col, p.position.y_col, p.position.orientation_col]
+        B = gseq[gseq[COLUMNS.id_col] == idB][
+            [order_col, COLUMNS.x_col, COLUMNS.y_col, COLUMNS.orientation_col]
         ].copy()
 
         if A.empty or B.empty:
@@ -234,7 +259,7 @@ class PairPositionFeatures:
         dfB["id_B"] = idA
 
         # Pass through group/sequence
-        for col in (p.columns.seq_col, p.columns.group_col):
+        for col in (COLUMNS.seq_col, COLUMNS.group_col):
             if col in orig_df.columns:
                 val = orig_df[col].iloc[0]
                 dfA[col] = val
@@ -250,12 +275,12 @@ class PairPositionFeatures:
         win = p.sampling.smooth_win
 
         # Extract positions and angles
-        cxA = j[f"{p.position.x_col}_A"].to_numpy()
-        cyA = j[f"{p.position.y_col}_A"].to_numpy()
-        cxB = j[f"{p.position.x_col}_B"].to_numpy()
-        cyB = j[f"{p.position.y_col}_B"].to_numpy()
-        thA = j[f"{p.position.orientation_col}_A"].to_numpy()
-        thB = j[f"{p.position.orientation_col}_B"].to_numpy()
+        cxA = j[f"{COLUMNS.x_col}_A"].to_numpy()
+        cyA = j[f"{COLUMNS.y_col}_A"].to_numpy()
+        cxB = j[f"{COLUMNS.x_col}_B"].to_numpy()
+        cyB = j[f"{COLUMNS.y_col}_B"].to_numpy()
+        thA = j[f"{COLUMNS.orientation_col}_A"].to_numpy()
+        thB = j[f"{COLUMNS.orientation_col}_B"].to_numpy()
         frames = j["frame"].to_numpy().astype(int)
 
         # Optional smoothing

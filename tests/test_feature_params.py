@@ -1,118 +1,84 @@
 """Tests for Pydantic feature parameter models."""
+
 from __future__ import annotations
 
 import json
+from typing import Literal
+
 import pytest
 from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
-from mosaic.behavior.feature_library._param_bases import (
-    ColumnConfig,
-    FeatureParams,
+from mosaic.behavior.feature_library.params import (
+    COLUMNS,
+    Inputs,
     InterpolationConfig,
-    PositionColumns,
+    Params,
+    Result,
     SamplingConfig,
+    TrackInput,
     resolve_order_col,
 )
 
+# --- COLUMNS global ---
 
-# --- FeatureParams base ---
 
-
-def test_defaults() -> None:
-    p = FeatureParams()
-    assert p.columns.id_col == "id"
-    assert p.columns.seq_col == "sequence"
-    assert p.columns.group_col == "group"
-    assert p.columns.order_by == "frames"
+def test_columns_defaults() -> None:
+    assert COLUMNS.id_col == "id"
+    assert COLUMNS.seq_col == "sequence"
+    assert COLUMNS.group_col == "group"
+    assert COLUMNS.frame_col == "frame"
+    assert COLUMNS.time_col == "time"
+    assert COLUMNS.order_by == "frames"
+    assert COLUMNS.x_col == "X"
+    assert COLUMNS.y_col == "Y"
+    assert COLUMNS.orientation_col == "ANGLE"
 
 
 def test_resolve_order_col_frames_first() -> None:
     import pandas as pd
-    cols = ColumnConfig()  # order_by="frames"
+
     df = pd.DataFrame({"frame": [1, 2], "time": [0.0, 0.1]})
-    assert resolve_order_col(cols, df) == "frame"
-
-
-def test_resolve_order_col_time_first() -> None:
-    import pandas as pd
-    cols = ColumnConfig(order_by="time")
-    df = pd.DataFrame({"frame": [1, 2], "time": [0.0, 0.1]})
-    assert resolve_order_col(cols, df) == "time"
-
-
-def test_resolve_order_col_fallback() -> None:
-    import pandas as pd
-    cols = ColumnConfig(order_by="time")
-    df = pd.DataFrame({"frame": [1, 2]})  # no time column
-    assert resolve_order_col(cols, df) == "frame"
+    assert resolve_order_col(df) == "frame"
 
 
 def test_resolve_order_col_missing_both() -> None:
     import pandas as pd
-    cols = ColumnConfig()
+
     df = pd.DataFrame({"x": [1]})
     with pytest.raises(ValueError, match="Need"):
-        resolve_order_col(cols, df)
+        resolve_order_col(df)
 
 
-def test_getitem() -> None:
-    p = FeatureParams()
-    assert p["columns"] == ColumnConfig()
+# --- Params base ---
+
+
+def test_params_empty_by_default() -> None:
+    p = Params()
+    assert set(p.keys()) == set()
+
+
+def test_params_getitem() -> None:
+    p = Params()
     with pytest.raises(KeyError):
         p["nonexistent"]
 
 
-def test_get_with_default() -> None:
-    p = FeatureParams()
-    assert p.get("columns") == ColumnConfig()
+def test_params_get_with_default() -> None:
+    p = Params()
     assert p.get("nonexistent", "fallback") == "fallback"
     assert p.get("nonexistent") is None
 
 
-def test_contains() -> None:
-    p = FeatureParams()
-    assert "columns" in p
-    assert "id_col" not in p
-    assert "nonexistent" not in p
-
-
-def test_keys() -> None:
-    p = FeatureParams()
-    assert set(p.keys()) == {"columns"}
-
-
-def test_dict_spread() -> None:
-    p = FeatureParams()
-    d = {**p}
-    assert "columns" in d
-    assert isinstance(d["columns"], ColumnConfig)
-
-
-def test_dict_spread_with_extra_key() -> None:
-    p = FeatureParams()
-    d = {**p, "_scope": None}
-    assert "_scope" in d
-    assert "columns" in d
+def test_params_extra_forbid() -> None:
+    with pytest.raises(ValidationError):
+        Params(bogus="x")
 
 
 def test_from_overrides_empty() -> None:
-    p = FeatureParams.from_overrides(None)
-    assert p.columns.id_col == "id"
-    p2 = FeatureParams.from_overrides({})
-    assert p2.columns.id_col == "id"
-
-
-def test_from_overrides_rejects_none_for_str_field() -> None:
-    with pytest.raises(ValidationError):
-        FeatureParams.from_overrides(
-            {"columns": {"id_col": None, "seq_col": "seq"}}
-        )
-
-
-def test_from_overrides_applies_values() -> None:
-    p = FeatureParams.from_overrides({"columns": {"id_col": "animal_id"}})
-    assert p.columns.id_col == "animal_id"
+    p = Params.from_overrides(None)
+    p2 = Params.from_overrides({})
+    assert p == p2
 
 
 class _InnerModel(_PydanticBaseModel):
@@ -120,7 +86,7 @@ class _InnerModel(_PydanticBaseModel):
     b: int = 2
 
 
-class _ParamsWithNested(FeatureParams):
+class _ParamsWithNested(Params):
     nested: _InnerModel = Field(default_factory=_InnerModel)
 
 
@@ -136,16 +102,10 @@ def test_from_overrides_full_basemodel_override() -> None:
     assert p.nested.b == 20
 
 
-def test_extra_forbid() -> None:
-    with pytest.raises(ValidationError):
-        FeatureParams(bogus="x")
-
-
 # --- Composition ---
 
 
-class _ComposedParams(FeatureParams):
-    position: PositionColumns = Field(default_factory=PositionColumns)
+class _ComposedParams(Params):
     interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
     sampling: SamplingConfig = Field(default_factory=SamplingConfig)
 
@@ -162,24 +122,8 @@ def test_group_constraints() -> None:
 def test_group_keys_in_spread() -> None:
     p = _ComposedParams()
     d = {**p}
-    assert "position" in d
     assert "sampling" in d
     assert "interpolation" in d
-    assert "columns" in d
-
-
-# --- Subclass override ---
-
-
-class _OverrideParams(FeatureParams):
-    columns: ColumnConfig = Field(
-        default_factory=lambda: ColumnConfig(group_col="event")
-    )
-
-
-def test_subclass_can_override_base_default() -> None:
-    p = _OverrideParams()
-    assert p.columns.group_col == "event"
 
 
 # --- dataset.py integration ---
@@ -187,24 +131,25 @@ def test_subclass_can_override_base_default() -> None:
 
 def test_hash_params_with_model() -> None:
     from mosaic.core.dataset import _hash_params
-    p = FeatureParams()
+
+    p = Params()
     d = p.model_dump()
     assert _hash_params(p) == _hash_params(d)
 
 
 def test_hash_params_deterministic() -> None:
     from mosaic.core.dataset import _hash_params
-    p = FeatureParams(columns=ColumnConfig(id_col="x"))
+
+    p = _ComposedParams()
     assert _hash_params(p) == _hash_params(p)
 
 
 def test_json_ready_with_model() -> None:
     from mosaic.core.dataset import _json_ready
-    p = FeatureParams()
+
+    p = Params()
     result = _json_ready(p)
     assert isinstance(result, dict)
-    assert isinstance(result["columns"], dict)
-    assert result["columns"]["id_col"] == "id"
     json.dumps(result)
 
 
@@ -214,6 +159,7 @@ def test_json_ready_with_model() -> None:
 def test_hash_stability_all_converted_features() -> None:
     """Verify that Params model produces the same hash as the equivalent dict."""
     from mosaic.core.dataset import FEATURES, _hash_params
+
     for name, cls in FEATURES.items():
         params_cls = getattr(cls, "Params", None)
         if params_cls is None:
@@ -233,7 +179,8 @@ def test_hash_stability_all_converted_features() -> None:
 
 
 def test_npz_load_spec_requires_key() -> None:
-    from mosaic.behavior.feature_library._param_bases import NpzLoadSpec
+    from mosaic.behavior.feature_library.params import NpzLoadSpec
+
     with pytest.raises(ValidationError):
         NpzLoadSpec()
     s = NpzLoadSpec(key="templates")
@@ -242,27 +189,131 @@ def test_npz_load_spec_requires_key() -> None:
 
 
 def test_parquet_load_spec_defaults() -> None:
-    from mosaic.behavior.feature_library._param_bases import ParquetLoadSpec
+    from mosaic.behavior.feature_library.params import ParquetLoadSpec
+
     s = ParquetLoadSpec()
     assert s.kind == "parquet"
     assert s.columns is None
     assert s.numeric_only is True
 
 
-def test_feature_ref_dict_like_access() -> None:
-    from mosaic.behavior.feature_library._param_bases import FeatureRef
-    ref = FeatureRef(feature="X")
-    assert ref["feature"] == "X"
-    assert ref.get("run_id") is None
-    assert "feature" in ref
+def test_artifact_spec_dict_like_access() -> None:
+    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+
+    spec = ArtifactSpec(feature="X", load=NpzLoadSpec(key="Y"))
+    assert spec["feature"] == "X"
+    assert spec.get("run_id") is None
+    assert "feature" in spec
 
 
 def test_nested_spec_model_dump_roundtrip() -> None:
-    from mosaic.behavior.feature_library._param_bases import ArtifactSpec, NpzLoadSpec
+    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+
     orig = ArtifactSpec(feature="test", load=NpzLoadSpec(key="X"))
     dumped = orig.model_dump()
     restored = ArtifactSpec.model_validate(dumped)
     assert restored == orig
+
+
+def test_joblib_load_spec() -> None:
+    from mosaic.behavior.feature_library.params import JoblibLoadSpec
+
+    s = JoblibLoadSpec()
+    assert s.kind == "joblib"
+    assert s.key is None
+    s2 = JoblibLoadSpec(key="scaler")
+    assert s2.key == "scaler"
+
+
+def test_result_use_latest() -> None:
+    r = Result(feature="nn", run_id="v1")
+    latest = r.use_latest()
+    assert latest.run_id is None
+    assert r.run_id == "v1"
+
+
+def test_nn_result_defaults() -> None:
+    from mosaic.behavior.feature_library.params import NNResult
+
+    nn = NNResult()
+    assert nn.feature == "nearest-neighbor"
+
+
+def test_nn_result_rejects_wrong_feature() -> None:
+    from mosaic.behavior.feature_library.params import NNResult
+
+    with pytest.raises(ValidationError):
+        NNResult(feature="wrong")
+
+
+def test_artifact_spec_auto_pattern() -> None:
+    from mosaic.behavior.feature_library.params import (
+        ArtifactSpec,
+        JoblibLoadSpec,
+        NpzLoadSpec,
+    )
+
+    a = ArtifactSpec(feature="x", load=NpzLoadSpec(key="y"))
+    assert a.pattern == "*.npz"
+    b = ArtifactSpec(feature="x", load=JoblibLoadSpec())
+    assert b.pattern == "*.joblib"
+
+
+def test_artifact_spec_pattern_kind_mismatch() -> None:
+    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+
+    with pytest.raises(ValidationError):
+        ArtifactSpec(feature="x", load=NpzLoadSpec(key="y"), pattern="foo.joblib")
+
+
+def test_artifact_from_result() -> None:
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    r = Result(feature="global-tsne", run_id="v1")
+    art = GlobalTSNE.TemplatesArtifact.from_result(r)
+    assert art.run_id == "v1"
+    assert art.pattern == "global_templates_features.npz"
+
+
+def test_artifact_from_result_wrong_feature() -> None:
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    with pytest.raises(ValueError, match="expects feature"):
+        GlobalTSNE.TemplatesArtifact.from_result(Result(feature="wrong"))
+
+
+def test_artifact_from_result_chained() -> None:
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    r = Result(feature="global-tsne", run_id="v1")
+    art = GlobalTSNE.TemplatesArtifact.from_result(r.use_latest())
+    assert art.run_id is None
+
+
+def test_artifact_from_result_suffixed_feature() -> None:
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    r = Result(
+        feature="global-tsne__from__pair-wavelet__from__pair-egocentric",
+        run_id="v2",
+    )
+    art = GlobalTSNE.TemplatesArtifact.from_result(r)
+    assert art.feature == r.feature
+    assert art.run_id == "v2"
+    assert art.pattern == "global_templates_features.npz"
+
+
+def test_pair_filter_on_params() -> None:
+    from mosaic.behavior.feature_library.ward_assign import WardAssignClustering
+
+    inputs = WardAssignClustering.Inputs((Result(feature="pair-wavelet"),))
+    wa = WardAssignClustering(inputs=inputs)
+    assert wa.params.pair_filter is None
+    wa2 = WardAssignClustering(
+        inputs=inputs,
+        params={"pair_filter": {"feature": "nearest-neighbor"}},
+    )
+    assert wa2.params.pair_filter.feature == "nearest-neighbor"
 
 
 # --- Validation behavior ---
@@ -270,18 +321,23 @@ def test_nested_spec_model_dump_roundtrip() -> None:
 
 def test_approach_avoidance_literal_validation() -> None:
     from mosaic.behavior.feature_library.approach_avoidance import ApproachAvoidance
+
     with pytest.raises(ValidationError):
         ApproachAvoidance.Params(velocity_units="invalid")
 
 
 def test_pair_egocentric_none_override_rejected() -> None:
     from mosaic.behavior.feature_library.pair_egocentric import PairEgocentricFeatures
+
     with pytest.raises(ValidationError):
         PairEgocentricFeatures.Params.from_overrides({"neck_idx": None})
 
 
 def test_temporal_stacking_pool_stats_normalization() -> None:
-    from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
+    from mosaic.behavior.feature_library.temporal_stacking import (
+        TemporalStackingFeature,
+    )
+
     p = TemporalStackingFeature.Params.from_overrides({"pool_stats": "MEAN"})
     assert p.pool_stats == ("mean",)
     p2 = TemporalStackingFeature.Params.from_overrides({"pool_stats": ["Mean", "STD"]})
@@ -293,9 +349,10 @@ def test_temporal_stacking_pool_stats_normalization() -> None:
 
 def test_global_ward_partial_artifact_override() -> None:
     from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
-    p = GlobalWardClustering.Params.from_overrides({"artifact": {"feature": "other"}})
-    assert p.artifact.feature == "other"
-    assert p.artifact.load.key == "templates"
+
+    p = GlobalWardClustering.Params.from_overrides({"templates": {"feature": "other"}})
+    assert p.templates.feature == "other"
+    assert p.templates.load.key == "templates"
 
 
 # --- Mutable default isolation ---
@@ -303,90 +360,245 @@ def test_global_ward_partial_artifact_override() -> None:
 
 def test_nn_delta_bins_mutable_default_isolation() -> None:
     from mosaic.behavior.feature_library.nn_delta_bins import NearestNeighborDeltaBins
+
     p1 = NearestNeighborDeltaBins.Params()
     p2 = NearestNeighborDeltaBins.Params()
     assert p1.category_specs is not p2.category_specs
 
 
 def test_orientation_relative_mutable_default_isolation() -> None:
-    from mosaic.behavior.feature_library.orientation_relative import OrientationRelativeFeature
+    from mosaic.behavior.feature_library.orientation_relative import (
+        OrientationRelativeFeature,
+    )
+
     p1 = OrientationRelativeFeature.Params()
     p2 = OrientationRelativeFeature.Params()
     assert p1.quantiles is not p2.quantiles
 
 
-def test_global_tsne_mutable_inputs_isolation() -> None:
-    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
-    p1 = GlobalTSNE.Params()
-    p2 = GlobalTSNE.Params()
-    assert p1.inputs is not p2.inputs
+# --- Result-based inputs (WardAssign, TemporalStacking, GlobalWard, GlobalKMeans) ---
 
 
-# --- _inputs_overridden detection ---
-
-
-def test_inputs_overridden_default() -> None:
-    """No inputs override -> _inputs_overridden is False."""
+def test_ward_assign_requires_inputs() -> None:
+    """WardAssign constructor requires explicit inputs (no default)."""
     from mosaic.behavior.feature_library.ward_assign import WardAssignClustering
-    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
-    wa = WardAssignClustering()
-    gt = GlobalTSNE()
-    assert wa._inputs_overridden is False
-    assert gt._inputs_overridden is False
+
+    with pytest.raises(TypeError):
+        WardAssignClustering()
 
 
-def test_inputs_overridden_custom() -> None:
-    """Custom inputs -> _inputs_overridden is True."""
-    from mosaic.behavior.feature_library.ward_assign import WardAssignClustering
-    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
-    wa = WardAssignClustering({"inputs": [{"feature": "x", "pattern": "*.npz", "load": {"kind": "npz", "key": "y"}}]})
-    gt = GlobalTSNE({"inputs": [{"feature": "x", "pattern": "*.npz", "load": {"kind": "npz", "key": "y"}}]})
-    assert wa._inputs_overridden is True
-    assert gt._inputs_overridden is True
-
-
-def test_inputs_overridden_same_as_default() -> None:
-    """Inputs identical to default -> _inputs_overridden is False (value equality)."""
-    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
-    default_inputs_dump = [inp.model_dump() for inp in GlobalTSNE.Params().inputs]
-    gt = GlobalTSNE({"inputs": default_inputs_dump})
-    assert gt._inputs_overridden is False
-
-
-# --- Composition merge tests ---
-
-
-def test_from_overrides_partial_group_merge() -> None:
-    """Partial override of a group model merges with defaults."""
-    p = _ComposedParams.from_overrides(
-        {"position": {"x_col": "X#wcentroid"}}
+def test_temporal_stacking_requires_inputs() -> None:
+    """TemporalStacking constructor requires explicit inputs (no default)."""
+    from mosaic.behavior.feature_library.temporal_stacking import (
+        TemporalStackingFeature,
     )
-    assert p.position.x_col == "X#wcentroid"
-    assert p.position.y_col == "Y"
-    assert p.position.orientation_col == "ANGLE"
+
+    with pytest.raises(TypeError):
+        TemporalStackingFeature()
 
 
-def test_from_overrides_nested_group_merge() -> None:
-    """Partial override of ColumnConfig merges with defaults."""
-    p = FeatureParams.from_overrides(
-        {"columns": {"id_col": "animal_id"}}
+def test_global_ward_default_inputs() -> None:
+    """GlobalWard defaults to empty inputs (artifact mode)."""
+    from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
+
+    gw = GlobalWardClustering()
+    assert len(gw.inputs.root) == 0
+    assert gw.inputs.feature_inputs == ()
+
+
+def test_global_kmeans_no_assign_dict() -> None:
+    """GlobalKMeans no longer has assign dict; assign controlled via inputs."""
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+
+    gk = GlobalKMeansClustering(
+        params={
+            "templates": {
+                "feature": "global-tsne",
+                "pattern": "global_templates_features.npz",
+                "load": {"kind": "npz", "key": "templates"},
+            }
+        }
     )
-    assert p.columns.id_col == "animal_id"
-    assert p.columns.seq_col == "sequence"
+    assert not hasattr(gk.params, "assign")
+    assert gk.inputs.feature_inputs == ()
 
-
-def test_per_feature_default_override() -> None:
-    """Feature can override individual group defaults via lambda factory."""
-
-    class _CustomParams(FeatureParams):
-        position: PositionColumns = Field(
-            default_factory=lambda: PositionColumns(x_col="X#wcentroid")
+    # With Result inputs -> assign mode
+    inputs = GlobalKMeansClustering.Inputs(
+        (
+            Result(feature="pair-wavelet"),
+            Result(feature="pair-ego-wavelet"),
         )
+    )
+    gk2 = GlobalKMeansClustering(
+        inputs=inputs,
+        params={
+            "templates": {
+                "feature": "global-tsne",
+                "pattern": "global_templates_features.npz",
+                "load": {"kind": "npz", "key": "templates"},
+            }
+        },
+    )
+    assert len(gk2.inputs.feature_inputs) == 2
 
-    p = _CustomParams()
-    assert p.position.x_col == "X#wcentroid"
-    assert p.position.y_col == "Y"
 
-    # User can still override at runtime
-    p2 = _CustomParams.from_overrides({"position": {"x_col": "custom"}})
-    assert p2.position.x_col == "custom"
+# --- GlobalTSNE Result-based inputs ---
+
+
+def test_global_tsne_requires_inputs() -> None:
+    """GlobalTSNE constructor requires explicit inputs (no default)."""
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    with pytest.raises(TypeError):
+        GlobalTSNE()
+
+
+def test_global_tsne_result_inputs() -> None:
+    """GlobalTSNE accepts Result-based inputs and computes correct storage_suffix."""
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+
+    inputs = GlobalTSNE.Inputs(
+        (
+            Result(feature="pair-wavelet", run_id="0.1-abc"),
+            Result(feature="pair-ego-wavelet"),
+        )
+    )
+    gt = GlobalTSNE(inputs=inputs)
+    assert gt.inputs.feature_inputs[0].feature == "pair-wavelet"
+    assert gt.inputs.feature_inputs[0].run_id == "0.1-abc"
+    assert gt.inputs.storage_suffix() == "pair-wavelet+pair-ego-wavelet"
+
+
+# --- Inputs ---
+
+
+def test_fi_tracks_only() -> None:
+    i = Inputs(("tracks",))
+    assert i.is_single_tracks
+    assert not i.is_single_feature
+    assert not i.is_multi
+    assert i.has_tracks
+
+
+def test_fi_single_feature() -> None:
+    i = Inputs((Result(feature="speed-angvel"),))
+    assert i.is_single_feature
+    assert not i.is_single_tracks
+    assert not i.is_multi
+    assert not i.has_tracks
+
+
+def test_result_str_delegates_to_repr() -> None:
+    r = Result(feature="speed-angvel", run_id="0.1-abc")
+    assert str(r) == repr(r)
+    assert "Result(" in str(r)
+    assert "speed-angvel" in str(r)
+
+
+def test_fi_single_feature_with_run_id() -> None:
+    i = Inputs((Result(feature="speed-angvel", run_id="v1"),))
+    assert i.is_single_feature
+    assert i.feature_inputs[0].run_id == "v1"
+
+
+def test_fi_multi() -> None:
+    i = Inputs(("tracks", Result(feature="nn")))
+    assert i.is_multi
+    assert not i.is_single_tracks
+    assert not i.is_single_feature
+    assert i.has_tracks
+    assert len(i.feature_inputs) == 1
+
+
+def test_fi_empty_raises() -> None:
+    with pytest.raises(ValidationError):
+        Inputs(())
+
+
+def test_fi_empty_still_rejected_by_default() -> None:
+    """Subclasses without _allow_empty=True still reject empty inputs."""
+
+    class StrictInputs(Inputs[Result]):
+        pass
+
+    with pytest.raises(ValidationError):
+        StrictInputs(())
+
+
+def test_fi_empty_allowed_with_opt_in() -> None:
+    """Subclasses with _allow_empty=True accept empty inputs."""
+    from typing import ClassVar
+
+    class EmptyOkInputs(Inputs[Result]):
+        _allow_empty: ClassVar[bool] = True
+
+    i = EmptyOkInputs(())
+    assert len(i.root) == 0
+    assert not i.has_tracks
+    assert i.feature_inputs == ()
+    assert i.storage_suffix() is None
+
+
+def test_fi_duplicate_raises() -> None:
+    with pytest.raises(ValidationError):
+        Inputs((Result(feature="nn"), Result(feature="nn")))
+
+
+def test_fi_feature_inputs_property() -> None:
+    i = Inputs(("tracks", Result(feature="a"), Result(feature="b")))
+    feats = i.feature_inputs
+    assert len(feats) == 2
+    assert feats[0].feature == "a"
+    assert feats[1].feature == "b"
+
+
+def test_fi_storage_suffix_tracks_only() -> None:
+    assert Inputs(("tracks",)).storage_suffix() is None
+
+
+def test_fi_storage_suffix_single_feature() -> None:
+    i = Inputs((Result(feature="speed-angvel"),))
+    assert i.storage_suffix() == "speed-angvel"
+
+
+def test_fi_storage_suffix_multi() -> None:
+    i = Inputs((Result(feature="a"), Result(feature="b")))
+    assert i.storage_suffix() == "a+b"
+
+
+def test_fi_narrowed_accepts_correct() -> None:
+    Narrowed = Inputs[Result[Literal["nn"]]]
+    i = Narrowed((Result(feature="nn"),))
+    assert i.is_single_feature
+
+
+def test_fi_narrowed_rejects_wrong() -> None:
+    Narrowed = Inputs[Result[Literal["nn"]]]
+    with pytest.raises(ValidationError):
+        Narrowed((Result(feature="wrong"),))
+
+
+def test_fi_narrowed_tracks() -> None:
+    Narrowed = Inputs[TrackInput]
+    i = Narrowed(("tracks",))
+    assert i.is_single_tracks
+
+
+def test_fi_narrowed_with_run_id() -> None:
+    Narrowed = Inputs[Result[Literal["nn"]]]
+    i = Narrowed((Result(feature="nn", run_id="v1"),))
+    assert i.feature_inputs[0].run_id == "v1"
+
+
+def test_fi_roundtrip_tracks() -> None:
+    orig = Inputs(("tracks",))
+    dumped = orig.model_dump()
+    restored = Inputs.model_validate(dumped)
+    assert restored.root == orig.root
+
+
+def test_fi_roundtrip_feature() -> None:
+    orig = Inputs((Result(feature="nn", run_id="v1"),))
+    dumped = orig.model_dump()
+    restored = Inputs.model_validate(dumped)
+    assert restored.root == orig.root

@@ -10,40 +10,65 @@ takes a single feature reference and auto-detects what to plot.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Dict, Any, Iterable
+
 import re
 import sys
+from pathlib import Path
+from typing import Any, ClassVar, Iterable
 
+import joblib
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import joblib
-
-import matplotlib
-import matplotlib.pyplot as plt
 import seaborn as sns
 
-from mosaic.core.dataset import register_feature
 from mosaic.behavior.feature_library.helpers import (
     _normalize_identity_columns,
 )
+from mosaic.behavior.feature_library.params import (
+    FeatureLabelsSource,
+    GroundTruthLabelsSource,
+    Inputs,
+    OutputType,
+    Params,
+    Result,
+)
+from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import (
-    to_safe_name,
     detect_label_format,
-    expand_labels_to_dense,
+    to_safe_name,
 )
 
 # Priority list for auto-detecting the label column in a DataFrame
 _LABEL_COL_PRIORITY = [
-    "syllable", "cluster", "label_id", "label",
-    "prediction", "behavior", "state",
+    "syllable",
+    "cluster",
+    "label_id",
+    "label",
+    "prediction",
+    "behavior",
+    "state",
 ]
 # Metadata columns that are never labels
-_SKIP_COLS = frozenset({
-    "frame", "time", "sequence", "group",
-    "id", "id1", "id2", "id_a", "id_b", "id_A", "id_B",
-    "entity_level", "perspective", "fps",
-})
+_SKIP_COLS = frozenset(
+    {
+        "frame",
+        "time",
+        "sequence",
+        "group",
+        "id",
+        "id1",
+        "id2",
+        "id_a",
+        "id_b",
+        "id_A",
+        "id_B",
+        "entity_level",
+        "perspective",
+        "fps",
+    }
+)
 
 
 @register_feature
@@ -99,57 +124,56 @@ class TimelinePlot:
 
     name = "viz-timeline"
     version = "0.1"
-    output_type = "viz"
+    output_type: OutputType = "viz"
+    parallelizable = False
+
+    class Inputs(Inputs[Result]):
+        _empty_only: ClassVar[bool] = True
+
+    class Params(Params):
+        source: FeatureLabelsSource | GroundTruthLabelsSource | None = None
+        label_column: str | None = None
+        label_columns: list[str] | None = None
+        skip_labels: list[int | str] | None = None
+        symmetric_pairs: bool = True
+        palette: str = "tab20"
+        pair_palette: str = "Paired"
+        figsize_width: float = 16.0
+        row_height: float = 0.4
+        min_fig_height: float = 2.0
+        max_fig_height: float = 20.0
+        show_legend: bool = True
+        title_template: str = "{sequence}"
+        dpi: int = 150
+        per_sequence: bool = True
+        missing_label_value: int = -1
+        label_name_map: dict[int, str] | None = None
 
     # -----------------------------------------------------------------
     # Init / dataset hooks
     # -----------------------------------------------------------------
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        defaults: dict = {
-            "source": {
-                "feature": None,
-                "run_id": None,
-                "pattern": "*.parquet",
-            },
-            "label_column": None,
-            "label_columns": None,
-            "skip_labels": None,
-            "symmetric_pairs": True,
-            "palette": "tab20",
-            "pair_palette": "Paired",
-            "figsize_width": 16,
-            "row_height": 0.4,
-            "min_fig_height": 2.0,
-            "max_fig_height": 20.0,
-            "show_legend": True,
-            "title_template": "{sequence}",
-            "dpi": 150,
-            "per_sequence": True,
-            "missing_label_value": -1,
-            "label_name_map": None,
-        }
-        self.params = dict(defaults)
-        if params:
-            for k, v in params.items():
-                if isinstance(v, dict) and isinstance(self.params.get(k), dict):
-                    merged = dict(self.params[k])
-                    merged.update(v)
-                    self.params[k] = merged
-                else:
-                    self.params[k] = v
+    def __init__(
+        self,
+        inputs: TimelinePlot.Inputs = Inputs(()),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
+        self.params = self.Params.from_overrides(params)
 
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
         self._ds = None
-        self._figs: list[tuple[str, plt.Figure]] = []
+        self._figs: list[tuple[str, Figure]] = []
         self._marker_written = False
         self._summary: dict = {}
-        self._scope_constraints: Optional[dict] = None
+        self._scope_filter: dict[str, object] = {}
 
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_constraints(self, scope: Optional[dict]) -> None:
-        self._scope_constraints = scope or {}
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
 
     def needs_fit(self):
         return True
@@ -160,7 +184,7 @@ class TimelinePlot:
     def loads_own_data(self):
         return True
 
-    def partial_fit(self, X):
+    def partial_fit(self, df):
         raise NotImplementedError
 
     def finalize_fit(self):
@@ -170,12 +194,12 @@ class TimelinePlot:
     # Artifact loading helpers (same pattern as VizGlobalColored)
     # -----------------------------------------------------------------
 
-    def _load_artifacts_glob(self, spec: dict):
+    def _load_artifacts_glob(self, spec: FeatureLabelsSource):
         """Resolve run_id and glob for files in a feature's run folder."""
         ds = self._ds
-        idx_path = ds.get_root("features") / spec["feature"] / "index.csv"
+        idx_path = ds.get_root("features") / spec.feature / "index.csv"
         df = pd.read_csv(idx_path)
-        run_id = spec.get("run_id")
+        run_id = spec.run_id
         if run_id is None:
             if "finished_at" in df.columns:
                 cand = df[df["finished_at"].fillna("").astype(str) != ""]
@@ -185,23 +209,27 @@ class TimelinePlot:
             else:
                 df = df.sort_values(by=["started_at"], ascending=False, kind="stable")
             run_id = str(df.iloc[0]["run_id"])
-        run_root = ds.get_root("features") / spec["feature"] / run_id
-        files = sorted(run_root.glob(spec["pattern"]))
+        run_root = ds.get_root("features") / spec.feature / run_id
+        pattern = spec.pattern or f"*.{spec.load.kind}"
+        files = sorted(run_root.glob(pattern))
         return run_id, run_root, files
 
-    def _load_labels_from_index(self, spec: dict) -> list[tuple[str, Path]]:
+    def _load_labels_from_index(self, spec: GroundTruthLabelsSource) -> list[tuple[str, Path]]:
         """Load (sequence_safe, path) pairs from labels/<kind>/index.csv."""
         if self._ds is None:
             raise RuntimeError("[viz-timeline] Dataset not bound.")
-        kind = spec.get("kind")
+        kind = spec.kind
         if not kind:
             raise ValueError("[viz-timeline] labels source requires 'kind'.")
         idx_path = self._ds.get_root("labels") / kind / "index.csv"
         if not idx_path.exists():
-            raise FileNotFoundError(f"[viz-timeline] Labels index not found: {idx_path}")
+            raise FileNotFoundError(
+                f"[viz-timeline] Labels index not found: {idx_path}"
+            )
         df = pd.read_csv(idx_path)
         import fnmatch
-        pattern = spec.get("pattern")
+
+        pattern = spec.pattern
         entries: list[tuple[str, Path]] = []
         for _, row in df.iterrows():
             abs_raw = row.get("abs_path", "")
@@ -210,7 +238,9 @@ class TimelinePlot:
             pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
-            seq_safe = str(row.get("sequence_safe") or row.get("sequence") or "").strip()
+            seq_safe = str(
+                row.get("sequence_safe") or row.get("sequence") or ""
+            ).strip()
             if not seq_safe:
                 seq_safe = to_safe_name(pth.stem)
             entries.append((seq_safe, pth))
@@ -221,11 +251,11 @@ class TimelinePlot:
     # -----------------------------------------------------------------
 
     def _allowed_set(self) -> set[str]:
-        scope = self._scope_constraints or {}
+        scope = self._scope_filter or {}
         allowed = set()
-        for s in (scope.get("safe_sequences") or []):
+        for s in scope.get("safe_sequences") or []:
             allowed.add(s)
-        for s in (scope.get("sequences") or []):
+        for s in scope.get("sequences") or []:
             allowed.add(s)
             allowed.add(to_safe_name(s))
         return allowed
@@ -235,7 +265,7 @@ class TimelinePlot:
             return False
         if seq_key in allowed or to_safe_name(seq_key) in allowed:
             return False
-        # seq_key may be "group__sequence" — check just the sequence portion
+        # seq_key may be "group__sequence" -- check just the sequence portion
         if "__" in seq_key:
             seq_part = seq_key.split("__", 1)[1]
             if seq_part in allowed or to_safe_name(seq_part) in allowed:
@@ -247,7 +277,7 @@ class TimelinePlot:
     # -----------------------------------------------------------------
 
     @staticmethod
-    def _auto_detect_label_col(df: pd.DataFrame) -> Optional[str]:
+    def _auto_detect_label_col(df: pd.DataFrame) -> str | None:
         for col in _LABEL_COL_PRIORITY:
             if col in df.columns:
                 return col
@@ -299,7 +329,11 @@ class TimelinePlot:
     def _normalize_df(df: pd.DataFrame, label_col: str) -> pd.DataFrame:
         """Normalize a raw parquet to ``[frame, label, id1?, id2?]``."""
         out = pd.DataFrame()
-        out["frame"] = df["frame"].astype(np.int64) if "frame" in df.columns else np.arange(len(df), dtype=np.int64)
+        out["frame"] = (
+            df["frame"].astype(np.int64)
+            if "frame" in df.columns
+            else np.arange(len(df), dtype=np.int64)
+        )
         out["label"] = df[label_col].values
 
         id1, id2, entity_level = _normalize_identity_columns(df)
@@ -314,12 +348,12 @@ class TimelinePlot:
     # Data loading
     # -----------------------------------------------------------------
 
-    def _load_from_feature(self, source_spec: dict) -> dict[str, pd.DataFrame]:
+    def _load_from_feature(self, source_spec: FeatureLabelsSource) -> dict[str, pd.DataFrame]:
         run_id, run_root, files = self._load_artifacts_glob(source_spec)
         if not files:
             raise FileNotFoundError("[viz-timeline] No files found for source feature.")
 
-        label_col_override = self.params.get("label_column")
+        label_col_override = self.params.label_column
         allowed = self._allowed_set()
 
         seq_data: dict[str, pd.DataFrame] = {}
@@ -327,7 +361,9 @@ class TimelinePlot:
             try:
                 df = pd.read_parquet(f)
             except Exception as exc:
-                print(f"[viz-timeline] WARN: failed to read {f}: {exc}", file=sys.stderr)
+                print(
+                    f"[viz-timeline] WARN: failed to read {f}: {exc}", file=sys.stderr
+                )
                 continue
             if df.empty:
                 continue
@@ -337,7 +373,7 @@ class TimelinePlot:
             if self._is_filtered_out(seq_key, allowed):
                 continue
 
-            label_columns = self.params.get("label_columns")
+            label_columns = self.params.label_columns
             if label_columns:
                 df["_combined_label"] = self._combine_label_columns(df, label_columns)
                 label_col = "_combined_label"
@@ -347,17 +383,21 @@ class TimelinePlot:
                 continue
             norm = self._normalize_df(df, label_col)
             if seq_key in seq_data:
-                seq_data[seq_key] = pd.concat([seq_data[seq_key], norm], ignore_index=True)
+                seq_data[seq_key] = pd.concat(
+                    [seq_data[seq_key], norm], ignore_index=True
+                )
             else:
                 seq_data[seq_key] = norm
 
         return seq_data
 
-    def _load_from_labels(self, source_spec: dict) -> dict[str, pd.DataFrame]:
+    def _load_from_labels(self, source_spec: GroundTruthLabelsSource) -> dict[str, pd.DataFrame]:
         entries = self._load_labels_from_index(source_spec)
         allowed = self._allowed_set()
         if allowed:
-            entries = [(s, p) for s, p in entries if not self._is_filtered_out(s, allowed)]
+            entries = [
+                (s, p) for s, p in entries if not self._is_filtered_out(s, allowed)
+            ]
 
         seq_data: dict[str, pd.DataFrame] = {}
         for seq_safe, pth in entries:
@@ -373,33 +413,46 @@ class TimelinePlot:
                         individual_ids = np.asarray(npz["individual_ids"])
                         if individual_ids.ndim == 1:
                             individual_ids = individual_ids.reshape(-1, 2)
-                        out = pd.DataFrame({
-                            "frame": frames,
-                            "label": labels,
-                            "id1": individual_ids[:, 0],
-                            "id2": individual_ids[:, 1],
-                        })
+                        out = pd.DataFrame(
+                            {
+                                "frame": frames,
+                                "label": labels,
+                                "id1": individual_ids[:, 0],
+                                "id2": individual_ids[:, 1],
+                            }
+                        )
                         has_pair = (individual_ids[:, 1] != -1).any()
                         out["entity_level"] = "pair" if has_pair else "individual"
                     else:
                         labels = np.asarray(npz.get("labels", npz.get("label"))).ravel()
-                        out = pd.DataFrame({
-                            "frame": np.arange(len(labels), dtype=np.int64),
-                            "label": labels,
-                            "entity_level": "global",
-                        })
+                        out = pd.DataFrame(
+                            {
+                                "frame": np.arange(len(labels), dtype=np.int64),
+                                "label": labels,
+                                "entity_level": "global",
+                            }
+                        )
 
                     # Store label_name_map from NPZ if not user-provided
-                    if self.params.get("label_name_map") is None and label_names_arr is not None and label_ids_arr is not None:
+                    if (
+                        self.params.label_name_map is None
+                        and label_names_arr is not None
+                        and label_ids_arr is not None
+                    ):
                         try:
-                            name_map = {int(lid): str(lname) for lid, lname in zip(label_ids_arr, label_names_arr)}
-                            self.params["label_name_map"] = name_map
+                            name_map = {
+                                int(lid): str(lname)
+                                for lid, lname in zip(label_ids_arr, label_names_arr)
+                            }
+                            self.params.label_name_map = name_map
                         except Exception:
                             pass
 
                     seq_data[seq_safe] = out
             except Exception as exc:
-                print(f"[viz-timeline] WARN: failed to load {pth}: {exc}", file=sys.stderr)
+                print(
+                    f"[viz-timeline] WARN: failed to load {pth}: {exc}", file=sys.stderr
+                )
 
         return seq_data
 
@@ -478,10 +531,12 @@ class TimelinePlot:
     # -----------------------------------------------------------------
 
     def _build_color_map(self, label_series: pd.Series) -> dict:
-        unique_vals = sorted(pd.unique(label_series), key=lambda x: (isinstance(x, str), x))
-        missing = self.params.get("missing_label_value", -1)
-        skip_labels = set(self.params.get("skip_labels") or [])
-        palette_name = self.params.get("palette", "tab20")
+        unique_vals = sorted(
+            pd.unique(label_series), key=lambda x: (isinstance(x, str), x)
+        )
+        missing = self.params.missing_label_value
+        skip_labels = set(self.params.skip_labels or [])
+        palette_name = self.params.palette
         excluded = {missing} | skip_labels
         n_active = len([v for v in unique_vals if v not in excluded])
         palette = sns.color_palette(palette_name, max(1, n_active))
@@ -503,9 +558,11 @@ class TimelinePlot:
         Uses the ``"Paired"`` palette which gives consecutive light/dark pairs.
         Returns ``(cmap_focal, cmap_other)`` where focal uses the darker shade.
         """
-        unique_vals = sorted(pd.unique(label_series), key=lambda x: (isinstance(x, str), x))
-        missing = self.params.get("missing_label_value", -1)
-        pair_palette_name = self.params.get("pair_palette", "Paired")
+        unique_vals = sorted(
+            pd.unique(label_series), key=lambda x: (isinstance(x, str), x)
+        )
+        missing = self.params.missing_label_value
+        pair_palette_name = self.params.pair_palette
         n_non_missing = len([v for v in unique_vals if v != missing])
         # Paired palette has pairs at (2i, 2i+1): lighter, darker
         palette = sns.color_palette(pair_palette_name, max(2, n_non_missing * 2))
@@ -518,13 +575,15 @@ class TimelinePlot:
                 cmap_other[val] = (0.7, 0.7, 0.7)
             else:
                 pi = (idx * 2) % len(palette)
-                cmap_other[val] = palette[pi]      # lighter shade
-                cmap_focal[val] = palette[pi + 1] if pi + 1 < len(palette) else palette[pi]  # darker shade
+                cmap_other[val] = palette[pi]  # lighter shade
+                cmap_focal[val] = (
+                    palette[pi + 1] if pi + 1 < len(palette) else palette[pi]
+                )  # darker shade
                 idx += 1
         return cmap_focal, cmap_other
 
     def _label_display(self, val) -> str:
-        name_map = self.params.get("label_name_map") or {}
+        name_map = self.params.label_name_map or {}
         if isinstance(name_map, dict):
             if val in name_map:
                 return str(name_map[val])
@@ -547,23 +606,32 @@ class TimelinePlot:
         ``barh()`` calls, which is orders of magnitude faster for features
         with many labels or long sequences (e.g. 25 clusters x 86k frames).
         """
-        skip_set = set(self.params.get("skip_labels") or [])
-        entity_level = df["entity_level"].mode().iloc[0] if "entity_level" in df.columns else "global"
-        symmetric = self.params.get("symmetric_pairs", True)
+        skip_set = set(self.params.skip_labels or [])
+        entity_level = (
+            df["entity_level"].mode().iloc[0]
+            if "entity_level" in df.columns
+            else "global"
+        )
+        symmetric = self.params.symmetric_pairs
         is_asymmetric_pair = entity_level == "pair" and not symmetric
 
         rows = self._build_row_groups(df, entity_level, symmetric)
         n_rows = len(rows)
-        fig_w = float(self.params.get("figsize_width", 16))
-        fig_h = float(np.clip(
-            n_rows * float(self.params["row_height"]) + 1.5,
-            float(self.params["min_fig_height"]),
-            float(self.params["max_fig_height"]),
-        ))
+        fig_w = self.params.figsize_width
+        fig_h = float(
+            np.clip(
+                n_rows * self.params.row_height + 1.5,
+                self.params.min_fig_height,
+                self.params.max_fig_height,
+            )
+        )
 
         fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h))
 
         # Build color map(s)
+        cmap_focal: dict = {}
+        cmap_other: dict = {}
+        cmap: dict = {}
         if is_asymmetric_pair:
             cmap_focal, cmap_other = self._build_asymmetric_color_map(df["label"])
         else:
@@ -573,7 +641,7 @@ class TimelinePlot:
         max_frame = int(df["frame"].max()) + 1
         img = np.ones((n_rows, max_frame, 4), dtype=np.float32)  # white RGBA
 
-        for i, (row_label, row_df) in enumerate(rows):
+        for i, (_, row_df) in enumerate(rows):
             frames = row_df["frame"].to_numpy().astype(np.intp)
             labels = row_df["label"].to_numpy()
 
@@ -594,13 +662,17 @@ class TimelinePlot:
                 img[i, f_idx, 2] = color[2]
                 # alpha already 1.0
 
-        ax.imshow(img, aspect="auto", interpolation="nearest",
-                  extent=[0, max_frame, n_rows - 0.5, -0.5])
+        ax.imshow(
+            img,
+            aspect="auto",
+            interpolation="nearest",
+            extent=[0, max_frame, n_rows - 0.5, -0.5],
+        )
 
         ax.set_yticks(range(n_rows))
         ax.set_yticklabels([label for label, _ in rows], fontsize=8)
         ax.set_xlabel("Frame")
-        title = self.params.get("title_template", "{sequence}").format(sequence=seq_key)
+        title = self.params.title_template.format(sequence=seq_key)
         ax.set_title(title)
         ax.set_xlim(left=0)
         sns.despine(ax=ax, left=True)
@@ -615,32 +687,48 @@ class TimelinePlot:
         return fig
 
     def _add_legend(self, ax, color_map: dict):
-        if not self.params.get("show_legend", True):
+        if not self.params.show_legend:
             return
-        items = [(v, c) for v, c in color_map.items() if v != self.params.get("missing_label_value", -1)]
+        items = [
+            (v, c)
+            for v, c in color_map.items()
+            if v != self.params.missing_label_value
+        ]
         if not items:
             return
         handles = [
-            plt.Line2D([0], [0], marker="s", linestyle="", markersize=8,
-                       markerfacecolor=c, markeredgecolor="none",
-                       label=self._label_display(v))
+            plt.Line2D(
+                [0],
+                [0],
+                marker="s",
+                linestyle="",
+                markersize=8,
+                markerfacecolor=c,
+                markeredgecolor="none",
+                label=self._label_display(v),
+            )
             for v, c in items
         ]
         n = len(handles)
         if n <= 15:
-            ax.legend(handles=handles, title="label", loc="upper right",
-                      fontsize=7)
+            ax.legend(handles=handles, title="label", loc="upper right", fontsize=7)
         else:
             # Many labels: place legend outside the axes
             ncol = max(1, (n + 29) // 30)  # ~30 items per column
-            ax.legend(handles=handles, title="label",
-                      loc="upper left", bbox_to_anchor=(1.01, 1.0),
-                      fontsize=6, ncol=ncol, borderaxespad=0)
+            ax.legend(
+                handles=handles,
+                title="label",
+                loc="upper left",
+                bbox_to_anchor=(1.01, 1.0),
+                fontsize=6,
+                ncol=ncol,
+                borderaxespad=0,
+            )
 
     def _add_paired_legend(self, ax, cmap_focal: dict, cmap_other: dict):
-        if not self.params.get("show_legend", True):
+        if not self.params.show_legend:
             return
-        missing = self.params.get("missing_label_value", -1)
+        missing = self.params.missing_label_value
         items = [v for v in cmap_focal if v != missing]
         if not items:
             return
@@ -648,34 +736,54 @@ class TimelinePlot:
         for v in items:
             disp = self._label_display(v)
             handles.append(
-                plt.Line2D([0], [0], marker="s", linestyle="", markersize=8,
-                           markerfacecolor=cmap_focal[v], markeredgecolor="none",
-                           label=f"{disp} (focal)")
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    linestyle="",
+                    markersize=8,
+                    markerfacecolor=cmap_focal[v],
+                    markeredgecolor="none",
+                    label=f"{disp} (focal)",
+                )
             )
             handles.append(
-                plt.Line2D([0], [0], marker="s", linestyle="", markersize=8,
-                           markerfacecolor=cmap_other[v], markeredgecolor="none",
-                           label=f"{disp} (other)")
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    linestyle="",
+                    markersize=8,
+                    markerfacecolor=cmap_other[v],
+                    markeredgecolor="none",
+                    label=f"{disp} (other)",
+                )
             )
         n = len(handles)
         if n <= 15:
-            ax.legend(handles=handles, title="label", loc="upper right",
-                      fontsize=7)
+            ax.legend(handles=handles, title="label", loc="upper right", fontsize=7)
         else:
             ncol = max(1, (n + 29) // 30)
-            ax.legend(handles=handles, title="label",
-                      loc="upper left", bbox_to_anchor=(1.01, 1.0),
-                      fontsize=6, ncol=ncol, borderaxespad=0)
+            ax.legend(
+                handles=handles,
+                title="label",
+                loc="upper left",
+                bbox_to_anchor=(1.01, 1.0),
+                fontsize=6,
+                ncol=ncol,
+                borderaxespad=0,
+            )
 
     # -----------------------------------------------------------------
     # fit / transform / save_model
     # -----------------------------------------------------------------
 
     def fit(self, X_iter: Iterable):
-        source = self.params["source"]
-        label_source = str(source.get("source", "feature")).lower()
+        source = self.params.source
+        if source is None:
+            raise RuntimeError("[viz-timeline] No source specified in params.")
 
-        if label_source == "labels":
+        if isinstance(source, GroundTruthLabelsSource):
             seq_data = self._load_from_labels(source)
         else:
             seq_data = self._load_from_feature(source)
@@ -684,7 +792,7 @@ class TimelinePlot:
             raise RuntimeError("[viz-timeline] No data loaded.")
 
         self._figs = []
-        if self.params.get("per_sequence", True):
+        if self.params.per_sequence:
             for seq_key in sorted(seq_data):
                 df = seq_data[seq_key]
                 fig = self._render_timeline(df, seq_key)
@@ -708,28 +816,39 @@ class TimelinePlot:
             "figures": len(self._figs),
         }
 
-    def transform(self, X):
+    def transform(self, df):
         if self._marker_written:
             return pd.DataFrame(index=[])
         self._marker_written = True
-        return pd.DataFrame([{
-            "outputs": ",".join(fname for fname, _ in self._figs),
-            "source_feature": self.params["source"].get("feature", ""),
-        }])
+        source = self.params.source
+        source_feature = source.feature if isinstance(source, FeatureLabelsSource) else ""
+        return pd.DataFrame(
+            [
+                {
+                    "outputs": ",".join(fname for fname, _ in self._figs),
+                    "source_feature": source_feature,
+                }
+            ]
+        )
 
     def save_model(self, path: Path):
         run_root = path.parent
-        dpi = int(self.params.get("dpi", 150))
+        dpi = self.params.dpi
         for fname, fig in self._figs:
             fig.savefig(run_root / fname, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
         joblib.dump(
-            {"params": self.params, "summary": self._summary,
-             "files": [fname for fname, _ in self._figs]},
+            {
+                "params": self.params.model_dump(),
+                "summary": self._summary,
+                "files": [fname for fname, _ in self._figs],
+            },
             run_root / "viz.joblib",
         )
 
     def load_model(self, path: Path):
         bundle = joblib.load(path)
-        self.params.update(bundle.get("params", {}))
+        saved = bundle.get("params", {})
+        if isinstance(saved, dict):
+            self.params = self.Params.model_validate(saved)
         self._summary = bundle.get("summary", {})

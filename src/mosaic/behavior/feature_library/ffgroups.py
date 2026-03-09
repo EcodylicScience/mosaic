@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import count, groupby
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import Iterable, final
 
 import networkx as nx
 import numpy as np
@@ -14,7 +14,7 @@ from scipy.spatial.distance import cdist
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 # ===== Numba-accelerated union-find for connected components =====
 
@@ -107,15 +107,22 @@ class FFGroups:
     name = "ffgroups"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         distance_cutoff: float = Field(default=50.0, gt=0)
         window_size: int = Field(default=5, ge=1)
         min_event_duration: int = Field(default=1, ge=1)
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: FFGroups.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self.storage_feature_name = self.name
@@ -126,7 +133,7 @@ class FFGroups:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: Optional[dict]) -> None:
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
         self._scope_filter = scope or {}
 
     # ---- Fit/transform contract ----
@@ -134,6 +141,9 @@ class FFGroups:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -157,11 +167,11 @@ class FFGroups:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p.columns.id_col
-        x_col, y_col = p.position.x_col, p.position.y_col
-        frame_col = p.columns.frame_col
-        time_col = p.columns.time_col
-        group_col, seq_col = p.columns.group_col, p.columns.seq_col
+        id_col = COLUMNS.id_col
+        x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
+        frame_col = COLUMNS.frame_col
+        time_col = COLUMNS.time_col
+        group_col, seq_col = COLUMNS.group_col, COLUMNS.seq_col
         distance_cutoff = p.distance_cutoff
         win = max(1, p.window_size)
         if np.mod(win, 2) == 0:
@@ -171,7 +181,7 @@ class FFGroups:
 
         # Basic ordering and bookkeeping
         try:
-            df = df.sort_values(resolve_order_col(p.columns, df)).reset_index(drop=True)
+            df = df.sort_values(resolve_order_col(df)).reset_index(drop=True)
         except ValueError:
             pass
         group_val = str(df[group_col].iloc[0]) if group_col in df.columns else ""
@@ -193,9 +203,7 @@ class FFGroups:
             [np.inf, -np.inf], np.nan
         )
         df_clean = df_clean.dropna(subset=[id_col, x_col, y_col])
-        df_clean = df_clean.drop_duplicates(
-            subset=[frame_col, id_col], keep="last"
-        )
+        df_clean = df_clean.drop_duplicates(subset=[frame_col, id_col], keep="last")
 
         # Build (T, N, 2) position tensor via direct index assignment
         fidx = df_clean[frame_col].map(frame_to_pos)
@@ -303,11 +311,11 @@ class FFGroups:
             return pd.DataFrame()
 
         p = self.params
-        id_col = p.id_col
-        x_col, y_col = p.x_col, p.y_col
-        frame_col = p.frame_col
-        time_col = p.time_col
-        group_col, seq_col = p.group_col, p.seq_col
+        id_col = COLUMNS.id_col
+        x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
+        frame_col = COLUMNS.frame_col
+        time_col = COLUMNS.time_col
+        group_col, seq_col = COLUMNS.group_col, COLUMNS.seq_col
         distance_cutoff = p.distance_cutoff
         win = max(1, p.window_size)
         if np.mod(win, 2) == 0:

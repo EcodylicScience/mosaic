@@ -103,9 +103,16 @@ def to_jsonable(obj):
     return obj
 
 
-def undersample_then_smote(X, y, use_undersample, undersample_ratio, use_smote, random_state=42):
+def undersample_then_smote(
+    X,
+    y,
+    foreground_samples=None,
+    undersample_ratio=1.0,
+    use_smote=False,
+    random_state=42,
+):
     """
-    Apply undersampling followed by SMOTE to balance class distribution.
+    Apply foreground cap + background undersampling + optional SMOTE.
 
     Parameters
     ----------
@@ -113,12 +120,14 @@ def undersample_then_smote(X, y, use_undersample, undersample_ratio, use_smote, 
         Feature matrix (n_samples, n_features)
     y : np.ndarray
         Binary labels (n_samples,)
-    use_undersample : bool
-        Whether to apply RandomUnderSampler
+    foreground_samples : int | None
+        Cap the minority (positive) class to this many samples.
+        None keeps all foreground samples.
     undersample_ratio : float
-        Target ratio of majority to minority samples after undersampling
+        Target ratio of majority to minority samples after undersampling.
+        1.0 means no background undersampling.
     use_smote : bool
-        Whether to apply SMOTE oversampling
+        Whether to apply SMOTE oversampling after undersampling.
     random_state : int, default=42
         Random seed for reproducibility
 
@@ -127,19 +136,30 @@ def undersample_then_smote(X, y, use_undersample, undersample_ratio, use_smote, 
     tuple[np.ndarray, np.ndarray]
         Resampled (X, y) arrays
     """
-    if use_undersample:
-        classes, counts = np.unique(y, return_counts=True)
-        if len(classes) == 2:
-            maj = classes[np.argmax(counts)]
-            minc = classes[np.argmin(counts)]
-            n_min = counts.min()
-            n_maj_target = int(round(n_min * undersample_ratio))
+    classes, counts = np.unique(y, return_counts=True)
+    if len(classes) == 2:
+        maj = classes[np.argmax(counts)]
+        minc = classes[np.argmin(counts)]
+        n_min = int(counts.min())
+
+        if foreground_samples is not None and foreground_samples < n_min:
+            n_min = foreground_samples
+
+        n_maj_target = int(round(n_min * undersample_ratio))
+        needs_resample = (
+            foreground_samples is not None and foreground_samples < int(counts.min())
+        ) or n_maj_target < int(counts.max())
+
+        if needs_resample:
             sampling_strategy = {
                 minc: n_min,
-                maj: min(n_maj_target, counts.max()),
+                maj: min(n_maj_target, int(counts.max())),
             }
-            rus = RandomUnderSampler(sampling_strategy=sampling_strategy, random_state=random_state)
+            rus = RandomUnderSampler(
+                sampling_strategy=sampling_strategy, random_state=random_state
+            )
             X, y = rus.fit_resample(X, y)
+
     if use_smote:
         sm = SMOTE(random_state=random_state)
         X, y = sm.fit_resample(X, y)

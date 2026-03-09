@@ -9,7 +9,15 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams, PositionColumns, SamplingConfig, resolve_order_col
+from .params import (
+    COLUMNS,
+    Inputs,
+    OutputType,
+    Params,
+    SamplingConfig,
+    TrackInput,
+    resolve_order_col,
+)
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -52,10 +60,12 @@ class NearestNeighborDelta:
     name = "nn-delta-response"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        position: PositionColumns = Field(default_factory=PositionColumns)
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
         speed_col: str = "SPEED#wcentroid"
         nn_id_col: str = "nn_id"
@@ -69,7 +79,12 @@ class NearestNeighborDelta:
         divide_dangle_by_frames: bool = True
         scale_dangle_by_fps: bool = True
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: NearestNeighborDelta.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
@@ -89,6 +104,9 @@ class NearestNeighborDelta:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -114,9 +132,9 @@ class NearestNeighborDelta:
         p = self.params
 
         # Resolve required columns with a few fallbacks
-        id_col = p.columns.id_col
-        frame_col = p.columns.frame_col
-        angle_col = p.position.orientation_col
+        id_col = COLUMNS.id_col
+        frame_col = COLUMNS.frame_col
+        angle_col = COLUMNS.orientation_col
         speed_col = (
             p.speed_col
             if p.speed_col in df.columns
@@ -138,7 +156,7 @@ class NearestNeighborDelta:
 
         # Order for reproducibility
         try:
-            order_col = resolve_order_col(p.columns, df)
+            order_col = resolve_order_col(df)
         except ValueError:
             return pd.DataFrame()
         df = df.sort_values([order_col, id_col]).reset_index(drop=True)
@@ -160,18 +178,21 @@ class NearestNeighborDelta:
         for focal_id, g in df.groupby(id_col, sort=False):
             g = g.sort_values(order_col)
             # Future samples diff_numframes ahead
-            future = g[[p.position.x_col, p.position.y_col, angle_col, speed_col, frame_col]].shift(
-                -diff_n
+            future = g[
+                [COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]
+            ].shift(-diff_n)
+            delta = (
+                future
+                - g[[COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]]
             )
-            delta = future - g[[p.position.x_col, p.position.y_col, angle_col, speed_col, frame_col]]
 
             valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
             if not valid_mask.any():
                 continue
 
             rows = g.loc[valid_mask].copy()
-            rows["dx"] = delta.loc[valid_mask, p.position.x_col].to_numpy()
-            rows["dy"] = delta.loc[valid_mask, p.position.y_col].to_numpy()
+            rows["dx"] = delta.loc[valid_mask, COLUMNS.x_col].to_numpy()
+            rows["dy"] = delta.loc[valid_mask, COLUMNS.y_col].to_numpy()
             rows["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
             dangle = delta.loc[valid_mask, angle_col].to_numpy()
             if wrap_angles:
@@ -210,12 +231,14 @@ class NearestNeighborDelta:
             # Pass through meta columns
             rows["nn_id"] = g.loc[valid_mask, nn_id_col].to_numpy()
             rows[id_col] = focal_id
-            if p.columns.group_col in g.columns:
-                rows[p.columns.group_col] = g.loc[valid_mask, p.columns.group_col].to_numpy()
-            if p.columns.seq_col in g.columns:
-                rows[p.columns.seq_col] = g.loc[valid_mask, p.columns.seq_col].to_numpy()
-            if p.columns.time_col in g.columns:
-                rows[p.columns.time_col] = g.loc[valid_mask, p.columns.time_col].to_numpy()
+            if COLUMNS.group_col in g.columns:
+                rows[COLUMNS.group_col] = g.loc[
+                    valid_mask, COLUMNS.group_col
+                ].to_numpy()
+            if COLUMNS.seq_col in g.columns:
+                rows[COLUMNS.seq_col] = g.loc[valid_mask, COLUMNS.seq_col].to_numpy()
+            if COLUMNS.time_col in g.columns:
+                rows[COLUMNS.time_col] = g.loc[valid_mask, COLUMNS.time_col].to_numpy()
             for passthrough in ("group_size", "event", p.focal_col):
                 if passthrough in g.columns and passthrough not in rows.columns:
                     rows[passthrough] = g.loc[valid_mask, passthrough].to_numpy()
@@ -231,9 +254,9 @@ class NearestNeighborDelta:
             c
             for c in (
                 frame_col,
-                p.columns.time_col,
-                p.columns.group_col,
-                p.columns.seq_col,
+                COLUMNS.time_col,
+                COLUMNS.group_col,
+                COLUMNS.seq_col,
                 id_col,
                 "nn_id",
             )

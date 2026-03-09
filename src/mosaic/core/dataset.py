@@ -1,7 +1,6 @@
 # dataset.py
 from __future__ import annotations
 
-import csv
 import datetime
 import fnmatch
 import gc
@@ -23,23 +22,24 @@ from concurrent.futures import (
     wait,
 )
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence, TypeVar
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
 
-from .helpers import filter_time_range, from_safe_name, to_safe_name
+from .helpers import filter_time_range, to_safe_name
 
 if TYPE_CHECKING:
-    from mosaic.behavior.feature_library._param_bases import FeatureParams
+    from mosaic.behavior.feature_library.params import (
+        InputsLike,
+        Inputs,
+        OutputType,
+        Params,
+    )
 import hashlib
-import json
-import time
 from dataclasses import dataclass
-
-import joblib
 
 
 def _probe_video_metadata(path: Path) -> dict[str, Any]:
@@ -169,9 +169,8 @@ def _remap_single_path(
     return None
 
 
-import hashlib
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from dataclasses import field
+from typing import Any, Callable, Dict, Mapping, Tuple
 
 # A tiny registry so you can plug converters: src_format -> callable
 TrackConverter = Callable[[Path, dict], pd.DataFrame]
@@ -192,7 +191,6 @@ def register_track_seq_enumerator(src_format: str, fn: TrackSeqEnumerator):
 
 
 # ----------- Label converter registry -----------
-from typing import Protocol
 
 
 class LabelConverter(Protocol):
@@ -239,7 +237,6 @@ from .schema import (
     TRACK_SCHEMAS,
     TrackSchema,
     ensure_track_schema,
-    register_track_schema,
 )
 
 # --- Standardized label metadata ---
@@ -2882,14 +2879,9 @@ class Dataset:
 
 
 # --- Backward compat: track converter helpers moved to core/track_library ---
-from mosaic.core.track_library.calms21 import calms21_to_trex_df
-from mosaic.core.track_library.helpers import (
-    angle_from_pca,
-    angle_from_two_points,
-    load_calms21,
-)
 
 from mosaic.core.track_library.trex import _strip_trex_seq
+
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""
@@ -2926,13 +2918,24 @@ class Feature(Protocol):
 
     name: str
     version: str
+    output_type: OutputType
+    parallelizable: bool
+    storage_feature_name: str
+    storage_use_input_suffix: bool
 
     @property
-    def params(self) -> FeatureParams: ...
+    def inputs(self) -> InputsLike: ...
+
+    @property
+    def params(self) -> Params: ...
+
+    def bind_dataset(self, ds: Dataset) -> None: ...
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None: ...
 
     # Fit/transform contract
     def needs_fit(self) -> bool: ...
     def supports_partial_fit(self) -> bool: ...
+    def loads_own_data(self) -> bool: ...
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
     def partial_fit(self, df: pd.DataFrame) -> None: ...
     def finalize_fit(self) -> None: ...
@@ -2946,8 +2949,10 @@ class Feature(Protocol):
 # Simple registry
 FEATURES: dict[str, type[Feature]] = {}
 
+_F = TypeVar("_F", bound=Feature)
 
-def register_feature(cls: type[Feature]):
+
+def register_feature(cls: type[_F]) -> type[_F]:
     FEATURES[cls.__name__] = cls
     return cls
 
@@ -3331,6 +3336,101 @@ def _feature_index_path(ds: "Dataset", feature_name: str) -> Path:
     return ds.get_root("features") / feature_name / "index.csv"
 
 
+def _resolve_tracks_pairs(
+    ds: "Dataset",
+    groups_set: set[str] | None,
+    seq_set: set[str] | None,
+) -> tuple[set[tuple[str, str]], dict[tuple[str, str], str]]:
+    """Resolve (group, sequence) pairs and safe-name map from tracks/index.csv."""
+    idx_path = ds.get_root("tracks") / "index.csv"
+    if not idx_path.exists():
+        raise FileNotFoundError("tracks/index.csv not found; run conversion first.")
+    df_idx = pd.read_csv(idx_path)
+    df_idx["group"] = df_idx["group"].fillna("")
+    df_idx["sequence"] = df_idx["sequence"].fillna("")
+    df_scope = df_idx
+    if groups_set:
+        df_scope = df_scope[df_scope["group"].isin(groups_set)]
+    if seq_set:
+        df_scope = df_scope[df_scope["sequence"].isin(seq_set)]
+    pairs = set(zip(df_scope["group"], df_scope["sequence"]))
+    pair_safe_map: dict[tuple[str, str], str] = {}
+    for _, row in df_scope.iterrows():
+        pair = (row["group"], row["sequence"])
+        pair_safe_map.setdefault(pair, to_safe_name(pair[1]))
+    return pairs, pair_safe_map
+
+
+def _resolve_feature_pairs(
+    ds: "Dataset",
+    feat_name: str,
+    run_id: str | None,
+    groups_set: set[str] | None,
+    seq_set: set[str] | None,
+    columns: list[str] | None = None,
+) -> tuple[set[tuple[str, str]], dict[tuple[str, str], str], dict]:
+    """Resolve pairs, safe-name map, and resolved_input dict for a feature run.
+
+    Returns (pairs, pair_safe_map_fragment, resolved_input_dict).
+    """
+    if run_id is None:
+        try:
+            run_id, _ = _latest_feature_run_root(ds, feat_name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to resolve latest run for feature '{feat_name}': {exc}"
+            ) from exc
+    else:
+        run_root = _feature_run_root(ds, feat_name, run_id)
+        if not run_root.exists():
+            raise FileNotFoundError(
+                f"Feature '{feat_name}' run '{run_id}' not found at {run_root}"
+            )
+
+    idx_path = _feature_index_path(ds, feat_name)
+    if not idx_path.exists():
+        raise FileNotFoundError(f"Feature '{feat_name}' has no index at {idx_path}")
+    df = pd.read_csv(idx_path)
+    df = df[df["run_id"].astype(str) == str(run_id)]
+    df["group"] = df["group"].fillna("").astype(str)
+    df["sequence"] = df["sequence"].fillna("").astype(str)
+    if "sequence_safe" not in df.columns:
+        df["sequence_safe"] = df["sequence"].apply(
+            lambda v: to_safe_name(v) if v else ""
+        )
+    # drop marker/global rows
+    df = df[df["sequence"].str.strip() != ""]
+    df = df[df["sequence"] != "__global__"]
+
+    df_scope = df
+    if groups_set:
+        df_scope = df_scope[df_scope["group"].isin(groups_set)]
+    if seq_set:
+        df_scope = df_scope[df_scope["sequence"].isin(seq_set)]
+
+    pairs = set(zip(df_scope["group"], df_scope["sequence"]))
+    pair_safe_map: dict[tuple[str, str], str] = {}
+    path_map: dict[tuple[str, str], Path] = {}
+    for _, row in df_scope.iterrows():
+        pair = (row["group"], row["sequence"])
+        seq_safe = row.get("sequence_safe")
+        if not isinstance(seq_safe, str) or not seq_safe:
+            seq_safe = to_safe_name(pair[1])
+        pair_safe_map.setdefault(pair, seq_safe)
+        abs_path = row.get("abs_path")
+        if isinstance(abs_path, str) and abs_path and abs_path.endswith(".parquet"):
+            path_map[pair] = ds.resolve_path(abs_path)
+
+    resolved = {
+        "feature": feat_name,
+        "run_id": run_id,
+        "kind": "feature",
+        "path_map": path_map,
+        "columns": columns,
+    }
+    return pairs, pair_safe_map, resolved
+
+
 def _resolve_inputset_scope(
     ds: "Dataset",
     inputset_name: str,
@@ -3344,143 +3444,53 @@ def _resolve_inputset_scope(
     groups_set = set(groups) if groups is not None else None
     seq_set = set(sequences) if sequences is not None else None
 
-    per_feature_pairs: list[set[tuple[str, str]]] = []
+    per_input_pairs: list[set[tuple[str, str]]] = []
     pair_safe_map: dict[tuple[str, str], str] = {}
     resolved_inputs: list[dict] = []
 
     for spec in inputs:
         kind = str(spec.get("kind", "feature")).lower()
         if kind == "tracks":
-            idx_path = ds.get_root("tracks") / "index.csv"
-            if not idx_path.exists():
-                raise FileNotFoundError(
-                    "tracks/index.csv not found; run conversion first."
-                )
-            df_idx = pd.read_csv(idx_path)
-            df_idx["group"] = df_idx["group"].fillna("")
-            df_idx["sequence"] = df_idx["sequence"].fillna("")
-
-            df_scope = df_idx
-            if groups_set:
-                df_scope = df_scope[df_scope["group"].isin(groups_set)]
-            if seq_set:
-                df_scope = df_scope[df_scope["sequence"].isin(seq_set)]
-
-            pairs = set(zip(df_scope["group"], df_scope["sequence"]))
+            pairs, psm = _resolve_tracks_pairs(ds, groups_set, seq_set)
             if not pairs:
                 print(
                     f"[inputset:{inputset_name}] WARN: tracks spec has no data matching the requested scope.",
                     file=sys.stderr,
                 )
-            per_feature_pairs.append(pairs)
+            per_input_pairs.append(pairs)
+            pair_safe_map.update(psm)
             resolved_inputs.append({"kind": "tracks", "columns": spec.get("columns")})
-
-            for _, row in df_scope.iterrows():
-                pair = (row["group"], row["sequence"])
-                seq_safe = to_safe_name(pair[1])
-                pair_safe_map.setdefault(pair, seq_safe)
             continue
 
         feat_name = spec.get("feature")
         if not feat_name:
             continue
-        run_id = spec.get("run_id")
-        if run_id is None:
-            try:
-                run_id, _ = _latest_feature_run_root(ds, feat_name)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Unable to resolve latest run for feature '{feat_name}': {exc}"
-                ) from exc
-        else:
-            run_root = _feature_run_root(ds, feat_name, run_id)
-            if not run_root.exists():
-                raise FileNotFoundError(
-                    f"Feature '{feat_name}' run '{run_id}' not found at {run_root}"
-                )
 
-        idx_path = _feature_index_path(ds, feat_name)
-        if not idx_path.exists():
-            raise FileNotFoundError(f"Feature '{feat_name}' has no index at {idx_path}")
-        df = pd.read_csv(idx_path)
-        df = df[df["run_id"].astype(str) == str(run_id)]
-        if df.empty:
-            print(
-                f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no indexed rows.",
-                file=sys.stderr,
+        try:
+            pairs, psm, resolved = _resolve_feature_pairs(
+                ds,
+                feat_name,
+                spec.get("run_id"),
+                groups_set,
+                seq_set,
+                columns=spec.get("columns"),
             )
-            per_feature_pairs.append(set())
-            resolved_inputs.append(
-                {"feature": feat_name, "run_id": run_id, "kind": "feature"}
-            )
-            continue
-        df["group"] = df["group"].fillna("").astype(str)
-        df["sequence"] = df["sequence"].fillna("").astype(str)
-        if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(
-                lambda v: to_safe_name(v) if v else ""
-            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            raise type(exc)(str(exc)) from exc
 
-        # drop marker/global rows
-        df = df[df["sequence"].str.strip() != ""]
-        df = df[df["sequence"] != "__global__"]
-
-        avail_groups = set(df["group"])
-        avail_sequences = set(df["sequence"])
-
-        if groups_set:
-            missing_groups = sorted(groups_set - avail_groups)
-            if missing_groups:
-                print(
-                    f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested groups {missing_groups}; continuing with overlap.",
-                    file=sys.stderr,
-                )
-        if seq_set:
-            missing_seq = sorted(seq_set - avail_sequences)
-            if missing_seq:
-                print(
-                    f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' missing requested sequences {missing_seq}; continuing with overlap.",
-                    file=sys.stderr,
-                )
-
-        df_scope = df
-        if groups_set:
-            df_scope = df_scope[df_scope["group"].isin(groups_set)]
-        if seq_set:
-            df_scope = df_scope[df_scope["sequence"].isin(seq_set)]
-
-        pairs = set(zip(df_scope["group"], df_scope["sequence"]))
         if not pairs:
             print(
-                f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{run_id}' has no data matching the requested scope.",
+                f"[inputset:{inputset_name}] WARN: feature '{feat_name}' run '{resolved['run_id']}' has no data matching the requested scope.",
                 file=sys.stderr,
             )
-        per_feature_pairs.append(pairs)
-        path_map: dict[tuple[str, str], Path] = {}
-        for _, row in df_scope.iterrows():
-            pair = (row["group"], row["sequence"])
-            seq_safe = row.get("sequence_safe")
-            if not isinstance(seq_safe, str) or not seq_safe:
-                seq_safe = to_safe_name(pair[1])
-            pair_safe_map.setdefault(pair, seq_safe)
-            abs_path = row.get("abs_path")
-            if isinstance(abs_path, str) and abs_path and abs_path.endswith(".parquet"):
-                remapped = ds.resolve_path(abs_path)
-                path_map[pair] = remapped
-        resolved_inputs.append(
-            {
-                "feature": feat_name,
-                "run_id": run_id,
-                "kind": "feature",
-                "path_map": path_map,
-                "columns": spec.get("columns"),
-            }
-        )
+        per_input_pairs.append(pairs)
+        pair_safe_map.update(psm)
+        resolved_inputs.append(resolved)
 
-    if not per_feature_pairs:
+    if not per_input_pairs:
         raise ValueError(f"Inputset '{inputset_name}' resolved no usable feature runs.")
 
-    allowed_pairs = set.intersection(*per_feature_pairs) if per_feature_pairs else set()
+    allowed_pairs = set.intersection(*per_input_pairs) if per_input_pairs else set()
     if not allowed_pairs:
         raise ValueError(
             f"Inputset '{inputset_name}' has no overlapping sequences for the requested scope."
@@ -3493,6 +3503,60 @@ def _resolve_inputset_scope(
     return {
         "inputset": inputset_name,
         "meta": meta,
+        "groups": sorted(groups_set) if groups_set else None,
+        "sequences": sorted(seq_set) if seq_set else None,
+        "pairs": allowed_pairs,
+        "pair_safe_map": {
+            pair: pair_safe_map.get(pair, to_safe_name(pair[1]))
+            for pair in allowed_pairs
+        },
+        "safe_sequences": safe_sequences,
+        "resolved_inputs": resolved_inputs,
+    }
+
+
+def inputset_from_inputs(
+    ds: "Dataset",
+    inputs: "Inputs",
+    groups: Iterable[str] | None = None,
+    sequences: Iterable[str] | None = None,
+) -> dict:
+    """Resolve an Inputs collection into the same scope dict format
+    as _resolve_inputset_scope, for use by run_feature()'s multi-input path.
+    """
+    groups_set = set(groups) if groups is not None else None
+    seq_set = set(sequences) if sequences is not None else None
+
+    per_input_pairs: list[set[tuple[str, str]]] = []
+    pair_safe_map: dict[tuple[str, str], str] = {}
+    resolved_inputs: list[dict] = []
+
+    for item in inputs.root:
+        if item == "tracks":
+            pairs, psm = _resolve_tracks_pairs(ds, groups_set, seq_set)
+            per_input_pairs.append(pairs)
+            pair_safe_map.update(psm)
+            resolved_inputs.append({"kind": "tracks"})
+        else:
+            pairs, psm, resolved = _resolve_feature_pairs(
+                ds, item.feature, item.run_id, groups_set, seq_set
+            )
+            per_input_pairs.append(pairs)
+            pair_safe_map.update(psm)
+            resolved_inputs.append(resolved)
+
+    if not per_input_pairs:
+        raise ValueError("Inputs resolved no usable inputs.")
+    allowed_pairs = set.intersection(*per_input_pairs)
+    if not allowed_pairs:
+        raise ValueError("Inputs has no overlapping sequences for the requested scope.")
+
+    safe_sequences = {
+        pair_safe_map.get(pair, to_safe_name(pair[1])) for pair in allowed_pairs
+    }
+    return {
+        "inputset": None,
+        "meta": {},
         "groups": sorted(groups_set) if groups_set else None,
         "sequences": sorted(seq_set) if seq_set else None,
         "pairs": allowed_pairs,
@@ -4571,9 +4635,6 @@ def run_feature(
     groups: Optional[Iterable[str]] = None,
     sequences: Optional[Iterable[str]] = None,
     overwrite: bool = False,
-    input_kind: str = "tracks",
-    input_feature: Optional[str] = None,
-    input_run_id: Optional[str] = None,
     parallel_workers: Optional[int] = None,
     parallel_mode: Optional[str] = "thread",
     overlap_frames: int = 0,
@@ -4581,22 +4642,18 @@ def run_feature(
     """
     Apply a Feature over a chosen scope (default: whole dataset).
 
+    Input routing is determined by ``feature.inputs``: tracks (default),
+    a single upstream feature, or a multi-input set.
+
     Parameters
     ----------
     feature : Feature
-        The feature object implementing the Feature protocol.
+        The feature object implementing the Feature protocol.  Its ``inputs``
+        attribute controls where data is read from.
     groups, sequences : optional iterables
         Scope filter (applies to whichever input source is used).
     overwrite : bool
         Overwrite existing outputs for this run_id.
-    input_kind : {'tracks','feature'}
-        Where to read inputs from. 'tracks' (default) streams standardized tracks.
-        'feature' streams outputs of a previously run feature (use input_feature/run_id).
-    input_feature : str | None
-        Name of the prior feature to use as input when input_kind='feature'.
-        If None with input_kind='feature', raises.
-    input_run_id : str | None
-        Specific run_id of the prior feature to use. If None, the latest finished run is used.
     parallel_workers : int | None
         When >1 and the feature declares itself parallelizable, run the transform phase in parallel
         across per-sequence chunks using this many threads. Defaults to sequential execution.
@@ -4605,7 +4662,7 @@ def run_feature(
         'process' uses ProcessPoolExecutor and requires picklable params/feature/inputs.
     overlap_frames : int, default 0
         For continuous datasets, load this many frames from adjacent segments to handle
-        edge effects in rolling windows, smoothing, etc. Only applies when input_kind='tracks'.
+        edge effects in rolling windows, smoothing, etc. Only applies when inputs are tracks.
         When > 0, the transform receives data with overlap but output is trimmed to original bounds.
 
     Behavior
@@ -4619,26 +4676,28 @@ def run_feature(
     - Returns run_id.
     """
     # Determine on-disk storage name (may encode upstream)
-    storage_feature_name = getattr(feature, "storage_feature_name", feature.name)
-    use_input_suffix = getattr(feature, "storage_use_input_suffix", True)
-    if input_kind in {"feature", "inputset"} and input_feature and use_input_suffix:
-        storage_feature_name = f"{storage_feature_name}__from__{input_feature}"
+    storage_feature_name = feature.storage_feature_name
+    use_input_suffix = feature.storage_use_input_suffix
+    suffix = feature.inputs.storage_suffix()
+    if suffix and use_input_suffix:
+        storage_feature_name = f"{storage_feature_name}__from__{suffix}"
 
     # Prepare run id & root
-    feature_params = getattr(feature, "params", {})
-
     # Include scope in hash for features whose fit result depends on input scope
     scope_key = None
     _nf = (
         feature.needs_fit() if callable(getattr(feature, "needs_fit", None)) else False
     )
-    _lo = getattr(feature, "loads_own_data", lambda: False)()
+    _lo = feature.loads_own_data()
     if _nf and _lo:
         scope_key = _build_scope_key(groups, sequences)
 
-    hashable_params = (
-        {**feature_params, "_scope": scope_key} if scope_key else feature_params
-    )
+    hashable_params = {
+        "_params": feature.params.model_dump(),
+        "_inputs": feature.inputs.model_dump(),
+    }
+    if scope_key:
+        hashable_params["_scope"] = scope_key
     params_hash = _hash_params(hashable_params)
     run_id = f"{feature.version}-{params_hash}"
     run_root = _feature_run_root(self, storage_feature_name, run_id)
@@ -4647,9 +4706,12 @@ def run_feature(
     # Persist params (with scope) for discoverability
     params_path = run_root / "params.json"
     try:
-        save_payload = _json_ready(feature_params)
+        save_payload = {
+            "_params": _json_ready(feature.params),
+            "_inputs": feature.inputs.model_dump(),
+        }
         if scope_key is not None:
-            save_payload = {**save_payload, "_scope": scope_key}
+            save_payload["_scope"] = scope_key
         params_path.write_text(json.dumps(save_payload, indent=2))
     except Exception as exc:
         print(
@@ -4667,7 +4729,7 @@ def run_feature(
     parallel_mode = (parallel_mode or "thread").lower()
     if parallel_mode not in {"thread", "process"}:
         parallel_mode = "thread"
-    parallel_allowed = bool(getattr(feature, "parallelizable", False))
+    parallel_allowed = feature.parallelizable
     if max_workers > 1 and not parallel_allowed:
         print(
             f"[feature:{feature.name}] parallel_workers requested but feature is not parallelizable; running sequentially.",
@@ -4735,29 +4797,31 @@ def run_feature(
 
     # Pre-pass: resolve candidate pairs, skip existing outputs before loading data
     input_scope = None
-    pairs_all: Optional[set[tuple[str, str]]] = None
-    pairs_to_compute: Optional[set[tuple[str, str]]] = None
+    pairs_all: set[tuple[str, str]] | None = None
+    pairs_to_compute: set[tuple[str, str]] | None = None
     preexisting_rows: list[dict] = []
-    resolved_input_run_id = input_run_id
+    resolved_input_run_id: str | None = None
 
-    if input_kind not in {"tracks", "feature", "inputset"}:
-        raise ValueError("input_kind must be 'tracks', 'feature', or 'inputset'")
-
-    if input_kind == "tracks":
+    inputs = feature.inputs
+    if inputs.is_single_tracks:
         pairs_all = _list_track_pairs()
-    elif input_kind == "feature":
-        if not input_feature:
-            raise ValueError("input_feature must be provided when input_kind='feature'")
+    elif inputs.is_single_feature:
+        fi = inputs.feature_inputs[0]
         resolved_input_run_id, pairs_all = _resolve_feature_run_and_pairs(
-            input_feature, input_run_id
+            fi.feature, fi.run_id
         )
-    elif input_kind == "inputset":
-        if not input_feature:
-            raise ValueError(
-                "input_feature (inputset name) must be provided when input_kind='inputset'"
-            )
-        input_scope = _resolve_inputset_scope(self, input_feature, groups, sequences)
+    elif inputs.is_multi:
+        input_scope = inputset_from_inputs(self, inputs, groups, sequences)
         pairs_all = input_scope.get("pairs") or set()
+    elif feature.loads_own_data():
+        if groups is not None or sequences is not None:
+            raise ValueError(
+                f"Feature '{feature.name}' has empty inputs and loads its "
+                f"own data; groups/sequences filters cannot be applied."
+            )
+        pairs_all = set()
+    else:
+        raise ValueError("Feature.inputs is empty")
 
     if pairs_all is not None:
         pairs_to_compute = set()
@@ -4791,18 +4855,20 @@ def run_feature(
                 pairs_to_compute.add(pair)
 
     # Choose input iterator (filtered to pairs_to_compute when known)
-    use_overlap = overlap_frames > 0 and input_kind == "tracks"
+    use_overlap = overlap_frames > 0 and inputs.is_single_tracks
 
-    if input_kind == "feature":
+    if inputs.is_single_feature:
+        _input_feature = inputs.feature_inputs[0].feature
+        _resolved_run_id = resolved_input_run_id
         iter_inputs = lambda: _yield_feature_frames(
             self,
-            input_feature,
-            resolved_input_run_id,
+            _input_feature,
+            _resolved_run_id,
             groups,
             sequences,
             allowed_pairs=pairs_to_compute,
         )
-    elif input_kind == "inputset":
+    elif inputs.is_multi:
         scope_for_iter = input_scope or {}
         if pairs_to_compute is not None:
             scope_for_iter = dict(scope_for_iter)
@@ -4811,9 +4877,26 @@ def run_feature(
             hasattr(feature, "wants_full_inputset_data")
             and not feature.wants_full_inputset_data()
         )
+        if _meta_only:
+            _scope_meta = (scope_for_iter.get("meta") or {})
+            if isinstance(_scope_meta, dict) and any(
+                _scope_meta.get(k) is not None
+                for k in (
+                    "filter_start_frame",
+                    "filter_end_frame",
+                    "filter_start_time",
+                    "filter_end_time",
+                )
+            ):
+                raise RuntimeError(
+                    f"[feature:{feature.name}] Time/frame filters are set but "
+                    f"this feature uses metadata-only iteration and cannot "
+                    f"apply them."
+                )
+        _inputset_name = None
         iter_inputs = lambda: _yield_inputset_frames(
             self,
-            input_feature,
+            _inputset_name,
             groups,
             sequences,
             scope_for_iter,
@@ -4821,7 +4904,6 @@ def run_feature(
         )
         input_scope = scope_for_iter
     elif use_overlap:
-        # Use overlap-aware iterator for continuous datasets
         iter_inputs = lambda: _yield_sequences_with_overlap(
             self,
             groups,
@@ -4835,11 +4917,7 @@ def run_feature(
         )
 
     # ===== FIT PHASE =====
-    if hasattr(feature, "bind_dataset"):
-        try:
-            feature.bind_dataset(self)  # allow feature to read feature indexes & roots
-        except Exception as e:
-            print(f"[feature:{feature.name}] bind_dataset failed: {e}", file=sys.stderr)
+    feature.bind_dataset(self)
 
     scope_constraints = {}
     if input_scope is not None:
@@ -4874,14 +4952,28 @@ def run_feature(
                 )
 
     if input_scope is not None:
-        setattr(feature, "_scope_filter", input_scope)
-        if hasattr(feature, "set_scope_filter"):
-            try:
-                feature.set_scope_filter(input_scope)
-            except Exception as e:
-                print(
-                    f"[feature:{feature.name}] set_scope_filter failed: {e}",
-                    file=sys.stderr,
+        feature.set_scope_filter(input_scope)
+
+    # Validate time/frame filters against self-loading features
+    if input_scope is not None:
+        _meta = (input_scope.get("meta") or {})
+        _has_time_filter = isinstance(_meta, dict) and any(
+            _meta.get(k) is not None
+            for k in (
+                "filter_start_frame",
+                "filter_end_frame",
+                "filter_start_time",
+                "filter_end_time",
+            )
+        )
+        if _has_time_filter:
+            _loads_own = feature.loads_own_data()
+            if _loads_own:
+                raise RuntimeError(
+                    f"[feature:{feature.name}] Time/frame filters are set in "
+                    f"scope but this feature loads its own data and cannot "
+                    f"apply them. Remove the filters or use a feature that "
+                    f"processes data from the sequence iterator."
                 )
 
     # Helper to extract DataFrame from iterator items (handles both 3-tuple and 5-tuple)
@@ -4904,7 +4996,7 @@ def run_feature(
                 )
 
         # Check if fit phase can be skipped (for global features with existing outputs)
-        loads_own = getattr(feature, "loads_own_data", lambda: False)()
+        loads_own = feature.loads_own_data()
         model_path = run_root / "model.joblib"
         # Also check for global-specific artifacts (e.g., global_opentsne_embedding.joblib)
         embedding_path = run_root / "global_opentsne_embedding.joblib"
@@ -5379,7 +5471,8 @@ def run_feature(
     _append_feature_index(idx_path, out_rows)
     _update_finished_times(idx_path, run_id, _now_iso())
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
-    return run_id
+    from mosaic.behavior.feature_library.params import Result
+    return Result(feature=storage_feature_name, run_id=run_id)
 
 
 # Attach to class
@@ -5496,7 +5589,7 @@ def extract_frames(
     media_df = _list_media_pairs(self, groups=groups, sequences=sequences)
     if media_df.empty:
         print(
-            f"[extract_frames] No media entries match the given scope.", file=sys.stderr
+            "[extract_frames] No media entries match the given scope.", file=sys.stderr
         )
         return run_id
 
@@ -6089,9 +6182,7 @@ def run_feature_remote(
     groups: Optional[Sequence[str]] = None,
     sequences: Optional[Sequence[str]] = None,
     overwrite: bool = False,
-    input_kind: str = "tracks",
-    input_feature: Optional[str] = None,
-    input_run_id: Optional[str] = None,
+    inputs_json: str | None = None,
     parallel_workers: Optional[int] = None,
     sync_before: bool = True,
     sync_after: bool = False,
@@ -6114,30 +6205,32 @@ def run_feature_remote(
 
     module_path, class_name = feature_class.rsplit(".", 1)
     FeatureCls = getattr(importlib.import_module(module_path), class_name)
-    feature_obj = FeatureCls(params or {})
-    feature_params = getattr(feature_obj, "params", params or {})
+    from mosaic.behavior.feature_library.params import Inputs
+
+    if inputs_json:
+        _inputs = Inputs.model_validate_json(inputs_json)
+    else:
+        _inputs = Inputs(("tracks",))
+    feature_obj = FeatureCls(inputs=_inputs, params=params)
 
     # Mirror scope-aware hashing from run_feature
     _scope_key = None
-    _nf = (
-        feature_obj.needs_fit()
-        if callable(getattr(feature_obj, "needs_fit", None))
-        else False
-    )
-    _lo = getattr(feature_obj, "loads_own_data", lambda: False)()
+    _nf = feature_obj.needs_fit()
+    _lo = feature_obj.loads_own_data()
     if _nf and _lo:
         _scope_key = _build_scope_key(groups, sequences)
-    _hashable = (
-        {**feature_params, "_scope": _scope_key} if _scope_key else feature_params
-    )
+    _hashable = {
+        "_params": feature_obj.params.model_dump(),
+        "_inputs": feature_obj.inputs.model_dump(),
+    }
+    if _scope_key:
+        _hashable["_scope"] = _scope_key
     params_hash = _hash_params(_hashable)
     expected_run_id = f"{feature_obj.version}-{params_hash}"
-    storage_feature_name = getattr(
-        feature_obj, "storage_feature_name", feature_obj.name
-    )
-    use_input_suffix = getattr(feature_obj, "storage_use_input_suffix", True)
-    if input_kind in {"feature", "inputset"} and input_feature and use_input_suffix:
-        storage_feature_name = f"{storage_feature_name}__from__{input_feature}"
+    storage_feature_name = feature_obj.storage_feature_name
+    suffix = feature_obj.inputs.storage_suffix()
+    if suffix and feature_obj.storage_use_input_suffix:
+        storage_feature_name = f"{storage_feature_name}__from__{suffix}"
 
     if remote_only:
         pattern = f"features/{storage_feature_name}/{expected_run_id}"
@@ -6150,12 +6243,11 @@ def run_feature_remote(
     root_map_json = json.dumps(root_map)
     remote_cwd = remote_root.as_posix()
     overwrite_literal = "True" if overwrite else "False"
-    input_feature_literal = repr(input_feature)
-    input_run_id_literal = repr(input_run_id)
+    inputs_json_for_remote = inputs_json or ""
     parallel_literal = (
         "None" if parallel_workers is None else str(int(parallel_workers))
     )
-    work_code = f"""
+    work_code = f'''
 import os, sys, json, importlib
 os.chdir(r"{remote_cwd}")
 cwd = os.getcwd()
@@ -6165,6 +6257,7 @@ src_dir = os.path.join(cwd, "src")
 if os.path.isdir(src_dir) and src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 from mosaic.core.dataset import Dataset
+from mosaic.behavior.feature_library.params import Inputs, Result
 manifest_path = r"{manifest_remote}"
 root_map = json.loads({root_map_json!r})
 module_path, class_name = "{feature_class}".rsplit(".", 1)
@@ -6172,24 +6265,23 @@ FeatureCls = getattr(importlib.import_module(module_path), class_name)
 params = json.loads({params_json!r})
 groups = json.loads({groups_json!r})
 sequences = json.loads({sequences_json!r})
+inputs_raw = {inputs_json_for_remote!r}
+inputs_obj = Inputs.model_validate_json(inputs_raw) if inputs_raw else Inputs(("tracks",))
 dataset = Dataset(manifest_path).load(ensure_roots=not bool(root_map))
 if root_map:
     dataset.remap_roots(root_map)
     dataset.ensure_roots()
-feature = FeatureCls(params)
-run_id = dataset.run_feature(
+feature = FeatureCls(inputs=inputs_obj, params=params)
+result = dataset.run_feature(
     feature,
     groups=groups,
     sequences=sequences,
     overwrite={overwrite_literal},
-    input_kind={input_kind!r},
-    input_feature={input_feature_literal},
-    input_run_id={input_run_id_literal},
     parallel_workers={parallel_literal}
 )
-print("REMOTE_FEATURE_RUN_ID=" + run_id)
+print("REMOTE_FEATURE_RUN_ID=" + result.run_id)
 print("REMOTE_STORAGE_FEATURE=" + {json.dumps(storage_feature_name)})
-"""
+'''
 
     if detached:
         meta_extra = {

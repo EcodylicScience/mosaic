@@ -15,8 +15,8 @@ import pandas as pd
 
 from mosaic.core.dataset import register_feature
 
-from ._param_bases import FeatureParams
 from .helpers import _pose_column_pairs
+from .params import Inputs, OutputType, Params, TrackInput
 
 
 @final
@@ -33,29 +33,39 @@ class BodyScaleFeature:
     name = "body-scale"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
-        """Body-scale feature parameters.
-
-        No algorithm-specific parameters beyond the base columns.
-        """
-
+    class Inputs(Inputs[TrackInput]):
         pass
 
-    def __init__(self, params: dict[str, object] | None = None):
+    class Params(Params):
+        pass
+
+    def __init__(
+        self,
+        inputs: BodyScaleFeature.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = False
         self._ds = None
+        self._scope_filter: dict[str, object] = {}
 
     def bind_dataset(self, ds):
         self._ds = ds
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
 
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]):

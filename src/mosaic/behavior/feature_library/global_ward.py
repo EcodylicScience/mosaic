@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 import joblib
 import numpy as np
@@ -16,10 +16,21 @@ import pandas as pd
 from pydantic import Field
 from scipy.cluster.hierarchy import linkage as _sch_linkage
 
-from mosaic.core.dataset import _resolve_inputs, register_feature
+from mosaic.core.dataset import register_feature
 
-from ._param_bases import ArtifactSpec, FeatureParams, NpzLoadSpec
-from .helpers import _collect_sequence_blocks, _load_artifact_matrix
+from .helpers import StreamingFeatureHelper, _load_artifact_matrix
+from .global_tsne import GlobalTSNE
+from .params import (
+    ArtifactSpec,
+    Inputs,
+    JoblibLoadSpec,
+    LoadSpec,
+    NNResult,
+    NpzLoadSpec,
+    OutputType,
+    Params,
+    Result,
+)
 
 
 @final
@@ -30,38 +41,58 @@ class GlobalWardClustering:
     """
 
     name = "global-ward"
-    version = "0.1"
-    output_type = "global"
+    version = "0.2"
+    output_type: OutputType = "global"
+    parallelizable = False
 
-    class Params(FeatureParams):
+    class ModelArtifact(ArtifactSpec):
+        """Ward linkage model (model.joblib)."""
+
+        feature: str = "global-ward"
+        pattern: str = "model.joblib"
+        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+
+    class LinkageArtifact(ArtifactSpec):
+        """Linkage matrix backup (model.npz)."""
+
+        feature: str = "global-ward"
+        pattern: str = "model.npz"
+        load: LoadSpec = Field(
+            default_factory=lambda: NpzLoadSpec(key="linkage_matrix")
+        )
+
+    class Inputs(Inputs[Result]):
+        _empty_only: ClassVar[bool] = True
+
+    class Params(Params):
         """Global Ward clustering parameters.
 
         Attributes:
-            artifact: Feature artifact specification.
+            templates: Templates artifact to cluster.
             method: Linkage method. Default "ward".
-            inputset: Alternative loading via named inputset. Default None.
-            inputs: Alternative loading via explicit input list. Default None.
+            pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
-        artifact: ArtifactSpec = Field(
-            default_factory=lambda: ArtifactSpec(
-                feature="global-tsne",
-                pattern="global_templates_features.npz",
-                load=NpzLoadSpec(key="templates"),
-            )
+        templates: GlobalTSNE.TemplatesArtifact = Field(
+            default_factory=GlobalTSNE.TemplatesArtifact
         )
         method: str = "ward"
-        inputset: str | None = None
-        inputs: list[dict[str, object]] | None = None
+        pair_filter: NNResult | None = None
 
-    def __init__(self, params: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: GlobalWardClustering.Inputs = Inputs(()),
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
 
         self._ds: object = None
         self._Z: np.ndarray | None = None
         self._X_shape: tuple[int, int] | None = None
         self._marker_written = False
-        self._artifact_inputs_meta: dict[str, object] = {}
         self._scope_filter: dict[str, object] | None = None
 
     # --- framework API ---
@@ -79,6 +110,9 @@ class GlobalWardClustering:
         return False
 
     def loads_own_data(self) -> bool:
+        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
+        # applied when loading own data. run_feature() raises RuntimeError
+        # if these filters are set. Future work: apply them during loading.
         return True
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -161,38 +195,40 @@ class GlobalWardClustering:
                 "[global-ward] Feature not bound to a Dataset; call via dataset.run_feature(...)"
             )
 
-        inputset_name = self.params.inputset
-        explicit_inputs = self.params.inputs
-        if inputset_name or explicit_inputs:
-            specs, meta = _resolve_inputs(
-                self._ds,
-                explicit_inputs,
-                inputset_name,
-                explicit_override=(explicit_inputs is not None),
-            )
+        feature_inputs = self.inputs.feature_inputs
+        if feature_inputs:
+            # Stacked-features mode: load per-frame features via Results
+            helper = StreamingFeatureHelper(self._ds, "global-ward")
+            if self.params.pair_filter:
+                helper.set_pair_filter(self.params.pair_filter)
             scope = self._scope_filter or {}
             scope_filter = None
             safe_sequences = set(scope.get("safe_sequences") or [])
             if safe_sequences:
                 scope_filter = {"safe_sequences": safe_sequences}
-            blocks = _collect_sequence_blocks(
-                self._ds,
-                specs,
-                pair_filter_spec=meta.get("pair_filter"),
-                scope_filter=scope_filter,
+            manifest = helper.build_manifest_from_results(
+                feature_inputs, scope_filter=scope_filter
             )
+            if not manifest:
+                raise RuntimeError(
+                    "[global-ward] Result inputs produced no usable matrices."
+                )
+            blocks = {}
+            for key, entries in manifest.items():
+                X_key, _ = helper.load_key_data(entries, extract_frames=False, key=key)
+                if X_key is not None and X_key.size > 0:
+                    blocks[key] = X_key
             if not blocks:
                 raise RuntimeError(
-                    "[global-ward] Inputset produced no usable matrices."
+                    "[global-ward] Result inputs produced no usable matrices."
                 )
             X = np.vstack(list(blocks.values()))
             if X.ndim != 2:
                 raise ValueError(
                     f"[global-ward] Loaded array must be 2D; got shape={X.shape}"
                 )
-            self._artifact_inputs_meta = meta
             return X.astype(np.float64, copy=False)
 
-        # Simple artifact branch: delegate to shared helper
-        X = _load_artifact_matrix(self._ds, self.params.artifact)
+        # Artifact-only mode: delegate to shared helper
+        X = _load_artifact_matrix(self._ds, self.params.templates)
         return X.astype(np.float64, copy=False)

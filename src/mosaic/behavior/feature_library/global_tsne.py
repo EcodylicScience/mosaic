@@ -19,15 +19,8 @@ from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.dataset import _dataset_base_dir, _resolve_inputs, register_feature
+from mosaic.core.dataset import _dataset_base_dir, register_feature
 
-from ._param_bases import (
-    ArtifactSpec,
-    FeatureParams,
-    FeatureRef,
-    InputSpec,
-    NpzLoadSpec,
-)
 from .helpers import (
     StreamingFeatureHelper,
     _build_index_row,
@@ -36,6 +29,17 @@ from .helpers import (
     _load_array_from_spec,
     _parse_scope_filter,
     _resolve_sequence_identity,
+)
+from .params import (
+    ArtifactSpec,
+    Inputs,
+    JoblibLoadSpec,
+    LoadSpec,
+    NNResult,
+    NpzLoadSpec,
+    OutputType,
+    Params,
+    Result,
 )
 
 
@@ -125,21 +129,69 @@ class GlobalTSNE:
     """
 
     name: str = "global-tsne"
-    version: str = "0.2"
-    output_type: str = "global"
+    version: str = "0.3"
+    output_type: OutputType = "global"
+    parallelizable = False
     skip_transform_phase: bool = True
 
-    class Params(FeatureParams):
+    class TemplatesArtifact(ArtifactSpec):
+        """Template feature vectors (global_templates_features.npz)."""
+
+        feature: str = "global-tsne"
+        pattern: str = "global_templates_features.npz"
+        load: LoadSpec = Field(
+            default_factory=lambda: NpzLoadSpec(key="templates")
+        )
+
+    class TSNECoordsArtifact(ArtifactSpec):
+        """t-SNE coordinates of templates (global_tsne_templates.npz)."""
+
+        feature: str = "global-tsne"
+        pattern: str = "global_tsne_templates.npz"
+        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
+
+    class SeqCoordsArtifact(ArtifactSpec):
+        """Per-sequence t-SNE coordinates (global_tsne_coords_seq=*.npz).
+
+        TODO: migrate to per-frame parquet outputs (frame, tsne_0, tsne_1)
+        following the standard output format convention. Requires threading
+        frame indices through the mapping pipeline.
+        """
+
+        feature: str = "global-tsne"
+        pattern: str = "global_tsne_coords_seq=*.npz"
+        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
+
+    class EmbeddingArtifact(ArtifactSpec):
+        """openTSNE embedding from bundle (joblib, key=embedding)."""
+
+        feature: str = "global-tsne"
+        pattern: str = "global_opentsne_embedding.joblib"
+        load: LoadSpec = Field(
+            default_factory=lambda: JoblibLoadSpec(key="embedding")
+        )
+
+    class ScalerArtifact(ArtifactSpec):
+        """StandardScaler from embedding bundle (joblib, key=scaler)."""
+
+        feature: str = "global-tsne"
+        pattern: str = "global_opentsne_embedding.joblib"
+        load: LoadSpec = Field(
+            default_factory=lambda: JoblibLoadSpec(key="scaler")
+        )
+
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
         """Global t-SNE parameters.
 
         Attributes:
-            inputs: Input specifications. Default includes pair-wavelet and
-                pair-egocentric-wavelet.
-            inputset: Inputset name to resolve.
             map_existing_inputs: Reuse existing embedding. Default False.
-            reuse_embedding: Embedding to reuse.
+            reuse_embedding: Embedding artifact to reuse.
             artifact: Template artifact specification.
-            scaler: Scaler specification.
+            scaler: Scaler artifact specification.
+            pair_filter: Nearest-neighbor pair filter. Default None.
             random_state: Random seed. Default 42.
             r_scaler: Max samples for scaler fitting. Default 200000.
             total_templates: Target farthest-first templates. Default 2000.
@@ -153,25 +205,11 @@ class GlobalTSNE:
             map_chunk: Chunk size for streaming. Default 50000.
         """
 
-        inputs: list[InputSpec] = Field(
-            default_factory=lambda: [
-                InputSpec(
-                    feature="pair-wavelet",
-                    pattern="wavelet_social_seq=*persp=*.npz",
-                    load=NpzLoadSpec(key="spectrogram", transpose=True),
-                ),
-                InputSpec(
-                    feature="pair-egocentric-wavelet",
-                    pattern="wavelet_ego_seq=*persp=*.npz",
-                    load=NpzLoadSpec(key="spectrogram", transpose=True),
-                ),
-            ]
-        )
-        inputset: str | None = None
         map_existing_inputs: bool = False
-        reuse_embedding: FeatureRef | None = None
-        artifact: ArtifactSpec | None = None
-        scaler: FeatureRef | None = None
+        reuse_embedding: GlobalTSNE.EmbeddingArtifact | None = None
+        artifact: GlobalTSNE.TemplatesArtifact | None = None
+        scaler: GlobalTSNE.ScalerArtifact | None = None
+        pair_filter: NNResult | None = None
         random_state: int = 42
         r_scaler: int = Field(default=200_000, ge=1)
         total_templates: int = Field(default=2000, ge=1)
@@ -184,16 +222,23 @@ class GlobalTSNE:
         partial_lr: float = Field(default=1.0, gt=0)
         map_chunk: int = Field(default=50_000, ge=1)
 
-    def __init__(self, params: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: GlobalTSNE.Inputs,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._inputs_overridden = self.params.inputs != self.Params().inputs
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
         self._rng = np.random.default_rng(self.params.random_state)
         self._scaler: StandardScaler | None = None
         self._embedding: TSNEEmbedding | None = None
-        self._artifacts: dict[str, object] = {}
+        self._templates: np.ndarray | None = None
+        self._template_indices: np.ndarray | None = None
+        self._mapped_coords: dict[str, np.ndarray] = {}
+        self._keys: list[str] = []
         self._ds: object = None
-        self._inputs_meta: dict[str, object] = {}
-        self._resolved_inputs: list[object] = []
         self._scope_filter: dict[str, object] | None = None
         self._allowed_safe_sequences: set[str] | None = None
         self._run_root: Path | None = None
@@ -233,6 +278,9 @@ class GlobalTSNE:
         pass
 
     def loads_own_data(self) -> bool:
+        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
+        # applied when loading own data. run_feature() raises RuntimeError
+        # if these filters are set. Future work: apply them during loading.
         return True
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
@@ -240,35 +288,24 @@ class GlobalTSNE:
             raise RuntimeError(
                 "GlobalTSNE requires dataset binding. Ensure Dataset.run_feature calls bind_dataset()."
             )
-        self._artifacts = {}
+        self._templates = None
+        self._template_indices = None
+        self._mapped_coords = {}
+        self._keys = []
         self._additional_index_rows = []
 
-        # 0) Gather inputs from feature indexes
-        inputset_name = self.params.inputset
-        explicit_inputs = (
-            self.params.inputs
-            if (self._inputs_overridden or not inputset_name)
-            else None
-        )
-        inputs, inputs_meta = _resolve_inputs(
-            self._ds,
-            explicit_inputs,
-            inputset_name,
-            explicit_override=self._inputs_overridden,
-        )
-        self._resolved_inputs = inputs
-        self._inputs_meta = inputs_meta
-
-        # Use StreamingFeatureHelper for manifest building
+        # Resolve inputs from self.inputs (Result-based)
         helper = StreamingFeatureHelper(self._ds, "global-tsne")
-        if inputs_meta.get("pair_filter"):
-            helper.set_pair_filter(inputs_meta["pair_filter"])
+        if self.params.pair_filter:
+            helper.set_pair_filter(self.params.pair_filter)
         scope_filter = (
             {"safe_sequences": self._allowed_safe_sequences}
             if self._allowed_safe_sequences
             else None
         )
-        key_file_manifest = helper.build_manifest(inputs, scope_filter=scope_filter)
+        key_file_manifest = helper.build_manifest_from_results(
+            self.inputs.feature_inputs, scope_filter=scope_filter
+        )
 
         if not key_file_manifest:
             raise RuntimeError(
@@ -281,9 +318,8 @@ class GlobalTSNE:
         if self.params.map_existing_inputs:
             self._prepare_reuse_artifacts()
             mapped = self._map_sequences_streaming(key_file_manifest, helper)
-            self._artifacts["mapped_coords"] = mapped if self._run_root is None else {}
-            self._artifacts["keys"] = keys
-            self._artifacts["inputs_meta"] = inputs_meta
+            self._mapped_coords = mapped if self._run_root is None else {}
+            self._keys = keys
             return
 
         # === PASS 1: Sample for scaler fitting and template selection ===
@@ -383,11 +419,10 @@ class GlobalTSNE:
         mapped = self._map_sequences_streaming(key_file_manifest, helper)
 
         # hold artifacts for save_model
-        self._artifacts["keys"] = keys
-        self._artifacts["templates"] = templates
-        self._artifacts["template_indices"] = np.array(sel)
-        self._artifacts["mapped_coords"] = mapped if self._run_root is None else {}
-        self._artifacts["inputs_meta"] = inputs_meta
+        self._keys = keys
+        self._templates = templates
+        self._template_indices = np.array(sel)
+        self._mapped_coords = mapped if self._run_root is None else {}
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # Just a stub so Dataset.run_feature can index a parquet per (group,sequence)
@@ -398,7 +433,7 @@ class GlobalTSNE:
         run_root.mkdir(parents=True, exist_ok=True)
 
         # Save templates
-        templates = self._artifacts.get("templates")
+        templates = self._templates
         if templates is not None:
             np.savez_compressed(
                 run_root / "global_templates_features.npz", templates=templates
@@ -410,7 +445,7 @@ class GlobalTSNE:
             np.savez_compressed(
                 run_root / "global_tsne_templates.npz",
                 Y=Y_templates,
-                sel=self._artifacts.get("template_indices", np.array([], int)),
+                sel=self._template_indices if self._template_indices is not None else np.array([], int),
             )
 
         # Save embedding + scaler
@@ -424,92 +459,93 @@ class GlobalTSNE:
         )
 
         # Save per-key coords
-        mapped = self._artifacts.get("mapped_coords", {})
+        mapped = self._mapped_coords
         for safe_seq, Y in mapped.items():
             out_name = f"global_tsne_coords_seq={safe_seq}.npz"
             np.savez_compressed(run_root / out_name, Y=Y)
 
     def load_model(self, path: Path) -> None:
         bundle = joblib.load(path)
-        self._embedding = bundle.get("embedding", None)
-        self._scaler = bundle.get("scaler", None)
+        embedding = bundle.get("embedding")
+        if embedding is not None and not isinstance(embedding, TSNEEmbedding):
+            raise ValueError(
+                f"load_model: expected TSNEEmbedding, got {type(embedding).__name__}"
+            )
+        self._embedding = embedding
+        scaler = bundle.get("scaler")
+        if scaler is not None and not isinstance(scaler, StandardScaler):
+            raise ValueError(
+                f"load_model: expected StandardScaler, got {type(scaler).__name__}"
+            )
+        self._scaler = scaler
         saved = bundle.get("params", {})
         if isinstance(saved, dict):
             self.params = self.Params.model_validate(saved)
 
-    def _load_embedding_from_spec(self, spec: FeatureRef) -> tuple[object, object]:
-        feature = spec.feature
-        if not feature:
-            raise ValueError("reuse_embedding spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(
-            self._ds, feature, spec.run_id
+    def _load_embedding(
+        self, artifact: GlobalTSNE.EmbeddingArtifact
+    ) -> tuple[TSNEEmbedding, StandardScaler | None]:
+        _, run_root = _get_feature_run_root(
+            self._ds, artifact.feature, artifact.run_id
         )
-        pattern = spec.pattern or "global_opentsne_embedding.joblib"
-        files = sorted(run_root.glob(pattern))
+        files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
-                f"reuse_embedding: no files matching '{pattern}' in {run_root}"
+                f"reuse_embedding: no files matching '{artifact.pattern}' in {run_root}"
             )
         bundle = joblib.load(files[0])
-        embedding = bundle.get("embedding")
-        scaler = bundle.get("scaler")
-        if embedding is None:
+        if not isinstance(bundle, dict):
             raise ValueError(
-                f"reuse_embedding bundle missing 'embedding' object: {files[0]}"
+                f"reuse_embedding: expected dict bundle, got {type(bundle).__name__}: {files[0]}"
             )
-        self._artifacts.setdefault("reuse_sources", {})["embedding"] = {
-            "feature": feature,
-            "run_id": resolved_run_id,
-            "path": str(files[0]),
-        }
+        key = artifact.load.key if isinstance(artifact.load, JoblibLoadSpec) else "embedding"
+        embedding = bundle.get(key)
+        if not isinstance(embedding, TSNEEmbedding):
+            raise ValueError(
+                f"reuse_embedding: expected TSNEEmbedding for key '{key}', "
+                f"got {type(embedding).__name__}: {files[0]}"
+            )
+        scaler = bundle.get("scaler")
+        if scaler is not None and not isinstance(scaler, StandardScaler):
+            raise ValueError(
+                f"reuse_embedding: expected StandardScaler for key 'scaler', "
+                f"got {type(scaler).__name__}: {files[0]}"
+            )
         return embedding, scaler
 
-    def _load_scaler_from_spec(self, spec: FeatureRef) -> object:
-        feature = spec.feature
-        if not feature:
-            raise ValueError("scaler spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(
-            self._ds, feature, spec.run_id
+    def _load_scaler(self, artifact: GlobalTSNE.ScalerArtifact) -> StandardScaler:
+        _, run_root = _get_feature_run_root(
+            self._ds, artifact.feature, artifact.run_id
         )
-        pattern = spec.pattern or "global_opentsne_embedding.joblib"
-        files = sorted(run_root.glob(pattern))
+        files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
-                f"scaler spec: no files matching '{pattern}' in {run_root}"
+                f"scaler: no files matching '{artifact.pattern}' in {run_root}"
             )
         obj = joblib.load(files[0])
-        # FeatureRef doesn't have a 'key' field, so load the object directly
-        scaler = obj
-        self._artifacts.setdefault("reuse_sources", {})["scaler"] = {
-            "feature": feature,
-            "run_id": resolved_run_id,
-            "path": str(files[0]),
-        }
-        return scaler
+        key = artifact.load.key if isinstance(artifact.load, JoblibLoadSpec) else None
+        if key is not None and isinstance(obj, dict):
+            obj = obj[key]
+        if not isinstance(obj, StandardScaler):
+            raise ValueError(
+                f"scaler: expected StandardScaler, got {type(obj).__name__}: {files[0]}"
+            )
+        return obj
 
-    def _load_templates_from_spec(self, spec: ArtifactSpec) -> np.ndarray | None:
-        feature = spec.feature
-        if not feature:
-            raise ValueError("artifact spec requires 'feature'.")
-        resolved_run_id, run_root = _get_feature_run_root(
-            self._ds, feature, spec.run_id
+    def _load_templates(self, artifact: GlobalTSNE.TemplatesArtifact) -> np.ndarray | None:
+        _, run_root = _get_feature_run_root(
+            self._ds, artifact.feature, artifact.run_id
         )
-        pattern = spec.pattern or "global_templates_features.npz"
-        files = sorted(run_root.glob(pattern))
+        files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
-                f"artifact spec: no files matching '{pattern}' in {run_root}"
+                f"templates: no files matching '{artifact.pattern}' in {run_root}"
             )
-        arr, _ = _load_array_from_spec(files[0], spec.load)
+        arr, _ = _load_array_from_spec(files[0], artifact.load)
         if arr is None:
             return None
         if arr.ndim == 1:
             arr = arr[None, :]
-        self._artifacts.setdefault("reuse_sources", {})["templates"] = {
-            "feature": feature,
-            "run_id": resolved_run_id,
-            "path": str(files[0]),
-        }
         return arr
 
     def _prepare_reuse_artifacts(self) -> None:
@@ -518,21 +554,21 @@ class GlobalTSNE:
             raise ValueError(
                 "map_existing_inputs=True requires params['reuse_embedding']."
             )
-        embedding, scaler = self._load_embedding_from_spec(emb_spec)
+        embedding, scaler = self._load_embedding(emb_spec)
         self._embedding = embedding
         self._scaler = scaler
         scaler_override = self.params.scaler
         if scaler_override:
-            self._scaler = self._load_scaler_from_spec(scaler_override)
+            self._scaler = self._load_scaler(scaler_override)
         if self._scaler is None:
             raise ValueError(
                 "Reusable embedding bundle missing scaler; provide params['scaler']."
             )
         art_spec = self.params.artifact
         if art_spec:
-            templates = self._load_templates_from_spec(art_spec)
+            templates = self._load_templates(art_spec)
             if templates is not None:
-                self._artifacts["templates"] = templates
+                self._templates = templates
 
     def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
         if self._sequence_lookup_cache is not None:

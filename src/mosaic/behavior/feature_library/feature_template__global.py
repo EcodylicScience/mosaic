@@ -3,14 +3,15 @@ Template for a global feature (clustering, embedding, dimensionality reduction).
 
 Copy this file, rename the class and `name`, and fill in your logic.
 
-Current patterns this template follows (as of 2026-02):
+Current patterns this template follows (as of 2026-03):
   - skip_transform_phase = True  (all work in fit/save_model, no per-seq transform)
   - loads_own_data() = True      (skips run_feature pre-loading)
-  - Uses Pydantic FeatureParams for typed, validated parameters
-  - Uses StreamingFeatureHelper for manifest building + data loading
+  - Uses Pydantic Params for typed, validated parameters
+  - Uses StreamingFeatureHelper with build_manifest_from_results for data loading
   - set_run_root() for streaming writes during fit
   - get_additional_index_rows() to register artifacts in the feature index
   - Shared helpers from helpers.py for scope parsing, sequence identity, index rows
+  - Data inputs via constructor `inputs` (Result-based), not Params
   - output_type = "global"
 
 See GlobalTSNE and WardAssignClustering for real examples.
@@ -27,16 +28,11 @@ from typing import final
 import joblib
 import numpy as np
 import pandas as pd
-from pydantic import Field
 
 # from mosaic.core.dataset import register_feature  # <-- uncomment when ready
-from mosaic.core.dataset import (
-    _dataset_base_dir,
-    _resolve_inputs,
-)
+from mosaic.core.dataset import _dataset_base_dir
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import FeatureParams
 from .helpers import (
     StreamingFeatureHelper,
     _build_index_row,
@@ -44,6 +40,7 @@ from .helpers import (
     _parse_scope_filter,
     _resolve_sequence_identity,
 )
+from .params import Inputs, NNResult, OutputType, Params, Result
 
 
 @final
@@ -52,12 +49,12 @@ class MyGlobalFeature:
     """
     Template for a global feature.
 
-    Global features load data from prior feature outputs (via an inputset or
-    explicit inputs), run a cross-sequence algorithm in fit(), and write
-    artifacts directly to disk.  The transform phase is skipped entirely.
+    Global features load data from prior feature outputs (via Result-based
+    inputs), run a cross-sequence algorithm in fit(), and write artifacts
+    directly to disk.  The transform phase is skipped entirely.
 
     Typical workflow:
-      1. fit() loads matrices via StreamingFeatureHelper
+      1. fit() loads matrices via StreamingFeatureHelper.build_manifest_from_results()
       2. Runs global computation (clustering, embedding, etc.)
       3. Writes per-sequence outputs + global artifacts via _run_root
       4. save_model() persists any model state (linkage, embedding, etc.)
@@ -66,25 +63,32 @@ class MyGlobalFeature:
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False
-    output_type = "global"
+    output_type: OutputType = "global"
     skip_transform_phase = True  # all work in fit/save_model
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
         """Global feature template parameters.
 
         Attributes:
-            inputs: Input specifications. Default empty list.
-            inputset: Inputset name to resolve.
             random_state: Random seed. Default 42.
+            pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
-        inputs: list[dict[str, object]] = Field(default_factory=list)
-        inputset: str | None = None
         random_state: int = 42
+        pair_filter: NNResult | None = None
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: MyGlobalFeature.Inputs,
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._inputs_overridden = self.params.inputs != self.Params().inputs
+        self.storage_feature_name = self.name
+        self.storage_use_input_suffix = True
 
         self._ds = None
         self._run_root: Path | None = None
@@ -122,6 +126,9 @@ class MyGlobalFeature:
         return False
 
     def loads_own_data(self) -> bool:
+        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
+        # applied when loading own data. run_feature() raises RuntimeError
+        # if these filters are set. Future work: apply them during loading.
         return True
 
     def partial_fit(self, X: pd.DataFrame) -> None:
@@ -140,34 +147,22 @@ class MyGlobalFeature:
             raise RuntimeError(f"{self.name}: dataset not bound.")
         self._additional_index_rows = []
 
-        # 1) Resolve inputs from inputset or explicit list
-        inputset_name = self.params.inputset
-        explicit_inputs = (
-            self.params.inputs
-            if (self._inputs_overridden or not inputset_name)
-            else None
-        )
-        inputs, inputs_meta = _resolve_inputs(
-            self._ds,
-            explicit_inputs,
-            inputset_name,
-            explicit_override=self._inputs_overridden,
-        )
-
-        # 2) Build manifest (paths only, no data loaded yet)
+        # Build manifest from Result-based inputs
         helper = StreamingFeatureHelper(self._ds, self.name)
-        if inputs_meta.get("pair_filter"):
-            helper.set_pair_filter(inputs_meta["pair_filter"])
+        if self.params.pair_filter:
+            helper.set_pair_filter(self.params.pair_filter)
         scope_filter = (
             {"safe_sequences": self._allowed_safe_sequences}
             if self._allowed_safe_sequences
             else None
         )
-        manifest = helper.build_manifest(inputs, scope_filter=scope_filter)
+        manifest = helper.build_manifest_from_results(
+            self.inputs.feature_inputs, scope_filter=scope_filter
+        )
         if not manifest:
             raise RuntimeError(f"{self.name}: no usable inputs found.")
 
-        # 3) Stream through data
+        # Stream through data
         keys = list(manifest.keys())
         for i, key in enumerate(keys):
             X, frames = helper.load_key_data(
@@ -194,8 +189,6 @@ class MyGlobalFeature:
                     file=sys.stderr,
                 )
 
-        self._artifacts["inputs_meta"] = inputs_meta
-
     # ----------------------- Save / Load -------------------------
 
     def save_model(self, path: Path) -> None:
@@ -204,7 +197,6 @@ class MyGlobalFeature:
         joblib.dump(
             {
                 "params": self.params.model_dump(),
-                "meta": self._artifacts.get("inputs_meta", {}),
             },
             path,
         )

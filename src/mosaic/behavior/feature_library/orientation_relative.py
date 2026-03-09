@@ -21,8 +21,8 @@ from mosaic.core.dataset import (
 )
 from mosaic.core.helpers import to_safe_name
 
-from ._param_bases import FeatureParams
 from .helpers import _pose_column_pairs
+from .params import Inputs, OutputType, Params, TrackInput
 
 
 @final
@@ -40,9 +40,12 @@ class OrientationRelativeFeature:
     name = "orientation-rel"
     version = "0.1"
     parallelizable = True
-    output_type = "per_frame"
+    output_type: OutputType = "per_frame"
 
-    class Params(FeatureParams):
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
         """Orientation-relative feature parameters.
 
         Attributes:
@@ -61,16 +64,25 @@ class OrientationRelativeFeature:
         nearest_k: int = Field(default=3, ge=1)
         quantiles: list[float] = Field(default=[0.25, 0.5, 0.75])
 
-    def __init__(self, params: dict[str, object] | None = None):
+    def __init__(
+        self,
+        inputs: OrientationRelativeFeature.Inputs = Inputs(("tracks",)),
+        params: dict[str, object] | None = None,
+    ):
+        self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = False
         self._ds = None
         self._scale_lookup: dict[str, float] = {}
+        self._scope_filter: dict[str, object] = {}
 
     def bind_dataset(self, ds):
         self._ds = ds
         self._load_scales()
+
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+        self._scope_filter = scope or {}
 
     def _load_scales(self):
         self._scale_lookup = {}
@@ -110,6 +122,9 @@ class OrientationRelativeFeature:
         return False
 
     def supports_partial_fit(self) -> bool:
+        return False
+
+    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]):

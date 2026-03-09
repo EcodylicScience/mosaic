@@ -10,29 +10,21 @@ from __future__ import annotations
 import gc
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Optional,
-    Tuple,
-    TypeVar,
-)
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator
+
+from .params import ArtifactSpec, JoblibLoadSpec, NpzLoadSpec, ParquetLoadSpec
+
+if TYPE_CHECKING:
+    from .params import DictModel, LoadSpec, Result
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.helpers import to_safe_name
 
-T = TypeVar("T")
 
-
-def _pose_column_pairs(columns: Iterable[str]) -> list[Tuple[str, str]]:
+def _pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
     """Extract (poseX*, poseY*) column pairs from column names."""
     pose_pairs = []
     xs = [c for c in columns if c.startswith("poseX")]
@@ -46,11 +38,11 @@ def _pose_column_pairs(columns: Iterable[str]) -> list[Tuple[str, str]]:
 
 def _load_array_from_spec(
     path: Path,
-    load_spec: dict,
-    extract_frame_col: Optional[str] = None,
-    df_filter: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    df: Optional[pd.DataFrame] = None,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    load_spec: LoadSpec,
+    extract_frame_col: str | None = None,
+    df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    df: pd.DataFrame | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """
     Load a numpy array from a file according to a load specification.
 
@@ -58,14 +50,8 @@ def _load_array_from_spec(
     ----------
     path : Path
         Path to the file to load
-    load_spec : dict
-        Load specification with keys:
-        - kind: "npz" or "parquet"
-        - transpose: bool (optional)
-        - key: str (required if kind="npz")
-        - columns: list (optional, for parquet)
-        - drop_columns: list (optional, for parquet)
-        - numeric_only: bool (optional, for parquet)
+    load_spec : LoadSpec
+        Typed load specification (NpzLoadSpec, ParquetLoadSpec, or JoblibLoadSpec)
     extract_frame_col : str, optional
         If provided, extract this column as frame indices before feature loading
     df_filter : callable, optional
@@ -78,56 +64,50 @@ def _load_array_from_spec(
 
     Returns
     -------
-    Tuple[np.ndarray or None, np.ndarray or None]
+    tuple[np.ndarray or None, np.ndarray or None]
         (features array as float32, frame indices or None)
     """
     import pyarrow as pa
 
-    kind = str(load_spec.get("kind", "parquet")).lower()
-    transpose = bool(load_spec.get("transpose", False))
-    frames: Optional[np.ndarray] = None
+    frames: np.ndarray | None = None
 
-    if kind == "npz":
-        key = load_spec.get("key")
-        if not key:
-            raise ValueError("load.kind='npz' requires 'key'")
+    if isinstance(load_spec, NpzLoadSpec):
         npz = np.load(path, allow_pickle=True)
-        if key not in npz.files:
+        if load_spec.key not in npz.files:
             return None, None
-        A = np.asarray(npz[key])
+        A = np.asarray(npz[load_spec.key])
         if A.ndim == 1:
             A = A[None, :]
-    elif kind == "parquet":
+        if load_spec.transpose:
+            A = A.T
+
+    elif isinstance(load_spec, ParquetLoadSpec):
         if df is not None:
             df = df.copy()
         else:
             df = pd.read_parquet(path)
 
-        # Apply row-level filter (e.g. NN pair filter) before dropping metadata
         if df_filter is not None:
             df = df_filter(df)
             if df.empty:
                 return None, None
 
-        # Extract frame column if requested
-        frame_col = extract_frame_col or load_spec.get("frame_column")
+        frame_col = extract_frame_col or load_spec.frame_column
         if frame_col and frame_col in df.columns:
             try:
                 frames = df[frame_col].to_numpy(dtype=np.int64, copy=True)
             except Exception:
                 frames = df[frame_col].to_numpy(copy=True)
 
-        drop_cols = load_spec.get("drop_columns")
-        if drop_cols:
+        if load_spec.drop_columns:
             df = df.drop(
-                columns=[c for c in drop_cols if c in df.columns], errors="ignore"
+                columns=[c for c in load_spec.drop_columns if c in df.columns],
+                errors="ignore",
             )
-        cols = load_spec.get("columns")
-        if cols:
-            df = df[[c for c in cols if c in df.columns]]
-        elif load_spec.get("numeric_only", True):
+        if load_spec.columns:
+            df = df[[c for c in load_spec.columns if c in df.columns]]
+        elif load_spec.numeric_only:
             df = df.select_dtypes(include=[np.number])
-            # Drop metadata columns that are numeric but not features
             for mc in (
                 "frame",
                 "time",
@@ -143,76 +123,27 @@ def _load_array_from_spec(
                     df = df.drop(columns=[mc])
         else:
             df = df.apply(pd.to_numeric, errors="coerce")
-        # CRITICAL: copy=True to decouple from Arrow memory
         A = df.to_numpy(dtype=np.float32, copy=True)
         del df
         pa.default_memory_pool().release_unused()
+
+        if load_spec.transpose:
+            A = A.T
+
     else:
-        raise ValueError(f"Unsupported load.kind='{kind}'")
+        raise ValueError(f"Unsupported load spec type: {type(load_spec).__name__}")
 
     if A.size == 0:
         return None, frames
-    if transpose:
-        A = A.T
     if A.ndim == 1:
         A = A[None, :]
     return A.astype(np.float32, copy=False), frames
 
 
-def _collect_sequence_blocks(
-    ds,
-    specs: list[dict],
-    pair_filter_spec: Optional[dict] = None,
-    scope_filter: Optional[dict] = None,
-) -> dict[str, np.ndarray]:
-    """
-    Load per-sequence stacked matrices for a given list of input specs.
-
-    Used by global features that need to collect data from multiple feature runs.
-
-    Parameters
-    ----------
-    ds : Dataset
-        Dataset instance
-    specs : list[dict]
-        List of input specifications, each with:
-        - feature: str (feature name)
-        - run_id: str or None
-        - pattern: str (glob pattern, default "*.parquet")
-        - load: dict (load specification)
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        Mapping from sequence_safe to concatenated feature matrix
-    """
-    helper = StreamingFeatureHelper(ds, "collect-sequence-blocks")
-    if pair_filter_spec:
-        helper.set_pair_filter(pair_filter_spec)
-    manifest = helper.build_manifest(specs, scope_filter=scope_filter)
-    per_seq: dict[str, list[np.ndarray]] = defaultdict(list)
-    for safe_seq, file_specs in manifest.items():
-        arr, _ = helper.load_key_data(file_specs, extract_frames=False, key=safe_seq)
-        if arr is None:
-            continue
-        per_seq[safe_seq].append(arr)
-
-    blocks: dict[str, np.ndarray] = {}
-    for safe_seq, mats in per_seq.items():
-        mats = [m for m in mats if m.size]
-        if not mats:
-            continue
-        T_min = min(m.shape[0] for m in mats)
-        if T_min <= 0:
-            continue
-        mats = [m[:T_min] for m in mats]
-        blocks[safe_seq] = np.hstack(mats)
-    return blocks
-
 
 def _normalize_identity_columns(
     df: pd.DataFrame,
-) -> tuple[Optional[pd.Series], Optional[pd.Series], str]:
+) -> tuple[pd.Series | None, pd.Series | None, str]:
     """
     Extract canonical identity columns from a frame-aligned DataFrame.
 
@@ -340,7 +271,7 @@ def _build_path_sequence_map(
 def _build_nn_lookup(
     ds,
     sequence_safe: str,
-    pair_filter_spec: dict,
+    pair_filter_spec: DictModel | dict,
 ) -> dict[tuple[int, int], int]:
     """
     Build a per-frame nearest-neighbor lookup for a given sequence.
@@ -502,11 +433,11 @@ class StreamingFeatureHelper:
         """
         self.ds = ds
         self.feature_name = feature_name
-        self._seq_path_cache: Dict[Tuple[str, str], Dict[Path, str]] = {}
-        self._pair_filter_spec: Optional[dict] = None
-        self._nn_lookup_cache: Dict[str, dict] = {}
+        self._seq_path_cache: dict[tuple[str, str], dict[Path, str]] = {}
+        self._pair_filter_spec: dict | None = None
+        self._nn_lookup_cache: dict[str, dict] = {}
 
-    def set_pair_filter(self, pair_filter_spec: Optional[dict]) -> None:
+    def set_pair_filter(self, pair_filter_spec: DictModel | dict | None) -> None:
         """Configure pair filtering (e.g. nearest-neighbor) for subsequent loads."""
         self._pair_filter_spec = pair_filter_spec
 
@@ -524,7 +455,7 @@ class StreamingFeatureHelper:
 
     def _make_df_filter(
         self, key: str
-    ) -> Optional[Callable[[pd.DataFrame], pd.DataFrame]]:
+    ) -> Callable[[pd.DataFrame], pd.DataFrame] | None:
         """Return a DataFrame filter callable for the given sequence, or None."""
         if self._pair_filter_spec is None:
             return None
@@ -538,36 +469,49 @@ class StreamingFeatureHelper:
 
         return _filter
 
+    def build_manifest_from_results(
+        self,
+        results: tuple[Result, ...],
+        scope_filter: dict | None = None,
+    ) -> dict[str, list[tuple[Path, LoadSpec]]]:
+        """Build manifest from Result objects (per-frame parquet outputs)."""
+        specs = [
+            ArtifactSpec(feature=r.feature, run_id=r.run_id, load=ParquetLoadSpec())
+            for r in results
+        ]
+        manifest = self.build_manifest(specs, scope_filter=scope_filter)
+        if not manifest:
+            labels = ", ".join(f"{r.feature} ({r.run_id})" for r in results)
+            raise RuntimeError(
+                f"[{self.feature_name}] build_manifest_from_results: "
+                f"no per-sequence parquet files found for inputs: {labels}"
+            )
+        return manifest
+
     def build_manifest(
         self,
-        inputs: List[dict],
-        scope_filter: Optional[dict] = None,
-    ) -> Dict[str, List[Tuple[Path, dict]]]:
+        inputs: list[ArtifactSpec],
+        scope_filter: dict | None = None,
+    ) -> dict[str, list[tuple[Path, LoadSpec]]]:
         """
         Build manifest of file paths per sequence WITHOUT loading data.
 
         Parameters
         ----------
-        inputs : List[dict]
-            List of input specifications, each with:
-            - feature: str (feature name)
-            - run_id: str or None (pick latest if None)
-            - pattern: str (glob pattern, default "*.parquet")
-            - load: dict (load specification)
+        inputs : list[ArtifactSpec]
+            List of typed artifact specifications.
         scope_filter : dict, optional
             Scope constraints with keys:
             - safe_sequences: set of allowed sequence names
-            - groups: set of allowed groups
-            - safe_groups: set of allowed safe group names
 
         Returns
         -------
-        Dict[str, List[Tuple[Path, dict]]]
+        dict[str, list[tuple[Path, LoadSpec]]]
             Mapping from sequence key to list of (path, load_spec) tuples
         """
         from mosaic.core.dataset import _feature_run_root, _latest_feature_run_root
 
-        manifest: Dict[str, List[Tuple[Path, dict]]] = {}
+        manifest: dict[str, list[tuple[Path, LoadSpec]]] = {}
 
         # Parse scope filter
         allowed_safe = None
@@ -577,15 +521,15 @@ class StreamingFeatureHelper:
                 allowed_safe = {str(s) for s in safe_seqs}
 
         for spec in inputs:
-            feat_name = spec["feature"]
-            run_id = spec.get("run_id")
+            feat_name = spec.feature
+            run_id = spec.run_id
             if run_id is None:
                 run_id, run_root = _latest_feature_run_root(self.ds, feat_name)
             else:
                 run_root = _feature_run_root(self.ds, feat_name, run_id)
 
-            pattern = spec.get("pattern", "*.parquet")
-            load_spec = spec.get("load", {"kind": "parquet", "transpose": False})
+            pattern = spec.pattern
+            load_spec = spec.load
             files = sorted(run_root.glob(pattern))
 
             if not files:
@@ -599,6 +543,8 @@ class StreamingFeatureHelper:
 
             for pth in files:
                 key = self._extract_key(pth, seq_map)
+                if key is None:
+                    continue
                 if allowed_safe is not None and key not in allowed_safe:
                     continue
                 if key not in manifest:
@@ -609,10 +555,10 @@ class StreamingFeatureHelper:
 
     def iter_sequences(
         self,
-        manifest: Dict[str, List[Tuple[Path, dict]]],
+        manifest: dict[str, list[tuple[Path, LoadSpec]]],
         extract_frames: bool = False,
         progress_interval: int = 10,
-    ) -> Iterator[Tuple[str, np.ndarray, Optional[np.ndarray]]]:
+    ) -> Iterator[tuple[str, np.ndarray, np.ndarray | None]]:
         """
         Iterate through manifest, yielding (key, X_combined, frames) one at a time.
 
@@ -620,7 +566,7 @@ class StreamingFeatureHelper:
 
         Parameters
         ----------
-        manifest : Dict[str, List[Tuple[Path, dict]]]
+        manifest : dict[str, list[tuple[Path, dict]]]
             Manifest from build_manifest()
         extract_frames : bool, default False
             Whether to extract frame column from parquet files
@@ -629,7 +575,7 @@ class StreamingFeatureHelper:
 
         Yields
         ------
-        Tuple[str, np.ndarray, Optional[np.ndarray]]
+        tuple[str, np.ndarray, np.ndarray | None]
             (sequence_key, feature_matrix, frame_indices or None)
         """
         import pyarrow as pa
@@ -659,16 +605,16 @@ class StreamingFeatureHelper:
 
     def load_key_data(
         self,
-        file_specs: List[Tuple[Path, dict]],
+        file_specs: list[tuple[Path, LoadSpec]],
         extract_frames: bool = False,
-        key: Optional[str] = None,
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        key: str | None = None,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
         """
         Load and concatenate data for a single key.
 
         Parameters
         ----------
-        file_specs : List[Tuple[Path, dict]]
+        file_specs : list[tuple[Path, dict]]
             List of (path, load_spec) tuples
         extract_frames : bool, default False
             Whether to extract frame column
@@ -677,7 +623,7 @@ class StreamingFeatureHelper:
 
         Returns
         -------
-        Tuple[np.ndarray or None, np.ndarray or None]
+        tuple[np.ndarray or None, np.ndarray or None]
             (combined_features, frame_indices or None)
         """
         import pyarrow as pa
@@ -719,9 +665,9 @@ class StreamingFeatureHelper:
     def _load_identity_from_spec(
         self,
         path: Path,
-        load_spec: dict,
-        df_filter: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], str]:
+        load_spec: LoadSpec,
+        df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, str]:
         """
         Load identity metadata from a source file.
 
@@ -730,8 +676,7 @@ class StreamingFeatureHelper:
         tuple
             (id1_values_or_None, id2_values_or_None, entity_level)
         """
-        kind = str(load_spec.get("kind", "parquet")).lower()
-        if kind != "parquet":
+        if not isinstance(load_spec, ParquetLoadSpec):
             return None, None, "global"
 
         df = pd.read_parquet(path)
@@ -753,14 +698,14 @@ class StreamingFeatureHelper:
 
     def load_key_data_with_identity(
         self,
-        file_specs: List[Tuple[Path, dict]],
+        file_specs: list[tuple[Path, LoadSpec]],
         extract_frames: bool = False,
-        key: Optional[str] = None,
-    ) -> Tuple[
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
+        key: str | None = None,
+    ) -> tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
         str,
     ]:
         """
@@ -776,8 +721,8 @@ class StreamingFeatureHelper:
         df_filter = self._make_df_filter(key) if key else None
         mats = []
         frames = None
-        id1_vals: Optional[np.ndarray] = None
-        id2_vals: Optional[np.ndarray] = None
+        id1_vals: np.ndarray | None = None
+        id2_vals: np.ndarray | None = None
         entity_level = "global"
 
         for pth, load_spec in file_specs:
@@ -828,7 +773,7 @@ class StreamingFeatureHelper:
 
         return X_full, frames, id1_vals, id2_vals, entity_level
 
-    def _get_seq_map(self, feature_name: str, run_id: str) -> Dict[Path, str]:
+    def _get_seq_map(self, feature_name: str, run_id: str) -> dict[Path, str]:
         """Get cached sequence path mapping."""
         cache_key = (feature_name, str(run_id))
         if cache_key in self._seq_path_cache:
@@ -837,8 +782,8 @@ class StreamingFeatureHelper:
         self._seq_path_cache[cache_key] = mapping
         return mapping
 
-    def _extract_key(self, path: Path, seq_map: Dict[Path, str]) -> str:
-        """Extract sequence key from file path."""
+    def _extract_key(self, path: Path, seq_map: dict[Path, str]) -> str | None:
+        """Extract sequence key from file path, or None if not a sequence file."""
         stem = path.stem
         # Try to extract from filename pattern: seq=<key>
         m = re.search(r"seq=(.+?)(?:_persp=.*)?$", stem)
@@ -848,8 +793,7 @@ class StreamingFeatureHelper:
         key = seq_map.get(path.resolve())
         if key:
             return str(key)
-        # Last resort: use safe name of stem
-        return to_safe_name(stem)
+        return None
 
 
 # -----------------------------------------------------------------------------
@@ -858,8 +802,8 @@ class StreamingFeatureHelper:
 
 
 def _parse_scope_filter(
-    scope: Optional[dict],
-) -> tuple[Optional[set[str]], dict[str, tuple[str, str]]]:
+    scope: dict | None,
+) -> tuple[set[str] | None, dict[str, tuple[str, str]]]:
     """
     Parse a scope filter dict into structured components.
 
@@ -890,7 +834,7 @@ def _parse_scope_filter(
 
 def _build_sequence_lookup(
     ds,
-    allowed_safe_sequences: Optional[set[str]] = None,
+    allowed_safe_sequences: set[str] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """
     Build a {safe_seq -> (group, sequence)} lookup from the tracks index.
@@ -963,7 +907,7 @@ def _resolve_sequence_identity(
 def _get_feature_run_root(
     ds,
     feature_name: str,
-    run_id: Optional[str] = None,
+    run_id: str | None = None,
 ) -> tuple[str, Path]:
     """
     Resolve (run_id, run_root_path) for a feature.
@@ -979,7 +923,7 @@ def _get_feature_run_root(
     return str(run_id), run_root
 
 
-def _load_joblib_artifact(ds, spec: dict) -> Any:
+def _load_joblib_artifact(ds, artifact: ArtifactSpec) -> object:
     """
     Load a joblib artifact from a feature run root.
 
@@ -987,34 +931,32 @@ def _load_joblib_artifact(ds, spec: dict) -> Any:
     ----------
     ds : Dataset
         Dataset instance
-    spec : dict
-        Specification with keys:
-        - feature: str (required)
-        - run_id: str or None (None picks latest)
-        - pattern: str (glob pattern, default "*.joblib")
-        - key: str or None (if not None, extract this key from loaded object)
+    artifact : ArtifactSpec
+        Typed artifact specification with feature, run_id, pattern, and load spec.
 
     Returns
     -------
-    Any
-        The loaded object, or obj[key] if key is specified
+    object
+        The loaded object, or obj[key] if load spec has a key
     """
     import joblib
 
-    feature = spec.get("feature")
-    if not feature:
-        raise ValueError("Artifact spec requires 'feature'.")
-    _, run_root = _get_feature_run_root(ds, feature, spec.get("run_id"))
-    pattern = spec.get("pattern", "*.joblib")
-    files = sorted(run_root.glob(pattern))
+    if not isinstance(artifact.load, JoblibLoadSpec):
+        raise ValueError(
+            f"_load_joblib_artifact requires JoblibLoadSpec, "
+            f"got {type(artifact.load).__name__}"
+        )
+    _, run_root = _get_feature_run_root(ds, artifact.feature, artifact.run_id)
+    files = sorted(run_root.glob(artifact.pattern))
     if not files:
-        raise FileNotFoundError(f"No files matching '{pattern}' in {run_root}")
+        raise FileNotFoundError(
+            f"No files matching '{artifact.pattern}' in {run_root}"
+        )
     obj = joblib.load(files[0])
-    key = spec.get("key")
-    return obj if key is None else obj[key]
+    return obj if artifact.load.key is None else obj[artifact.load.key]
 
 
-def _load_artifact_matrix(ds, artifact_spec: dict) -> np.ndarray:
+def _load_artifact_matrix(ds, artifact: ArtifactSpec) -> np.ndarray:
     """
     Load a numeric matrix from a feature artifact (npz or parquet).
 
@@ -1022,40 +964,27 @@ def _load_artifact_matrix(ds, artifact_spec: dict) -> np.ndarray:
     ----------
     ds : Dataset
         Dataset instance
-    artifact_spec : dict
-        Specification with keys:
-        - feature: str (required)
-        - run_id: str or None
-        - pattern: str (glob pattern)
-        - load: dict with keys:
-            - kind: "npz" or "parquet"
-            - key: str (required for npz)
-            - transpose: bool (optional)
-            - columns: list[str] (optional, for parquet)
-            - numeric_only: bool (default True, for parquet)
+    artifact : ArtifactSpec
+        Typed artifact specification with feature, run_id, pattern, and load spec.
 
     Returns
     -------
     np.ndarray
         Loaded matrix as float32
     """
-    feature = artifact_spec.get("feature")
-    if not feature:
-        raise ValueError("artifact.feature required.")
-    _, run_root = _get_feature_run_root(ds, feature, artifact_spec.get("run_id"))
-    pattern = artifact_spec.get("pattern", "*.npz")
-    loader = artifact_spec.get(
-        "load", {"kind": "npz", "key": "templates", "transpose": False}
-    )
-    files = sorted(run_root.glob(pattern))
+    _, run_root = _get_feature_run_root(ds, artifact.feature, artifact.run_id)
+    files = sorted(run_root.glob(artifact.pattern))
     if not files:
-        raise FileNotFoundError(f"No files matching '{pattern}' in {run_root}")
+        raise FileNotFoundError(
+            f"No files matching '{artifact.pattern}' in {run_root}"
+        )
 
-    kind = str(loader.get("kind", "npz")).lower()
-    transpose = bool(loader.get("transpose", False))
+    loader = artifact.load
+    kind = loader.kind
+    transpose = bool(getattr(loader, "transpose", False))
 
     if kind == "npz":
-        key = loader.get("key")
+        key = getattr(loader, "key", None)
         if not key:
             raise ValueError("artifact.load.kind='npz' requires 'key'")
         mats = []
@@ -1076,12 +1005,13 @@ def _load_artifact_matrix(ds, artifact_spec: dict) -> np.ndarray:
         return np.vstack(mats) if len(mats) > 1 else mats[0]
     elif kind == "parquet":
         dfs = []
+        cols = getattr(loader, "columns", None)
+        numeric_only = getattr(loader, "numeric_only", True)
         for fp in files:
             df = pd.read_parquet(fp)
-            cols = loader.get("columns")
             if cols:
                 df = df[[c for c in cols if c in df.columns]]
-            elif loader.get("numeric_only", True):
+            elif numeric_only:
                 df = df.select_dtypes(include=[np.number])
                 for mc in (
                     "frame",
@@ -1119,8 +1049,8 @@ def _build_index_row(
     group: str,
     sequence: str,
     output_path: Path,
-    n_rows: Optional[int] = None,
-    dataset_root: Optional[Path] = None,
+    n_rows: int | None = None,
+    dataset_root: Path | None = None,
 ) -> dict:
     """
     Build a standard index row dict for get_additional_index_rows().
