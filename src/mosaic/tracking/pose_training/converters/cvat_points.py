@@ -245,11 +245,12 @@ def convert_cvat_points(
             continue
 
         subset = split_assignment.get(filename, "train")
+        basename = Path(filename).name
         stem = Path(filename).stem
 
         write_yolo_label(output_dir / subset / "labels" / f"{stem}.txt", lines)
 
-        dest_image = output_dir / subset / "images" / filename
+        dest_image = output_dir / subset / "images" / basename
         if dest_image.exists() or dest_image.is_symlink():
             dest_image.unlink()
         if symlink_images:
@@ -493,11 +494,12 @@ def _write_images(
             continue
 
         subset = split_assignment.get(filename, "train")
+        basename = Path(filename).name
         stem = Path(filename).stem
 
         write_yolo_label(output_dir / subset / "labels" / f"{stem}.txt", lines)
 
-        dest_image = output_dir / subset / "images" / filename
+        dest_image = output_dir / subset / "images" / basename
         if dest_image.exists() or dest_image.is_symlink():
             dest_image.unlink()
         if symlink_images:
