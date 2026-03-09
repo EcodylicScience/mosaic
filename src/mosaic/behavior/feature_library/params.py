@@ -244,6 +244,12 @@ LoadSpec = Annotated[
 TrackInput = Literal["tracks"]
 
 F = TypeVar("F", bound=str, default=str)
+L = TypeVar(
+    "L",
+    bound=NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec,
+    default=NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec,
+    covariant=True,
+)
 
 
 class Result(DictModel, Generic[F]):
@@ -271,7 +277,7 @@ class NNResult(Result[Literal["nearest-neighbor"]]):
     feature: Literal["nearest-neighbor"] = "nearest-neighbor"
 
 
-class ArtifactSpec(Result[str]):
+class ArtifactSpec(Result[str], Generic[L]):
     """Reference to a feature artifact with load specification.
 
     Attributes:
@@ -279,7 +285,7 @@ class ArtifactSpec(Result[str]):
         pattern: Glob pattern. Auto-derived from load.kind when empty.
     """
 
-    load: LoadSpec
+    load: L
     pattern: str = ""
 
     @model_validator(mode="after")
@@ -318,11 +324,11 @@ class ArtifactSpec(Result[str]):
         )
 
 
-class FeatureLabelsSource(ArtifactSpec):
+class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec]):
     """Labels loaded from a feature's output files."""
 
     source: Literal["feature"] = "feature"
-    load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+    load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
 
 
 class GroundTruthLabelsSource(DictModel):

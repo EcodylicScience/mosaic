@@ -134,23 +134,23 @@ class GlobalTSNE:
     parallelizable = False
     skip_transform_phase: bool = True
 
-    class TemplatesArtifact(ArtifactSpec):
+    class TemplatesArtifact(ArtifactSpec[NpzLoadSpec]):
         """Template feature vectors (global_templates_features.npz)."""
 
         feature: str = "global-tsne"
         pattern: str = "global_templates_features.npz"
-        load: LoadSpec = Field(
+        load: NpzLoadSpec = Field(
             default_factory=lambda: NpzLoadSpec(key="templates")
         )
 
-    class TSNECoordsArtifact(ArtifactSpec):
+    class TSNECoordsArtifact(ArtifactSpec[NpzLoadSpec]):
         """t-SNE coordinates of templates (global_tsne_templates.npz)."""
 
         feature: str = "global-tsne"
         pattern: str = "global_tsne_templates.npz"
-        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
 
-    class SeqCoordsArtifact(ArtifactSpec):
+    class SeqCoordsArtifact(ArtifactSpec[NpzLoadSpec]):
         """Per-sequence t-SNE coordinates (global_tsne_coords_seq=*.npz).
 
         TODO: migrate to per-frame parquet outputs (frame, tsne_0, tsne_1)
@@ -160,23 +160,23 @@ class GlobalTSNE:
 
         feature: str = "global-tsne"
         pattern: str = "global_tsne_coords_seq=*.npz"
-        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
 
-    class EmbeddingArtifact(ArtifactSpec):
+    class EmbeddingArtifact(ArtifactSpec[JoblibLoadSpec]):
         """openTSNE embedding from bundle (joblib, key=embedding)."""
 
         feature: str = "global-tsne"
         pattern: str = "global_opentsne_embedding.joblib"
-        load: LoadSpec = Field(
+        load: JoblibLoadSpec = Field(
             default_factory=lambda: JoblibLoadSpec(key="embedding")
         )
 
-    class ScalerArtifact(ArtifactSpec):
+    class ScalerArtifact(ArtifactSpec[JoblibLoadSpec]):
         """StandardScaler from embedding bundle (joblib, key=scaler)."""
 
         feature: str = "global-tsne"
         pattern: str = "global_opentsne_embedding.joblib"
-        load: LoadSpec = Field(
+        load: JoblibLoadSpec = Field(
             default_factory=lambda: JoblibLoadSpec(key="scaler")
         )
 
@@ -498,7 +498,7 @@ class GlobalTSNE:
             raise ValueError(
                 f"reuse_embedding: expected dict bundle, got {type(bundle).__name__}: {files[0]}"
             )
-        key = artifact.load.key if isinstance(artifact.load, JoblibLoadSpec) else "embedding"
+        key = artifact.load.key or "embedding"
         embedding = bundle.get(key)
         if not isinstance(embedding, TSNEEmbedding):
             raise ValueError(
@@ -523,7 +523,7 @@ class GlobalTSNE:
                 f"scaler: no files matching '{artifact.pattern}' in {run_root}"
             )
         obj = joblib.load(files[0])
-        key = artifact.load.key if isinstance(artifact.load, JoblibLoadSpec) else None
+        key = artifact.load.key
         if key is not None and isinstance(obj, dict):
             obj = obj[key]
         if not isinstance(obj, StandardScaler):
@@ -641,7 +641,7 @@ class GlobalTSNE:
 
     def _map_sequences_streaming(
         self,
-        key_file_manifest: dict[str, list[tuple[Path, dict[str, object]]]],
+        key_file_manifest: dict[str, list[tuple[Path, LoadSpec]]],
         helper: StreamingFeatureHelper,
     ) -> dict[str, np.ndarray]:
         """Map sequences one at a time to minimize memory usage."""

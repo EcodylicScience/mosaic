@@ -37,7 +37,6 @@ from .params import (
     ArtifactSpec,
     Inputs,
     JoblibLoadSpec,
-    LoadSpec,
     NNResult,
     NpzLoadSpec,
     OutputType,
@@ -64,19 +63,19 @@ class WardAssignClustering:
     output_type: OutputType = "global"
     skip_transform_phase = True
 
-    class ModelArtifact(ArtifactSpec):
+    class ModelArtifact(ArtifactSpec[JoblibLoadSpec]):
         """Params dump (model.joblib)."""
 
         feature: str = "ward-assign"
         pattern: str = "model.joblib"
-        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+        load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
-    class SeqLabelsArtifact(ArtifactSpec):
+    class SeqLabelsArtifact(ArtifactSpec[NpzLoadSpec]):
         """Per-sequence cluster labels (global_ward_labels_seq=*.npz)."""
 
         feature: str = "ward-assign"
         pattern: str = "global_ward_labels_seq=*.npz"
-        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
 
     class Inputs(Inputs[Result]):
         pass
@@ -96,7 +95,7 @@ class WardAssignClustering:
         ward: GlobalWardClustering.ModelArtifact = Field(
             default_factory=GlobalWardClustering.ModelArtifact
         )
-        templates: GlobalTSNE.TemplatesArtifact | None = Field(
+        templates: GlobalTSNE.TemplatesArtifact = Field(
             default_factory=GlobalTSNE.TemplatesArtifact
         )
         scaler: GlobalTSNE.ScalerArtifact | None = None

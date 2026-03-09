@@ -20,6 +20,7 @@ from sklearn.cluster import KMeans as _SklearnKMeans
 from mosaic.core.dataset import _dataset_base_dir, register_feature
 from mosaic.core.helpers import to_safe_name
 
+from .global_tsne import GlobalTSNE
 from .helpers import (
     StreamingFeatureHelper,
     _build_index_row,
@@ -29,14 +30,12 @@ from .helpers import (
     _parse_scope_filter,
     _resolve_sequence_identity,
 )
-from .global_tsne import GlobalTSNE
 from .params import (
     ArtifactSpec,
     FeatureLabelsSource,
     InputRequire,
     Inputs,
     JoblibLoadSpec,
-    LoadSpec,
     NNResult,
     NpzLoadSpec,
     OutputType,
@@ -81,33 +80,33 @@ class GlobalKMeansClustering:
     parallelizable = False
     skip_transform_phase: bool = True
 
-    class ModelArtifact(ArtifactSpec):
+    class ModelArtifact(ArtifactSpec[JoblibLoadSpec]):
         """KMeans model (model.joblib)."""
 
         feature: str = "global-kmeans"
         pattern: str = "model.joblib"
-        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+        load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
-    class ClusterCentersArtifact(ArtifactSpec):
+    class ClusterCentersArtifact(ArtifactSpec[NpzLoadSpec]):
         """Cluster center vectors (cluster_centers.npz)."""
 
         feature: str = "global-kmeans"
         pattern: str = "cluster_centers.npz"
-        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="centers"))
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="centers"))
 
-    class ClusterSizesArtifact(ArtifactSpec):
+    class ClusterSizesArtifact(ArtifactSpec[ParquetLoadSpec]):
         """Per-cluster sample counts (cluster_sizes.parquet)."""
 
         feature: str = "global-kmeans"
         pattern: str = "cluster_sizes.parquet"
-        load: LoadSpec = Field(default_factory=ParquetLoadSpec)
+        load: ParquetLoadSpec = Field(default_factory=ParquetLoadSpec)
 
-    class ArtifactLabelsArtifact(ArtifactSpec):
+    class ArtifactLabelsArtifact(ArtifactSpec[NpzLoadSpec]):
         """Labels for the artifact points used in fitting (artifact_labels.npz)."""
 
         feature: str = "global-kmeans"
         pattern: str = "artifact_labels.npz"
-        load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
 
     class SeqLabelsArtifact(FeatureLabelsSource):
         """Per-sequence cluster labels (global_kmeans_labels_seq=*.npz)."""
@@ -304,16 +303,8 @@ class GlobalKMeansClustering:
         if not files:
             raise FileNotFoundError(f"No files matching '{pattern}' in {run_root}")
 
-        kind = loader.kind
         self._fit_columns = None
-        if kind == "npz":
-            key = loader.key
-            X, meta = self._load_npz_matrix(files, key, loader.transpose)
-        elif kind == "parquet":
-            X, meta, fit_cols = self._load_parquet_matrix(files, loader)
-            self._fit_columns = fit_cols
-        else:
-            raise ValueError(f"Unknown artifact load.kind='{kind}'")
+        X, meta = self._load_npz_matrix(files, loader.key, loader.transpose)
 
         self._fit_artifact_info = {
             "feature": feature,

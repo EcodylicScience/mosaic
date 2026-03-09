@@ -25,7 +25,6 @@ from .params import (
     InputRequire,
     Inputs,
     JoblibLoadSpec,
-    LoadSpec,
     NNResult,
     NpzLoadSpec,
     OutputType,
@@ -46,19 +45,19 @@ class GlobalWardClustering:
     output_type: OutputType = "global"
     parallelizable = False
 
-    class ModelArtifact(ArtifactSpec):
+    class ModelArtifact(ArtifactSpec[JoblibLoadSpec]):
         """Ward linkage model (model.joblib)."""
 
         feature: str = "global-ward"
         pattern: str = "model.joblib"
-        load: LoadSpec = Field(default_factory=JoblibLoadSpec)
+        load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
-    class LinkageArtifact(ArtifactSpec):
+    class LinkageArtifact(ArtifactSpec[NpzLoadSpec]):
         """Linkage matrix backup (model.npz)."""
 
         feature: str = "global-ward"
         pattern: str = "model.npz"
-        load: LoadSpec = Field(
+        load: NpzLoadSpec = Field(
             default_factory=lambda: NpzLoadSpec(key="linkage_matrix")
         )
 
