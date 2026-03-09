@@ -608,9 +608,13 @@ def convert_cvat_points_polo(
     n = len(usable)
 
     def _make_line(img_rec, x, y, class_name):
-        if name_to_id and class_name not in name_to_id:
+        if not class_name and not class_attribute:
+            # No class attribute configured → single-class, assign class 0
+            cid = 0
+        elif name_to_id and class_name not in name_to_id:
             return None
-        cid = name_to_id[class_name] if name_to_id else 0
+        else:
+            cid = name_to_id[class_name] if name_to_id else 0
         radius = radii_by_id.get(cid, 100.0)
         x_rel, y_rel = normalize_coords(x, y, img_rec["width"], img_rec["height"])
         return format_polo_label_line(cid, radius, x_rel, y_rel)
