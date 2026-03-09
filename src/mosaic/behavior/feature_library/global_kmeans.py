@@ -33,6 +33,7 @@ from .global_tsne import GlobalTSNE
 from .params import (
     ArtifactSpec,
     FeatureLabelsSource,
+    InputRequire,
     Inputs,
     JoblibLoadSpec,
     LoadSpec,
@@ -115,7 +116,7 @@ class GlobalKMeansClustering:
         pattern: str = "global_kmeans_labels_seq=*.npz"
 
     class Inputs(Inputs[Result]):
-        _empty_only: ClassVar[bool] = True
+        _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
         """Global K-means clustering parameters.

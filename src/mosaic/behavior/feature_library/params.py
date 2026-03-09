@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from typing_extensions import TypeVar
 
 OutputType = Literal["per_frame", "global", "summary", "viz"] | None
+InputRequire = Literal["nonempty", "empty", "any"]
 
 
 class DictModel(BaseModel):
@@ -375,10 +376,17 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
 
     Self-loading features that take no pipeline inputs:
         class Inputs(Inputs[Result]):
-            _empty_only: ClassVar[bool] = True
+            _require: ClassVar[InputRequire] = "empty"
+
+    Self-loading features that optionally accept inputs (e.g. fit + assign):
+        class Inputs(Inputs[Result]):
+            _require: ClassVar[InputRequire] = "any"
     """
 
-    _empty_only: ClassVar[bool] = False
+    # "nonempty" (default): at least one input required
+    # "empty": must be empty (loads own data)
+    # "any": both empty and non-empty are valid
+    _require: ClassVar[InputRequire] = "nonempty"
 
     @model_validator(mode="before")
     @classmethod
@@ -396,11 +404,11 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if self._empty_only:
+        if self._require == "empty":
             if self.root:
                 raise ValueError("This feature takes no inputs (loads its own data)")
             return self
-        if not self.root:
+        if self._require == "nonempty" and not self.root:
             raise ValueError("Inputs must have at least one item")
         keys = [i if isinstance(i, str) else (i.feature, i.run_id) for i in self.root]
         if len(keys) != len(set(keys)):

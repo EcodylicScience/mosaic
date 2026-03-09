@@ -24,6 +24,7 @@ from mosaic.behavior.feature_library.params import (
     ArtifactSpec,
     FeatureLabelsSource,
     GroundTruthLabelsSource,
+    InputRequire,
     Inputs,
     JoblibLoadSpec,
     LoadSpec,
@@ -73,7 +74,7 @@ class VizGlobalColored:
     parallelizable = False
 
     class Inputs(Inputs[Result]):
-        _empty_only: ClassVar[bool] = True
+        _require: ClassVar[InputRequire] = "empty"
 
     class Params(Params):
         coords: ArtifactSpec

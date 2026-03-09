@@ -516,7 +516,7 @@ def test_fi_empty_raises() -> None:
 
 
 def test_fi_empty_still_rejected_by_default() -> None:
-    """Subclasses without _allow_empty=True still reject empty inputs."""
+    """Subclasses with default _require='nonempty' still reject empty inputs."""
 
     class StrictInputs(Inputs[Result]):
         pass
@@ -526,11 +526,11 @@ def test_fi_empty_still_rejected_by_default() -> None:
 
 
 def test_fi_empty_allowed_with_opt_in() -> None:
-    """Subclasses with _allow_empty=True accept empty inputs."""
+    """Subclasses with _require='any' accept both empty and non-empty inputs."""
     from typing import ClassVar
 
     class EmptyOkInputs(Inputs[Result]):
-        _allow_empty: ClassVar[bool] = True
+        _require: ClassVar[str] = "any"
 
     i = EmptyOkInputs(())
     assert len(i.root) == 0

@@ -29,6 +29,7 @@ from mosaic.behavior.feature_library.helpers import (
 from mosaic.behavior.feature_library.params import (
     FeatureLabelsSource,
     GroundTruthLabelsSource,
+    InputRequire,
     Inputs,
     OutputType,
     Params,
@@ -128,7 +129,7 @@ class TimelinePlot:
     parallelizable = False
 
     class Inputs(Inputs[Result]):
-        _empty_only: ClassVar[bool] = True
+        _require: ClassVar[InputRequire] = "empty"
 
     class Params(Params):
         source: FeatureLabelsSource | GroundTruthLabelsSource | None = None

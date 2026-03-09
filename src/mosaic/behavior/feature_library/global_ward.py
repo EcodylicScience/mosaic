@@ -22,6 +22,7 @@ from .helpers import StreamingFeatureHelper, _load_artifact_matrix
 from .global_tsne import GlobalTSNE
 from .params import (
     ArtifactSpec,
+    InputRequire,
     Inputs,
     JoblibLoadSpec,
     LoadSpec,
@@ -62,7 +63,7 @@ class GlobalWardClustering:
         )
 
     class Inputs(Inputs[Result]):
-        _empty_only: ClassVar[bool] = True
+        _require: ClassVar[InputRequire] = "empty"
 
     class Params(Params):
         """Global Ward clustering parameters.
