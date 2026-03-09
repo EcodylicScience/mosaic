@@ -46,14 +46,15 @@ def detect_locations(
     Parameters
     ----------
     model : LocalizerEncoder
-        Localizer model (must be in eval mode on the correct device).
+        Localizer model (must be in eval mode).  Automatically moved to
+        *device* if not already there.
     image : ndarray
         BGR or grayscale image.
     thresholds : dict or float
         Per-class detection thresholds ``{class_id: threshold}``, or a
         single threshold applied to all classes.
     device : str
-        Device string (used only for input tensor placement).
+        Device string for inference (e.g. ``"0"`` for first GPU, ``"cpu"``).
     min_distance : int
         Minimum distance between peaks in heatmap pixels.
     refine_window : int
@@ -85,6 +86,7 @@ def detect_locations(
         dev = torch.device("cpu")
 
     inp = inp.to(dev)
+    model = model.to(dev)
 
     # Forward pass
     with torch.no_grad():
