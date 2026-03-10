@@ -9,7 +9,7 @@ import pandas as pd
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
 
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+from .params import COLUMNS, Inputs, OutputType, Params, Result, TrackInput, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:
@@ -41,7 +41,7 @@ class FFGroupsMetrics:
     parallelizable = True
     output_type: OutputType = "summary"
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

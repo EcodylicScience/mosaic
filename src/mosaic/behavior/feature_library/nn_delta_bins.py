@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
-from .params import Inputs, OutputType, Params, TrackInput
+from .params import Inputs, OutputType, Params, Result, TrackInput
 
 
 def _binned_mean_fast(
@@ -107,7 +107,7 @@ class NearestNeighborDeltaBins:
     parallelizable = True
     output_type: OutputType = "summary"
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

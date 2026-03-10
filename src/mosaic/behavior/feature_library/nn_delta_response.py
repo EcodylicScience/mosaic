@@ -14,6 +14,7 @@ from .params import (
     Inputs,
     OutputType,
     Params,
+    Result,
     SamplingConfig,
     TrackInput,
     resolve_order_col,
@@ -62,7 +63,7 @@ class NearestNeighborDelta:
     parallelizable = True
     output_type: OutputType = "per_frame"
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
@@ -190,7 +191,20 @@ class NearestNeighborDelta:
             if not valid_mask.any():
                 continue
 
-            rows = g.loc[valid_mask].copy()
+            # Only keep columns needed for output (meta + source for computation)
+            keep_cols = [frame_col, id_col]
+            for c in (COLUMNS.time_col, COLUMNS.group_col, COLUMNS.seq_col,
+                      COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, nn_id_col):
+                if c in g.columns and c not in keep_cols:
+                    keep_cols.append(c)
+            for c in (p.nn_dx_ego_col, p.nn_dy_ego_col,
+                      p.nn_dx_world_col, p.nn_dy_world_col):
+                if c in g.columns and c not in keep_cols:
+                    keep_cols.append(c)
+            for c in ("group_size", "event", p.focal_col):
+                if c in g.columns and c not in keep_cols:
+                    keep_cols.append(c)
+            rows = g.loc[valid_mask, keep_cols].copy()
             rows["dx"] = delta.loc[valid_mask, COLUMNS.x_col].to_numpy()
             rows["dy"] = delta.loc[valid_mask, COLUMNS.y_col].to_numpy()
             rows["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
@@ -273,6 +287,4 @@ class NearestNeighborDelta:
         for c in ("group_size", "event", p.focal_col):
             if c in out_df.columns and c not in col_order:
                 col_order.append(c)
-        # Append any remaining columns (if any) to avoid dropping data
-        col_order += [c for c in out_df.columns if c not in col_order]
         return out_df[col_order]
