@@ -793,21 +793,30 @@ class Dataset:
 
         results: dict[str, int] = {}
 
+        def _resolve_root(key: str) -> Path | None:
+            """Resolve a root path, handling relative paths."""
+            raw = self.roots.get(key)
+            if not raw:
+                return None
+            p = Path(raw)
+            if not p.is_absolute():
+                p = _dataset_base_dir(self) / p
+            return p
+
         # All roots that may have index files
         root_keys = ["tracks", "tracks_raw", "labels", "media", "models", "inputsets"]
         for key in root_keys:
-            root = self.roots.get(key)
-            if not root:
+            root_path = _resolve_root(key)
+            if not root_path:
                 continue
-            idx_path = Path(root) / "index.csv"
+            idx_path = root_path / "index.csv"
             count = rewrite_index(idx_path)
             if count > 0:
                 results[str(idx_path)] = count
 
         # Features: has per-feature subdirectories with their own index.csv
-        features_root = self.roots.get("features")
-        if features_root:
-            features_path = Path(features_root)
+        features_path = _resolve_root("features")
+        if features_path and features_path.exists():
             # Root-level index
             root_idx = features_path / "index.csv"
             count = rewrite_index(root_idx)
@@ -822,9 +831,8 @@ class Dataset:
                         results[str(sub_idx)] = count
 
         # Labels: has per-kind subdirectories (e.g., id_tags) with their own index.csv
-        labels_root = self.roots.get("labels")
-        if labels_root:
-            labels_path = Path(labels_root)
+        labels_path = _resolve_root("labels")
+        if labels_path and labels_path.exists():
             for subdir in labels_path.iterdir():
                 if subdir.is_dir():
                     sub_idx = subdir / "index.csv"
@@ -833,16 +841,14 @@ class Dataset:
                         results[str(sub_idx)] = count
 
         # Frames: has per-method subdirectories (uniform, kmeans) with their own index.csv
-        frames_root = self.roots.get("frames")
-        if frames_root:
-            frames_path = Path(frames_root)
-            if frames_path.exists():
-                for subdir in frames_path.iterdir():
-                    if subdir.is_dir():
-                        sub_idx = subdir / "index.csv"
-                        count = rewrite_index(sub_idx)
-                        if count > 0:
-                            results[str(sub_idx)] = count
+        frames_path = _resolve_root("frames")
+        if frames_path and frames_path.exists():
+            for subdir in frames_path.iterdir():
+                if subdir.is_dir():
+                    sub_idx = subdir / "index.csv"
+                    count = rewrite_index(sub_idx)
+                    if count > 0:
+                        results[str(sub_idx)] = count
 
         return results
 
