@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import bisect
 import json
+import shutil
 import subprocess
 import sys
+import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import cv2
 import numpy as np
@@ -70,6 +72,55 @@ def _count_frames_by_decoding(path: Path) -> int:
     finally:
         cap.release()
     return count
+
+
+_FFMPEG_OK: bool | None = None
+_NVDEC_OK: bool | None = None
+_NVENC_OK: bool | None = None
+
+
+def _ffmpeg_available() -> bool:
+    """Check if ffmpeg is available on PATH (cached)."""
+    global _FFMPEG_OK
+    if _FFMPEG_OK is None:
+        _FFMPEG_OK = shutil.which("ffmpeg") is not None
+    return _FFMPEG_OK
+
+
+def _nvdec_available() -> bool:
+    """Check if ffmpeg supports CUDA/NVDEC hardware acceleration (cached)."""
+    global _NVDEC_OK
+    if _NVDEC_OK is None:
+        if not _ffmpeg_available():
+            _NVDEC_OK = False
+        else:
+            try:
+                proc = subprocess.run(
+                    ["ffmpeg", "-hwaccels"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _NVDEC_OK = "cuda" in proc.stdout.lower()
+            except Exception:
+                _NVDEC_OK = False
+    return _NVDEC_OK
+
+
+def _nvenc_available() -> bool:
+    """Check if ffmpeg supports NVENC (h264_nvenc) hardware encoding (cached)."""
+    global _NVENC_OK
+    if _NVENC_OK is None:
+        if not _ffmpeg_available():
+            _NVENC_OK = False
+        else:
+            try:
+                proc = subprocess.run(
+                    ["ffmpeg", "-encoders"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _NVENC_OK = "h264_nvenc" in proc.stdout
+            except Exception:
+                _NVENC_OK = False
+    return _NVENC_OK
 
 
 def get_video_metadata(video_path: Path | str) -> VideoMetadata:
@@ -551,6 +602,411 @@ class MultiVideoReader:
 
     def __len__(self) -> int:
         return self.total_frames
+
+
+class FFmpegFrameReader:
+    """Sequential frame reader using ffmpeg subprocess pipe.
+
+    Spawns an ffmpeg process that decodes video and pipes raw BGR frames
+    to stdout. Supports decode-time resize, frame stepping, and optional
+    NVDEC hardware acceleration.
+
+    This reader is optimised for high-throughput sequential access (e.g.
+    batched inference). It does **not** support random seeking — frame
+    selection is handled by ffmpeg's ``select`` filter at spawn time.
+
+    Parameters
+    ----------
+    video_path : path
+        Path to input video file.
+    start_frame : int
+        First frame to output (0-based).
+    end_frame : int, optional
+        Stop before this frame (exclusive). ``None`` = to end of video.
+    frame_step : int
+        Output every Nth frame (relative to *start_frame*).
+    resize : (width, height), optional
+        Resize frames during decode. ``None`` = original resolution.
+    hwaccel : bool
+        Attempt NVDEC hardware decoding if available.
+    """
+
+    def __init__(
+        self,
+        video_path: Path | str,
+        start_frame: int = 0,
+        end_frame: int | None = None,
+        frame_step: int = 1,
+        resize: tuple[int, int] | None = None,
+        hwaccel: bool = False,
+    ):
+        if not _ffmpeg_available():
+            raise RuntimeError(
+                "ffmpeg not found on PATH. Install ffmpeg or use OpenCV fallback."
+            )
+
+        self._path = Path(video_path).expanduser().resolve()
+        meta = get_video_metadata(self._path)
+        self._source_width = meta.width
+        self._source_height = meta.height
+        self._fps = meta.fps
+        self._source_frame_count = meta.frame_count
+
+        self._start_frame = max(0, int(start_frame))
+        self._end_frame = (
+            min(int(end_frame), self._source_frame_count)
+            if end_frame is not None
+            else self._source_frame_count
+        )
+        self._frame_step = max(1, int(frame_step))
+
+        if resize is not None:
+            self._width, self._height = int(resize[0]), int(resize[1])
+        else:
+            self._width, self._height = self._source_width, self._source_height
+
+        self._hwaccel = hwaccel and _nvdec_available()
+        self._frame_nbytes = self._width * self._height * 3
+        self._proc: subprocess.Popen | None = None
+        self._closed = False
+
+        # Precompute the frame indices we will output
+        self._output_indices = list(
+            range(self._start_frame, self._end_frame, self._frame_step)
+        )
+        self._output_pos = 0  # index into _output_indices
+
+    # ── Properties ──
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def fps(self) -> float:
+        return self._fps
+
+    @property
+    def frame_count(self) -> int:
+        """Number of frames this reader will output."""
+        return len(self._output_indices)
+
+    # ── FFmpeg command ──
+
+    def _build_cmd(self) -> list[str]:
+        cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+
+        if self._hwaccel:
+            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+
+        cmd.extend(["-i", str(self._path)])
+
+        # Build video filter chain
+        filters: list[str] = []
+
+        # Frame selection filter — always needed unless reading all frames
+        need_select = (
+            self._start_frame > 0
+            or self._end_frame < self._source_frame_count
+            or self._frame_step > 1
+        )
+        if need_select:
+            parts: list[str] = []
+            if self._start_frame > 0:
+                parts.append(f"gte(n\\,{self._start_frame})")
+            if self._end_frame < self._source_frame_count:
+                parts.append(f"lt(n\\,{self._end_frame})")
+            if self._frame_step > 1:
+                parts.append(
+                    f"not(mod(n-{self._start_frame}\\,{self._frame_step}))"
+                )
+            expr = "*".join(parts)
+            filters.append(f"select='{expr}'")
+
+        # Resize filter
+        if (self._width, self._height) != (self._source_width, self._source_height):
+            scale_name = "scale_cuda" if self._hwaccel else "scale"
+            filters.append(f"{scale_name}={self._width}:{self._height}")
+
+        if filters:
+            cmd.extend(["-vf", ",".join(filters)])
+
+        cmd.extend(["-vsync", "drop", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"])
+        return cmd
+
+    # ── Start / stop ──
+
+    def _ensure_started(self) -> None:
+        if self._proc is None and not self._closed:
+            cmd = self._build_cmd()
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+
+    # ── Reading ──
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        """Read the next frame.
+
+        Returns ``(True, frame)`` or ``(False, None)`` at EOF.
+        Frame is BGR uint8 with shape ``(height, width, 3)``.
+        """
+        if self._closed or self._output_pos >= len(self._output_indices):
+            return False, None
+
+        self._ensure_started()
+        assert self._proc is not None and self._proc.stdout is not None
+
+        raw = self._proc.stdout.read(self._frame_nbytes)
+        if len(raw) < self._frame_nbytes:
+            return False, None
+
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(
+            self._height, self._width, 3
+        )
+        self._output_pos += 1
+        return True, frame
+
+    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
+        """Read up to *batch_size* frames.
+
+        Returns
+        -------
+        indices : ndarray, shape (N,)
+            Global frame indices for each frame in the batch.
+        frames : ndarray, shape (N, H, W, 3)
+            BGR uint8 frames.  ``N`` may be less than *batch_size* at EOF.
+        """
+        indices: list[int] = []
+        frames: list[np.ndarray] = []
+        for _ in range(batch_size):
+            ok, frame = self.read()
+            if not ok:
+                break
+            idx = self._output_indices[self._output_pos - 1]
+            indices.append(idx)
+            frames.append(frame)
+
+        if not frames:
+            return np.array([], dtype=np.int64), np.empty(
+                (0, self._height, self._width, 3), dtype=np.uint8
+            )
+        return np.array(indices, dtype=np.int64), np.stack(frames)
+
+    def __iter__(self) -> Iterator[tuple[int, np.ndarray]]:
+        """Yield ``(frame_index, frame)`` tuples."""
+        while True:
+            ok, frame = self.read()
+            if not ok:
+                break
+            idx = self._output_indices[self._output_pos - 1]
+            yield idx, frame
+
+    # ── Cleanup ──
+
+    def close(self) -> None:
+        """Kill the ffmpeg subprocess and close pipes."""
+        if not self._closed:
+            self._closed = True
+            if self._proc is not None:
+                try:
+                    if self._proc.stdout:
+                        self._proc.stdout.close()
+                    self._proc.kill()
+                    self._proc.wait(timeout=5)
+                except Exception:
+                    pass
+                self._proc = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def __len__(self) -> int:
+        return self.frame_count
+
+
+def _prefetch_batches(
+    reader: FFmpegFrameReader,
+    queue: Any,
+    batch_size: int,
+) -> None:
+    """Worker function for prefetch thread. Reads batches and puts them on queue."""
+    try:
+        while True:
+            indices, batch = reader.read_batch(batch_size)
+            if len(indices) == 0:
+                break
+            queue.put((indices, batch))
+    finally:
+        queue.put(None)  # sentinel
+
+
+# ─── FFmpeg-based video writer ───
+
+
+class FFmpegVideoWriter:
+    """Write BGR frames to an H.264 MP4 file via an ffmpeg subprocess pipe.
+
+    This is the write counterpart to :class:`FFmpegFrameReader`.  Frames are
+    piped as raw BGR24 to ffmpeg's stdin, which encodes them with libx264
+    (or h264_nvenc when *hwaccel=True* and hardware encoding is available).
+
+    Parameters
+    ----------
+    output_path : Path or str
+        Destination MP4 file.  Parent directory is created if needed.
+    width, height : int
+        Frame dimensions (must match every frame passed to :meth:`write`).
+    fps : float
+        Output frame rate.
+    crf : int
+        Constant Rate Factor for libx264 (0–51, lower = higher quality).
+        Ignored when NVENC is used (replaced by ``-cq``).
+    preset : str
+        Encoding speed/quality preset (e.g. ``"ultrafast"``, ``"medium"``).
+    hwaccel : bool
+        If *True* **and** ``h264_nvenc`` is available, use GPU encoding.
+
+    Raises
+    ------
+    RuntimeError
+        If ffmpeg is not found on ``PATH``.
+
+    Examples
+    --------
+    >>> with FFmpegVideoWriter("out.mp4", 640, 480, fps=30) as writer:
+    ...     for frame in frames:
+    ...         writer.write(frame)
+    """
+
+    def __init__(
+        self,
+        output_path: Path | str,
+        width: int,
+        height: int,
+        fps: float = 30.0,
+        crf: int = 23,
+        preset: str = "medium",
+        hwaccel: bool = False,
+    ) -> None:
+        if not _ffmpeg_available():
+            raise RuntimeError(
+                "ffmpeg not found on PATH; install ffmpeg to use FFmpegVideoWriter"
+            )
+
+        self._output_path = Path(output_path).expanduser().resolve()
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._width = width
+        self._height = height
+        self._fps = fps
+        self._closed = False
+        self._frames_written = 0
+
+        use_nvenc = hwaccel and _nvenc_available()
+
+        cmd: list[str] = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}",
+            "-r", str(fps),
+            "-i", "pipe:0",
+        ]
+
+        if use_nvenc:
+            cmd += ["-c:v", "h264_nvenc", "-preset", preset, "-cq", str(crf)]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]
+
+        cmd += ["-pix_fmt", "yuv420p", str(self._output_path)]
+
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    # ── Properties ──
+
+    @property
+    def output_path(self) -> Path:
+        return self._output_path
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def fps(self) -> float:
+        return self._fps
+
+    @property
+    def frames_written(self) -> int:
+        return self._frames_written
+
+    # ── Writing ──
+
+    def write(self, frame: np.ndarray) -> None:
+        """Write a single BGR uint8 frame.
+
+        Parameters
+        ----------
+        frame : ndarray, shape (H, W, 3), dtype uint8
+            BGR frame matching the writer's width and height.
+        """
+        if self._closed:
+            raise RuntimeError("Writer is closed")
+        if self._proc is None or self._proc.stdin is None:
+            raise RuntimeError("ffmpeg process is not running")
+        self._proc.stdin.write(frame.tobytes())
+        self._frames_written += 1
+
+    # ── Cleanup ──
+
+    def close(self) -> None:
+        """Flush and close the ffmpeg encoder."""
+        if not self._closed:
+            self._closed = True
+            if self._proc is not None:
+                try:
+                    if self._proc.stdin:
+                        self._proc.stdin.close()
+                    self._proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+                    self._proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+                self._proc = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        self.close()
 
 
 # ─── Multi-video extraction helpers ───

@@ -23,8 +23,12 @@ from .train import (
 )
 from .inference import (
     run_inference,
+    run_inference_opencv,
     run_point_inference,
+    run_point_inference_opencv,
     visualize_keypoints,
+    visualize_detections,
+    visualize_inference,
     inference_to_dataframe,
     locations_to_dataframe,
 )
