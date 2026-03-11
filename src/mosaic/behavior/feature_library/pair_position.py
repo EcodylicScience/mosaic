@@ -233,7 +233,7 @@ class PairPositionFeatures:
             return None
 
         # Get fps
-        fps = float(p.sampling.fps_default)
+        fps = float(p.sampling.fps)
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()

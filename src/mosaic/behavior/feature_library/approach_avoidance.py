@@ -247,7 +247,7 @@ class ApproachAvoidance:
             return None
 
         # Get fps
-        fps = p.sampling.fps_default
+        fps = p.sampling.fps
         if "fps" in orig_df.columns:
             try:
                 c = orig_df["fps"].dropna().unique()

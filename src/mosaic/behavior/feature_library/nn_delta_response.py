@@ -166,7 +166,7 @@ class NearestNeighborDelta:
         wrap_angles = p.wrap_angle
         divide_by_frames = p.divide_dangle_by_frames
         scale_by_fps = p.scale_dangle_by_fps
-        fps = p.sampling.fps_default
+        fps = p.sampling.fps
 
         # Optional neighbor focal lookup (frame + id -> focal flag)
         focal_lookup = None

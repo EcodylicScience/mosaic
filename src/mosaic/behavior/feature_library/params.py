@@ -127,13 +127,12 @@ class SamplingConfig(DictModel):
     """Frame rate and temporal smoothing parameters.
 
     Attributes:
-        fps_default: Fallback frames-per-second when the data does not carry an
-            fps column. Default 30.0, must be > 0.
+        fps: Frames per second for this feature run. Default 30.0, must be > 0.
         smooth_win: Moving-average window size applied to pose coordinates
             before feature computation. 0 disables smoothing. Default 0.
     """
 
-    fps_default: float = Field(default=30.0, gt=0)
+    fps: float = Field(default=30.0, gt=0)
     smooth_win: int = Field(default=0, ge=0)
 
 

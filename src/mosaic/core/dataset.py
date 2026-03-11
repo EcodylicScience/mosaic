@@ -661,13 +661,13 @@ class Dataset:
             payload["time_column"] = self.time_column
 
         if self.format == "json":
-            self.manifest_path.write_text(json.dumps(payload, indent=2))
+            Path(self.manifest_path).write_text(json.dumps(payload, indent=2))
         else:
             if not _YAML_OK:
                 raise RuntimeError(
                     "pyyaml not installed; set format='json' or install pyyaml."
                 )
-            self.manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+            Path(self.manifest_path).write_text(yaml.safe_dump(payload, sort_keys=False))
 
     # ---- Helpers ----
     def get_root(self, key: str) -> Path:
@@ -3910,7 +3910,7 @@ def _process_transform_worker(payload):
     module, cls_name, params, df, extra_attrs, model_path = payload
     mod = importlib.import_module(module)
     cls = getattr(mod, cls_name)
-    feat = cls(params)
+    feat = cls(params=params)
     for name, val in (extra_attrs or {}).items():
         try:
             setattr(feat, name, val)
@@ -5374,10 +5374,14 @@ def run_feature(
                 if parallel_mode == "process":
                     model_path = run_root / "model.joblib"
                     model_path_str = str(model_path) if model_path.exists() else None
+                    # Serialize params to dict to avoid pickling nested classes
+                    raw_params = getattr(feature, "params", {})
+                    if hasattr(raw_params, "model_dump"):
+                        raw_params = raw_params.model_dump()
                     payload = (
                         feature.__module__,
                         feature.__class__.__name__,
-                        getattr(feature, "params", {}),
+                        raw_params,
                         df,
                         extra_attrs,
                         model_path_str,

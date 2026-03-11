@@ -168,7 +168,7 @@ class PairEgocentricFeatures:
                 continue
 
             # fps heuristic: prefer df['fps'] if present and constant; else default
-            fps = p.sampling.fps_default
+            fps = p.sampling.fps
             if "fps" in df.columns:
                 try:
                     c = df["fps"].dropna().unique()

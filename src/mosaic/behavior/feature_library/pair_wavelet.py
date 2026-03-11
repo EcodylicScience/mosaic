@@ -53,7 +53,7 @@ class PairWavelet:
 
     Notes:
       • Stateless (no fitting).
-      • FPS is inferred from constant df['fps'] if present; else fps_default.
+      • FPS is inferred from constant df['fps'] if present; else sampling.fps.
       • Frequencies are dyadically spaced in [f_min, f_max].
     """
 
@@ -166,7 +166,7 @@ class PairWavelet:
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = resolve_order_col(df)
-        fps = self._infer_fps(df, p.sampling.fps_default)
+        fps = self._infer_fps(df, p.sampling.fps)
         in_cols = self._select_input_columns(df)
         if "perspective" not in df.columns:
             raise ValueError("[pair-wavelet] Missing 'perspective' column.")
