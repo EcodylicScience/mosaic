@@ -324,7 +324,7 @@ class NearestNeighborDeltaBins:
             y_base = np.asarray(subdf["neighbor_y"], dtype=float)
             dangle = np.asarray(subdf["dangle"], dtype=float)
             dspeed = np.asarray(subdf["dspeed"], dtype=float)
-            base_mask = np.isfinite(x_base) & np.isfinite(y_base)
+            base_mask = np.isfinite(x_base) & np.isfinite(y_base) & np.isfinite(dangle) & np.isfinite(dspeed)
             x_base = x_base[base_mask]
             y_base = y_base[base_mask]
             dangle = dangle[base_mask]

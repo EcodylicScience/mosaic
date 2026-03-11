@@ -68,17 +68,20 @@ class NearestNeighborDelta:
 
     class Params(Params):
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        speed_col: str = "SPEED#wcentroid"
+        speed_col: str = "speed"
         nn_id_col: str = "nn_id"
         nn_dx_ego_col: str = "nn_delta_x_ego"
         nn_dy_ego_col: str = "nn_delta_y_ego"
         nn_dx_world_col: str = "nn_delta_x"
         nn_dy_world_col: str = "nn_delta_y"
         focal_col: str = "Focal_fish"
+        tag_cols: list[str] = Field(default_factory=list)
         diff_numframes: int = Field(default=4, ge=1)
         wrap_angle: bool = True
         divide_dangle_by_frames: bool = True
         scale_dangle_by_fps: bool = True
+        divide_dspeed_by_frames: bool = True
+        scale_dspeed_by_fps: bool = True
 
     def __init__(
         self,
@@ -136,6 +139,8 @@ class NearestNeighborDelta:
         id_col = COLUMNS.id_col
         frame_col = COLUMNS.frame_col
         angle_col = COLUMNS.orientation_col
+        x_col = COLUMNS.x_col
+        y_col = COLUMNS.y_col
         speed_col = (
             p.speed_col
             if p.speed_col in df.columns
@@ -152,118 +157,107 @@ class NearestNeighborDelta:
             or frame_col not in df
             or id_col not in df
         ):
-            # Missing critical inputs; nothing to compute.
             return pd.DataFrame()
 
-        # Order for reproducibility
         try:
             order_col = resolve_order_col(df)
         except ValueError:
             return pd.DataFrame()
-        df = df.sort_values([order_col, id_col]).reset_index(drop=True)
+
+        # Sort by (id, order) so groupby().shift() operates within each fish
+        df = df.sort_values([id_col, order_col]).reset_index(drop=True)
 
         diff_n = p.diff_numframes
-        wrap_angles = p.wrap_angle
-        divide_by_frames = p.divide_dangle_by_frames
-        scale_by_fps = p.scale_dangle_by_fps
         fps = p.sampling.fps
 
-        # Optional neighbor focal lookup (frame + id -> focal flag)
-        focal_lookup = None
-        if p.focal_col in df.columns:
-            focal_lookup = df[[frame_col, id_col, p.focal_col]].rename(
-                columns={id_col: "_nid", p.focal_col: "neighbor_focal"}
-            )
+        # --- Vectorized shift and delta across ALL fish at once ---
+        delta_cols = [x_col, y_col, angle_col, speed_col, frame_col]
+        future = df.groupby(id_col, sort=False)[delta_cols].shift(-diff_n)
+        delta = future - df[delta_cols]
 
-        outputs = []
-        for focal_id, g in df.groupby(id_col, sort=False):
-            g = g.sort_values(order_col)
-            # Future samples diff_numframes ahead
-            future = g[
-                [COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]
-            ].shift(-diff_n)
-            delta = (
-                future
-                - g[[COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]]
-            )
-
-            valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
-            if not valid_mask.any():
-                continue
-
-            # Only keep columns needed for output (meta + source for computation)
-            keep_cols = [frame_col, id_col]
-            for c in (COLUMNS.time_col, COLUMNS.group_col, COLUMNS.seq_col,
-                      COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, nn_id_col):
-                if c in g.columns and c not in keep_cols:
-                    keep_cols.append(c)
-            for c in (p.nn_dx_ego_col, p.nn_dy_ego_col,
-                      p.nn_dx_world_col, p.nn_dy_world_col):
-                if c in g.columns and c not in keep_cols:
-                    keep_cols.append(c)
-            for c in ("group_size", "event", p.focal_col):
-                if c in g.columns and c not in keep_cols:
-                    keep_cols.append(c)
-            rows = g.loc[valid_mask, keep_cols].copy()
-            rows["dx"] = delta.loc[valid_mask, COLUMNS.x_col].to_numpy()
-            rows["dy"] = delta.loc[valid_mask, COLUMNS.y_col].to_numpy()
-            rows["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
-            dangle = delta.loc[valid_mask, angle_col].to_numpy()
-            if wrap_angles:
-                dangle = _wrap_angle(dangle)
-            if divide_by_frames:
-                dangle = dangle / diff_n
-            if scale_by_fps:
-                dangle = dangle * fps
-            rows["dangle"] = dangle
-            rows["dspeed"] = delta.loc[valid_mask, speed_col].to_numpy()
-
-            # Neighbor position in ego frame: prefer existing ego offsets, else rotate world offsets
-            if p.nn_dx_ego_col in g.columns and p.nn_dy_ego_col in g.columns:
-                rows["neighbor_x"] = g.loc[valid_mask, p.nn_dx_ego_col].to_numpy()
-                rows["neighbor_y"] = g.loc[valid_mask, p.nn_dy_ego_col].to_numpy()
-            elif p.nn_dx_world_col in g.columns and p.nn_dy_world_col in g.columns:
-                dx_world = g.loc[valid_mask, p.nn_dx_world_col].to_numpy()
-                dy_world = g.loc[valid_mask, p.nn_dy_world_col].to_numpy()
-                heading = g.loc[valid_mask, angle_col].to_numpy()
-                nx, ny = _ego_rotate(dx_world, dy_world, heading)
-                rows["neighbor_x"] = nx
-                rows["neighbor_y"] = ny
-            else:
-                rows["neighbor_x"] = np.nan
-                rows["neighbor_y"] = np.nan
-
-            # Neighbor focal flag (if available)
-            if focal_lookup is not None:
-                neighbor_meta = rows[[frame_col, nn_id_col]].rename(
-                    columns={nn_id_col: "_nid"}
-                )
-                rows["neighbor_focal"] = neighbor_meta.merge(
-                    focal_lookup, on=[frame_col, "_nid"], how="left"
-                )["neighbor_focal"].to_numpy()
-
-            # Pass through meta columns
-            rows["nn_id"] = g.loc[valid_mask, nn_id_col].to_numpy()
-            rows[id_col] = focal_id
-            if COLUMNS.group_col in g.columns:
-                rows[COLUMNS.group_col] = g.loc[
-                    valid_mask, COLUMNS.group_col
-                ].to_numpy()
-            if COLUMNS.seq_col in g.columns:
-                rows[COLUMNS.seq_col] = g.loc[valid_mask, COLUMNS.seq_col].to_numpy()
-            if COLUMNS.time_col in g.columns:
-                rows[COLUMNS.time_col] = g.loc[valid_mask, COLUMNS.time_col].to_numpy()
-            for passthrough in ("group_size", "event", p.focal_col):
-                if passthrough in g.columns and passthrough not in rows.columns:
-                    rows[passthrough] = g.loc[valid_mask, passthrough].to_numpy()
-
-            outputs.append(rows)
-
-        if not outputs:
+        valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
+        if not valid_mask.any():
             return pd.DataFrame()
 
-        out_df = pd.concat(outputs, ignore_index=True)
-        # Ensure stable column order: meta first, then deltas and neighbor info
+        # --- Build keep_cols list (same logic, applied once) ---
+        keep_cols = [frame_col, id_col]
+        for c in (COLUMNS.time_col, COLUMNS.group_col, COLUMNS.seq_col,
+                  x_col, y_col, angle_col, speed_col, nn_id_col):
+            if c in df.columns and c not in keep_cols:
+                keep_cols.append(c)
+        for c in (p.nn_dx_ego_col, p.nn_dy_ego_col,
+                  p.nn_dx_world_col, p.nn_dy_world_col):
+            if c in df.columns and c not in keep_cols:
+                keep_cols.append(c)
+        for c in ("group_size", "event", p.focal_col):
+            if c in df.columns and c not in keep_cols:
+                keep_cols.append(c)
+        for c in p.tag_cols:
+            if c in df.columns and c not in keep_cols:
+                keep_cols.append(c)
+
+        # --- Single slice for all valid rows ---
+        out = df.loc[valid_mask, keep_cols].copy()
+        out["dx"] = delta.loc[valid_mask, x_col].to_numpy()
+        out["dy"] = delta.loc[valid_mask, y_col].to_numpy()
+        out["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
+
+        dangle = delta.loc[valid_mask, angle_col].to_numpy()
+        if p.wrap_angle:
+            dangle = _wrap_angle(dangle)
+        if p.divide_dangle_by_frames:
+            dangle = dangle / diff_n
+        if p.scale_dangle_by_fps:
+            dangle = dangle * fps
+        out["dangle"] = dangle
+
+        dspeed = delta.loc[valid_mask, speed_col].to_numpy()
+        if p.divide_dspeed_by_frames:
+            dspeed = dspeed / diff_n
+        if p.scale_dspeed_by_fps:
+            dspeed = dspeed * fps
+        out["dspeed"] = dspeed
+
+        # --- Neighbor position in ego frame (vectorized) ---
+        if p.nn_dx_ego_col in df.columns and p.nn_dy_ego_col in df.columns:
+            out["neighbor_x"] = df.loc[valid_mask, p.nn_dx_ego_col].to_numpy()
+            out["neighbor_y"] = df.loc[valid_mask, p.nn_dy_ego_col].to_numpy()
+        elif p.nn_dx_world_col in df.columns and p.nn_dy_world_col in df.columns:
+            dx_world = df.loc[valid_mask, p.nn_dx_world_col].to_numpy()
+            dy_world = df.loc[valid_mask, p.nn_dy_world_col].to_numpy()
+            heading = df.loc[valid_mask, angle_col].to_numpy()
+            nx, ny = _ego_rotate(dx_world, dy_world, heading)
+            out["neighbor_x"] = nx
+            out["neighbor_y"] = ny
+        else:
+            out["neighbor_x"] = np.nan
+            out["neighbor_y"] = np.nan
+
+        # --- Rename nn_id_col to output name ---
+        out["nn_id"] = out[nn_id_col].to_numpy()
+
+        # --- Neighbor lookups: single indexed lookup instead of per-fish merges ---
+        if p.focal_col in df.columns:
+            focal_idx = df.set_index([frame_col, id_col])[p.focal_col]
+            # Drop duplicates in the index (keep first) to avoid reindex errors
+            focal_idx = focal_idx[~focal_idx.index.duplicated(keep="first")]
+            keys = pd.MultiIndex.from_arrays(
+                [out[frame_col].to_numpy(), out[nn_id_col].to_numpy()]
+            )
+            out["neighbor_focal"] = focal_idx.reindex(keys).values
+
+        for tag_col in p.tag_cols:
+            if tag_col in df.columns:
+                tag_idx = df.set_index([frame_col, id_col])[tag_col]
+                tag_idx = tag_idx[~tag_idx.index.duplicated(keep="first")]
+                keys = pd.MultiIndex.from_arrays(
+                    [out[frame_col].to_numpy(), out[nn_id_col].to_numpy()]
+                )
+                out[f"neighbor_{tag_col}"] = tag_idx.reindex(keys).values
+
+        # --- Passthrough columns already in out from keep_cols ---
+
+        # --- Stable column order ---
         col_order = [
             c
             for c in (
@@ -274,17 +268,23 @@ class NearestNeighborDelta:
                 id_col,
                 "nn_id",
             )
-            if c in out_df.columns
+            if c in out.columns
         ]
         col_order += [
             c
             for c in ("neighbor_x", "neighbor_y", "neighbor_focal")
-            if c in out_df.columns
+            if c in out.columns
         ]
         col_order += [
-            c for c in ("dx", "dy", "dt", "dangle", "dspeed") if c in out_df.columns
+            c for c in ("dx", "dy", "dt", "dangle", "dspeed") if c in out.columns
         ]
         for c in ("group_size", "event", p.focal_col):
-            if c in out_df.columns and c not in col_order:
+            if c in out.columns and c not in col_order:
                 col_order.append(c)
-        return out_df[col_order]
+        for c in p.tag_cols:
+            if c in out.columns and c not in col_order:
+                col_order.append(c)
+            neighbor_c = f"neighbor_{c}"
+            if neighbor_c in out.columns and neighbor_c not in col_order:
+                col_order.append(neighbor_c)
+        return out[col_order]
