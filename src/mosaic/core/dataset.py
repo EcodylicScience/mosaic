@@ -3629,6 +3629,11 @@ def _yield_inputset_frames(
             if path_map:
                 pth = path_map.get((g, s))
                 if pth is None or not pth.exists():
+                    _feat = spec.get("feature", "?")
+                    print(
+                        f"[inputset] WARN: feature '{_feat}' has no file for ({g}, {s})",
+                        file=sys.stderr,
+                    )
                     continue
                 try:
                     feat_columns = spec.get("columns")
@@ -3681,6 +3686,11 @@ def _yield_inputset_frames(
                 except Exception:
                     continue
             if df_feat is None or df_feat.empty:
+                _feat = spec.get("feature", "?")
+                print(
+                    f"[inputset] WARN: feature '{_feat}' returned empty data for ({g}, {s})",
+                    file=sys.stderr,
+                )
                 continue
             # Merge on shared meta columns
             on_cols = [
@@ -5313,7 +5323,7 @@ def run_feature(
             else:
                 executor = ThreadPoolExecutor(max_workers=max_workers)
         extra_attrs = {}
-        for attr in ("_scope_filter", "_scope_constraints"):
+        for attr in ("_scope_filter", "_scope_constraints", "_labels"):
             if hasattr(feature, attr):
                 extra_attrs[attr] = getattr(feature, attr)
 
@@ -5465,6 +5475,19 @@ def run_feature(
 
     _append_feature_index(idx_path, out_rows)
     _update_finished_times(idx_path, run_id, _now_iso())
+
+    # Warn if all outputs are empty
+    n_total = sum(1 for r in out_rows if r.get("sequence", "") != "__global__")
+    n_empty = sum(
+        1 for r in out_rows
+        if r.get("sequence", "") != "__global__"
+        and (r.get("n_rows") is None or r.get("n_rows") == 0)
+    )
+    if n_total > 0 and n_empty == n_total:
+        print(
+            f"[feature:{storage_feature_name}] WARNING: all {n_total} outputs are empty!",
+            file=sys.stderr,
+        )
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     from mosaic.behavior.feature_library.params import Result
     return Result(feature=storage_feature_name, run_id=run_id)
