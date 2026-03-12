@@ -5,6 +5,7 @@ from typing import Iterable, Optional, final
 
 import numpy as np
 import pandas as pd
+from scipy.signal import savgol_filter
 
 from mosaic.core.dataset import register_feature
 
@@ -38,6 +39,8 @@ class SpeedAngvel:
       - angvel: wrapped heading difference (rad) divided by dt
       - speed_step / angvel_step: same, but using a configurable step_size
         (omitted if step_size is None)
+      - speed_smooth: Savitzky-Golay smoothed speed (polyorder=1), only present
+        when smooth_window is set in Params
     """
 
     name = "speed-angvel"
@@ -50,6 +53,7 @@ class SpeedAngvel:
 
     class Params(Params):
         step_size: int | None = None
+        smooth_window: int | None = None
 
     def __init__(
         self,
@@ -144,6 +148,16 @@ class SpeedAngvel:
         dt = self._dt(step, time_arr, len(angle))
         return dtheta / dt
 
+    @staticmethod
+    def _smooth_speed(speed: np.ndarray, window: int) -> np.ndarray:
+        """Apply Savitzky-Golay filter (polyorder=1) to speed, handling NaN/inf."""
+        bad = ~np.isfinite(speed)
+        filled = speed.copy()
+        filled[bad] = 0.0
+        smoothed = savgol_filter(filled, window_length=window, polyorder=1)
+        smoothed[bad] = np.nan
+        return smoothed
+
     def _compute_one_id(self, sub: pd.DataFrame, p, order_col: str) -> pd.DataFrame:
         sub = sub.sort_values(order_col).reset_index(drop=True)
         x = sub[COLUMNS.x_col].to_numpy(dtype=float)
@@ -166,6 +180,11 @@ class SpeedAngvel:
         )
         if angle is not None:
             out["angvel"] = self._compute_angvel(angle, step=1, time_arr=time_arr)
+
+        if p.smooth_window is not None:
+            out["speed_smooth"] = self._smooth_speed(
+                out["speed"].to_numpy(), p.smooth_window
+            )
 
         step_size = p.step_size
         if step_size:
