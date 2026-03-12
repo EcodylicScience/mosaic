@@ -3721,11 +3721,32 @@ def _yield_inputset_frames(
                 ]
             if not on_cols:
                 # fallback to cartesian concat
+                shared = set(df.columns) & set(df_feat.columns)
+                if shared:
+                    _feat = spec.get("feature", "?")
+                    print(
+                        f"[inputset] INFO: feature '{_feat}' overwrites "
+                        f"columns {sorted(shared)} from prior input",
+                        file=sys.stderr,
+                    )
+                    df = df.drop(columns=list(shared))
                 df = pd.concat(
                     [df.reset_index(drop=True), df_feat.reset_index(drop=True)], axis=1
                 )
             else:
-                df = df.merge(df_feat, how="left", on=on_cols)
+                shared = set(df.columns) & set(df_feat.columns) - set(on_cols)
+                if shared:
+                    _feat = spec.get("feature", "?")
+                    print(
+                        f"[inputset] INFO: feature '{_feat}' overwrites "
+                        f"columns {sorted(shared)} from prior input",
+                        file=sys.stderr,
+                    )
+                df = df.merge(df_feat, how="left", on=on_cols, suffixes=("_drop", ""))
+                # Resolve: keep the feature's version, drop the base's
+                drop_cols = [c for c in df.columns if c.endswith("_drop")]
+                if drop_cols:
+                    df = df.drop(columns=drop_cols)
 
         if df is not None:
             yield g, s, df
