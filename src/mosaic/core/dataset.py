@@ -3612,12 +3612,23 @@ def _yield_inputset_frames(
         if str(spec.get("kind", "feature")) == "feature"
     ]
 
-    for g, s, df_tracks in _yield_sequences(
-        ds, groups, sequences, allowed_pairs=allowed_pairs
-    ):
+    # When no "tracks" in inputs, iterate over allowed pairs directly
+    # and use the first feature result as the base DataFrame instead of raw tracks.
+    if track_specs:
+        base_iter = _yield_sequences(
+            ds, groups, sequences, allowed_pairs=allowed_pairs
+        )
+    else:
+        # Build iterator from allowed_pairs without loading raw tracks
+        def _pairs_iter():
+            for g, s in sorted(allowed_pairs):
+                yield g, s, None
+        base_iter = _pairs_iter()
+
+    for g, s, df_tracks in base_iter:
         df = df_tracks
         # Apply track column filter if provided
-        if track_specs:
+        if track_specs and df is not None:
             cols = track_specs[-1].get("columns")
             if cols:
                 keep = [c for c in cols if c in df.columns]
@@ -3692,6 +3703,10 @@ def _yield_inputset_frames(
                     file=sys.stderr,
                 )
                 continue
+            # If no base yet (no tracks in inputs), use first feature as base
+            if df is None:
+                df = df_feat
+                continue
             # Merge on shared meta columns
             on_cols = [
                 c
@@ -3712,7 +3727,8 @@ def _yield_inputset_frames(
             else:
                 df = df.merge(df_feat, how="left", on=on_cols)
 
-        yield g, s, df
+        if df is not None:
+            yield g, s, df
 
 
 @dataclass
@@ -5476,12 +5492,19 @@ def run_feature(
     _append_feature_index(idx_path, out_rows)
     _update_finished_times(idx_path, run_id, _now_iso())
 
-    # Warn if all outputs are empty
-    n_total = sum(1 for r in out_rows if r.get("sequence", "") != "__global__")
-    n_empty = sum(
-        1 for r in out_rows
+    # Warn if all *newly computed* outputs are empty (skip preexisting)
+    _preexisting_set = {
+        (r.get("group", ""), r.get("sequence", "")) for r in preexisting_rows
+    }
+    new_rows = [
+        r for r in out_rows
         if r.get("sequence", "") != "__global__"
-        and (r.get("n_rows") is None or r.get("n_rows") == 0)
+        and (r.get("group", ""), r.get("sequence", "")) not in _preexisting_set
+    ]
+    n_total = len(new_rows)
+    n_empty = sum(
+        1 for r in new_rows
+        if r.get("n_rows") is None or r.get("n_rows") == 0
     )
     if n_total > 0 and n_empty == n_total:
         print(

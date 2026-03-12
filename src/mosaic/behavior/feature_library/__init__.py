@@ -64,8 +64,10 @@ from . import (
     pairposedistancepca,
     speed_angvel,
     temporal_stacking,
+    trajectory_smooth,
     ward_assign,
 )
+from . import movement  # triggers @register_feature for movement features
 from .approach_avoidance import ApproachAvoidance
 from .body_scale import BodyScaleFeature
 from .ffgroups import FFGroups
@@ -99,6 +101,8 @@ from .params import (
 )
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+from .trajectory_smooth import TrajectorySmooth
+from .movement import MovementFilterInterpolate, MovementSmooth
 from .ward_assign import WardAssignClustering
 
 # Note: Templates are not imported (they're just examples)
@@ -203,6 +207,9 @@ __all__ = [
     "PairWavelet",
     "SpeedAngvel",
     "TemporalStackingFeature",
+    "TrajectorySmooth",
+    "MovementSmooth",
+    "MovementFilterInterpolate",
     "WardAssignClustering",
     # Submodules
     "approach_avoidance",
@@ -226,5 +233,7 @@ __all__ = [
     "pairposedistancepca",
     "speed_angvel",
     "temporal_stacking",
+    "trajectory_smooth",
+    "movement",
     "ward_assign",
 ]
