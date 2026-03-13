@@ -96,7 +96,7 @@ def train_pose_model(
         imgsz=imgsz,
         batch=batch,
         device=device,
-        project=str(project),
+        project=str(Path(project).resolve()),
         name=name,
         patience=patience,
     )
@@ -149,7 +149,7 @@ def find_best_model(project_dir: str | Path) -> Path | None:
     Searches *project_dir* for subdirectories containing weights/best.pt,
     returns the most recently modified one.
     """
-    project_path = Path(project_dir)
+    project_path = Path(project_dir).resolve()
     candidates = sorted(
         project_path.glob("*/weights/best.pt"),
         key=lambda p: p.stat().st_mtime,
@@ -317,7 +317,7 @@ def train_point_model(
         imgsz=imgsz,
         batch=batch,
         device=device,
-        project=str(project),
+        project=str(Path(project).resolve()),
         name=name,
         patience=patience,
         loc=loc,
