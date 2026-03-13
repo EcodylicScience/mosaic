@@ -44,6 +44,7 @@ class MovementSmooth:
         min_periods: int | None = None
         # savgol-specific
         polyorder: int = 2
+        savgol_mode: str = "nearest"
         # shared
         include_centroid: bool = True
         fps: float | None = None
@@ -117,7 +118,7 @@ class MovementSmooth:
                 kwargs["min_periods"] = p.min_periods
             smoothed = rolling_filter(position, **kwargs)
         elif p.method == "savgol":
-            smoothed = savgol_filter(position, window=p.window, polyorder=p.polyorder)
+            smoothed = savgol_filter(position, window=p.window, polyorder=p.polyorder, mode=p.savgol_mode)
         else:
             raise ValueError(f"Unknown smoothing method: {p.method!r}")
 
