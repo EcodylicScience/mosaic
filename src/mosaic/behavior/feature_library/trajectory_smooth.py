@@ -41,6 +41,15 @@ class TrajectorySmooth:
     Output is the full track DataFrame with smoothed positions replacing
     originals, plus a ``bad_frame`` boolean column. Downstream features
     can consume this via ``Inputs((Result(feature="trajectory-smooth"),))``.
+
+    Parameters
+    ----------
+    speed_threshold : float or None
+        When ``fps`` is set, interpreted as **units/sec** (e.g. 40 cm/s).
+        When ``fps`` is None, interpreted as units/frame (legacy behavior).
+    fps : float or None
+        Frames per second.  When provided, ``speed_threshold`` is treated as
+        units/sec and converted internally to units/frame.
     """
 
     name = "trajectory-smooth"
@@ -53,6 +62,7 @@ class TrajectorySmooth:
 
     class Params(Params):
         speed_threshold: float | None = None
+        fps: float | None = None
         interpolate_centroid: bool = True
         interpolate_pose: bool = False
         expand_frames: int = 2
@@ -143,12 +153,17 @@ class TrajectorySmooth:
 
         # --- Step 1: Bad-frame detection ---
         if p.speed_threshold is not None and x_col in sub.columns and y_col in sub.columns:
+            # Convert threshold to units/frame when fps is given
+            threshold_per_frame = (
+                p.speed_threshold / p.fps if p.fps is not None
+                else p.speed_threshold
+            )
             x = sub[x_col].to_numpy(dtype=float)
             y = sub[y_col].to_numpy(dtype=float)
             dx = np.diff(x, prepend=np.nan)
             dy = np.diff(y, prepend=np.nan)
             speed = np.hypot(dx, dy)
-            bad_mask = speed > p.speed_threshold
+            bad_mask = speed > threshold_per_frame
             # Expand bad region
             if p.expand_frames > 0 and np.any(bad_mask):
                 bad_indices = np.where(bad_mask)[0]
