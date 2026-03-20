@@ -24,6 +24,23 @@ import pandas as pd
 from mosaic.core.helpers import to_safe_name
 
 
+def apply_exclude_cols(
+    df: pd.DataFrame,
+    exclude_cols: list[str] | None,
+) -> pd.DataFrame:
+    """Drop rows where any *exclude_cols* column is truthy.
+
+    Silently skips column names not present in *df*.
+    Returns *df* unchanged when *exclude_cols* is empty/None.
+    """
+    if not exclude_cols:
+        return df
+    present = [c for c in exclude_cols if c in df.columns]
+    if not present:
+        return df
+    return df[~df[present].any(axis=1)]
+
+
 def _pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
     """Extract (poseX*, poseY*) column pairs from column names."""
     pose_pairs = []

@@ -9,6 +9,7 @@ from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 
+from .helpers import apply_exclude_cols
 from .params import Inputs, OutputType, Params, Result, TrackInput
 
 
@@ -121,6 +122,7 @@ class NearestNeighborDeltaBins:
         exp_col: str = "Exp"
         trial_col: str = "Trial"
         category_specs: list = Field(default_factory=list)
+        exclude_cols: list[str] = Field(default_factory=list)
         nonfocal_flag_col: str = "Focal_fish"
         nonfocal_flag_value: bool = False
 
@@ -206,6 +208,11 @@ class NearestNeighborDeltaBins:
 
         # Drop rows missing required numeric inputs
         df = df.dropna(subset=required)
+        if df.empty:
+            return pd.DataFrame()
+
+        # Drop rows where any exclude_col is truthy (e.g. bad_frame)
+        df = apply_exclude_cols(df, p.exclude_cols)
         if df.empty:
             return pd.DataFrame()
 

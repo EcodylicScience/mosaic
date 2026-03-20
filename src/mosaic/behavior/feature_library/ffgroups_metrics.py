@@ -5,10 +5,12 @@ from typing import Iterable, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.dataset import register_feature
 from mosaic.core.helpers import chunk_sequence
 
+from .helpers import apply_exclude_cols
 from .params import COLUMNS, Inputs, OutputType, Params, Result, TrackInput, resolve_order_col
 
 
@@ -50,6 +52,7 @@ class FFGroupsMetrics:
         time_chunk_sec: float | None = None
         frame_chunk: int | None = None
         centroid_heading_col: str = "centroid_heading"
+        exclude_cols: list[str] = Field(default_factory=list)
 
     def __init__(
         self,
@@ -103,6 +106,11 @@ class FFGroupsMetrics:
         p = self.params
         order_col = resolve_order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
+
+        # Drop rows where any exclude_col is truthy (e.g. bad_frame)
+        df = apply_exclude_cols(df, p.exclude_cols)
+        if df.empty:
+            return pd.DataFrame()
 
         required = [
             COLUMNS.x_col,
