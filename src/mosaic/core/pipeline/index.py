@@ -31,23 +31,8 @@ class FeatureIndexRow(IndexRowBase):
     version: str
     group: str
     sequence: str
-    abs_path: Path
     params_hash: str
     n_rows: int = 0
-
-    def __post_init__(self) -> None:
-        if isinstance(self.abs_path, str):
-            object.__setattr__(self, "abs_path", Path(self.abs_path))
-        if not self.abs_path.name:
-            raise ValueError(
-                f"FeatureIndexRow.abs_path cannot be empty "
-                f"(feature={self.feature!r}, group={self.group!r}, sequence={self.sequence!r})"
-            )
-        if not self.abs_path.exists():
-            raise FileNotFoundError(
-                f"FeatureIndexRow.abs_path does not exist: {self.abs_path} "
-                f"(feature={self.feature!r}, group={self.group!r}, sequence={self.sequence!r})"
-            )
 
 
 def feature_index(path: Path) -> IndexCSV[FeatureIndexRow]:

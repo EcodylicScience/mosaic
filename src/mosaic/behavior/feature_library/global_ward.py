@@ -16,11 +16,10 @@ import pandas as pd
 from pydantic import Field
 from scipy.cluster.hierarchy import linkage as _sch_linkage
 
-from .spec import register_feature
 from mosaic.core.pipeline._utils import Scope
 
-from .helpers import StreamingFeatureHelper, _load_artifact_matrix
 from .global_tsne import GlobalTSNE
+from .helpers import StreamingFeatureHelper, _load_artifact_matrix
 from .spec import (
     ArtifactSpec,
     InputRequire,
@@ -31,6 +30,7 @@ from .spec import (
     OutputType,
     Params,
     Result,
+    register_feature,
 )
 
 
@@ -204,10 +204,10 @@ class GlobalWardClustering:
                     "[global-ward] Result inputs produced no usable matrices."
                 )
             blocks = {}
-            for key, entries in manifest.items():
-                kd = helper.load_key_data(entries, key=key)
+            for entry_key, entries in manifest.items():
+                kd = helper.load_entry_data(entries, entry_key=entry_key)
                 if kd is not None and kd.features.size > 0:
-                    blocks[key] = kd.features
+                    blocks[entry_key] = kd.features
             if not blocks:
                 raise RuntimeError(
                     "[global-ward] Result inputs produced no usable matrices."

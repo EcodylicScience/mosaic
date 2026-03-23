@@ -18,10 +18,11 @@ from pydantic import Field
 from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from .spec import register_feature
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
+from .global_tsne import GlobalTSNE
+from .global_ward import GlobalWardClustering
 from .helpers import (
     PartialIndexRow,
     StreamingFeatureHelper,
@@ -31,8 +32,6 @@ from .helpers import (
     _load_joblib_artifact,
     _resolve_sequence_identity,
 )
-from .global_tsne import GlobalTSNE
-from .global_ward import GlobalWardClustering
 from .spec import (
     ArtifactSpec,
     Inputs,
@@ -41,6 +40,7 @@ from .spec import (
     OutputType,
     Params,
     Result,
+    register_feature,
 )
 
 
@@ -172,9 +172,7 @@ class WardAssignClustering:
             id2_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
 
         # Standard per-sequence parquet artifact for index-based loading.
-        group, sequence = _resolve_sequence_identity(
-            entry_key, self._scope.entry_map
-        )
+        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
         out_name = f"{make_entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
         df_out = pd.DataFrame(
@@ -265,7 +263,7 @@ class WardAssignClustering:
         keys = list(manifest.keys())
         n_keys = len(keys)
         for i, entry_key in enumerate(keys):
-            kd = helper.load_key_data(manifest[entry_key], key=entry_key)
+            kd = helper.load_entry_data(manifest[entry_key], entry_key=entry_key)
             if kd is None:
                 continue
 

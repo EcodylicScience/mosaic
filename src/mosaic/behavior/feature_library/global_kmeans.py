@@ -17,7 +17,6 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from .spec import register_feature
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
@@ -41,6 +40,7 @@ from .spec import (
     Params,
     ParquetLoadSpec,
     Result,
+    register_feature,
 )
 
 
@@ -339,8 +339,8 @@ class GlobalKMeansClustering:
 
             keys = list(manifest.keys())
             n_keys = len(keys)
-            for i, key in enumerate(keys):
-                kd = helper.load_key_data(manifest[key], key=key)
+            for i, entry_key in enumerate(keys):
+                kd = helper.load_entry_data(manifest[entry_key], entry_key=entry_key)
                 if kd is None:
                     continue
                 D_total = kd.features.shape[1]
@@ -353,7 +353,7 @@ class GlobalKMeansClustering:
                     if scaler.n_features_in_ != D_total:
                         raise ValueError(
                             f"Scaler expects n_features_in_={getattr(scaler, 'n_features_in_', None)}, "
-                            f"got {D_total} columns for key={key}"
+                            f"got {D_total} columns for entry_key={entry_key}"
                         )
                     X_use = scaler.transform(kd.features)
                 else:
@@ -364,22 +364,22 @@ class GlobalKMeansClustering:
                     if D_total != self._fit_dim:
                         raise ValueError(
                             f"Assign-without-scaler requires feature dim {self._fit_dim}, "
-                            f"but got {D_total} for key={key}. Provide a scaler or align inputs."
+                            f"but got {D_total} for entry_key={entry_key}. Provide a scaler or align inputs."
                         )
                     X_use = kd.features
 
                 labels = self._kmeans.predict(X_use)
-                self._assign_labels[key] = labels.astype(np.int32)
-                self._assign_frames[key] = kd.frames
+                self._assign_labels[entry_key] = labels.astype(np.int32)
+                self._assign_frames[entry_key] = kd.frames
                 if kd.id1 is not None:
-                    self._assign_id1[key] = np.asarray(
+                    self._assign_id1[entry_key] = np.asarray(
                         kd.id1, dtype=np.float64
                     ).ravel()
                 if kd.id2 is not None:
-                    self._assign_id2[key] = np.asarray(
+                    self._assign_id2[entry_key] = np.asarray(
                         kd.id2, dtype=np.float64
                     ).ravel()
-                self._assign_entity_level[key] = kd.entity_level
+                self._assign_entity_level[entry_key] = kd.entity_level
 
                 del X_use, kd, labels
                 gc.collect()
@@ -509,7 +509,6 @@ class GlobalKMeansClustering:
             self._additional_index_rows.append(
                 _build_index_row(group, sequence, out_path, int(len(df_out)))
             )
-
 
     def load_model(self, path: Path) -> None:
         bundle = joblib.load(path)

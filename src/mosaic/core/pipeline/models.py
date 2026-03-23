@@ -135,6 +135,7 @@ def train_model(
         rows = [
             ModelIndexRow(
                 run_id=run_id,
+                abs_path=run_root,
                 model=storage_model_name,
                 version=model.version,
                 config_path=str(config_path),
@@ -157,6 +158,7 @@ def train_model(
     rows = [
         ModelIndexRow(
             run_id=run_id,
+            abs_path=run_root,
             model=storage_model_name,
             version=model.version,
             config_path=str(config_path),

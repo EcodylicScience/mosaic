@@ -17,8 +17,16 @@ class IndexRowBase:
     """Base for all index row dataclasses. Provides run-tracking fields."""
 
     run_id: str
+    abs_path: Path
     started_at: str = dataclasses.field(init=False, default_factory=now_iso)
     finished_at: str = dataclasses.field(init=False, default="")
+
+    def __post_init__(self) -> None:
+        if isinstance(self.abs_path, str):
+            object.__setattr__(self, "abs_path", Path(self.abs_path))
+        if not self.abs_path.exists():
+            msg = f"{type(self).__name__}.abs_path does not exist: {self.abs_path}"
+            raise FileNotFoundError(msg)
 
 
 _TYPE_TO_DTYPE: dict[type, str] = {
@@ -84,10 +92,19 @@ class IndexCSV(Generic[RowT]):
         df.to_csv(self.path, index=False)
 
     def read(self) -> pd.DataFrame:
-        """Read and return the CSV as a DataFrame."""
+        """Read the CSV, validating that all abs_path entries still exist."""
         if not self.path.exists():
             raise FileNotFoundError(f"Index not found: {self.path}")
-        return pd.read_csv(self.path, keep_default_na=False)
+        df = pd.read_csv(self.path, keep_default_na=False)
+        missing = [p for p in df["abs_path"] if not Path(p).exists()]
+        if missing:
+            msg = (
+                f"Stale index {self.path}: "
+                f"{len(missing)} path(s) no longer exist, "
+                f"first: {missing[0]}"
+            )
+            raise FileNotFoundError(msg)
+        return df
 
     def append(self, rows: list[RowT]) -> None:
         """Append rows, deduplicating by dedup_keys if configured.

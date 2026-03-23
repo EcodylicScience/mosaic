@@ -33,8 +33,6 @@ from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
 
-from .spec import register_feature
-
 from .spec import (
     COLUMNS,
     Inputs,
@@ -43,6 +41,7 @@ from .spec import (
     Params,
     SamplingConfig,
     TrackInput,
+    register_feature,
     resolve_order_col,
 )
 

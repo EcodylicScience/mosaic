@@ -19,13 +19,10 @@ from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from .spec import register_feature
-
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
-    KeyData,
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
@@ -43,6 +40,7 @@ from .spec import (
     OutputType,
     Params,
     Result,
+    register_feature,
 )
 
 
@@ -218,7 +216,12 @@ class GlobalTSNE:
         self._embedding: TSNEEmbedding | None = None
         self._templates: np.ndarray | None = None
         self._template_indices: np.ndarray | None = None
-        self._mapped_coords: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]] = {}
+        self._mapped_coords: dict[
+            str,
+            tuple[
+                np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str
+            ],
+        ] = {}
         self._keys: list[str] = []
         self._ds: object = None
         self._scope: Scope = Scope()
@@ -298,8 +301,10 @@ class GlobalTSNE:
         scaler_samples = []
         template_samples = []
 
-        for ki, key in enumerate(keys):
-            kd = helper.load_key_data(key_file_manifest[key], key=key)
+        for ki, entry_key in enumerate(keys):
+            kd = helper.load_entry_data(
+                key_file_manifest[entry_key], entry_key=entry_key
+            )
             if kd is None or kd.features.shape[0] == 0:
                 continue
             X = kd.features
@@ -437,7 +442,9 @@ class GlobalTSNE:
             data: dict[str, object] = {
                 "tsne_x": Y[:, 0].astype(np.float32),
                 "tsne_y": Y[:, 1].astype(np.float32),
-                "frame": frames if frames is not None else np.arange(n_rows, dtype=np.int64),
+                "frame": frames
+                if frames is not None
+                else np.arange(n_rows, dtype=np.int64),
                 "sequence": sequence,
                 "group": group,
             }
@@ -555,9 +562,7 @@ class GlobalTSNE:
     def _append_index_row(
         self, entry_key: str, out_path: Path, n_rows: int | None
     ) -> None:
-        group, sequence = _resolve_sequence_identity(
-            entry_key, self._scope.entry_map
-        )
+        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
         self._additional_index_rows = [
             r
             for r in self._additional_index_rows
@@ -578,9 +583,7 @@ class GlobalTSNE:
     ) -> None:
         if self._run_root is None:
             return
-        group, sequence = _resolve_sequence_identity(
-            entry_key, self._scope.entry_map
-        )
+        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
         out_name = f"{make_entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
 
@@ -588,7 +591,9 @@ class GlobalTSNE:
         data: dict[str, object] = {
             "tsne_x": Y[:, 0].astype(np.float32),
             "tsne_y": Y[:, 1].astype(np.float32),
-            "frame": frames if frames is not None else np.arange(n_rows, dtype=np.int64),
+            "frame": frames
+            if frames is not None
+            else np.arange(n_rows, dtype=np.int64),
             "sequence": sequence,
             "group": group,
         }
@@ -615,9 +620,7 @@ class GlobalTSNE:
                 "global_tsne_templates",
             ):
                 continue
-            group, sequence = _resolve_sequence_identity(
-                stem, self._scope.entry_map
-            )
+            group, sequence = _resolve_sequence_identity(stem, self._scope.entry_map)
             rows.append(_build_index_row(group, sequence, fp))
         return rows
 
@@ -625,7 +628,10 @@ class GlobalTSNE:
         self,
         key_file_manifest: dict[str, list[tuple[Path, LoadSpec]]],
         helper: StreamingFeatureHelper,
-    ) -> dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]]:
+    ) -> dict[
+        str,
+        tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str],
+    ]:
         """Map sequences one at a time to minimize memory usage."""
         if self._embedding is None or self._scaler is None:
             raise RuntimeError("GlobalTSNE mapping requires both embedding and scaler.")
@@ -667,13 +673,20 @@ class GlobalTSNE:
 
         import pyarrow as pa
 
-        mapped: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]] = {}
+        mapped: dict[
+            str,
+            tuple[
+                np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str
+            ],
+        ] = {}
         keys = list(key_file_manifest.keys())
         n_keys = len(keys)
 
-        # Use load_key_data directly (NOT iter_sequences generator) to avoid holding extra references
-        for i, key in enumerate(keys):
-            kd = helper.load_key_data(key_file_manifest[key], key=key)
+        # Use load_entry_data directly (NOT iter_sequences generator) to avoid holding extra references
+        for i, entry_key in enumerate(keys):
+            kd = helper.load_entry_data(
+                key_file_manifest[entry_key], entry_key=entry_key
+            )
             if kd is None or kd.features.shape[0] == 0:
                 continue
             X = kd.features
@@ -697,10 +710,12 @@ class GlobalTSNE:
                     gc.collect()
 
             if self._run_root is not None:
-                self._persist_mapped_coords(key, Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
+                self._persist_mapped_coords(
+                    entry_key, Y_seq, frames, kd.id1, kd.id2, kd.entity_level
+                )
                 del Y_seq
             else:
-                mapped[key] = (Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
+                mapped[entry_key] = (Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
             del Xs
 
             # Force garbage collection after each sequence to prevent openTSNE memory buildup

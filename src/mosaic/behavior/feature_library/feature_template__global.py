@@ -146,17 +146,17 @@ class MyGlobalFeature:
 
         # Stream through data
         keys = list(manifest.keys())
-        for i, key in enumerate(keys):
-            kd = helper.load_key_data(manifest[key], key=key)
+        for i, entry_key in enumerate(keys):
+            kd = helper.load_entry_data(manifest[entry_key], entry_key=entry_key)
             if kd is None or kd.features.shape[0] == 0:
                 continue
 
             # --- YOUR GLOBAL LOGIC HERE ---
-            result = self._process_sequence(key, kd.features, kd.frames)
+            result = self._process_sequence(entry_key, kd.features, kd.frames)
 
             # Write per-sequence output
             if result is not None and self._run_root is not None:
-                self._write_sequence_output(key, result)
+                self._write_sequence_output(entry_key, result)
 
             del kd, result
             gc.collect()

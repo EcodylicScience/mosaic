@@ -50,9 +50,10 @@ from .iteration import (
 )
 from .writers import FeatureOutput, trim_feature_output, write_output
 
+from .types import Feature, Result
+
 if TYPE_CHECKING:
     from mosaic.behavior.feature_library.helpers import PartialIndexRow
-    from mosaic.behavior.feature_library.spec import Feature
     from mosaic.core.dataset import Dataset
 
 
@@ -618,6 +619,4 @@ def run_feature(
     idx.append(out_rows)
     idx.mark_finished(run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
-    from mosaic.behavior.feature_library.spec import Result
-
     return Result(feature=storage_feature_name, run_id=run_id)

@@ -38,7 +38,6 @@ class FramesIndexRow(IndexRowBase):
     method: str
     group: str
     sequence: str
-    abs_path: str
     video_abs_path: str
     params_hash: str
     n_frames_extracted: int = 0
@@ -280,7 +279,7 @@ def extract_frames(
                 method=method_norm,
                 group=group,
                 sequence=sequence,
-                abs_path=ds._relative_to_root(seq_dir),
+                abs_path=seq_dir,
                 n_frames_extracted=result.n_extracted,
                 n_frames_requested=result.n_requested,
                 video_abs_path=json.dumps([str(p) for p in video_paths])

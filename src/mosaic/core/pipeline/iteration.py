@@ -12,13 +12,13 @@ from ._utils import ResolvedInput, Scope
 from .index import (
     feature_index,
     feature_index_path,
-    feature_run_root,
     latest_feature_run_root,
 )
 
 if TYPE_CHECKING:
-    from mosaic.behavior.feature_library.spec import InputsLike
     from mosaic.core.dataset import Dataset
+
+    from .types import InputsLike
 
 
 # --- Helpers ---
@@ -234,21 +234,12 @@ def yield_feature_data(
     df_idx = _filter_index(df_idx, groups, sequences, allowed_pairs)
 
     for _, row in df_idx.iterrows():
-        g, s = str(row["group"]), str(row["sequence"])
-        abs_path_str = row.get("abs_path", "")
-        if not abs_path_str.endswith(".parquet"):
-            continue  # skip non-parquet entries (e.g. .npz artifacts)
-        p = ds.resolve_path(abs_path_str)
-        if not p.exists():
-            print(
-                f"[feature-input] missing parquet for ({g},{s}) -> {p}", file=sys.stderr
-            )
-            continue
-        try:
-            df = pd.read_parquet(p)
-        except Exception as e:
-            print(f"[feature-input] failed to read {p}: {e}", file=sys.stderr)
-            continue
+        g, s = row["group"], row["sequence"]
+        p = Path(row["abs_path"])
+        if p.suffix != ".parquet":
+            msg = f"Expected .parquet in feature index, got: {p}"
+            raise ValueError(msg)
+        df = pd.read_parquet(p)
         # Skip marker tiny tables (<= 1 row or < 2 numeric cols)
         if len(df) <= 1:
             continue
@@ -286,18 +277,10 @@ def resolve_feature_entries(
             raise RuntimeError(
                 f"Unable to resolve latest run for feature '{feat_name}': {exc}"
             ) from exc
-    else:
-        run_root = feature_run_root(ds, feat_name, run_id)
-        if not run_root.exists():
-            raise FileNotFoundError(
-                f"Feature '{feat_name}' run '{run_id}' not found at {run_root}"
-            )
-
     idx_path = feature_index_path(ds, feat_name)
     df_idx = feature_index(idx_path).read()
     df_idx = df_idx[df_idx["run_id"] == run_id]
-    # drop marker/global rows
-    df_idx = df_idx[df_idx["sequence"].str.strip() != ""]
+    # Drop global marker rows (written by run.py for global-only features)
     df_idx = df_idx[df_idx["sequence"] != "__global__"]
 
     df_idx = _filter_index(df_idx, groups_set, seq_set)
@@ -305,9 +288,11 @@ def resolve_feature_entries(
     entries = set(zip(df_idx["group"], df_idx["sequence"]))
     path_map: dict[tuple[str, str], Path] = {}
     for _, row in df_idx.iterrows():
-        abs_path = row.get("abs_path")
-        if isinstance(abs_path, str) and abs_path and abs_path.endswith(".parquet"):
-            path_map[(row["group"], row["sequence"])] = ds.resolve_path(abs_path)
+        p = Path(row["abs_path"])
+        if p.suffix != ".parquet":
+            msg = f"Expected .parquet in feature index, got: {p}"
+            raise ValueError(msg)
+        path_map[(row["group"], row["sequence"])] = p
 
     resolved = ResolvedInput(
         kind="feature",
@@ -455,10 +440,6 @@ def yield_input_data(
             pth = spec.path_map.get((g, s))
             if pth is None:
                 continue
-            if not pth.exists():
-                raise FileNotFoundError(
-                    f"Stale feature index: {spec.feature} ({g},{s}) -> {pth}"
-                )
             try:
                 if spec.columns:
                     merge_keys = {
