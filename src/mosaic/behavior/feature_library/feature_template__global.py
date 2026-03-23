@@ -13,7 +13,7 @@ Current patterns this template follows (as of 2026-03):
   - Data inputs via constructor `inputs` (Result-based), not Params
   - output_type = "global"
 
-See GlobalTSNE and WardAssignClustering for real examples.
+See GlobalTSNE and GlobalWardClustering for real examples.
 """
 
 from __future__ import annotations
@@ -187,7 +187,7 @@ class MyGlobalFeature:
 
     # ----------------------- Internal helpers --------------------
     # These use shared functions from helpers.py -- the same ones used
-    # by GlobalTSNE, WardAssign, GlobalKMeans, etc.
+    # by GlobalTSNE, GlobalWardClustering, GlobalKMeans, etc.
 
     def _process_sequence(
         self, key: str, X: np.ndarray, frames: np.ndarray | None

@@ -1,224 +1,233 @@
 """
 GlobalWardClustering feature.
 
-Extracted from features.py as part of feature_library modularization.
+Fits Ward hierarchical linkage on templates, cuts at n_clusters,
+builds centroids, and assigns per-sequence rows via 1-NN.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
-from scipy.cluster.hierarchy import linkage as _sch_linkage
+from scipy.cluster.hierarchy import fcluster, linkage as _sch_linkage
+from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import (
+    _nn_pair_mask,  # pyright: ignore[reportPrivateUsage]
+)
 
-from .global_tsne import GlobalTSNE
-from .helpers import StreamingFeatureHelper, _load_artifact_matrix
+from .helpers import ensure_columns, nn_lookup_for
 from .spec import (
-    ArtifactSpec,
+    COLUMNS as C,
+    GlobalModelParams,
     InputRequire,
     Inputs,
+    JoblibArtifact,
     JoblibLoadSpec,
     NNResult,
-    NpzLoadSpec,
     OutputType,
-    Params,
     Result,
     register_feature,
 )
+
+
+class WardModelBundle(TypedDict):
+    linkage_matrix: np.ndarray
+    cluster_ids: list[int]
+    assign_nn: NearestNeighbors
+    feature_columns: list[str]
+    version: str
+
+
+class WardModelArtifact(JoblibArtifact[WardModelBundle]):
+    """Ward linkage model (model.joblib)."""
+
+    feature: str = "global-ward"
+    pattern: str = "model.joblib"
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
 @final
 @register_feature
 class GlobalWardClustering:
     """
-    Ward hierarchical clustering on a global feature artifact (e.g. global t-SNE templates).
+    Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     """
 
     name = "global-ward"
-    version = "0.2"
+    version = "0.3"
     output_type: OutputType = "global"
     parallelizable = False
+    scope_dependent = False
 
-    class ModelArtifact(ArtifactSpec[JoblibLoadSpec]):
-        """Ward linkage model (model.joblib)."""
-
-        feature: str = "global-ward"
-        pattern: str = "model.joblib"
-        load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
-
-    class LinkageArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Linkage matrix backup (model.npz)."""
-
-        feature: str = "global-ward"
-        pattern: str = "model.npz"
-        load: NpzLoadSpec = Field(
-            default_factory=lambda: NpzLoadSpec(key="linkage_matrix")
-        )
+    ModelArtifact = WardModelArtifact
 
     class Inputs(Inputs[Result]):
-        _require: ClassVar[InputRequire] = "empty"
+        _require: ClassVar[InputRequire] = "any"
 
-    class Params(Params):
+    class Params(GlobalModelParams[WardModelArtifact]):
         """Global Ward clustering parameters.
 
         Attributes:
-            templates: Templates artifact to cluster.
+            templates: Templates artifact to cluster (inherited).
+            model: Pre-fitted Ward model artifact (skip fit).
+            n_clusters: Number of clusters to cut. Default 20.
             method: Linkage method. Default "ward".
             pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
-        templates: GlobalTSNE.TemplatesArtifact = Field(
-            default_factory=GlobalTSNE.TemplatesArtifact
+        model: WardModelArtifact | None = Field(
+            default_factory=WardModelArtifact
         )
+        n_clusters: int = Field(default=20, ge=1)
         method: str = "ward"
         pair_filter: NNResult | None = None
 
     def __init__(
         self,
-        inputs: GlobalWardClustering.Inputs = Inputs(()),
+        inputs: GlobalWardClustering.Inputs,
         params: dict[str, object] | None = None,
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
 
-        self._ds: object = None
-        self._Z: np.ndarray | None = None
-        self._X_shape: tuple[int, int] | None = None
-        self._marker_written = False
-        self._scope: Scope = Scope()
+        self._linkage: np.ndarray | None = None
+        self._cluster_ids: np.ndarray | None = None
+        self._assign_nn: NearestNeighbors | None = None
+        self._feature_columns: list[str] | None = None
+        self._templates: np.ndarray | None = None
+        self._nn_index: pd.DataFrame | None = None
 
-    # --- framework API ---
+    # --- Feature protocol ---
 
-    def bind_dataset(self, ds: object) -> None:
-        self._ds = ds
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        self._linkage = None
+        self._cluster_ids = None
+        self._assign_nn = None
+        self._feature_columns = None
+        self._templates = None
+        self._nn_index = None
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+        # Load pair filter index
+        if dependency_indices and "pair_filter" in dependency_indices:
+            self._nn_index = dependency_indices["pair_filter"]
 
-    def needs_fit(self) -> bool:
-        return True
+        # Branch 1: cached model in run_root
+        cached_path = run_root / "model.joblib"
+        if cached_path.exists():
+            bundle: WardModelBundle = WardModelArtifact().from_path(cached_path)
+            self._linkage = bundle["linkage_matrix"]
+            self._cluster_ids = np.asarray(bundle["cluster_ids"], dtype=np.int32)
+            self._assign_nn = bundle["assign_nn"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
 
-    def supports_partial_fit(self) -> bool:
+        # Branch 2: pre-fitted model from artifact_paths
+        if self.params.model is not None and "model" in artifact_paths:
+            bundle = self.params.model.from_path(artifact_paths["model"])
+            self._linkage = bundle["linkage_matrix"]
+            self._cluster_ids = np.asarray(bundle["cluster_ids"], dtype=np.int32)
+            self._assign_nn = bundle["assign_nn"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
+
+        # Branch 3: templates from artifact_paths
+        if self.params.templates is not None and "templates" in artifact_paths:
+            df = self.params.templates.from_path(artifact_paths["templates"])
+            self._feature_columns = list(df.columns)
+            self._templates = df.to_numpy(dtype=np.float64)
+            return False
+
         return False
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        X = self._load_artifact_matrix()
-        if X.ndim != 2 or X.shape[0] < 2:
-            raise ValueError(
-                f"[global-ward] Need a 2D matrix with >=2 samples; got shape={X.shape}"
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+        if self._templates is None:
+            msg = "[global-ward] No templates loaded. Check load_state."
+            raise RuntimeError(msg)
+
+        templates = self._templates.astype(np.float64, copy=False)
+
+        if templates.ndim != 2 or templates.shape[0] < 2:
+            msg = (
+                f"[global-ward] Need a 2D matrix with >=2 samples; "
+                f"got shape={templates.shape}"
             )
+            raise ValueError(msg)
+
         method = self.params.method.lower()
         if method != "ward":
-            raise ValueError(
-                f"[global-ward] Only 'ward' is supported here, got '{method}'."
-            )
+            msg = f"[global-ward] Only 'ward' is supported here, got '{method}'."
+            raise ValueError(msg)
 
-        self._Z = _sch_linkage(X, method=method)
-        self._X_shape = tuple(X.shape)
+        self._linkage = _sch_linkage(templates, method=method)
 
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        raise NotImplementedError
+        labels = fcluster(self._linkage, self.params.n_clusters, criterion="maxclust")
+        unique_ids = np.unique(labels)
+        centroids = np.vstack([
+            templates[labels == cid].mean(axis=0)
+            for cid in unique_ids
+        ])
+        self._cluster_ids = unique_ids.astype(np.int32)
+        self._assign_nn = NearestNeighbors(n_neighbors=1).fit(centroids)
 
-    def finalize_fit(self) -> None:
-        pass
+        # Free templates memory
+        self._templates = None
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Emit a single 1-row marker the first time; subsequent calls return empty DF."""
-        if self._marker_written:
-            return pd.DataFrame(index=[])
-        self._marker_written = True
-        ns, nf = self._X_shape or (np.nan, np.nan)
-        return pd.DataFrame(
-            [
-                {
-                    "linkage_method": self.params.method,
-                    "n_samples": int(ns) if ns == ns else -1,
-                    "n_features": int(nf) if nf == nf else -1,
-                    "model_file": "model.joblib",
-                }
-            ]
-        )
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if (
+            self._assign_nn is None
+            or self._cluster_ids is None
+            or self._feature_columns is None
+        ):
+            msg = "GlobalWardClustering not fitted yet."
+            raise RuntimeError(msg)
 
-    def save_model(self, path: Path) -> None:
-        """Persist the linkage and minimal provenance to model.joblib."""
-        if self._Z is None:
+        ensure_columns(df, [C.frame_col] + self._feature_columns)
+
+        # Apply pair filter
+        nn_lookup = nn_lookup_for(self._nn_index, df)
+        if nn_lookup is not None:
+            nn_mask = _nn_pair_mask(df, nn_lookup)
+            keep = np.flatnonzero(nn_mask).tolist()
+            df = df.iloc[keep].reset_index(drop=True)
+
+        arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
+
+        mask = np.isfinite(arr).all(axis=1)
+        idx = np.flatnonzero(mask).tolist()
+        valid = df.iloc[idx].reset_index(drop=True)
+        meta_cols = sorted(set(valid.columns) - set(self._feature_columns))
+        out = valid[meta_cols].copy()
+
+        _, indices = self._assign_nn.kneighbors(arr[mask])
+        out["cluster"] = self._cluster_ids[indices.ravel()]
+        return out
+
+    def save_state(self, run_root: Path) -> None:
+        if (
+            self._assign_nn is None
+            or self._cluster_ids is None
+            or self._linkage is None
+        ):
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
+        run_root.mkdir(parents=True, exist_ok=True)
 
-        joblib.dump(
-            {
-                "linkage_matrix": self._Z,
-                "n_samples": None if self._X_shape is None else int(self._X_shape[0]),
-                "n_features": None if self._X_shape is None else int(self._X_shape[1]),
-                "version": self.version,
-                "params": self.params.model_dump(),
-            },
-            path,
-        )
-
-        np.savez_compressed(
-            path.with_suffix(".npz"),
-            linkage_matrix=self._Z,
-            method=self.params.method,
-            n_samples=(None if self._X_shape is None else int(self._X_shape[0])),
-            n_features=(None if self._X_shape is None else int(self._X_shape[1])),
-        )
-
-    def load_model(self, path: Path) -> None:
-        bundle = joblib.load(path)
-        self._Z = bundle.get("linkage_matrix")
-        ns = bundle.get("n_samples")
-        nf = bundle.get("n_features")
-        self._X_shape = (ns, nf) if ns is not None and nf is not None else None
-        saved = bundle.get("params", {})
-        if isinstance(saved, dict):
-            self.params = self.Params.model_validate(saved)
-
-    def _load_artifact_matrix(self) -> np.ndarray:
-        """Resolve the artifact, glob the pattern, and load to a single (N,D) matrix."""
-        if self._ds is None:
-            raise RuntimeError(
-                "[global-ward] Feature not bound to a Dataset; call via dataset.run_feature(...)"
-            )
-
-        feature_inputs = self.inputs.feature_inputs
-        if feature_inputs:
-            # Stacked-features mode: load per-frame features via Results
-            helper = StreamingFeatureHelper(self._ds, "global-ward")
-            if self.params.pair_filter:
-                helper.set_pair_filter(self.params.pair_filter)
-            manifest = helper.build_manifest_from_results(
-                feature_inputs, scope=self._scope
-            )
-            if not manifest:
-                raise RuntimeError(
-                    "[global-ward] Result inputs produced no usable matrices."
-                )
-            blocks = {}
-            for entry_key, entries in manifest.items():
-                kd = helper.load_entry_data(entries, entry_key=entry_key)
-                if kd is not None and kd.features.size > 0:
-                    blocks[entry_key] = kd.features
-            if not blocks:
-                raise RuntimeError(
-                    "[global-ward] Result inputs produced no usable matrices."
-                )
-            X = np.vstack(list(blocks.values()))
-            if X.ndim != 2:
-                raise ValueError(
-                    f"[global-ward] Loaded array must be 2D; got shape={X.shape}"
-                )
-            return X.astype(np.float64, copy=False)
-
-        # Artifact-only mode: delegate to shared helper
-        X = _load_artifact_matrix(self._ds, self.params.templates)
-        return X.astype(np.float64, copy=False)
+        bundle: WardModelBundle = {
+            "linkage_matrix": self._linkage,
+            "cluster_ids": self._cluster_ids.tolist(),
+            "assign_nn": self._assign_nn,
+            "feature_columns": self._feature_columns or [],
+            "version": self.version,
+        }
+        joblib.dump(bundle, run_root / "model.joblib")

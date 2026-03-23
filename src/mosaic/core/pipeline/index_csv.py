@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import typing
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -9,7 +10,7 @@ import pandas as pd
 
 from ._utils import now_iso
 
-RowT = TypeVar("RowT")
+RowT = TypeVar("RowT", bound="IndexRowBase")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -22,8 +23,12 @@ class IndexRowBase:
     finished_at: str = dataclasses.field(init=False, default="")
 
     def __post_init__(self) -> None:
-        if isinstance(self.abs_path, str):
-            object.__setattr__(self, "abs_path", Path(self.abs_path))
+        raw = self.abs_path
+        if isinstance(raw, str):
+            if not raw:
+                msg = f"{type(self).__name__}.abs_path cannot be empty"
+                raise ValueError(msg)
+            object.__setattr__(self, "abs_path", Path(raw))
         if not self.abs_path.exists():
             msg = f"{type(self).__name__}.abs_path does not exist: {self.abs_path}"
             raise FileNotFoundError(msg)
@@ -91,11 +96,54 @@ class IndexCSV(Generic[RowT]):
         )
         df.to_csv(self.path, index=False)
 
-    def read(self) -> pd.DataFrame:
-        """Read the CSV, validating that all abs_path entries still exist."""
+    def read(
+        self,
+        run_id: str | None = None,
+        filter_ext: str | None = None,
+        groups: Iterable[str] | None = None,
+        sequences: Iterable[str] | None = None,
+        entries: Iterable[tuple[str, str]] | None = None,
+    ) -> pd.DataFrame:
+        """Read the CSV with optional filtering and validation.
+
+        Parameters
+        ----------
+        run_id : str | None
+            If set, only rows matching this run_id are returned.
+            Raises FileNotFoundError if the index contains no entries
+            for the requested run_id.
+        filter_ext : str | None
+            If set (e.g. ``".parquet"``), only rows whose ``abs_path``
+            ends with this suffix are returned.
+        groups : Iterable[str] | None
+            If set, only rows whose ``group`` column is in this set.
+        sequences : Iterable[str] | None
+            If set, only rows whose ``sequence`` column is in this set.
+        entries : Iterable[tuple[str, str]] | None
+            If set, only rows whose ``(group, sequence)`` pair is in
+            this set.
+        """
         if not self.path.exists():
             raise FileNotFoundError(f"Index not found: {self.path}")
         df = pd.read_csv(self.path, keep_default_na=False)
+        if run_id is not None:
+            df = df[df["run_id"] == run_id].reset_index(drop=True)
+            if df.empty:
+                msg = f"No entries for run_id '{run_id}' in {self.path}"
+                raise FileNotFoundError(msg)
+        if filter_ext is not None:
+            df = df[df["abs_path"].str.endswith(filter_ext)].reset_index(drop=True)
+        if groups is not None:
+            df = df[df["group"].isin(set(groups))].reset_index(drop=True)
+        if sequences is not None:
+            df = df[df["sequence"].isin(set(sequences))].reset_index(drop=True)
+        if entries is not None:
+            entry_set = set(entries)
+            mask = [
+                (row["group"], row["sequence"]) in entry_set
+                for _, row in df.iterrows()
+            ]
+            df = df[mask].reset_index(drop=True)
         missing = [p for p in df["abs_path"] if not Path(p).exists()]
         if missing:
             msg = (

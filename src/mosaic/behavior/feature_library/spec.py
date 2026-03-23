@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Generic, Literal, Self
 
 if TYPE_CHECKING:
     import pandas as pd
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing_extensions import TypeVar
 
 from mosaic.core.pipeline.types import (
@@ -18,14 +18,17 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputsLike,
+    JoblibArtifact,
     JoblibLoadSpec,
     LabelsSource,
     LabelsSourceSpec,
     LoadSpec,
     NNResult,
+    NpzArtifact,
     NpzLoadSpec,
     OutputType,
     Params,
+    ParquetArtifact,
     ParquetLoadSpec,
     Result,
     ResultColumn,
@@ -42,14 +45,17 @@ __all__ = [
     "InputRequire",
     "Inputs",
     "InputsLike",
+    "JoblibArtifact",
     "JoblibLoadSpec",
     "LabelsSource",
     "LabelsSourceSpec",
     "LoadSpec",
     "NNResult",
+    "NpzArtifact",
     "NpzLoadSpec",
     "OutputType",
     "Params",
+    "ParquetArtifact",
     "ParquetLoadSpec",
     "Result",
     "ResultColumn",
@@ -60,6 +66,8 @@ __all__ = [
     "InterpolationConfig",
     "SamplingConfig",
     "PoseConfig",
+    "PoolConfig",
+    "GlobalModelParams",
     "FEATURES",
     "register_feature",
 ]
@@ -94,6 +102,21 @@ class Columns(DictModel):
     x_col: str = "X"
     y_col: str = "Y"
     orientation_col: str = "ANGLE"
+
+    def meta_set(self) -> set[str]:
+        """The five metadata column names as a set.
+
+        Useful for set intersection (passthrough) or set difference (exclusion)
+        against ``df.columns``.  Spatial columns (x, y, orientation) are
+        intentionally excluded — they are data, not metadata.
+        """
+        return {
+            self.id_col,
+            self.seq_col,
+            self.group_col,
+            self.frame_col,
+            self.time_col,
+        }
 
 
 COLUMNS = Columns()
@@ -163,6 +186,70 @@ class PoseConfig(DictModel):
     pose_indices: list[int] | None = None
     x_prefix: str = "poseX"
     y_prefix: str = "poseY"
+
+
+class PoolConfig(DictModel):
+    """Candidate pool configuration for template extraction.
+
+    Controls how per-entry contributions to the candidate pool are
+    allocated before the final template selection step.
+
+    Attributes:
+        size: Candidate pool size. For "random" strategy, defaults to
+            n_templates (pool == output). For "farthest_first", should
+            be larger (e.g. n_templates * 3).
+        allocation: How per-entry quotas are computed.
+            "reservoir": weighted reservoir sampling, single pass.
+            "exact": two-pass -- first counts rows, second samples
+            with exact proportional quotas.
+            Default "reservoir".
+        max_entry_fraction: Cap per entry as fraction of pool size.
+            None means no cap (purely proportional). At runtime,
+            effective cap is max(max_entry_fraction, 1 / n_entries)
+            so the pool can always be filled completely. Default None.
+    """
+
+    size: int | None = None
+    allocation: Literal["reservoir", "exact"] = "reservoir"
+    max_entry_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+_M = TypeVar("_M", bound=JoblibArtifact[object], default=JoblibArtifact[object])
+
+
+class GlobalModelParams(Params, Generic[_M]):
+    """Base params for global features that fit on a templates artifact
+    or load a pre-fitted model.
+
+    Type parameter M is the model artifact type (must extend JoblibArtifact).
+    Exactly one of `templates` or `model` must be provided.
+
+    Both fields use default_factory so that from_overrides() merges
+    partial dicts correctly. The _exclusive_source validator checks
+    model_fields_set and nulls out the field that was not provided.
+
+    Attributes:
+        templates: Templates artifact to fit from. Mutually exclusive with model.
+        model: Pre-fitted model artifact. Mutually exclusive with templates.
+    """
+
+    templates: ParquetArtifact | None = Field(
+        default_factory=lambda: ArtifactSpec(feature="", load=ParquetLoadSpec())
+    )
+    model: _M | None = None
+
+    @model_validator(mode="after")
+    def _exclusive_source(self) -> Self:
+        has_templates = "templates" in self.model_fields_set
+        has_model = "model" in self.model_fields_set
+        if has_templates == has_model:
+            msg = "Exactly one of 'templates' or 'model' must be provided"
+            raise ValueError(msg)
+        if not has_templates:
+            self.templates = None
+        if not has_model:
+            self.model = None
+        return self
 
 
 FEATURES: dict[str, type[Feature]] = {}

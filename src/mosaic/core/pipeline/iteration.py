@@ -220,25 +220,21 @@ def yield_feature_data(
     """
     idx_path = feature_index_path(ds, feature_name)
     idx = feature_index(idx_path)
-    df_idx = idx.read()
 
     if run_id is None:
         run_id = idx.latest_run_id()
 
-    df_idx = df_idx[df_idx["run_id"] == run_id]
-    if df_idx.empty:
-        raise ValueError(
-            f"No entries for feature '{feature_name}' with run_id '{run_id}'."
-        )
-
-    df_idx = _filter_index(df_idx, groups, sequences, allowed_pairs)
+    df_idx = idx.read(
+        run_id=run_id,
+        filter_ext=".parquet",
+        groups=groups,
+        sequences=sequences,
+        entries=allowed_pairs,
+    )
 
     for _, row in df_idx.iterrows():
         g, s = row["group"], row["sequence"]
         p = Path(row["abs_path"])
-        if p.suffix != ".parquet":
-            msg = f"Expected .parquet in feature index, got: {p}"
-            raise ValueError(msg)
         df = pd.read_parquet(p)
         # Skip marker tiny tables (<= 1 row or < 2 numeric cols)
         if len(df) <= 1:
@@ -278,21 +274,17 @@ def resolve_feature_entries(
                 f"Unable to resolve latest run for feature '{feat_name}': {exc}"
             ) from exc
     idx_path = feature_index_path(ds, feat_name)
-    df_idx = feature_index(idx_path).read()
-    df_idx = df_idx[df_idx["run_id"] == run_id]
-    # Drop global marker rows (written by run.py for global-only features)
-    df_idx = df_idx[df_idx["sequence"] != "__global__"]
-
-    df_idx = _filter_index(df_idx, groups_set, seq_set)
+    df_idx = feature_index(idx_path).read(
+        run_id=run_id,
+        filter_ext=".parquet",
+        groups=groups_set,
+        sequences=seq_set,
+    )
 
     entries = set(zip(df_idx["group"], df_idx["sequence"]))
     path_map: dict[tuple[str, str], Path] = {}
     for _, row in df_idx.iterrows():
-        p = Path(row["abs_path"])
-        if p.suffix != ".parquet":
-            msg = f"Expected .parquet in feature index, got: {p}"
-            raise ValueError(msg)
-        path_map[(row["group"], row["sequence"])] = p
+        path_map[(row["group"], row["sequence"])] = Path(row["abs_path"])
 
     resolved = ResolvedInput(
         kind="feature",

@@ -125,22 +125,18 @@ def _resolve_feature(
         run_id, _ = latest_feature_run_root(ds, feature_name)
 
     idx = feature_index(idx_path)
-    df = idx.read()
-    df = df[df["run_id"] == run_id]
-
-    # Drop global marker rows (written by run.py for global-only features)
-    df = df[df["sequence"] != "__global__"]
+    df = idx.read(
+        run_id=run_id,
+        filter_ext=".parquet",
+        groups=groups,
+        sequences=sequences,
+    )
 
     entries: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
 
     for _, row in df.iterrows():
-        g, s = row["group"], row["sequence"]
-        if groups and g not in groups:
-            continue
-        if sequences and s not in sequences:
-            continue
-        entry = (g, s)
+        entry = (row["group"], row["sequence"])
         entries.add(entry)
         path_map[entry] = (Path(row["abs_path"]), ParquetLoadSpec())
 

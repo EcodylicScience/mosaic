@@ -32,9 +32,11 @@ dependencies = [
 dev = [
     "basedpyright>=1.38.2",
     "joblib-stubs>=1.4.2.5.20240918",
+    "microsoft-python-type-stubs",
     "pandas-stubs>=2.2.2.240807",
     "pytest>=8.0",
     "ruff>=0.15.4",
+    "scipy-stubs>=1.17.1.1",
 ]
 
 [project.optional-dependencies]
@@ -65,3 +67,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-stubs" }

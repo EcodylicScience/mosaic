@@ -6,7 +6,7 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from itertools import combinations
 from pathlib import Path
 from typing import final
@@ -70,10 +70,15 @@ class PairEgocentricFeatures:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -88,23 +93,23 @@ class PairEgocentricFeatures:
         required = [C.id_col, C.seq_col] + pose_cols
         ensure_columns(df, required)
 
-        df_small = df[[order_col] + required].copy()
-        if order_col == "frame":
-            df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
+        df_small = df[[order_col] + required]
 
         group_cols = [C.seq_col, C.id_col]
 
         df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            lambda g: clean_animal_track(g, pose_cols, order_col, self.params.interpolation)
+            lambda g: clean_animal_track(
+                g, pose_cols, order_col, self.params.interpolation
+            )
         )
 
         # Build dyads (all C(n,2) pairs per sequence)
-        pairs = []
+        pairs: list[tuple[str, int, int]] = []
         for seq, gseq in df_small.groupby(C.seq_col):
-            ids = sorted(gseq[C.id_col].unique())
+            ids: list[int] = sorted(gseq[C.id_col].unique())
             if len(ids) >= 2:
-                for idA, idB in combinations(ids, 2):
-                    pairs.append((seq, idA, idB))
+                for id_a, id_b in combinations(ids, 2):
+                    pairs.append((str(seq), int(id_a), int(id_b)))
 
         if not pairs:
             raise ValueError(
@@ -112,16 +117,16 @@ class PairEgocentricFeatures:
             )
 
         out_frames: list[pd.DataFrame] = []
-        for seq, idA, idB in pairs:
-            gseq = df_small[df_small[C.seq_col] == seq]
-            A = gseq[gseq[C.id_col] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[C.id_col] == idB][[order_col] + pose_cols].copy()
-            if A.empty or B.empty:
+        for seq_key, id_a, id_b in pairs:
+            gseq = df_small[df_small[C.seq_col] == seq_key]
+            df_a = gseq[gseq[C.id_col] == id_a][[order_col] + pose_cols]
+            df_b = gseq[gseq[C.id_col] == id_b][[order_col] + pose_cols]
+            if df_a.empty or df_b.empty:
                 continue
 
-            A = A.sort_values(order_col).rename(columns={order_col: "frame"})
-            B = B.sort_values(order_col).rename(columns={order_col: "frame"})
-            j = A.merge(B, on="frame", suffixes=("_A", "_B"))
+            df_a = df_a.sort_values(order_col).rename(columns={order_col: C.frame_col})
+            df_b = df_b.sort_values(order_col).rename(columns={order_col: C.frame_col})
+            j = df_a.merge(df_b, on=C.frame_col, suffixes=("_A", "_B"))
             if j.empty:
                 continue
 
@@ -141,16 +146,16 @@ class PairEgocentricFeatures:
 
             # produce row-wise DataFrames
             dfA = pd.DataFrame(AtoB.T, columns=names)
-            dfA["frame"] = frames
+            dfA[C.frame_col] = frames
             dfA["perspective"] = 0
-            dfA["id1"] = idA
-            dfA["id2"] = idB
+            dfA["id1"] = id_a
+            dfA["id2"] = id_b
 
             dfB = pd.DataFrame(BtoA.T, columns=names)
-            dfB["frame"] = frames
+            dfB[C.frame_col] = frames
             dfB["perspective"] = 1
-            dfB["id1"] = idB
-            dfB["id2"] = idA
+            dfB["id1"] = id_b
+            dfB["id2"] = id_a
 
             # optional pass-through for convenience (constant per call)
             for col in (C.seq_col, C.group_col):
@@ -161,10 +166,10 @@ class PairEgocentricFeatures:
             out_frames.extend([dfA, dfB])
 
         if not out_frames:
-            return pd.DataFrame(columns=["perspective", "frame", "id1", "id2"])
+            return pd.DataFrame(columns=["perspective", C.frame_col, "id1", "id2"])
 
         out = pd.concat(out_frames, ignore_index=True)
-        out = out.sort_values(["frame", "id1", "id2"]).reset_index(drop=True)
+        out = out.sort_values([C.frame_col, "id1", "id2"]).reset_index(drop=True)
         return out
 
     # --- Internals ---
@@ -174,10 +179,6 @@ class PairEgocentricFeatures:
         if indices is None:
             return list(range(self.params.pose.pose_n))
         return list(indices)
-
-    def _effective_pose_n(self) -> int:
-        """Return the number of pose points being used."""
-        return len(self._get_pose_indices())
 
     def _map_anatomical_idx(self, param_name: str) -> int:
         """Map an anatomical index (neck_idx, tail_base_idx) to position in filtered array.
@@ -224,32 +225,32 @@ class PairEgocentricFeatures:
         self, j: pd.DataFrame, fps: float, pose_cols: list[str]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
         indices = self._get_pose_indices()
-        N = len(indices)
+        n_pts = len(indices)
         neck = self._map_anatomical_idx("neck_idx")
         tail = self._map_anatomical_idx("tail_base_idx")
         win = self.params.sampling.smooth_win
         mode = self.params.center_mode
 
-        XA = j[[f"{self.params.pose.x_prefix}{k}_A" for k in indices]].to_numpy()
-        YA = j[[f"{self.params.pose.y_prefix}{k}_A" for k in indices]].to_numpy()
-        XB = j[[f"{self.params.pose.x_prefix}{k}_B" for k in indices]].to_numpy()
-        YB = j[[f"{self.params.pose.y_prefix}{k}_B" for k in indices]].to_numpy()
-        frames = j["frame"].to_numpy().astype(int)
+        xa = j[[f"{self.params.pose.x_prefix}{k}_A" for k in indices]].to_numpy()
+        ya = j[[f"{self.params.pose.y_prefix}{k}_A" for k in indices]].to_numpy()
+        xb = j[[f"{self.params.pose.x_prefix}{k}_B" for k in indices]].to_numpy()
+        yb = j[[f"{self.params.pose.y_prefix}{k}_B" for k in indices]].to_numpy()
+        frames = j[C.frame_col].to_numpy()
 
         # optional smoothing
         if win and win > 1:
-            XA = np.vstack([smooth_1d(XA[:, k], win) for k in range(N)]).T
-            YA = np.vstack([smooth_1d(YA[:, k], win) for k in range(N)]).T
-            XB = np.vstack([smooth_1d(XB[:, k], win) for k in range(N)]).T
-            YB = np.vstack([smooth_1d(YB[:, k], win) for k in range(N)]).T
+            xa = np.vstack([smooth_1d(xa[:, k], win) for k in range(n_pts)]).T
+            ya = np.vstack([smooth_1d(ya[:, k], win) for k in range(n_pts)]).T
+            xb = np.vstack([smooth_1d(xb[:, k], win) for k in range(n_pts)]).T
+            yb = np.vstack([smooth_1d(yb[:, k], win) for k in range(n_pts)]).T
 
         # centers
-        cxA, cyA = self._center_from_points(XA, YA, mode)
-        cxB, cyB = self._center_from_points(XB, YB, mode)
+        cxA, cyA = self._center_from_points(xa, ya, mode)
+        cxB, cyB = self._center_from_points(xb, yb, mode)
 
         # headings (neck - tail) and units
-        hxA, hyA = XA[:, neck] - XA[:, tail], YA[:, neck] - YA[:, tail]
-        hxB, hyB = XB[:, neck] - XB[:, tail], YB[:, neck] - YB[:, tail]
+        hxA, hyA = xa[:, neck] - xa[:, tail], ya[:, neck] - ya[:, tail]
+        hxB, hyB = xb[:, neck] - xb[:, tail], yb[:, neck] - yb[:, tail]
         uhxA, uhyA = self._safe_unit(hxA, hyA)
         uhxB, uhyB = self._safe_unit(hxB, hyB)
         # left-hand orthogonal

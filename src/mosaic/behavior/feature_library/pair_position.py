@@ -11,7 +11,7 @@ downstream features like PairWavelet.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from itertools import combinations
 from pathlib import Path
 from typing import final
@@ -48,7 +48,7 @@ class PairPositionFeatures:
     Output columns (per row):
       - frame: frame number
       - perspective: 0 for A->B, 1 for B->A
-      - id_A, id_B: IDs of the two animals in this pair
+      - id1, id2: IDs of the two animals in this pair
       - A_speed, A_v_para, A_v_perp, A_ang_speed: focal kinematics
       - A_heading_cos, A_heading_sin: focal heading
       - AB_dist: inter-animal distance
@@ -78,45 +78,49 @@ class PairPositionFeatures:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        p = self.params
         order_col = resolve_order_col(df)
 
         required = [C.id_col, C.seq_col, C.x_col, C.y_col, C.orientation_col]
         ensure_columns(df, required)
 
-        df_small = df[[order_col] + required].copy()
-        if order_col == "frame":
-            df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
+        df_small = df[[order_col] + required]
 
         # Clean per-animal, per-sequence
         group_cols = [C.seq_col, C.id_col]
         data_cols = [C.x_col, C.y_col, C.orientation_col]
 
         df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            lambda g: clean_animal_track(g, data_cols, order_col, self.params.interpolation)
+            lambda g: clean_animal_track(
+                g, data_cols, order_col, self.params.interpolation
+            )
         )
 
         # Build all pairs for each sequence
         out_frames: list[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(C.seq_col):
+        for _, gseq in df_small.groupby(C.seq_col):
             ids = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
 
             # All unique pairs
-            for idA, idB in combinations(ids, 2):
-                pair_df = self._compute_pair_features(gseq, idA, idB, order_col, df)
+            for id_a, id_b in combinations(ids, 2):
+                pair_df = self._compute_pair_features(gseq, id_a, id_b, order_col, df)
                 if pair_df is not None and not pair_df.empty:
                     out_frames.append(pair_df)
 
@@ -124,10 +128,10 @@ class PairPositionFeatures:
             # Return empty DataFrame with expected columns
             return pd.DataFrame(
                 columns=[
-                    "frame",
+                    C.frame_col,
                     "perspective",
-                    "id_A",
-                    "id_B",
+                    "id1",
+                    "id2",
                     "A_speed",
                     "A_v_para",
                     "A_v_perp",
@@ -147,7 +151,7 @@ class PairPositionFeatures:
             )
 
         out = pd.concat(out_frames, ignore_index=True)
-        out = out.sort_values(["id_A", "id_B", "perspective", "frame"]).reset_index(
+        out = out.sort_values(["id1", "id2", "perspective", C.frame_col]).reset_index(
             drop=True
         )
         return out
@@ -155,8 +159,8 @@ class PairPositionFeatures:
     def _compute_pair_features(
         self,
         gseq: pd.DataFrame,
-        idA: int,
-        idB: int,
+        id_a: int,
+        id_b: int,
         order_col: str,
         orig_df: pd.DataFrame,
     ) -> pd.DataFrame | None:
@@ -164,22 +168,22 @@ class PairPositionFeatures:
         p = self.params
 
         # Extract data for each animal
-        A = gseq[gseq[C.id_col] == idA][
+        df_a = gseq[gseq[C.id_col] == id_a][
             [order_col, C.x_col, C.y_col, C.orientation_col]
-        ].copy()
-        B = gseq[gseq[C.id_col] == idB][
+        ]
+        df_b = gseq[gseq[C.id_col] == id_b][
             [order_col, C.x_col, C.y_col, C.orientation_col]
-        ].copy()
+        ]
 
-        if A.empty or B.empty:
+        if df_a.empty or df_b.empty:
             return None
 
         # Sort and rename for merge
-        A = A.sort_values(order_col).rename(columns={order_col: "frame"})
-        B = B.sort_values(order_col).rename(columns={order_col: "frame"})
+        df_a = df_a.sort_values(order_col).rename(columns={order_col: C.frame_col})
+        df_b = df_b.sort_values(order_col).rename(columns={order_col: C.frame_col})
 
         # Inner join on frame
-        j = A.merge(B, on="frame", suffixes=("_A", "_B"))
+        j = df_a.merge(df_b, on=C.frame_col, suffixes=("_A", "_B"))
         if j.empty:
             return None
 
@@ -198,16 +202,16 @@ class PairPositionFeatures:
 
         # Create DataFrames for both perspectives
         dfA = pd.DataFrame(AtoB.T, columns=names)
-        dfA["frame"] = frames
+        dfA[C.frame_col] = frames
         dfA["perspective"] = 0
-        dfA["id_A"] = idA
-        dfA["id_B"] = idB
+        dfA["id1"] = id_a
+        dfA["id2"] = id_b
 
         dfB = pd.DataFrame(BtoA.T, columns=names)
-        dfB["frame"] = frames
+        dfB[C.frame_col] = frames
         dfB["perspective"] = 1
-        dfB["id_A"] = idB  # Swap: B is now the focal
-        dfB["id_B"] = idA
+        dfB["id1"] = id_b  # Swap: B is now the focal
+        dfB["id2"] = id_a
 
         # Pass through group/sequence
         for col in (C.seq_col, C.group_col):
@@ -232,7 +236,7 @@ class PairPositionFeatures:
         cyB = j[f"{C.y_col}_B"].to_numpy()
         thA = j[f"{C.orientation_col}_A"].to_numpy()
         thB = j[f"{C.orientation_col}_B"].to_numpy()
-        frames = j["frame"].to_numpy().astype(int)
+        frames = j[C.frame_col].to_numpy()
 
         # Optional smoothing
         if win and win > 1:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, final
+from typing import TypedDict, final
 
 import joblib
 import numpy as np
@@ -10,23 +12,35 @@ import pandas as pd
 from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
-if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
-
+from .helpers import clean_animal_track, ensure_columns
+from .spec import COLUMNS as C
 from .spec import (
-    COLUMNS,
     Inputs,
     InterpolationConfig,
     OutputType,
     Params,
     PoseConfig,
     TrackInput,
+    register_feature,
     resolve_order_col,
 )
+
+
+class PairPoseDistancePCABundle(TypedDict):
+    ipca: IncrementalPCA
+    tri_i: np.ndarray | None
+    tri_j: np.ndarray | None
+    feat_len: int | None
+    version: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchMeta:
+    """Metadata yielded alongside each feature batch."""
+
+    frames: np.ndarray | None
+    id1: int
+    id2: int
 
 
 @final
@@ -40,6 +54,7 @@ class PairPoseDistancePCA:
     name = "pair-posedistance-pca"
     version = "0.1"
     parallelizable = True
+    scope_dependent = True
     output_type: OutputType = "per_frame"
 
     class Inputs(Inputs[TrackInput]):
@@ -62,67 +77,74 @@ class PairPoseDistancePCA:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
         self._ipca: IncrementalPCA = IncrementalPCA(
             n_components=self.params.n_components,
             batch_size=self.params.batch_size,
         )
         self._fitted = False
-        self._tri_i: Optional[np.ndarray] = None
-        self._tri_j: Optional[np.ndarray] = None
-        self._feat_len: Optional[int] = None
-        self._scope: Scope = Scope()
+        self._tri_i: np.ndarray | None = None
+        self._tri_j: np.ndarray | None = None
+        self._feat_len: int | None = None
 
     # ---------- Feature protocol ----------
-    def bind_dataset(self, ds: Dataset) -> None:
-        pass
-
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
-
-    def needs_fit(self) -> bool:
-        return True
-
-    def supports_partial_fit(self) -> bool:
-        return True
-
-    def finalize_fit(self) -> None:
-        pass
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        for df in X_iter:
-            self.partial_fit(df)
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        for Xb, _, _ in self._feature_batches(df, for_fit=True):
-            if Xb.size == 0:
-                continue
-            self._ipca.partial_fit(Xb)
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        path = run_root / "model.joblib"
+        if path.exists():
+            bundle: PairPoseDistancePCABundle = joblib.load(path)
+            self._ipca = bundle["ipca"]
+            self._tri_i = bundle["tri_i"]
+            self._tri_j = bundle["tri_j"]
+            self._feat_len = bundle["feat_len"]
             self._fitted = True
+            return True
+        return False
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+        for _entry_key, df in inputs():
+            for batch, _, _ in self._feature_batches(df, for_fit=True):
+                if batch.size == 0:
+                    continue
+                self._ipca.partial_fit(batch)
+                self._fitted = True
+
+    def save_state(self, run_root: Path) -> None:
+        if not self._fitted:
+            return
+        run_root.mkdir(parents=True, exist_ok=True)
+        bundle: PairPoseDistancePCABundle = {
+            "ipca": self._ipca,
+            "tri_i": self._tri_i,
+            "tri_j": self._tri_j,
+            "feat_len": self._feat_len,
+            "version": self.version,
+        }
+        joblib.dump(bundle, run_root / "model.joblib")
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self._fitted:
             raise RuntimeError(
                 "pair-posedistance-pca: not fitted yet; run fit/partial_fit first."
             )
 
-        pcs: List[pd.DataFrame] = []
-        for Xb, meta_frames, meta_persp in self._feature_batches(df, for_fit=False):
-            if Xb.size == 0:
+        pcs: list[pd.DataFrame] = []
+        for features, meta, persp in self._feature_batches(df, for_fit=False):
+            if features.size == 0:
                 continue
-            Zb = self._ipca.transform(Xb)
-            out = pd.DataFrame(Zb, columns=[f"PC{i}" for i in range(Zb.shape[1])])
-            if "frame" in meta_frames:
-                out["frame"] = meta_frames["frame"]
-            if "time" in meta_frames:
-                out["time"] = meta_frames["time"]
-            out["perspective"] = meta_persp
-            if "id1" in meta_frames:
-                out["id1"] = meta_frames["id1"]
-            if "id2" in meta_frames:
-                out["id2"] = meta_frames["id2"]
-            for col in (COLUMNS.seq_col, COLUMNS.group_col):
+            scores = self._ipca.transform(features)
+            out = pd.DataFrame(
+                scores, columns=[f"PC{i}" for i in range(scores.shape[1])]
+            )
+            if meta.frames is not None:
+                out[C.frame_col] = meta.frames
+            out["perspective"] = persp
+            out["id1"] = meta.id1
+            out["id2"] = meta.id2
+            for col in (C.seq_col, C.group_col):
                 if col in df.columns:
                     out[col] = df[col].iloc[0]
             pcs.append(out)
@@ -134,41 +156,16 @@ class PairPoseDistancePCA:
             )
 
         out_df = pd.concat(pcs, ignore_index=True)
-        sort_keys = []
-        if "id1" in out_df.columns:
-            sort_keys += ["id1", "id2"]
-        sort_keys.append("perspective")
-        if "frame" in out_df.columns:
-            sort_keys.append("frame")
-        elif "time" in out_df.columns:
-            sort_keys.append("time")
+        sort_keys: list[str] = ["id1", "id2", "perspective"]
+        if C.frame_col in out_df.columns:
+            sort_keys.append(C.frame_col)
+        elif C.time_col in out_df.columns:
+            sort_keys.append(C.time_col)
         out_df = out_df.sort_values(sort_keys).reset_index(drop=True)
         return out_df
 
-    def save_model(self, path: Path) -> None:
-        if not self._fitted:
-            raise NotImplementedError("Model not fitted; nothing to save.")
-        payload = dict(
-            ipca=self._ipca,
-            params=self.params.model_dump(),
-            tri_i=self._tri_i,
-            tri_j=self._tri_j,
-            feat_len=self._feat_len,
-        )
-        joblib.dump(payload, path)
-
-    def load_model(self, path: Path) -> None:
-        obj = joblib.load(path)
-        self._ipca = obj["ipca"]
-        saved = obj.get("params", {})
-        self.params = self.Params.model_validate(saved)
-        self._tri_i = obj.get("tri_i", None)
-        self._tri_j = obj.get("tri_j", None)
-        self._feat_len = obj.get("feat_len", None)
-        self._fitted = True
-
     # ---------- Internals ----------
-    def _get_pose_indices(self) -> List[int]:
+    def _get_pose_indices(self) -> list[int]:
         """Return the list of pose point indices to use."""
         indices = self.params.pose.pose_indices
         if indices is None:
@@ -179,72 +176,39 @@ class PairPoseDistancePCA:
         """Return the number of pose points being used."""
         return len(self._get_pose_indices())
 
-    def _column_names(self) -> Tuple[List[str], List[str]]:
+    def _column_names(self) -> tuple[list[str], list[str]]:
         indices = self._get_pose_indices()
         xs = [f"{self.params.pose.x_prefix}{i}" for i in indices]
         ys = [f"{self.params.pose.y_prefix}{i}" for i in indices]
         return xs, ys
 
-    def _clean_one_animal(
-        self, g: pd.DataFrame, pose_cols: List[str], order_col: str
-    ) -> pd.DataFrame:
-        p = self.params
-        g = g.sort_values(order_col).copy()
-        g = g.set_index(order_col)
-        g[pose_cols] = g[pose_cols].replace([np.inf, -np.inf], np.nan)
-        g[pose_cols] = g[pose_cols].interpolate(
-            method="linear",
-            limit=p.interpolation.linear_interp_limit,
-            limit_direction="both",
-        )
-        g[pose_cols] = g[pose_cols].ffill(limit=p.interpolation.edge_fill_limit)
-        g[pose_cols] = g[pose_cols].bfill(limit=p.interpolation.edge_fill_limit)
-        miss_frac = g[pose_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
-        if g[pose_cols].isna().any().any():
-            med = g[pose_cols].median()
-            g[pose_cols] = g[pose_cols].fillna(med)
-        g = g.reset_index()
-        return g
-
     def _prep_pairs(
         self, df: pd.DataFrame
-    ) -> Tuple[pd.DataFrame, List[Tuple[Any, Any, Any]]]:
+    ) -> tuple[pd.DataFrame, list[tuple[str, int, int]]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
 
-        need = [COLUMNS.id_col, COLUMNS.seq_col, order_col] + pose_cols
-        missing = [c for c in need if c not in df.columns]
-        if missing:
-            raise ValueError(f"[pair-posedistance-pca] Missing cols: {missing}")
+        ensure_columns(df, [C.id_col, C.seq_col, order_col] + pose_cols)
 
-        df_small = df[need].copy()
-        if order_col == "frame":
-            df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
+        need = [C.id_col, C.seq_col, order_col] + pose_cols
+        df_small = df[need]
 
-        group_cols = [COLUMNS.seq_col, COLUMNS.id_col]
-
-        def wrapped_func(g):
-            result = self._clean_one_animal(g, pose_cols, order_col)
-            if isinstance(g.name, tuple):
-                for col, val in zip(group_cols, g.name):
-                    result[col] = val
-            else:
-                result[group_cols[0]] = g.name
-            return result
+        group_cols = [C.seq_col, C.id_col]
 
         df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            wrapped_func, include_groups=False
+            lambda g: clean_animal_track(
+                g, pose_cols, order_col, self.params.interpolation
+            )
         )
 
-        pairs: List[Tuple[Any, Any, Any]] = []
-        for seq, gseq in df_small.groupby(COLUMNS.seq_col):
-            ids = sorted(gseq[COLUMNS.id_col].unique())
+        pairs: list[tuple[str, int, int]] = []
+        for seq, gseq in df_small.groupby(C.seq_col):
+            ids: list[int] = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
-            for idA, idB in combinations(ids, 2):
-                pairs.append((seq, idA, idB))
+            for id_a, id_b in combinations(ids, 2):
+                pairs.append((str(seq), int(id_a), int(id_b)))
 
         if not pairs:
             raise ValueError(
@@ -266,23 +230,23 @@ class PairPoseDistancePCA:
             self._tri_i, self._tri_j, self._feat_len = tri_i, tri_j, feat_len
         return df_small, pairs
 
-    def _build_pair_feat(self, rowA: np.ndarray, rowB: np.ndarray) -> np.ndarray:
-        parts = []
-        A = self._pose_to_points(rowA)
-        B = self._pose_to_points(rowB)
+    def _build_pair_feat(self, row_a: np.ndarray, row_b: np.ndarray) -> np.ndarray:
+        parts: list[np.ndarray] = []
+        pts_a = self._pose_to_points(row_a)
+        pts_b = self._pose_to_points(row_b)
         if self.params.include_intra_A:
-            parts.append(self._intra_lower_tri(A))
+            parts.append(self._intra_lower_tri(pts_a))
         if self.params.include_intra_B:
-            parts.append(self._intra_lower_tri(B))
+            parts.append(self._intra_lower_tri(pts_b))
         if self.params.include_inter:
-            parts.append(self._inter_all(A, B))
+            parts.append(self._inter_all(pts_a, pts_b))
         return (
             np.concatenate(parts, axis=0) if parts else np.empty((0,), dtype=np.float32)
         )
 
     def _feature_batches(
         self, df: pd.DataFrame, for_fit: bool
-    ) -> Iterable[Tuple[np.ndarray, Dict[str, np.ndarray], np.ndarray]]:
+    ) -> Iterator[tuple[np.ndarray, _BatchMeta, np.ndarray]]:
         x_cols, y_cols = self._column_names()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
@@ -290,51 +254,48 @@ class PairPoseDistancePCA:
         df_small, pairs = self._prep_pairs(df)
         bs = self.params.batch_size
         dup = self.params.duplicate_perspective
+        has_frames = C.frame_col in df.columns
 
-        for seq, idA, idB in pairs:
-            gseq = df_small[df_small[COLUMNS.seq_col] == seq]
-            A = gseq[gseq[COLUMNS.id_col] == idA][[order_col] + pose_cols].copy()
-            B = gseq[gseq[COLUMNS.id_col] == idB][[order_col] + pose_cols].copy()
-            A = A.sort_values(order_col)
-            B = B.sort_values(order_col)
-            AB = A.merge(B, on=order_col, suffixes=("_A", "_B"))
-            if AB.empty:
+        for seq_key, id_a, id_b in pairs:
+            gseq = df_small[df_small[C.seq_col] == seq_key]
+            df_a = gseq[gseq[C.id_col] == id_a][[order_col] + pose_cols]
+            df_b = gseq[gseq[C.id_col] == id_b][[order_col] + pose_cols]
+            df_a = df_a.sort_values(order_col)
+            df_b = df_b.sort_values(order_col)
+            merged = df_a.merge(df_b, on=order_col, suffixes=("_A", "_B"))
+            if merged.empty:
                 continue
 
-            n = len(AB)
+            n = len(merged)
             for i in range(0, n, bs):
-                j = min(i + bs, n)
-                chunk = AB.iloc[i:j]
-                XA = chunk[[c + "_A" for c in pose_cols]].to_numpy(dtype=float)
-                XB = chunk[[c + "_B" for c in pose_cols]].to_numpy(dtype=float)
-                feats = [self._build_pair_feat(a, b) for a, b in zip(XA, XB)]
-                X = np.vstack(feats).astype(np.float32, copy=False)
+                chunk = merged.iloc[i : min(i + bs, n)]
+                vals_a = chunk[[c + "_A" for c in pose_cols]].to_numpy(dtype=float)
+                vals_b = chunk[[c + "_B" for c in pose_cols]].to_numpy(dtype=float)
+                feat_rows = [
+                    self._build_pair_feat(a, b) for a, b in zip(vals_a, vals_b)
+                ]
+                feat_mat = np.vstack(feat_rows).astype(np.float32, copy=False)
 
-                persp = np.zeros(X.shape[0], dtype=np.int8)
-                frames_meta: Dict[str, Any] = {}
-                if "frame" in df.columns:
-                    frames_meta["frame"] = chunk[order_col].to_numpy()
-                frames_meta["id1"] = idA
-                frames_meta["id2"] = idB
+                persp = np.zeros(feat_mat.shape[0], dtype=np.int8)
+                frame_arr = chunk[order_col].to_numpy() if has_frames else None
 
                 if dup:
-                    feats2 = [self._build_pair_feat(b, a) for a, b in zip(XA, XB)]
-                    X2 = np.vstack(feats2).astype(np.float32, copy=False)
-                    X = np.vstack([X, X2])
+                    feat_rows2 = [
+                        self._build_pair_feat(b, a) for a, b in zip(vals_a, vals_b)
+                    ]
+                    feat_dup = np.vstack(feat_rows2).astype(np.float32, copy=False)
+                    feat_mat = np.vstack([feat_mat, feat_dup])
                     persp = np.concatenate(
-                        [persp, np.ones(X2.shape[0], dtype=np.int8)], axis=0
+                        [persp, np.ones(feat_dup.shape[0], dtype=np.int8)], axis=0
                     )
-                    if "frame" in frames_meta:
-                        frames_meta["frame"] = np.concatenate(
-                            [frames_meta["frame"], frames_meta["frame"]], axis=0
-                        )
+                    if frame_arr is not None:
+                        frame_arr = np.concatenate([frame_arr, frame_arr], axis=0)
 
-                if self._feat_len is not None and X.shape[1] != self._feat_len:
-                    raise ValueError(
-                        f"Feature length mismatch: got {X.shape[1]}, expected {self._feat_len}"
-                    )
+                if self._feat_len is not None and feat_mat.shape[1] != self._feat_len:
+                    msg = f"Feature length mismatch: got {feat_mat.shape[1]}, expected {self._feat_len}"
+                    raise ValueError(msg)
 
-                yield X, frames_meta, persp
+                yield feat_mat, _BatchMeta(frame_arr, id_a, id_b), persp
 
     def _pose_to_points(self, row_vals: np.ndarray) -> np.ndarray:
         N = self._effective_pose_n()
@@ -346,7 +307,7 @@ class PairPoseDistancePCA:
         dif = pts[self._tri_i] - pts[self._tri_j]
         return np.sqrt((dif**2).sum(axis=1))
 
-    def _inter_all(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
-        dif = A[:, None, :] - B[None, :, :]
+    def _inter_all(self, pts_a: np.ndarray, pts_b: np.ndarray) -> np.ndarray:
+        dif = pts_a[:, None, :] - pts_b[None, :, :]
         d = np.sqrt((dif**2).sum(axis=2))
         return d.ravel()

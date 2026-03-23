@@ -27,11 +27,17 @@ if TYPE_CHECKING:
 
 # TODO, also see below: This shares logic, and hardcodes columns defined in feature_library.params.COLUMNS
 # so COLUMNS needs to move to core or pipeline, and we'd need to derive the sets dynamically from it
+# should use the new Columns.meta_set() | {"id1", "id2"} - id1 and id2 should actually also move to Columns for consistency.
 _ALIGN_COLS = frozenset({"frame", "time", "id", "id1", "id2"})
 
+# those might be dead code, check if any feature still uses that istead of id1, id2
 _IDENTITY_META_COLS = _ALIGN_COLS | {"id_a", "id_b", "id_A", "id_B"}
 
+# the only missing here is entitiy_level, then.
 _ALL_META_COLS = _IDENTITY_META_COLS | {"group", "sequence", "entity_level"}
+
+# so _ALL_META_COLS would become COLUMNS.meta_set() | {"entity_level"}, and just use .meta_set() everywhere directly
+# IMPORTANT: This implies that Columns moves from feature_library.spec to pipeline.types or similar
 
 
 def _concat_into(
@@ -162,6 +168,9 @@ def _load_array_from_spec(
     return arr.astype(np.float32, copy=False), frames
 
 
+# is this really a valid approach? We may rather want to raise if not numeric but exists
+# also, features decide whether they are "pair", "individual" or "global" internally, why do we need this here?
+# just to write the __global__ marker row to the index?
 def _normalize_identity_columns(
     df: pd.DataFrame,
 ) -> tuple[pd.Series | None, pd.Series | None, str]:
@@ -308,9 +317,7 @@ def _build_nn_lookup(
     if run_id is None:
         run_id = idx.latest_run_id()
 
-    idx_df = idx.read()
-
-    idx_df = idx_df[idx_df["run_id"] == run_id]
+    idx_df = idx.read(run_id=run_id, filter_ext=".parquet")
     if idx_df.empty:
         return {}
 

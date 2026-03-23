@@ -162,7 +162,12 @@ class _TestFeature:
     def params(self) -> _TestFeature.Params:
         return self._params
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         return True
 
     def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
@@ -178,7 +183,7 @@ class _TestFeature:
 def test_feature_protocol() -> None:
     f: Feature = _TestFeature()
     assert f.scope_dependent is False
-    assert f.load_state(Path("/tmp"), {}) is True
+    assert f.load_state(Path("/tmp"), {}, {}) is True
 
 
 def test_satisfies_feature_protocol() -> None:

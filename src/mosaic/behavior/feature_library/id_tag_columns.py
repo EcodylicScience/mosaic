@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -46,7 +46,12 @@ class IdTagColumns:
         self.params = self.Params.from_overrides(params)
         self._labels: dict[tuple[str, str], dict] = {}
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         self._labels = {}
         labels_root = artifact_paths.get("labels")
         if labels_root is None:
@@ -63,7 +68,7 @@ class IdTagColumns:
                 continue
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

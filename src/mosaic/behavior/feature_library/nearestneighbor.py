@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -47,10 +47,15 @@ class NearestNeighbor:
 
     # --- State protocol ---
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -130,7 +135,7 @@ class NearestNeighbor:
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
 
-        meta = {C.frame_col, C.time_col, C.seq_col, C.group_col, C.id_col} & set(
+        meta = C.meta_set() & set(
             df.columns
         )
         return out.join(df[sorted(meta)])

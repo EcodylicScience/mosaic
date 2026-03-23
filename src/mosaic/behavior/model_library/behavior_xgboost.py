@@ -51,7 +51,7 @@ class BehaviorXGBoostModel:
         (use this path when training from one feature)
       - OR specify an inputset/multi-input spec:
             "inputset": "social+ego@v1"   # saved via features.save_inputset
-            # optional "inputs": [...] overrides or supplements the set, same schema as GlobalTSNE/WardAssign
+            # optional "inputs": [...] overrides or supplements the set, same schema as GlobalTSNE/GlobalWardClustering
         Each input entry supports {"feature","run_id","pattern","load":{...}}
       - label_kind: str (default "behavior")
       - train_sequences / test_sequences: optional lists (raw or safe names)

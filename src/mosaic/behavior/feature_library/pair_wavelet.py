@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, final
 
@@ -91,10 +91,15 @@ class PairWavelet:
         self._scales: np.ndarray | None = None
         self._central_f: float | None = None
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -190,17 +195,7 @@ class PairWavelet:
         if pc_cols:
             return pc_cols
         # 3) Auto-detect: all numeric columns except known meta
-        meta_like = {
-            C.seq_col,
-            C.group_col,
-            C.frame_col,
-            C.time_col,
-            C.id_col,
-            "perspective",
-            "fps",
-            "id1",
-            "id2",
-        }
+        meta_like = C.meta_set() | {"perspective", "fps", "id1", "id2"}
         num_cols = sorted(
             set(df.select_dtypes(include=[np.number]).columns) - meta_like
         )

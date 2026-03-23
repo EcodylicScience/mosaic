@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     ClassVar,
     Generic,
     Literal,
@@ -12,9 +11,8 @@ from typing import (
     override,
 )
 
-if TYPE_CHECKING:
-    import pandas as pd
-
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, Field, RootModel, model_validator
 from typing_extensions import TypeVar
 
@@ -44,7 +42,7 @@ class Params(DictModel):
 
         For BaseModel-typed fields with default_factory, partial dict overrides
         are merged on top of the default before validation (1-level deep merge).
-        This replaces the per-feature deep-merge hacks in global_ward/ward_assign.
+        This replaces the per-feature deep-merge hacks in global_ward.
         """
         if not overrides:
             return cls()
@@ -71,6 +69,7 @@ L = TypeVar(
     default=NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec,
     covariant=True,
 )
+R = TypeVar("R", default=object, covariant=True)
 
 
 class Result(DictModel, Generic[F]):
@@ -124,8 +123,12 @@ class ResultColumn(Result[str]):
         )
 
 
-class ArtifactSpec(Result[str], Generic[L]):
+class ArtifactSpec(Result[str], Generic[L, R]):
     """Reference to a feature artifact with load specification.
+
+    Type parameters:
+        L: Load spec type (NpzLoadSpec, ParquetLoadSpec, JoblibLoadSpec).
+        R: Return type of from_path(). Defaults to object.
 
     Attributes:
         load: How to load the matched files.
@@ -166,16 +169,21 @@ class ArtifactSpec(Result[str], Generic[L]):
                 )
         return cls.model_validate({"feature": result.feature, "run_id": result.run_id})
 
-    def from_path(self, path: Path) -> object:
+    def from_path(self, path: Path) -> R:
         """Load artifact from a resolved file path.
 
         Dispatches on load-spec type via load_from_spec().
-        Subclasses may override for custom loading behavior.
+        Return type is determined by the R type parameter.
         """
-        return load_from_spec(path, self.load)
+        return load_from_spec(path, self.load)  # pyright: ignore[reportReturnType]
 
 
-class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec]):
+NpzArtifact = ArtifactSpec[NpzLoadSpec, np.ndarray]
+ParquetArtifact = ArtifactSpec[ParquetLoadSpec, pd.DataFrame]
+JoblibArtifact = ArtifactSpec[JoblibLoadSpec, R]
+
+
+class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec, np.ndarray]):
     """Labels loaded from a feature's output files."""
 
     source: Literal["feature"] = "feature"
@@ -318,10 +326,13 @@ class Feature(Protocol):
     def params(self) -> Params: ...
 
     def load_state(
-        self, run_root: Path, artifact_paths: dict[str, Path]
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
     ) -> bool: ...
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None: ...
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None: ...
 
     def save_state(self, run_root: Path) -> None: ...
 

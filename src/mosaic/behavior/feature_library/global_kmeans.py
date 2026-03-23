@@ -7,9 +7,9 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, Literal, TypedDict, final
 
 import joblib
 import numpy as np
@@ -17,34 +17,38 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import (
+    _nn_pair_mask,  # pyright: ignore[reportPrivateUsage]
+)
 
-from .global_tsne import GlobalTSNE
-from .helpers import (
-    PartialIndexRow,
-    StreamingFeatureHelper,
-    _build_index_row,
-    _get_feature_run_root,
-    _load_joblib_artifact,
-    _resolve_sequence_identity,
+from .helpers import ensure_columns, nn_lookup_for
+from .spec import (
+    COLUMNS as C,
 )
 from .spec import (
-    ArtifactSpec,
+    GlobalModelParams,
     InputRequire,
     Inputs,
+    JoblibArtifact,
     JoblibLoadSpec,
     NNResult,
+    NpzArtifact,
     NpzLoadSpec,
     OutputType,
-    Params,
+    ParquetArtifact,
     ParquetLoadSpec,
     Result,
     register_feature,
 )
 
 
-def _get_kmeans_class(device: str) -> type:
+class KMeansModelBundle(TypedDict):
+    kmeans: _SklearnKMeans
+    feature_columns: list[str]
+    version: str
+
+
+def _get_kmeans_class(device: str) -> type[_SklearnKMeans]:
     """Return the appropriate KMeans class for the requested device.
 
     When ``device="cuda"``, tries to import cuML's GPU-accelerated KMeans.
@@ -52,9 +56,11 @@ def _get_kmeans_class(device: str) -> type:
     """
     if device == "cuda":
         try:
-            from cuml.cluster import KMeans as _CumlKMeans
+            from cuml.cluster import (  # pyright: ignore[reportMissingImports]
+                KMeans as _CumlKMeans,  # pyright: ignore[reportUnknownVariableType]
+            )
 
-            return _CumlKMeans
+            return _CumlKMeans  # pyright: ignore[reportUnknownVariableType]
         except ImportError:
             print(
                 "[global-kmeans] cuML not available; falling back to sklearn KMeans. "
@@ -64,248 +70,153 @@ def _get_kmeans_class(device: str) -> type:
     return _SklearnKMeans
 
 
+class KMeansModelArtifact(JoblibArtifact[KMeansModelBundle]):
+    """KMeans model (model.joblib)."""
+
+    feature: str = "global-kmeans"
+    pattern: str = "model.joblib"
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
+
+
+class KMeansClusterCentersArtifact(NpzArtifact):
+    """Cluster center vectors (cluster_centers.npz)."""
+
+    feature: str = "global-kmeans"
+    pattern: str = "cluster_centers.npz"
+    load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="centers"))
+
+
+class KMeansClusterSizesArtifact(ParquetArtifact):
+    """Per-cluster sample counts (cluster_sizes.parquet)."""
+
+    feature: str = "global-kmeans"
+    pattern: str = "cluster_sizes.parquet"
+    load: ParquetLoadSpec = Field(default_factory=ParquetLoadSpec)
+
+
+class KMeansArtifactLabelsArtifact(NpzArtifact):
+    """Labels for the artifact points used in fitting (artifact_labels.npz)."""
+
+    feature: str = "global-kmeans"
+    pattern: str = "artifact_labels.npz"
+    load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+
+
 @final
 @register_feature
 class GlobalKMeansClustering:
     """
-    Global K-Means that fits on an artifact matrix resolved from the dataset's
-    feature index. Optional assign phase uses Result-based inputs to label
-    per-frame features with the fitted cluster IDs.
+    Global K-Means clustering on templates loaded via load_state.
+    Per-sequence cluster assignment is done in apply().
     """
 
     name: str = "global-kmeans"
     version: str = "0.4"
     output_type: OutputType = "global"
     parallelizable = False
-    skip_transform_phase: bool = True
+    scope_dependent = False
 
-    class ModelArtifact(ArtifactSpec[JoblibLoadSpec]):
-        """KMeans model (model.joblib)."""
-
-        feature: str = "global-kmeans"
-        pattern: str = "model.joblib"
-        load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
-
-    class ClusterCentersArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Cluster center vectors (cluster_centers.npz)."""
-
-        feature: str = "global-kmeans"
-        pattern: str = "cluster_centers.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="centers"))
-
-    class ClusterSizesArtifact(ArtifactSpec[ParquetLoadSpec]):
-        """Per-cluster sample counts (cluster_sizes.parquet)."""
-
-        feature: str = "global-kmeans"
-        pattern: str = "cluster_sizes.parquet"
-        load: ParquetLoadSpec = Field(default_factory=ParquetLoadSpec)
-
-    class ArtifactLabelsArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Labels for the artifact points used in fitting (artifact_labels.npz)."""
-
-        feature: str = "global-kmeans"
-        pattern: str = "artifact_labels.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+    ModelArtifact = KMeansModelArtifact
+    ClusterCentersArtifact = KMeansClusterCentersArtifact
+    ClusterSizesArtifact = KMeansClusterSizesArtifact
+    ArtifactLabelsArtifact = KMeansArtifactLabelsArtifact
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
 
-    class Params(Params):
+    class Params(GlobalModelParams[KMeansModelArtifact]):
         """Global K-means clustering parameters.
 
         Attributes:
+            templates: Templates artifact to fit on (inherited).
+            model: Pre-fitted KMeans model artifact (skip fit).
             k: Number of clusters. Default 100.
             random_state: Random seed. Default 42.
             n_init: KMeans initializations. Default "auto".
             max_iter: Max iterations per run. Default 300.
             device: Compute device. Default "cpu".
-            templates: Templates artifact to fit on.
             label_artifact_points: Label points used for fitting. Default True.
-            scaler: Optional scaler for assign phase.
-            pair_filter: Nearest-neighbor pair filter. Default None.
+            pair_filter: Nearest-neighbor pair filter for dependency resolution. Default None.
         """
 
+        model: KMeansModelArtifact | None = Field(default_factory=KMeansModelArtifact)
         k: int = Field(default=100, ge=1)
         random_state: int = 42
-        n_init: str | int = "auto"
+        n_init: Literal["auto"] | int = "auto"
         max_iter: int = Field(default=300, ge=1)
         device: str = "cpu"
-        templates: GlobalTSNE.TemplatesArtifact
         label_artifact_points: bool = True
-        scaler: GlobalTSNE.ScalerArtifact | None = None
         pair_filter: NNResult | None = None
 
     def __init__(
         self,
-        inputs: GlobalKMeansClustering.Inputs = Inputs(()),
+        inputs: GlobalKMeansClustering.Inputs,
         params: dict[str, object] | None = None,
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
 
-        self._ds: object = None
-        self._kmeans: object = None
-        self._fit_dim: int | None = None
-        self._fit_columns: list[str] | None = None
-        self._fit_artifact_info: dict[str, object] | None = None
+        self._kmeans: _SklearnKMeans | None = None
+        self._feature_columns: list[str] | None = None
         self._artifact_labels: np.ndarray | None = None
-        self._assign_labels: dict[str, np.ndarray] = {}
-        self._assign_frames: dict[str, np.ndarray] = {}
-        self._assign_id1: dict[str, np.ndarray] = {}
-        self._assign_id2: dict[str, np.ndarray] = {}
-        self._assign_entity_level: dict[str, str] = {}
-        self._additional_index_rows: list[PartialIndexRow] = []
-        self._scope: Scope = Scope()
+        self._templates: np.ndarray | None = None
+        self._nn_index: pd.DataFrame | None = None
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    # --- Feature protocol ---
 
-    # Dataset binding
-    def needs_fit(self) -> bool:
-        return True
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        self._kmeans = None
+        self._feature_columns = None
+        self._artifact_labels = None
+        self._templates = None
+        self._nn_index = None
 
-    def supports_partial_fit(self) -> bool:
+        # Load pair filter index
+        if dependency_indices and "pair_filter" in dependency_indices:
+            self._nn_index = dependency_indices["pair_filter"]
+
+        # Check for cached model
+        cached_path = run_root / "model.joblib"
+        if cached_path.exists():
+            bundle: KMeansModelBundle = KMeansModelArtifact().from_path(cached_path)
+            self._kmeans = bundle["kmeans"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
+
+        # Load pre-fitted model from artifact_paths
+        if self.params.model is not None and "model" in artifact_paths:
+            bundle = self.params.model.from_path(artifact_paths["model"])
+            self._kmeans = bundle["kmeans"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
+
+        # Load templates from artifact_paths
+        if self.params.templates is not None and "templates" in artifact_paths:
+            df = self.params.templates.from_path(artifact_paths["templates"])
+            self._feature_columns = list(df.columns)
+            self._templates = df.to_numpy(dtype=np.float64)
+            return False
+
         return False
 
-    def bind_dataset(self, ds: object) -> None:
-        self._ds = ds
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+        if self._templates is None:
+            msg = "[global-kmeans] No templates loaded. Check load_state."
+            raise RuntimeError(msg)
 
-    # --- Fit helpers ---
+        self._templates = self._templates.astype(np.float32, copy=False)
 
-    def _load_npz_matrix(
-        self, files: list[Path], key: str, transpose: bool
-    ) -> tuple[np.ndarray, dict[str, object]]:
-        mats = []
-        for p in files:
-            npz = np.load(p, allow_pickle=True)
-            if key not in npz.files:
-                continue
-            A = np.asarray(npz[key])
-            if A.ndim == 1:
-                A = A[None, :]
-            A = A.astype(np.float32, copy=False)
-            A = A.T if transpose else A
-            mats.append(A)
-        if not mats:
-            raise FileNotFoundError(
-                f"No NPZ containing key '{key}' among: {[p.name for p in files]}"
+        if self._templates.shape[0] < self.params.k:
+            msg = (
+                f"Not enough samples to fit KMeans: "
+                f"n={self._templates.shape[0]} < k={self.params.k}"
             )
-        X = np.vstack(mats)
-        meta: dict[str, object] = {
-            "loader_kind": "npz",
-            "key": key,
-            "transpose": bool(transpose),
-        }
-        return X, meta
-
-    def _load_parquet_matrix(
-        self, files: list[Path], spec: ParquetLoadSpec
-    ) -> tuple[np.ndarray, dict[str, object], list[str]]:
-        cols = spec.columns
-        drop_cols = set(spec.drop_columns or [])
-        numeric_only = spec.numeric_only
-
-        def load_df(p: Path) -> pd.DataFrame:
-            df = pd.read_parquet(p)
-            if drop_cols:
-                df = df.drop(columns=list(drop_cols), errors="ignore")
-            if cols is not None:
-                use = [c for c in cols if c in df.columns]
-                if not use:
-                    return pd.DataFrame()
-                df = df[use]
-            else:
-                if numeric_only:
-                    df = df.select_dtypes(include=["number"])
-                    for mc in (
-                        "frame",
-                        "time",
-                        "id",
-                        "id1",
-                        "id2",
-                        "id_a",
-                        "id_b",
-                        "id_A",
-                        "id_B",
-                    ):
-                        if mc in df.columns:
-                            df = df.drop(columns=[mc])
-                else:
-                    df = df.apply(pd.to_numeric, errors="coerce")
-            return df
-
-        dfs = []
-        first_cols: list[str] | None = None
-        for p in files:
-            df = load_df(p)
-            if df.empty:
-                continue
-            if first_cols is None:
-                first_cols = df.columns.tolist()
-            else:
-                df = df.reindex(columns=first_cols)
-            dfs.append(df)
-
-        if not dfs:
-            raise FileNotFoundError(
-                f"No Parquet files with usable numeric columns among: {[p.name for p in files]}"
-            )
-
-        D = pd.concat(dfs, ignore_index=True)
-        A = D.to_numpy(dtype=np.float32, copy=False)
-        assert first_cols is not None
-        meta: dict[str, object] = {
-            "loader_kind": "parquet",
-            "columns": first_cols,
-            "drop_columns": list(drop_cols) if drop_cols else [],
-            "numeric_only": numeric_only,
-        }
-        return A, meta, first_cols
-
-    def _load_artifact_matrix(self) -> np.ndarray:
-        art = self.params.templates
-        feature = art.feature
-        resolved_run_id, run_root = _get_feature_run_root(self._ds, feature, art.run_id)
-        pattern = art.pattern
-        loader = art.load
-        files = sorted(run_root.glob(pattern))
-        if not files:
-            raise FileNotFoundError(f"No files matching '{pattern}' in {run_root}")
-
-        self._fit_columns = None
-        X, meta = self._load_npz_matrix(files, loader.key, loader.transpose)
-
-        self._fit_artifact_info = {
-            "feature": feature,
-            "run_id": resolved_run_id,
-            "run_root": str(run_root),
-            "pattern": pattern,
-            "loader": meta,
-        }
-        return X
-
-    # --- Fit / Transform / Save ---
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        raise NotImplementedError
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        self._assign_labels = {}
-        self._assign_frames = {}
-        self._assign_id1 = {}
-        self._assign_id2 = {}
-        self._assign_entity_level = {}
-        self._additional_index_rows = []
-
-        X = self._load_artifact_matrix()
-        self._fit_dim = X.shape[1]
-
-        if X.shape[0] < self.params.k:
-            raise ValueError(
-                f"Not enough samples to fit KMeans: n={X.shape[0]} < k={self.params.k}"
-            )
+            raise ValueError(msg)
 
         KMeansCls = _get_kmeans_class(self.params.device)
         self._kmeans = KMeansCls(
@@ -313,153 +224,46 @@ class GlobalKMeansClustering:
             n_init=self.params.n_init,
             random_state=self.params.random_state,
             max_iter=self.params.max_iter,
-        ).fit(X)
+        ).fit(self._templates)
 
         if self.params.label_artifact_points:
-            self._artifact_labels = self._kmeans.predict(X)
+            self._artifact_labels = self._kmeans.predict(self._templates)
 
-        # Assign phase: label per-frame features if inputs provided
-        feature_inputs = self.inputs.feature_inputs
-        if feature_inputs:
-            import gc
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._kmeans is None or self._feature_columns is None:
+            msg = "GlobalKMeansClustering not fitted yet."
+            raise RuntimeError(msg)
 
-            import pyarrow as pa
+        ensure_columns(df, [C.frame_col] + self._feature_columns)
 
-            scaler = None
-            scaler_spec = self.params.scaler
-            if scaler_spec is not None:
-                scaler = _load_joblib_artifact(self._ds, scaler_spec)
+        # Apply pair filter if configured
+        nn_lookup = nn_lookup_for(self._nn_index, df)
+        if nn_lookup is not None:
+            nn_mask = _nn_pair_mask(df, nn_lookup)
+            keep = np.flatnonzero(nn_mask).tolist()
+            df = df.iloc[keep].reset_index(drop=True)
 
-            helper = StreamingFeatureHelper(self._ds, "global-kmeans")
-            if self.params.pair_filter:
-                helper.set_pair_filter(self.params.pair_filter)
-            manifest = helper.build_manifest_from_results(
-                feature_inputs, scope=self._scope
-            )
+        arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 
-            keys = list(manifest.keys())
-            n_keys = len(keys)
-            for i, entry_key in enumerate(keys):
-                kd = helper.load_entry_data(manifest[entry_key], entry_key=entry_key)
-                if kd is None:
-                    continue
-                D_total = kd.features.shape[1]
-
-                if scaler is not None:
-                    if not hasattr(scaler, "n_features_in_"):
-                        raise ValueError(
-                            "Scaler object must have n_features_in_ (e.g. sklearn StandardScaler)"
-                        )
-                    if scaler.n_features_in_ != D_total:
-                        raise ValueError(
-                            f"Scaler expects n_features_in_={getattr(scaler, 'n_features_in_', None)}, "
-                            f"got {D_total} columns for entry_key={entry_key}"
-                        )
-                    X_use = scaler.transform(kd.features)
-                else:
-                    if self._fit_dim is None:
-                        raise RuntimeError(
-                            "GlobalKMeansClustering internal error: fit_dim is None before assignment."
-                        )
-                    if D_total != self._fit_dim:
-                        raise ValueError(
-                            f"Assign-without-scaler requires feature dim {self._fit_dim}, "
-                            f"but got {D_total} for entry_key={entry_key}. Provide a scaler or align inputs."
-                        )
-                    X_use = kd.features
-
-                labels = self._kmeans.predict(X_use)
-                self._assign_labels[entry_key] = labels.astype(np.int32)
-                self._assign_frames[entry_key] = kd.frames
-                if kd.id1 is not None:
-                    self._assign_id1[entry_key] = np.asarray(
-                        kd.id1, dtype=np.float64
-                    ).ravel()
-                if kd.id2 is not None:
-                    self._assign_id2[entry_key] = np.asarray(
-                        kd.id2, dtype=np.float64
-                    ).ravel()
-                self._assign_entity_level[entry_key] = kd.entity_level
-
-                del X_use, kd, labels
-                gc.collect()
-                pa.default_memory_pool().release_unused()
-
-                if (i + 1) % 10 == 0 or i == n_keys - 1:
-                    print(
-                        f"[global-kmeans] Processed {i + 1}/{n_keys} sequences",
-                        file=sys.stderr,
-                    )
-
-    def finalize_fit(self) -> None:
-        pass
-
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Assign clusters to an input DataFrame.
-
-        Only succeeds if columns can be aligned to the fitted feature space:
-          - If we fitted on parquet with explicit/numeric columns, require those columns.
-          - Otherwise, require numeric matrix with matching dimensionality.
-        If alignment fails, return an empty DataFrame (no error).
-        """
-        if self._kmeans is None or self._fit_dim is None:
-            raise RuntimeError("GlobalKMeansClustering not fitted yet.")
-
-        if self._fit_columns:
-            missing = [c for c in self._fit_columns if c not in df.columns]
-            if missing:
-                return pd.DataFrame(columns=["frame", "cluster"])
-            A = df[self._fit_columns].to_numpy(dtype=np.float32, copy=False)
-        else:
-            num = df.select_dtypes(include=["number"])
-            for mc in (
-                "frame",
-                "time",
-                "id",
-                "id1",
-                "id2",
-                "id_a",
-                "id_b",
-                "id_A",
-                "id_B",
-            ):
-                if mc in num.columns:
-                    num = num.drop(columns=[mc])
-            if num.shape[1] != self._fit_dim:
-                return pd.DataFrame(columns=["frame", "cluster"])
-            A = num.to_numpy(dtype=np.float32, copy=False)
-
-        mask = np.isfinite(A).all(axis=1)
-        labels = np.full(A.shape[0], -1, dtype=np.int32)
-        if mask.any():
-            labels[mask] = self._kmeans.predict(A[mask])
-
-        out = pd.DataFrame(
-            {
-                "frame": df["frame"].astype(int, errors="ignore")
-                if "frame" in df.columns
-                else np.arange(len(df), dtype=int),
-                "cluster": labels,
-            }
-        )
+        mask = np.isfinite(arr).all(axis=1)
+        idx = np.flatnonzero(mask).tolist()
+        valid = df.iloc[idx].reset_index(drop=True)
+        meta_cols = sorted(set(valid.columns) - set(self._feature_columns))
+        out = valid[meta_cols].copy()
+        out["cluster"] = self._kmeans.predict(arr[mask])
         return out
 
-    def save_model(self, path: Path) -> None:
-        run_root = path.parent
+    def save_state(self, run_root: Path) -> None:
+        if self._kmeans is None:
+            return
         run_root.mkdir(parents=True, exist_ok=True)
-        self._additional_index_rows = []
 
-        joblib.dump(
-            {
-                "kmeans": self._kmeans,
-                "fit_dim": int(self._fit_dim or 0),
-                "fit_columns": self._fit_columns,
-                "artifact_info": self._fit_artifact_info,
-                "version": self.version,
-                "params": self.params.model_dump(),
-            },
-            path,
-        )
+        bundle: KMeansModelBundle = {
+            "kmeans": self._kmeans,
+            "feature_columns": self._feature_columns or [],
+            "version": self.version,
+        }
+        joblib.dump(bundle, run_root / "model.joblib")
 
         centers = np.asarray(self._kmeans.cluster_centers_, dtype=np.float32)
         np.savez_compressed(run_root / "cluster_centers.npz", centers=centers)
@@ -472,53 +276,3 @@ class GlobalKMeansClustering:
             pd.DataFrame(
                 {"cluster": uniq.astype(int), "count": cnt.astype(int)}
             ).to_parquet(run_root / "cluster_sizes.parquet", index=False)
-
-        for entry_key, labels in self._assign_labels.items():
-            labels_arr = np.asarray(labels, dtype=np.int32).ravel()
-            frames = self._assign_frames.get(entry_key)
-            if frames is not None and len(frames) != len(labels_arr):
-                frames = None
-            if frames is None:
-                frames = np.arange(len(labels_arr), dtype=np.int64)
-            id1_vals = self._assign_id1.get(entry_key)
-            id2_vals = self._assign_id2.get(entry_key)
-            if id1_vals is None or len(id1_vals) != len(labels_arr):
-                id1_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
-            if id2_vals is None or len(id2_vals) != len(labels_arr):
-                id2_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
-            entity_level = self._assign_entity_level.get(entry_key, "global")
-            group, sequence = _resolve_sequence_identity(
-                entry_key, self._scope.entry_map
-            )
-            out_name = f"{make_entry_key(group, sequence)}.parquet"
-            out_path = run_root / out_name
-            df_out = pd.DataFrame(
-                {
-                    "frame": frames.astype(np.int64, copy=False),
-                    "cluster": labels_arr,
-                    "id1": pd.array(id1_vals, dtype="Int64"),
-                    "id2": pd.array(id2_vals, dtype="Int64"),
-                    "entity_level": np.full(
-                        len(labels_arr), entity_level, dtype=object
-                    ),
-                    "sequence": sequence,
-                    "group": group,
-                }
-            )
-            df_out.to_parquet(out_path, index=False)
-            self._additional_index_rows.append(
-                _build_index_row(group, sequence, out_path, int(len(df_out)))
-            )
-
-    def load_model(self, path: Path) -> None:
-        bundle = joblib.load(path)
-        self._kmeans = bundle["kmeans"]
-        self._fit_dim = int(bundle.get("fit_dim") or 0)
-        self._fit_columns = bundle.get("fit_columns")
-        self._fit_artifact_info = bundle.get("artifact_info", {})
-        saved = bundle.get("params", {})
-        if isinstance(saved, dict):
-            self.params = self.Params.model_validate(saved)
-
-    def get_additional_index_rows(self) -> list[PartialIndexRow]:
-        return list(self._additional_index_rows)

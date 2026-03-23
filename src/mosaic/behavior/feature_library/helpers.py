@@ -266,12 +266,83 @@ def _build_index_row(
     )
 
 
+# Extra non-feature columns that may appear in result DataFrames alongside
+# the standard COLUMNS metadata (id, sequence, group, frame, time).
+_EXTRA_META = {"id1", "id2", "entity_level", "perspective", "fps"}
+
+
+def feature_columns(df: pd.DataFrame) -> list[str]:
+    """Return the sorted list of numeric feature column names in *df*.
+
+    Excludes standard metadata columns (COLUMNS.meta_set()) and known
+    non-feature columns (id1, id2, entity_level, perspective, fps).
+    """
+    from .spec import COLUMNS as C
+
+    exclude = C.meta_set() | (_EXTRA_META & set(df.columns))
+    return sorted(set(df.select_dtypes(include="number").columns) - exclude)
+
+
 def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
     """Raise ValueError if any required columns are missing from *df*."""
     missing = set(required) - set(df.columns)
     if missing:
         msg = f"Missing required columns: {sorted(missing)}"
         raise ValueError(msg)
+
+
+def nn_lookup_for(
+    nn_index: pd.DataFrame | None, df: pd.DataFrame
+) -> dict[tuple[int, int], int] | None:
+    """Build NN lookup for the sequence in *df* from a dependency index.
+
+    Returns a ``{(frame, id): nn_id}`` dict, or ``None`` if *nn_index* is not
+    provided.  Used by features that apply a nearest-neighbor pair filter in
+    their ``apply()`` method.
+    """
+    from .spec import COLUMNS as C
+
+    if nn_index is None:
+        return None
+    group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
+    sequence = str(df[C.seq_col].iloc[0])
+    df_nn = load_result_for(nn_index, group, sequence)
+    frames = df_nn[C.frame_col].to_numpy()
+    ids = df_nn[C.id_col].to_numpy()
+    nn_ids = df_nn["nn_id"].to_numpy()
+    lookup: dict[tuple[int, int], int] = {}
+    for f, ind, nn in zip(frames, ids, nn_ids):
+        if not np.isnan(nn):
+            lookup[(int(f), int(ind))] = int(nn)
+    return lookup
+
+
+def load_result_for(
+    index: pd.DataFrame, group: str, sequence: str
+) -> pd.DataFrame:
+    """Look up and read the upstream result parquet for a (group, sequence) pair.
+
+    Filters *index* (a dependency index DataFrame with ``group``, ``sequence``,
+    and ``abs_path`` columns) to exactly one row, then reads and returns the
+    parquet at that path.
+
+    Raises ``FileNotFoundError`` if no match is found, and ``ValueError`` if
+    more than one row matches (ambiguous upstream data).
+    """
+    match = index[(index["group"] == group) & (index["sequence"] == sequence)]
+    if match.empty:
+        msg = (
+            f"No upstream result for group={group!r}, sequence={sequence!r}"
+        )
+        raise FileNotFoundError(msg)
+    if len(match) > 1:
+        msg = (
+            f"Ambiguous upstream result: {len(match)} rows match "
+            f"group={group!r}, sequence={sequence!r}"
+        )
+        raise ValueError(msg)
+    path = Path(str(match.iloc[0]["abs_path"]))
+    return pd.read_parquet(path)
 
 
 # --- Shared helpers for per-sequence features ---

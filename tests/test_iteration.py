@@ -339,7 +339,7 @@ class TestYieldFeatureData:
             list(yield_feature_data(ds, "nonexistent"))
 
     def test_no_such_run_raises(self, feature_ds):
-        with pytest.raises(ValueError, match="No entries"):
+        with pytest.raises(FileNotFoundError, match="No entries"):
             list(yield_feature_data(feature_ds, "speed", run_id="nonexistent"))
 
     def test_skips_tiny_tables(self, ds, tmp_path):

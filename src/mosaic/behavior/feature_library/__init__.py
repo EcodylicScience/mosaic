@@ -42,9 +42,11 @@ Usage
 from . import (
     approach_avoidance,
     body_scale,
+    extract_templates,
     ffgroups,
     ffgroups_metrics,
     global_kmeans,
+    global_scaler,
     global_tsne,
     global_ward,
     helpers,
@@ -62,13 +64,14 @@ from . import (
     pairposedistancepca,
     speed_angvel,
     temporal_stacking,
-    ward_assign,
 )
 from .approach_avoidance import ApproachAvoidance
 from .body_scale import BodyScaleFeature
+from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
 from .ffgroups_metrics import FFGroupsMetrics
 from .global_kmeans import GlobalKMeansClustering
+from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
@@ -89,6 +92,7 @@ from .spec import (
     ArtifactSpec,
     Feature,
     FeatureLabelsSource,
+    GlobalModelParams,
     GroundTruthLabelsSource,
     Inputs,
     InputsLike,
@@ -100,8 +104,6 @@ from .spec import (
 )
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
-from .ward_assign import WardAssignClustering
-
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
 # from . import feature_template__global
@@ -187,9 +189,12 @@ __all__ = [
     # Feature classes
     "ApproachAvoidance",
     "BodyScaleFeature",
+    "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
     "GlobalKMeansClustering",
+    "GlobalModelParams",
+    "GlobalScaler",
     "GlobalTSNE",
     "GlobalWardClustering",
     "IdTagColumns",
@@ -206,13 +211,14 @@ __all__ = [
     "PairWavelet",
     "SpeedAngvel",
     "TemporalStackingFeature",
-    "WardAssignClustering",
     # Submodules
     "approach_avoidance",
     "body_scale",
+    "extract_templates",
     "ffgroups",
     "ffgroups_metrics",
     "global_kmeans",
+    "global_scaler",
     "global_tsne",
     "global_ward",
     "id_tag_columns",
@@ -229,5 +235,4 @@ __all__ = [
     "pairposedistancepca",
     "speed_angvel",
     "temporal_stacking",
-    "ward_assign",
 ]

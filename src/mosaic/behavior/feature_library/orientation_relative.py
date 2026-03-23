@@ -6,18 +6,21 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
-
-from mosaic.core.helpers import to_safe_name
 from scipy.spatial.distance import pdist
 
-from .helpers import _pose_column_pairs, ensure_columns, wrap_angle
+from .helpers import (
+    _pose_column_pairs,  # pyright: ignore[reportPrivateUsage]
+    ensure_columns,
+    load_result_for,
+    wrap_angle,
+)
 from .spec import COLUMNS as C
 from .spec import BodyScaleResult, Inputs, Params, TrackInput, register_feature
 
@@ -64,26 +67,31 @@ class OrientationRelativeFeature:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._scale_lookup: dict[str, float] = {}
+        self._scale_index: pd.DataFrame | None = None
 
-    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
-        self._scale_lookup = {}
-        scale_root = artifact_paths.get("scale")
-        if scale_root is None:
-            return True
-        for p in sorted(scale_root.glob("*.parquet")):
-            try:
-                df_scale = pd.read_parquet(p)
-                if "scale" not in df_scale.columns:
-                    continue
-                mean_scale = float(df_scale["scale"].dropna().mean())
-                if np.isfinite(mean_scale) and mean_scale > 0:
-                    self._scale_lookup[p.stem] = mean_scale
-            except Exception:
-                continue
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        self._scale_index = None
+        if dependency_indices and "scale" in dependency_indices:
+            self._scale_index = dependency_indices["scale"]
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def _scale_for(self, group: str, sequence: str) -> float | None:
+        """Look up mean body scale for the given sequence from the dependency index."""
+        if self._scale_index is None:
+            return None
+
+        df_scale = load_result_for(self._scale_index, group, sequence)
+        mean_scale = float(df_scale["scale"].dropna().mean())
+        if np.isfinite(mean_scale) and mean_scale > 0:
+            return mean_scale
+        return None
+
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -98,8 +106,7 @@ class OrientationRelativeFeature:
             return pd.DataFrame()
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
-        seq_safe = to_safe_name(sequence)
-        global_scale = self._scale_lookup.get(seq_safe, None)
+        global_scale = self._scale_for(group, sequence)
         quantiles = self.params.quantiles
         nearest_k = self.params.nearest_k
         rows: list[dict[str, object]] = []

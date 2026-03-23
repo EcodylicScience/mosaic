@@ -116,7 +116,7 @@ def compute_cluster_label_agreement(
     ds : Dataset
         Bound dataset instance.
     cluster_feature : str
-        Feature folder under features/ (e.g. "ward-assign__from__global-ward__from__global-tsne__from__social+ego@v1").
+        Feature folder under features/ (e.g. "global-ward__from__global-tsne__from__social+ego@v1").
     cluster_run_id : str, optional
         Specific run_id to use. If None, the most recent finished run is selected.
     label_kind : str

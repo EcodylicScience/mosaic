@@ -272,23 +272,23 @@ def test_artifact_from_result() -> None:
     from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
 
     r = Result(feature="global-tsne", run_id="v1")
-    art = GlobalTSNE.TemplatesArtifact.from_result(r)
+    art = GlobalTSNE.TSNECoordsArtifact.from_result(r)
     assert art.run_id == "v1"
-    assert art.pattern == "global_templates_features.npz"
+    assert art.pattern == "global_tsne_templates.npz"
 
 
 def test_artifact_from_result_wrong_feature() -> None:
     from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
 
     with pytest.raises(ValueError, match="expects feature"):
-        GlobalTSNE.TemplatesArtifact.from_result(Result(feature="wrong"))
+        GlobalTSNE.TSNECoordsArtifact.from_result(Result(feature="wrong"))
 
 
 def test_artifact_from_result_chained() -> None:
     from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
 
     r = Result(feature="global-tsne", run_id="v1")
-    art = GlobalTSNE.TemplatesArtifact.from_result(r.use_latest())
+    art = GlobalTSNE.TSNECoordsArtifact.from_result(r.use_latest())
     assert art.run_id is None
 
 
@@ -299,23 +299,37 @@ def test_artifact_from_result_suffixed_feature() -> None:
         feature="global-tsne__from__pair-wavelet__from__pair-egocentric",
         run_id="v2",
     )
-    art = GlobalTSNE.TemplatesArtifact.from_result(r)
+    art = GlobalTSNE.TSNECoordsArtifact.from_result(r)
     assert art.feature == r.feature
     assert art.run_id == "v2"
-    assert art.pattern == "global_templates_features.npz"
+    assert art.pattern == "global_tsne_templates.npz"
 
 
 def test_pair_filter_on_params() -> None:
-    from mosaic.behavior.feature_library.ward_assign import WardAssignClustering
+    from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
 
-    inputs = WardAssignClustering.Inputs((Result(feature="pair-wavelet"),))
-    wa = WardAssignClustering(inputs=inputs)
-    assert wa.params.pair_filter is None
-    wa2 = WardAssignClustering(
+    inputs = GlobalWardClustering.Inputs((Result(feature="pair-wavelet"),))
+    gw = GlobalWardClustering(
         inputs=inputs,
-        params={"pair_filter": {"feature": "nearest-neighbor"}},
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            },
+        },
     )
-    assert wa2.params.pair_filter.feature == "nearest-neighbor"
+    assert gw.params.pair_filter is None
+    gw2 = GlobalWardClustering(
+        inputs=inputs,
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            },
+            "pair_filter": {"feature": "nearest-neighbor"},
+        },
+    )
+    assert gw2.params.pair_filter.feature == "nearest-neighbor"
 
 
 # --- Validation behavior ---
@@ -354,7 +368,7 @@ def test_global_ward_partial_artifact_override() -> None:
 
     p = GlobalWardClustering.Params.from_overrides({"templates": {"feature": "other"}})
     assert p.templates.feature == "other"
-    assert p.templates.load.key == "templates"
+    assert p.templates.pattern == "*.parquet"
 
 
 # --- Mutable default isolation ---
@@ -381,14 +395,6 @@ def test_orientation_relative_mutable_default_isolation() -> None:
 # --- Result-based inputs (WardAssign, TemporalStacking, GlobalWard, GlobalKMeans) ---
 
 
-def test_ward_assign_requires_inputs() -> None:
-    """WardAssign constructor requires explicit inputs (no default)."""
-    from mosaic.behavior.feature_library.ward_assign import WardAssignClustering
-
-    with pytest.raises(TypeError):
-        WardAssignClustering()
-
-
 def test_temporal_stacking_requires_inputs() -> None:
     """TemporalStacking constructor requires explicit inputs (no default)."""
     from mosaic.behavior.feature_library.temporal_stacking import (
@@ -399,49 +405,90 @@ def test_temporal_stacking_requires_inputs() -> None:
         TemporalStackingFeature()
 
 
-def test_global_ward_default_inputs() -> None:
-    """GlobalWard defaults to empty inputs (artifact mode)."""
+def test_global_ward_requires_inputs() -> None:
+    """GlobalWard constructor requires explicit inputs (no default)."""
     from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
 
-    gw = GlobalWardClustering()
-    assert len(gw.inputs.root) == 0
-    assert gw.inputs.feature_inputs == ()
-
-
-def test_global_kmeans_no_assign_dict() -> None:
-    """GlobalKMeans no longer has assign dict; assign controlled via inputs."""
-    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
-
-    gk = GlobalKMeansClustering(
-        params={
-            "templates": {
-                "feature": "global-tsne",
-                "pattern": "global_templates_features.npz",
-                "load": {"kind": "npz", "key": "templates"},
+    with pytest.raises(TypeError):
+        GlobalWardClustering(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                }
             }
-        }
-    )
-    assert not hasattr(gk.params, "assign")
-    assert gk.inputs.feature_inputs == ()
-
-    # With Result inputs -> assign mode
-    inputs = GlobalKMeansClustering.Inputs(
-        (
-            Result(feature="pair-wavelet"),
-            Result(feature="pair-ego-wavelet"),
         )
-    )
-    gk2 = GlobalKMeansClustering(
-        inputs=inputs,
+
+
+def test_global_ward_accepts_empty_and_result_inputs() -> None:
+    """GlobalWard accepts both empty and Result-based inputs (_require='any')."""
+    from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
+
+    gw = GlobalWardClustering(
+        inputs=GlobalWardClustering.Inputs(()),
         params={
             "templates": {
-                "feature": "global-tsne",
-                "pattern": "global_templates_features.npz",
-                "load": {"kind": "npz", "key": "templates"},
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
             }
         },
     )
-    assert len(gk2.inputs.feature_inputs) == 2
+    assert len(gw.inputs.root) == 0
+    assert gw.inputs.feature_inputs == ()
+
+    gw2 = GlobalWardClustering(
+        inputs=GlobalWardClustering.Inputs((Result(feature="pair-wavelet"),)),
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            }
+        },
+    )
+    assert len(gw2.inputs.root) == 1
+
+
+def test_global_kmeans_requires_inputs() -> None:
+    """GlobalKMeans constructor requires explicit inputs (no default)."""
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+
+    with pytest.raises(TypeError):
+        GlobalKMeansClustering(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                }
+            }
+        )
+
+
+def test_global_kmeans_accepts_empty_and_result_inputs() -> None:
+    """GlobalKMeans accepts both empty and Result-based inputs (_require='any')."""
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+
+    gk = GlobalKMeansClustering(
+        inputs=GlobalKMeansClustering.Inputs(()),
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            }
+        },
+    )
+    assert len(gk.inputs.root) == 0
+    assert gk.inputs.feature_inputs == ()
+
+    gk2 = GlobalKMeansClustering(
+        inputs=GlobalKMeansClustering.Inputs((Result(feature="pair-wavelet"),)),
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            }
+        },
+    )
+    assert len(gk2.inputs.root) == 1
 
 
 # --- GlobalTSNE Result-based inputs ---
@@ -465,7 +512,15 @@ def test_global_tsne_result_inputs() -> None:
             Result(feature="pair-ego-wavelet"),
         )
     )
-    gt = GlobalTSNE(inputs=inputs)
+    gt = GlobalTSNE(
+        inputs=inputs,
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            },
+        },
+    )
     assert gt.inputs.feature_inputs[0].feature == "pair-wavelet"
     assert gt.inputs.feature_inputs[0].run_id == "0.1-abc"
     assert gt.inputs.storage_suffix() == "pair-wavelet+pair-ego-wavelet"
@@ -609,8 +664,8 @@ def test_fi_roundtrip_feature() -> None:
 def test_result_column_direct():
     from mosaic.behavior.feature_library.spec import ResultColumn
 
-    rc = ResultColumn(feature="ward-assign", column="cluster")
-    assert rc.feature == "ward-assign"
+    rc = ResultColumn(feature="global-ward", column="cluster")
+    assert rc.feature == "global-ward"
     assert rc.column == "cluster"
     assert rc.run_id is None
 
@@ -663,9 +718,9 @@ def test_result_column_from_result_use_latest():
     from mosaic.behavior.feature_library.spec import ResultColumn
 
     rc = ResultColumn(column="cluster").from_result(
-        Result(feature="ward-assign", run_id="0.1-abc").use_latest()
+        Result(feature="global-ward", run_id="0.1-abc").use_latest()
     )
-    assert rc.feature == "ward-assign"
+    assert rc.feature == "global-ward"
     assert rc.run_id is None
 
 

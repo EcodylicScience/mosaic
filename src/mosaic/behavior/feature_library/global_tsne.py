@@ -1,44 +1,33 @@
-"""
-GlobalTSNE feature.
+"""GlobalTSNE feature."""
 
-Extracted from features.py as part of feature_library modularization.
-"""
+# openTSNE and faiss are untyped; suppress cascading Unknown errors from those libs.
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false, reportMissingImports=false
 
 from __future__ import annotations
 
 import gc
-import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import final
+from typing import ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
 import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
-from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import Scope
-
-from .helpers import (
-    PartialIndexRow,
-    StreamingFeatureHelper,
-    _build_index_row,
-    _get_feature_run_root,
-    _load_array_from_spec,
-    _resolve_sequence_identity,
-)
+from .helpers import ensure_columns
 from .spec import (
-    ArtifactSpec,
+    DictModel,
+    GlobalModelParams,
+    InputRequire,
     Inputs,
+    JoblibArtifact,
     JoblibLoadSpec,
-    LoadSpec,
-    NNResult,
+    NpzArtifact,
     NpzLoadSpec,
     OutputType,
-    Params,
     Result,
     register_feature,
 )
@@ -106,101 +95,115 @@ class _FaissKNNIndex:
     def query(self, query: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
         """Query nearest neighbors for new points against the built index."""
         query_f32 = np.ascontiguousarray(query, dtype=np.float32)
-        sq_dist, idx = self._index.search(query_f32, k)
+        sq_dist, idx = self._index.search(query_f32, k)  # pyright: ignore[reportAttributeAccessIssue]
         return idx.astype(np.int64), np.sqrt(np.maximum(sq_dist, 0)).astype(np.float64)
+
+
+class TSNECoordsArtifact(NpzArtifact):
+    """t-SNE coordinates of templates (global_tsne_templates.npz)."""
+
+    feature: str = "global-tsne"
+    pattern: str = "global_tsne_templates.npz"
+    load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
+
+
+class TSNEFitConfig(DictModel):
+    """openTSNE fitting parameters.
+
+    Attributes:
+        learning_rate: Learning rate ("auto" lets openTSNE compute). Default "auto".
+        exaggeration_iters: Early exaggeration phase iterations. Default 250.
+        exaggeration: Early exaggeration factor. Default 12.
+        exaggeration_momentum: Momentum during early exaggeration. Default 0.5.
+        iters: Refinement phase iterations. Default 750.
+        momentum: Momentum during refinement. Default 0.8.
+    """
+
+    learning_rate: float | str = "auto"
+    exaggeration_iters: int = Field(default=250, ge=1)
+    exaggeration: float = Field(default=12, gt=0)
+    exaggeration_momentum: float = Field(default=0.5, ge=0)
+    iters: int = Field(default=750, ge=1)
+    momentum: float = Field(default=0.8, ge=0)
+
+
+class TSNEMapConfig(DictModel):
+    """Parameters for mapping new points into the fitted embedding.
+
+    Attributes:
+        k: Neighbors for partial embedding. Default 25.
+        iters: Optimization iterations. Default 100.
+        learning_rate: Learning rate. Default 1.0.
+        exaggeration: Exaggeration factor. Default 2.0.
+        momentum: Momentum. Default 0.0.
+        chunk_size: Chunk size for large sequences. Default 50000.
+    """
+
+    k: int = Field(default=25, ge=1)
+    iters: int = Field(default=100, ge=1)
+    learning_rate: float = Field(default=1.0, gt=0)
+    exaggeration: float = Field(default=2.0, gt=0)
+    momentum: float = Field(default=0.0, ge=0)
+    chunk_size: int = Field(default=50_000, ge=1)
+
+
+class TSNEModelBundle(TypedDict):
+    embedding: TSNEEmbedding
+    feature_columns: list[str]
+    version: str
+
+
+class TSNEModelArtifact(JoblibArtifact[TSNEModelBundle]):
+    """Fitted t-SNE embedding model (embedding.joblib)."""
+
+    feature: str = "global-tsne"
+    pattern: str = "embedding.joblib"
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
 @final
 @register_feature
 class GlobalTSNE:
-    """
-    Global t-SNE over multiple prior features discovered from the dataset's feature indexes.
-    Inputs are Result references to prior feature outputs (per-frame parquet).
-    The loaded arrays are treated as (T x D); arrays from all inputs with the same sequence
-    are length-aligned (min T) and concatenated horizontally.
+    """Fit an openTSNE embedding on templates and map per-sequence data.
 
-    Heavy work happens in fit(); transform() returns a tiny stub DF.
+    Consumes a templates artifact (from ExtractTemplates, GlobalScaler, or
+    any feature producing templates). Produces an embedding model bundle
+    and template coordinates.
     """
 
     name: str = "global-tsne"
-    version: str = "0.3"
+    version: str = "0.4"
     output_type: OutputType = "global"
     parallelizable = False
-    skip_transform_phase: bool = True
+    scope_dependent = False
 
-    class TemplatesArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Template feature vectors (global_templates_features.npz)."""
-
-        feature: str = "global-tsne"
-        pattern: str = "global_templates_features.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="templates"))
-
-    class TSNECoordsArtifact(ArtifactSpec[NpzLoadSpec]):
-        """t-SNE coordinates of templates (global_tsne_templates.npz)."""
-
-        feature: str = "global-tsne"
-        pattern: str = "global_tsne_templates.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
-
-    class EmbeddingArtifact(ArtifactSpec[JoblibLoadSpec]):
-        """openTSNE embedding from bundle (joblib, key=embedding)."""
-
-        feature: str = "global-tsne"
-        pattern: str = "global_opentsne_embedding.joblib"
-        load: JoblibLoadSpec = Field(
-            default_factory=lambda: JoblibLoadSpec(key="embedding")
-        )
-
-    class ScalerArtifact(ArtifactSpec[JoblibLoadSpec]):
-        """StandardScaler from embedding bundle (joblib, key=scaler)."""
-
-        feature: str = "global-tsne"
-        pattern: str = "global_opentsne_embedding.joblib"
-        load: JoblibLoadSpec = Field(
-            default_factory=lambda: JoblibLoadSpec(key="scaler")
-        )
+    ModelArtifact = TSNEModelArtifact
+    TSNECoordsArtifact = TSNECoordsArtifact
 
     class Inputs(Inputs[Result]):
-        pass
+        _require: ClassVar[InputRequire] = "any"
 
-    class Params(Params):
+    class Params(GlobalModelParams[TSNEModelArtifact]):
         """Global t-SNE parameters.
 
         Attributes:
-            map_existing_inputs: Reuse existing embedding. Default False.
-            reuse_embedding: Embedding artifact to reuse.
-            artifact: Template artifact specification.
-            scaler: Scaler artifact specification.
-            pair_filter: Nearest-neighbor pair filter. Default None.
+            templates: Templates artifact to fit embedding on.
+            model: Pre-fitted embedding model artifact (skip fit).
             random_state: Random seed. Default 42.
-            r_scaler: Max samples for scaler fitting. Default 200000.
-            total_templates: Target farthest-first templates. Default 2000.
-            pre_quota_per_key: Pre-sample quota per sequence. Default 50.
             perplexity: t-SNE perplexity. Default 50.
-            knn_method: kNN method. Default "annoy".
-            n_jobs: Parallel jobs. Default 8.
-            partial_k: Neighbors for partial embedding. Default 25.
-            partial_iters: Optimization iterations. Default 100.
-            partial_lr: Learning rate. Default 1.0.
-            map_chunk: Chunk size for streaming. Default 50000.
+            knn_method: kNN method ("annoy", "faiss", "faiss-gpu"). Default "annoy".
+            n_jobs: Parallel jobs for openTSNE. Default 8.
+            fit: Embedding fitting parameters.
+            mapping: Partial embedding mapping parameters.
         """
 
-        map_existing_inputs: bool = False
-        reuse_embedding: GlobalTSNE.EmbeddingArtifact | None = None
-        artifact: GlobalTSNE.TemplatesArtifact | None = None
-        scaler: GlobalTSNE.ScalerArtifact | None = None
-        pair_filter: NNResult | None = None
+        model: TSNEModelArtifact | None = Field(default_factory=TSNEModelArtifact)
         random_state: int = 42
-        r_scaler: int = Field(default=200_000, ge=1)
-        total_templates: int = Field(default=2000, ge=1)
-        pre_quota_per_key: int = Field(default=50, ge=1)
         perplexity: int = Field(default=50, ge=1)
         knn_method: str = "annoy"
         n_jobs: int = Field(default=8, ge=1)
-        partial_k: int = Field(default=25, ge=1)
-        partial_iters: int = Field(default=100, ge=1)
-        partial_lr: float = Field(default=1.0, gt=0)
-        map_chunk: int = Field(default=50_000, ge=1)
+        fit: TSNEFitConfig = Field(default_factory=TSNEFitConfig)
+        mapping: TSNEMapConfig = Field(default_factory=TSNEMapConfig)
 
     def __init__(
         self,
@@ -209,522 +212,162 @@ class GlobalTSNE:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self._rng = np.random.default_rng(self.params.random_state)
-        self._scaler: StandardScaler | None = None
+
+        self._feature_columns: list[str] | None = None
         self._embedding: TSNEEmbedding | None = None
         self._templates: np.ndarray | None = None
-        self._template_indices: np.ndarray | None = None
-        self._mapped_coords: dict[
-            str,
-            tuple[
-                np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str
-            ],
-        ] = {}
-        self._keys: list[str] = []
-        self._ds: object = None
-        self._scope: Scope = Scope()
-        self._run_root: Path | None = None
-        self._additional_index_rows: list[PartialIndexRow] = []
 
-    # dataset hook
-    def bind_dataset(self, ds: object) -> None:
-        self._ds = ds
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        self._feature_columns = None
+        self._embedding = None
+        self._templates = None
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+        # Check for cached model
+        cached_path = run_root / "embedding.joblib"
+        if cached_path.exists():
+            bundle: TSNEModelBundle = TSNEModelArtifact().from_path(cached_path)
+            self._embedding = bundle["embedding"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
 
-    def set_run_root(self, run_root: Path) -> None:
-        self._run_root = Path(run_root)
+        # Load pre-fitted model from artifact_paths
+        if self.params.model is not None and "model" in artifact_paths:
+            bundle = self.params.model.from_path(artifact_paths["model"])
+            self._embedding = bundle["embedding"]
+            self._feature_columns = bundle["feature_columns"]
+            return True
 
-    def get_additional_index_rows(self) -> list[PartialIndexRow]:
-        if self._additional_index_rows:
-            return list(self._additional_index_rows)
-        return self._discover_existing_coord_rows()
+        # Load templates from artifact_paths
+        if self.params.templates is not None and "templates" in artifact_paths:
+            df = self.params.templates.from_path(artifact_paths["templates"])
+            self._feature_columns = list(df.columns)
+            self._templates = df.to_numpy(dtype=np.float64)
+            return False
 
-    # --- Feature protocol ---
-
-    def needs_fit(self) -> bool:
-        return True
-
-    def supports_partial_fit(self) -> bool:
         return False
 
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        raise NotImplementedError
+    def fit(
+        self,
+        inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
+    ) -> None:
+        if self._templates is None:
+            msg = "[global-tsne] No templates loaded. Check load_state."
+            raise RuntimeError(msg)
 
-    def finalize_fit(self) -> None:
-        pass
+        templates = self._templates.astype(np.float32, copy=False)
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        if self._ds is None:
-            raise RuntimeError(
-                "GlobalTSNE requires dataset binding. Ensure Dataset.run_feature calls bind_dataset()."
-            )
-        self._templates = None
-        self._template_indices = None
-        self._mapped_coords = {}
-        self._keys = []
-        self._additional_index_rows = []
-
-        # Resolve inputs from self.inputs (Result-based)
-        helper = StreamingFeatureHelper(self._ds, "global-tsne")
-        if self.params.pair_filter:
-            helper.set_pair_filter(self.params.pair_filter)
-        key_file_manifest = helper.build_manifest_from_results(
-            self.inputs.feature_inputs, scope=self._scope
-        )
-
-        if not key_file_manifest:
-            raise RuntimeError(
-                "GlobalTSNE found no usable inputs from the specified prior features."
-            )
-
-        keys = list(key_file_manifest.keys())
-
-        # Handle map_existing_inputs mode (reuse existing embedding)
-        if self.params.map_existing_inputs:
-            self._prepare_reuse_artifacts()
-            mapped = self._map_sequences_streaming(key_file_manifest, helper)
-            self._mapped_coords = mapped if self._run_root is None else {}
-            self._keys = keys
-            return
-
-        # === PASS 1: Sample for scaler fitting and template selection ===
-        # Stream through data, sampling without holding everything in memory
-        r_scaler = self.params.r_scaler
-        T_target = self.params.total_templates
-        quota = max(self.params.pre_quota_per_key, T_target // max(1, len(keys)))
-        samples_per_key = max(1000, r_scaler // max(1, len(keys)))
-
-        scaler_samples = []
-        template_samples = []
-
-        for ki, entry_key in enumerate(keys):
-            kd = helper.load_entry_data(
-                key_file_manifest[entry_key], entry_key=entry_key
-            )
-            if kd is None or kd.features.shape[0] == 0:
-                continue
-            X = kd.features
-
-            # Sample for scaler
-            take_scaler = min(X.shape[0], samples_per_key)
-            idx_scaler = self._rng.choice(X.shape[0], size=take_scaler, replace=False)
-            scaler_samples.append(X[idx_scaler].copy())
-
-            # Sample for templates (larger sample for farthest-first)
-            take_templ = min(X.shape[0], quota * 3)
-            idx_templ = self._rng.choice(X.shape[0], size=take_templ, replace=False)
-            template_samples.append(X[idx_templ].copy())
-
-            # Explicitly free memory
-            del X
-            if ki % 10 == 0:
-                gc.collect()
-
-        if not scaler_samples:
-            raise RuntimeError("No combined feature frames after alignment.")
-
-        # 2) Fit global standardizer
-        Xsamp = np.vstack(scaler_samples)
-        del scaler_samples
-        if Xsamp.shape[0] > r_scaler:
-            idx = self._rng.choice(Xsamp.shape[0], size=r_scaler, replace=False)
-            Xsamp = Xsamp[idx]
-        scaler = StandardScaler().fit(Xsamp)
-        self._scaler = scaler
-        del Xsamp
-
-        # 3) Template selection (farthest-first over pre-sample)
-        X_pre = np.vstack([scaler.transform(s) for s in template_samples])
-        del template_samples
-
-        sel = [int(self._rng.integers(0, X_pre.shape[0]))]
-        d2 = np.sum((X_pre - X_pre[sel[0]]) ** 2, axis=1)
-        while len(sel) < min(T_target, X_pre.shape[0]):
-            i = int(np.argmax(d2))
-            sel.append(i)
-            d2 = np.minimum(d2, np.sum((X_pre - X_pre[i]) ** 2, axis=1))
-        templates = X_pre[np.array(sel)]
-        del X_pre, d2
-
-        # 4) Fit openTSNE on templates
-        perp = self.params.perplexity
+        perplexity = self.params.perplexity
         knn_method = self.params.knn_method.lower()
         if knn_method in ("faiss", "faiss-gpu"):
             use_gpu = knn_method == "faiss-gpu"
-            k_neighbors = min(3 * perp, templates.shape[0] - 1)
+            k_neighbors = min(3 * perplexity, templates.shape[0] - 1)
             faiss_knn = _FaissKNNIndex(templates, k_neighbors, use_gpu=use_gpu)
             aff = affinity.PerplexityBasedNN(
                 knn_index=faiss_knn,
-                perplexity=perp,
+                perplexity=perplexity,
                 n_jobs=self.params.n_jobs,
             )
         else:
             aff = affinity.PerplexityBasedNN(
                 templates,
-                perplexity=perp,
+                perplexity=perplexity,
                 metric="euclidean",
                 method="annoy",
                 n_jobs=self.params.n_jobs,
                 random_state=self.params.random_state,
             )
+
         init = initialization.pca(templates, random_state=self.params.random_state)
-        emb = TSNEEmbedding(
+        embedding = TSNEEmbedding(
             init,
             aff,
+            learning_rate=self.params.fit.learning_rate,
             negative_gradient_method="fft",
             n_jobs=self.params.n_jobs,
             random_state=self.params.random_state,
         )
-        emb.optimize(
-            n_iter=250, exaggeration=12, momentum=0.5, inplace=True, verbose=False
+        embedding.optimize(
+            n_iter=self.params.fit.exaggeration_iters,
+            exaggeration=self.params.fit.exaggeration,
+            momentum=self.params.fit.exaggeration_momentum,
+            inplace=True,
+            verbose=False,
         )
-        emb.optimize(n_iter=750, momentum=0.8, inplace=True, verbose=False)
-        self._embedding = emb
+        embedding.optimize(
+            n_iter=self.params.fit.iters,
+            momentum=self.params.fit.momentum,
+            inplace=True,
+            verbose=False,
+        )
 
-        # === PASS 2: Map sequences one at a time (streaming) ===
-        mapped = self._map_sequences_streaming(key_file_manifest, helper)
+        self._embedding = embedding
+        self._templates = None  # free memory
 
-        # hold artifacts for save_model
-        self._keys = keys
-        self._templates = templates
-        self._template_indices = np.array(sel)
-        self._mapped_coords = mapped if self._run_root is None else {}
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._embedding is None or self._feature_columns is None:
+            msg = "[global-tsne] Not fitted. Call fit() or load_state() first."
+            raise RuntimeError(msg)
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Just a stub so Dataset.run_feature can index a parquet per (group,sequence)
-        return pd.DataFrame({"global_tsne_done": [True]})
+        ensure_columns(df, self._feature_columns)
+        features = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 
-    def save_model(self, path: Path) -> None:
-        run_root = path.parent
+        valid_mask = np.isfinite(features).all(axis=1)
+        valid_features = features[valid_mask]
+
+        coords = np.full((features.shape[0], 2), np.nan, dtype=np.float32)
+        if valid_features.shape[0] > 0:
+            chunk_size = self.params.mapping.chunk_size
+            valid_coords = np.empty((valid_features.shape[0], 2), dtype=np.float32)
+            for start in range(0, valid_features.shape[0], chunk_size):
+                end = min(start + chunk_size, valid_features.shape[0])
+                valid_coords[start:end] = self._map_chunk(valid_features[start:end])
+            coords[valid_mask] = valid_coords
+
+        meta_cols = sorted(set(df.columns) - set(self._feature_columns))
+        out = df[meta_cols].copy()
+        out["tsne_x"] = coords[:, 0]
+        out["tsne_y"] = coords[:, 1]
+        return out
+
+    def _map_chunk(self, chunk: np.ndarray) -> np.ndarray:
+        """Map a chunk of feature vectors to t-SNE coordinates."""
+        assert self._embedding is not None
+        partial_embedding = self._embedding.prepare_partial(
+            chunk,
+            initialization="median",
+            k=self.params.mapping.k,
+            perplexity=self.params.perplexity,
+        )
+        partial_embedding.optimize(
+            n_iter=self.params.mapping.iters,
+            learning_rate=self.params.mapping.learning_rate,
+            exaggeration=self.params.mapping.exaggeration,
+            momentum=self.params.mapping.momentum,
+            inplace=True,
+            verbose=False,
+        )
+        coords = np.asarray(partial_embedding, dtype=np.float32).copy()
+        del partial_embedding
+        gc.collect()
+        return coords
+
+    def save_state(self, run_root: Path) -> None:
+        if self._embedding is None or self._feature_columns is None:
+            return
         run_root.mkdir(parents=True, exist_ok=True)
 
-        # Save templates
-        templates = self._templates
-        if templates is not None:
-            np.savez_compressed(
-                run_root / "global_templates_features.npz", templates=templates
-            )
-
-        # Save tsne coords of templates + selection indices
-        if self._embedding is not None:
-            Y_templates = np.asarray(self._embedding)
-            np.savez_compressed(
-                run_root / "global_tsne_templates.npz",
-                Y=Y_templates,
-                sel=self._template_indices
-                if self._template_indices is not None
-                else np.array([], int),
-            )
-
-        # Save embedding + scaler
-        joblib.dump(
-            {
-                "embedding": self._embedding,
-                "scaler": self._scaler,
-                "params": self.params.model_dump(),
-            },
-            run_root / "global_opentsne_embedding.joblib",
-        )
-
-        # Save per-key coords
-        mapped = self._mapped_coords
-        for entry_key, (Y, frames, id1, id2, entity_level) in mapped.items():
-            group, sequence = _resolve_sequence_identity(
-                entry_key, self._scope.entry_map
-            )
-            out_name = f"{make_entry_key(group, sequence)}.parquet"
-            out_path = run_root / out_name
-            n_rows = int(Y.shape[0])
-            data: dict[str, object] = {
-                "tsne_x": Y[:, 0].astype(np.float32),
-                "tsne_y": Y[:, 1].astype(np.float32),
-                "frame": frames
-                if frames is not None
-                else np.arange(n_rows, dtype=np.int64),
-                "sequence": sequence,
-                "group": group,
-            }
-            if id1 is not None:
-                data["id1"] = pd.array(id1, dtype="Int64")
-            if id2 is not None:
-                data["id2"] = pd.array(id2, dtype="Int64")
-            if entity_level != "global":
-                data["entity_level"] = np.full(n_rows, entity_level, dtype=object)
-            df = pd.DataFrame(data)
-            df.to_parquet(out_path, index=False)
-
-    def load_model(self, path: Path) -> None:
-        bundle = joblib.load(path)
-        embedding = bundle.get("embedding")
-        if embedding is not None and not isinstance(embedding, TSNEEmbedding):
-            raise ValueError(
-                f"load_model: expected TSNEEmbedding, got {type(embedding).__name__}"
-            )
-        self._embedding = embedding
-        scaler = bundle.get("scaler")
-        if scaler is not None and not isinstance(scaler, StandardScaler):
-            raise ValueError(
-                f"load_model: expected StandardScaler, got {type(scaler).__name__}"
-            )
-        self._scaler = scaler
-        saved = bundle.get("params", {})
-        if isinstance(saved, dict):
-            self.params = self.Params.model_validate(saved)
-
-    def _load_embedding(
-        self, artifact: GlobalTSNE.EmbeddingArtifact
-    ) -> tuple[TSNEEmbedding, StandardScaler | None]:
-        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
-        files = sorted(run_root.glob(artifact.pattern))
-        if not files:
-            raise FileNotFoundError(
-                f"reuse_embedding: no files matching '{artifact.pattern}' in {run_root}"
-            )
-        bundle = joblib.load(files[0])
-        if not isinstance(bundle, dict):
-            raise ValueError(
-                f"reuse_embedding: expected dict bundle, got {type(bundle).__name__}: {files[0]}"
-            )
-        key = artifact.load.key or "embedding"
-        embedding = bundle.get(key)
-        if not isinstance(embedding, TSNEEmbedding):
-            raise ValueError(
-                f"reuse_embedding: expected TSNEEmbedding for key '{key}', "
-                f"got {type(embedding).__name__}: {files[0]}"
-            )
-        scaler = bundle.get("scaler")
-        if scaler is not None and not isinstance(scaler, StandardScaler):
-            raise ValueError(
-                f"reuse_embedding: expected StandardScaler for key 'scaler', "
-                f"got {type(scaler).__name__}: {files[0]}"
-            )
-        return embedding, scaler
-
-    def _load_scaler(self, artifact: GlobalTSNE.ScalerArtifact) -> StandardScaler:
-        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
-        files = sorted(run_root.glob(artifact.pattern))
-        if not files:
-            raise FileNotFoundError(
-                f"scaler: no files matching '{artifact.pattern}' in {run_root}"
-            )
-        obj = joblib.load(files[0])
-        key = artifact.load.key
-        if key is not None and isinstance(obj, dict):
-            obj = obj[key]
-        if not isinstance(obj, StandardScaler):
-            raise ValueError(
-                f"scaler: expected StandardScaler, got {type(obj).__name__}: {files[0]}"
-            )
-        return obj
-
-    def _load_templates(
-        self, artifact: GlobalTSNE.TemplatesArtifact
-    ) -> np.ndarray | None:
-        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
-        files = sorted(run_root.glob(artifact.pattern))
-        if not files:
-            raise FileNotFoundError(
-                f"templates: no files matching '{artifact.pattern}' in {run_root}"
-            )
-        arr, _ = _load_array_from_spec(files[0], artifact.load)
-        if arr is None:
-            return None
-        if arr.ndim == 1:
-            arr = arr[None, :]
-        return arr
-
-    def _prepare_reuse_artifacts(self) -> None:
-        emb_spec = self.params.reuse_embedding
-        if not emb_spec:
-            raise ValueError(
-                "map_existing_inputs=True requires params['reuse_embedding']."
-            )
-        embedding, scaler = self._load_embedding(emb_spec)
-        self._embedding = embedding
-        self._scaler = scaler
-        scaler_override = self.params.scaler
-        if scaler_override:
-            self._scaler = self._load_scaler(scaler_override)
-        if self._scaler is None:
-            raise ValueError(
-                "Reusable embedding bundle missing scaler; provide params['scaler']."
-            )
-        art_spec = self.params.artifact
-        if art_spec:
-            templates = self._load_templates(art_spec)
-            if templates is not None:
-                self._templates = templates
-
-    def _append_index_row(
-        self, entry_key: str, out_path: Path, n_rows: int | None
-    ) -> None:
-        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
-        self._additional_index_rows = [
-            r
-            for r in self._additional_index_rows
-            if not (r.group == group and r.sequence == sequence)
-        ]
-        self._additional_index_rows.append(
-            _build_index_row(group, sequence, out_path, n_rows)
-        )
-
-    def _persist_mapped_coords(
-        self,
-        entry_key: str,
-        Y: np.ndarray,
-        frames: np.ndarray | None,
-        id1: np.ndarray | None = None,
-        id2: np.ndarray | None = None,
-        entity_level: str = "global",
-    ) -> None:
-        if self._run_root is None:
-            return
-        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
-        out_name = f"{make_entry_key(group, sequence)}.parquet"
-        out_path = self._run_root / out_name
-
-        n_rows = int(Y.shape[0])
-        data: dict[str, object] = {
-            "tsne_x": Y[:, 0].astype(np.float32),
-            "tsne_y": Y[:, 1].astype(np.float32),
-            "frame": frames
-            if frames is not None
-            else np.arange(n_rows, dtype=np.int64),
-            "sequence": sequence,
-            "group": group,
+        bundle: TSNEModelBundle = {
+            "embedding": self._embedding,
+            "feature_columns": self._feature_columns,
+            "version": self.version,
         }
-        if id1 is not None:
-            data["id1"] = pd.array(id1, dtype="Int64")
-        if id2 is not None:
-            data["id2"] = pd.array(id2, dtype="Int64")
-        if entity_level != "global":
-            data["entity_level"] = np.full(n_rows, entity_level, dtype=object)
+        joblib.dump(bundle, run_root / "embedding.joblib")
 
-        df = pd.DataFrame(data)
-        df.to_parquet(out_path, index=False)
-        self._append_index_row(entry_key, out_path, n_rows)
-
-    def _discover_existing_coord_rows(self) -> list[PartialIndexRow]:
-        if self._run_root is None or not self._run_root.exists():
-            return []
-        rows: list[PartialIndexRow] = []
-        for fp in sorted(self._run_root.glob("*.parquet")):
-            stem = fp.stem
-            if stem.startswith("__") or stem in (
-                "cluster_sizes",
-                "global_templates_features",
-                "global_tsne_templates",
-            ):
-                continue
-            group, sequence = _resolve_sequence_identity(stem, self._scope.entry_map)
-            rows.append(_build_index_row(group, sequence, fp))
-        return rows
-
-    def _map_sequences_streaming(
-        self,
-        key_file_manifest: dict[str, list[tuple[Path, LoadSpec]]],
-        helper: StreamingFeatureHelper,
-    ) -> dict[
-        str,
-        tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str],
-    ]:
-        """Map sequences one at a time to minimize memory usage."""
-        if self._embedding is None or self._scaler is None:
-            raise RuntimeError("GlobalTSNE mapping requires both embedding and scaler.")
-
-        embedding = self._embedding
-        scaler = self._scaler
-        CHUNK = self.params.map_chunk
-        Kp = self.params.partial_k
-        Pp = self.params.perplexity
-        It = self.params.partial_iters
-        Lr = self.params.partial_lr
-
-        def map_chunk_block(X_chunk_std: np.ndarray) -> np.ndarray:
-            part = embedding.prepare_partial(
-                X_chunk_std, initialization="median", k=Kp, perplexity=Pp
-            )
-            # Use inplace=True to avoid creating extra objects
-            part.optimize(
-                n_iter=It,
-                learning_rate=Lr,
-                exaggeration=2.0,
-                momentum=0.0,
-                inplace=True,
-                verbose=False,
-            )
-            # Extract coordinates before deleting
-            coords = np.asarray(part)
-            if coords.dtype != np.float32:
-                coords = coords.astype(np.float32, copy=False)
-            coords = coords.copy()
-            # Explicitly delete partial embedding internals to free openTSNE memory
-            if hasattr(part, "affinities"):
-                del part.affinities
-            if hasattr(part, "_P"):
-                del part._P
-            del part
-            gc.collect()
-            return coords
-
-        import pyarrow as pa
-
-        mapped: dict[
-            str,
-            tuple[
-                np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str
-            ],
-        ] = {}
-        keys = list(key_file_manifest.keys())
-        n_keys = len(keys)
-
-        # Use load_entry_data directly (NOT iter_sequences generator) to avoid holding extra references
-        for i, entry_key in enumerate(keys):
-            kd = helper.load_entry_data(
-                key_file_manifest[entry_key], entry_key=entry_key
-            )
-            if kd is None or kd.features.shape[0] == 0:
-                continue
-            X = kd.features
-            frames = kd.frames
-
-            # Scale and map in chunks
-            Xs = scaler.transform(X)
-            if Xs.dtype != np.float32:
-                Xs = Xs.astype(np.float32, copy=False)
-            del X
-            gc.collect()
-            pa.default_memory_pool().release_unused()
-
-            Y_seq = np.empty((Xs.shape[0], 2), dtype=np.float32)
-            for j in range(0, Xs.shape[0], CHUNK):
-                block = map_chunk_block(Xs[j : j + CHUNK])
-                Y_seq[j : j + block.shape[0], :] = block
-                del block
-                # Aggressive gc every few chunks to prevent openTSNE memory buildup
-                if (j // CHUNK) % 5 == 4:
-                    gc.collect()
-
-            if self._run_root is not None:
-                self._persist_mapped_coords(
-                    entry_key, Y_seq, frames, kd.id1, kd.id2, kd.entity_level
-                )
-                del Y_seq
-            else:
-                mapped[entry_key] = (Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
-            del Xs
-
-            # Force garbage collection after each sequence to prevent openTSNE memory buildup
-            gc.collect()
-            pa.default_memory_pool().release_unused()
-
-            if (i + 1) % 10 == 0 or i == n_keys - 1:
-                print(
-                    f"[global-tsne] Mapped {i + 1}/{n_keys} sequences", file=sys.stderr
-                )
-
-        return mapped
+        # Save template coordinates for visualization
+        coords = np.asarray(self._embedding)
+        np.savez_compressed(run_root / "global_tsne_templates.npz", Y=coords)
