@@ -10,13 +10,12 @@ import pytest
 from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
-from mosaic.behavior.feature_library.spec import (
+from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
+from mosaic.core.pipeline.types import (
     COLUMNS,
     Inputs,
-    InterpolationConfig,
     Params,
     Result,
-    SamplingConfig,
     TrackInput,
     resolve_order_col,
 )
@@ -52,23 +51,6 @@ def test_resolve_order_col_missing_both() -> None:
 
 
 # --- Params base ---
-
-
-def test_params_empty_by_default() -> None:
-    p = Params()
-    assert set(p.keys()) == set()
-
-
-def test_params_getitem() -> None:
-    p = Params()
-    with pytest.raises(KeyError):
-        p["nonexistent"]
-
-
-def test_params_get_with_default() -> None:
-    p = Params()
-    assert p.get("nonexistent", "fallback") == "fallback"
-    assert p.get("nonexistent") is None
 
 
 def test_params_extra_forbid() -> None:
@@ -120,13 +102,6 @@ def test_group_constraints() -> None:
         _ComposedParams(sampling=SamplingConfig(fps_default=-1.0))
 
 
-def test_group_keys_in_spread() -> None:
-    p = _ComposedParams()
-    d = {**p}
-    assert "sampling" in d
-    assert "interpolation" in d
-
-
 # --- dataset.py integration ---
 
 
@@ -159,7 +134,7 @@ def test_json_ready_with_model() -> None:
 
 def test_hash_stability_all_converted_features() -> None:
     """Verify that Params model produces the same hash as the equivalent dict."""
-    from mosaic.behavior.feature_library.spec import FEATURES
+    from mosaic.behavior.feature_library.registry import FEATURES
     from mosaic.core.pipeline._utils import hash_params as _hash_params
 
     for name, cls in FEATURES.items():
@@ -171,7 +146,7 @@ def test_hash_stability_all_converted_features() -> None:
         except ValidationError:
             # Some Params have required fields (e.g. GlobalKMeansClustering.Params.artifact)
             continue
-        as_dict = {**model}
+        as_dict = model.model_dump()
         assert _hash_params(model) == _hash_params(as_dict), (
             f"{name}: hash mismatch between model and dict"
         )
@@ -181,7 +156,7 @@ def test_hash_stability_all_converted_features() -> None:
 
 
 def test_npz_load_spec_requires_key() -> None:
-    from mosaic.behavior.feature_library.spec import NpzLoadSpec
+    from mosaic.core.pipeline.types import NpzLoadSpec
 
     with pytest.raises(ValidationError):
         NpzLoadSpec()
@@ -191,7 +166,7 @@ def test_npz_load_spec_requires_key() -> None:
 
 
 def test_parquet_load_spec_defaults() -> None:
-    from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+    from mosaic.core.pipeline.types import ParquetLoadSpec
 
     s = ParquetLoadSpec()
     assert s.kind == "parquet"
@@ -199,17 +174,8 @@ def test_parquet_load_spec_defaults() -> None:
     assert s.numeric_only is True
 
 
-def test_artifact_spec_dict_like_access() -> None:
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
-
-    spec = ArtifactSpec(feature="X", load=NpzLoadSpec(key="Y"))
-    assert spec["feature"] == "X"
-    assert spec.get("run_id") is None
-    assert "feature" in spec
-
-
 def test_nested_spec_model_dump_roundtrip() -> None:
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+    from mosaic.core.pipeline.types import ArtifactSpec, NpzLoadSpec
 
     orig = ArtifactSpec(feature="test", load=NpzLoadSpec(key="X"))
     dumped = orig.model_dump()
@@ -218,7 +184,7 @@ def test_nested_spec_model_dump_roundtrip() -> None:
 
 
 def test_joblib_load_spec() -> None:
-    from mosaic.behavior.feature_library.spec import JoblibLoadSpec
+    from mosaic.core.pipeline.types import JoblibLoadSpec
 
     s = JoblibLoadSpec()
     assert s.kind == "joblib"
@@ -235,21 +201,21 @@ def test_result_use_latest() -> None:
 
 
 def test_nn_result_defaults() -> None:
-    from mosaic.behavior.feature_library.spec import NNResult
+    from mosaic.core.pipeline.types import NNResult
 
     nn = NNResult()
     assert nn.feature == "nearest-neighbor"
 
 
 def test_nn_result_rejects_wrong_feature() -> None:
-    from mosaic.behavior.feature_library.spec import NNResult
+    from mosaic.core.pipeline.types import NNResult
 
     with pytest.raises(ValidationError):
         NNResult(feature="wrong")
 
 
 def test_artifact_spec_auto_pattern() -> None:
-    from mosaic.behavior.feature_library.spec import (
+    from mosaic.core.pipeline.types import (
         ArtifactSpec,
         JoblibLoadSpec,
         NpzLoadSpec,
@@ -262,7 +228,7 @@ def test_artifact_spec_auto_pattern() -> None:
 
 
 def test_artifact_spec_pattern_kind_mismatch() -> None:
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+    from mosaic.core.pipeline.types import ArtifactSpec, NpzLoadSpec
 
     with pytest.raises(ValidationError):
         ArtifactSpec(feature="x", load=NpzLoadSpec(key="y"), pattern="foo.joblib")
@@ -610,12 +576,17 @@ def test_fi_feature_inputs_property() -> None:
 
 
 def test_fi_storage_suffix_tracks_only() -> None:
-    assert Inputs(("tracks",)).storage_suffix() is None
+    assert Inputs(("tracks",)).storage_suffix() == "tracks"
 
 
 def test_fi_storage_suffix_single_feature() -> None:
     i = Inputs((Result(feature="speed-angvel"),))
     assert i.storage_suffix() == "speed-angvel"
+
+
+def test_fi_storage_suffix_mixed() -> None:
+    i = Inputs(("tracks", Result(feature="sa")))
+    assert i.storage_suffix() == "tracks+sa"
 
 
 def test_fi_storage_suffix_multi() -> None:
@@ -662,7 +633,7 @@ def test_fi_roundtrip_feature() -> None:
 
 
 def test_result_column_direct():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(feature="global-ward", column="cluster")
     assert rc.feature == "global-ward"
@@ -671,14 +642,14 @@ def test_result_column_direct():
 
 
 def test_result_column_with_run_id():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(feature="global-kmeans", column="cluster", run_id="0.1-abc")
     assert rc.run_id == "0.1-abc"
 
 
 def test_result_column_column_only():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(column="tsne_x")
     assert rc.feature == ""
@@ -687,7 +658,7 @@ def test_result_column_column_only():
 
 
 def test_result_column_column_with_run_id():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(column="tsne_x", run_id="0.1-abc")
     assert rc.feature == ""
@@ -696,16 +667,18 @@ def test_result_column_column_with_run_id():
 
 
 def test_result_column_from_result():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
-    rc = ResultColumn(column="tsne_x").from_result(Result(feature="global-tsne", run_id="0.1-abc"))
+    rc = ResultColumn(column="tsne_x").from_result(
+        Result(feature="global-tsne", run_id="0.1-abc")
+    )
     assert rc.feature == "global-tsne"
     assert rc.column == "tsne_x"
     assert rc.run_id == "0.1-abc"
 
 
 def test_result_column_from_result_overwrites_run_id():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(column="tsne_x", run_id="old").from_result(
         Result(feature="global-tsne", run_id="new")
@@ -715,7 +688,7 @@ def test_result_column_from_result_overwrites_run_id():
 
 
 def test_result_column_from_result_use_latest():
-    from mosaic.behavior.feature_library.spec import ResultColumn
+    from mosaic.core.pipeline.types import ResultColumn
 
     rc = ResultColumn(column="cluster").from_result(
         Result(feature="global-ward", run_id="0.1-abc").use_latest()
@@ -729,7 +702,8 @@ def test_result_column_from_result_use_latest():
 
 def test_from_path_npz(tmp_path: Path) -> None:
     import numpy as np
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, NpzLoadSpec
 
     p = tmp_path / "data.npz"
     np.savez(p, templates=np.arange(12, dtype=np.float32).reshape(3, 4))
@@ -742,7 +716,8 @@ def test_from_path_npz(tmp_path: Path) -> None:
 
 def test_from_path_npz_missing_key(tmp_path: Path) -> None:
     import numpy as np
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, NpzLoadSpec
 
     p = tmp_path / "data.npz"
     np.savez(p, other=np.array([1.0]))
@@ -753,7 +728,8 @@ def test_from_path_npz_missing_key(tmp_path: Path) -> None:
 
 def test_from_path_npz_1d_becomes_2d(tmp_path: Path) -> None:
     import numpy as np
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, NpzLoadSpec
 
     p = tmp_path / "vec.npz"
     np.savez(p, vec=np.array([1.0, 2.0, 3.0]))
@@ -765,7 +741,8 @@ def test_from_path_npz_1d_becomes_2d(tmp_path: Path) -> None:
 
 def test_from_path_joblib(tmp_path: Path) -> None:
     import joblib
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, JoblibLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, JoblibLoadSpec
 
     p = tmp_path / "model.joblib"
     joblib.dump({"scaler": "mock_scaler", "model": "mock_model"}, p)
@@ -775,7 +752,8 @@ def test_from_path_joblib(tmp_path: Path) -> None:
 
 def test_from_path_joblib_no_key(tmp_path: Path) -> None:
     import joblib
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, JoblibLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, JoblibLoadSpec
 
     p = tmp_path / "model.joblib"
     bundle = {"a": 1, "b": 2}
@@ -786,7 +764,8 @@ def test_from_path_joblib_no_key(tmp_path: Path) -> None:
 
 def test_from_path_parquet(tmp_path: Path) -> None:
     import pandas as pd
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, ParquetLoadSpec
 
     p = tmp_path / "sizes.parquet"
     df = pd.DataFrame({"cluster": [0, 1], "count": [50, 30]})
@@ -800,7 +779,8 @@ def test_from_path_parquet(tmp_path: Path) -> None:
 
 def test_from_path_parquet_numeric_only(tmp_path: Path) -> None:
     import pandas as pd
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, ParquetLoadSpec
 
     p = tmp_path / "mixed.parquet"
     df = pd.DataFrame({"name": ["a", "b"], "value": [1.0, 2.0], "score": [3, 4]})
@@ -815,7 +795,8 @@ def test_from_path_parquet_numeric_only(tmp_path: Path) -> None:
 
 def test_from_path_parquet_drop_columns(tmp_path: Path) -> None:
     import pandas as pd
-    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    from mosaic.core.pipeline.types import ArtifactSpec, ParquetLoadSpec
 
     p = tmp_path / "drop.parquet"
     df = pd.DataFrame({"a": [1.0], "b": [2.0], "c": [3.0]})

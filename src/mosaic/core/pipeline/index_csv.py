@@ -15,12 +15,9 @@ RowT = TypeVar("RowT", bound="IndexRowBase")
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class IndexRowBase:
-    """Base for all index row dataclasses. Provides run-tracking fields."""
+    """Minimal index row -- just a validated abs_path."""
 
-    run_id: str
     abs_path: Path
-    started_at: str = dataclasses.field(init=False, default_factory=now_iso)
-    finished_at: str = dataclasses.field(init=False, default="")
 
     def __post_init__(self) -> None:
         raw = self.abs_path
@@ -32,6 +29,23 @@ class IndexRowBase:
         if not self.abs_path.exists():
             msg = f"{type(self).__name__}.abs_path does not exist: {self.abs_path}"
             raise FileNotFoundError(msg)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RunIndexRowBase(IndexRowBase):
+    """Index row with run-tracking fields."""
+
+    run_id: str
+    started_at: str = dataclasses.field(init=False, default_factory=now_iso)
+    finished_at: str = dataclasses.field(init=False, default="")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TracksIndexRow(IndexRowBase):
+    """Index row for tracks (no run-tracking)."""
+
+    group: str
+    sequence: str
 
 
 _TYPE_TO_DTYPE: dict[type, str] = {
@@ -86,6 +100,11 @@ class IndexCSV(Generic[RowT]):
         self.schema: dict[str, str] = _infer_schema(row_cls)
         self.dedup_keys: list[str] | None = dedup_keys
 
+    def _assert_run_index(self) -> None:
+        if not issubclass(self.row_cls, RunIndexRowBase):
+            msg = f"{self.row_cls.__name__} is not a run index row type"
+            raise TypeError(msg)
+
     def ensure(self) -> None:
         """Create the CSV with column headers if it doesn't exist."""
         if self.path.exists():
@@ -127,6 +146,7 @@ class IndexCSV(Generic[RowT]):
             raise FileNotFoundError(f"Index not found: {self.path}")
         df = pd.read_csv(self.path, keep_default_na=False)
         if run_id is not None:
+            self._assert_run_index()
             df = df[df["run_id"] == run_id].reset_index(drop=True)
             if df.empty:
                 msg = f"No entries for run_id '{run_id}' in {self.path}"
@@ -140,8 +160,7 @@ class IndexCSV(Generic[RowT]):
         if entries is not None:
             entry_set = set(entries)
             mask = [
-                (row["group"], row["sequence"]) in entry_set
-                for _, row in df.iterrows()
+                (row["group"], row["sequence"]) in entry_set for _, row in df.iterrows()
             ]
             df = df[mask].reset_index(drop=True)
         missing = [p for p in df["abs_path"] if not Path(p).exists()]
@@ -174,8 +193,19 @@ class IndexCSV(Generic[RowT]):
         df = pd.concat([df, df_new], ignore_index=True)
         df.to_csv(self.path, index=False)
 
+    def ordered_entries(
+        self,
+        run_id: str | None = None,
+        filter_ext: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """Return all (group, sequence) pairs in sorted order."""
+        df = self.read(run_id=run_id, filter_ext=filter_ext)
+        df = df.sort_values(["group", "sequence"])
+        return list(zip(df["group"], df["sequence"]))
+
     def list_runs(self) -> pd.DataFrame:
         """Return all rows sorted: finished (newest first), then unfinished (newest first)."""
+        self._assert_run_index()
         df = self.read()
         if df.empty:
             return df
@@ -186,6 +216,7 @@ class IndexCSV(Generic[RowT]):
 
     def latest_run_id(self) -> str:
         """Return the most recent run_id. Prefers finished over in-progress."""
+        self._assert_run_index()
         df = self.list_runs()
         if df.empty:
             raise ValueError(f"No runs found in {self.path}")
@@ -193,6 +224,7 @@ class IndexCSV(Generic[RowT]):
 
     def mark_finished(self, run_id: str) -> None:
         """Set finished_at to now on all rows matching run_id where it is empty."""
+        self._assert_run_index()
         df = pd.read_csv(self.path, keep_default_na=False)
         sel = (df["run_id"] == run_id) & (df["finished_at"] == "")
         if sel.any():

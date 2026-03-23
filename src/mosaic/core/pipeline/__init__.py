@@ -10,8 +10,14 @@ from .index import (
     list_feature_runs,
 )
 from .index_csv import IndexCSV
-from .iteration import resolve_input_scope, yield_sequences
-from .manifest import Manifest, build_manifest, iter_manifest
+from .manifest import (
+    FileSpecs,
+    FilterFactory,
+    Manifest,
+    ManifestEntry,
+    build_manifest,
+    iter_manifest,
+)
 from .models import model_run_root
 from .types import (
     Feature,
@@ -32,14 +38,15 @@ __all__ = [
     "IndexCSV",
     "feature_index_path",
     "feature_run_root",
+    "FileSpecs",
+    "FilterFactory",
     "Manifest",
+    "ManifestEntry",
     "build_manifest",
     "iter_manifest",
-    "resolve_input_scope",
     "latest_feature_run_root",
     "list_feature_runs",
     "model_run_root",
     "trim_feature_output",
     "write_output",
-    "yield_sequences",
 ]

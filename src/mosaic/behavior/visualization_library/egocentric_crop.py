@@ -14,17 +14,10 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.behavior.feature_library.spec import (
-    COLUMNS,
-    Inputs,
-    OutputType,
-    Params,
-    PoseConfig,
-    TrackInput,
-)
-from mosaic.behavior.feature_library.spec import register_feature
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.types import COLUMNS, Inputs, Params, PoseConfig, TrackInput
 
+from ..feature_library.registry import register_feature
 from .helpers import (
     compute_heading_angle,
     create_video_writer,
@@ -87,7 +80,6 @@ class EgocentricCrop:
     name = "egocentric-crop"
     version = "0.1"
     parallelizable = False  # Video I/O is sequential
-    output_type: OutputType = "viz"
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -175,8 +167,14 @@ class EgocentricCrop:
             return pd.DataFrame()
 
         p = self.params
-        group = str(df[COLUMNS.group_col].iloc[0]) if COLUMNS.group_col in df.columns else ""
-        sequence = str(df[COLUMNS.seq_col].iloc[0]) if COLUMNS.seq_col in df.columns else ""
+        group = (
+            str(df[COLUMNS.group_col].iloc[0])
+            if COLUMNS.group_col in df.columns
+            else ""
+        )
+        sequence = (
+            str(df[COLUMNS.seq_col].iloc[0]) if COLUMNS.seq_col in df.columns else ""
+        )
 
         # Resolve video paths (supports multi-video sequences)
         video_paths = self._ds.resolve_media_paths(group, sequence)

@@ -22,7 +22,6 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-from mosaic.behavior.feature_library.spec import Inputs, Result
 from mosaic.core.dataset import _resolve_inputs
 from mosaic.core.helpers import load_labels_for_feature_frames, to_safe_name
 from mosaic.core.pipeline.index import (
@@ -30,6 +29,7 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
     latest_feature_run_root,
 )
+from mosaic.core.pipeline.types import Inputs, Result
 
 from .helpers import XGB_PARAM_PRESETS, to_jsonable, undersample_then_smote
 
@@ -564,7 +564,7 @@ class BehaviorXGBoostModel:
             ds, explicit_inputs, inputset_name, explicit_override=explicit_override
         )
         pair_filter_spec = meta.get("pair_filter")
-        nn_lookup_cache: Dict[str, dict] = {}
+        nn_lookup_cache: dict[tuple[str, str], dict] = {}
         n_inputs = len(inputs)
         per_seq: Dict[str, dict] = {}
         meta_cache: Dict[tuple[str, str], Dict[Path, dict]] = {}
@@ -599,26 +599,26 @@ class BehaviorXGBoostModel:
                     resolved = pth.resolve()
                 except Exception:
                     resolved = pth
-                safe_seq = seq_map.get(resolved) or to_safe_name(pth.stem)
+                group, safe_seq = seq_map.get(resolved, ("", to_safe_name(pth.stem)))
                 # Build pair filter for this sequence if configured
                 df_filter = None
                 if pair_filter_spec:
-                    if safe_seq not in nn_lookup_cache:
-                        from mosaic.behavior.feature_library.helpers import (
-                            _build_nn_lookup,
+                    if (group, safe_seq) not in nn_lookup_cache:
+                        from mosaic.core.pipeline.loading import (
+                            build_nn_lookup,
                         )
 
-                        nn_lookup_cache[safe_seq] = _build_nn_lookup(
-                            ds, safe_seq, pair_filter_spec
+                        nn_lookup_cache[(group, safe_seq)] = build_nn_lookup(
+                            ds, group, safe_seq, pair_filter_spec
                         )
-                    nn_lookup = nn_lookup_cache[safe_seq]
+                    nn_lookup = nn_lookup_cache[(group, safe_seq)]
                     if nn_lookup:
-                        from mosaic.behavior.feature_library.helpers import (
-                            _nn_pair_mask,
+                        from mosaic.core.pipeline.loading import (
+                            nn_pair_mask,
                         )
 
                         def df_filter(df, _nn=nn_lookup):
-                            mask = _nn_pair_mask(df, _nn)
+                            mask = nn_pair_mask(df, _nn)
                             return df.loc[mask].reset_index(drop=True)
 
                 arr, cols, frame_indices, pair_ids = self._load_feature_matrix(
@@ -881,7 +881,7 @@ class BehaviorXGBoostModel:
 
     def _feature_sequence_map(
         self, ds, feature_name: str, run_id: str
-    ) -> Dict[Path, str]:
+    ) -> dict[Path, tuple[str, str]]:
         idx_path = feature_index_path(ds, feature_name)
         if not idx_path.exists():
             return {}
@@ -889,13 +889,15 @@ class BehaviorXGBoostModel:
         df = df[df["run_id"].astype(str) == str(run_id)]
         if df.empty:
             return {}
-        mapping = {}
+        mapping: dict[Path, tuple[str, str]] = {}
         for _, row in df.iterrows():
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
             resolved = ds.resolve_path(abs_path)
-            mapping[resolved] = to_safe_name(str(row.get("sequence", "")))
+            group = str(row.get("group", ""))
+            sequence = to_safe_name(str(row.get("sequence", "")))
+            mapping[resolved] = (group, sequence)
         return mapping
 
     def _feature_metadata_map(

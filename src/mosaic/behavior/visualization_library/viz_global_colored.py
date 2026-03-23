@@ -12,23 +12,12 @@ from pathlib import Path
 from typing import ClassVar
 
 import joblib
-from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.figure import Figure
 
-from mosaic.behavior.feature_library.spec import (
-    GroundTruthLabelsSource,
-    InputRequire,
-    Inputs,
-    NpzLoadSpec,
-    OutputType,
-    Params,
-    ResultColumn,
-)
-from mosaic.behavior.feature_library.spec import register_feature
-from mosaic.behavior.feature_library.helpers import _get_feature_run_root
 from mosaic.core.helpers import (
     detect_label_format,
     expand_labels_to_dense,
@@ -37,6 +26,17 @@ from mosaic.core.helpers import (
     to_safe_name,
 )
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import get_feature_run_root
+from mosaic.core.pipeline.types import (
+    GroundTruthLabelsSource,
+    InputRequire,
+    Inputs,
+    NpzLoadSpec,
+    Params,
+    ResultColumn,
+)
+
+from ..feature_library.registry import register_feature
 
 
 @register_feature
@@ -52,7 +52,6 @@ class VizGlobalColored:
 
     name = "viz-global-colored"
     version = "0.1"
-    output_type: OutputType = "viz"
     parallelizable = False
 
     class Inputs(Inputs[ResultColumn]):
@@ -108,7 +107,7 @@ class VizGlobalColored:
 
     def _resolve_run_root(self, rc: ResultColumn) -> tuple[str, Path]:
         """Resolve (run_id, run_root) for a ResultColumn reference."""
-        return _get_feature_run_root(self._ds, rc.feature, rc.run_id)
+        return get_feature_run_root(self._ds, rc.feature, rc.run_id)
 
     def _load_result_columns(
         self,
@@ -148,7 +147,9 @@ class VizGlobalColored:
         load_columns = list(columns) + ["frame", "sequence", "group"]
         result: dict[str, pd.DataFrame] = {}
         for _, row in idx_df.iterrows():
-            key = make_entry_key(str(row.get("group", "") or ""), str(row.get("sequence", "") or ""))
+            key = make_entry_key(
+                str(row.get("group", "") or ""), str(row.get("sequence", "") or "")
+            )
             if allowed_keys and key not in allowed_keys:
                 continue
             abs_path = str(row.get("abs_path", ""))
@@ -229,7 +230,9 @@ class VizGlobalColored:
                     raise KeyError(f"Key '{key}' not found in {path.name}")
                 return np.asarray(npz[key]).ravel()
 
-    def _load_labels_from_index(self, spec: GroundTruthLabelsSource) -> list[tuple[str, Path]]:
+    def _load_labels_from_index(
+        self, spec: GroundTruthLabelsSource
+    ) -> list[tuple[str, Path]]:
         """
         Load (sequence_safe, path) pairs from labels/<kind>/index.csv.
         Supports optional glob-style filtering via spec.pattern on filename.
@@ -255,7 +258,9 @@ class VizGlobalColored:
             pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
-            key = make_entry_key(str(row.get("group", "")), str(row.get("sequence", "")))
+            key = make_entry_key(
+                str(row.get("group", "")), str(row.get("sequence", ""))
+            )
             if not key:
                 key = to_safe_name(pth.stem)
             entries.append((key, pth))
@@ -304,7 +309,7 @@ class VizGlobalColored:
         y_rc = self.params.y
 
         # Load x and y columns
-        same_source = (x_rc.feature == y_rc.feature and x_rc.run_id == y_rc.run_id)
+        same_source = x_rc.feature == y_rc.feature and x_rc.run_id == y_rc.run_id
         if same_source:
             xy_frames: dict[str, pd.DataFrame] = self._load_result_columns(
                 x_rc, y_rc, allowed_keys=allowed_keys
@@ -317,17 +322,22 @@ class VizGlobalColored:
                 xdf = x_data[key]
                 ydf = y_data[key]
                 shared_columns = [
-                    c for c in ("frame", "sequence", "group")
+                    c
+                    for c in ("frame", "sequence", "group")
                     if c in xdf.columns and c in ydf.columns
                 ]
                 if shared_columns:
-                    y_keep = [y_rc.column] + [c for c in shared_columns if c != y_rc.column]
+                    y_keep = [y_rc.column] + [
+                        c for c in shared_columns if c != y_rc.column
+                    ]
                     merged = xdf.merge(ydf[y_keep], on=shared_columns, how="inner")
                 elif len(xdf) == len(ydf):
-                    merged = pd.DataFrame({
-                        x_rc.column: xdf[x_rc.column].values,
-                        y_rc.column: ydf[y_rc.column].values,
-                    })
+                    merged = pd.DataFrame(
+                        {
+                            x_rc.column: xdf[x_rc.column].values,
+                            y_rc.column: ydf[y_rc.column].values,
+                        }
+                    )
                 else:
                     msg = f"cannot align x and y for key={key}: no shared columns and lengths differ ({len(xdf)} vs {len(ydf)})"
                     raise RuntimeError(msg)
@@ -359,7 +369,9 @@ class VizGlobalColored:
                 for label_key, path in entries:
                     lab_map[label_key] = self._load_label_file(path, labels_spec.load)
             elif isinstance(labels_spec, ResultColumn):
-                label_data = self._load_result_columns(labels_spec, allowed_keys=allowed_keys)
+                label_data = self._load_result_columns(
+                    labels_spec, allowed_keys=allowed_keys
+                )
                 for label_key, ldf in label_data.items():
                     # Align labels to coord frames if possible
                     coord_df = xy_frames.get(label_key)
@@ -370,7 +382,8 @@ class VizGlobalColored:
                     elif coord_df is not None:
                         # Different lengths: try merging on shared columns
                         shared_columns = [
-                            c for c in ("frame", "sequence", "group", "id1", "id2", "id")
+                            c
+                            for c in ("frame", "sequence", "group", "id1", "id2", "id")
                             if c in coord_df.columns and c in ldf.columns
                         ]
                         if shared_columns:
@@ -382,7 +395,11 @@ class VizGlobalColored:
                                 on=shared_columns,
                                 how="left",
                             )
-                            vals = merged[labels_spec.column].fillna(missing_value).to_numpy()
+                            vals = (
+                                merged[labels_spec.column]
+                                .fillna(missing_value)
+                                .to_numpy()
+                            )
                         else:
                             vals = ldf[labels_spec.column].to_numpy()
                     else:
@@ -453,7 +470,9 @@ class VizGlobalColored:
             Y_plot = Y_all
             L_plot = L_all
 
-        color_map = self._prepare_color_map(L_all if labels_spec is not None else L_plot)
+        color_map = self._prepare_color_map(
+            L_all if labels_spec is not None else L_plot
+        )
         colors = np.array([color_map.get(val, (0.7, 0.7, 0.7)) for val in L_plot])
 
         sns.set_style("white")

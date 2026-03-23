@@ -8,17 +8,18 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .helpers import ensure_columns
-from .spec import (
+from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
-from .spec import (
+from mosaic.core.pipeline.types import (
     Inputs,
     Params,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:

@@ -8,16 +8,19 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .helpers import ego_rotate, wrap_angle
-from .spec import COLUMNS as C
-from .spec import (
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
     Inputs,
     Params,
-    SamplingConfig,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .helpers import ego_rotate, wrap_angle
+from .registry import register_feature
+from .types import SamplingConfig
 
 
 @final

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -24,7 +24,7 @@ def feature_index_path(ds: Dataset, feature_name: str) -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class FeatureIndexRow(IndexRowBase):
+class FeatureIndexRow(RunIndexRowBase):
     """Typed row for the feature index CSV."""
 
     feature: str

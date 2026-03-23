@@ -13,7 +13,7 @@ from mosaic.behavior.feature_library.ffgroups import (
     _calculate_gmembership_numba,
     _get_events_info,
 )
-from mosaic.behavior.feature_library.spec import COLUMNS as C
+from mosaic.core.pipeline.types import COLUMNS as C
 
 
 def _make_track_data(
@@ -55,8 +55,8 @@ def _make_track_data(
     if inf_fraction > 0:
         n_inf = int(len(df) * inf_fraction)
         inf_idx = rng.choice(len(df), size=n_inf, replace=False)
-        df.loc[inf_idx[:n_inf // 2], "X"] = np.inf
-        df.loc[inf_idx[n_inf // 2:], "Y"] = -np.inf
+        df.loc[inf_idx[: n_inf // 2], "X"] = np.inf
+        df.loc[inf_idx[n_inf // 2 :], "Y"] = -np.inf
 
     # Introduce duplicate (frame, id) rows
     if duplicate_fraction > 0:
@@ -118,9 +118,7 @@ def _apply_reference(feature: FFGroups, df: pd.DataFrame) -> pd.DataFrame:
         coords = coords.dropna(subset=[id_col, x_col, y_col])
         if coords.empty:
             continue
-        coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(
-            id_col
-        )
+        coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(id_col)
         ids_present = coords.index.to_numpy()
         xy = coords[[x_col, y_col]].to_numpy(dtype=np.float32, copy=False)
 

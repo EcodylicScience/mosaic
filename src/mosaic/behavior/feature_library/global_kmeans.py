@@ -17,15 +17,10 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.pipeline.loading import (
-    _nn_pair_mask,  # pyright: ignore[reportPrivateUsage]
-)
-
-from .helpers import ensure_columns, nn_lookup_for
-from .spec import (
+from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
-from .spec import (
+from mosaic.core.pipeline.types import (
     GlobalModelParams,
     InputRequire,
     Inputs,
@@ -34,12 +29,13 @@ from .spec import (
     NNResult,
     NpzArtifact,
     NpzLoadSpec,
-    OutputType,
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
-    register_feature,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 class KMeansModelBundle(TypedDict):
@@ -112,7 +108,6 @@ class GlobalKMeansClustering:
 
     name: str = "global-kmeans"
     version: str = "0.4"
-    output_type: OutputType = "global"
     parallelizable = False
     scope_dependent = False
 
@@ -160,7 +155,6 @@ class GlobalKMeansClustering:
         self._feature_columns: list[str] | None = None
         self._artifact_labels: np.ndarray | None = None
         self._templates: np.ndarray | None = None
-        self._nn_index: pd.DataFrame | None = None
 
     # --- Feature protocol ---
 
@@ -174,11 +168,6 @@ class GlobalKMeansClustering:
         self._feature_columns = None
         self._artifact_labels = None
         self._templates = None
-        self._nn_index = None
-
-        # Load pair filter index
-        if dependency_indices and "pair_filter" in dependency_indices:
-            self._nn_index = dependency_indices["pair_filter"]
 
         # Check for cached model
         cached_path = run_root / "model.joblib"
@@ -235,13 +224,6 @@ class GlobalKMeansClustering:
             raise RuntimeError(msg)
 
         ensure_columns(df, [C.frame_col] + self._feature_columns)
-
-        # Apply pair filter if configured
-        nn_lookup = nn_lookup_for(self._nn_index, df)
-        if nn_lookup is not None:
-            nn_mask = _nn_pair_mask(df, nn_lookup)
-            keep = np.flatnonzero(nn_mask).tolist()
-            df = df.iloc[keep].reset_index(drop=True)
 
         arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 

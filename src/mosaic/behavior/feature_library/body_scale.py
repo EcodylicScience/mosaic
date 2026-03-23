@@ -14,9 +14,12 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist
 
-from .helpers import _pose_column_pairs, ensure_columns
-from .spec import COLUMNS as C
-from .spec import Inputs, Params, TrackInput, register_feature
+from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.types import Inputs, Params, TrackInput
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 def _expect_single(df: pd.DataFrame, col: str) -> str:
@@ -78,7 +81,7 @@ class BodyScaleFeature:
         if df.empty:
             return pd.DataFrame()
         ensure_columns(df, [C.frame_col, C.id_col])
-        pose_pairs = _pose_column_pairs(df.columns)
+        pose_pairs = pose_column_pairs(df.columns)
         if not pose_pairs:
             return pd.DataFrame()
         group = _expect_single(df, C.group_col)

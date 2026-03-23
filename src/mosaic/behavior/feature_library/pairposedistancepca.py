@@ -12,18 +12,20 @@ import pandas as pd
 from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
-from .helpers import clean_animal_track, ensure_columns
-from .spec import COLUMNS as C
-from .spec import (
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
     Inputs,
-    InterpolationConfig,
-    OutputType,
     Params,
     PoseConfig,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .helpers import clean_animal_track, ensure_columns
+from .registry import register_feature
+from .types import InterpolationConfig
 
 
 class PairPoseDistancePCABundle(TypedDict):
@@ -55,7 +57,6 @@ class PairPoseDistancePCA:
     version = "0.1"
     parallelizable = True
     scope_dependent = True
-    output_type: OutputType = "per_frame"
 
     class Inputs(Inputs[TrackInput]):
         pass

@@ -4,62 +4,15 @@ import dataclasses
 import datetime
 import hashlib
 import json
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from mosaic.core.helpers import make_entry_key
 
 import numpy as np
 from pydantic import BaseModel
 
+from mosaic.core.helpers import make_entry_key
+
 # --- Pipeline data types ---
-
-
-@dataclass
-class ChunkedPayload:
-    """Feature output: pre-computed 2D array, written in row-chunks."""
-
-    parquet_data: np.ndarray
-    columns: list[str]
-    sequence: str = ""
-    group: str | None = None
-    chunk_size: int = 10000
-
-
-@dataclass
-class StreamPayload:
-    """Feature output: lazy chunk iterator, written as streaming parquet."""
-
-    parquet_chunk_iter: Iterator[tuple[int, np.ndarray]]
-    columns: list[str]
-    sequence: str = ""
-    group: str | None = None
-    pair_ids: tuple[int, int] | None = None
-    frame_indices: np.ndarray | None = None
-
-
-@dataclass
-class DataPayload:
-    """Feature output: raw data array with explicit column names."""
-
-    data: np.ndarray
-    columns: list[str]
-    sequence: str | None = None
-    group: str | None = None
-    frame_indices: np.ndarray | None = None
-    pair_ids_per_row: np.ndarray | None = None
-
-
-@dataclass
-class ResolvedInput:
-    """A single resolved input within a Scope."""
-
-    kind: str
-    feature: str | None = None
-    run_id: str | None = None
-    path_map: dict[tuple[str, str], Path] = field(default_factory=dict)
-    columns: list[str] | None = None
 
 
 @dataclass

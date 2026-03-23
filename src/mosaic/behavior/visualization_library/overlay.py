@@ -4,22 +4,26 @@ This module contains functions for building and rendering overlays:
 - prepare_overlay: Precompute per-frame overlay structures
 - draw_frame: Render pose, bbox, labels onto a single frame
 """
-from __future__ import annotations
-from typing import Dict, Tuple, Any, Optional, Iterable
-import pandas as pd
-import numpy as np
-import cv2
 
-from mosaic.behavior.feature_library.helpers import _pose_column_pairs
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, Optional, Tuple
+
+import cv2
+import numpy as np
+import pandas as pd
+
+from mosaic.core.pipeline.loading import pose_column_pairs
+
 from .helpers import (
-    _extract_pose_points,
-    _compute_bbox,
-    _extract_centroid,
     _color_for_id,
     _color_for_label,
+    _compute_bbox,
+    _extract_centroid,
+    _extract_pose_points,
+    _format_label_text,
     _lookup_label_series,
     _scalar_from_series,
-    _format_label_text,
 )
 
 
@@ -45,7 +49,9 @@ def _pick_gt_entry(entries: list[dict]) -> Optional[dict]:
     return scored[0][1]
 
 
-def _build_gt_maps(gt_df: pd.DataFrame) -> tuple[dict[int, dict], dict[int, dict[tuple[int, int], dict]]]:
+def _build_gt_maps(
+    gt_df: pd.DataFrame,
+) -> tuple[dict[int, dict], dict[int, dict[tuple[int, int], dict]]]:
     """
     Build GT lookup maps:
       - global_map[frame] -> {"label_id", "label_name"}
@@ -75,7 +81,12 @@ def _build_gt_maps(gt_df: pd.DataFrame) -> tuple[dict[int, dict], dict[int, dict
         if has_pairs:
             id1 = row.get("id1")
             id2 = row.get("id2")
-            if id1 is not None and id2 is not None and not pd.isna(id1) and not pd.isna(id2):
+            if (
+                id1 is not None
+                and id2 is not None
+                and not pd.isna(id1)
+                and not pd.isna(id2)
+            ):
                 try:
                     a = int(id1)
                     b = int(id2)
@@ -84,7 +95,11 @@ def _build_gt_maps(gt_df: pd.DataFrame) -> tuple[dict[int, dict], dict[int, dict
                 pair = tuple(sorted((a, b)))
                 frame_pairs = pair_map.setdefault(frame, {})
                 prev = frame_pairs.get(pair)
-                frame_pairs[pair] = _pick_gt_entry([prev, {**entry, "id1": a, "id2": b}] if prev else [{**entry, "id1": a, "id2": b}])
+                frame_pairs[pair] = _pick_gt_entry(
+                    [prev, {**entry, "id1": a, "id2": b}]
+                    if prev
+                    else [{**entry, "id1": a, "id2": b}]
+                )
                 continue
 
         prev_g = global_map.get(frame)
@@ -93,7 +108,9 @@ def _build_gt_maps(gt_df: pd.DataFrame) -> tuple[dict[int, dict], dict[int, dict
     return global_map, pair_map
 
 
-def _collect_gt_for_id(frame_pair_map: dict[tuple[int, int], dict], id_val: Any) -> Optional[dict]:
+def _collect_gt_for_id(
+    frame_pair_map: dict[tuple[int, int], dict], id_val: Any
+) -> Optional[dict]:
     """
     Resolve GT for one individual at a frame from pair-aware GT rows.
     """
@@ -187,12 +204,14 @@ def _anchor_for_id_info(info: dict[str, Any]) -> Optional[tuple[float, float]]:
     return None
 
 
-def prepare_overlay(tracks_df: pd.DataFrame,
-                    labels: dict,
-                    gt_df: Optional[pd.DataFrame] = None,
-                    kinds: Iterable[str] = ("pose", "bbox"),
-                    color_by: Optional[str] = None,
-                    hide_unlabeled: bool = False) -> dict:
+def prepare_overlay(
+    tracks_df: pd.DataFrame,
+    labels: dict,
+    gt_df: Optional[pd.DataFrame] = None,
+    kinds: Iterable[str] = ("pose", "bbox"),
+    color_by: Optional[str] = None,
+    hide_unlabeled: bool = False,
+) -> dict:
     """
     Precompute lightweight per-frame overlay structures (pose keypoints, bounding boxes, labels).
 
@@ -217,13 +236,15 @@ def prepare_overlay(tracks_df: pd.DataFrame,
     if tracks_df.empty:
         raise ValueError("tracks_df is empty; cannot build overlay.")
     kinds = tuple(kinds)
-    pose_pairs = _pose_column_pairs(tracks_df.columns)
+    pose_pairs = pose_column_pairs(tracks_df.columns)
 
     # Precompute label sources for quick lookup
     per_id_labels = labels.get("per_id", {})
     per_pair_labels = labels.get("per_pair", {})
 
-    gt_global_map, gt_pair_map = _build_gt_maps(gt_df if gt_df is not None else pd.DataFrame())
+    gt_global_map, gt_pair_map = _build_gt_maps(
+        gt_df if gt_df is not None else pd.DataFrame()
+    )
 
     per_frame: dict[int, dict[str, Any]] = {}
     id_colors: dict[Any, Tuple[int, int, int]] = {}
@@ -231,7 +252,9 @@ def prepare_overlay(tracks_df: pd.DataFrame,
     color_mode = (color_by or "").strip().lower()
     color_feature = None
     if color_mode and color_mode != "gt":
-        feature_names = list(dict.fromkeys([*per_id_labels.keys(), *per_pair_labels.keys()]))
+        feature_names = list(
+            dict.fromkeys([*per_id_labels.keys(), *per_pair_labels.keys()])
+        )
         for feat in feature_names:
             if feat.lower() == color_mode:
                 color_feature = feat
@@ -313,20 +336,30 @@ def prepare_overlay(tracks_df: pd.DataFrame,
                     gt_entry = global_labels
                 if gt_entry is not None:
                     gt_val = gt_entry.get("label_name") or gt_entry.get("label_id")
-                    if gt_val is not None and not (isinstance(gt_val, float) and np.isnan(gt_val)):
+                    if gt_val is not None and not (
+                        isinstance(gt_val, float) and np.isnan(gt_val)
+                    ):
                         labels_for_id["gt"] = gt_val
-            feature_names = list(dict.fromkeys([*per_id_labels.keys(), *per_pair_labels.keys()]))
+            feature_names = list(
+                dict.fromkeys([*per_id_labels.keys(), *per_pair_labels.keys()])
+            )
             for feat_name in feature_names:
                 per_id_map = per_id_labels.get(feat_name, {})
-                series = _lookup_label_series(per_id_map, id_val) if per_id_map else None
+                series = (
+                    _lookup_label_series(per_id_map, id_val) if per_id_map else None
+                )
                 if series is not None:
                     val = _scalar_from_series(series.get(frame_int))
-                    if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                    if val is not None and not (
+                        isinstance(val, float) and np.isnan(val)
+                    ):
                         labels_for_id[feat_name] = val
                         continue
                 per_pair_map = per_pair_labels.get(feat_name, {})
                 if per_pair_map:
-                    pair_val = _collect_pair_label_for_id(per_pair_map, id_val, frame_int)
+                    pair_val = _collect_pair_label_for_id(
+                        per_pair_map, id_val, frame_int
+                    )
                     if pair_val is not None:
                         labels_for_id[feat_name] = pair_val
             if labels_for_id:
@@ -380,19 +413,21 @@ def prepare_overlay(tracks_df: pd.DataFrame,
     }
 
 
-def draw_frame(image: np.ndarray,
-               frame_overlay: dict,
-               id_colors: dict,
-               show_labels: bool = True,
-               point_radius: int = 8,
-               bbox_thickness: int = 2,
-               show_individual_bboxes: bool = True,
-               scale: Tuple[float, float] = (1.0, 1.0),
-               color_feature: Optional[str] = None,
-               color_mode: Optional[str] = None,
-               pair_box_feature: Optional[str] = None,
-               pair_box_behaviors: Optional[Iterable[Any]] = None,
-               hide_individual_bboxes_for_pair: bool = False) -> np.ndarray:
+def draw_frame(
+    image: np.ndarray,
+    frame_overlay: dict,
+    id_colors: dict,
+    show_labels: bool = True,
+    point_radius: int = 8,
+    bbox_thickness: int = 2,
+    show_individual_bboxes: bool = True,
+    scale: Tuple[float, float] = (1.0, 1.0),
+    color_feature: Optional[str] = None,
+    color_mode: Optional[str] = None,
+    pair_box_feature: Optional[str] = None,
+    pair_box_behaviors: Optional[Iterable[Any]] = None,
+    hide_individual_bboxes_for_pair: bool = False,
+) -> np.ndarray:
     """
     Draw pose points, bounding boxes, and labels for a single frame.
 
@@ -421,7 +456,9 @@ def draw_frame(image: np.ndarray,
             continue
         info = ids.get(key) or {}
         if "color" in style:
-            info["color"] = _coerce_color(style.get("color"), info.get("color") or id_colors.get(key, (0, 255, 0)))
+            info["color"] = _coerce_color(
+                style.get("color"), info.get("color") or id_colors.get(key, (0, 255, 0))
+            )
         lbl = style.get("label")
         if lbl is not None:
             label_key = style.get("label_key", "overlay")
@@ -432,14 +469,19 @@ def draw_frame(image: np.ndarray,
     pair_boxes = []
     ids_in_pair_boxes = set()
     pair_labels_all = frame_overlay.get("pair_labels") or {}
-    behavior_set = {str(v).strip().lower() for v in (pair_box_behaviors or []) if str(v).strip()}
+    behavior_set = {
+        str(v).strip().lower() for v in (pair_box_behaviors or []) if str(v).strip()
+    }
 
     selected_pair_feature = pair_box_feature
     if selected_pair_feature is None and color_mode == "gt" and "gt" in pair_labels_all:
         selected_pair_feature = "gt"
     if selected_pair_feature:
         for feat_name in pair_labels_all.keys():
-            if str(feat_name).strip().lower() == str(selected_pair_feature).strip().lower():
+            if (
+                str(feat_name).strip().lower()
+                == str(selected_pair_feature).strip().lower()
+            ):
                 selected_pair_feature = feat_name
                 break
 
@@ -483,14 +525,16 @@ def draw_frame(image: np.ndarray,
             src = key_a
             dst = key_b
             canon = _canon_pair(src, dst)
-            grouped.setdefault(canon, []).append({
-                "src": src,
-                "dst": dst,
-                "label": val,
-                "label_norm": lbl_norm,
-                "bbox": union,
-                "color": _color_for_label(val),
-            })
+            grouped.setdefault(canon, []).append(
+                {
+                    "src": src,
+                    "dst": dst,
+                    "label": val,
+                    "label_norm": lbl_norm,
+                    "bbox": union,
+                    "color": _color_for_label(val),
+                }
+            )
             ids_in_pair_boxes.update({key_a, key_b})
 
         for _, entries in grouped.items():
@@ -508,25 +552,31 @@ def draw_frame(image: np.ndarray,
             label_norms = {e["label_norm"] for e in collapsed}
             if len(label_norms) == 1:
                 e = collapsed[0]
-                pair_boxes.append({
-                    "pair": (e["src"], e["dst"]),
-                    "label": e["label"],
-                    "bbox": e["bbox"],
-                    "color": e["color"],
-                    "offset_px": 0,
-                })
+                pair_boxes.append(
+                    {
+                        "pair": (e["src"], e["dst"]),
+                        "label": e["label"],
+                        "bbox": e["bbox"],
+                        "color": e["color"],
+                        "offset_px": 0,
+                    }
+                )
                 continue
 
             # Asymmetric case: keep directional entries and offset them for visibility.
-            collapsed.sort(key=lambda e: (str(e["src"]), str(e["dst"]), str(e["label"])))
+            collapsed.sort(
+                key=lambda e: (str(e["src"]), str(e["dst"]), str(e["label"]))
+            )
             for idx, e in enumerate(collapsed):
-                pair_boxes.append({
-                    "pair": (e["src"], e["dst"]),
-                    "label": f"{e['src']}->{e['dst']}:{_format_label_text(e['label'])}",
-                    "bbox": e["bbox"],
-                    "color": e["color"],
-                    "offset_px": idx * 3,
-                })
+                pair_boxes.append(
+                    {
+                        "pair": (e["src"], e["dst"]),
+                        "label": f"{e['src']}->{e['dst']}:{_format_label_text(e['label'])}",
+                        "bbox": e["bbox"],
+                        "color": e["color"],
+                        "offset_px": idx * 3,
+                    }
+                )
 
     for id_val, info in ids.items():
         base_color = info.get("color")
@@ -556,12 +606,16 @@ def draw_frame(image: np.ndarray,
                 dominant = labels_map.get("gt")
                 if dominant is None:
                     global_label = frame_overlay.get("global_labels", {})
-                    dominant = global_label.get("label_name") or global_label.get("label_id")
+                    dominant = global_label.get("label_name") or global_label.get(
+                        "label_id"
+                    )
             label_text = None
             if dominant is not None:
                 label_text = _format_label_text(dominant)
             elif labels_map:
-                label_text = " | ".join(f"{k}:{_format_label_text(v)}" for k, v in labels_map.items())
+                label_text = " | ".join(
+                    f"{k}:{_format_label_text(v)}" for k, v in labels_map.items()
+                )
             if not label_text:
                 continue
             anchor = None
@@ -572,7 +626,16 @@ def draw_frame(image: np.ndarray,
                 anchor = info.get("centroid")
             if anchor and all(np.isfinite(anchor)):
                 pos = (int(anchor[0] * sx), int(anchor[1] * sy) - 4)
-                cv2.putText(canvas, str(label_text), pos, cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                cv2.putText(
+                    canvas,
+                    str(label_text),
+                    pos,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
 
     # Draw pair-level boxes after per-id overlays so they stay visible.
     for pb in pair_boxes:
@@ -586,7 +649,16 @@ def draw_frame(image: np.ndarray,
             lbl = _format_label_text(pb["label"])
             if lbl:
                 pos = (pt1[0], max(12, pt1[1] - 6))
-                cv2.putText(canvas, str(lbl), pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+                cv2.putText(
+                    canvas,
+                    str(lbl),
+                    pos,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
 
     # Draw group-level outlines (union over member ids).
     for item in render_layers.get("group_outlines", []) or []:
@@ -600,7 +672,11 @@ def draw_frame(image: np.ndarray,
                 continue
             info = ids.get(key) or {}
             bbox = info.get("bbox")
-            if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and all(np.isfinite(bbox)):
+            if (
+                isinstance(bbox, (list, tuple))
+                and len(bbox) == 4
+                and all(np.isfinite(bbox))
+            ):
                 rects.append(tuple(float(v) for v in bbox))
                 continue
             anchor = _anchor_for_id_info(info)
@@ -615,7 +691,9 @@ def draw_frame(image: np.ndarray,
         x2 = max(r[2] for r in rects)
         y2 = max(r[3] for r in rects)
 
-        color = _coerce_color(item.get("color"), _color_for_label(item.get("group_size", len(members))))
+        color = _coerce_color(
+            item.get("color"), _color_for_label(item.get("group_size", len(members)))
+        )
         thickness = int(item.get("thickness", max(1, bbox_thickness + 1)))
         pt1 = (int(x1 * sx), int(y1 * sy))
         pt2 = (int(x2 * sx), int(y2 * sy))
@@ -624,7 +702,16 @@ def draw_frame(image: np.ndarray,
             lbl = _format_label_text(item.get("label"))
             if lbl:
                 pos = (pt1[0], max(12, pt1[1] - 6))
-                cv2.putText(canvas, str(lbl), pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+                cv2.putText(
+                    canvas,
+                    str(lbl),
+                    pos,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
 
     # Draw optional line edges between ids.
     for edge in render_layers.get("edges", []) or []:
@@ -713,7 +800,14 @@ def draw_frame(image: np.ndarray,
             tmp = canvas.copy()
             cv2.fillPoly(tmp, [arr], color)
             canvas = cv2.addWeighted(tmp, alpha, canvas, 1.0 - alpha, 0.0)
-        cv2.polylines(canvas, [arr], bool(poly.get("closed", True)), color, thickness, lineType=cv2.LINE_AA)
+        cv2.polylines(
+            canvas,
+            [arr],
+            bool(poly.get("closed", True)),
+            color,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
 
     # Draw optional free text labels.
     for txt in render_layers.get("texts", []) or []:
@@ -745,7 +839,16 @@ def draw_frame(image: np.ndarray,
     if global_labels and color_mode != "gt":
         text = ", ".join(f"{k}:{v}" for k, v in global_labels.items() if v is not None)
         if text:
-            cv2.putText(canvas, text, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                canvas,
+                text,
+                (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
     return canvas
 
 

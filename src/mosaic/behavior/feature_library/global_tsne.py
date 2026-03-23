@@ -17,9 +17,8 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
-from .helpers import ensure_columns
-from .spec import (
-    DictModel,
+from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.pipeline.types import (
     GlobalModelParams,
     InputRequire,
     Inputs,
@@ -27,10 +26,11 @@ from .spec import (
     JoblibLoadSpec,
     NpzArtifact,
     NpzLoadSpec,
-    OutputType,
     Result,
-    register_feature,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 class _FaissKNNIndex:
@@ -107,7 +107,7 @@ class TSNECoordsArtifact(NpzArtifact):
     load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
 
 
-class TSNEFitConfig(DictModel):
+class TSNEFitConfig(StrictModel):
     """openTSNE fitting parameters.
 
     Attributes:
@@ -127,7 +127,7 @@ class TSNEFitConfig(DictModel):
     momentum: float = Field(default=0.8, ge=0)
 
 
-class TSNEMapConfig(DictModel):
+class TSNEMapConfig(StrictModel):
     """Parameters for mapping new points into the fitted embedding.
 
     Attributes:
@@ -173,7 +173,6 @@ class GlobalTSNE:
 
     name: str = "global-tsne"
     version: str = "0.4"
-    output_type: OutputType = "global"
     parallelizable = False
     scope_dependent = False
 

@@ -14,7 +14,7 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key, to_safe_name
 
 from ._utils import hash_params, json_ready
-from .index_csv import IndexCSV, IndexRowBase
+from .index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -32,7 +32,7 @@ def frames_index_path(ds: Dataset, method: str) -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class FramesIndexRow(IndexRowBase):
+class FramesIndexRow(RunIndexRowBase):
     """Typed row for the frames index CSV."""
 
     method: str

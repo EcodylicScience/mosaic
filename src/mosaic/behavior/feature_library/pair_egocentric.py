@@ -15,18 +15,20 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .helpers import clean_animal_track, ensure_columns, smooth_1d, unwrap_diff
-from .spec import COLUMNS as C
-from .spec import (
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
     Inputs,
-    InterpolationConfig,
     Params,
     PoseConfig,
-    SamplingConfig,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .helpers import clean_animal_track, ensure_columns, smooth_1d, unwrap_diff
+from .registry import register_feature
+from .types import InterpolationConfig, SamplingConfig
 
 
 @final

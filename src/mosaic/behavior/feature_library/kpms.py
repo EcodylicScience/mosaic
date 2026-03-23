@@ -20,16 +20,16 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
-
-from .spec import (
+from mosaic.core.pipeline.types import (
     Inputs,
     JoblibArtifact,
     JoblibLoadSpec,
     Params,
     PoseConfig,
     TrackInput,
-    register_feature,
 )
+
+from .registry import register_feature
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -67,7 +67,10 @@ def _tracks_df_to_kpms_arrays(
     pose_prefix_x: str = "poseX",
     pose_prefix_y: str = "poseY",
     pose_confidence_prefix: str = "poseP",
-) -> tuple[np.ndarray[tuple[int, int, int], np.dtype[np.float32]], np.ndarray[tuple[int, int], np.dtype[np.float32]]]:
+) -> tuple[
+    np.ndarray[tuple[int, int, int], np.dtype[np.float32]],
+    np.ndarray[tuple[int, int], np.dtype[np.float32]],
+]:
     """Convert a single-sequence track DataFrame to keypoint-moseq arrays.
 
     Returns
@@ -102,9 +105,7 @@ def _tracks_df_to_kpms_arrays(
     coords[:, :, 0] = x_vals
     coords[:, :, 1] = y_vals
 
-    conf_cols = [
-        f"{pose_confidence_prefix}{c[len(pose_prefix_x):]}" for c in x_cols
-    ]
+    conf_cols = [f"{pose_confidence_prefix}{c[len(pose_prefix_x) :]}" for c in x_cols]
     confidences: np.ndarray[tuple[int, int], np.dtype[np.float32]]
     if all(c in df.columns for c in conf_cols):
         confidences = np.asarray(df[conf_cols], dtype=np.float32)
@@ -164,9 +165,7 @@ class KpmsFeature:
         pass
 
     class Params(Params):
-        model: KpmsModelArtifact | None = Field(
-            default_factory=KpmsModelArtifact
-        )
+        model: KpmsModelArtifact | None = Field(default_factory=KpmsModelArtifact)
         kpms_python: str | None = None
         pose: PoseConfig = Field(default_factory=PoseConfig)
         anterior_bodyparts: list[str] = Field(min_length=1)
@@ -265,7 +264,15 @@ class KpmsFeature:
         ReadyResponse.model_validate_json(line)
         log.info("[kpms] Server ready.")
 
-    def _send(self, request: AddTrackRequest | FitRequest | LoadModelRequest | ApplyRequest | SaveModelRequest | ShutdownRequest) -> None:
+    def _send(
+        self,
+        request: AddTrackRequest
+        | FitRequest
+        | LoadModelRequest
+        | ApplyRequest
+        | SaveModelRequest
+        | ShutdownRequest,
+    ) -> None:
         if self._conn is None:
             msg = "[kpms] Server not started"
             raise RuntimeError(msg)
@@ -378,9 +385,7 @@ class KpmsFeature:
         cached_path = run_root / "kpms_model.joblib"
         if cached_path.exists():
             self._start_server()
-            self._send(
-                LoadModelRequest(command="load_model", path=str(cached_path))
-            )
+            self._send(LoadModelRequest(command="load_model", path=str(cached_path)))
             self._receive_ok()
             return True
 
@@ -397,9 +402,7 @@ class KpmsFeature:
 
         return False
 
-    def fit(
-        self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]
-    ) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         self._start_server()
 
         pose = self.params.pose
@@ -417,9 +420,7 @@ class KpmsFeature:
 
             # Auto-detect bodypart names from first track if not configured
             if bodypart_names is None:
-                x_cols = [
-                    c for c in df.columns if c.startswith(pose.x_prefix)
-                ]
+                x_cols = [c for c in df.columns if c.startswith(pose.x_prefix)]
                 bodypart_names = [f"kp{i}" for i in range(len(x_cols))]
 
         if bodypart_names is None:
@@ -465,9 +466,7 @@ class KpmsFeature:
         import pandas as pd
 
         group = str(df["group"].iloc[0]) if "group" in df.columns else ""
-        sequence = (
-            str(df["sequence"].iloc[0]) if "sequence" in df.columns else ""
-        )
+        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns else ""
         key = make_entry_key(group, sequence)
 
         results: list[pd.DataFrame] = []
@@ -499,7 +498,9 @@ class KpmsFeature:
 
         return pd.concat(results, ignore_index=True)
 
-    def _apply_one(self, key: str, df: pd.DataFrame) -> np.ndarray[tuple[int], np.dtype[np.int32]]:
+    def _apply_one(
+        self, key: str, df: pd.DataFrame
+    ) -> np.ndarray[tuple[int], np.dtype[np.int32]]:
         pose = self.params.pose
         coords, conf = _tracks_df_to_kpms_arrays(
             df, pose.x_prefix, pose.y_prefix, pose.confidence_prefix
@@ -518,9 +519,7 @@ class KpmsFeature:
     def save_state(self, run_root: Path) -> None:
         run_root.mkdir(parents=True, exist_ok=True)
         model_path = run_root / "kpms_model.joblib"
-        self._send(
-            SaveModelRequest(command="save_model", path=str(model_path))
-        )
+        self._send(SaveModelRequest(command="save_model", path=str(model_path)))
         self._receive_ok()
         self._shutdown_server()
 

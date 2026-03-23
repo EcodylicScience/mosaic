@@ -15,26 +15,25 @@ import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
-from scipy.cluster.hierarchy import fcluster, linkage as _sch_linkage
+from scipy.cluster.hierarchy import fcluster
+from scipy.cluster.hierarchy import linkage as _sch_linkage
 from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.pipeline.loading import (
-    _nn_pair_mask,  # pyright: ignore[reportPrivateUsage]
-)
-
-from .helpers import ensure_columns, nn_lookup_for
-from .spec import (
+from mosaic.core.pipeline.types import (
     COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
     GlobalModelParams,
     InputRequire,
     Inputs,
     JoblibArtifact,
     JoblibLoadSpec,
     NNResult,
-    OutputType,
     Result,
-    register_feature,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 class WardModelBundle(TypedDict):
@@ -62,7 +61,6 @@ class GlobalWardClustering:
 
     name = "global-ward"
     version = "0.3"
-    output_type: OutputType = "global"
     parallelizable = False
     scope_dependent = False
 
@@ -82,9 +80,7 @@ class GlobalWardClustering:
             pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
-        model: WardModelArtifact | None = Field(
-            default_factory=WardModelArtifact
-        )
+        model: WardModelArtifact | None = Field(default_factory=WardModelArtifact)
         n_clusters: int = Field(default=20, ge=1)
         method: str = "ward"
         pair_filter: NNResult | None = None
@@ -102,7 +98,6 @@ class GlobalWardClustering:
         self._assign_nn: NearestNeighbors | None = None
         self._feature_columns: list[str] | None = None
         self._templates: np.ndarray | None = None
-        self._nn_index: pd.DataFrame | None = None
 
     # --- Feature protocol ---
 
@@ -117,11 +112,6 @@ class GlobalWardClustering:
         self._assign_nn = None
         self._feature_columns = None
         self._templates = None
-        self._nn_index = None
-
-        # Load pair filter index
-        if dependency_indices and "pair_filter" in dependency_indices:
-            self._nn_index = dependency_indices["pair_filter"]
 
         # Branch 1: cached model in run_root
         cached_path = run_root / "model.joblib"
@@ -174,10 +164,9 @@ class GlobalWardClustering:
 
         labels = fcluster(self._linkage, self.params.n_clusters, criterion="maxclust")
         unique_ids = np.unique(labels)
-        centroids = np.vstack([
-            templates[labels == cid].mean(axis=0)
-            for cid in unique_ids
-        ])
+        centroids = np.vstack(
+            [templates[labels == cid].mean(axis=0) for cid in unique_ids]
+        )
         self._cluster_ids = unique_ids.astype(np.int32)
         self._assign_nn = NearestNeighbors(n_neighbors=1).fit(centroids)
 
@@ -194,13 +183,6 @@ class GlobalWardClustering:
             raise RuntimeError(msg)
 
         ensure_columns(df, [C.frame_col] + self._feature_columns)
-
-        # Apply pair filter
-        nn_lookup = nn_lookup_for(self._nn_index, df)
-        if nn_lookup is not None:
-            nn_mask = _nn_pair_mask(df, nn_lookup)
-            keep = np.flatnonzero(nn_mask).tolist()
-            df = df.iloc[keep].reset_index(drop=True)
 
         arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 

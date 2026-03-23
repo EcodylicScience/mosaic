@@ -2,31 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types import Feature
-
-from mosaic.behavior.feature_library.spec import (
+from mosaic.behavior.feature_library.registry import register_feature
+from mosaic.core.pipeline.types import (
+    Feature,
+    InputRequire,
     Inputs,
-    OutputType,
     Params,
     Result,
     TrackInput,
-    register_feature,
 )
 
 
 class _TrackOnlyFeature:
     name = "track-only-test"
     version = "0.1"
-    output_type: OutputType = "per_frame"
     parallelizable = False
-    storage_feature_name = "track-only-test"
-    storage_use_input_suffix = False
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -42,31 +39,25 @@ class _TrackOnlyFeature:
     def params(self) -> _TrackOnlyFeature.Params:
         return self._params
 
-    def bind_dataset(self, ds: object) -> None: ...
-    def set_scope(self, scope: object) -> None: ...
-    def needs_fit(self) -> bool:
-        return False
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        return True
 
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
-    def partial_fit(self, df: pd.DataFrame) -> None: ...
-    def finalize_fit(self) -> None: ...
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None: ...
+    def save_state(self, run_root: Path) -> None: ...
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
-
-    def save_model(self, path: Path) -> None: ...
-    def load_model(self, path: Path) -> None: ...
 
 
 class _MixedInputFeature:
     name = "mixed-test"
     version = "0.1"
-    output_type: OutputType = "per_frame"
     parallelizable = False
-    storage_feature_name = "mixed-test"
-    storage_use_input_suffix = True
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -85,22 +76,18 @@ class _MixedInputFeature:
     def params(self) -> _MixedInputFeature.Params:
         return self._params
 
-    def bind_dataset(self, ds: object) -> None: ...
-    def set_scope(self, scope: object) -> None: ...
-    def needs_fit(self) -> bool:
-        return False
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        return True
 
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
-    def partial_fit(self, df: pd.DataFrame) -> None: ...
-    def finalize_fit(self) -> None: ...
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None: ...
+    def save_state(self, run_root: Path) -> None: ...
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
-
-    def save_model(self, path: Path) -> None: ...
-    def load_model(self, path: Path) -> None: ...
 
 
 def test_track_only() -> None:
@@ -127,7 +114,6 @@ def test_register_feature_accepts_mixed() -> None:
 def test_is_empty() -> None:
     """Inputs.is_empty reflects whether the tuple is empty."""
     from typing import ClassVar
-    from mosaic.behavior.feature_library.spec import InputRequire
 
     class _AnyInputs(Inputs[TrackInput | Result]):
         _require: ClassVar[InputRequire] = "any"
@@ -170,7 +156,7 @@ class _TestFeature:
     ) -> bool:
         return True
 
-    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

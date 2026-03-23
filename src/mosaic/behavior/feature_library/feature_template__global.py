@@ -3,42 +3,35 @@ Template for a global feature (clustering, embedding, dimensionality reduction).
 
 Copy this file, rename the class and `name`, and fill in your logic.
 
-Current patterns this template follows (as of 2026-03):
-  - skip_transform_phase = True  (all work in fit/save_model, no per-seq transform)
-  - Uses Pydantic Params for typed, validated parameters
-  - Uses StreamingFeatureHelper with build_manifest_from_results for data loading
-  - set_run_root() for streaming writes during fit
-  - get_additional_index_rows() to register artifacts in the feature index
-  - Shared helpers from helpers.py for scope parsing, sequence identity, index rows
-  - Data inputs via constructor `inputs` (Result-based), not Params
-  - output_type = "global"
+Protocol (4 attributes + 4 methods):
+  - name, version, parallelizable, scope_dependent
+  - load_state(run_root, artifact_paths, dependency_indices) -> bool
+  - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
+  - save_state(run_root) -> None
+  - apply(df: DataFrame) -> DataFrame
+
+Global features are stateful: fit() iterates over all sequences to build a
+model, save_state() persists it, and load_state() restores it to skip re-fitting.
+apply() then maps per-sequence data using the fitted model.
+
+Set scope_dependent = False unless outputs change depending on which sequences
+are in scope (most global features are scope-independent once fitted).
 
 See GlobalTSNE and GlobalWardClustering for real examples.
 """
 
 from __future__ import annotations
 
-import gc
-import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 import joblib
 import numpy as np
 import pandas as pd
 
-# from .spec import register_feature  # <-- uncomment when ready
-from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import Scope
-
-from .helpers import (
-    PartialIndexRow,
-    StreamingFeatureHelper,
-    _build_index_row,
-    _resolve_sequence_identity,
-)
-from .spec import Inputs, NNResult, OutputType, Params, Result
+# from .registry import register_feature  # <-- uncomment when ready
+from mosaic.core.pipeline.types import InputRequire, Inputs, Params, Result
 
 
 @final
@@ -48,35 +41,33 @@ class MyGlobalFeature:
     Template for a global feature.
 
     Global features load data from prior feature outputs (via Result-based
-    inputs), run a cross-sequence algorithm in fit(), and write artifacts
-    directly to disk.  The transform phase is skipped entirely.
+    inputs), run a cross-sequence algorithm in fit(), and persist the model
+    via save_state(). The apply() method maps per-sequence data using the
+    fitted model.
 
     Typical workflow:
-      1. fit() loads matrices via StreamingFeatureHelper.build_manifest_from_results()
-      2. Runs global computation (clustering, embedding, etc.)
-      3. Writes per-sequence outputs + global artifacts via _run_root
-      4. save_model() persists any model state (linkage, embedding, etc.)
+      1. load_state() checks for a cached model on disk
+      2. fit() iterates over all sequences, accumulates data, runs algorithm
+      3. save_state() persists the model to run_root
+      4. apply() maps per-sequence data using the fitted model
     """
 
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False
-    output_type: OutputType = "global"
-    skip_transform_phase = True  # all work in fit/save_model
+    scope_dependent = False
 
     class Inputs(Inputs[Result]):
-        pass
+        _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
         """Global feature template parameters.
 
         Attributes:
             random_state: Random seed. Default 42.
-            pair_filter: Nearest-neighbor pair filter. Default None.
         """
 
         random_state: int = 42
-        pair_filter: NNResult | None = None
 
     def __init__(
         self,
@@ -85,143 +76,80 @@ class MyGlobalFeature:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
+        self._model: np.ndarray | None = None
 
-        self._ds = None
-        self._run_root: Path | None = None
-        self._scope: Scope = Scope()
-        self._additional_index_rows: list[PartialIndexRow] = []
-        self._artifacts: dict[str, object] = {}
+    # --- State ---
 
-    # ----------------------- Dataset hooks -----------------------
-
-    def bind_dataset(self, ds):
-        self._ds = ds
-
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
-
-    def set_run_root(self, run_root: Path) -> None:
-        """Set by run_feature before fit(); use for streaming writes."""
-        self._run_root = Path(run_root)
-
-    def get_additional_index_rows(self) -> list[PartialIndexRow]:
-        """Return index rows for artifacts written during fit/save_model."""
-        return list(self._additional_index_rows)
-
-    # ----------------------- Feature protocol --------------------
-
-    def needs_fit(self) -> bool:
-        return True
-
-    def supports_partial_fit(self) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        # Check for cached model from a previous run
+        cached_path = run_root / "model.joblib"
+        if cached_path.exists():
+            bundle = joblib.load(cached_path)
+            self._model = bundle["model"]
+            return True
         return False
 
-    def partial_fit(self, X: pd.DataFrame) -> None:
-        raise NotImplementedError
-
-    def finalize_fit(self) -> None:
-        pass
-
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        return pd.DataFrame(index=[])
-
-    # ----------------------- Fit ---------------------------------
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        if self._ds is None:
-            raise RuntimeError(f"{self.name}: dataset not bound.")
-        self._additional_index_rows = []
-
-        # Build manifest from Result-based inputs
-        helper = StreamingFeatureHelper(self._ds, self.name)
-        if self.params.pair_filter:
-            helper.set_pair_filter(self.params.pair_filter)
-        manifest = helper.build_manifest_from_results(
-            self.inputs.feature_inputs, scope=self._scope
-        )
-        if not manifest:
-            raise RuntimeError(f"{self.name}: no usable inputs found.")
-
-        # Stream through data
-        keys = list(manifest.keys())
-        for i, entry_key in enumerate(keys):
-            kd = helper.load_entry_data(manifest[entry_key], entry_key=entry_key)
-            if kd is None or kd.features.shape[0] == 0:
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+        # Iterate over all sequences to accumulate data
+        all_data: list[np.ndarray] = []
+        for _entry_key, df in inputs():
+            if df.empty:
                 continue
+            # Select numeric columns (exclude metadata)
+            numeric = df.select_dtypes(include=[np.number])
+            if numeric.empty:
+                continue
+            all_data.append(numeric.to_numpy(dtype=np.float32))
 
-            # --- YOUR GLOBAL LOGIC HERE ---
-            result = self._process_sequence(entry_key, kd.features, kd.frames)
+        if not all_data:
+            msg = f"{self.name}: no usable inputs found."
+            raise RuntimeError(msg)
 
-            # Write per-sequence output
-            if result is not None and self._run_root is not None:
-                self._write_sequence_output(entry_key, result)
+        stacked = np.concatenate(all_data, axis=0)
 
-            del kd, result
-            gc.collect()
+        # --- YOUR GLOBAL ALGORITHM HERE ---
+        # EXAMPLE: project to first 2 dimensions
+        if stacked.shape[1] >= 2:
+            self._model = stacked[:, :2]
+        else:
+            self._model = stacked
 
-            if (i + 1) % 10 == 0 or i == len(keys) - 1:
-                print(
-                    f"[{self.name}] Processed {i + 1}/{len(keys)} sequences",
-                    file=sys.stderr,
-                )
-
-    # ----------------------- Save / Load -------------------------
-
-    def save_model(self, path: Path) -> None:
-        run_root = path.parent
+    def save_state(self, run_root: Path) -> None:
+        if self._model is None:
+            return
         run_root.mkdir(parents=True, exist_ok=True)
         joblib.dump(
             {
+                "model": self._model,
                 "params": self.params.model_dump(),
             },
-            path,
+            run_root / "model.joblib",
         )
 
-    def load_model(self, path: Path) -> None:
-        bundle = joblib.load(path)
-        saved = bundle.get("params", {})
-        if isinstance(saved, dict):
-            self.params = self.Params.model_validate(saved)
+    # --- Apply ---
 
-    # ----------------------- Internal helpers --------------------
-    # These use shared functions from helpers.py -- the same ones used
-    # by GlobalTSNE, GlobalWardClustering, GlobalKMeans, etc.
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._model is None:
+            msg = f"{self.name}: not fitted. Call fit() or load_state() first."
+            raise RuntimeError(msg)
 
-    def _process_sequence(
-        self, key: str, X: np.ndarray, frames: np.ndarray | None
-    ) -> np.ndarray | None:
-        """
-        Pure computation for one sequence.  X is (T, D) float32.
+        # --- YOUR PER-SEQUENCE MAPPING HERE ---
+        # EXAMPLE: project to first 2 dimensions using fitted model
+        numeric = df.select_dtypes(include=[np.number])
+        width = min(numeric.shape[1], 2)
+        projected = numeric.iloc[:, :width].to_numpy(dtype=np.float32)
 
-        Return an array to write, or None to skip this sequence.
-        Replace this with your own algorithm.
-        """
-        # EXAMPLE: project to first 2 dims
-        if X.shape[1] >= 2:
-            return X[:, :2].astype(np.float32, copy=False)
-        return None
+        out_cols = [f"feat_{i}" for i in range(projected.shape[1])]
+        out = pd.DataFrame(projected, columns=out_cols, index=df.index)
 
-    def _write_sequence_output(self, entry_key: str, data: np.ndarray) -> None:
-        """Write per-sequence output and register an index row."""
-        if self._run_root is None:
-            return
-        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
-        out_name = f"{make_entry_key(group, sequence)}.parquet"
-        out_path = self._run_root / out_name
+        # Carry over metadata columns
+        meta_cols = sorted(set(df.columns) - set(numeric.columns))
+        for col in meta_cols:
+            out[col] = df[col].values
 
-        cols = [f"feat_{i}" for i in range(data.shape[1])]
-        df_out = pd.DataFrame(data, columns=cols)
-        df_out["sequence"] = sequence
-        df_out["group"] = group
-        df_out.to_parquet(out_path, index=False)
-
-        self._additional_index_rows.append(
-            _build_index_row(
-                group,
-                sequence,
-                out_path,
-                int(len(df_out)),
-            )
-        )
+        return out

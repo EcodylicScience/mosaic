@@ -7,15 +7,6 @@ Features are automatically registered on import via the @register_feature decora
 All features are automatically loaded when the feature_library is imported,
 making them available in the global FEATURES registry.
 
-Feature Output Types
---------------------
-Features have an `output_type` attribute indicating their output structure:
-- "per_frame": One row per frame (or per frame×pair/id)
-- "summary": Aggregated stats per sequence/chunk/id
-- "global": Operates across all sequences (embeddings, clustering)
-- "viz": Produces visualizations, not data
-- None: Complex/custom output
-
 Usage
 -----
 >>> from mosaic.behavior.feature_library import Inputs, Result
@@ -30,15 +21,25 @@ Usage
 >>> dataset.run_feature(feat)
 >>>
 >>> # List all registered features
->>> from mosaic.behavior.feature_library.spec import FEATURES
+>>> from mosaic.behavior.feature_library.registry import FEATURES
 >>> print(list(FEATURES.keys()))
->>>
->>> # List features by output type
->>> from mosaic.behavior.feature_library import list_features_by_type
->>> print(list_features_by_type("per_frame"))
 """
 
 # Import all submodules to trigger @register_feature auto-registration
+from mosaic.core.pipeline.types import (
+    COLUMNS,
+    ArtifactSpec,
+    Feature,
+    FeatureLabelsSource,
+    GlobalModelParams,
+    GroundTruthLabelsSource,
+    Inputs,
+    InputsLike,
+    Result,
+    ResultColumn,
+    TrackInput,
+)
+
 from . import (
     approach_avoidance,
     body_scale,
@@ -52,7 +53,6 @@ from . import (
     helpers,
     id_tag_columns,
     kpms,
-    model_predict,
     nearestneighbor,
     nn_delta_bins,
     nn_delta_response,
@@ -75,7 +75,6 @@ from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .kpms import KpmsFeature
-from .model_predict import ModelPredictFeature
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
@@ -84,84 +83,13 @@ from .pair_egocentric import PairEgocentricFeatures
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
-from .spec import (
-    COLUMNS,
-    FEATURES,
-    ArtifactSpec,
-    Feature,
-    FeatureLabelsSource,
-    GlobalModelParams,
-    GroundTruthLabelsSource,
-    Inputs,
-    InputsLike,
-    OutputType,
-    Result,
-    ResultColumn,
-    TrackInput,
-    register_feature,
-)
+from .registry import FEATURES, register_feature
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
 # from . import feature_template__global
-
-
-def list_features_by_type(output_type: OutputType = None) -> list[str]:
-    """
-    Return feature names filtered by output_type.
-
-    Parameters
-    ----------
-    output_type : str or None
-        Filter to features with this output_type. Valid values:
-        - "per_frame": Per-frame features
-        - "summary": Summary/aggregated features
-        - "global": Global fit-transform features
-        - "viz": Visualization features
-        - None with filter=True: Features with output_type=None (custom)
-        - None with filter=False (default): Return ALL features
-
-    Returns
-    -------
-    list[str]
-        List of feature names (the .name attribute, e.g., "speed-angvel")
-    """
-    result = []
-    for cls in FEATURES.values():
-        feat_output_type = cls.output_type
-        feat_name = cls.name
-        if output_type is None:
-            result.append(feat_name)
-        elif feat_output_type == output_type:
-            result.append(feat_name)
-    return sorted(result)
-
-
-def get_feature_output_type(feature_name: str) -> OutputType:
-    """
-    Return the output_type for a registered feature.
-
-    Parameters
-    ----------
-    feature_name : str
-        The feature name (e.g., "speed-angvel") or class name (e.g., "SpeedAngvel")
-
-    Returns
-    -------
-    OutputType
-        The output_type attribute, or None if feature not found
-    """
-    # Try direct class name lookup
-    if feature_name in FEATURES:
-        return FEATURES[feature_name].output_type
-
-    # Try matching by .name attribute
-    for cls in FEATURES.values():
-        if cls.name == feature_name:
-            return cls.output_type
-
-    return None
 
 
 __all__ = [
@@ -176,13 +104,10 @@ __all__ = [
     "GroundTruthLabelsSource",
     "Inputs",
     "InputsLike",
-    "OutputType",
     "Result",
     "ResultColumn",
     "TrackInput",
-    # Helper functions
-    "list_features_by_type",
-    "get_feature_output_type",
+    # Helpers
     "helpers",
     # Feature classes
     "ApproachAvoidance",
@@ -197,7 +122,6 @@ __all__ = [
     "GlobalWardClustering",
     "IdTagColumns",
     "KpmsFeature",
-    "ModelPredictFeature",
     "NearestNeighbor",
     "NearestNeighborDelta",
     "NearestNeighborDeltaBins",
@@ -220,7 +144,6 @@ __all__ = [
     "global_ward",
     "id_tag_columns",
     "kpms",
-    "model_predict",
     "nearestneighbor",
     "nn_delta_bins",
     "nn_delta_response",

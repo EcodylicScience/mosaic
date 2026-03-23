@@ -9,12 +9,12 @@ import pytest
 
 from mosaic.core.pipeline.frames import FramesIndexRow, frames_index
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
-from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.models import ModelIndexRow, model_index
 
 
 @dataclass(frozen=True, slots=True)
-class SampleRow(IndexRowBase):
+class SampleRow(RunIndexRowBase):
     name: str = ""
     status: str = ""
     value: int = 0
@@ -141,10 +141,12 @@ class TestRead:
         npz_file = tmp_path / "data.npz"
         npz_file.touch()
 
-        idx.append([
-            _sample_row(tmp_path, name="pq", abs_path=str(parquet_file)),
-            _sample_row(tmp_path, name="nz", abs_path=str(npz_file)),
-        ])
+        idx.append(
+            [
+                _sample_row(tmp_path, name="pq", abs_path=str(parquet_file)),
+                _sample_row(tmp_path, name="nz", abs_path=str(npz_file)),
+            ]
+        )
         df_all = idx.read()
         assert len(df_all) == 2
 
@@ -522,28 +524,61 @@ def _write_run_csv(path: Path, rows: list[dict[str, str]]) -> None:
 class TestLatestRunId:
     def test_returns_latest_finished(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "index.csv"
-        _write_run_csv(csv_path, [
-            {"run_id": "old", "started_at": "2025-01-01T00:00:00", "finished_at": "2025-01-01T01:00:00"},
-            {"run_id": "new", "started_at": "2025-01-02T00:00:00", "finished_at": "2025-01-02T01:00:00"},
-        ])
+        _write_run_csv(
+            csv_path,
+            [
+                {
+                    "run_id": "old",
+                    "started_at": "2025-01-01T00:00:00",
+                    "finished_at": "2025-01-01T01:00:00",
+                },
+                {
+                    "run_id": "new",
+                    "started_at": "2025-01-02T00:00:00",
+                    "finished_at": "2025-01-02T01:00:00",
+                },
+            ],
+        )
         idx = IndexCSV(csv_path, FeatureIndexRow)
         assert idx.latest_run_id() == "new"
 
     def test_prefers_finished_over_unfinished(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "index.csv"
-        _write_run_csv(csv_path, [
-            {"run_id": "finished", "started_at": "2025-01-01T00:00:00", "finished_at": "2025-01-01T01:00:00"},
-            {"run_id": "in_progress", "started_at": "2025-06-01T00:00:00", "finished_at": ""},
-        ])
+        _write_run_csv(
+            csv_path,
+            [
+                {
+                    "run_id": "finished",
+                    "started_at": "2025-01-01T00:00:00",
+                    "finished_at": "2025-01-01T01:00:00",
+                },
+                {
+                    "run_id": "in_progress",
+                    "started_at": "2025-06-01T00:00:00",
+                    "finished_at": "",
+                },
+            ],
+        )
         idx = IndexCSV(csv_path, FeatureIndexRow)
         assert idx.latest_run_id() == "finished"
 
     def test_falls_back_to_started_at(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "index.csv"
-        _write_run_csv(csv_path, [
-            {"run_id": "old", "started_at": "2025-01-01T00:00:00", "finished_at": ""},
-            {"run_id": "new", "started_at": "2025-06-01T00:00:00", "finished_at": ""},
-        ])
+        _write_run_csv(
+            csv_path,
+            [
+                {
+                    "run_id": "old",
+                    "started_at": "2025-01-01T00:00:00",
+                    "finished_at": "",
+                },
+                {
+                    "run_id": "new",
+                    "started_at": "2025-06-01T00:00:00",
+                    "finished_at": "",
+                },
+            ],
+        )
         idx = IndexCSV(csv_path, FeatureIndexRow)
         assert idx.latest_run_id() == "new"
 

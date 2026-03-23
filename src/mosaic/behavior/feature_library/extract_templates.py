@@ -8,18 +8,21 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .helpers import ensure_columns, feature_columns
-from .spec import COLUMNS as C
-from .spec import (
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     Params,
     ParquetArtifact,
     ParquetLoadSpec,
-    PoolConfig,
     Result,
-    register_feature,
 )
+
+from .helpers import ensure_columns, feature_columns
+from .registry import register_feature
+from .types import PoolConfig
 
 
 class TemplatesArtifact(ParquetArtifact):
@@ -235,7 +238,7 @@ class ExtractTemplates:
         inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
         pool_size: int,
     ) -> None:
-        from .spec import COLUMNS as C
+        from mosaic.core.pipeline.types import COLUMNS as C
 
         # Pass 1: count rows per entry, capture feature_columns and metadata
         entry_counts: dict[str, int] = {}
@@ -360,12 +363,14 @@ class ExtractTemplates:
         for entry_idx in sorted(self._entry_map):
             group, sequence = self._entry_map[entry_idx]
             count = count_map.get(entry_idx, 0)
-            rows.append({
-                "group": group,
-                "sequence": sequence,
-                "count": count,
-                "proportion": float(count) / total if total > 0 else 0.0,
-            })
+            rows.append(
+                {
+                    "group": group,
+                    "sequence": sequence,
+                    "count": count,
+                    "proportion": float(count) / total if total > 0 else 0.0,
+                }
+            )
         return pd.DataFrame(rows)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:

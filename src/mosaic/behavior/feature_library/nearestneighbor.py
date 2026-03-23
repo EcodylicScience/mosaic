@@ -7,9 +7,18 @@ from typing import final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
+    Inputs,
+    Params,
+    TrackInput,
+    resolve_order_col,
+)
+
 from .helpers import ego_rotate, ensure_columns, wrap_angle
-from .spec import COLUMNS as C
-from .spec import Inputs, Params, TrackInput, register_feature, resolve_order_col
+from .registry import register_feature
 
 
 @final
@@ -135,7 +144,5 @@ class NearestNeighbor:
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
 
-        meta = C.meta_set() & set(
-            df.columns
-        )
+        meta = C.meta_set() & set(df.columns)
         return out.join(df[sorted(meta)])

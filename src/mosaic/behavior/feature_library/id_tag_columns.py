@@ -8,8 +8,17 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .spec import COLUMNS as C
-from .spec import Inputs, LabelsSource, Params, TrackInput, register_feature
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
+    Inputs,
+    LabelsSource,
+    Params,
+    TrackInput,
+)
+
+from .registry import register_feature
 
 
 @final
@@ -32,7 +41,9 @@ class IdTagColumns:
         pass
 
     class Params(Params):
-        labels: LabelsSource = Field(default_factory=lambda: LabelsSource(kind="id_tags"))
+        labels: LabelsSource = Field(
+            default_factory=lambda: LabelsSource(kind="id_tags")
+        )
         label_kind: str = "id_tags"
         fields: list[str] | None = None
         field_renames: dict[str, str] | None = None
@@ -61,7 +72,11 @@ class IdTagColumns:
         for path in sorted(labels_root.glob("*.json")):
             try:
                 data = json.loads(path.read_text())
-                key = tuple(path.stem.split("__", 1)) if "__" in path.stem else ("", path.stem)
+                key = (
+                    tuple(path.stem.split("__", 1))
+                    if "__" in path.stem
+                    else ("", path.stem)
+                )
                 labels = data.get("labels") or {}
                 self._labels[key] = labels
             except Exception:
@@ -78,12 +93,8 @@ class IdTagColumns:
         if df.empty:
             return pd.DataFrame()
 
-        group_val = (
-            str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        )
-        sequence_val = (
-            str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
-        )
+        group_val = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
+        sequence_val = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
         labels = self._labels.get((group_val, sequence_val))
         if not labels:
             return pd.DataFrame()

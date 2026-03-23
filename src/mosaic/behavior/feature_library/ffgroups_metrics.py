@@ -8,18 +8,18 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.helpers import chunk_sequence
-
-from .helpers import ensure_columns
-from .spec import (
+from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
-from .spec import (
+from mosaic.core.pipeline.types import (
     Inputs,
     Params,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 @final
@@ -189,11 +189,13 @@ class FFGroupsMetrics:
         starts = np.flatnonzero(new_run)
         ends = np.append(starts[1:], len(ids))
 
-        durations = pd.DataFrame({
-            C.id_col: ids[starts],
-            "group_size": group_sizes[starts],
-            "duration": frames[ends - 1] - frames[starts] + 1,
-        })
+        durations = pd.DataFrame(
+            {
+                C.id_col: ids[starts],
+                "group_size": group_sizes[starts],
+                "duration": frames[ends - 1] - frames[starts] + 1,
+            }
+        )
         agg_dur = (
             durations.groupby([C.id_col, "group_size"])["duration"]
             .agg(avg_duration_frame="mean", med_duration_frame="median")
@@ -208,9 +210,7 @@ class FFGroupsMetrics:
             "distance_from_centroid"
         ].rank(ascending=True, method="max")
         farthest_df = df.loc[df["rank_centroid_distance"] == df["group_size"]]
-        ftime_counts = (
-            farthest_df.groupby([C.id_col, "group_size"])[frame_key].count()
-        )
+        ftime_counts = farthest_df.groupby([C.id_col, "group_size"])[frame_key].count()
         # Normalize by frames spent in that group_size; fill missing combos with 0
         ftime_periphery = (
             (ftime_counts / frame_counts)
@@ -218,9 +218,9 @@ class FFGroupsMetrics:
             .reset_index()
             .rename(columns={frame_key: "ftime_periphery"})
         )
-        ftime_periphery_norm_counts = (
-            farthest_df.groupby([C.id_col, "group_size"])["group_size"].sum()
-        )
+        ftime_periphery_norm_counts = farthest_df.groupby([C.id_col, "group_size"])[
+            "group_size"
+        ].sum()
         ftime_periphery_norm = (
             (ftime_periphery_norm_counts / frame_counts)
             .reindex(frame_counts.index, fill_value=0)

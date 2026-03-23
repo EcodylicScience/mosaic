@@ -9,8 +9,7 @@ import pandas as pd
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from .helpers import ensure_columns
-from .spec import (
+from mosaic.core.pipeline.types import (
     GlobalModelParams,
     InputRequire,
     Inputs,
@@ -19,8 +18,10 @@ from .spec import (
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
-    register_feature,
 )
+
+from .helpers import ensure_columns
+from .registry import register_feature
 
 
 class ScalerModelBundle(TypedDict):
@@ -74,9 +75,7 @@ class GlobalScaler:
             model: Pre-fitted scaler model artifact (skip fit).
         """
 
-        model: ScalerModelArtifact | None = Field(
-            default_factory=ScalerModelArtifact
-        )
+        model: ScalerModelArtifact | None = Field(default_factory=ScalerModelArtifact)
 
     def __init__(
         self,
@@ -103,9 +102,7 @@ class GlobalScaler:
         # Check for cached model
         cached_path = run_root / "scaler.joblib"
         if cached_path.exists():
-            bundle: ScalerModelBundle = ScalerModelArtifact().from_path(
-                cached_path
-            )
+            bundle: ScalerModelBundle = ScalerModelArtifact().from_path(cached_path)
             self._scaler = bundle["scaler"]
             self._feature_columns = bundle["feature_columns"]
 
@@ -175,9 +172,5 @@ class GlobalScaler:
         joblib.dump(bundle, run_root / "scaler.joblib")
 
         if self._scaled_templates is not None:
-            df = pd.DataFrame(
-                self._scaled_templates, columns=self._feature_columns
-            )
-            df.to_parquet(
-                run_root / "scaled_templates.parquet", index=False
-            )
+            df = pd.DataFrame(self._scaled_templates, columns=self._feature_columns)
+            df.to_parquet(run_root / "scaled_templates.parquet", index=False)

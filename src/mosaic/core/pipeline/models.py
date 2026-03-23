@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ._utils import hash_params, json_ready
-from .index_csv import IndexCSV, IndexRowBase
+from .index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -25,7 +25,7 @@ def model_index_path(ds: Dataset, model_name: str) -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelIndexRow(IndexRowBase):
+class ModelIndexRow(RunIndexRowBase):
     """Typed row for the model index CSV."""
 
     model: str

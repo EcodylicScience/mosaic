@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
-from mosaic.behavior.feature_library.spec import Result
+from mosaic.core.pipeline.types import Result
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 

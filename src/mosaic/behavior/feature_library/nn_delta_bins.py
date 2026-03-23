@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 from collections.abc import Callable, Iterator, Sequence
+from pathlib import Path
 from typing import final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from .spec import COLUMNS as C
-from .spec import Inputs, Params, TrackInput, register_feature
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.types import Inputs, Params, TrackInput
+
+from .registry import register_feature
 
 
 def _binned_mean_fast(

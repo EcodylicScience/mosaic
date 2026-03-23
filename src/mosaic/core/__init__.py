@@ -7,7 +7,7 @@ from .helpers import from_safe_name, to_safe_name
 
 def __getattr__(name: str):
     if name == "register_feature":
-        from mosaic.behavior.feature_library.spec import register_feature
+        from mosaic.behavior.feature_library.registry import register_feature
 
         return register_feature
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

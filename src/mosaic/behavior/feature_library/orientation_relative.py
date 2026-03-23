@@ -15,14 +15,23 @@ import pandas as pd
 from pydantic import Field
 from scipy.spatial.distance import pdist
 
+from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import (
+    BodyScaleResult,
+    Inputs,
+    Params,
+    TrackInput,
+)
+
 from .helpers import (
-    _pose_column_pairs,  # pyright: ignore[reportPrivateUsage]
     ensure_columns,
     load_result_for,
     wrap_angle,
 )
-from .spec import COLUMNS as C
-from .spec import BodyScaleResult, Inputs, Params, TrackInput, register_feature
+from .registry import register_feature
 
 
 @final
@@ -101,7 +110,7 @@ class OrientationRelativeFeature:
         if df.empty:
             return pd.DataFrame()
         ensure_columns(df, [C.frame_col, C.id_col, C.orientation_col])
-        pose_pairs = _pose_column_pairs(df.columns)
+        pose_pairs = pose_column_pairs(df.columns)
         if not pose_pairs:
             return pd.DataFrame()
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""

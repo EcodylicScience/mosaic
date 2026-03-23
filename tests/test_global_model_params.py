@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import Field
 
-from mosaic.behavior.feature_library.spec import (
+from mosaic.core.pipeline.types import (
     GlobalModelParams,
     JoblibArtifact,
     JoblibLoadSpec,
@@ -19,9 +19,7 @@ class _StubModelArtifact(JoblibArtifact[object]):
 
 
 class _StubParams(GlobalModelParams[_StubModelArtifact]):
-    model: _StubModelArtifact | None = Field(
-        default_factory=_StubModelArtifact
-    )
+    model: _StubModelArtifact | None = Field(default_factory=_StubModelArtifact)
 
 
 class TestGlobalModelParamsValidation:
@@ -32,35 +30,41 @@ class TestGlobalModelParamsValidation:
 
         # Both provided
         with pytest.raises(ValueError, match="Exactly one"):
-            _StubParams.from_overrides({
+            _StubParams.from_overrides(
+                {
+                    "templates": {
+                        "feature": "x",
+                        "pattern": "x.parquet",
+                        "load": {},
+                    },
+                    "model": {
+                        "feature": "x",
+                        "pattern": "x.joblib",
+                        "load": {},
+                    },
+                }
+            )
+
+    def test_templates_only_valid(self) -> None:
+        params = _StubParams.from_overrides(
+            {
                 "templates": {
                     "feature": "x",
                     "pattern": "x.parquet",
-                    "load": {},
                 },
-                "model": {
-                    "feature": "x",
-                    "pattern": "x.joblib",
-                    "load": {},
-                },
-            })
-
-    def test_templates_only_valid(self) -> None:
-        params = _StubParams.from_overrides({
-            "templates": {
-                "feature": "x",
-                "pattern": "x.parquet",
-            },
-        })
+            }
+        )
         assert params.templates is not None
         assert params.model is None
 
     def test_model_only_valid(self) -> None:
-        params = _StubParams.from_overrides({
-            "model": {
-                "feature": "x",
-                "pattern": "x.joblib",
-            },
-        })
+        params = _StubParams.from_overrides(
+            {
+                "model": {
+                    "feature": "x",
+                    "pattern": "x.joblib",
+                },
+            }
+        )
         assert params.model is not None
         assert params.templates is None

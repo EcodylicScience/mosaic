@@ -17,47 +17,46 @@ Example usage:
 """
 
 # Import helpers module
-from . import helpers
-
 # Import visualization modules
-from . import data_loading
-from . import overlay
-from . import video_stream
-from . import playback
-from . import visual_spec
-
 # Import egocentric crop feature
-from . import egocentric_crop
-
 # Import visualization features (registered via @register_feature)
-from . import viz_global_colored
-from . import viz_timeline
+from . import (
+    data_loading,
+    egocentric_crop,
+    helpers,
+    overlay,
+    playback,
+    video_stream,
+    visual_spec,
+    viz_global_colored,
+    viz_timeline,
+)
 
 # Re-export common functions for convenience
 from .data_loading import (
-    load_tracks_and_labels,
-    load_ground_truth_labels,
     demo_load_visual_inputs,
+    load_ground_truth_labels,
+    load_tracks_and_labels,
+)
+from .egocentric_crop import (
+    EgocentricCrop,
 )
 from .overlay import (
-    prepare_overlay,
     draw_frame,
+    prepare_overlay,
+)
+from .playback import (
+    build_overlay,
+    play_video,
+    play_video_with_spec,
 )
 from .video_stream import (
     render_stream,
 )
-from .playback import (
-    play_video,
-    play_video_with_spec,
-    build_overlay,
-)
 from .visual_spec import (
-    normalize_visualization_spec,
     apply_visualization_spec,
     list_visual_adapters,
-)
-from .egocentric_crop import (
-    EgocentricCrop,
+    normalize_visualization_spec,
 )
 from .viz_global_colored import (
     VizGlobalColored,

@@ -5,7 +5,6 @@ No internal pipeline imports -- both types.py and loading.py import from here.
 
 from __future__ import annotations
 
-from collections.abc import KeysView
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
@@ -15,39 +14,13 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class DictModel(BaseModel):
-    """BaseModel with dict-like access for backward compatibility.
-
-    Provides __getitem__, get, __contains__, and keys() so that existing
-    code using dict-style access (spec["key"], spec.get("key")) works
-    transparently with typed models.
-    """
+class StrictModel(BaseModel):
+    """BaseModel with extra="forbid" to reject unknown fields."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
-    def __getitem__(self, key: str) -> object:
-        try:
-            val: object = getattr(self, key)  # pyright: ignore[reportAny]
-            return val
-        except AttributeError:
-            raise KeyError(key)
 
-    def get(self, key: str, default: object = None) -> object:
-        try:
-            val: object = getattr(self, key)  # pyright: ignore[reportAny]
-            return val
-        except AttributeError:
-            return default
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.__class__.model_fields
-
-    def keys(self) -> KeysView[str]:
-        """Support {**params} dict spread and dict(params) conversion."""
-        return self.__class__.model_fields.keys()
-
-
-class NpzLoadSpec(DictModel):
+class NpzLoadSpec(StrictModel):
     """Load spec for numpy .npz archives.
 
     Attributes:
@@ -61,7 +34,7 @@ class NpzLoadSpec(DictModel):
     transpose: bool = False
 
 
-class ParquetLoadSpec(DictModel):
+class ParquetLoadSpec(StrictModel):
     """Load spec for parquet files.
 
     Attributes:
@@ -81,7 +54,7 @@ class ParquetLoadSpec(DictModel):
     frame_column: str | None = None
 
 
-class JoblibLoadSpec(DictModel):
+class JoblibLoadSpec(StrictModel):
     """Load spec for joblib-serialized objects.
 
     Attributes:
@@ -99,7 +72,9 @@ LoadSpec = Annotated[
 ]
 
 
-def load_from_spec(path: Path, spec: NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec) -> object:
+def load_from_spec(
+    path: Path, spec: NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec
+) -> object:
     """Load artifact from a file path using a typed load specification.
 
     Parameters

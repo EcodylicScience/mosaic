@@ -17,30 +17,28 @@ from pathlib import Path
 from typing import Any, ClassVar, Iterable
 
 import joblib
-from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.figure import Figure
 
-from mosaic.behavior.feature_library.helpers import (
-    _normalize_identity_columns,
-)
-from mosaic.behavior.feature_library.spec import (
-    FeatureLabelsSource,
-    GroundTruthLabelsSource,
-    InputRequire,
-    Inputs,
-    OutputType,
-    Params,
-    Result,
-)
-from mosaic.behavior.feature_library.spec import register_feature
 from mosaic.core.helpers import (
     detect_label_format,
     to_safe_name,
 )
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import normalize_identity_columns
+from mosaic.core.pipeline.types import (
+    FeatureLabelsSource,
+    GroundTruthLabelsSource,
+    InputRequire,
+    Inputs,
+    Params,
+    Result,
+)
+
+from ..feature_library.registry import register_feature
 
 # Priority list for auto-detecting the label column in a DataFrame
 _LABEL_COL_PRIORITY = [
@@ -126,7 +124,6 @@ class TimelinePlot:
 
     name = "viz-timeline"
     version = "0.1"
-    output_type: OutputType = "viz"
     parallelizable = False
 
     class Inputs(Inputs[Result]):
@@ -213,7 +210,9 @@ class TimelinePlot:
         files = sorted(run_root.glob(pattern))
         return run_id, run_root, files
 
-    def _load_labels_from_index(self, spec: GroundTruthLabelsSource) -> list[tuple[str, Path]]:
+    def _load_labels_from_index(
+        self, spec: GroundTruthLabelsSource
+    ) -> list[tuple[str, Path]]:
         """Load (sequence_safe, path) pairs from labels/<kind>/index.csv."""
         if self._ds is None:
             raise RuntimeError("[viz-timeline] Dataset not bound.")
@@ -326,7 +325,7 @@ class TimelinePlot:
         )
         out["label"] = df[label_col].values
 
-        id1, id2, entity_level = _normalize_identity_columns(df)
+        id1, id2, entity_level = normalize_identity_columns(df)
         if id1 is not None:
             out["id1"] = id1.values
         if id2 is not None and entity_level == "pair":
@@ -338,7 +337,9 @@ class TimelinePlot:
     # Data loading
     # -----------------------------------------------------------------
 
-    def _load_from_feature(self, source_spec: FeatureLabelsSource) -> dict[str, pd.DataFrame]:
+    def _load_from_feature(
+        self, source_spec: FeatureLabelsSource
+    ) -> dict[str, pd.DataFrame]:
         run_id, run_root, files = self._load_artifacts_glob(source_spec)
         if not files:
             raise FileNotFoundError("[viz-timeline] No files found for source feature.")
@@ -381,7 +382,9 @@ class TimelinePlot:
 
         return seq_data
 
-    def _load_from_labels(self, source_spec: GroundTruthLabelsSource) -> dict[str, pd.DataFrame]:
+    def _load_from_labels(
+        self, source_spec: GroundTruthLabelsSource
+    ) -> dict[str, pd.DataFrame]:
         entries = self._load_labels_from_index(source_spec)
         allowed = self._allowed_set()
         if allowed:
@@ -680,9 +683,7 @@ class TimelinePlot:
         if not self.params.show_legend:
             return
         items = [
-            (v, c)
-            for v, c in color_map.items()
-            if v != self.params.missing_label_value
+            (v, c) for v, c in color_map.items() if v != self.params.missing_label_value
         ]
         if not items:
             return
@@ -811,7 +812,9 @@ class TimelinePlot:
             return pd.DataFrame(index=[])
         self._marker_written = True
         source = self.params.source
-        source_feature = source.feature if isinstance(source, FeatureLabelsSource) else ""
+        source_feature = (
+            source.feature if isinstance(source, FeatureLabelsSource) else ""
+        )
         return pd.DataFrame(
             [
                 {

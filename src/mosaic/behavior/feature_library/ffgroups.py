@@ -10,16 +10,17 @@ from numba import njit  # pyright: ignore[reportUnknownVariableType]
 from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
 
-from .spec import (
+from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
-from .spec import (
+from mosaic.core.pipeline.types import (
     Inputs,
     Params,
     TrackInput,
-    register_feature,
     resolve_order_col,
 )
+
+from .registry import register_feature
 
 # --- Numba-accelerated union-find for connected components ---
 

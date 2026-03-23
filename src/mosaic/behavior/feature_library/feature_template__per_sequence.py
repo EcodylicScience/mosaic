@@ -3,29 +3,37 @@ Template for a per-sequence feature.
 
 Copy this file, rename the class and `name`, and fill in your logic.
 
-Current patterns this template follows (as of 2026-02):
-  - Uses Pydantic Params for typed, validated parameters
-  - Declares output_type for feature registry
-  - Handles pair-aware (id1/id2) and single-individual inputs
-  - Includes id1/id2 columns in output when present
-  - Uses from __future__ import annotations
-  - finalize_fit() present for protocol completeness
-  - Stateless by default (needs_fit=False, save_model raises)
+Protocol (4 attributes + 4 methods):
+  - name, version, parallelizable, scope_dependent
+  - load_state(run_root, artifact_paths, dependency_indices) -> bool
+  - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
+  - save_state(run_root) -> None
+  - apply(df: DataFrame) -> DataFrame
+
+Per-sequence features are stateless by default: load_state returns True
+(nothing to restore), fit/save_state are no-ops, and apply does all the work.
+Set scope_dependent = False unless outputs depend on which sequences are in scope.
+
+See SpeedAngvel for a real per-sequence feature.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline._utils import Scope
-
-# from .spec import register_feature  # <-- uncomment when ready
-from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+# from .registry import register_feature  # <-- uncomment when ready
+from mosaic.core.pipeline.types import (
+    COLUMNS,
+    Inputs,
+    Params,
+    TrackInput,
+    resolve_order_col,
+)
 
 
 @final
@@ -48,11 +56,10 @@ class MyPerSequenceFeature:
         * your feature columns
     """
 
-    # Stored under dataset_root/features/<name>/
     name = "my-new-feature"
     version = "0.1"
-    parallelizable = True  # safe if transform(df) only depends on df
-    output_type: OutputType = "per_frame"
+    parallelizable = True
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -72,64 +79,36 @@ class MyPerSequenceFeature:
         params: dict[str, object] | None = None,
     ):
         self.inputs = inputs
-        self.params = self.Params.from_overrides(params)
-        self._ds = None
+        self.params: MyPerSequenceFeature.Params = self.Params.from_overrides(params)
 
-        # Storage overrides (set before run_feature processes the feature)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True  # appends "__from__<input>" to run dir
-        self.skip_existing_outputs = False  # set True if idempotent + expensive
-        self._scope: Scope = Scope()
+    # --- State ---
 
-    # ----------------------- Dataset hooks -----------------------
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_indices: dict[str, pd.DataFrame],
+    ) -> bool:
+        return True  # stateless -- nothing to restore
 
-    def bind_dataset(self, ds):
-        """Called by Dataset.run_feature before any fit/transform."""
-        self._ds = ds
+    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+        pass  # stateless -- no fitting required
 
-    def set_scope(self, scope: Scope) -> None:
-        """Restrict which sequences are processed (used by inputset path)."""
-        self._scope = scope
+    def save_state(self, run_root: Path) -> None:
+        pass  # stateless -- nothing to persist
 
-    # ----------------------- Fit protocol ------------------------
+    # --- Apply ---
 
-    def needs_fit(self) -> bool:
-        return False
-
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        """Global fit over all sequences. Only called if needs_fit() == True."""
-        return
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        """Streaming fit per sequence. Used when supports_partial_fit() == True."""
-        return
-
-    def finalize_fit(self) -> None:
-        """Called after all fit/partial_fit calls complete."""
-        return
-
-    def save_model(self, path: Path) -> None:
-        raise NotImplementedError("Stateless feature; no model to save.")
-
-    def load_model(self, path: Path) -> None:
-        raise NotImplementedError("Stateless feature; no model to load.")
-
-    # ----------------------- Core logic --------------------------
-
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Compute features for a single (group, sequence).
 
         For pair-aware inputs the df may contain multiple (id1, id2) pairs;
         process each pair independently to avoid mixing contexts.
         """
-        if df is None or df.empty:
+        if df.empty:
             return pd.DataFrame()
 
-        p = self.params
         order_col = resolve_order_col(df)
 
         # Detect pair structure
@@ -163,25 +142,24 @@ class MyPerSequenceFeature:
         if group_keys:
             blocks: list[pd.DataFrame] = []
             for group_vals, g in df.groupby(group_keys, sort=False):
+                assert isinstance(group_vals, tuple)
                 cur_id1, cur_id2 = group_vals
-                block_out = self._process_block(g, numeric_cols, order_col, p)
-                if block_out is not None and len(block_out):
-                    block_out["id1"] = int(cur_id1)
-                    block_out["id2"] = int(cur_id2)
+                block_out = self._process_block(g, numeric_cols, order_col)
+                if len(block_out):
+                    block_out["id1"] = int(cur_id1)  # type: ignore[arg-type]
+                    block_out["id2"] = int(cur_id2)  # type: ignore[arg-type]
                     blocks.append(block_out)
             return pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame()
         else:
-            return self._process_block(df, numeric_cols, order_col, p)
+            return self._process_block(df, numeric_cols, order_col)
 
     def _process_block(
         self,
         df: pd.DataFrame,
         numeric_cols: list[str],
         order_col: str,
-        params: Params,
     ) -> pd.DataFrame:
         """Process a single block (one pair or one sequence)."""
-        p = params
         seq_col = COLUMNS.seq_col
         group_col = COLUMNS.group_col
 
@@ -189,7 +167,7 @@ class MyPerSequenceFeature:
         X = df[numeric_cols].to_numpy(dtype=np.float32, copy=False)
 
         # --- YOUR LOGIC HERE ---
-        features = self._compute(X, params)
+        features = self._compute(X)
 
         if features.ndim == 1:
             features = features[:, None]
@@ -217,9 +195,9 @@ class MyPerSequenceFeature:
 
         return out
 
-    # ----------------------- Internal helpers --------------------
+    # --- Internal helpers ---
 
-    def _compute(self, X: np.ndarray, params: Params) -> np.ndarray:
+    def _compute(self, X: np.ndarray) -> np.ndarray:
         """
         Pure computational logic.  X is (T, D) float32 for one block.
 
@@ -227,10 +205,10 @@ class MyPerSequenceFeature:
         touch DataFrames, dataset, or file I/O.
         """
         # EXAMPLE: sliding-window mean
-        win = params.window_size
+        win = self.params.window_size
         if win <= 1:
             return X
-        T, D = X.shape
+        T = X.shape[0]
         out = np.zeros_like(X)
         for t in range(T):
             lo = max(0, t - win // 2)
