@@ -17,11 +17,14 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.dataset import _dataset_base_dir
+
+from .spec import register_feature
 from mosaic.core.helpers import to_safe_name
 
 from .global_tsne import GlobalTSNE
 from .helpers import (
+    PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
     _build_sequence_lookup,
@@ -30,7 +33,7 @@ from .helpers import (
     _parse_scope_filter,
     _resolve_sequence_identity,
 )
-from .params import (
+from .spec import (
     ArtifactSpec,
     FeatureLabelsSource,
     InputRequire,
@@ -165,7 +168,7 @@ class GlobalKMeansClustering:
         self._assign_entity_level: dict[str, str] = {}
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
-        self._additional_index_rows: list[dict[str, object]] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
         self._allowed_safe_sequences: set[str] | None = None
         self._scope_filter: dict[str, object] = {}
 
@@ -554,7 +557,6 @@ class GlobalKMeansClustering:
             df_out.to_parquet(out_path, index=False)
             self._additional_index_rows.append(
                 _build_index_row(
-                    safe_seq,
                     group,
                     sequence,
                     out_path,
@@ -579,7 +581,6 @@ class GlobalKMeansClustering:
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
             _build_index_row(
-                safe_marker_seq,
                 "",
                 marker_seq,
                 marker_path,
@@ -598,5 +599,5 @@ class GlobalKMeansClustering:
         if isinstance(saved, dict):
             self.params = self.Params.model_validate(saved)
 
-    def get_additional_index_rows(self) -> list[dict[str, object]]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         return list(self._additional_index_rows)

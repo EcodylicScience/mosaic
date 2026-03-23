@@ -6,9 +6,9 @@ from typing import Iterable, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput
 
 
 @final

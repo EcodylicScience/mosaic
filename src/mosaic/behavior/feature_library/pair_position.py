@@ -19,12 +19,12 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-from .params import (
+from .spec import (
     COLUMNS,
     Inputs,
     InterpolationConfig,

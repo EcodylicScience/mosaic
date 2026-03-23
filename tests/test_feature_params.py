@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
     COLUMNS,
     Inputs,
     InterpolationConfig,
@@ -130,7 +130,7 @@ def test_group_keys_in_spread() -> None:
 
 
 def test_hash_params_with_model() -> None:
-    from mosaic.core.dataset import _hash_params
+    from mosaic.core.pipeline._utils import hash_params as _hash_params
 
     p = Params()
     d = p.model_dump()
@@ -138,14 +138,14 @@ def test_hash_params_with_model() -> None:
 
 
 def test_hash_params_deterministic() -> None:
-    from mosaic.core.dataset import _hash_params
+    from mosaic.core.pipeline._utils import hash_params as _hash_params
 
     p = _ComposedParams()
     assert _hash_params(p) == _hash_params(p)
 
 
 def test_json_ready_with_model() -> None:
-    from mosaic.core.dataset import _json_ready
+    from mosaic.core.pipeline._utils import json_ready as _json_ready
 
     p = Params()
     result = _json_ready(p)
@@ -158,7 +158,8 @@ def test_json_ready_with_model() -> None:
 
 def test_hash_stability_all_converted_features() -> None:
     """Verify that Params model produces the same hash as the equivalent dict."""
-    from mosaic.core.dataset import FEATURES, _hash_params
+    from mosaic.behavior.feature_library.spec import FEATURES
+    from mosaic.core.pipeline._utils import hash_params as _hash_params
 
     for name, cls in FEATURES.items():
         params_cls = getattr(cls, "Params", None)
@@ -179,7 +180,7 @@ def test_hash_stability_all_converted_features() -> None:
 
 
 def test_npz_load_spec_requires_key() -> None:
-    from mosaic.behavior.feature_library.params import NpzLoadSpec
+    from mosaic.behavior.feature_library.spec import NpzLoadSpec
 
     with pytest.raises(ValidationError):
         NpzLoadSpec()
@@ -189,7 +190,7 @@ def test_npz_load_spec_requires_key() -> None:
 
 
 def test_parquet_load_spec_defaults() -> None:
-    from mosaic.behavior.feature_library.params import ParquetLoadSpec
+    from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
     s = ParquetLoadSpec()
     assert s.kind == "parquet"
@@ -198,7 +199,7 @@ def test_parquet_load_spec_defaults() -> None:
 
 
 def test_artifact_spec_dict_like_access() -> None:
-    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
 
     spec = ArtifactSpec(feature="X", load=NpzLoadSpec(key="Y"))
     assert spec["feature"] == "X"
@@ -207,7 +208,7 @@ def test_artifact_spec_dict_like_access() -> None:
 
 
 def test_nested_spec_model_dump_roundtrip() -> None:
-    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
 
     orig = ArtifactSpec(feature="test", load=NpzLoadSpec(key="X"))
     dumped = orig.model_dump()
@@ -216,7 +217,7 @@ def test_nested_spec_model_dump_roundtrip() -> None:
 
 
 def test_joblib_load_spec() -> None:
-    from mosaic.behavior.feature_library.params import JoblibLoadSpec
+    from mosaic.behavior.feature_library.spec import JoblibLoadSpec
 
     s = JoblibLoadSpec()
     assert s.kind == "joblib"
@@ -233,21 +234,21 @@ def test_result_use_latest() -> None:
 
 
 def test_nn_result_defaults() -> None:
-    from mosaic.behavior.feature_library.params import NNResult
+    from mosaic.behavior.feature_library.spec import NNResult
 
     nn = NNResult()
     assert nn.feature == "nearest-neighbor"
 
 
 def test_nn_result_rejects_wrong_feature() -> None:
-    from mosaic.behavior.feature_library.params import NNResult
+    from mosaic.behavior.feature_library.spec import NNResult
 
     with pytest.raises(ValidationError):
         NNResult(feature="wrong")
 
 
 def test_artifact_spec_auto_pattern() -> None:
-    from mosaic.behavior.feature_library.params import (
+    from mosaic.behavior.feature_library.spec import (
         ArtifactSpec,
         JoblibLoadSpec,
         NpzLoadSpec,
@@ -260,7 +261,7 @@ def test_artifact_spec_auto_pattern() -> None:
 
 
 def test_artifact_spec_pattern_kind_mismatch() -> None:
-    from mosaic.behavior.feature_library.params import ArtifactSpec, NpzLoadSpec
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
 
     with pytest.raises(ValidationError):
         ArtifactSpec(feature="x", load=NpzLoadSpec(key="y"), pattern="foo.joblib")

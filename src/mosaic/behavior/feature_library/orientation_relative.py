@@ -14,15 +14,11 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import (
-    _feature_index_path,
-    _latest_feature_run_root,
-    register_feature,
-)
 from mosaic.core.helpers import to_safe_name
+from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 
 from .helpers import _pose_column_pairs
-from .params import Inputs, OutputType, Params, TrackInput
+from .spec import Inputs, OutputType, Params, TrackInput, register_feature
 
 
 @final
@@ -92,10 +88,10 @@ class OrientationRelativeFeature:
         run_id = self.params.scale_run_id
         if run_id is None:
             try:
-                run_id, _ = _latest_feature_run_root(self._ds, feat)
+                run_id, _ = latest_feature_run_root(self._ds, feat)
             except Exception:
                 return
-        idx_path = _feature_index_path(self._ds, feat)
+        idx_path = feature_index_path(self._ds, feat)
         if not idx_path.exists():
             return
         df_idx = pd.read_csv(idx_path)
@@ -103,7 +99,7 @@ class OrientationRelativeFeature:
         if df_idx.empty:
             return
         for _, row in df_idx.iterrows():
-            seq_safe = row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
+            seq_safe = to_safe_name(str(row.get("sequence", "")))
             abs_path = row.get("abs_path")
             if not abs_path:
                 continue

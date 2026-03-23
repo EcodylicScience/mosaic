@@ -21,11 +21,13 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.dataset import _dataset_base_dir
+
+from .spec import register_feature
 from mosaic.core.helpers import to_safe_name
 
-from .helpers import _build_index_row
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput
+from .helpers import PartialIndexRow, _build_index_row
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput
 
 # ---------------------------------------------------------------------------
 # Path to the runner script shipped alongside this module
@@ -409,7 +411,7 @@ class KpmsFit:
         self.storage_use_input_suffix = True
         self._ds = None
         self._run_root: Optional[Path] = None
-        self._additional_index_rows: list[dict] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
         self._scope_filter_dict: Optional[dict] = None
         self._scope_constraints: Optional[dict] = None
 
@@ -427,7 +429,7 @@ class KpmsFit:
     def set_scope_constraints(self, constraints: Optional[dict]) -> None:
         self._scope_constraints = constraints
 
-    def get_additional_index_rows(self) -> list[dict]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         return list(self._additional_index_rows)
 
     # ----------------------- Feature protocol --------------------
@@ -575,7 +577,6 @@ class KpmsFit:
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
             _build_index_row(
-                safe_marker_seq,
                 "",
                 marker_seq,
                 marker_path,

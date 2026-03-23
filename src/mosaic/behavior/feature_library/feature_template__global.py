@@ -29,18 +29,19 @@ import joblib
 import numpy as np
 import pandas as pd
 
-# from mosaic.core.dataset import register_feature  # <-- uncomment when ready
+# from .spec import register_feature  # <-- uncomment when ready
 from mosaic.core.dataset import _dataset_base_dir
 from mosaic.core.helpers import to_safe_name
 
 from .helpers import (
+    PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
     _build_sequence_lookup,
     _parse_scope_filter,
     _resolve_sequence_identity,
 )
-from .params import Inputs, NNResult, OutputType, Params, Result
+from .spec import Inputs, NNResult, OutputType, Params, Result
 
 
 @final
@@ -96,7 +97,7 @@ class MyGlobalFeature:
         self._allowed_safe_sequences: set[str] | None = None
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
-        self._additional_index_rows: list[dict[str, object]] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
         self._artifacts: dict[str, object] = {}
 
     # ----------------------- Dataset hooks -----------------------
@@ -113,7 +114,7 @@ class MyGlobalFeature:
         """Set by run_feature before fit(); use for streaming writes."""
         self._run_root = Path(run_root)
 
-    def get_additional_index_rows(self) -> list[dict[str, object]]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         """Return index rows for artifacts written during fit/save_model."""
         return list(self._additional_index_rows)
 
@@ -253,7 +254,6 @@ class MyGlobalFeature:
 
         self._additional_index_rows.append(
             _build_index_row(
-                safe_seq,
                 group,
                 sequence,
                 out_path,

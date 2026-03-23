@@ -22,14 +22,14 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-from mosaic.behavior.feature_library.params import Inputs, Result
-from mosaic.core.dataset import (
-    _feature_index_path,
-    _feature_run_root,
-    _latest_feature_run_root,
-    _resolve_inputs,
-)
+from mosaic.behavior.feature_library.spec import Inputs, Result
+from mosaic.core.dataset import _resolve_inputs
 from mosaic.core.helpers import load_labels_for_feature_frames, to_safe_name
+from mosaic.core.pipeline.index import (
+    feature_index_path,
+    feature_run_root,
+    latest_feature_run_root,
+)
 
 from .helpers import XGB_PARAM_PRESETS, to_jsonable, undersample_then_smote
 
@@ -251,7 +251,11 @@ class BehaviorXGBoostModel:
                 )
                 neg = max(1, int((yt == 0).sum()))
                 spw = float(neg) / max(1, float((yt == 1).sum()))
-                resampled = cfg.get("foreground_samples") is not None or cfg.get("undersample_ratio", 3.0) != 1.0 or cfg.get("use_smote")
+                resampled = (
+                    cfg.get("foreground_samples") is not None
+                    or cfg.get("undersample_ratio", 3.0) != 1.0
+                    or cfg.get("use_smote")
+                )
                 if resampled:
                     spw = 1.0
                 params = dict(xgb_params)
@@ -512,17 +516,11 @@ class BehaviorXGBoostModel:
             raise RuntimeError(f"No rows found for feature {feature} run_id={run_id}")
         df["sequence"] = df["sequence"].fillna("").astype(str)
         df["group"] = df["group"].fillna("").astype(str)
-        if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(
-                lambda v: to_safe_name(v) if v else ""
-            )
 
         feature_columns: Optional[List[str]] = None
         payloads: Dict[str, dict] = {}
         for _, row in df.iterrows():
-            safe_seq = str(
-                row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
-            )
+            safe_seq = to_safe_name(str(row.get("sequence", "")))
             if not safe_seq:
                 continue
             abs_raw = row.get("abs_path", "")
@@ -577,9 +575,9 @@ class BehaviorXGBoostModel:
             feat_name = spec["feature"]
             run_id = spec.get("run_id")
             if run_id is None:
-                run_id, run_root = _latest_feature_run_root(ds, feat_name)
+                run_id, run_root = latest_feature_run_root(ds, feat_name)
             else:
-                run_root = _feature_run_root(ds, feat_name, run_id)
+                run_root = feature_run_root(ds, feat_name, run_id)
             resolved_spec = dict(spec)
             resolved_spec["resolved_run_id"] = run_id
             resolved_spec["run_id"] = run_id
@@ -868,15 +866,9 @@ class BehaviorXGBoostModel:
         df = pd.read_csv(idx_path)
         df["sequence"] = df["sequence"].fillna("").astype(str)
         df["group"] = df["group"].fillna("").astype(str)
-        if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = df["sequence"].apply(
-                lambda v: to_safe_name(v) if v else ""
-            )
         lookup = {}
         for _, row in df.iterrows():
-            safe_seq = str(
-                row.get("sequence_safe") or to_safe_name(row.get("sequence", ""))
-            )
+            safe_seq = to_safe_name(str(row.get("sequence", "")))
             path = str(row.get("abs_path", "")).strip()
             if not safe_seq or not path:
                 continue
@@ -890,26 +882,20 @@ class BehaviorXGBoostModel:
     def _feature_sequence_map(
         self, ds, feature_name: str, run_id: str
     ) -> Dict[Path, str]:
-        idx_path = _feature_index_path(ds, feature_name)
+        idx_path = feature_index_path(ds, feature_name)
         if not idx_path.exists():
             return {}
         df = pd.read_csv(idx_path)
         df = df[df["run_id"].astype(str) == str(run_id)]
         if df.empty:
             return {}
-        if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = (
-                df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
-            )
         mapping = {}
         for _, row in df.iterrows():
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
             resolved = ds.resolve_path(abs_path)
-            mapping[resolved] = row.get("sequence_safe") or to_safe_name(
-                row.get("sequence", "")
-            )
+            mapping[resolved] = to_safe_name(str(row.get("sequence", "")))
         return mapping
 
     def _feature_metadata_map(
@@ -921,7 +907,7 @@ class BehaviorXGBoostModel:
     ) -> Dict[Path, dict]:
         if cache is not None and (feature_name, run_id) in cache:
             return cache[(feature_name, run_id)]
-        idx_path = _feature_index_path(ds, feature_name)
+        idx_path = feature_index_path(ds, feature_name)
         if not idx_path.exists():
             return {}
         df = pd.read_csv(idx_path)
@@ -937,7 +923,6 @@ class BehaviorXGBoostModel:
             mapping[resolved] = {
                 "sequence": row.get("sequence", ""),
                 "group": row.get("group", ""),
-                "sequence_safe": row.get("sequence_safe", ""),
             }
         if cache is not None:
             cache[(feature_name, run_id)] = mapping

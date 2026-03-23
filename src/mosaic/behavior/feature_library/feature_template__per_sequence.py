@@ -22,8 +22,8 @@ from typing import final
 import numpy as np
 import pandas as pd
 
-# from mosaic.core.dataset import register_feature  # <-- uncomment when ready
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+# from .spec import register_feature  # <-- uncomment when ready
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 @final

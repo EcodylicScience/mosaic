@@ -19,9 +19,12 @@ from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.dataset import _dataset_base_dir
+
+from .spec import register_feature
 
 from .helpers import (
+    PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
     _build_sequence_lookup,
@@ -30,7 +33,7 @@ from .helpers import (
     _parse_scope_filter,
     _resolve_sequence_identity,
 )
-from .params import (
+from .spec import (
     ArtifactSpec,
     Inputs,
     JoblibLoadSpec,
@@ -139,9 +142,7 @@ class GlobalTSNE:
 
         feature: str = "global-tsne"
         pattern: str = "global_templates_features.npz"
-        load: NpzLoadSpec = Field(
-            default_factory=lambda: NpzLoadSpec(key="templates")
-        )
+        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="templates"))
 
     class TSNECoordsArtifact(ArtifactSpec[NpzLoadSpec]):
         """t-SNE coordinates of templates (global_tsne_templates.npz)."""
@@ -244,7 +245,7 @@ class GlobalTSNE:
         self._run_root: Path | None = None
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
-        self._additional_index_rows: list[dict[str, object]] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
 
     # dataset hook
     def bind_dataset(self, ds: object) -> None:
@@ -258,7 +259,7 @@ class GlobalTSNE:
     def set_run_root(self, run_root: Path) -> None:
         self._run_root = Path(run_root)
 
-    def get_additional_index_rows(self) -> list[dict[str, object]]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         if self._additional_index_rows:
             return list(self._additional_index_rows)
         return self._discover_existing_coord_rows()
@@ -445,7 +446,9 @@ class GlobalTSNE:
             np.savez_compressed(
                 run_root / "global_tsne_templates.npz",
                 Y=Y_templates,
-                sel=self._template_indices if self._template_indices is not None else np.array([], int),
+                sel=self._template_indices
+                if self._template_indices is not None
+                else np.array([], int),
             )
 
         # Save embedding + scaler
@@ -485,9 +488,7 @@ class GlobalTSNE:
     def _load_embedding(
         self, artifact: GlobalTSNE.EmbeddingArtifact
     ) -> tuple[TSNEEmbedding, StandardScaler | None]:
-        _, run_root = _get_feature_run_root(
-            self._ds, artifact.feature, artifact.run_id
-        )
+        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
         files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
@@ -514,9 +515,7 @@ class GlobalTSNE:
         return embedding, scaler
 
     def _load_scaler(self, artifact: GlobalTSNE.ScalerArtifact) -> StandardScaler:
-        _, run_root = _get_feature_run_root(
-            self._ds, artifact.feature, artifact.run_id
-        )
+        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
         files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
@@ -532,10 +531,10 @@ class GlobalTSNE:
             )
         return obj
 
-    def _load_templates(self, artifact: GlobalTSNE.TemplatesArtifact) -> np.ndarray | None:
-        _, run_root = _get_feature_run_root(
-            self._ds, artifact.feature, artifact.run_id
-        )
+    def _load_templates(
+        self, artifact: GlobalTSNE.TemplatesArtifact
+    ) -> np.ndarray | None:
+        _, run_root = _get_feature_run_root(self._ds, artifact.feature, artifact.run_id)
         files = sorted(run_root.glob(artifact.pattern))
         if not files:
             raise FileNotFoundError(
@@ -587,14 +586,10 @@ class GlobalTSNE:
         self._additional_index_rows = [
             r
             for r in self._additional_index_rows
-            if not (
-                str(r.get("group", "")) == group
-                and str(r.get("sequence", "")) == sequence
-            )
+            if not (r.group == group and r.sequence == sequence)
         ]
         self._additional_index_rows.append(
             _build_index_row(
-                safe_seq,
                 group,
                 sequence,
                 out_path,
@@ -630,7 +625,6 @@ class GlobalTSNE:
             )
             rows.append(
                 _build_index_row(
-                    safe_seq,
                     group,
                     sequence,
                     fp,

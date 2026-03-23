@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import KeysView
+from collections.abc import Iterable, KeysView
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -13,6 +14,9 @@ from typing import (
 
 if TYPE_CHECKING:
     import pandas as pd
+
+    from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ChunkedPayload, DataPayload, StreamPayload
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from typing_extensions import TypeVar
@@ -319,9 +323,7 @@ class ArtifactSpec(Result[str], Generic[L]):
                 f"{cls.__name__} expects feature={expected!r} "
                 f"(or {expected}__from__...), got {result.feature!r}"
             )
-        return cls.model_validate(
-            {"feature": result.feature, "run_id": result.run_id}
-        )
+        return cls.model_validate({"feature": result.feature, "run_id": result.run_id})
 
 
 class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec]):
@@ -448,3 +450,51 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
         if len(feats) == 1:
             return feats[0].feature
         return "+".join(f.feature for f in feats)
+
+
+# --- Feature registry ---
+
+
+class Feature(Protocol):
+    """Interface for a feature/calculation applied over tracks."""
+
+    name: str
+    version: str
+    output_type: OutputType
+    parallelizable: bool
+    storage_feature_name: str
+    storage_use_input_suffix: bool
+
+    @property
+    def inputs(self) -> InputsLike: ...
+
+    @property
+    def params(self) -> Params: ...
+
+    def bind_dataset(self, ds: Dataset) -> None: ...
+    def set_scope_filter(self, scope: dict[str, object] | None) -> None: ...
+
+    # Fit/transform contract
+    def needs_fit(self) -> bool: ...
+    def supports_partial_fit(self) -> bool: ...
+    def loads_own_data(self) -> bool: ...
+    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
+    def partial_fit(self, df: pd.DataFrame) -> None: ...
+    def finalize_fit(self) -> None: ...
+    def transform(
+        self, df: pd.DataFrame
+    ) -> StreamPayload | ChunkedPayload | DataPayload | pd.DataFrame | None: ...
+
+    # Persistence of model state (if any)
+    def save_model(self, path: Path) -> None: ...
+    def load_model(self, path: Path) -> None: ...
+
+
+FEATURES: dict[str, type[Feature]] = {}
+
+_F = TypeVar("_F", bound=Feature)
+
+
+def register_feature(cls: type[_F]) -> type[_F]:
+    FEATURES[cls.__name__] = cls
+    return cls

@@ -12,9 +12,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
 from scipy.spatial.distance import cdist
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 # ===== Numba-accelerated union-find for connected components =====
 

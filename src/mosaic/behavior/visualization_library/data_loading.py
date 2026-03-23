@@ -4,22 +4,17 @@ This module contains functions for loading tracks and labels:
 - load_tracks_and_labels: Load tracks + feature/model labels for a sequence
 - load_ground_truth_labels: Load GT labels from labels/<kind>/
 """
+
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict, Tuple, Any, Optional
-import pandas as pd
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
+import pandas as pd
 
-from mosaic.core.helpers import to_safe_name
-
-try:
-    from mosaic.core.dataset import (
-        _yield_sequences,
-        _feature_index_path,
-        _latest_feature_run_root,
-    )
-except Exception as exc:
-    raise ImportError("visualization_library requires dataset module to be importable.") from exc
+from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
+from mosaic.core.pipeline.iteration import yield_sequences
 
 
 def _pick_label_column(df: pd.DataFrame) -> Optional[str]:
@@ -31,7 +26,19 @@ def _pick_label_column(df: pd.DataFrame) -> Optional[str]:
     for col in preferred:
         if col in df.columns:
             return col
-    skip = {"frame", "sequence", "group", "id", "id1", "id2", "id_a", "id_b", "id_A", "id_B", "entity_level"}
+    skip = {
+        "frame",
+        "sequence",
+        "group",
+        "id",
+        "id1",
+        "id2",
+        "id_a",
+        "id_b",
+        "id_A",
+        "id_B",
+        "entity_level",
+    }
     for col in df.columns:
         if col not in skip:
             return col
@@ -93,43 +100,39 @@ def load_tracks_and_labels(
         Series are indexed by frame and hold the chosen label column.
     """
     tracks_df = None
-    for _, _, df in _yield_sequences(ds, groups=[group], sequences=[sequence]):
+    for _, _, df in yield_sequences(ds, groups=[group], sequences=[sequence]):
         tracks_df = df
         break
     if tracks_df is None:
-        raise FileNotFoundError(f"No tracks found for group='{group}', sequence='{sequence}'.")
+        raise FileNotFoundError(
+            f"No tracks found for group='{group}', sequence='{sequence}'."
+        )
 
     per_id: dict[str, dict[Any, pd.Series]] = {}
     per_pair: dict[str, dict[Tuple[Any, Any], pd.Series]] = {}
     raw: dict[str, pd.DataFrame] = {}
 
-    safe_seq = to_safe_name(sequence)
-    safe_group = to_safe_name(group)
-
     for feature_name, run_id in feature_runs.items():
         # Resolve run_id if not provided
         resolved_run_id = run_id
         if not resolved_run_id:
-            resolved_run_id, _ = _latest_feature_run_root(ds, feature_name)
+            resolved_run_id, _ = latest_feature_run_root(ds, feature_name)
 
-        idx_path = _feature_index_path(ds, feature_name)
+        idx_path = feature_index_path(ds, feature_name)
         if not idx_path.exists():
-            raise FileNotFoundError(f"Missing feature index for '{feature_name}': {idx_path}")
+            raise FileNotFoundError(
+                f"Missing feature index for '{feature_name}': {idx_path}"
+            )
         df_idx = pd.read_csv(idx_path)
 
         # Normalize NaNs/None to empty strings so blank/absent groups still match
-        for col in ("sequence", "sequence_safe", "group", "group_safe"):
+        for col in ("sequence", "group"):
             if col in df_idx.columns:
                 df_idx[col] = df_idx[col].fillna("").astype(str)
 
         df_idx = df_idx[df_idx["run_id"].astype(str) == str(resolved_run_id)]
-        if "sequence_safe" in df_idx.columns:
-            df_idx = df_idx[df_idx["sequence_safe"] == safe_seq]
-        else:
-            df_idx = df_idx[df_idx["sequence"].astype(str) == str(sequence)]
-        if "group_safe" in df_idx.columns:
-            df_idx = df_idx[df_idx["group_safe"] == safe_group]
-        elif "group" in df_idx.columns:
+        df_idx = df_idx[df_idx["sequence"].astype(str) == str(sequence)]
+        if "group" in df_idx.columns:
             df_idx = df_idx[df_idx["group"].astype(str) == str(group)]
 
         if df_idx.empty:
@@ -150,13 +153,18 @@ def load_tracks_and_labels(
         df_norm = _normalize_identity_columns(df_feat)
         if "id1" in df_norm.columns:
             has_id1 = df_norm["id1"].notna()
-            has_id2 = df_norm["id2"].notna() if "id2" in df_norm.columns else pd.Series(False, index=df_norm.index)
+            has_id2 = (
+                df_norm["id2"].notna()
+                if "id2" in df_norm.columns
+                else pd.Series(False, index=df_norm.index)
+            )
 
             # Per-pair rows (id1 + id2 present)
             pair_rows = df_norm[has_id1 & has_id2]
             if not pair_rows.empty:
                 pairs = pair_rows[["id1", "id2"]].apply(
-                    lambda row: tuple(sorted((int(row["id1"]), int(row["id2"])))), axis=1
+                    lambda row: tuple(sorted((int(row["id1"]), int(row["id2"])))),
+                    axis=1,
                 )
                 pair_rows = pair_rows.assign(_pair=pairs)
                 for pair, sub in pair_rows.groupby("_pair"):
@@ -174,7 +182,9 @@ def load_tracks_and_labels(
             # Global rows (no id1) stay under None
             global_rows = df_norm[~has_id1]
             if not global_rows.empty:
-                series = global_rows.sort_values("frame").groupby("frame")[label_col].last()
+                series = (
+                    global_rows.sort_values("frame").groupby("frame")[label_col].last()
+                )
                 per_id.setdefault(feature_name, {})[None] = series.sort_index()
         else:
             # No identity columns: global series
@@ -201,23 +211,17 @@ def load_ground_truth_labels(
     labels_root = Path(ds.get_root("labels")) / label_kind
     idx_path = labels_root / "index.csv"
     if not idx_path.exists():
-        raise FileNotFoundError(f"Label index not found for kind='{label_kind}': {idx_path}")
+        raise FileNotFoundError(
+            f"Label index not found for kind='{label_kind}': {idx_path}"
+        )
     df_idx = pd.read_csv(idx_path)
     if df_idx.empty:
         raise FileNotFoundError(f"No labels indexed for kind='{label_kind}'.")
 
-    safe_group = to_safe_name(group)
-    safe_seq = to_safe_name(sequence)
-
     hits = df_idx[
-        (df_idx["group"].astype(str) == str(group)) &
-        (df_idx["sequence"].astype(str) == str(sequence))
+        (df_idx["group"].astype(str) == str(group))
+        & (df_idx["sequence"].astype(str) == str(sequence))
     ]
-    if hits.empty and {"group_safe", "sequence_safe"}.issubset(df_idx.columns):
-        hits = df_idx[
-            (df_idx["group_safe"] == safe_group) &
-            (df_idx["sequence_safe"] == safe_seq)
-        ]
     if hits.empty:
         raise FileNotFoundError(
             f"No GT labels for kind='{label_kind}' group='{group}' sequence='{sequence}'."
@@ -252,7 +256,9 @@ def load_ground_truth_labels(
     return pd.DataFrame(result)
 
 
-def demo_load_visual_inputs(ds, group: str, sequence: str, features: Dict[str, Optional[str]]):
+def demo_load_visual_inputs(
+    ds, group: str, sequence: str, features: Dict[str, Optional[str]]
+):
     """
     Small wrapper to quickly inspect what load_tracks_and_labels returns.
     Usage (notebook):

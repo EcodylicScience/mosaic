@@ -13,10 +13,10 @@ from typing import final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
 from .helpers import _pose_column_pairs
-from .params import Inputs, OutputType, Params, TrackInput
+from .spec import Inputs, OutputType, Params, TrackInput
 
 
 @final

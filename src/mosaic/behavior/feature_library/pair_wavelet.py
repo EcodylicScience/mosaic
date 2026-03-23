@@ -20,12 +20,12 @@ try:
 except Exception:
     _PYWT_OK = False
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-from .params import (
+from .spec import (
     COLUMNS,
     Inputs,
     OutputType,

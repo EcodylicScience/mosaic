@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Optional
 import json
 import math
@@ -57,7 +58,9 @@ def _make_run_id() -> str:
     return f"{now}_{suffix}"
 
 
-def _crop_to_dict(crop_rect: Optional[tuple[int, int, int, int]]) -> Optional[dict[str, int]]:
+def _crop_to_dict(
+    crop_rect: Optional[tuple[int, int, int, int]],
+) -> Optional[dict[str, int]]:
     if crop_rect is None:
         return None
     x, y, w, h = [int(v) for v in crop_rect]
@@ -139,7 +142,9 @@ def extract_frames(
         if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
             approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
             if approx_candidates > int(kmeans_max_candidates):
-                stride_mult = int(math.ceil(approx_candidates / float(kmeans_max_candidates)))
+                stride_mult = int(
+                    math.ceil(approx_candidates / float(kmeans_max_candidates))
+                )
                 effective_step = int(candidate_step) * max(1, stride_mult)
 
         candidates, features = extract_candidate_features(
@@ -164,7 +169,9 @@ def extract_frames(
         sampling_details = {
             "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
             "kmeans_grayscale": bool(kmeans_grayscale),
-            "kmeans_max_candidates": None if kmeans_max_candidates is None else int(kmeans_max_candidates),
+            "kmeans_max_candidates": None
+            if kmeans_max_candidates is None
+            else int(kmeans_max_candidates),
             "kmeans_effective_candidate_step": int(effective_step),
             "kmeans_batch_size": int(kmeans_batch_size),
             "kmeans_max_iter": int(kmeans_max_iter),
@@ -179,7 +186,12 @@ def extract_frames(
     else:
         if output_root is None:
             raise ValueError("Either output_root or output_dir must be provided.")
-        out_dir = Path(output_root).expanduser().resolve() / meta.path.stem / method_norm / run
+        out_dir = (
+            Path(output_root).expanduser().resolve()
+            / meta.path.stem
+            / method_norm
+            / run
+        )
         out_dir.mkdir(parents=True, exist_ok=False)
 
     file_records = save_frames_as_png(
@@ -189,7 +201,9 @@ def extract_frames(
         crop_rect=crop_rect,
     )
 
-    created_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    created_utc = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
     result = FrameExtractionResult(
         run_id=run,
         method=method_norm,
@@ -221,7 +235,7 @@ def extract_frames(
 
 
 def extract_frames_multi(
-    video_paths: list[Path | str],
+    video_paths: Sequence[Path | str],
     output_root: Path | str | None = None,
     n_frames: int = 50,
     method: str = "uniform",
@@ -274,7 +288,9 @@ def extract_frames_multi(
         if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
             approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
             if approx_candidates > int(kmeans_max_candidates):
-                stride_mult = int(math.ceil(approx_candidates / float(kmeans_max_candidates)))
+                stride_mult = int(
+                    math.ceil(approx_candidates / float(kmeans_max_candidates))
+                )
                 effective_step = int(candidate_step) * max(1, stride_mult)
 
         candidates, features = extract_candidate_features_multi(
@@ -299,7 +315,9 @@ def extract_frames_multi(
         sampling_details = {
             "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
             "kmeans_grayscale": bool(kmeans_grayscale),
-            "kmeans_max_candidates": None if kmeans_max_candidates is None else int(kmeans_max_candidates),
+            "kmeans_max_candidates": None
+            if kmeans_max_candidates is None
+            else int(kmeans_max_candidates),
             "kmeans_effective_candidate_step": int(effective_step),
             "kmeans_batch_size": int(kmeans_batch_size),
             "kmeans_max_iter": int(kmeans_max_iter),
@@ -326,7 +344,9 @@ def extract_frames_multi(
     )
     reader.close()
 
-    created_utc = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    created_utc = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
     result = FrameExtractionResult(
         run_id=run,
         method=method_norm,

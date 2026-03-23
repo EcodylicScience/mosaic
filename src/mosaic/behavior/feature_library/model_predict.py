@@ -13,9 +13,9 @@ from typing import final
 
 import pandas as pd
 
-from mosaic.core.dataset import _model_run_root, register_feature
+from mosaic.core.pipeline.models import model_run_root
 
-from .params import Inputs, OutputType, Params, Result
+from .spec import Inputs, OutputType, Params, Result, register_feature
 
 
 @final
@@ -87,7 +87,7 @@ class ModelPredictFeature:
         )
         if not storage_model_name:
             raise ValueError("Model must define 'name' or params['model_name'].")
-        run_root = _model_run_root(ds, storage_model_name, run_id)
+        run_root = model_run_root(ds, storage_model_name, run_id)
         if not run_root.exists():
             raise FileNotFoundError(f"Model artifacts not found: {run_root}")
         if not hasattr(self._model, "load_trained_model"):

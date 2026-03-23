@@ -16,15 +16,11 @@ import pandas as pd
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
-from mosaic.core.dataset import (
-    _feature_index_path,
-    _latest_feature_run_root,
-    register_feature,
-)
 from mosaic.core.helpers import to_safe_name
+from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 
 from .helpers import _load_array_from_spec
-from .params import (
+from .spec import (
     COLUMNS,
     ArtifactSpec,
     Inputs,
@@ -33,6 +29,7 @@ from .params import (
     Params,
     ParquetLoadSpec,
     Result,
+    register_feature,
 )
 
 
@@ -197,10 +194,6 @@ class TemporalStackingFeature:
             )
 
         safe_seq = to_safe_name(sequence)
-        # If scope_filter provides canonical mapping, prefer it
-        if self._scope_filter:
-            pair_map = self._scope_filter.get("pair_safe_map") or {}
-            safe_seq = pair_map.get((group, sequence), safe_seq)
         if (
             self._allowed_safe_sequences
             and safe_seq not in self._allowed_safe_sequences
@@ -313,7 +306,7 @@ class TemporalStackingFeature:
                 continue
             run_id = spec.run_id
             if run_id is None:
-                run_id, _ = _latest_feature_run_root(self._ds, feat_name)
+                run_id, _ = latest_feature_run_root(self._ds, feat_name)
             else:
                 run_id = str(run_id)
             mapping = self._build_sequence_mapping(feat_name, run_id, allowed)
@@ -330,7 +323,7 @@ class TemporalStackingFeature:
     def _build_sequence_mapping(
         self, feature_name: str, run_id: str, allowed: set[str] | None
     ) -> dict[str, Path]:
-        idx_path = _feature_index_path(self._ds, feature_name)
+        idx_path = feature_index_path(self._ds, feature_name)
         if not idx_path.exists():
             raise FileNotFoundError(
                 f"temporal-stack: missing index for feature '{feature_name}' -> {idx_path}"
@@ -341,16 +334,13 @@ class TemporalStackingFeature:
             raise ValueError(
                 f"temporal-stack: feature '{feature_name}' run_id='{run_id}' has no rows."
             )
-        if "sequence_safe" not in df.columns:
-            df["sequence_safe"] = (
-                df["sequence"].fillna("").apply(lambda v: to_safe_name(v) if v else "")
-            )
-        df = df[df["sequence_safe"].astype(str).str.strip() != ""]
+        df["_seq_safe"] = df["sequence"].fillna("").apply(lambda v: to_safe_name(v))
+        df = df[df["_seq_safe"] != ""]
         if allowed:
-            df = df[df["sequence_safe"].isin(allowed)]
+            df = df[df["_seq_safe"].isin(allowed)]
         mapping: dict[str, Path] = {}
         for _, row in df.iterrows():
-            seq_safe = str(row["sequence_safe"])
+            seq_safe = str(row["_seq_safe"])
             abs_path = row.get("abs_path")
             if not seq_safe or not isinstance(abs_path, str) or not abs_path:
                 continue

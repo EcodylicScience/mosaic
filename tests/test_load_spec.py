@@ -11,14 +11,13 @@ import pytest
 from mosaic.behavior.feature_library.helpers import (
     _load_array_from_spec,
 )
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
     ArtifactSpec,
     JoblibLoadSpec,
     NpzLoadSpec,
     ParquetLoadSpec,
     Result,
 )
-
 
 # --- Fixtures ---
 
@@ -186,9 +185,7 @@ class TestLoadIdentityFromSpec:
         from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
 
         p = tmp_path / "pairs.parquet"
-        df = pd.DataFrame(
-            {"id1": [1, 1], "id2": [2, 2], "feat": [0.5, 0.6]}
-        )
+        df = pd.DataFrame({"id1": [1, 1], "id2": [2, 2], "feat": [0.5, 0.6]})
         df.to_parquet(p, index=False)
 
         helper = StreamingFeatureHelper(None, "test")
@@ -295,16 +292,14 @@ class TestBuildManifestSkipsGlobalArtifacts:
 
         helper = StreamingFeatureHelper(None, "test")
 
-        spec = ArtifactSpec(
-            feature="global-kmeans", load=ParquetLoadSpec()
-        )
+        spec = ArtifactSpec(feature="global-kmeans", load=ParquetLoadSpec())
 
         seq_map = {indexed_file.resolve(): "my_sequence_2"}
 
         with (
             patch.object(helper, "_get_seq_map", return_value=seq_map),
             patch(
-                "mosaic.core.dataset._latest_feature_run_root",
+                "mosaic.core.pipeline.index.latest_feature_run_root",
                 return_value=("run_001", run_root),
             ),
         ):

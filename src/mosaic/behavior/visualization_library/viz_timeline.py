@@ -26,7 +26,7 @@ import seaborn as sns
 from mosaic.behavior.feature_library.helpers import (
     _normalize_identity_columns,
 )
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
     FeatureLabelsSource,
     GroundTruthLabelsSource,
     InputRequire,
@@ -35,7 +35,7 @@ from mosaic.behavior.feature_library.params import (
     Params,
     Result,
 )
-from mosaic.core.dataset import register_feature
+from mosaic.behavior.feature_library.spec import register_feature
 from mosaic.core.helpers import (
     detect_label_format,
     to_safe_name,
@@ -239,9 +239,7 @@ class TimelinePlot:
             pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
-            seq_safe = str(
-                row.get("sequence_safe") or row.get("sequence") or ""
-            ).strip()
+            seq_safe = to_safe_name(str(row.get("sequence", "")))
             if not seq_safe:
                 seq_safe = to_safe_name(pth.stem)
             entries.append((seq_safe, pth))

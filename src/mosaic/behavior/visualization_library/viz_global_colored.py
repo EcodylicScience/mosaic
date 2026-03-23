@@ -20,7 +20,7 @@ import pandas as pd
 import seaborn as sns
 
 from mosaic.behavior.feature_library.helpers import _build_path_sequence_map
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
     ArtifactSpec,
     FeatureLabelsSource,
     GroundTruthLabelsSource,
@@ -34,7 +34,7 @@ from mosaic.behavior.feature_library.params import (
     ParquetLoadSpec,
     Result,
 )
-from mosaic.core.dataset import register_feature
+from mosaic.behavior.feature_library.spec import register_feature
 from mosaic.core.helpers import (
     detect_label_format,
     expand_labels_to_dense,
@@ -284,9 +284,7 @@ class VizGlobalColored:
             pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
-            seq_safe = str(
-                row.get("sequence_safe") or row.get("sequence") or ""
-            ).strip()
+            seq_safe = to_safe_name(str(row.get("sequence", "")))
             if not seq_safe:
                 seq_safe = to_safe_name(pth.stem)
             entries.append((seq_safe, pth))
@@ -391,9 +389,7 @@ class VizGlobalColored:
                 if not pth.exists():
                     continue
                 # Get sequence key
-                seq_safe = str(
-                    row.get("sequence_safe") or row.get("sequence") or ""
-                ).strip()
+                seq_safe = to_safe_name(str(row.get("sequence", "")))
                 if not seq_safe:
                     seq_safe = to_safe_name(
                         pth.stem.split("__")[-1] if "__" in pth.stem else pth.stem

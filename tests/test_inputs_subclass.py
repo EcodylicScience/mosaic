@@ -7,14 +7,15 @@ from typing import Iterable
 
 import pandas as pd
 
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
+    Feature,
     Inputs,
     OutputType,
     Params,
     Result,
     TrackInput,
+    register_feature,
 )
-from mosaic.core.dataset import Feature, register_feature
 
 
 class _TrackOnlyFeature:

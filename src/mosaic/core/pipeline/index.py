@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pandas as pd
+
+from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
+
+def feature_run_root(ds: Dataset, feature_name: str, run_id: str) -> Path:
+    return ds.get_root("features") / feature_name / run_id
+
+
+def feature_index_path(ds: Dataset, feature_name: str) -> Path:
+    return ds.get_root("features") / feature_name / "index.csv"
+
+
+# --- Feature Index ---
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureIndexRow(IndexRowBase):
+    """Typed row for the feature index CSV."""
+
+    feature: str
+    version: str
+    group: str
+    sequence: str
+    abs_path: Path
+    params_hash: str
+    n_rows: int = 0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.abs_path, str):
+            object.__setattr__(self, "abs_path", Path(self.abs_path))
+        if not self.abs_path.name:
+            raise ValueError(
+                f"FeatureIndexRow.abs_path cannot be empty "
+                f"(feature={self.feature!r}, group={self.group!r}, sequence={self.sequence!r})"
+            )
+        if not self.abs_path.exists():
+            raise FileNotFoundError(
+                f"FeatureIndexRow.abs_path does not exist: {self.abs_path} "
+                f"(feature={self.feature!r}, group={self.group!r}, sequence={self.sequence!r})"
+            )
+
+
+def feature_index(path: Path) -> IndexCSV[FeatureIndexRow]:
+    """Factory: return an IndexCSV configured for the feature index schema."""
+    return IndexCSV(
+        path,
+        FeatureIndexRow,
+        dedup_keys=["run_id", "group", "sequence"],
+    )
+
+
+def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
+    return feature_index(feature_index_path(ds, feature_name)).list_runs()
+
+
+def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
+    idx = feature_index(feature_index_path(ds, feature_name))
+    run_id = idx.latest_run_id()
+    return run_id, feature_run_root(ds, feature_name, run_id)

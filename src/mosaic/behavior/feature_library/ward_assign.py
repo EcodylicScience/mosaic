@@ -18,10 +18,13 @@ from pydantic import Field
 from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.dataset import _dataset_base_dir
+
+from .spec import register_feature
 from mosaic.core.helpers import to_safe_name
 
 from .helpers import (
+    PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
     _build_sequence_lookup,
@@ -33,7 +36,7 @@ from .helpers import (
 )
 from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
-from .params import (
+from .spec import (
     ArtifactSpec,
     Inputs,
     JoblibLoadSpec,
@@ -111,9 +114,7 @@ class WardAssignClustering:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
 
-        self.storage_feature_name = (
-            f"ward-assign__from__{self.params.ward.feature}"
-        )
+        self.storage_feature_name = f"ward-assign__from__{self.params.ward.feature}"
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
 
@@ -129,7 +130,7 @@ class WardAssignClustering:
         self._pair_map: dict[str, tuple[str, str]] = {}
         self._scope_filter: dict[str, object] | None = None
         self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
-        self._additional_index_rows: list[dict[str, object]] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
 
     def bind_dataset(self, ds: object) -> None:
         self._ds = ds
@@ -234,7 +235,6 @@ class WardAssignClustering:
         df_out.to_parquet(out_path, index=False)
         self._additional_index_rows.append(
             _build_index_row(
-                safe_seq,
                 group,
                 sequence,
                 out_path,
@@ -372,7 +372,6 @@ class WardAssignClustering:
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
             _build_index_row(
-                safe_marker_seq,
                 "",
                 marker_seq,
                 marker_path,
@@ -390,7 +389,7 @@ class WardAssignClustering:
             path,
         )
 
-    def get_additional_index_rows(self) -> list[dict[str, object]]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         return list(self._additional_index_rows)
 
 

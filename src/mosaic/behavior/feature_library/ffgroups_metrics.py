@@ -6,10 +6,10 @@ from typing import Iterable, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 from mosaic.core.helpers import chunk_sequence
 
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 def _wrap_angle(x: np.ndarray) -> np.ndarray:

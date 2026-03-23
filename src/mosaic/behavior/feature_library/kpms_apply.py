@@ -17,10 +17,13 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import _dataset_base_dir, register_feature
+from mosaic.core.dataset import _dataset_base_dir
+
+from .spec import register_feature
 from mosaic.core.helpers import to_safe_name
 
 from .helpers import (
+    PartialIndexRow,
     _build_index_row,
     _get_feature_run_root,
 )
@@ -28,7 +31,7 @@ from .kpms_fit import (
     _collect_and_serialize_tracks,
     _run_kpms_subprocess,
 )
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput
 
 
 @final
@@ -91,7 +94,7 @@ class KpmsApply:
         self.storage_use_input_suffix = True
         self._ds = None
         self._run_root: Optional[Path] = None
-        self._additional_index_rows: list[dict] = []
+        self._additional_index_rows: list[PartialIndexRow] = []
         self._scope_filter_dict: Optional[dict] = None
         self._scope_constraints: Optional[dict] = None
 
@@ -109,7 +112,7 @@ class KpmsApply:
     def set_scope_constraints(self, constraints: Optional[dict]) -> None:
         self._scope_constraints = constraints
 
-    def get_additional_index_rows(self) -> list[dict]:
+    def get_additional_index_rows(self) -> list[PartialIndexRow]:
         return list(self._additional_index_rows)
 
     # ----------------------- Feature protocol --------------------
@@ -338,7 +341,6 @@ class KpmsApply:
 
             self._additional_index_rows.append(
                 _build_index_row(
-                    safe_seq,
                     group,
                     sequence or recording_name,
                     out_path,

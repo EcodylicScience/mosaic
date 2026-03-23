@@ -30,15 +30,13 @@ Usage
 >>> dataset.run_feature(feat)
 >>>
 >>> # List all registered features
->>> from mosaic.core.dataset import FEATURES
+>>> from mosaic.behavior.feature_library.spec import FEATURES
 >>> print(list(FEATURES.keys()))
 >>>
 >>> # List features by output type
 >>> from mosaic.behavior.feature_library import list_features_by_type
 >>> print(list_features_by_type("per_frame"))
 """
-
-from mosaic.core.dataset import FEATURES, register_feature
 
 # Import all submodules to trigger @register_feature auto-registration
 from . import (
@@ -85,9 +83,11 @@ from .pair_egocentric import PairEgocentricFeatures
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
-from .params import (
+from .spec import (
     COLUMNS,
+    FEATURES,
     ArtifactSpec,
+    Feature,
     FeatureLabelsSource,
     GroundTruthLabelsSource,
     Inputs,
@@ -95,6 +95,7 @@ from .params import (
     OutputType,
     Result,
     TrackInput,
+    register_feature,
 )
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
@@ -164,6 +165,8 @@ def get_feature_output_type(feature_name: str) -> OutputType:
 
 __all__ = [
     # Registry
+    "Feature",
+    "FEATURES",
     "register_feature",
     # Types and params
     "ArtifactSpec",

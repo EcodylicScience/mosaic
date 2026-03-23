@@ -10,13 +10,14 @@ from __future__ import annotations
 import gc
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Iterator
 
-from .params import ArtifactSpec, JoblibLoadSpec, NpzLoadSpec, ParquetLoadSpec
+from .spec import ArtifactSpec, JoblibLoadSpec, NpzLoadSpec, ParquetLoadSpec
 
 if TYPE_CHECKING:
-    from .params import DictModel, LoadSpec, Result
+    from .spec import DictModel, LoadSpec, Result
 
 import numpy as np
 import pandas as pd
@@ -140,7 +141,6 @@ def _load_array_from_spec(
     return A.astype(np.float32, copy=False), frames
 
 
-
 def _normalize_identity_columns(
     df: pd.DataFrame,
 ) -> tuple[pd.Series | None, pd.Series | None, str]:
@@ -205,14 +205,14 @@ def _build_path_sequence_map(
         Mapping from absolute path to sequence_safe name
     """
     # Import here to avoid circular import
-    from mosaic.core.dataset import _feature_index_path
+    from mosaic.core.pipeline.index import feature_index_path
 
     mapping: dict[Path, str] = {}
     if ds is None or not feature_name or run_id is None:
         return mapping
 
     try:
-        idx_path = _feature_index_path(ds, feature_name)
+        idx_path = feature_index_path(ds, feature_name)
     except Exception:
         return mapping
     if not idx_path.exists():
@@ -228,20 +228,11 @@ def _build_path_sequence_map(
     if df.empty:
         return mapping
 
-    if "sequence_safe" not in df.columns:
-        df["sequence_safe"] = (
-            df["sequence"]
-            .fillna("")
-            .apply(lambda v: to_safe_name(str(v)) if str(v).strip() else "")
-        )
-
     for _, row in df.iterrows():
         abs_raw = row.get("abs_path")
         if not isinstance(abs_raw, str) or not abs_raw:
             continue
         try:
-            # Use dataset's resolve_path to handle relative paths correctly
-            # (relative paths are stored relative to dataset root, not CWD)
             abs_path = (
                 ds.resolve_path(abs_raw)
                 if hasattr(ds, "resolve_path")
@@ -249,14 +240,9 @@ def _build_path_sequence_map(
             )
         except Exception:
             abs_path = Path(abs_raw)
-        seq_val = (
-            row.get("sequence_safe")
-            or row.get("sequence")
-            or row.get("group_safe")
-            or row.get("group")
-            or ""
-        )
-        seq_val = str(seq_val).strip()
+        seq_val = to_safe_name(str(row.get("sequence", "")))
+        if not seq_val:
+            seq_val = to_safe_name(str(row.get("group", "")))
         if not seq_val:
             seq_val = to_safe_name(Path(abs_raw).stem)
         mapping[abs_path] = seq_val
@@ -280,10 +266,10 @@ def _build_nn_lookup(
     feature parquet.  Returns an empty dict when the NN feature has not been
     computed for this sequence (fail-open).
     """
-    from mosaic.core.dataset import (
-        _feature_index_path,
-        _feature_run_root,
-        _latest_feature_run_root,
+    from mosaic.core.pipeline.index import (
+        feature_index_path,
+        feature_run_root,
+        latest_feature_run_root,
     )
 
     feat_name = pair_filter_spec.get("feature", "nearest-neighbor")
@@ -291,13 +277,13 @@ def _build_nn_lookup(
 
     try:
         if run_id is None:
-            run_id, _ = _latest_feature_run_root(ds, feat_name)
+            run_id, _ = latest_feature_run_root(ds, feat_name)
         else:
-            _feature_run_root(ds, feat_name, str(run_id))
+            feature_run_root(ds, feat_name, str(run_id))
     except (ValueError, FileNotFoundError):
         return {}
 
-    idx_path = _feature_index_path(ds, feat_name)
+    idx_path = feature_index_path(ds, feat_name)
     if not idx_path.exists():
         return {}
 
@@ -310,15 +296,10 @@ def _build_nn_lookup(
     if df_idx.empty:
         return {}
 
-    if "sequence_safe" not in df_idx.columns:
-        df_idx = df_idx.copy()
-        df_idx["sequence_safe"] = (
-            df_idx["sequence"]
-            .fillna("")
-            .apply(lambda v: to_safe_name(str(v)) if str(v).strip() else "")
-        )
-
-    match = df_idx[df_idx["sequence_safe"] == sequence_safe]
+    match = df_idx[
+        df_idx["sequence"].fillna("").apply(lambda v: to_safe_name(str(v)))
+        == sequence_safe
+    ]
     if match.empty:
         return {}
 
@@ -509,7 +490,7 @@ class StreamingFeatureHelper:
         dict[str, list[tuple[Path, LoadSpec]]]
             Mapping from sequence key to list of (path, load_spec) tuples
         """
-        from mosaic.core.dataset import _feature_run_root, _latest_feature_run_root
+        from mosaic.core.pipeline.index import feature_run_root, latest_feature_run_root
 
         manifest: dict[str, list[tuple[Path, LoadSpec]]] = {}
 
@@ -524,9 +505,9 @@ class StreamingFeatureHelper:
             feat_name = spec.feature
             run_id = spec.run_id
             if run_id is None:
-                run_id, run_root = _latest_feature_run_root(self.ds, feat_name)
+                run_id, run_root = latest_feature_run_root(self.ds, feat_name)
             else:
-                run_root = _feature_run_root(self.ds, feat_name, run_id)
+                run_root = feature_run_root(self.ds, feat_name, run_id)
 
             pattern = spec.pattern
             load_spec = spec.load
@@ -812,7 +793,7 @@ def _parse_scope_filter(
     scope : dict or None
         Scope filter with optional keys:
         - safe_sequences: iterable of allowed safe sequence names
-        - pair_safe_map: {(group, sequence) -> safe_name} mapping
+        - pairs: set of (group, sequence) tuples
 
     Returns
     -------
@@ -823,12 +804,11 @@ def _parse_scope_filter(
         return None, {}
     safe_sequences = scope.get("safe_sequences")
     allowed = {str(s) for s in safe_sequences} if safe_sequences else None
-    pair_safe_map = scope.get("pair_safe_map")
+    pairs = scope.get("pairs")
     pair_map: dict[str, tuple[str, str]] = {}
-    if pair_safe_map:
-        for pair, safe in pair_safe_map.items():
-            if isinstance(pair, (list, tuple)) and len(pair) == 2:
-                pair_map[str(safe)] = (str(pair[0]), str(pair[1]))
+    if pairs:
+        for group, sequence in pairs:
+            pair_map[to_safe_name(sequence)] = (str(group), str(sequence))
     return allowed, pair_map
 
 
@@ -871,16 +851,11 @@ def _build_sequence_lookup(
         df["sequence"] = df["sequence"].fillna("").astype(str)
     else:
         df["sequence"] = ""
-    if "sequence_safe" in df.columns:
-        df["sequence_safe"] = df["sequence_safe"].fillna("").astype(str)
-    else:
-        df["sequence_safe"] = df["sequence"].apply(
-            lambda v: to_safe_name(v) if v else ""
-        )
+    df["_seq_safe"] = df["sequence"].apply(lambda v: to_safe_name(v))
     if allowed_safe_sequences:
-        df = df[df["sequence_safe"].isin({str(s) for s in allowed_safe_sequences})]
+        df = df[df["_seq_safe"].isin({str(s) for s in allowed_safe_sequences})]
     for _, row in df.iterrows():
-        safe_seq = str(row.get("sequence_safe", "")).strip()
+        safe_seq = str(row["_seq_safe"])
         if not safe_seq or safe_seq in lookup:
             continue
         lookup[safe_seq] = (str(row.get("group", "")), str(row.get("sequence", "")))
@@ -914,12 +889,12 @@ def _get_feature_run_root(
 
     If run_id is None, picks the latest finished run.
     """
-    from mosaic.core.dataset import _feature_run_root, _latest_feature_run_root
+    from mosaic.core.pipeline.index import feature_run_root, latest_feature_run_root
 
     if run_id is None:
-        run_id, run_root = _latest_feature_run_root(ds, feature_name)
+        run_id, run_root = latest_feature_run_root(ds, feature_name)
     else:
-        run_root = _feature_run_root(ds, feature_name, str(run_id))
+        run_root = feature_run_root(ds, feature_name, str(run_id))
     return str(run_id), run_root
 
 
@@ -949,9 +924,7 @@ def _load_joblib_artifact(ds, artifact: ArtifactSpec) -> object:
     _, run_root = _get_feature_run_root(ds, artifact.feature, artifact.run_id)
     files = sorted(run_root.glob(artifact.pattern))
     if not files:
-        raise FileNotFoundError(
-            f"No files matching '{artifact.pattern}' in {run_root}"
-        )
+        raise FileNotFoundError(f"No files matching '{artifact.pattern}' in {run_root}")
     obj = joblib.load(files[0])
     return obj if artifact.load.key is None else obj[artifact.load.key]
 
@@ -975,9 +948,7 @@ def _load_artifact_matrix(ds, artifact: ArtifactSpec) -> np.ndarray:
     _, run_root = _get_feature_run_root(ds, artifact.feature, artifact.run_id)
     files = sorted(run_root.glob(artifact.pattern))
     if not files:
-        raise FileNotFoundError(
-            f"No files matching '{artifact.pattern}' in {run_root}"
-        )
+        raise FileNotFoundError(f"No files matching '{artifact.pattern}' in {run_root}")
 
     loader = artifact.load
     kind = loader.kind
@@ -1044,21 +1015,28 @@ def _load_artifact_matrix(ds, artifact: ArtifactSpec) -> np.ndarray:
         raise ValueError(f"Unsupported artifact load.kind='{kind}'")
 
 
+@dataclass(frozen=True, slots=True)
+class PartialIndexRow:
+    """Partial index row from global features (group/sequence/path/n_rows).
+
+    Produced by _build_index_row(), consumed by _append_external_row()
+    in run.py which fills in the remaining FeatureIndexRow fields.
+    """
+
+    group: str
+    sequence: str
+    abs_path: str
+    n_rows: int = 0
+
+
 def _build_index_row(
-    safe_seq: str,
     group: str,
     sequence: str,
     output_path: Path,
-    n_rows: int | None = None,
+    n_rows: int = 0,
     dataset_root: Path | None = None,
-) -> dict:
-    """
-    Build a standard index row dict for get_additional_index_rows().
-
-    When *dataset_root* is provided, ``abs_path`` is stored relative to it
-    (portable).  Otherwise falls back to the resolved absolute path.
-    """
-    safe_group = to_safe_name(group) if group else ""
+) -> PartialIndexRow:
+    """Build a partial index row for get_additional_index_rows()."""
     resolved = output_path.resolve()
     if dataset_root is not None:
         try:
@@ -1067,11 +1045,9 @@ def _build_index_row(
             path_str = str(resolved)
     else:
         path_str = str(resolved)
-    return {
-        "group": group,
-        "sequence": sequence,
-        "group_safe": safe_group,
-        "sequence_safe": safe_seq,
-        "abs_path": path_str,
-        "n_rows": n_rows,
-    }
+    return PartialIndexRow(
+        group=group,
+        sequence=sequence,
+        abs_path=path_str,
+        n_rows=n_rows,
+    )

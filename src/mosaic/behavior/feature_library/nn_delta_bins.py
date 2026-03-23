@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
-from .params import Inputs, OutputType, Params, TrackInput
+from .spec import Inputs, OutputType, Params, TrackInput
 
 
 def _binned_mean_fast(

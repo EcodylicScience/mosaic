@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.behavior.feature_library.params import (
+from mosaic.behavior.feature_library.spec import (
     COLUMNS,
     Inputs,
     OutputType,
@@ -22,7 +22,7 @@ from mosaic.behavior.feature_library.params import (
     PoseConfig,
     TrackInput,
 )
-from mosaic.core.dataset import register_feature
+from mosaic.behavior.feature_library.spec import register_feature
 
 from .helpers import (
     compute_heading_angle,

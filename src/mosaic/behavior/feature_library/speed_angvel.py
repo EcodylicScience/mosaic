@@ -6,9 +6,9 @@ from typing import Iterable, Optional, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_feature
+from .spec import register_feature
 
-from .params import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:

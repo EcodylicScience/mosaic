@@ -1,11 +1,13 @@
-from urllib.parse import quote, unquote
 from typing import Optional, Tuple
+from urllib.parse import quote, unquote
+
 import numpy as np
 import pandas as pd
 
+
 def to_safe_name(s: str) -> str:
-    # encode EVERYTHING that could be problematic on any OS
-    return quote(s, safe="")   # e.g. "task1/train/m1" -> "task1%2Ftrain%2Fm1"
+    return quote(s.strip(), safe="")
+
 
 def from_safe_name(safe: str) -> str:
     return unquote(safe)
@@ -14,6 +16,7 @@ def from_safe_name(safe: str) -> str:
 # =============================================================================
 # Label Format Helpers
 # =============================================================================
+
 
 def detect_label_format(npz_data: dict) -> str:
     """
@@ -35,13 +38,17 @@ def detect_label_format(npz_data: dict) -> str:
     ...     fmt = detect_label_format(npz)
     """
     # Check for explicit label_format key
-    if "label_format" in npz_data.files if hasattr(npz_data, 'files') else "label_format" in npz_data:
+    if (
+        "label_format" in npz_data.files
+        if hasattr(npz_data, "files")
+        else "label_format" in npz_data
+    ):
         fmt = str(npz_data["label_format"])
         if fmt:
             return fmt
 
     # Heuristic detection based on keys present
-    keys = set(npz_data.files if hasattr(npz_data, 'files') else npz_data.keys())
+    keys = set(npz_data.files if hasattr(npz_data, "files") else npz_data.keys())
 
     # individual_pair_v1: has frames, labels, individual_ids arrays
     if {"frames", "labels", "individual_ids"}.issubset(keys):
@@ -114,7 +121,9 @@ def expand_labels_to_dense(
     labels = np.asarray(labels, dtype=np.int64).ravel()
 
     if frames.shape[0] != labels.shape[0]:
-        raise ValueError(f"frames and labels must have same length, got {frames.shape[0]} vs {labels.shape[0]}")
+        raise ValueError(
+            f"frames and labels must have same length, got {frames.shape[0]} vs {labels.shape[0]}"
+        )
 
     if frames.shape[0] == 0:
         return np.full(n_frames or 1, default_label, dtype=np.int64)
@@ -185,8 +194,9 @@ def load_labels_auto(
     >>> frames, labels, ids = load_labels_auto("behavior/hex_03.npz",
     ...                                         return_format="sparse")
     """
-    import numpy as np
     from pathlib import Path
+
+    import numpy as np
 
     path = Path(path)
     with np.load(path, allow_pickle=True) as npz:
@@ -204,13 +214,17 @@ def load_labels_auto(
 
             # Expand to dense
             return expand_labels_to_dense(
-                frames, labels, individual_ids,
+                frames,
+                labels,
+                individual_ids,
                 n_frames=n_frames,
                 default_label=default_label,
                 individual_filter=individual_filter,
             )
 
-        elif fmt == "dense" or "labels" in (npz.files if hasattr(npz, 'files') else npz):
+        elif fmt == "dense" or "labels" in (
+            npz.files if hasattr(npz, "files") else npz
+        ):
             labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
 
             if return_format == "sparse":
@@ -323,7 +337,7 @@ def load_labels_for_feature_frames(
             )
             return result
 
-        elif "labels" in (npz.files if hasattr(npz, 'files') else npz):
+        elif "labels" in (npz.files if hasattr(npz, "files") else npz):
             # Dense format - direct indexing
             dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
 
@@ -337,9 +351,11 @@ def load_labels_for_feature_frames(
             raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
 
 
-def chunk_sequence(df: pd.DataFrame,
-                   time_chunk_sec: float | None = None,
-                   frame_chunk: int | None = None):
+def chunk_sequence(
+    df: pd.DataFrame,
+    time_chunk_sec: float | None = None,
+    frame_chunk: int | None = None,
+):
     """
     Yield (chunk_id, df_chunk, meta) from a per-sequence DataFrame.
     If time_chunk_sec is provided and 'time' exists, chunk by time.
@@ -351,35 +367,47 @@ def chunk_sequence(df: pd.DataFrame,
     time_key = "time" if "time" in df.columns else None
 
     if time_chunk_sec and time_key in df.columns:
-        starts = np.arange(df[time_key].min(), df[time_key].max() + time_chunk_sec, time_chunk_sec)
+        starts = np.arange(
+            df[time_key].min(), df[time_key].max() + time_chunk_sec, time_chunk_sec
+        )
         for idx, start in enumerate(starts):
             end = start + time_chunk_sec
             mask = (df[time_key] >= start) & (df[time_key] < end)
             sub = df[mask]
             if sub.empty:
                 continue
-            yield idx, sub, {
-                "start_time": float(start),
-                "end_time": float(end),
-                "start_frame": int(sub[frame_key].iloc[0]) if frame_key else None,
-                "end_frame": int(sub[frame_key].iloc[-1]) if frame_key else None,
-            }
+            yield (
+                idx,
+                sub,
+                {
+                    "start_time": float(start),
+                    "end_time": float(end),
+                    "start_frame": int(sub[frame_key].iloc[0]) if frame_key else None,
+                    "end_frame": int(sub[frame_key].iloc[-1]) if frame_key else None,
+                },
+            )
     elif frame_chunk and frame_key in df.columns:
         frames = df[frame_key].to_numpy()
         start_frame = frames.min()
         end_frame = frames.max()
-        for idx, start in enumerate(range(start_frame, end_frame + 1, int(frame_chunk))):
+        for idx, start in enumerate(
+            range(start_frame, end_frame + 1, int(frame_chunk))
+        ):
             end = start + int(frame_chunk)
             mask = (df[frame_key] >= start) & (df[frame_key] < end)
             sub = df[mask]
             if sub.empty:
                 continue
-            yield idx, sub, {
-                "start_frame": int(start),
-                "end_frame": int(end),
-                "start_time": float(sub[time_key].iloc[0]) if time_key else None,
-                "end_time": float(sub[time_key].iloc[-1]) if time_key else None,
-            }
+            yield (
+                idx,
+                sub,
+                {
+                    "start_frame": int(start),
+                    "end_frame": int(end),
+                    "start_time": float(sub[time_key].iloc[0]) if time_key else None,
+                    "end_time": float(sub[time_key].iloc[-1]) if time_key else None,
+                },
+            )
     else:
         meta = {}
         if frame_key:
@@ -394,6 +422,7 @@ def chunk_sequence(df: pd.DataFrame,
 # =============================================================================
 # Time/Frame Range Filtering
 # =============================================================================
+
 
 def filter_time_range(
     df: pd.DataFrame,
@@ -479,6 +508,7 @@ def resolve_frame_range(
 # =============================================================================
 # Hierarchical Naming Helpers
 # =============================================================================
+
 
 def parse_compound_name(name: str, separator: str = "__") -> list[str]:
     """
@@ -601,3 +631,15 @@ def parse_hierarchy(
         result[name] = all_parts[i] if i < len(all_parts) else None
 
     return result
+
+
+def ensure_text_column(df: pd.DataFrame, column: str, fill: str = "") -> pd.DataFrame:
+    """Make sure df[column] exists with object/string dtype so string assignments won't raise warnings."""
+    if column not in df.columns:
+        df[column] = fill
+    else:
+        if df[column].dtype != object:
+            df[column] = df[column].astype(object)
+        if fill is not None:
+            df.loc[df[column].isna(), column] = fill
+    return df
