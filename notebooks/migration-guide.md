@@ -5,7 +5,7 @@ code needs to update. Reference implementation: `notebooks/calms21-template.ipyn
 
 ## Imports
 
-Features and params are now re-exported from `__init__.py`:
+Features and types are re-exported from `__init__.py`:
 
 ```python
 # before
@@ -15,17 +15,14 @@ feature_library.global_tsne.GlobalTSNE(params=...)
 
 # after
 from mosaic.behavior.feature_library import (
-    GlobalTSNE, GlobalKMeansClustering, PairWavelet, Inputs, ...
+    GlobalTSNE, GlobalKMeansClustering, PairWavelet,
+    ExtractTemplates, GlobalScaler, ExtractLabeledTemplates, XgboostFeature,
+    Inputs, Result, ResultColumn, GroundTruthLabelsSource, ...
 )
-GlobalTSNE(Inputs(...), params=...)
 ```
 
-Same for models and visualizations:
-
-```python
-from mosaic.behavior.model_library import BehaviorXGBoostModel
-from mosaic.behavior.visualization_library import VizGlobalColored
-```
+`BehaviorXGBoostModel` is deprecated. Use `XgboostFeature` instead (see below).
+`VizTimeline` and `VizGlobalColored` are removed. Use `load_values()` instead.
 
 ## Inputs replace input_kind/input_feature/input_run_id
 
@@ -48,8 +45,7 @@ result = dataset.run_feature(feat, ...)
 - `"tracks"` -- raw track data (the default for single-track features)
 - `Result(feature=..., run_id=...)` -- output of a previous `run_feature()` call
 
-Features that only accept tracks default to `Inputs(("tracks",))`. Features that
-load their own data (global-ward, viz features) default to `Inputs(())`.
+Features that only accept tracks default to `Inputs(("tracks",))`.
 
 ### Multiple inputs replace inputsets
 
@@ -66,7 +62,7 @@ run = dataset.run_feature(tsne, input_kind="inputset",
 # after
 tsne = GlobalTSNE(
     Inputs((social_wave_result, ego_wave_result)),
-    params={"total_templates": 2000, "perplexity": 50},
+    params={"perplexity": 50, ...},
 )
 result = dataset.run_feature(tsne, ...)
 ```
@@ -81,6 +77,49 @@ To reference the latest run of a feature (same as `run_id=None` before):
 ```python
 Inputs((pose_result.use_latest(),))
 ```
+
+## Global features are composable stages
+
+GlobalTSNE no longer handles template extraction and scaling internally.
+These are now separate features chained together:
+
+```python
+# 1. Extract templates from per-sequence features
+templates = ExtractTemplates(
+    Inputs((social_wave_result, ego_wave_result)),
+    params={"n_templates": 2000},
+)
+templates_result = dataset.run_feature(templates)
+
+# 2. Fit scaler on templates, scale per-sequence data
+scaler = GlobalScaler(
+    Inputs((social_wave_result, ego_wave_result)),
+    params={
+        "templates": ExtractTemplates.TemplatesArtifact().from_result(templates_result),
+    },
+)
+scaler_result = dataset.run_feature(scaler)
+
+# 3. Extract templates from scaled data (for embedding/clustering)
+scaled_templates = ExtractTemplates(
+    Inputs((scaler_result,)),
+    params={"n_templates": 2000, "strategy": "farthest_first"},
+)
+scaled_templates_result = dataset.run_feature(scaled_templates)
+
+# 4. Fit t-SNE on scaled templates
+tsne = GlobalTSNE(
+    Inputs((scaled_templates_result,)),
+    params={
+        "perplexity": 50,
+        "templates": ExtractTemplates.TemplatesArtifact().from_result(scaled_templates_result),
+    },
+)
+tsne_result = dataset.run_feature(tsne)
+```
+
+Each stage caches independently. Re-running with different t-SNE perplexity
+reuses the existing scaler and templates.
 
 ## Artifacts replace raw dicts
 
@@ -97,13 +136,11 @@ params={
         "pattern": "global_templates_features.npz",
         "load": {"kind": "npz", "key": "templates"},
     },
-    "assign": {"scaler": {"feature": tsne_feature, ...}},
 }
 
 # after
 params={
-    "templates": GlobalTSNE.TemplatesArtifact.from_result(tsne_result),
-    "scaler": GlobalTSNE.ScalerArtifact.from_result(tsne_result),
+    "templates": ExtractTemplates.TemplatesArtifact().from_result(templates_result),
 }
 ```
 
@@ -112,40 +149,29 @@ only needs to specify which run to load from.
 
 ## Label sources
 
-Visualization features accept typed label sources instead of raw dicts:
+Ground truth labels use a typed source:
 
 ```python
-# before -- ground truth labels
+# before
 "labels": {"source": "labels", "kind": "behavior",
            "load": {"kind": "npz", "key": "labels"}}
 
 # after
 from mosaic.behavior.feature_library import GroundTruthLabelsSource
-"labels": GroundTruthLabelsSource()  # defaults match the above
-```
-
-```python
-# before -- labels from a feature artifact
-"labels": {"feature": kmeans_feature, "run_id": kmeans_run_id,
-           "pattern": "global_kmeans_labels_seq=*.npz",
-           "load": {"kind": "npz", "key": "labels"}}
-
-# after
-"labels": GlobalKMeansClustering.SeqLabelsArtifact.from_result(k_result)
+GroundTruthLabelsSource()  # defaults match the above
 ```
 
 ## Params are typed Pydantic models
 
-Feature params are now `Params` subclasses (inheriting from `DictModel`).
+Feature params are now `Params` subclasses (Pydantic `BaseModel` with `extra="forbid"`).
 Constructors accept `dict` overrides that get validated:
 
 ```python
 # still works -- dict overrides merged with field defaults
 feat = PairWavelet(Inputs((pose_result,)), params={"f_min": 0.2, ...})
 
-# params object is a Pydantic model, not a dict
-feat.params.f_min  # attribute access
-feat.params["f_min"]  # dict-style also works (DictModel compatibility)
+# params object is a Pydantic model
+feat.params.f_min         # attribute access
 feat.params.model_dump()  # serialize to dict
 ```
 
@@ -158,14 +184,11 @@ PairPoseDistancePCA(params={"pose": {"pose_n": 7}})
 
 ## run_feature() return value
 
-`run_feature()` now returns a `Result` dataclass instead of a raw `run_id` string.
-This is why the "after" examples throughout this guide use `result = dataset.run_feature(...)`
-instead of `run = ...` -- the variable holds a `Result`, not a plain run ID.
+`run_feature()` returns a `Result` dataclass instead of a raw `run_id` string:
 
 ```python
 # before
 run = dataset.run_feature(feat, ...)  # str (a run_id)
-feature_name = f"pair-posedistance-pca"
 
 # after
 result = dataset.run_feature(feat, ...)  # Result
@@ -177,9 +200,7 @@ Results can be passed directly to `Inputs()` and `from_result()`.
 
 ## Frame/time filtering is now on run_feature()
 
-The old `save_inputset()` accepted `filter_start_frame`, `filter_end_frame`,
-`filter_start_time`, `filter_end_time` kwargs that were stored in the inputset
-JSON. These filters are now direct parameters on `run_feature()`:
+Frame/time filters are direct parameters on `run_feature()`:
 
 ```python
 # before -- filters embedded in inputset metadata
@@ -188,19 +209,10 @@ save_inputset(dataset, "social+ego", [...],
 run = dataset.run_feature(tsne, input_kind="inputset",
                           input_feature="social+ego", ...)
 
-# after -- direct params on run_feature()
-result = dataset.run_feature(feat, groups=GROUP_SCOPE,
+# after
+result = dataset.run_feature(feat,
                              filter_start_frame=100,
                              filter_end_frame=5000)
-```
-
-Time-based filters work the same way and require `fps_default` in the dataset
-manifest metadata:
-
-```python
-result = dataset.run_feature(feat,
-                             filter_start_time=1.0,
-                             filter_end_time=50.0)
 ```
 
 Frame and time filters are mutually exclusive per boundary -- you can't set both
@@ -212,23 +224,15 @@ Semantics: `start` is inclusive (`>=`), `end` is exclusive (`<`).
 ### Nearest-neighbor pair filter moved to params
 
 The `pair_filter` dict that was stored in inputset metadata is now a typed
-parameter on feature `Params`. Unlike frame/time filters (which set data
-scope), pair filtering controls *which* pairs are used in the embedding -- an
-algorithmic choice, not a data range, so it belongs in feature params.
-
-Features with `pair_filter: NNResult | None` on their `Params`:
-`GlobalTSNE`, `GlobalKMeansClustering`, `GlobalWard`, `WardAssign`,
-`TemporalStacking`.
+parameter on feature `Params`:
 
 ```python
 # before -- pair_filter in inputset JSON metadata
 save_inputset(dataset, "social+ego", [...],
-              pair_filter={"type": "nearest_neighbor",
-                           "feature": "nearest-neighbor",
-                           "run_id": nn_run})
+              pair_filter={"type": "nearest_neighbor", ...})
 
 # after -- typed NNResult on feature params
-from mosaic.behavior.feature_library import NNResult
+from mosaic.core.pipeline.types import NNResult
 
 tsne = GlobalTSNE(
     Inputs((social_wave_result, ego_wave_result)),
@@ -238,16 +242,109 @@ tsne = GlobalTSNE(
 )
 ```
 
-## XGBoost model: undersample changes
+Features with `pair_filter` on their Params: `GlobalKMeansClustering`,
+`GlobalWardClustering`, `TemporalStackingFeature`.
 
-`use_undersample` is removed. Use `foreground_samples` and `undersample_ratio`:
+## load_values() replaces visualization features
+
+`VizTimeline` and `VizGlobalColored` are removed. Use `load_values()` to load
+any combination of feature columns, track columns, and ground truth labels into
+a single DataFrame:
+
+```python
+from mosaic.core.pipeline import load_values
+
+df = load_values(
+    dataset,
+    [
+        ResultColumn(column="tsne_x").from_result(tsne_result),
+        ResultColumn(column="tsne_y").from_result(tsne_result),
+        ResultColumn(column="cluster").from_result(k_result),
+        GroundTruthLabelsSource(),
+    ],
+)
+# df has columns: group, sequence, frame, id1, id2, tsne_x, tsne_y, cluster, labels-behavior
+```
+
+All visualization and analysis happens in notebook code using standard pandas/matplotlib.
+
+## XGBoost: model_library to feature_library
+
+`BehaviorXGBoostModel` + `ModelPredictFeature` are replaced by two composable
+features: `ExtractLabeledTemplates` and `XgboostFeature`.
 
 ```python
 # before
-"use_undersample": True,
-"undersample_ratio": 3.0,
+from mosaic.behavior.model_library import BehaviorXGBoostModel
+
+xgb_model = BehaviorXGBoostModel()
+xgb_model.bind_dataset(dataset)
+xgb_model.configure({
+    "feature": ts_stack_result.feature,
+    "feature_run_id": ts_stack_result.run_id,
+    "label_kind": "behavior",
+    "train_sequences": train_seqs,
+    "test_sequences": test_seqs,
+    "standardize": True,
+    "foreground_samples": 500,
+    "undersample_ratio": 3.0,
+    "xgb_params": {"n_estimators": 10},
+}, run_root)
+xgb_model.train()
+
+# prediction required a separate ModelPredictFeature wrapper
+predict_feat = ModelPredictFeature(
+    Inputs((ts_stack_result,)),
+    params={"model_class": "...BehaviorXGBoostModel", ...},
+)
+pred_result = dataset.run_feature(predict_feat)
 
 # after
-"foreground_samples": 500,   # cap minority class to N samples (None = all)
-"undersample_ratio": 3.0,    # majority/minority ratio (1.0 = no undersampling)
+from mosaic.behavior.feature_library import (
+    ExtractLabeledTemplates, XgboostFeature,
+    GroundTruthLabelsSource, Inputs,
+)
+
+# 1. Extract labeled templates (handles label alignment + train/test split)
+labeled_templates = ExtractLabeledTemplates(
+    Inputs((ts_stack_result,)),
+    params={
+        "labels": GroundTruthLabelsSource(),
+        "n_per_class": 500,
+        "test_fraction": 0.2,
+    },
+)
+labeled_templates_result = dataset.run_feature(labeled_templates)
+
+# 2. Train + predict in one step (fit on templates, apply per-sequence)
+xgb = XgboostFeature(
+    Inputs((ts_stack_result,)),
+    params={
+        "templates": ExtractLabeledTemplates.LabeledTemplatesArtifact()
+            .from_result(labeled_templates_result),
+        "strategy": "multiclass",
+        "default_class": 3,
+        "n_estimators": 10,
+        "max_depth": 3,
+    },
+)
+xgb_result = dataset.run_feature(xgb)
+```
+
+Key differences:
+- No manual train/test sequence lists. `ExtractLabeledTemplates` assigns splits
+  automatically (deterministic, guarantees at least 1 test sequence).
+- No internal scaling. Use `GlobalScaler` upstream.
+- No `ModelPredictFeature` wrapper. `XgboostFeature.apply()` runs inference
+  directly during `run_feature()`.
+- `ExtractLabeledTemplates.apply()` adds `label` and `split` columns to
+  per-sequence outputs, so you can filter to test-only data:
+
+```python
+df = load_values(dataset, [
+    ResultColumn(column="predicted_label").from_result(xgb_result),
+    ResultColumn(column="split").from_result(labeled_templates_result),
+    GroundTruthLabelsSource(),
+])
+df_test = df[df["split"] == "test"]
 ```
