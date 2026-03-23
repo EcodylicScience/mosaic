@@ -1,6 +1,6 @@
 # Pipeline Migration
 
-Summary of the pipeline migration. Replaces the original feature execution infrastructure with a composable pipeline. Work spanned multiple branches; the `pipeline` branch contains the bulk of it (193 commits, 115 files, +24k/-15k lines).
+Replaces the original feature execution infrastructure with a composable pipeline. The Feature protocol is reduced from 12+ methods to 4, global features are decomposed into independently cacheable stages, and XGBoost behavior classification is integrated as a pipeline feature.
 
 ## Motivation
 
@@ -129,7 +129,7 @@ scaled features
 
 ### Feature output column declaration
 
-`feature_columns()` uses a hardcoded `_EXTRA_META` set to distinguish metadata from feature output. Adding `label` and `split` required updating this set manually. A more robust solution would be explicit `output_columns` declarations per feature, validated at registration time. Tracked in `docs/issues/2026-03-19-feature-output-column-declaration.md`.
+`feature_columns()` uses a hardcoded `_EXTRA_META` set to distinguish metadata from feature output. Adding `label` and `split` required updating this set manually. A more robust solution would be explicit `output_columns` declarations per feature, validated at registration time.
 
 ### `model_library/` not yet removed
 

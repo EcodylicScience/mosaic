@@ -23,6 +23,12 @@ dev-docs/
 guppies/
 guppies-collective-src/
 
+# Internal planning docs (kept locally, not tracked)
+docs/plans/
+docs/assessments/
+docs/issues/
+docs/specs/
+
 # Local notebooks / scratch files
 notebooks/trex-bees.ipynb
 sync-to-remote.ipynb

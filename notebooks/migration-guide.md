@@ -121,6 +121,39 @@ tsne_result = dataset.run_feature(tsne)
 Each stage caches independently. Re-running with different t-SNE perplexity
 reuses the existing scaler and templates.
 
+### Reusing a fitted model (skip fit)
+
+Global features that extend `GlobalModelParams` accept either `templates`
+(fit from scratch) or `model` (load a previously fitted model). These are
+mutually exclusive -- provide exactly one.
+
+```python
+# Fit from templates (default workflow above)
+tsne = GlobalTSNE(
+    Inputs((scaled_templates_result,)),
+    params={
+        "templates": ExtractTemplates.TemplatesArtifact().from_result(scaled_templates_result),
+        "perplexity": 50,
+    },
+)
+tsne_result = dataset.run_feature(tsne)
+
+# Reuse the fitted model on different data (skip fit, apply only)
+tsne_reuse = GlobalTSNE(
+    Inputs((other_scaler_result,)),
+    params={
+        "model": GlobalTSNE.TSNEModelArtifact().from_result(tsne_result),
+        "perplexity": 50,  # used during apply for mapping new points
+    },
+)
+dataset.run_feature(tsne_reuse)
+```
+
+This works for all global features: `GlobalScaler` (`ScalerModelArtifact`),
+`GlobalTSNE` (`TSNEModelArtifact`), `GlobalKMeansClustering`
+(`KMeansModelArtifact`), `GlobalWardClustering` (`WardModelArtifact`),
+and `XgboostFeature` (`XgboostModelArtifact`).
+
 ## Artifacts replace raw dicts
 
 Features that produce non-per-frame outputs (models, templates, cluster centers)
@@ -232,15 +265,18 @@ save_inputset(dataset, "social+ego", [...],
               pair_filter={"type": "nearest_neighbor", ...})
 
 # after -- typed NNResult on feature params
-from mosaic.core.pipeline.types import NNResult
-
 tsne = GlobalTSNE(
     Inputs((social_wave_result, ego_wave_result)),
     params={
-        "pair_filter": NNResult(run_id=nn_result.run_id),
+        "pair_filter": nn_result,
     },
 )
 ```
+
+`NNResult` is a `Result` subclass narrowed to only accept `"nearest-neighbor"`
+feature results. You can pass an existing result directly, pin a specific
+`run_id` with `NNResult(run_id="...")`, or use `nn_result.use_latest()` to
+always resolve to the most recent run.
 
 Features with `pair_filter` on their Params: `GlobalKMeansClustering`,
 `GlobalWardClustering`, `TemporalStackingFeature`.
