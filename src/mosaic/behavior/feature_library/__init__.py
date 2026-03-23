@@ -30,7 +30,6 @@ from mosaic.core.pipeline.types import (
     COLUMNS,
     ArtifactSpec,
     Feature,
-    FeatureLabelsSource,
     GlobalModelParams,
     GroundTruthLabelsSource,
     Inputs,
@@ -43,6 +42,7 @@ from mosaic.core.pipeline.types import (
 from . import (
     approach_avoidance,
     body_scale,
+    extract_labeled_templates,
     extract_templates,
     ffgroups,
     ffgroups_metrics,
@@ -63,9 +63,11 @@ from . import (
     pairposedistancepca,
     speed_angvel,
     temporal_stacking,
+    xgboost_feature,
 )
 from .approach_avoidance import ApproachAvoidance
 from .body_scale import BodyScaleFeature
+from .extract_labeled_templates import ExtractLabeledTemplates
 from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
 from .ffgroups_metrics import FFGroupsMetrics
@@ -86,6 +88,7 @@ from .pairposedistancepca import PairPoseDistancePCA
 from .registry import FEATURES, register_feature
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+from .xgboost_feature import XgboostFeature
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
@@ -100,7 +103,6 @@ __all__ = [
     # Types and params
     "ArtifactSpec",
     "COLUMNS",
-    "FeatureLabelsSource",
     "GroundTruthLabelsSource",
     "Inputs",
     "InputsLike",
@@ -112,6 +114,7 @@ __all__ = [
     # Feature classes
     "ApproachAvoidance",
     "BodyScaleFeature",
+    "ExtractLabeledTemplates",
     "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
@@ -132,9 +135,11 @@ __all__ = [
     "PairWavelet",
     "SpeedAngvel",
     "TemporalStackingFeature",
+    "XgboostFeature",
     # Submodules
     "approach_avoidance",
     "body_scale",
+    "extract_labeled_templates",
     "extract_templates",
     "ffgroups",
     "ffgroups_metrics",
@@ -154,4 +159,5 @@ __all__ = [
     "pairposedistancepca",
     "speed_angvel",
     "temporal_stacking",
+    "xgboost_feature",
 ]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import final
 
@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import Inputs, Params, TrackInput
+from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, TrackInput
 
 from .registry import register_feature
 
@@ -140,11 +140,11 @@ class NearestNeighborDeltaBins:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

@@ -6,7 +6,6 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -21,14 +20,15 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     BodyScaleResult,
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
     TrackInput,
 )
 
 from .helpers import (
     ensure_columns,
-    load_result_for,
     wrap_angle,
 )
 from .registry import register_feature
@@ -76,31 +76,32 @@ class OrientationRelativeFeature:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._scale_index: pd.DataFrame | None = None
+        self._scale_lookup: dict[tuple[str, str], Path] | None = None
 
     def load_state(
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
-        self._scale_index = None
-        if dependency_indices and "scale" in dependency_indices:
-            self._scale_index = dependency_indices["scale"]
+        self._scale_lookup = dependency_lookups.get("scale")
         return True
 
     def _scale_for(self, group: str, sequence: str) -> float | None:
-        """Look up mean body scale for the given sequence from the dependency index."""
-        if self._scale_index is None:
+        """Look up mean body scale for the given sequence from the dependency lookup."""
+        if self._scale_lookup is None:
             return None
 
-        df_scale = load_result_for(self._scale_index, group, sequence)
+        path = self._scale_lookup.get((group, sequence))
+        if path is None:
+            return None
+        df_scale = pd.read_parquet(path)
         mean_scale = float(df_scale["scale"].dropna().mean())
         if np.isfinite(mean_scale) and mean_scale > 0:
             return mean_scale
         return None
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

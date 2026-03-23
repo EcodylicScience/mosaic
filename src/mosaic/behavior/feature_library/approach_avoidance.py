@@ -24,7 +24,6 @@ Output columns (per frame × pair):
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from itertools import combinations
 from pathlib import Path
 from typing import Literal, final
@@ -37,13 +36,15 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
     TrackInput,
     resolve_order_col,
 )
 
-from .helpers import clean_animal_track, ensure_columns
+from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
 
@@ -110,11 +111,11 @@ class ApproachAvoidance:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -143,8 +144,8 @@ class ApproachAvoidance:
         if C.orientation_col in df_small.columns:
             data_cols.append(C.orientation_col)
 
-        df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            lambda g: clean_animal_track(g, data_cols, order_col, p.interpolation)
+        df_small = clean_tracks_grouped(
+            df_small, group_cols, data_cols, order_col, p.interpolation
         )
 
         out_frames: list[pd.DataFrame] = []

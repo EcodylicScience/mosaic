@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar
 
@@ -17,11 +16,11 @@ from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
+    InputStream,
     Params,
     Result,
     TrackInput,
 )
-
 
 # --- Mock dataset ---
 
@@ -114,11 +113,11 @@ class _StatelessFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -162,7 +161,7 @@ class _StatefulFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         state_path = run_root / "state.json"
         if state_path.exists():
@@ -172,7 +171,7 @@ class _StatefulFeature:
             return True
         return False
 
-    def fit(self, factory: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, factory: InputStream) -> None:
         all_values: list[float] = []
         for _key, df in factory():
             all_values.extend(df["feat_a"].tolist())
@@ -221,11 +220,11 @@ class _EmptyInputFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

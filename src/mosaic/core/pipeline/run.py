@@ -16,11 +16,13 @@ from concurrent.futures import (
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
 from mosaic.core.helpers import (
     filter_time_range,
+    load_labels_for_feature_frames,
     make_entry_key,
     resolve_frame_range,
 )
@@ -39,7 +41,21 @@ from .index import (
 )
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
-from .types import ArtifactSpec, Feature, LabelsSource, NNResult, Params, Result
+from .types import (
+    COLUMNS,
+    ArtifactSpec,
+    DependencyLookup,
+    Feature,
+    InputStream,
+    Inputs,
+    LabelsSource,
+    NNResult,
+    Params,
+    Result,
+    ResultColumn,
+    TrackInput,
+    TracksColumn,
+)
 from .writers import FeatureOutput, trim_feature_output, write_output
 
 if TYPE_CHECKING:
@@ -65,17 +81,17 @@ def build_feature_meta(group: str, sequence: str, run_root: Path) -> FeatureMeta
 
 def _resolve_dependencies(
     ds: Dataset, params: Params
-) -> tuple[dict[str, Path], dict[str, pd.DataFrame]]:
+) -> tuple[dict[str, Path], dict[str, DependencyLookup]]:
     """Introspect params fields to resolve upstream dependencies.
 
-    Returns (artifact_paths, dependency_indices) where:
+    Returns (artifact_paths, dependency_lookups) where:
     - artifact_paths maps field name to resolved file/directory Path
-    - dependency_indices maps field name to upstream index DataFrame
+    - dependency_lookups maps field name to (group, sequence) -> Path dict
     """
     from .index import latest_feature_run_root as _latest_feature_run_root
 
     artifact_paths: dict[str, Path] = {}
-    dependency_indices: dict[str, pd.DataFrame] = {}
+    dependency_lookups: dict[str, DependencyLookup] = {}
 
     for field_name in type(params).model_fields:
         value = getattr(params, field_name)
@@ -93,9 +109,7 @@ def _resolve_dependencies(
                 if not feature_name:
                     continue
                 if _run_id is None:
-                    _run_id, dep_root = _latest_feature_run_root(
-                        ds, feature_name
-                    )
+                    _run_id, dep_root = _latest_feature_run_root(ds, feature_name)
                 else:
                     dep_root = feature_run_root(ds, feature_name, _run_id)
                 files = sorted(dep_root.glob(pattern))
@@ -114,31 +128,34 @@ def _resolve_dependencies(
                 dep_index = feature_index(feature_index_path(ds, feature_name))
                 if _run_id is None:
                     _run_id = dep_index.latest_run_id()
-                dependency_indices[field_name] = dep_index.read(
+                index_df = dep_index.read(
                     run_id=_run_id, filter_ext=".parquet"
                 )
+                lookup: DependencyLookup = {}
+                for _, row in index_df.iterrows():
+                    group = str(row.get("group", ""))
+                    sequence = str(row.get("sequence", ""))
+                    abs_path = str(row.get("abs_path", ""))
+                    if abs_path:
+                        lookup[(group, sequence)] = Path(abs_path)
+                dependency_lookups[field_name] = lookup
 
             case LabelsSource(kind=str(kind)):
                 if not kind:
                     continue
-                try:
-                    labels_base = Path(ds.get_root("labels"))
-                except KeyError:
+                lookup = _build_labels_lookup(ds, kind)
+                if not lookup:
                     msg = (
-                        f"Dataset has no 'labels' root configured, "
+                        f"Labels lookup is empty for kind={kind!r}, "
                         f"required by field '{field_name}'"
                     )
-                    raise FileNotFoundError(msg) from None
-                labels_root = labels_base / kind
-                if not labels_root.exists():
-                    msg = f"Labels directory not found: {labels_root}"
                     raise FileNotFoundError(msg)
-                artifact_paths[field_name] = labels_root
+                dependency_lookups[field_name] = lookup
 
             case _:
                 pass
 
-    return artifact_paths, dependency_indices
+    return artifact_paths, dependency_lookups
 
 
 def _resolve_pair_filter(params: Params) -> NNResult | None:
@@ -174,7 +191,7 @@ def _process_apply_worker(
     params_dump: dict[str, object],
     run_root_str: str,
     artifact_paths_str: dict[str, str],
-    dependency_indices: dict[str, pd.DataFrame],
+    dependency_lookups: dict[str, DependencyLookup],
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Reconstruct a feature in a worker process and run apply."""
@@ -185,7 +202,7 @@ def _process_apply_worker(
     feature.load_state(
         Path(run_root_str),
         {k: Path(v) for k, v in artifact_paths_str.items()},
-        dependency_indices,
+        dependency_lookups,
     )
     return feature.apply(df)
 
@@ -341,13 +358,13 @@ def run_feature(
     idx.ensure()
 
     # Resolve dependencies
-    artifact_paths, dependency_indices = _resolve_dependencies(ds, feature.params)
+    artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature.params)
 
     # Resolve pair filter
     pair_filter_spec = _resolve_pair_filter(feature.params)
 
     # Load state
-    state_ready = feature.load_state(run_root, artifact_paths, dependency_indices)
+    state_ready = feature.load_state(run_root, artifact_paths, dependency_lookups)
 
     # Build filter factory (shared by fit and apply phases)
     filter_factory = _make_filter_factory(
@@ -357,10 +374,10 @@ def run_feature(
     # Fit phase (if not state_ready)
     if not state_ready:
 
-        def fit_factory() -> Iterator[tuple[str, pd.DataFrame]]:
+        def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
             return iter_manifest(manifest, filter_factory=filter_factory)
 
-        feature.fit(fit_factory)
+        feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
 
     # Apply phase
@@ -461,7 +478,7 @@ def run_feature(
                         feature.params.model_dump(),
                         str(run_root),
                         artifact_paths_str,
-                        dependency_indices,
+                        dependency_lookups,
                         df,
                     )
                 ] = (meta, core_start, core_end)
@@ -541,3 +558,192 @@ def run_feature(
     idx.mark_finished(run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(feature=storage_feature_name, run_id=run_id)
+
+
+# --- load_values ---
+
+
+ValueSource = ResultColumn | TracksColumn | LabelsSource
+
+
+def _source_column_name(source: ValueSource) -> str:
+    """Derive output column name for a source."""
+    if isinstance(source, (TracksColumn, ResultColumn)):
+        return source.column
+    return f"labels-{source.kind}"
+
+
+def _deduplicate_column_names(names: list[str]) -> list[str]:
+    """First occurrence bare, subsequent get -1, -2, ..."""
+    seen: dict[str, int] = {}
+    result: list[str] = []
+    for name in names:
+        count = seen.get(name, 0)
+        seen[name] = count + 1
+        result.append(name if count == 0 else f"{name}-{count}")
+    return result
+
+
+def _build_labels_lookup(
+    ds: Dataset, kind: str
+) -> dict[tuple[str, str], Path]:
+    try:
+        labels_root = Path(ds.get_root("labels")) / kind
+    except KeyError:
+        return {}
+    idx_path = labels_root / "index.csv"
+    if not idx_path.exists():
+        return {}
+    df = pd.read_csv(idx_path, keep_default_na=False)
+    lookup: dict[tuple[str, str], Path] = {}
+    for _, row in df.iterrows():
+        group = str(row.get("group", ""))
+        sequence = str(row.get("sequence", ""))
+        abs_path_raw = str(row.get("abs_path", ""))
+        if abs_path_raw:
+            path = ds.resolve_path(abs_path_raw)
+            if path.exists():
+                lookup[(group, sequence)] = path
+    return lookup
+
+
+def _find_merged_column(
+    column: str, input_index: int, df: pd.DataFrame
+) -> str | None:
+    if input_index == 0:
+        return column if column in df.columns else None
+    suffixed = f"{column}__{input_index}"
+    if suffixed in df.columns:
+        return suffixed
+    return column if column in df.columns else None
+
+
+def load_values(
+    ds: Dataset,
+    sources: Iterable[ValueSource],
+    *,
+    groups: Iterable[str] | None = None,
+    sequences: Iterable[str] | None = None,
+    filter_start_frame: int | None = None,
+    filter_end_frame: int | None = None,
+    filter_start_time: float | None = None,
+    filter_end_time: float | None = None,
+    pair_filter: NNResult | None = None,
+) -> pd.DataFrame:
+    """Load and align value columns from tracks, features, and labels.
+
+    Sources can reference tracks columns, feature output columns, or
+    ground-truth labels. All are aligned by frame/id via a single
+    manifest pass.
+    """
+    source_list = list(sources)
+    if not source_list:
+        return pd.DataFrame()
+
+    tracks_columns = [s for s in source_list if isinstance(s, TracksColumn)]
+    result_columns = [s for s in source_list if isinstance(s, ResultColumn)]
+    label_sources = [s for s in source_list if isinstance(s, LabelsSource)]
+
+    if not tracks_columns and not result_columns:
+        msg = "load_values requires at least one TracksColumn or ResultColumn"
+        raise ValueError(msg)
+
+    # Column naming
+    raw_names = [_source_column_name(s) for s in source_list]
+    column_names = _deduplicate_column_names(raw_names)
+
+    # Build synthetic Inputs from unique sources
+    unique_inputs: dict[str | tuple[str, str | None], int] = {}
+    input_items: list[TrackInput | Result] = []
+
+    if tracks_columns:
+        unique_inputs["tracks"] = len(unique_inputs)
+        input_items.append("tracks")
+
+    for rc in result_columns:
+        key = (rc.feature, rc.run_id)
+        if key not in unique_inputs:
+            unique_inputs[key] = len(unique_inputs)
+            input_items.append(Result(feature=rc.feature, run_id=rc.run_id))
+
+    # Map each source index to its input index for merged column resolution
+    column_input_indices: dict[int, int] = {}
+    for source_idx, source in enumerate(source_list):
+        if isinstance(source, TracksColumn):
+            column_input_indices[source_idx] = unique_inputs["tracks"]
+        elif isinstance(source, ResultColumn):
+            column_input_indices[source_idx] = unique_inputs[
+                (source.feature, source.run_id)
+            ]
+
+    synthetic_inputs = Inputs(tuple(input_items))
+
+    # Scope
+    groups_set = {str(g) for g in groups} if groups is not None else None
+    sequences_set = {str(s) for s in sequences} if sequences is not None else None
+
+    manifest, scope = build_manifest(ds, synthetic_inputs, groups_set, sequences_set)
+
+    # Frame range
+    frame_start, frame_end = resolve_frame_range(
+        ds.meta.get("fps_default"),
+        filter_start_frame,
+        filter_end_frame,
+        filter_start_time,
+        filter_end_time,
+    )
+
+    filter_factory = _make_filter_factory(
+        ds, scope, pair_filter, frame_start, frame_end
+    )
+
+    # Pre-load labels lookups
+    labels_lookups: dict[str, dict[tuple[str, str], Path]] = {}
+    for ls in label_sources:
+        if ls.kind not in labels_lookups:
+            labels_lookups[ls.kind] = _build_labels_lookup(ds, ls.kind)
+
+    meta_cols = COLUMNS.meta_set() | {"id1", "id2"}
+
+    all_parts: list[pd.DataFrame] = []
+
+    for entry_key, entry_df in iter_manifest(manifest, filter_factory=filter_factory):
+        group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+
+        entry_data: dict[str, object] = {}
+
+        for col in meta_cols:
+            if col in entry_df.columns:
+                entry_data[col] = entry_df[col].values
+        if "group" not in entry_data:
+            entry_data["group"] = [group] * len(entry_df)
+        if "sequence" not in entry_data:
+            entry_data["sequence"] = [sequence] * len(entry_df)
+
+        for source_idx, source in enumerate(source_list):
+            col_name = column_names[source_idx]
+
+            if isinstance(source, (TracksColumn, ResultColumn)):
+                input_idx = column_input_indices[source_idx]
+                resolved = _find_merged_column(source.column, input_idx, entry_df)
+                if resolved is not None:
+                    entry_data[col_name] = entry_df[resolved].values
+
+            else:
+                label_lookup = labels_lookups.get(source.kind, {})
+                label_path = label_lookup.get((group, sequence))
+                if label_path is not None and "frame" in entry_df.columns:
+                    feature_frames = entry_df["frame"].to_numpy()
+                    entry_data[col_name] = load_labels_for_feature_frames(
+                        label_path, feature_frames, default_label=0
+                    )
+                else:
+                    entry_data[col_name] = np.zeros(len(entry_df), dtype=np.int64)
+
+        if entry_data:
+            all_parts.append(pd.DataFrame(entry_data))
+
+    if not all_parts:
+        return pd.DataFrame(columns=sorted(meta_cols) + column_names)
+
+    return pd.concat(all_parts, ignore_index=True)

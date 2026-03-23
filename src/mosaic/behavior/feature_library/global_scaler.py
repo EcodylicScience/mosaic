@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar, TypedDict, final
 
@@ -10,9 +9,11 @@ from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     GlobalModelParams,
     InputRequire,
     Inputs,
+    InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     ParquetArtifact,
@@ -93,7 +94,7 @@ class GlobalScaler:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._feature_columns = None
         self._scaler = None
@@ -130,10 +131,7 @@ class GlobalScaler:
 
         return False
 
-    def fit(
-        self,
-        inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
-    ) -> None:
+    def fit(self, inputs: InputStream) -> None:
         if self._scaled_templates is None:
             msg = "[global-scaler] No templates loaded. Check load_state."
             raise RuntimeError(msg)

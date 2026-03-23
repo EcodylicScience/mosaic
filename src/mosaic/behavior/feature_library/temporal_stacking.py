@@ -6,7 +6,6 @@ Gaussian-smoothed frames at time offsets and optional pooled statistics.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -15,7 +14,10 @@ import pandas as pd
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
-from mosaic.core.pipeline.types import Inputs, NNResult, Params, Result
+from mosaic.core.pipeline.types import (
+    COLUMNS as C,
+)
+from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, NNResult, Params, Result
 
 from .helpers import feature_columns
 from .registry import register_feature
@@ -234,11 +236,11 @@ class TemporalStackingFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
@@ -265,11 +267,12 @@ class TemporalStackingFeature:
         df: pd.DataFrame,
         cols: list[str],
     ) -> pd.DataFrame:
+        meta = sorted(((C.meta_set() | {"id1", "id2"}) & set(df.columns)) - set(cols))
         base = df[cols].to_numpy(dtype=np.float32)
         stacked, stacked_names = self._stack(base, cols)
-        result = pd.DataFrame(stacked, columns=stacked_names)
-        if "frame" in df.columns:
-            result.insert(0, "frame", df["frame"].values[: len(result)])
+        result = pd.DataFrame(stacked, columns=stacked_names, index=df.index)
+        for col in meta:
+            result[col] = df[col].values
         return result
 
     def _apply_pairs(
@@ -277,16 +280,15 @@ class TemporalStackingFeature:
         df: pd.DataFrame,
         cols: list[str],
     ) -> pd.DataFrame:
+        meta = sorted(((C.meta_set() | {"id1", "id2"}) & set(df.columns)) - set(cols))
         parts: list[pd.DataFrame] = []
-        for (id1, id2), sub in df.groupby(["id1", "id2"], sort=False):
+        for _, sub in df.groupby(["id1", "id2"], sort=False):
             sub = sub.sort_values("frame").reset_index(drop=True)
             base = sub[cols].to_numpy(dtype=np.float32)
             stacked, stacked_names = self._stack(base, cols)
-            part = pd.DataFrame(stacked, columns=stacked_names)
-            if "frame" in sub.columns:
-                part.insert(0, "frame", sub["frame"].values[: len(part)])
-            part["id1"] = id1
-            part["id2"] = id2
+            part = pd.DataFrame(stacked, columns=stacked_names, index=sub.index)
+            for col in meta:
+                part[col] = sub[col].values
             parts.append(part)
         if not parts:
             return pd.DataFrame()

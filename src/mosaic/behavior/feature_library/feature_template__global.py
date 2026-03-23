@@ -5,7 +5,7 @@ Copy this file, rename the class and `name`, and fill in your logic.
 
 Protocol (4 attributes + 4 methods):
   - name, version, parallelizable, scope_dependent
-  - load_state(run_root, artifact_paths, dependency_indices) -> bool
+  - load_state(run_root, artifact_paths, dependency_lookups) -> bool
   - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
   - save_state(run_root) -> None
   - apply(df: DataFrame) -> DataFrame
@@ -22,7 +22,6 @@ See GlobalTSNE and GlobalWardClustering for real examples.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar, final
 
@@ -31,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 # from .registry import register_feature  # <-- uncomment when ready
-from mosaic.core.pipeline.types import InputRequire, Inputs, Params, Result
+from mosaic.core.pipeline.types import DependencyLookup, InputRequire, Inputs, InputStream, Params, Result
 
 
 @final
@@ -84,7 +83,7 @@ class MyGlobalFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         # Check for cached model from a previous run
         cached_path = run_root / "model.joblib"
@@ -94,7 +93,7 @@ class MyGlobalFeature:
             return True
         return False
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         # Iterate over all sequences to accumulate data
         all_data: list[np.ndarray] = []
         for _entry_key, df in inputs():

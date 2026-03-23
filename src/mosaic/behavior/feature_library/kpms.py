@@ -21,7 +21,9 @@ from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     Inputs,
+    InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     Params,
@@ -32,8 +34,6 @@ from mosaic.core.pipeline.types import (
 from .registry import register_feature
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
-
     import pandas as pd
 
 from .external.kpms_protocol import (
@@ -379,7 +379,7 @@ class KpmsFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         # Branch 1: cached model in run_root
         cached_path = run_root / "kpms_model.joblib"
@@ -402,7 +402,7 @@ class KpmsFeature:
 
         return False
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         self._start_server()
 
         pose = self.params.pose

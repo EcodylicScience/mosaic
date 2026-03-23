@@ -7,7 +7,6 @@ from mosaic.core.pipeline._loaders import (
 )
 from mosaic.core.pipeline.types.artifacts import (
     ArtifactSpec,
-    FeatureLabelsSource,
     JoblibArtifact,
     NpzArtifact,
     ParquetArtifact,
@@ -18,7 +17,7 @@ from mosaic.core.pipeline.types.data_config import (
     PoseConfig,
     resolve_order_col,
 )
-from mosaic.core.pipeline.types.feature import Feature
+from mosaic.core.pipeline.types.feature import DependencyLookup, Feature, InputStream
 from mosaic.core.pipeline.types.inputs import (
     InputItem,
     InputRequire,
@@ -37,6 +36,7 @@ from mosaic.core.pipeline.types.results import (
     NNResult,
     Result,
     ResultColumn,
+    TracksColumn,
 )
 
 __all__ = [
@@ -44,10 +44,11 @@ __all__ = [
     "BodyScaleResult",
     "COLUMNS",
     "Columns",
+    "DependencyLookup",
     "Feature",
-    "FeatureLabelsSource",
     "GlobalModelParams",
     "GroundTruthLabelsSource",
+    "InputStream",
     "InputItem",
     "InputRequire",
     "Inputs",
@@ -67,6 +68,7 @@ __all__ = [
     "Result",
     "ResultColumn",
     "TrackInput",
+    "TracksColumn",
     "load_from_spec",
     "resolve_order_col",
 ]

@@ -7,8 +7,6 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
@@ -16,11 +14,10 @@ from .types import InterpolationConfig
 
 __all__ = [
     "clean_animal_track",
+    "clean_tracks_grouped",
     "ego_rotate",
     "ensure_columns",
     "feature_columns",
-    "load_result_for",
-    "nn_lookup_for",
     "smooth_1d",
     "unwrap_diff",
     "wrap_angle",
@@ -29,7 +26,7 @@ __all__ = [
 
 # Extra non-feature columns that may appear in result DataFrames alongside
 # the standard COLUMNS metadata (id, sequence, group, frame, time).
-_EXTRA_META = {"id1", "id2", "entity_level", "perspective", "fps"}
+_EXTRA_META = {"id1", "id2", "entity_level", "perspective", "fps", "label", "split"}
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
@@ -50,56 +47,6 @@ def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
     if missing:
         msg = f"Missing required columns: {sorted(missing)}"
         raise ValueError(msg)
-
-
-def nn_lookup_for(
-    nn_index: pd.DataFrame | None, df: pd.DataFrame
-) -> dict[tuple[int, int], int] | None:
-    """Build NN lookup for the sequence in *df* from a dependency index.
-
-    Returns a ``{(frame, id): nn_id}`` dict, or ``None`` if *nn_index* is not
-    provided.  Used by features that apply a nearest-neighbor pair filter in
-    their ``apply()`` method.
-    """
-    from mosaic.core.pipeline.types import COLUMNS as C
-
-    if nn_index is None:
-        return None
-    group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-    sequence = str(df[C.seq_col].iloc[0])
-    df_nn = load_result_for(nn_index, group, sequence)
-    frames = df_nn[C.frame_col].to_numpy()
-    ids = df_nn[C.id_col].to_numpy()
-    nn_ids = df_nn["nn_id"].to_numpy()
-    lookup: dict[tuple[int, int], int] = {}
-    for f, ind, nn in zip(frames, ids, nn_ids):
-        if not np.isnan(nn):
-            lookup[(int(f), int(ind))] = int(nn)
-    return lookup
-
-
-def load_result_for(index: pd.DataFrame, group: str, sequence: str) -> pd.DataFrame:
-    """Look up and read the upstream result parquet for a (group, sequence) pair.
-
-    Filters *index* (a dependency index DataFrame with ``group``, ``sequence``,
-    and ``abs_path`` columns) to exactly one row, then reads and returns the
-    parquet at that path.
-
-    Raises ``FileNotFoundError`` if no match is found, and ``ValueError`` if
-    more than one row matches (ambiguous upstream data).
-    """
-    match = index[(index["group"] == group) & (index["sequence"] == sequence)]
-    if match.empty:
-        msg = f"No upstream result for group={group!r}, sequence={sequence!r}"
-        raise FileNotFoundError(msg)
-    if len(match) > 1:
-        msg = (
-            f"Ambiguous upstream result: {len(match)} rows match "
-            f"group={group!r}, sequence={sequence!r}"
-        )
-        raise ValueError(msg)
-    path = Path(str(match.iloc[0]["abs_path"]))
-    return pd.read_parquet(path)
 
 
 # --- Shared helpers for per-sequence features ---
@@ -129,6 +76,26 @@ def clean_animal_track(
         g[data_cols] = g[data_cols].fillna(med)
     g = g.reset_index()
     return g
+
+
+def clean_tracks_grouped(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    data_cols: list[str],
+    order_col: str,
+    config: InterpolationConfig,
+) -> pd.DataFrame:
+    """Clean tracks per group, preserving group columns in the result.
+
+    Pandas 3.0 excludes group columns from ``groupby().apply()`` results.
+    This wrapper uses ``group_keys=True`` and resets the index to restore them.
+    """
+    return (
+        df.groupby(group_cols, group_keys=True)
+        .apply(lambda g: clean_animal_track(g, data_cols, order_col, config))
+        .reset_index(level=group_cols)
+        .reset_index(drop=True)
+    )
 
 
 def smooth_1d(x: np.ndarray, win: int) -> np.ndarray:

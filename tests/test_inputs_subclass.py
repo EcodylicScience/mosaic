@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +12,7 @@ from mosaic.core.pipeline.types import (
     Feature,
     InputRequire,
     Inputs,
+    InputStream,
     Params,
     Result,
     TrackInput,
@@ -43,11 +43,11 @@ class _TrackOnlyFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None: ...
+    def fit(self, inputs: InputStream) -> None: ...
     def save_state(self, run_root: Path) -> None: ...
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
@@ -80,11 +80,11 @@ class _MixedInputFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None: ...
+    def fit(self, inputs: InputStream) -> None: ...
     def save_state(self, run_root: Path) -> None: ...
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
@@ -152,11 +152,11 @@ class _TestFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

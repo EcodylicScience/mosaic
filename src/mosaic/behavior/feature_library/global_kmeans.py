@@ -7,7 +7,6 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar, Literal, TypedDict, final
 
@@ -21,9 +20,11 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     GlobalModelParams,
     InputRequire,
     Inputs,
+    InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     NNResult,
@@ -162,7 +163,7 @@ class GlobalKMeansClustering:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._kmeans = None
         self._feature_columns = None
@@ -193,7 +194,7 @@ class GlobalKMeansClustering:
 
         return False
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
             msg = "[global-kmeans] No templates loaded. Check load_state."
             raise RuntimeError(msg)

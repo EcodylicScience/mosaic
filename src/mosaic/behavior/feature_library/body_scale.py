@@ -6,7 +6,6 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -16,7 +15,7 @@ from scipy.spatial.distance import pdist
 
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import Inputs, Params, TrackInput
+from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, TrackInput
 
 from .helpers import ensure_columns
 from .registry import register_feature
@@ -67,11 +66,11 @@ class BodyScaleFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

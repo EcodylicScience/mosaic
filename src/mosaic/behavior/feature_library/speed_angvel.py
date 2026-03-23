@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -12,7 +11,9 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
     TrackInput,
     resolve_order_col,
@@ -105,11 +106,11 @@ class SpeedAngvel:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

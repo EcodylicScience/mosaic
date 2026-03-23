@@ -12,8 +12,10 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     InputRequire,
     Inputs,
+    InputStream,
     Params,
     ParquetArtifact,
     ParquetLoadSpec,
@@ -96,7 +98,7 @@ class ExtractTemplates:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._feature_columns = None
         self._templates = None
@@ -117,10 +119,7 @@ class ExtractTemplates:
             return True
         return False
 
-    def fit(
-        self,
-        inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
-    ) -> None:
+    def fit(self, inputs: InputStream) -> None:
         n_templates = self.params.n_templates
         pool_cfg = self.params.pool
         pool_size = pool_cfg.size if pool_cfg.size is not None else n_templates

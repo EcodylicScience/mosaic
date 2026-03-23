@@ -5,7 +5,7 @@ Copy this file, rename the class and `name`, and fill in your logic.
 
 Protocol (4 attributes + 4 methods):
   - name, version, parallelizable, scope_dependent
-  - load_state(run_root, artifact_paths, dependency_indices) -> bool
+  - load_state(run_root, artifact_paths, dependency_lookups) -> bool
   - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
   - save_state(run_root) -> None
   - apply(df: DataFrame) -> DataFrame
@@ -19,7 +19,6 @@ See SpeedAngvel for a real per-sequence feature.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import final
 
@@ -29,7 +28,9 @@ import pandas as pd
 # from .registry import register_feature  # <-- uncomment when ready
 from mosaic.core.pipeline.types import (
     COLUMNS,
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
     TrackInput,
     resolve_order_col,
@@ -87,11 +88,11 @@ class MyPerSequenceFeature:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True  # stateless -- nothing to restore
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass  # stateless -- no fitting required
 
     def save_state(self, run_root: Path) -> None:

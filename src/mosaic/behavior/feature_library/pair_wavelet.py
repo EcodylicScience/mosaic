@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, final
 
@@ -15,8 +14,11 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
+    Result,
     TrackInput,
     resolve_order_col,
 )
@@ -63,7 +65,7 @@ class PairWavelet:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
@@ -78,7 +80,7 @@ class PairWavelet:
 
     def __init__(
         self,
-        inputs: PairWavelet.Inputs = Inputs(("tracks",)),
+        inputs: PairWavelet.Inputs,
         params: dict[str, object] | None = None,
     ):
         if not _has_pywt:
@@ -96,11 +98,11 @@ class PairWavelet:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         return True
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:

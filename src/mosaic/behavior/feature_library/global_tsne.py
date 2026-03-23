@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import gc
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar, TypedDict, final
 
@@ -19,9 +18,11 @@ from pydantic import Field
 
 from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     GlobalModelParams,
     InputRequire,
     Inputs,
+    InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     NpzArtifact,
@@ -220,7 +221,7 @@ class GlobalTSNE:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._feature_columns = None
         self._embedding = None
@@ -250,10 +251,7 @@ class GlobalTSNE:
 
         return False
 
-    def fit(
-        self,
-        inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
-    ) -> None:
+    def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
             msg = "[global-tsne] No templates loaded. Check load_state."
             raise RuntimeError(msg)

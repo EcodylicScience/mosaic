@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -16,14 +16,16 @@ from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
 from mosaic.core.pipeline.types import (
+    DependencyLookup,
     Inputs,
+    InputStream,
     Params,
     PoseConfig,
     TrackInput,
     resolve_order_col,
 )
 
-from .helpers import clean_animal_track, ensure_columns
+from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature
 from .types import InterpolationConfig
 
@@ -92,7 +94,7 @@ class PairPoseDistancePCA:
         self,
         run_root: Path,
         artifact_paths: dict[str, Path],
-        dependency_indices: dict[str, pd.DataFrame],
+        dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         path = run_root / "model.joblib"
         if path.exists():
@@ -105,7 +107,7 @@ class PairPoseDistancePCA:
             return True
         return False
 
-    def fit(self, inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]]) -> None:
+    def fit(self, inputs: InputStream) -> None:
         for _entry_key, df in inputs():
             for batch, _, _ in self._feature_batches(df, for_fit=True):
                 if batch.size == 0:
@@ -197,10 +199,8 @@ class PairPoseDistancePCA:
 
         group_cols = [C.seq_col, C.id_col]
 
-        df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            lambda g: clean_animal_track(
-                g, pose_cols, order_col, self.params.interpolation
-            )
+        df_small = clean_tracks_grouped(
+            df_small, group_cols, pose_cols, order_col, self.params.interpolation
         )
 
         pairs: list[tuple[str, int, int]] = []
