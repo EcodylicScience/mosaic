@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 import numpy as np
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.pipeline._utils import Scope
 
 
 def _pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
@@ -395,7 +396,7 @@ class StreamingFeatureHelper:
 
     Usage:
         helper = StreamingFeatureHelper(ds, "my-feature")
-        manifest = helper.build_manifest(inputs, scope_filter)
+        manifest = helper.build_manifest(inputs, scope)
         for key, X, frames in helper.iter_sequences(manifest, extract_frames=True):
             # process X, frames
             pass
@@ -453,14 +454,14 @@ class StreamingFeatureHelper:
     def build_manifest_from_results(
         self,
         results: tuple[Result, ...],
-        scope_filter: dict | None = None,
+        scope: Scope | None = None,
     ) -> dict[str, list[tuple[Path, LoadSpec]]]:
         """Build manifest from Result objects (per-frame parquet outputs)."""
         specs = [
             ArtifactSpec(feature=r.feature, run_id=r.run_id, load=ParquetLoadSpec())
             for r in results
         ]
-        manifest = self.build_manifest(specs, scope_filter=scope_filter)
+        manifest = self.build_manifest(specs, scope=scope)
         if not manifest:
             labels = ", ".join(f"{r.feature} ({r.run_id})" for r in results)
             raise RuntimeError(
@@ -472,7 +473,7 @@ class StreamingFeatureHelper:
     def build_manifest(
         self,
         inputs: list[ArtifactSpec],
-        scope_filter: dict | None = None,
+        scope: Scope | None = None,
     ) -> dict[str, list[tuple[Path, LoadSpec]]]:
         """
         Build manifest of file paths per sequence WITHOUT loading data.
@@ -481,9 +482,8 @@ class StreamingFeatureHelper:
         ----------
         inputs : list[ArtifactSpec]
             List of typed artifact specifications.
-        scope_filter : dict, optional
-            Scope constraints with keys:
-            - safe_sequences: set of allowed sequence names
+        scope : Scope, optional
+            Resolved scope with entries to filter by.
 
         Returns
         -------
@@ -494,12 +494,7 @@ class StreamingFeatureHelper:
 
         manifest: dict[str, list[tuple[Path, LoadSpec]]] = {}
 
-        # Parse scope filter
-        allowed_safe = None
-        if scope_filter:
-            safe_seqs = scope_filter.get("safe_sequences")
-            if safe_seqs:
-                allowed_safe = {str(s) for s in safe_seqs}
+        allowed_keys = scope.entry_keys if scope and scope.entries else None
 
         for spec in inputs:
             feat_name = spec.feature
@@ -526,7 +521,7 @@ class StreamingFeatureHelper:
                 key = self._extract_key(pth, seq_map)
                 if key is None:
                     continue
-                if allowed_safe is not None and key not in allowed_safe:
+                if allowed_keys is not None and key not in allowed_keys:
                     continue
                 if key not in manifest:
                     manifest[key] = []
@@ -782,100 +777,17 @@ class StreamingFeatureHelper:
 # -----------------------------------------------------------------------------
 
 
-def _parse_scope_filter(
-    scope: dict | None,
-) -> tuple[set[str] | None, dict[str, tuple[str, str]]]:
-    """
-    Parse a scope filter dict into structured components.
-
-    Parameters
-    ----------
-    scope : dict or None
-        Scope filter with optional keys:
-        - safe_sequences: iterable of allowed safe sequence names
-        - pairs: set of (group, sequence) tuples
-
-    Returns
-    -------
-    tuple
-        (allowed_safe_sequences or None, pair_map: {safe_name -> (group, sequence)})
-    """
-    if not scope:
-        return None, {}
-    safe_sequences = scope.get("safe_sequences")
-    allowed = {str(s) for s in safe_sequences} if safe_sequences else None
-    pairs = scope.get("pairs")
-    pair_map: dict[str, tuple[str, str]] = {}
-    if pairs:
-        for group, sequence in pairs:
-            pair_map[to_safe_name(sequence)] = (str(group), str(sequence))
-    return allowed, pair_map
-
-
-def _build_sequence_lookup(
-    ds,
-    allowed_safe_sequences: set[str] | None = None,
-) -> dict[str, tuple[str, str]]:
-    """
-    Build a {safe_seq -> (group, sequence)} lookup from the tracks index.
-
-    Parameters
-    ----------
-    ds : Dataset
-        Dataset instance (must have get_root("tracks"))
-    allowed_safe_sequences : set[str] or None
-        If provided, only include sequences in this set
-
-    Returns
-    -------
-    dict[str, tuple[str, str]]
-        Mapping from safe sequence name to (group, sequence) tuple
-    """
-    lookup: dict[str, tuple[str, str]] = {}
-    if ds is None:
-        return lookup
-    idx_path = ds.get_root("tracks") / "index.csv"
-    if not idx_path.exists():
-        return lookup
-    try:
-        df = pd.read_csv(idx_path)
-    except Exception:
-        return lookup
-    if df.empty:
-        return lookup
-    if "group" in df.columns:
-        df["group"] = df["group"].fillna("").astype(str)
-    else:
-        df["group"] = ""
-    if "sequence" in df.columns:
-        df["sequence"] = df["sequence"].fillna("").astype(str)
-    else:
-        df["sequence"] = ""
-    df["_seq_safe"] = df["sequence"].apply(lambda v: to_safe_name(v))
-    if allowed_safe_sequences:
-        df = df[df["_seq_safe"].isin({str(s) for s in allowed_safe_sequences})]
-    for _, row in df.iterrows():
-        safe_seq = str(row["_seq_safe"])
-        if not safe_seq or safe_seq in lookup:
-            continue
-        lookup[safe_seq] = (str(row.get("group", "")), str(row.get("sequence", "")))
-    return lookup
-
-
 def _resolve_sequence_identity(
     safe_seq: str,
-    pair_map: dict[str, tuple[str, str]],
-    sequence_lookup: dict[str, tuple[str, str]],
+    entry_map: dict[str, tuple[str, str]],
 ) -> tuple[str, str]:
     """
     Map a safe sequence name to (group, sequence).
 
-    Checks pair_map first, then sequence_lookup, falls back to ("", safe_seq).
+    Looks up in entry_map, falls back to ("", safe_seq).
     """
-    if safe_seq in pair_map:
-        return pair_map[safe_seq]
-    if safe_seq in sequence_lookup:
-        return sequence_lookup[safe_seq]
+    if safe_seq in entry_map:
+        return entry_map[safe_seq]
     return "", safe_seq
 
 
@@ -1034,20 +946,11 @@ def _build_index_row(
     sequence: str,
     output_path: Path,
     n_rows: int = 0,
-    dataset_root: Path | None = None,
 ) -> PartialIndexRow:
     """Build a partial index row for get_additional_index_rows()."""
-    resolved = output_path.resolve()
-    if dataset_root is not None:
-        try:
-            path_str = str(resolved.relative_to(dataset_root))
-        except ValueError:
-            path_str = str(resolved)
-    else:
-        path_str = str(resolved)
     return PartialIndexRow(
         group=group,
         sequence=sequence,
-        abs_path=path_str,
+        abs_path=str(output_path.resolve()),
         n_rows=n_rows,
     )

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name
-
-from ._utils import InputScope, ResolvedInput
+from ._utils import ResolvedInput, Scope
 from .index import (
     feature_index,
     feature_index_path,
@@ -69,7 +67,7 @@ def yield_sequences(
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
-):
+) -> Iterator[tuple[str, str, pd.DataFrame]]:
     """
     Yield (group, sequence, df) for standardized tracks present in tracks/index.csv,
     filtered by groups and/or sequences if provided.
@@ -77,7 +75,7 @@ def yield_sequences(
     df_idx = _filter_index(_read_tracks_index(ds), groups, sequences, allowed_pairs)
 
     for _, row in df_idx.iterrows():
-        g, s = row["group"], row["sequence"]
+        g, s = str(row["group"]), str(row["sequence"])
         p = ds.resolve_path(row["abs_path"])
         if not p.exists():
             raise FileNotFoundError(f"Stale tracks index: ({g},{s}) -> {p}")
@@ -90,7 +88,7 @@ def yield_sequences_with_overlap(
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
     overlap_frames: int = 0,
-):
+) -> Iterator[tuple[str, str, pd.DataFrame, int, int]]:
     """
     Yield (group, sequence, df, df_core_start, df_core_end) with optional overlap from adjacent sequences.
 
@@ -161,7 +159,7 @@ def yield_sequences_with_overlap(
     df_filtered = _filter_index(df_idx, groups, sequences, allowed_pairs)
 
     for _, row in df_filtered.iterrows():
-        g, s = row["group"], row["sequence"]
+        g, s = str(row["group"]), str(row["sequence"])
         df_main = load_parquet(g, s)
 
         parts = []
@@ -205,17 +203,17 @@ def yield_sequences_with_overlap(
         yield g, s, df_combined, core_start, core_end
 
 
-# --- Feature frame iteration ---
+# --- Feature data iteration ---
 
 
-def yield_feature_frames(
+def yield_feature_data(
     ds: Dataset,
     feature_name: str,
     run_id: str | None = None,
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
-):
+) -> Iterator[tuple[str, str, pd.DataFrame]]:
     """
     Yield (group, sequence, df) from a prior feature's saved outputs.
     If run_id is None, pick the most recent finished run_id for that feature (by finished_at).
@@ -236,7 +234,7 @@ def yield_feature_frames(
     df_idx = _filter_index(df_idx, groups, sequences, allowed_pairs)
 
     for _, row in df_idx.iterrows():
-        g, s = row["group"], row["sequence"]
+        g, s = str(row["group"]), str(row["sequence"])
         abs_path_str = row.get("abs_path", "")
         if not abs_path_str.endswith(".parquet"):
             continue  # skip non-parquet entries (e.g. .npz artifacts)
@@ -259,20 +257,20 @@ def yield_feature_frames(
         yield g, s, df
 
 
-# --- Pair resolution ---
+# --- Entry resolution ---
 
 
-def resolve_tracks_pairs(
+def resolve_tracks_entries(
     ds: Dataset,
     groups_set: set[str] | None,
     seq_set: set[str] | None,
 ) -> set[tuple[str, str]]:
-    """Resolve (group, sequence) pairs from tracks/index.csv."""
+    """Resolve (group, sequence) entries from tracks/index.csv."""
     df_idx = _filter_index(_read_tracks_index(ds), groups_set, seq_set)
     return set(zip(df_idx["group"], df_idx["sequence"]))
 
 
-def resolve_feature_pairs(
+def resolve_feature_entries(
     ds: Dataset,
     feat_name: str,
     run_id: str | None,
@@ -280,7 +278,7 @@ def resolve_feature_pairs(
     seq_set: set[str] | None,
     columns: list[str] | None = None,
 ) -> tuple[set[tuple[str, str]], ResolvedInput]:
-    """Resolve pairs and resolved input for a feature run."""
+    """Resolve entries and resolved input for a feature run."""
     if run_id is None:
         try:
             run_id, _ = latest_feature_run_root(ds, feat_name)
@@ -304,7 +302,7 @@ def resolve_feature_pairs(
 
     df_idx = _filter_index(df_idx, groups_set, seq_set)
 
-    pairs = set(zip(df_idx["group"], df_idx["sequence"]))
+    entries = set(zip(df_idx["group"], df_idx["sequence"]))
     path_map: dict[tuple[str, str], Path] = {}
     for _, row in df_idx.iterrows():
         abs_path = row.get("abs_path")
@@ -318,10 +316,10 @@ def resolve_feature_pairs(
         path_map=path_map,
         columns=columns,
     )
-    return pairs, resolved
+    return entries, resolved
 
 
-# --- Inputset resolution ---
+# --- Input resolution ---
 
 
 def _resolve_input_specs(
@@ -331,26 +329,26 @@ def _resolve_input_specs(
     seq_set: set[str] | None,
     label: str = "",
 ) -> tuple[set[tuple[str, str]], list[ResolvedInput]]:
-    """Resolve a list of (kind, feature, run_id, columns) specs into pairs and resolved inputs."""
-    per_input_pairs: list[set[tuple[str, str]]] = []
+    """Resolve a list of (kind, feature, run_id, columns) specs into entries and resolved inputs."""
+    per_input_entries: list[set[tuple[str, str]]] = []
     resolved_inputs: list[ResolvedInput] = []
 
     for kind, feat_name, run_id, columns in specs:
         if kind == "tracks":
-            pairs = resolve_tracks_pairs(ds, groups_set, seq_set)
-            if not pairs and label:
+            entries = resolve_tracks_entries(ds, groups_set, seq_set)
+            if not entries and label:
                 print(
                     f"[{label}] WARN: tracks spec has no data matching the requested scope.",
                     file=sys.stderr,
                 )
-            per_input_pairs.append(pairs)
+            per_input_entries.append(entries)
             resolved_inputs.append(ResolvedInput(kind="tracks", columns=columns))
             continue
 
         if not feat_name:
             continue
 
-        pairs, resolved = resolve_feature_pairs(
+        entries, resolved = resolve_feature_entries(
             ds,
             feat_name,
             run_id,
@@ -359,35 +357,39 @@ def _resolve_input_specs(
             columns=columns,
         )
 
-        if not pairs and label:
+        if not entries and label:
             print(
                 f"[{label}] WARN: feature '{feat_name}' run '{resolved.run_id}' has no data matching the requested scope.",
                 file=sys.stderr,
             )
-        per_input_pairs.append(pairs)
+        per_input_entries.append(entries)
         resolved_inputs.append(resolved)
 
-    if not per_input_pairs:
+    if not per_input_entries:
         raise ValueError(
             f"No usable inputs resolved{' for ' + label if label else ''}."
         )
 
-    allowed_pairs = set.intersection(*per_input_pairs)
-    if not allowed_pairs:
+    allowed_entries = set.intersection(*per_input_entries)
+    if not allowed_entries:
         raise ValueError(
             f"No overlapping sequences{' for ' + label if label else ''} in the requested scope."
         )
 
-    return allowed_pairs, resolved_inputs
+    return allowed_entries, resolved_inputs
 
 
-def inputset_from_inputs(
+def resolve_input_scope(
     ds: Dataset,
     inputs: InputsLike,
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
-) -> InputScope:
-    """Resolve an Inputs collection into an InputScope for run_feature()'s multi-input path."""
+) -> tuple[Scope, list[ResolvedInput]]:
+    """Resolve an Inputs collection into a Scope and resolved inputs.
+
+    Returns (scope, resolved_inputs) -- scope holds the filtered entries,
+    resolved_inputs holds the data source references for iteration.
+    """
     groups_set = set(groups) if groups is not None else None
     seq_set = set(sequences) if sequences is not None else None
 
@@ -398,37 +400,32 @@ def inputset_from_inputs(
         else:
             specs.append(("feature", item.feature, item.run_id, None))
 
-    allowed_pairs, resolved_inputs = _resolve_input_specs(
+    allowed_entries, resolved_inputs = _resolve_input_specs(
         ds,
         specs,
         groups_set,
         seq_set,
     )
-    return InputScope(
-        groups=sorted(groups_set) if groups_set else None,
-        sequences=sorted(seq_set) if seq_set else None,
-        pairs=allowed_pairs,
-        safe_sequences={to_safe_name(s) for _, s in allowed_pairs},
-        resolved_inputs=resolved_inputs,
-    )
+    return Scope(entries=allowed_entries), resolved_inputs
 
 
-def yield_inputset_frames(
+def yield_input_data(
     ds: Dataset,
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
     *,
-    scope: InputScope,
+    entries: set[tuple[str, str]],
+    resolved_inputs: list[ResolvedInput],
     metadata_only: bool = False,
-):
-    if not scope.pairs:
+) -> Iterator[tuple[str, str, pd.DataFrame]]:
+    if not entries:
         return
 
     # Lightweight path: yield only routing columns (group, sequence, frame)
     # for features that load their own data and don't need the full merge.
     if metadata_only:
         for g, s, df_tracks in yield_sequences(
-            ds, groups, sequences, allowed_pairs=scope.pairs
+            ds, groups, sequences, allowed_pairs=entries
         ):
             routing_cols = [
                 c
@@ -438,11 +435,11 @@ def yield_inputset_frames(
             yield g, s, df_tracks[routing_cols]
         return
 
-    track_specs = [ri for ri in scope.resolved_inputs if ri.kind == "tracks"]
-    feat_specs = [ri for ri in scope.resolved_inputs if ri.kind == "feature"]
+    track_specs = [ri for ri in resolved_inputs if ri.kind == "tracks"]
+    feat_specs = [ri for ri in resolved_inputs if ri.kind == "feature"]
 
     for g, s, df_tracks in yield_sequences(
-        ds, groups, sequences, allowed_pairs=scope.pairs
+        ds, groups, sequences, allowed_pairs=entries
     ):
         df = df_tracks
         # Apply track column filter if provided

@@ -18,20 +18,17 @@ from pydantic import Field
 from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.dataset import _dataset_base_dir
-
 from .spec import register_feature
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
-    _build_sequence_lookup,
     _get_feature_run_root,
     _load_artifact_matrix,
     _load_joblib_artifact,
-    _parse_scope_filter,
     _resolve_sequence_identity,
 )
 from .global_tsne import GlobalTSNE
@@ -126,10 +123,7 @@ class WardAssignClustering:
         self._scaler: object = None
         self._processed_sequences: set[str] = set()
         self._run_root: Path | None = None
-        self._allowed_safe_sequences: set[str] | None = None
-        self._pair_map: dict[str, tuple[str, str]] = {}
-        self._scope_filter: dict[str, object] | None = None
-        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
+        self._scope: Scope = Scope()
         self._additional_index_rows: list[PartialIndexRow] = []
 
     def bind_dataset(self, ds: object) -> None:
@@ -139,22 +133,14 @@ class WardAssignClustering:
         """Set the output directory for immediate file writes during fit()."""
         self._run_root = path
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
-        self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
-        self._sequence_lookup_cache = None
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self) -> bool:
         return True
 
     def supports_partial_fit(self) -> bool:
         return False
-
-    def loads_own_data(self) -> bool:
-        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
-        # applied when loading own data. run_feature() raises RuntimeError
-        # if these filters are set. Future work: apply them during loading.
-        return True
 
     def partial_fit(self, df: pd.DataFrame) -> None:
         raise NotImplementedError
@@ -166,14 +152,6 @@ class WardAssignClustering:
         raise NotImplementedError
 
     # --- helpers ---
-
-    def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
-        if self._sequence_lookup_cache is not None:
-            return self._sequence_lookup_cache
-        self._sequence_lookup_cache = _build_sequence_lookup(
-            self._ds, self._allowed_safe_sequences
-        )
-        return self._sequence_lookup_cache
 
     def _write_sequence_outputs(
         self,
@@ -214,10 +192,9 @@ class WardAssignClustering:
 
         # Standard per-sequence parquet artifact for index-based loading.
         group, sequence = _resolve_sequence_identity(
-            safe_seq, self._pair_map, self._get_sequence_lookup()
+            safe_seq, self._scope.entry_map
         )
-        safe_group = to_safe_name(group) if group else ""
-        out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
+        out_name = f"{entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
         df_out = pd.DataFrame(
             {
@@ -234,13 +211,7 @@ class WardAssignClustering:
         )
         df_out.to_parquet(out_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(
-                group,
-                sequence,
-                out_path,
-                int(len(df_out)),
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-            )
+            _build_index_row(group, sequence, out_path, int(len(df_out)))
         )
         self._processed_sequences.add(safe_seq)
 
@@ -303,13 +274,8 @@ class WardAssignClustering:
         helper = StreamingFeatureHelper(self._ds, "ward-assign")
         if self.params.pair_filter:
             helper.set_pair_filter(self.params.pair_filter)
-        scope_filter = (
-            {"safe_sequences": self._allowed_safe_sequences}
-            if self._allowed_safe_sequences
-            else None
-        )
         manifest = helper.build_manifest_from_results(
-            self.inputs.feature_inputs, scope_filter=scope_filter
+            self.inputs.feature_inputs, scope=self._scope
         )
         if not manifest:
             raise RuntimeError("[ward-assign] No usable inputs found for assignment.")
@@ -371,13 +337,7 @@ class WardAssignClustering:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(
-                "",
-                marker_seq,
-                marker_path,
-                int(len(marker_df)),
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-            )
+            _build_index_row("", marker_seq, marker_path, int(len(marker_df)))
         )
 
         # Labels are already written to disk during fit(); just save model params

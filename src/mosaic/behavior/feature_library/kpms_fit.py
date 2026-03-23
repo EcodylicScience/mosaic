@@ -15,19 +15,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import Iterable, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
-
-from mosaic.core.dataset import _dataset_base_dir
 
 from .spec import register_feature
 from mosaic.core.helpers import to_safe_name
 
 from .helpers import PartialIndexRow, _build_index_row
 from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput
+from mosaic.core.pipeline._utils import Scope
 
 # ---------------------------------------------------------------------------
 # Path to the runner script shipped alongside this module
@@ -103,11 +102,11 @@ def _collect_and_serialize_tracks(
     pose_prefix_y: str,
     pose_confidence_prefix: str,
     id_col: str = "id",
-    bodypart_names: Optional[list[str]] = None,
-    groups: Optional[list[str]] = None,
-    sequences: Optional[list[str]] = None,
-    fit_sample_sequences: Optional[int] = None,
-    downsample_rate: Optional[int] = None,
+    bodypart_names: list[str] | None = None,
+    groups: list[str] | None = None,
+    sequences: list[str] | None = None,
+    fit_sample_sequences: int | None = None,
+    downsample_rate: int | None = None,
 ) -> list[str]:
     """Iterate all track parquets, convert, and write to data_dir as npz+json.
 
@@ -410,10 +409,9 @@ class KpmsFit:
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self._ds = None
-        self._run_root: Optional[Path] = None
+        self._run_root: Path | None = None
         self._additional_index_rows: list[PartialIndexRow] = []
-        self._scope_filter_dict: Optional[dict] = None
-        self._scope_constraints: Optional[dict] = None
+        self._scope: Scope = Scope()
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -423,11 +421,8 @@ class KpmsFit:
     def set_run_root(self, run_root: Path) -> None:
         self._run_root = Path(run_root)
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter_dict = scope
-
-    def set_scope_constraints(self, constraints: Optional[dict]) -> None:
-        self._scope_constraints = constraints
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def get_additional_index_rows(self) -> list[PartialIndexRow]:
         return list(self._additional_index_rows)
@@ -439,9 +434,6 @@ class KpmsFit:
 
     def supports_partial_fit(self) -> bool:
         return False
-
-    def loads_own_data(self) -> bool:
-        return True
 
     def partial_fit(self, df: pd.DataFrame) -> None:
         raise NotImplementedError
@@ -476,12 +468,9 @@ class KpmsFit:
         # 1. Serialize track data to a temp directory
         data_dir = self._run_root / "_kpms_data"
 
-        # Extract group/sequence scope from constraints set by run_feature
-        scope_groups = None
-        scope_sequences = None
-        if self._scope_constraints:
-            scope_groups = self._scope_constraints.get("groups")
-            scope_sequences = self._scope_constraints.get("sequences")
+        # Extract group/sequence scope
+        scope_groups = sorted(self._scope.groups) if self._scope.entries else None
+        scope_sequences = sorted(self._scope.sequences) if self._scope.entries else None
 
         print("[kpms-fit] Collecting and serializing track data...", file=sys.stderr)
         bodypart_names = _collect_and_serialize_tracks(
@@ -576,13 +565,7 @@ class KpmsFit:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(
-                "",
-                marker_seq,
-                marker_path,
-                1,
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-            )
+            _build_index_row("", marker_seq, marker_path, 1)
         )
 
     def load_model(self, path: Path) -> None:

@@ -22,6 +22,8 @@ from typing import final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline._utils import Scope
+
 # from .spec import register_feature  # <-- uncomment when ready
 from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
 
@@ -77,6 +79,7 @@ class MyPerSequenceFeature:
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True  # appends "__from__<input>" to run dir
         self.skip_existing_outputs = False  # set True if idempotent + expensive
+        self._scope: Scope = Scope()
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -84,9 +87,9 @@ class MyPerSequenceFeature:
         """Called by Dataset.run_feature before any fit/transform."""
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+    def set_scope(self, scope: Scope) -> None:
         """Restrict which sequences are processed (used by inputset path)."""
-        self._scope_filter = scope or {}
+        self._scope = scope
 
     # ----------------------- Fit protocol ------------------------
 

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key, to_safe_name
 
 from ._utils import hash_params, json_ready
 from .index_csv import IndexCSV, IndexRowBase
@@ -214,9 +214,7 @@ def extract_frames(
     def _extract_sequence(
         group: str, sequence: str, video_paths: list[Path]
     ) -> FramesIndexRow | None:
-        safe_group = to_safe_name(group)
-        safe_seq = to_safe_name(sequence)
-        seq_label = f"{safe_group}__{safe_seq}" if safe_group else safe_seq
+        seq_label = entry_key(group, sequence)
         seq_dir = run_root / seq_label
 
         if seq_dir.exists() and not overwrite:
@@ -425,9 +423,7 @@ def get_frame_paths(
     # Collect PNG paths
     paths = []
     if group is not None or sequence is not None:
-        g_safe = to_safe_name(group) if group else ""
-        s_safe = to_safe_name(sequence) if sequence else ""
-        seq_label = f"{g_safe}__{s_safe}" if g_safe else s_safe
+        seq_label = entry_key(group or "", sequence or "")
         seq_dir = run_root / seq_label
         if seq_dir.exists():
             paths = sorted(seq_dir.glob("*.png"))
@@ -485,9 +481,7 @@ def get_frame_manifests(
 
     # Collect sequence directories
     if group is not None or sequence is not None:
-        g_safe = to_safe_name(group) if group else ""
-        s_safe = to_safe_name(sequence) if sequence else ""
-        seq_label = f"{g_safe}__{s_safe}" if g_safe else s_safe
+        seq_label = entry_key(group or "", sequence or "")
         seq_dirs = [run_root / seq_label]
     else:
         seq_dirs = sorted(d for d in run_root.iterdir() if d.is_dir())

@@ -23,6 +23,7 @@ from mosaic.behavior.feature_library.spec import (
     TrackInput,
 )
 from mosaic.behavior.feature_library.spec import register_feature
+from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
     compute_heading_angle,
@@ -114,7 +115,7 @@ class EgocentricCrop:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
         # Storage settings (for feature pipeline integration)
         self.storage_feature_name = self.name
@@ -127,9 +128,9 @@ class EgocentricCrop:
         """Called by Dataset.run_feature before any fit/transform."""
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
+    def set_scope(self, scope: Scope) -> None:
         """Receive scope constraints from run_feature."""
-        self._scope_filter = scope or {}
+        self._scope = scope
 
     # ----------------------- Fit protocol ------------------------
 
@@ -137,9 +138,6 @@ class EgocentricCrop:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter) -> None:

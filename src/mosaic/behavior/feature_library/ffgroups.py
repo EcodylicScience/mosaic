@@ -12,6 +12,8 @@ from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
 from scipy.spatial.distance import cdist
 
+from mosaic.core.pipeline._utils import Scope
+
 from .spec import register_feature
 
 from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
@@ -128,22 +130,20 @@ class FFGroups:
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
+        self._scope: Scope = Scope()
 
     # ---- Dataset hooks ----
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     # ---- Fit/transform contract ----
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:

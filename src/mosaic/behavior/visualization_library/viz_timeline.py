@@ -40,6 +40,7 @@ from mosaic.core.helpers import (
     detect_label_format,
     to_safe_name,
 )
+from mosaic.core.pipeline._utils import Scope
 
 # Priority list for auto-detecting the label column in a DataFrame
 _LABEL_COL_PRIORITY = [
@@ -168,22 +169,19 @@ class TimelinePlot:
         self._figs: list[tuple[str, Figure]] = []
         self._marker_written = False
         self._summary: dict = {}
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self):
         return True
 
     def supports_partial_fit(self):
         return False
-
-    def loads_own_data(self):
-        return True
 
     def partial_fit(self, df):
         raise NotImplementedError
@@ -250,14 +248,7 @@ class TimelinePlot:
     # -----------------------------------------------------------------
 
     def _allowed_set(self) -> set[str]:
-        scope = self._scope_filter or {}
-        allowed = set()
-        for s in scope.get("safe_sequences") or []:
-            allowed.add(s)
-        for s in scope.get("sequences") or []:
-            allowed.add(s)
-            allowed.add(to_safe_name(s))
-        return allowed
+        return self._scope.entry_keys
 
     def _is_filtered_out(self, seq_key: str, allowed: set[str]) -> bool:
         if not allowed:

@@ -33,7 +33,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key, to_safe_name
 
 
 def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,7 +149,7 @@ class CustomLabelConverter:
             # Create safe names and output path
             safe_group = to_safe_name(group_val) if group_val else ""
             safe_seq = to_safe_name(seq_name)
-            fname = f"{safe_group + '__' if safe_group else ''}{safe_seq}.npz"
+            fname = f"{entry_key(group_val, seq_name)}.npz"
             out_path = labels_root / fname
 
             # Build NPZ payload

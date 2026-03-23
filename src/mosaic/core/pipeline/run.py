@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import gc
 import importlib
 import json
@@ -20,12 +19,17 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.helpers import filter_time_range, resolve_frame_range, to_safe_name
+from mosaic.core.helpers import (
+    entry_key,
+    filter_time_range,
+    resolve_frame_range,
+    to_safe_name,
+)
 
 from ._utils import (
     FeatureMeta,
-    InputScope,
-    build_scope_key,
+    ResolvedInput,
+    Scope,
     hash_params,
     json_ready,
 )
@@ -36,11 +40,11 @@ from .index import (
     feature_run_root,
 )
 from .iteration import (
-    inputset_from_inputs,
-    resolve_feature_pairs,
-    resolve_tracks_pairs,
-    yield_feature_frames,
-    yield_inputset_frames,
+    resolve_input_scope,
+    resolve_feature_entries,
+    resolve_tracks_entries,
+    yield_feature_data,
+    yield_input_data,
     yield_sequences,
     yield_sequences_with_overlap,
 )
@@ -53,11 +57,8 @@ if TYPE_CHECKING:
 
 
 def build_output_path(group: str, sequence: str, run_root: Path) -> Path:
-    """Build the parquet output path for a (group, sequence) pair."""
-    safe_group = to_safe_name(group)
-    safe_seq = to_safe_name(sequence)
-    out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
-    return run_root / out_name
+    """Build the parquet output path for a (group, sequence) entry."""
+    return run_root / f"{entry_key(group, sequence)}.parquet"
 
 
 def build_feature_meta(group: str, sequence: str, run_root: Path) -> FeatureMeta:
@@ -157,16 +158,7 @@ def run_feature(
     if suffix and use_input_suffix:
         storage_feature_name = f"{storage_feature_name}__from__{suffix}"
 
-    # Prepare run id & root
-    # Include scope in hash for features whose fit result depends on input scope
-    scope_key = None
-    _nf = (
-        feature.needs_fit() if callable(getattr(feature, "needs_fit", None)) else False
-    )
-    _lo = feature.loads_own_data()
-    if _nf and _lo:
-        scope_key = build_scope_key(groups, sequences)
-
+    # Resolve frame range
     frame_start, frame_end = resolve_frame_range(
         ds.meta.get("fps_default"),
         filter_start_frame,
@@ -176,30 +168,63 @@ def run_feature(
     )
     _has_frame_filter = frame_start is not None or frame_end is not None
 
+    # Pre-pass: resolve candidate entries before hashing
+    input_scope: Scope | None = None
+    resolved_inputs: list[ResolvedInput] = []
+    entries_all: set[tuple[str, str]] | None = None
+    entries_to_compute: set[tuple[str, str]] | None = None
+    preexisting_rows: list[FeatureIndexRow] = []
+    resolved_input_run_id: str | None = None
+
+    groups_set = {str(g) for g in groups} if groups is not None else None
+    seq_set = {str(s) for s in sequences} if sequences is not None else None
+
+    inputs = feature.inputs
+    if inputs.is_single_tracks:
+        try:
+            entries_all = resolve_tracks_entries(ds, groups_set, seq_set)
+        except FileNotFoundError:
+            entries_all = set()
+    elif inputs.is_single_feature:
+        fi = inputs.feature_inputs[0]
+        entries_all, resolved_input_ref = resolve_feature_entries(
+            ds, fi.feature, fi.run_id, groups_set, seq_set
+        )
+        resolved_input_run_id = resolved_input_ref.run_id
+    elif inputs.is_multi:
+        input_scope, resolved_inputs = resolve_input_scope(ds, inputs, groups, sequences)
+        entries_all = input_scope.entries
+    elif inputs.is_empty:
+        if groups is not None or sequences is not None:
+            raise ValueError(
+                f"Feature '{feature.name}' has empty inputs; "
+                f"groups/sequences filters cannot be applied."
+            )
+        entries_all = set()
+    else:
+        raise ValueError("Feature.inputs is empty and unrecognized")
+
+    # Prepare run id & root
     hashable_params: dict[str, object] = {
         "_params": feature.params.model_dump(),
         "_inputs": feature.inputs.model_dump(),
+        "_frame_range": [frame_start, frame_end],
     }
-    if scope_key:
-        hashable_params["_scope"] = scope_key
-    if _has_frame_filter:
-        hashable_params["_frame_range"] = [frame_start, frame_end]
+    if feature.needs_fit():
+        hashable_params["_scope_entries"] = sorted(entries_all or set())
     params_hash = hash_params(hashable_params)
     run_id = f"{feature.version}-{params_hash}"
     run_root = feature_run_root(ds, storage_feature_name, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    # Persist params (with scope) for discoverability
+    # Persist params for discoverability
     params_path = run_root / "params.json"
     try:
-        save_payload = {
+        save_payload: dict[str, object] = {
             "_params": json_ready(feature.params),
             "_inputs": feature.inputs.model_dump(),
+            "_frame_range": [frame_start, frame_end],
         }
-        if scope_key is not None:
-            save_payload["_scope"] = scope_key
-        if _has_frame_filter:
-            save_payload["_frame_range"] = [frame_start, frame_end]
         params_path.write_text(json.dumps(save_payload, indent=2))
     except Exception as exc:
         print(
@@ -225,86 +250,57 @@ def run_feature(
         )
         max_workers = 1
 
-    # Pre-pass: resolve candidate pairs, skip existing outputs before loading data
-    input_scope: InputScope | None = None
-    pairs_all: set[tuple[str, str]] | None = None
-    pairs_to_compute: set[tuple[str, str]] | None = None
-    preexisting_rows: list[FeatureIndexRow] = []
-    resolved_input_run_id: str | None = None
-
-    groups_set = {str(g) for g in groups} if groups is not None else None
-    seq_set = {str(s) for s in sequences} if sequences is not None else None
-
-    inputs = feature.inputs
-    if inputs.is_single_tracks:
-        try:
-            pairs_all = resolve_tracks_pairs(ds, groups_set, seq_set)
-        except FileNotFoundError:
-            pairs_all = set()
-    elif inputs.is_single_feature:
-        fi = inputs.feature_inputs[0]
-        pairs_all, resolved_input_ref = resolve_feature_pairs(
-            ds, fi.feature, fi.run_id, groups_set, seq_set
-        )
-        resolved_input_run_id = resolved_input_ref.run_id
-    elif inputs.is_multi:
-        input_scope = inputset_from_inputs(ds, inputs, groups, sequences)
-        pairs_all = input_scope.pairs
-    elif feature.loads_own_data():
-        if groups is not None or sequences is not None:
-            raise ValueError(
-                f"Feature '{feature.name}' has empty inputs and loads its "
-                f"own data; groups/sequences filters cannot be applied."
-            )
-        pairs_all = set()
-    else:
-        raise ValueError("Feature.inputs is empty")
-
-    if pairs_all is not None:
-        pairs_to_compute = set()
-        for pair in pairs_all:
-            out_path = build_output_path(pair[0], pair[1], run_root)
+    # Skip existing outputs before loading data
+    if entries_all is not None:
+        entries_to_compute = set()
+        for entry in entries_all:
+            out_path = build_output_path(entry[0], entry[1], run_root)
             if out_path.exists() and not overwrite:
                 if getattr(feature, "skip_existing_outputs", False):
                     continue  # neither compute nor index append
-                g, s = pair
-                g = "" if g is None else str(g)
-                s = "" if s is None else str(s)
+                group, sequence = entry
+                group = "" if group is None else str(group)
+                sequence = "" if sequence is None else str(sequence)
                 preexisting_rows.append(
                     FeatureIndexRow(
                         run_id=run_id,
                         feature=storage_feature_name,
                         version=feature.version,
-                        group=g,
-                        sequence=s,
+                        group=group,
+                        sequence=sequence,
                         abs_path=out_path,
                         n_rows=0,
                         params_hash=params_hash,
                     )
                 )
             else:
-                pairs_to_compute.add(pair)
+                entries_to_compute.add(entry)
 
-    # Choose input iterator (filtered to pairs_to_compute when known)
+    # Build unified scope
+    scope = Scope(
+        entries=entries_all or set(),
+        frame_start=frame_start,
+        frame_end=frame_end,
+    )
+
+    # Choose input iterator (filtered to entries_to_compute when known)
     use_overlap = overlap_frames > 0 and inputs.is_single_tracks
 
     if inputs.is_single_feature:
         _iter_fn = partial(
-            yield_feature_frames,
+            yield_feature_data,
             ds,
             inputs.feature_inputs[0].feature,
             resolved_input_run_id,
             groups,
             sequences,
-            allowed_pairs=pairs_to_compute,
+            allowed_pairs=entries_to_compute,
         )
     elif inputs.is_multi:
         if input_scope is None:
             raise ValueError("Feature.inputs is multi but no scope was resolved.")
-        scope_for_iter = input_scope
-        if pairs_to_compute is not None:
-            scope_for_iter = dataclasses.replace(input_scope, pairs=pairs_to_compute)
-        _wants_full = getattr(feature, "wants_full_inputset_data", None)
+        iter_entries = entries_to_compute or scope.entries
+        _wants_full = getattr(feature, "wants_full_input_data", None)
         _meta_only = callable(_wants_full) and not _wants_full()
         if _meta_only and _has_frame_filter:
             raise RuntimeError(
@@ -313,26 +309,26 @@ def run_feature(
                 f"apply them."
             )
         _iter_fn = partial(
-            yield_inputset_frames,
+            yield_input_data,
             ds,
             groups,
             sequences,
-            scope=scope_for_iter,
+            entries=iter_entries,
+            resolved_inputs=resolved_inputs,
             metadata_only=_meta_only,
         )
-        input_scope = scope_for_iter
     elif use_overlap:
         _iter_fn = partial(
             yield_sequences_with_overlap,
             ds,
             groups,
             sequences,
-            allowed_pairs=pairs_to_compute,
+            allowed_pairs=entries_to_compute,
             overlap_frames=overlap_frames,
         )
     else:
         _iter_fn = partial(
-            yield_sequences, ds, groups, sequences, allowed_pairs=pairs_to_compute
+            yield_sequences, ds, groups, sequences, allowed_pairs=entries_to_compute
         )
 
     def iter_inputs():
@@ -353,57 +349,12 @@ def run_feature(
 
     # ===== FIT PHASE =====
     feature.bind_dataset(ds)
+    feature.set_scope(scope)
 
-    scope_constraints: dict[str, object] = {}
-    if input_scope is not None:
-        if input_scope.groups:
-            scope_constraints["groups"] = input_scope.groups
-        if input_scope.sequences:
-            scope_constraints["sequences"] = input_scope.sequences
-        if input_scope.safe_sequences:
-            scope_constraints["safe_sequences"] = input_scope.safe_sequences
-        if input_scope.pairs:
-            scope_constraints["pairs"] = input_scope.pairs
-    if groups is not None:
-        norm_groups = sorted({str(g) for g in groups})
-        if norm_groups:
-            scope_constraints["groups"] = norm_groups
-            scope_constraints["safe_groups"] = sorted(
-                {to_safe_name(g) for g in norm_groups}
-            )
-    if sequences is not None:
-        norm_sequences = sorted({str(s) for s in sequences})
-        if norm_sequences:
-            scope_constraints["sequences"] = norm_sequences
-            if not scope_constraints.get("safe_sequences"):
-                scope_constraints["safe_sequences"] = sorted(
-                    {to_safe_name(s) for s in norm_sequences}
-                )
-    if _has_frame_filter:
-        scope_constraints["frame_start"] = frame_start
-        scope_constraints["frame_end"] = frame_end
-    if scope_constraints:
-        setattr(feature, "_scope_constraints", scope_constraints)
-        _set_sc = getattr(feature, "set_scope_constraints", None)
-        if callable(_set_sc):
-            try:
-                _set_sc(scope_constraints)
-            except Exception as e:
-                print(
-                    f"[feature:{feature.name}] set_scope_constraints failed: {e}",
-                    file=sys.stderr,
-                )
-
-    if input_scope is not None:
-        feature.set_scope_filter(dataclasses.asdict(input_scope))
-
-    # Validate time/frame filters against ds-loading features
-    if _has_frame_filter and feature.loads_own_data():
+    if _has_frame_filter and inputs.is_empty:
         raise RuntimeError(
             f"[feature:{feature.name}] Time/frame filters are set but "
-            f"this feature loads its own data and cannot apply them. "
-            f"Remove the filters or use a feature that processes data "
-            f"from the sequence iterator."
+            f"this feature has no inputs and cannot apply them."
         )
 
     if feature.needs_fit():
@@ -418,14 +369,12 @@ def run_feature(
                     file=sys.stderr,
                 )
 
-        # Check if fit phase can be skipped (for global features with existing outputs)
-        loads_own = feature.loads_own_data()
+        # Skip fit for empty-input features when outputs already exist
         model_path = run_root / "model.joblib"
-        # Also check for global-specific artifacts (e.g., global_opentsne_embedding.joblib)
         embedding_path = run_root / "global_opentsne_embedding.joblib"
         fit_complete = model_path.exists() or embedding_path.exists()
 
-        skip_fit = not overwrite and loads_own and fit_complete
+        skip_fit = not overwrite and inputs.is_empty and fit_complete
         if skip_fit:
             print(
                 f"[feature:{feature.name}] fit phase skipped (overwrite=False, outputs exist)",
@@ -446,21 +395,13 @@ def run_feature(
             except Exception:
                 pass
         else:
-            # Check if feature loads its own data (e.g., GlobalTSNE) - avoid pre-loading
-            if loads_own:
-                # Feature will load data itself; pass empty iterator to satisfy protocol
-                all_dfs = []
-            else:
-                all_dfs = []
+            def _fit_iter():
                 for item in iter_inputs():
-                    df = item[2]
-                    all_dfs.append(df)
-            # Always call fit, even if no streamed inputs were found.
-            # Many "global/artifact" features load their own matrices from disk.
+                    yield item[2]
+
             try:
-                feature.fit(all_dfs)
+                feature.fit([] if inputs.is_empty else _fit_iter())
             except TypeError:
-                # Backward-compat: some features define fit() with no args.
                 try:
                     getattr(feature, "fit")()
                 except Exception as e:
@@ -503,10 +444,7 @@ def run_feature(
         if row.abs_path:
             abs_path = Path(row.abs_path)
         else:
-            safe_group = to_safe_name(group)
-            safe_seq = to_safe_name(sequence)
-            out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
-            abs_path = run_root / out_name
+            abs_path = run_root / f"{entry_key(group, sequence)}.parquet"
         n_rows = row.n_rows
         out_rows[:] = [
             r
@@ -539,7 +477,7 @@ def run_feature(
             else:
                 executor = ThreadPoolExecutor(max_workers=max_workers)
         extra_attrs = {}
-        for attr in ("_scope_filter", "_scope_constraints"):
+        for attr in ("_scope",):
             if hasattr(feature, attr):
                 extra_attrs[attr] = getattr(feature, attr)
 

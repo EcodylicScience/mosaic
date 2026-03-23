@@ -7,14 +7,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline._utils import InputScope, ResolvedInput
+from mosaic.core.pipeline._utils import ResolvedInput, Scope
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.iteration import (
     _read_tracks_index,
-    resolve_feature_pairs,
-    resolve_tracks_pairs,
-    yield_feature_frames,
-    yield_inputset_frames,
+    resolve_feature_entries,
+    resolve_tracks_entries,
+    yield_feature_data,
+    yield_input_data,
     yield_sequences,
     yield_sequences_with_overlap,
 )
@@ -301,46 +301,46 @@ class TestYieldSequencesWithOverlap:
         assert end == len(df)
 
 
-# --- yield_feature_frames ---
+# --- yield_feature_data ---
 
 
-class TestYieldFeatureFrames:
+class TestYieldFeatureData:
     @pytest.fixture
     def feature_ds(self, ds, tmp_path):
         _setup_feature(ds, tmp_path, "speed", [("arena", "s1"), ("arena", "s2")])
         return ds
 
     def test_yields_all_for_run(self, feature_ds):
-        results = list(yield_feature_frames(feature_ds, "speed", run_id="v1-abc"))
+        results = list(yield_feature_data(feature_ds, "speed", run_id="v1-abc"))
         assert len(results) == 2
 
     def test_auto_resolves_latest_run(self, feature_ds):
-        results = list(yield_feature_frames(feature_ds, "speed"))
+        results = list(yield_feature_data(feature_ds, "speed"))
         assert len(results) == 2
 
     def test_filter_by_group(self, feature_ds):
-        results = list(yield_feature_frames(feature_ds, "speed", groups=["arena"]))
+        results = list(yield_feature_data(feature_ds, "speed", groups=["arena"]))
         assert len(results) == 2
 
     def test_filter_by_sequence(self, feature_ds):
-        results = list(yield_feature_frames(feature_ds, "speed", sequences=["s1"]))
+        results = list(yield_feature_data(feature_ds, "speed", sequences=["s1"]))
         assert len(results) == 1
         assert results[0][1] == "s1"
 
     def test_filter_by_allowed_pairs(self, feature_ds):
         results = list(
-            yield_feature_frames(feature_ds, "speed", allowed_pairs={("arena", "s2")})
+            yield_feature_data(feature_ds, "speed", allowed_pairs={("arena", "s2")})
         )
         assert len(results) == 1
         assert results[0][1] == "s2"
 
     def test_no_such_feature_raises(self, ds):
         with pytest.raises(FileNotFoundError):
-            list(yield_feature_frames(ds, "nonexistent"))
+            list(yield_feature_data(ds, "nonexistent"))
 
     def test_no_such_run_raises(self, feature_ds):
         with pytest.raises(ValueError, match="No entries"):
-            list(yield_feature_frames(feature_ds, "speed", run_id="nonexistent"))
+            list(yield_feature_data(feature_ds, "speed", run_id="nonexistent"))
 
     def test_skips_tiny_tables(self, ds, tmp_path):
         """Tables with <= 1 row are skipped."""
@@ -369,7 +369,7 @@ class TestYieldFeatureFrames:
         )
         idx.mark_finished("v1-abc")
 
-        results = list(yield_feature_frames(ds, "tiny", run_id="v1-abc"))
+        results = list(yield_feature_data(ds, "tiny", run_id="v1-abc"))
         assert len(results) == 0
 
     def test_skips_non_parquet_entries(self, ds, tmp_path):
@@ -398,7 +398,7 @@ class TestYieldFeatureFrames:
         )
         idx.mark_finished("v1-abc")
 
-        results = list(yield_feature_frames(ds, "npz_feat", run_id="v1-abc"))
+        results = list(yield_feature_data(ds, "npz_feat", run_id="v1-abc"))
         assert len(results) == 0
 
     def test_skips_few_numeric_columns(self, ds, tmp_path):
@@ -429,43 +429,43 @@ class TestYieldFeatureFrames:
         )
         idx.mark_finished("v1-abc")
 
-        results = list(yield_feature_frames(ds, "sparse", run_id="v1-abc"))
+        results = list(yield_feature_data(ds, "sparse", run_id="v1-abc"))
         assert len(results) == 0
 
 
-# --- resolve_tracks_pairs ---
+# --- resolve_tracks_entries ---
 
 
-class TestResolveTracksPairs:
+class TestResolveTracksEntries:
     def test_returns_all_pairs(self, populated_ds):
-        pairs = resolve_tracks_pairs(populated_ds, None, None)
+        pairs = resolve_tracks_entries(populated_ds, None, None)
         assert pairs == {("arena", "s1"), ("arena", "s2"), ("field", "s3")}
 
     def test_filter_by_groups(self, populated_ds):
-        pairs = resolve_tracks_pairs(populated_ds, {"arena"}, None)
+        pairs = resolve_tracks_entries(populated_ds, {"arena"}, None)
         assert len(pairs) == 2
         assert all(g == "arena" for g, _ in pairs)
 
     def test_filter_by_sequences(self, populated_ds):
-        pairs = resolve_tracks_pairs(populated_ds, None, {"s1"})
+        pairs = resolve_tracks_entries(populated_ds, None, {"s1"})
         assert pairs == {("arena", "s1")}
 
     def test_missing_index_raises(self, ds):
         with pytest.raises(FileNotFoundError):
-            resolve_tracks_pairs(ds, None, None)
+            resolve_tracks_entries(ds, None, None)
 
 
-# --- resolve_feature_pairs ---
+# --- resolve_feature_entries ---
 
 
-class TestResolveFeaturePairs:
+class TestResolveFeatureEntries:
     @pytest.fixture
     def feature_ds(self, ds, tmp_path):
         _setup_feature(ds, tmp_path, "speed", [("arena", "s1"), ("arena", "s2")])
         return ds
 
     def test_returns_pairs_and_resolved_input(self, feature_ds):
-        pairs, resolved = resolve_feature_pairs(
+        pairs, resolved = resolve_feature_entries(
             feature_ds, "speed", "v1-abc", None, None
         )
         assert pairs == {("arena", "s1"), ("arena", "s2")}
@@ -475,16 +475,16 @@ class TestResolveFeaturePairs:
         assert len(resolved.path_map) == 2
 
     def test_auto_resolves_latest_run(self, feature_ds):
-        pairs, resolved = resolve_feature_pairs(feature_ds, "speed", None, None, None)
+        pairs, resolved = resolve_feature_entries(feature_ds, "speed", None, None, None)
         assert resolved.run_id == "v1-abc"
         assert len(pairs) == 2
 
     def test_filter_by_groups(self, feature_ds):
-        pairs, _ = resolve_feature_pairs(feature_ds, "speed", "v1-abc", {"arena"}, None)
+        pairs, _ = resolve_feature_entries(feature_ds, "speed", "v1-abc", {"arena"}, None)
         assert len(pairs) == 2
 
     def test_filter_by_sequences(self, feature_ds):
-        pairs, _ = resolve_feature_pairs(feature_ds, "speed", "v1-abc", None, {"s1"})
+        pairs, _ = resolve_feature_entries(feature_ds, "speed", "v1-abc", None, {"s1"})
         assert pairs == {("arena", "s1")}
 
     def test_drops_global_rows(self, ds, tmp_path):
@@ -549,24 +549,24 @@ class TestResolveFeaturePairs:
         )
         idx.mark_finished("v1-abc")
 
-        pairs, _ = resolve_feature_pairs(ds, "gfeat", "v1-abc", None, None)
+        pairs, _ = resolve_feature_entries(ds, "gfeat", "v1-abc", None, None)
         assert pairs == {("arena", "s1")}
 
     def test_nonexistent_run_raises(self, feature_ds):
         with pytest.raises(FileNotFoundError):
-            resolve_feature_pairs(feature_ds, "speed", "nonexistent", None, None)
+            resolve_feature_entries(feature_ds, "speed", "nonexistent", None, None)
 
     def test_no_feature_raises(self, ds):
         with pytest.raises(FileNotFoundError):
-            resolve_feature_pairs(ds, "nonexistent", "v1-abc", None, None)
+            resolve_feature_entries(ds, "nonexistent", "v1-abc", None, None)
 
 
-# --- yield_inputset_frames ---
+# --- yield_input_data ---
 
 
-class TestYieldInputsetFrames:
+class TestYieldInputData:
     @pytest.fixture
-    def inputset_ds(self, ds, tmp_path):
+    def multi_input_ds(self, ds, tmp_path):
         """Dataset with tracks and a feature, both covering the same 2 sequences."""
         pairs = [("arena", "s1"), ("arena", "s2")]
 
@@ -582,14 +582,14 @@ class TestYieldInputsetFrames:
         _setup_feature(ds, tmp_path, "speed", pairs)
         return ds
 
-    def _make_scope(self, ds, tmp_path, pairs, include_feature=True):
-        """Build a minimal InputScope for testing."""
+    def _make_inputs(self, tmp_path, pairs, include_feature=True):
+        """Build entries and resolved_inputs for testing."""
         resolved_inputs = [ResolvedInput(kind="tracks")]
         if include_feature:
             feat_dir = tmp_path / "features" / "speed" / "v1-abc"
             path_map = {}
-            for g, s in pairs:
-                path_map[(g, s)] = feat_dir / f"{g}__{s}.parquet"
+            for group, seq in pairs:
+                path_map[(group, seq)] = feat_dir / f"{group}__{seq}.parquet"
             resolved_inputs.append(
                 ResolvedInput(
                     kind="feature",
@@ -598,25 +598,21 @@ class TestYieldInputsetFrames:
                     path_map=path_map,
                 )
             )
-        return InputScope(
-            pairs=set(pairs),
-            safe_sequences={p[1] for p in pairs},
-            resolved_inputs=resolved_inputs,
-        )
+        return set(pairs), resolved_inputs
 
-    def test_yields_merged_frames(self, inputset_ds, tmp_path):
+    def test_yields_merged_frames(self, multi_input_ds, tmp_path):
         pairs = [("arena", "s1"), ("arena", "s2")]
-        scope = self._make_scope(inputset_ds, tmp_path, pairs)
-        results = list(yield_inputset_frames(inputset_ds, scope=scope))
+        entries, resolved = self._make_inputs(tmp_path, pairs)
+        results = list(yield_input_data(multi_input_ds, entries=entries, resolved_inputs=resolved))
         assert len(results) == 2
         for _, _, df in results:
             assert isinstance(df, pd.DataFrame)
 
-    def test_metadata_only(self, inputset_ds, tmp_path):
+    def test_metadata_only(self, multi_input_ds, tmp_path):
         pairs = [("arena", "s1"), ("arena", "s2")]
-        scope = self._make_scope(inputset_ds, tmp_path, pairs)
+        entries, resolved = self._make_inputs(tmp_path, pairs)
         results = list(
-            yield_inputset_frames(inputset_ds, scope=scope, metadata_only=True)
+            yield_input_data(multi_input_ds, entries=entries, resolved_inputs=resolved, metadata_only=True)
         )
         assert len(results) == 2
         for _, _, df in results:
@@ -625,13 +621,12 @@ class TestYieldInputsetFrames:
                 c in ("frame", "time", "group", "sequence", "id") for c in df.columns
             )
 
-    def test_empty_scope_yields_nothing(self, inputset_ds, tmp_path):
-        scope = InputScope()
-        results = list(yield_inputset_frames(inputset_ds, scope=scope))
+    def test_empty_scope_yields_nothing(self, multi_input_ds, tmp_path):
+        results = list(yield_input_data(multi_input_ds, entries=set(), resolved_inputs=[]))
         assert len(results) == 0
 
-    def test_tracks_only_scope(self, inputset_ds, tmp_path):
+    def test_tracks_only_scope(self, multi_input_ds, tmp_path):
         pairs = [("arena", "s1")]
-        scope = self._make_scope(inputset_ds, tmp_path, pairs, include_feature=False)
-        results = list(yield_inputset_frames(inputset_ds, scope=scope))
+        entries, resolved = self._make_inputs(tmp_path, pairs, include_feature=False)
+        results = list(yield_input_data(multi_input_ds, entries=entries, resolved_inputs=resolved))
         assert len(results) == 1

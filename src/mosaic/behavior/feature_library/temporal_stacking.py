@@ -17,6 +17,7 @@ from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
 from mosaic.core.helpers import to_safe_name
+from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 
 from .helpers import _load_array_from_spec
@@ -107,8 +108,7 @@ class TemporalStackingFeature:
         self._inputs: list[ArtifactSpec] = []
         self._resolved_inputs: list[tuple[ArtifactSpec, dict[str, Path]]] = []
         self._input_cache_ready = False
-        self._scope_filter: dict | None = None
-        self._allowed_safe_sequences: set[str] | None = None
+        self._scope: Scope = Scope()
 
     def bind_dataset(self, ds):
         self._ds = ds
@@ -124,13 +124,8 @@ class TemporalStackingFeature:
         self._resolved_inputs = []
         self._input_cache_ready = False
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
-        safe_sequences = scope.get("safe_sequences") if scope else None
-        if safe_sequences:
-            self._allowed_safe_sequences = {str(s) for s in safe_sequences}
-        else:
-            self._allowed_safe_sequences = None
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self) -> bool:
         return False
@@ -138,11 +133,8 @@ class TemporalStackingFeature:
     def supports_partial_fit(self) -> bool:
         return False
 
-    def loads_own_data(self) -> bool:
-        return False
-
-    def wants_full_inputset_data(self) -> bool:
-        # NOTE: returning False means _yield_inputset_frames uses metadata_only
+    def wants_full_input_data(self) -> bool:
+        # NOTE: returning False means yield_input_data uses metadata_only
         # mode, which skips time/frame filtering. run_feature() raises if
         # these filters are set. Future work: apply them in _load_sequence_matrix.
         return False
@@ -194,12 +186,13 @@ class TemporalStackingFeature:
             )
 
         safe_seq = to_safe_name(sequence)
+        allowed_entry_keys = self._scope.entry_keys or None
         if (
-            self._allowed_safe_sequences
-            and safe_seq not in self._allowed_safe_sequences
+            allowed_entry_keys
+            and safe_seq not in allowed_entry_keys
         ):
             raise ValueError(
-                f"temporal-stack: sequence '{sequence}' not present in resolved inputset scope."
+                f"temporal-stack: sequence '{sequence}' not present in resolved input scope."
             )
 
         base_matrix, base_names, frame_indices, pair_ids = self._load_sequence_matrix(
@@ -299,7 +292,7 @@ class TemporalStackingFeature:
         if self._input_cache_ready:
             return
         resolved: list[tuple[ArtifactSpec, dict[str, Path]]] = []
-        allowed = self._allowed_safe_sequences
+        allowed = self._scope.entry_keys or None
         for spec in self._inputs:
             feat_name = spec.feature
             if not feat_name:

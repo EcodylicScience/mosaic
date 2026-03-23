@@ -13,6 +13,17 @@ def from_safe_name(safe: str) -> str:
     return unquote(safe)
 
 
+def entry_key(group: str, sequence: str) -> str:
+    """Composite key for a (group, sequence) dataset entry.
+
+    Matches the filename stem convention used throughout the pipeline:
+    ``{safe_group}__{safe_seq}`` when group is non-empty, else ``{safe_seq}``.
+    """
+    safe_group = to_safe_name(group) if group else ""
+    safe_seq = to_safe_name(sequence)
+    return f"{safe_group + '__' if safe_group else ''}{safe_seq}"
+
+
 # =============================================================================
 # Label Format Helpers
 # =============================================================================

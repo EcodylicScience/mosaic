@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline._utils import ChunkedPayload, DataPayload, StreamPayload
 
+from mosaic.core.pipeline._utils import Scope
+
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from typing_extensions import TypeVar
 
@@ -362,6 +364,8 @@ class InputsLike(Protocol):
     @property
     def is_multi(self) -> bool: ...
     @property
+    def is_empty(self) -> bool: ...
+    @property
     def feature_inputs(self) -> tuple[Result, ...]: ...
     def storage_suffix(self) -> str | None: ...
     def model_dump(self) -> dict[str, object]: ...
@@ -382,7 +386,7 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
         class Inputs(Inputs[TrackInput]):
             pass
 
-    Self-loading features that take no pipeline inputs:
+    Features that take no pipeline inputs:
         class Inputs(Inputs[Result]):
             _require: ClassVar[InputRequire] = "empty"
 
@@ -392,7 +396,7 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
     """
 
     # "nonempty" (default): at least one input required
-    # "empty": must be empty (loads own data)
+    # "empty": must be empty (no pipeline inputs)
     # "any": both empty and non-empty are valid
     _require: ClassVar[InputRequire] = "nonempty"
 
@@ -414,7 +418,7 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
     def _validate(self) -> Self:
         if self._require == "empty":
             if self.root:
-                raise ValueError("This feature takes no inputs (loads its own data)")
+                raise ValueError("This feature takes no pipeline inputs")
             return self
         if self._require == "nonempty" and not self.root:
             raise ValueError("Inputs must have at least one item")
@@ -442,6 +446,10 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
     @property
     def is_multi(self) -> bool:
         return len(self.root) > 1
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.root) == 0
 
     def storage_suffix(self) -> str | None:
         feats = self.feature_inputs
@@ -472,12 +480,11 @@ class Feature(Protocol):
     def params(self) -> Params: ...
 
     def bind_dataset(self, ds: Dataset) -> None: ...
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None: ...
+    def set_scope(self, scope: Scope) -> None: ...
 
     # Fit/transform contract
     def needs_fit(self) -> bool: ...
     def supports_partial_fit(self) -> bool: ...
-    def loads_own_data(self) -> bool: ...
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
     def partial_fit(self, df: pd.DataFrame) -> None: ...
     def finalize_fit(self) -> None: ...

@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline._utils import Scope
+
 from .spec import register_feature
 
 if TYPE_CHECKING:
@@ -82,22 +84,19 @@ class PairPositionFeatures:
         self.params = self.Params.from_overrides(params)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
     # ------------- Feature protocol -------------
     def bind_dataset(self, ds: Dataset) -> None:
         pass
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def finalize_fit(self) -> None:

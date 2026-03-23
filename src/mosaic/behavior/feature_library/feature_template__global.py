@@ -5,7 +5,6 @@ Copy this file, rename the class and `name`, and fill in your logic.
 
 Current patterns this template follows (as of 2026-03):
   - skip_transform_phase = True  (all work in fit/save_model, no per-seq transform)
-  - loads_own_data() = True      (skips run_feature pre-loading)
   - Uses Pydantic Params for typed, validated parameters
   - Uses StreamingFeatureHelper with build_manifest_from_results for data loading
   - set_run_root() for streaming writes during fit
@@ -30,15 +29,13 @@ import numpy as np
 import pandas as pd
 
 # from .spec import register_feature  # <-- uncomment when ready
-from mosaic.core.dataset import _dataset_base_dir
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key
+from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
-    _build_sequence_lookup,
-    _parse_scope_filter,
     _resolve_sequence_identity,
 )
 from .spec import Inputs, NNResult, OutputType, Params, Result
@@ -93,10 +90,7 @@ class MyGlobalFeature:
 
         self._ds = None
         self._run_root: Path | None = None
-        self._scope_filter: dict[str, object] | None = None
-        self._allowed_safe_sequences: set[str] | None = None
-        self._pair_map: dict[str, tuple[str, str]] = {}
-        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
+        self._scope: Scope = Scope()
         self._additional_index_rows: list[PartialIndexRow] = []
         self._artifacts: dict[str, object] = {}
 
@@ -105,10 +99,8 @@ class MyGlobalFeature:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
-        self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
-        self._sequence_lookup_cache = None
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def set_run_root(self, run_root: Path) -> None:
         """Set by run_feature before fit(); use for streaming writes."""
@@ -125,12 +117,6 @@ class MyGlobalFeature:
 
     def supports_partial_fit(self) -> bool:
         return False
-
-    def loads_own_data(self) -> bool:
-        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
-        # applied when loading own data. run_feature() raises RuntimeError
-        # if these filters are set. Future work: apply them during loading.
-        return True
 
     def partial_fit(self, X: pd.DataFrame) -> None:
         raise NotImplementedError
@@ -152,13 +138,8 @@ class MyGlobalFeature:
         helper = StreamingFeatureHelper(self._ds, self.name)
         if self.params.pair_filter:
             helper.set_pair_filter(self.params.pair_filter)
-        scope_filter = (
-            {"safe_sequences": self._allowed_safe_sequences}
-            if self._allowed_safe_sequences
-            else None
-        )
         manifest = helper.build_manifest_from_results(
-            self.inputs.feature_inputs, scope_filter=scope_filter
+            self.inputs.feature_inputs, scope=self._scope
         )
         if not manifest:
             raise RuntimeError(f"{self.name}: no usable inputs found.")
@@ -212,15 +193,6 @@ class MyGlobalFeature:
     # These use shared functions from helpers.py -- the same ones used
     # by GlobalTSNE, WardAssign, GlobalKMeans, etc.
 
-    def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
-        """Cached wrapper around shared _build_sequence_lookup."""
-        if self._sequence_lookup_cache is not None:
-            return self._sequence_lookup_cache
-        self._sequence_lookup_cache = _build_sequence_lookup(
-            self._ds, self._allowed_safe_sequences
-        )
-        return self._sequence_lookup_cache
-
     def _process_sequence(
         self, key: str, X: np.ndarray, frames: np.ndarray | None
     ) -> np.ndarray | None:
@@ -239,11 +211,8 @@ class MyGlobalFeature:
         """Write per-sequence output and register an index row."""
         if self._run_root is None:
             return
-        group, sequence = _resolve_sequence_identity(
-            safe_seq, self._pair_map, self._get_sequence_lookup()
-        )
-        safe_group = to_safe_name(group) if group else ""
-        out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
+        group, sequence = _resolve_sequence_identity(safe_seq, self._scope.entry_map)
+        out_name = f"{entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
 
         cols = [f"feat_{i}" for i in range(data.shape[1])]
@@ -258,6 +227,5 @@ class MyGlobalFeature:
                 sequence,
                 out_path,
                 int(len(df_out)),
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
             )
         )

@@ -17,6 +17,7 @@ from pydantic import Field
 from scipy.cluster.hierarchy import linkage as _sch_linkage
 
 from .spec import register_feature
+from mosaic.core.pipeline._utils import Scope
 
 from .helpers import StreamingFeatureHelper, _load_artifact_matrix
 from .global_tsne import GlobalTSNE
@@ -93,27 +94,21 @@ class GlobalWardClustering:
         self._Z: np.ndarray | None = None
         self._X_shape: tuple[int, int] | None = None
         self._marker_written = False
-        self._scope_filter: dict[str, object] | None = None
+        self._scope: Scope = Scope()
 
     # --- framework API ---
 
     def bind_dataset(self, ds: object) -> None:
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self) -> bool:
         return True
 
     def supports_partial_fit(self) -> bool:
         return False
-
-    def loads_own_data(self) -> bool:
-        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
-        # applied when loading own data. run_feature() raises RuntimeError
-        # if these filters are set. Future work: apply them during loading.
-        return True
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         X = self._load_artifact_matrix()
@@ -201,13 +196,8 @@ class GlobalWardClustering:
             helper = StreamingFeatureHelper(self._ds, "global-ward")
             if self.params.pair_filter:
                 helper.set_pair_filter(self.params.pair_filter)
-            scope = self._scope_filter or {}
-            scope_filter = None
-            safe_sequences = set(scope.get("safe_sequences") or [])
-            if safe_sequences:
-                scope_filter = {"safe_sequences": safe_sequences}
             manifest = helper.build_manifest_from_results(
-                feature_inputs, scope_filter=scope_filter
+                feature_inputs, scope=self._scope
             )
             if not manifest:
                 raise RuntimeError(

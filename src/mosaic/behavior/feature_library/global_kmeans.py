@@ -17,20 +17,17 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
-from mosaic.core.dataset import _dataset_base_dir
-
 from .spec import register_feature
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.pipeline._utils import Scope
 
 from .global_tsne import GlobalTSNE
 from .helpers import (
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
-    _build_sequence_lookup,
     _get_feature_run_root,
     _load_joblib_artifact,
-    _parse_scope_filter,
     _resolve_sequence_identity,
 )
 from .spec import (
@@ -166,27 +163,11 @@ class GlobalKMeansClustering:
         self._assign_id1: dict[str, np.ndarray] = {}
         self._assign_id2: dict[str, np.ndarray] = {}
         self._assign_entity_level: dict[str, str] = {}
-        self._pair_map: dict[str, tuple[str, str]] = {}
-        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
         self._additional_index_rows: list[PartialIndexRow] = []
-        self._allowed_safe_sequences: set[str] | None = None
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
-
-    def set_scope_constraints(self, scope: dict[str, object] | None) -> None:
-        """Capture dataset-level sequence filters so assignment can respect them."""
-        self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
-        self._sequence_lookup_cache = None
-
-    def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
-        if self._sequence_lookup_cache is not None:
-            return self._sequence_lookup_cache
-        self._sequence_lookup_cache = _build_sequence_lookup(
-            self._ds, self._allowed_safe_sequences
-        )
-        return self._sequence_lookup_cache
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     # Dataset binding
     def needs_fit(self) -> bool:
@@ -194,12 +175,6 @@ class GlobalKMeansClustering:
 
     def supports_partial_fit(self) -> bool:
         return False
-
-    def loads_own_data(self) -> bool:
-        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
-        # applied when loading own data. run_feature() raises RuntimeError
-        # if these filters are set. Future work: apply them during loading.
-        return True
 
     def bind_dataset(self, ds: object) -> None:
         self._ds = ds
@@ -365,13 +340,8 @@ class GlobalKMeansClustering:
             helper = StreamingFeatureHelper(self._ds, "global-kmeans")
             if self.params.pair_filter:
                 helper.set_pair_filter(self.params.pair_filter)
-            scope_filter = (
-                {"safe_sequences": self._allowed_safe_sequences}
-                if self._allowed_safe_sequences
-                else None
-            )
             manifest = helper.build_manifest_from_results(
-                feature_inputs, scope_filter=scope_filter
+                feature_inputs, scope=self._scope
             )
 
             keys = list(manifest.keys())
@@ -536,10 +506,9 @@ class GlobalKMeansClustering:
                 id2_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
             entity_level = self._assign_entity_level.get(safe_seq, "global")
             group, sequence = _resolve_sequence_identity(
-                safe_seq, self._pair_map, self._get_sequence_lookup()
+                safe_seq, self._scope.entry_map
             )
-            safe_group = to_safe_name(group) if group else ""
-            out_name = f"{safe_group + '__' if safe_group else ''}{safe_seq}.parquet"
+            out_name = f"{entry_key(group, sequence)}.parquet"
             out_path = run_root / out_name
             df_out = pd.DataFrame(
                 {
@@ -556,13 +525,7 @@ class GlobalKMeansClustering:
             )
             df_out.to_parquet(out_path, index=False)
             self._additional_index_rows.append(
-                _build_index_row(
-                    group,
-                    sequence,
-                    out_path,
-                    int(len(df_out)),
-                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-                )
+                _build_index_row(group, sequence, out_path, int(len(df_out)))
             )
             fname = f"global_kmeans_labels_seq={safe_seq}.npz"
             np.savez_compressed(
@@ -580,13 +543,7 @@ class GlobalKMeansClustering:
         marker_df = pd.DataFrame({"run_marker": [True]})
         marker_df.to_parquet(marker_path, index=False)
         self._additional_index_rows.append(
-            _build_index_row(
-                "",
-                marker_seq,
-                marker_path,
-                int(len(marker_df)),
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-            )
+            _build_index_row("", marker_seq, marker_path, int(len(marker_df)))
         )
 
     def load_model(self, path: Path) -> None:

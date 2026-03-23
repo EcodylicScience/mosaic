@@ -41,6 +41,7 @@ from mosaic.core.helpers import (
     load_labels_for_feature_frames,
     to_safe_name,
 )
+from mosaic.core.pipeline._utils import Scope
 
 
 @register_feature
@@ -106,23 +107,20 @@ class VizGlobalColored:
         self._marker_written = False
         self._summary: dict = {}
         self._seq_path_cache: dict[tuple[str, str], dict[Path, str]] = {}
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
         self._debug_arrays: dict | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self):
         return True
 
     def supports_partial_fit(self):
         return False
-
-    def loads_own_data(self):
-        return True  # Skip run_feature pre-loading; we load from artifacts
 
     def partial_fit(self, df):
         raise NotImplementedError
@@ -422,14 +420,7 @@ class VizGlobalColored:
         if not coord_files:
             raise FileNotFoundError("[viz-global-colored] No coordinate files found.")
 
-        scope = self._scope_filter or {}
-        allowed_safe = set(scope.get("safe_sequences") or [])
-        allowed_sequences = set(scope.get("sequences") or [])
-        allowed_any = set()
-        if allowed_sequences:
-            allowed_any.update(allowed_sequences)
-            allowed_any.update(to_safe_name(s) for s in allowed_sequences)
-        allowed_any.update(allowed_safe)
+        allowed_any = self._scope.entry_keys
 
         key_regex = self.params.coord_key_regex
         coord_seq_map = self._feature_seq_map(coord_spec.feature, coord_run_id)

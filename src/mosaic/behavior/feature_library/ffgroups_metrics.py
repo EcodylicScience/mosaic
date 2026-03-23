@@ -6,6 +6,8 @@ from typing import Iterable, final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline._utils import Scope
+
 from .spec import register_feature
 from mosaic.core.helpers import chunk_sequence
 
@@ -62,22 +64,20 @@ class FFGroupsMetrics:
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = True
         self.skip_existing_outputs = False
+        self._scope: Scope = Scope()
 
     # ----------------------- Dataset hooks -----------------------
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     # ----------------------- Fit protocol ------------------------
     def needs_fit(self) -> bool:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:

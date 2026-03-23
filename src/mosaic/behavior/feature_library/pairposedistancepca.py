@@ -10,6 +10,8 @@ import pandas as pd
 from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
+from mosaic.core.pipeline._utils import Scope
+
 from .spec import register_feature
 
 if TYPE_CHECKING:
@@ -70,23 +72,20 @@ class PairPoseDistancePCA:
         self._tri_i: Optional[np.ndarray] = None
         self._tri_j: Optional[np.ndarray] = None
         self._feat_len: Optional[int] = None
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
     # ---------- Feature protocol ----------
     def bind_dataset(self, ds: Dataset) -> None:
         pass
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def needs_fit(self) -> bool:
         return True
 
     def supports_partial_fit(self) -> bool:
         return True
-
-    def loads_own_data(self) -> bool:
-        return False
 
     def finalize_fit(self) -> None:
         pass

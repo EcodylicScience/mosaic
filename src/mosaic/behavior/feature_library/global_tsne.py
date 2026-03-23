@@ -19,18 +19,16 @@ from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.dataset import _dataset_base_dir
-
 from .spec import register_feature
+
+from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
-    _build_sequence_lookup,
     _get_feature_run_root,
     _load_array_from_spec,
-    _parse_scope_filter,
     _resolve_sequence_identity,
 )
 from .spec import (
@@ -240,21 +238,16 @@ class GlobalTSNE:
         self._mapped_coords: dict[str, np.ndarray] = {}
         self._keys: list[str] = []
         self._ds: object = None
-        self._scope_filter: dict[str, object] | None = None
-        self._allowed_safe_sequences: set[str] | None = None
+        self._scope: Scope = Scope()
         self._run_root: Path | None = None
-        self._pair_map: dict[str, tuple[str, str]] = {}
-        self._sequence_lookup_cache: dict[str, tuple[str, str]] | None = None
         self._additional_index_rows: list[PartialIndexRow] = []
 
     # dataset hook
     def bind_dataset(self, ds: object) -> None:
         self._ds = ds
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
-        self._allowed_safe_sequences, self._pair_map = _parse_scope_filter(scope)
-        self._sequence_lookup_cache = None
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def set_run_root(self, run_root: Path) -> None:
         self._run_root = Path(run_root)
@@ -278,12 +271,6 @@ class GlobalTSNE:
     def finalize_fit(self) -> None:
         pass
 
-    def loads_own_data(self) -> bool:
-        # NOTE: time/frame scope filters (filter_start_frame, etc.) are not
-        # applied when loading own data. run_feature() raises RuntimeError
-        # if these filters are set. Future work: apply them during loading.
-        return True
-
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         if self._ds is None:
             raise RuntimeError(
@@ -299,13 +286,8 @@ class GlobalTSNE:
         helper = StreamingFeatureHelper(self._ds, "global-tsne")
         if self.params.pair_filter:
             helper.set_pair_filter(self.params.pair_filter)
-        scope_filter = (
-            {"safe_sequences": self._allowed_safe_sequences}
-            if self._allowed_safe_sequences
-            else None
-        )
         key_file_manifest = helper.build_manifest_from_results(
-            self.inputs.feature_inputs, scope_filter=scope_filter
+            self.inputs.feature_inputs, scope=self._scope
         )
 
         if not key_file_manifest:
@@ -569,19 +551,11 @@ class GlobalTSNE:
             if templates is not None:
                 self._templates = templates
 
-    def _get_sequence_lookup(self) -> dict[str, tuple[str, str]]:
-        if self._sequence_lookup_cache is not None:
-            return self._sequence_lookup_cache
-        self._sequence_lookup_cache = _build_sequence_lookup(
-            self._ds, self._allowed_safe_sequences
-        )
-        return self._sequence_lookup_cache
-
     def _append_index_row(
         self, safe_seq: str, out_path: Path, n_rows: int | None
     ) -> None:
         group, sequence = _resolve_sequence_identity(
-            safe_seq, self._pair_map, self._get_sequence_lookup()
+            safe_seq, self._scope.entry_map
         )
         self._additional_index_rows = [
             r
@@ -589,13 +563,7 @@ class GlobalTSNE:
             if not (r.group == group and r.sequence == sequence)
         ]
         self._additional_index_rows.append(
-            _build_index_row(
-                group,
-                sequence,
-                out_path,
-                n_rows,
-                dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-            )
+            _build_index_row(group, sequence, out_path, n_rows)
         )
 
     def _persist_mapped_coords(self, safe_seq: str, Y: np.ndarray) -> None:
@@ -621,16 +589,9 @@ class GlobalTSNE:
             if not safe_seq:
                 continue
             group, sequence = _resolve_sequence_identity(
-                safe_seq, self._pair_map, self._get_sequence_lookup()
+                safe_seq, self._scope.entry_map
             )
-            rows.append(
-                _build_index_row(
-                    group,
-                    sequence,
-                    fp,
-                    dataset_root=_dataset_base_dir(self._ds) if self._ds else None,
-                )
-            )
+            rows.append(_build_index_row(group, sequence, fp))
         return rows
 
     def _map_sequences_streaming(

@@ -4,9 +4,11 @@ import dataclasses
 import datetime
 import hashlib
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from mosaic.core.helpers import entry_key
 
 import numpy as np
 from pydantic import BaseModel
@@ -51,7 +53,7 @@ class DataPayload:
 
 @dataclass
 class ResolvedInput:
-    """A single resolved input within an InputScope."""
+    """A single resolved input within a Scope."""
 
     kind: str
     feature: str | None = None
@@ -61,16 +63,32 @@ class ResolvedInput:
 
 
 @dataclass
-class InputScope:
-    """Resolved scope for multi-input / inputset feature runs."""
+class Scope:
+    """Resolved scope for feature computation.
 
-    pairs: set[tuple[str, str]] = field(default_factory=set)
-    safe_sequences: set[str] = field(default_factory=set)
-    resolved_inputs: list[ResolvedInput] = field(default_factory=list)
-    inputset: str | None = None
-    meta: dict[str, object] = field(default_factory=dict)
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
+    ``entries`` is the source of truth -- a set of (group, sequence) tuples.
+    All other identifiers are derived from it.
+    """
+
+    entries: set[tuple[str, str]] = field(default_factory=set)
+    frame_start: int | None = None
+    frame_end: int | None = None
+
+    @property
+    def groups(self) -> set[str]:
+        return {group for group, _ in self.entries}
+
+    @property
+    def sequences(self) -> set[str]:
+        return {seq for _, seq in self.entries}
+
+    @property
+    def entry_keys(self) -> set[str]:
+        return {entry_key(group, seq) for group, seq in self.entries}
+
+    @property
+    def entry_map(self) -> dict[str, tuple[str, str]]:
+        return {entry_key(group, seq): (group, seq) for group, seq in self.entries}
 
 
 @dataclass
@@ -108,18 +126,6 @@ def hash_params(d: object) -> str:
     d = json_ready(d)
     s = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
-
-
-def build_scope_key(
-    groups: Iterable[str] | None, sequences: Iterable[str] | None
-) -> dict[str, list[str]] | None:
-    """Normalize scope into a deterministic hashable dict, or None if unrestricted."""
-    scope: dict[str, list[str]] = {}
-    if groups is not None:
-        scope["groups"] = sorted({str(g) for g in groups})
-    if sequences is not None:
-        scope["sequences"] = sorted({str(s) for s in sequences})
-    return scope if scope else None
 
 
 def now_iso() -> str:

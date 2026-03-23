@@ -15,6 +15,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.helpers import to_safe_name
+from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 
 from .helpers import _pose_column_pairs
@@ -71,14 +72,14 @@ class OrientationRelativeFeature:
         self.storage_use_input_suffix = False
         self._ds = None
         self._scale_lookup: dict[str, float] = {}
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
     def bind_dataset(self, ds):
         self._ds = ds
         self._load_scales()
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def _load_scales(self):
         self._scale_lookup = {}
@@ -118,9 +119,6 @@ class OrientationRelativeFeature:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]):

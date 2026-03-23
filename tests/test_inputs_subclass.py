@@ -41,7 +41,7 @@ class _TrackOnlyFeature:
         return self._params
 
     def bind_dataset(self, ds: object) -> None: ...
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None: ...
+    def set_scope(self, scope: object) -> None: ...
     def needs_fit(self) -> bool:
         return False
 
@@ -84,7 +84,7 @@ class _MixedInputFeature:
         return self._params
 
     def bind_dataset(self, ds: object) -> None: ...
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None: ...
+    def set_scope(self, scope: object) -> None: ...
     def needs_fit(self) -> bool:
         return False
 
@@ -120,6 +120,22 @@ def test_register_feature_accepts_track_only() -> None:
 def test_register_feature_accepts_mixed() -> None:
     cls = register_feature(_MixedInputFeature)
     assert cls is _MixedInputFeature
+
+
+def test_is_empty() -> None:
+    """Inputs.is_empty reflects whether the tuple is empty."""
+    from typing import ClassVar
+    from mosaic.behavior.feature_library.spec import InputRequire
+
+    class _AnyInputs(Inputs[TrackInput | Result]):
+        _require: ClassVar[InputRequire] = "any"
+
+    empty = _AnyInputs(())
+    assert empty.is_empty
+    non_empty = _AnyInputs(("tracks",))
+    assert not non_empty.is_empty
+    also_non_empty = Inputs(("tracks",))
+    assert not also_non_empty.is_empty
 
 
 def test_satisfies_feature_protocol() -> None:

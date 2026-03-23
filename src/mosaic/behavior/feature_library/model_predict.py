@@ -13,6 +13,7 @@ from typing import final
 
 import pandas as pd
 
+from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.models import model_run_root
 
 from .spec import Inputs, OutputType, Params, Result, register_feature
@@ -63,10 +64,10 @@ class ModelPredictFeature:
         self._model_run_id: str | None = None
         self.storage_feature_name = self.params.output_feature_name or self.name
         self.storage_use_input_suffix = True
-        self._scope_filter: dict[str, object] = {}
+        self._scope: Scope = Scope()
 
-    def set_scope_filter(self, scope: dict[str, object] | None) -> None:
-        self._scope_filter = scope or {}
+    def set_scope(self, scope: Scope) -> None:
+        self._scope = scope
 
     def bind_dataset(self, ds):
         self._ds = ds
@@ -105,9 +106,6 @@ class ModelPredictFeature:
         return False
 
     def supports_partial_fit(self) -> bool:
-        return False
-
-    def loads_own_data(self) -> bool:
         return False
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
