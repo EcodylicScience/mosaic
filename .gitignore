@@ -3,6 +3,9 @@
 .claude/
 .worktrees/
 
+# Virtual environments
+.venv/
+
 # Python cache / build
 __pycache__/
 *.py[cod]

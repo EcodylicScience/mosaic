@@ -180,12 +180,27 @@ class PoseConfig(DictModel):
         pose_indices: Subset of keypoint indices to use. None uses all.
         x_prefix: Column name prefix for X coordinates. Default "poseX".
         y_prefix: Column name prefix for Y coordinates. Default "poseY".
+        confidence_prefix: Column prefix for confidence scores. Default "poseP".
+        keypoint_names: Human-readable names for each keypoint. Default None
+            (auto-generated as ["kp0", "kp1", ...] by features that need names).
     """
 
     pose_n: int = 7
     pose_indices: list[int] | None = None
     x_prefix: str = "poseX"
     y_prefix: str = "poseY"
+    confidence_prefix: str = "poseP"
+    keypoint_names: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check_keypoint_names_length(self) -> Self:
+        if self.keypoint_names is not None and len(self.keypoint_names) != self.pose_n:
+            msg = (
+                f"len(keypoint_names)={len(self.keypoint_names)} "
+                f"does not match pose_n={self.pose_n}"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class PoolConfig(DictModel):

@@ -51,8 +51,7 @@ from . import (
     global_ward,
     helpers,
     id_tag_columns,
-    kpms_apply,
-    kpms_fit,
+    kpms,
     model_predict,
     nearestneighbor,
     nn_delta_bins,
@@ -75,8 +74,7 @@ from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
-from .kpms_apply import KpmsApply
-from .kpms_fit import KpmsFit
+from .kpms import KpmsFeature
 from .model_predict import ModelPredictFeature
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
@@ -198,8 +196,7 @@ __all__ = [
     "GlobalTSNE",
     "GlobalWardClustering",
     "IdTagColumns",
-    "KpmsApply",
-    "KpmsFit",
+    "KpmsFeature",
     "ModelPredictFeature",
     "NearestNeighbor",
     "NearestNeighborDelta",
@@ -222,8 +219,7 @@ __all__ = [
     "global_tsne",
     "global_ward",
     "id_tag_columns",
-    "kpms_apply",
-    "kpms_fit",
+    "kpms",
     "model_predict",
     "nearestneighbor",
     "nn_delta_bins",

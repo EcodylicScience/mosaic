@@ -61,6 +61,15 @@ typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 reportMissingTypeStubs = false
+executionEnvironments = [
+    { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external/.venv/lib/python3.13/site-packages"] },
+]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: marks tests as slow (deselected by default, run with -m slow)",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -70,3 +79,8 @@ where = ["src"]
 
 [tool.uv.sources]
 microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-stubs" }
+
+[tool.uv.workspace]
+exclude = [
+    "src/mosaic/behavior/feature_library/external",
+]

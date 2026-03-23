@@ -1,0 +1,23 @@
+[project]
+name = "mosaic-kpms-env"
+version = "0.1.0"
+description = "Isolated environment for keypoint-moseq (CPU)"
+requires-python = ">=3.10"
+dependencies = [
+    "keypoint-moseq",
+    "lark",
+]
+
+[tool.uv]
+override-dependencies = [
+    # keypoint-moseq pins numpy<=1.26.4 but that forces ancient
+    # tensorflow-probability (0.10.1) which requires full tensorflow.
+    # numpy 2.x allows modern tfp (JAX-only, no tensorflow needed).
+    "numpy>=2.1",
+    # keypoint-moseq pins bokeh/panel/holoviews to old versions that are
+    # incompatible with numpy 2.x (np.bool8 removed). Override to modern
+    # versions that work together.
+    "bokeh>=3.4",
+    "panel>=1.4",
+    "holoviews>=1.19",
+]
