@@ -7,6 +7,7 @@ from mosaic.core.pipeline._loaders import (
 )
 from mosaic.core.pipeline.types.artifacts import (
     ArtifactSpec,
+    FeatureLabelsSource,
     JoblibArtifact,
     NpzArtifact,
     ParquetArtifact,
@@ -46,6 +47,7 @@ __all__ = [
     "Columns",
     "DependencyLookup",
     "Feature",
+    "FeatureLabelsSource",
     "GlobalModelParams",
     "GroundTruthLabelsSource",
     "InputStream",

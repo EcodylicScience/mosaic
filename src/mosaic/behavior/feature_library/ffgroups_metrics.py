@@ -5,6 +5,7 @@ from typing import final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.helpers import chunk_sequence
 from mosaic.core.pipeline.types import (
@@ -19,7 +20,7 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 
-from .helpers import ensure_columns
+from .helpers import apply_exclude_cols, ensure_columns
 from .registry import register_feature
 
 
@@ -53,6 +54,7 @@ class FFGroupsMetrics:
         time_chunk_sec: float | None = None
         frame_chunk: int | None = None
         centroid_heading_col: str = "centroid_heading"
+        exclude_cols: list[str] = Field(default_factory=list)
 
     def __init__(
         self,
@@ -82,6 +84,11 @@ class FFGroupsMetrics:
 
         order_col = resolve_order_col(df)
         df = df.sort_values(order_col).reset_index(drop=True)
+
+        # Drop rows where any exclude_col is truthy (e.g. bad_frame)
+        df = apply_exclude_cols(df, self.params.exclude_cols)
+        if df.empty:
+            return pd.DataFrame()
 
         ensure_columns(df, [C.x_col, C.y_col, self.params.speed_col, C.id_col])
 

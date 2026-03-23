@@ -6,6 +6,7 @@ from typing import final
 import numpy as np
 import pandas as pd
 from pydantic import Field
+from scipy.signal import savgol_filter
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -15,6 +16,7 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     Params,
+    Result,
     TrackInput,
     resolve_order_col,
 )
@@ -79,6 +81,8 @@ class SpeedAngvel:
       - angvel: wrapped heading difference (rad) divided by dt
       - speed_step / angvel_step: same, but using a configurable step_size
         (omitted if step_size is None)
+      - speed_smooth: Savitzky-Golay smoothed speed (polyorder=1), only present
+        when smooth_window is set in Params
     """
 
     name = "speed-angvel"
@@ -91,6 +95,7 @@ class SpeedAngvel:
 
     class Params(Params):
         step_size: int | None = Field(default=None, ge=1)
+        smooth_window: int | None = None
 
     def __init__(
         self,
@@ -134,6 +139,16 @@ class SpeedAngvel:
             return pd.DataFrame()
         return pd.concat(out_parts, axis=0, ignore_index=True)
 
+    @staticmethod
+    def _smooth_speed(speed: np.ndarray, window: int) -> np.ndarray:
+        """Apply Savitzky-Golay filter (polyorder=1) to speed, handling NaN/inf."""
+        bad = ~np.isfinite(speed)
+        filled = speed.copy()
+        filled[bad] = 0.0
+        smoothed = savgol_filter(filled, window_length=window, polyorder=1)
+        smoothed[bad] = np.nan
+        return smoothed
+
     def _compute_one_id(self, sub: pd.DataFrame, order_col: str) -> pd.DataFrame:
         # Already sorted by (id, order_col) in apply()
         x = sub[C.x_col].to_numpy(dtype=float)
@@ -153,6 +168,11 @@ class SpeedAngvel:
         )
         if angle is not None:
             out["angvel"] = _compute_angvel(angle, step=1, time_arr=time_arr)
+
+        if self.params.smooth_window is not None:
+            out["speed_smooth"] = self._smooth_speed(
+                out["speed"].to_numpy(), self.params.smooth_window
+            )
 
         step_size = self.params.step_size
         if step_size is not None:

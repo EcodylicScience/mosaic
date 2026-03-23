@@ -63,6 +63,7 @@ from . import (
     pairposedistancepca,
     speed_angvel,
     temporal_stacking,
+    trajectory_smooth,
     xgboost_feature,
 )
 from .approach_avoidance import ApproachAvoidance
@@ -88,7 +89,14 @@ from .pairposedistancepca import PairPoseDistancePCA
 from .registry import FEATURES, register_feature
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+from .trajectory_smooth import TrajectorySmooth
 from .xgboost_feature import XgboostFeature
+
+# Optional: movement library integration (requires `movement` package)
+try:
+    from .movement import MovementFilterInterpolate, MovementSmooth
+except ImportError:
+    pass
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
@@ -135,6 +143,7 @@ __all__ = [
     "PairWavelet",
     "SpeedAngvel",
     "TemporalStackingFeature",
+    "TrajectorySmooth",
     "XgboostFeature",
     # Submodules
     "approach_avoidance",
@@ -159,5 +168,6 @@ __all__ = [
     "pairposedistancepca",
     "speed_angvel",
     "temporal_stacking",
+    "trajectory_smooth",
     "xgboost_feature",
 ]

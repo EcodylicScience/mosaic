@@ -56,6 +56,9 @@ class IdTagColumns:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        # Sync labels.kind with label_kind so _resolve_dependencies finds the right dir
+        if self.params.label_kind != self.params.labels.kind:
+            self.params.labels = LabelsSource(kind=self.params.label_kind)
         self._labels: dict[tuple[str, str], dict] = {}
 
     def load_state(
@@ -65,21 +68,28 @@ class IdTagColumns:
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._labels = {}
-        labels_root = artifact_paths.get("labels")
-        if labels_root is None:
-            return True
-        import json
-
-        for path in sorted(labels_root.glob("*.json")):
+        labels_lookup = dependency_lookups.get("labels", {})
+        for (group, sequence), path in labels_lookup.items():
+            if not path.exists():
+                continue
             try:
-                data = json.loads(path.read_text())
-                key = (
-                    tuple(path.stem.split("__", 1))
-                    if "__" in path.stem
-                    else ("", path.stem)
-                )
-                labels = data.get("labels") or {}
-                self._labels[key] = labels
+                if path.suffix == ".npz":
+                    data = np.load(path, allow_pickle=True)
+                    ids = data.get("ids", data.get("id", np.array([])))
+                    fields = [k for k in data.keys() if k not in ("ids", "id")]
+                    labels: dict = {}
+                    for idx, fid in enumerate(ids):
+                        fid_key = int(fid) if hasattr(fid, 'item') else fid
+                        labels[fid_key] = {
+                            f: int(data[f][idx]) if hasattr(data[f][idx], 'item')
+                            else data[f][idx]
+                            for f in fields
+                        }
+                    self._labels[(group, sequence)] = labels
+                elif path.suffix == ".json":
+                    import json
+                    raw = json.loads(path.read_text())
+                    self._labels[(group, sequence)] = raw.get("labels", {})
             except Exception:
                 continue
         return True

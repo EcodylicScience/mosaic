@@ -137,7 +137,7 @@ def _resolve_dependencies(
                     sequence = str(row.get("sequence", ""))
                     abs_path = str(row.get("abs_path", ""))
                     if abs_path:
-                        lookup[(group, sequence)] = Path(abs_path)
+                        lookup[(group, sequence)] = ds.resolve_path(abs_path)
                 dependency_lookups[field_name] = lookup
 
             case LabelsSource(kind=str(kind)):
@@ -197,7 +197,7 @@ def _process_apply_worker(
     """Reconstruct a feature in a worker process and run apply."""
     mod = importlib.import_module(module_name)
     cls = getattr(mod, class_name)
-    inputs_obj = cls.Inputs.model_validate(inputs_dump)
+    inputs_obj = Inputs.model_validate(inputs_dump)
     feature = cls(inputs_obj, params_dump)
     feature.load_state(
         Path(run_root_str),
@@ -380,8 +380,22 @@ def run_feature(
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
 
-    # Apply phase
-    out_rows: list[FeatureIndexRow] = []
+    # Apply phase — index rows are flushed periodically for interrupt recovery
+    _IDX_FLUSH_EVERY = 10
+    _pending_idx_rows: list[FeatureIndexRow] = []
+    _total_written = 0
+
+    def _flush_idx() -> None:
+        nonlocal _total_written
+        if _pending_idx_rows:
+            idx.append(list(_pending_idx_rows))
+            _total_written += len(_pending_idx_rows)
+            _pending_idx_rows.clear()
+
+    def _record_row(row: FeatureIndexRow) -> None:
+        _pending_idx_rows.append(row)
+        if len(_pending_idx_rows) >= _IDX_FLUSH_EVERY:
+            _flush_idx()
 
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
@@ -423,7 +437,7 @@ def run_feature(
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
             n_rows = write_output(meta, result_df)
-            out_rows.append(
+            _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
                     feature=storage_feature_name,
@@ -450,7 +464,7 @@ def run_feature(
         # Skip existing outputs when state was loaded from cache
         if state_ready and not overwrite and meta.out_path.exists():
             n_rows = int(pq.read_metadata(meta.out_path).num_rows)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            out_rows.append(
+            _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
                     feature=storage_feature_name,
@@ -500,7 +514,7 @@ def run_feature(
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
             n_rows = write_output(meta, result_df)
-            out_rows.append(
+            _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
                     feature=storage_feature_name,
@@ -539,8 +553,8 @@ def run_feature(
         executor.shutdown(wait=True)
 
     # Global marker (for empty-input features)
-    if not out_rows and not manifest:
-        out_rows.append(
+    if _total_written == 0 and not _pending_idx_rows and not manifest:
+        _pending_idx_rows.append(
             FeatureIndexRow(
                 run_id=run_id,
                 feature=storage_feature_name,
@@ -553,8 +567,8 @@ def run_feature(
             )
         )
 
-    # Finalize
-    idx.append(out_rows)
+    # Finalize — flush any remaining rows
+    _flush_idx()
     idx.mark_finished(run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(feature=storage_feature_name, run_id=run_id)

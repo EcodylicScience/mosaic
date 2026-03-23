@@ -41,6 +41,16 @@ class BodyScaleResult(Result[Literal["body-scale"]]):
     feature: Literal["body-scale"] = "body-scale"
 
 
+class TracksColumn(StrictModel):
+    """Reference to a column in the tracks data.
+
+    Attributes:
+        column: Column name to extract from tracks.
+    """
+
+    column: str
+
+
 class ResultColumn(Result[str]):
     """Reference to a column in a feature's standard parquet output.
 

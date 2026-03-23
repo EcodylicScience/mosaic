@@ -13,6 +13,7 @@ import pandas as pd
 from .types import InterpolationConfig
 
 __all__ = [
+    "apply_exclude_cols",
     "clean_animal_track",
     "clean_tracks_grouped",
     "ego_rotate",
@@ -27,6 +28,23 @@ __all__ = [
 # Extra non-feature columns that may appear in result DataFrames alongside
 # the standard COLUMNS metadata (id, sequence, group, frame, time).
 _EXTRA_META = {"id1", "id2", "entity_level", "perspective", "fps", "label", "split"}
+
+
+def apply_exclude_cols(
+    df: pd.DataFrame,
+    exclude_cols: list[str] | None,
+) -> pd.DataFrame:
+    """Drop rows where any *exclude_cols* column is truthy.
+
+    Silently skips column names not present in *df*.
+    Returns *df* unchanged when *exclude_cols* is empty/None.
+    """
+    if not exclude_cols:
+        return df
+    present = [c for c in exclude_cols if c in df.columns]
+    if not present:
+        return df
+    return df[~df[present].any(axis=1)]
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:

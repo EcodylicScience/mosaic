@@ -225,7 +225,7 @@ def _resolve_feature(
     all_entries: list[tuple[str, str]] = []
     for _, row in df_all.iterrows():
         entry = (row["group"], row["sequence"])
-        path_map_all[entry] = (Path(row["abs_path"]), ParquetLoadSpec())
+        path_map_all[entry] = (ds.resolve_path(row["abs_path"]), ParquetLoadSpec())
         all_entries.append(entry)
 
     full_order = sorted(set(all_entries))
@@ -243,7 +243,7 @@ def _resolve_feature(
     for _, row in df.iterrows():
         entry = (row["group"], row["sequence"])
         entries.add(entry)
-        path_map[entry] = (Path(row["abs_path"]), ParquetLoadSpec())
+        path_map[entry] = (ds.resolve_path(row["abs_path"]), ParquetLoadSpec())
 
     return entries, path_map, full_order, path_map_all
 

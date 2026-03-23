@@ -122,6 +122,7 @@ class IndexCSV(Generic[RowT]):
         groups: Iterable[str] | None = None,
         sequences: Iterable[str] | None = None,
         entries: Iterable[tuple[str, str]] | None = None,
+        validate_paths: bool = True,
     ) -> pd.DataFrame:
         """Read the CSV with optional filtering and validation.
 
@@ -141,6 +142,10 @@ class IndexCSV(Generic[RowT]):
         entries : Iterable[tuple[str, str]] | None
             If set, only rows whose ``(group, sequence)`` pair is in
             this set.
+        validate_paths : bool
+            If True (default), raise FileNotFoundError when abs_path
+            entries point to missing files. Set to False for discovery
+            operations like list_runs().
         """
         if not self.path.exists():
             raise FileNotFoundError(f"Index not found: {self.path}")
@@ -163,7 +168,18 @@ class IndexCSV(Generic[RowT]):
                 (row["group"], row["sequence"]) in entry_set for _, row in df.iterrows()
             ]
             df = df[mask].reset_index(drop=True)
-        missing = [p for p in df["abs_path"] if not Path(p).exists()]
+        if not validate_paths:
+            return df
+        # Resolve relative paths against the dataset root (grandparent of
+        # the index file: features/<name>/index.csv -> features -> dataset_root)
+        base = self.path.parent.parent.parent
+        missing = []
+        for p in df["abs_path"]:
+            pp = Path(p)
+            if not pp.is_absolute():
+                pp = base / pp
+            if not pp.exists():
+                missing.append(p)
         if missing:
             msg = (
                 f"Stale index {self.path}: "
@@ -206,7 +222,7 @@ class IndexCSV(Generic[RowT]):
     def list_runs(self) -> pd.DataFrame:
         """Return all rows sorted: finished (newest first), then unfinished (newest first)."""
         self._assert_run_index()
-        df = self.read()
+        df = self.read(validate_paths=False)
         if df.empty:
             return df
         mask = df["finished_at"] != ""

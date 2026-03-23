@@ -15,6 +15,7 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     Params,
+    Result,
     TrackInput,
     resolve_order_col,
 )
@@ -64,6 +65,7 @@ class NearestNeighborDelta:
         wrap_angle: bool = True
         divide_dangle_by_frames: bool = True
         scale_dangle_by_fps: bool = True
+        tag_cols: list[str] = Field(default_factory=list)
 
     def __init__(
         self,
@@ -193,6 +195,21 @@ class NearestNeighborDelta:
                 if passthrough in g.columns and passthrough not in rows.columns:
                     rows[passthrough] = g.loc[valid_mask, passthrough].to_numpy()
 
+            # Tag columns: passthrough + neighbor lookup
+            for tag_col in p.tag_cols:
+                if tag_col in g.columns and tag_col not in rows.columns:
+                    rows[tag_col] = g.loc[valid_mask, tag_col].to_numpy()
+                if tag_col in df.columns:
+                    tag_lookup = df[[C.frame_col, C.id_col, tag_col]].rename(
+                        columns={C.id_col: "_nid", tag_col: f"neighbor_{tag_col}"}
+                    )
+                    neighbor_meta = rows[[C.frame_col, nn_id_col]].rename(
+                        columns={nn_id_col: "_nid"}
+                    )
+                    rows[f"neighbor_{tag_col}"] = neighbor_meta.merge(
+                        tag_lookup, on=[C.frame_col, "_nid"], how="left"
+                    )[f"neighbor_{tag_col}"].to_numpy()
+
             outputs.append(rows)
 
         if not outputs:
@@ -222,5 +239,9 @@ class NearestNeighborDelta:
         for c in ("group_size", "event", p.focal_col):
             if c in out_df.columns and c not in col_order:
                 col_order.append(c)
+        for tag_col in p.tag_cols:
+            for c in (tag_col, f"neighbor_{tag_col}"):
+                if c in out_df.columns and c not in col_order:
+                    col_order.append(c)
         col_order += [c for c in out_df.columns if c not in col_order]
         return out_df[col_order]

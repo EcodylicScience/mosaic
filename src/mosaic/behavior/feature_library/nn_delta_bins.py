@@ -9,8 +9,9 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, TrackInput
+from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, Result, TrackInput
 
+from .helpers import apply_exclude_cols
 from .registry import register_feature
 
 
@@ -123,6 +124,7 @@ class NearestNeighborDeltaBins:
         exp_col: str = "Exp"
         trial_col: str = "Trial"
         category_specs: list = Field(default_factory=list)
+        exclude_cols: list[str] = Field(default_factory=list)
         nonfocal_flag_col: str = "Focal_fish"
         nonfocal_flag_value: bool = False
 
@@ -157,6 +159,12 @@ class NearestNeighborDeltaBins:
             return pd.DataFrame()
 
         p = self.params
+
+        # Drop rows where any exclude column is truthy (e.g., bad_frame)
+        df = apply_exclude_cols(df, p.exclude_cols)
+        if df.empty:
+            return pd.DataFrame()
+
         required = ["neighbor_x", "neighbor_y", "dangle", "dspeed"]
 
         # helper to coalesce suffix-split columns (e.g., focal_fish_x, focal_fish_y)
