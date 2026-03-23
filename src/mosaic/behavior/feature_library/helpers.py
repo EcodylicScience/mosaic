@@ -13,16 +13,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator
 
+import numpy as np
 import pandas as pd
 
-from .spec import ArtifactSpec, ParquetLoadSpec
+from .spec import ArtifactSpec, InterpolationConfig, ParquetLoadSpec
 
 if TYPE_CHECKING:
     from .spec import DictModel, LoadSpec, Result
 
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.loading import (
-    EntryData,
     _build_nn_lookup,
     _get_feature_run_root,
     _load_array_from_spec,
@@ -39,7 +39,6 @@ from mosaic.core.pipeline.loading import (
 )
 
 __all__ = [
-    "EntryData",
     "PartialIndexRow",
     "StreamingFeatureHelper",
     "_build_index_row",
@@ -202,7 +201,7 @@ class StreamingFeatureHelper:
         self,
         manifest: dict[str, list[tuple[Path, LoadSpec]]],
         progress_interval: int = 10,
-    ) -> Iterator[tuple[str, EntryData]]:
+    ) -> Iterator[tuple[str, tuple[pd.DataFrame, str]]]:
         """Iterate through manifest, yielding (entry_key, EntryData) one at a time."""
         import pyarrow as pa
 
@@ -228,7 +227,7 @@ class StreamingFeatureHelper:
         self,
         file_specs: list[tuple[Path, LoadSpec]],
         entry_key: str | None = None,
-    ) -> EntryData | None:
+    ) -> tuple[pd.DataFrame, str] | None:
         """Load and merge data for a single manifest entry."""
         df_filter = self._make_df_filter(entry_key) if entry_key else None
         return _load_entry_data(file_specs, df_filter=df_filter)
@@ -265,3 +264,72 @@ def _build_index_row(
         abs_path=str(output_path.resolve()),
         n_rows=n_rows,
     )
+
+
+def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
+    """Raise ValueError if any required columns are missing from *df*."""
+    missing = set(required) - set(df.columns)
+    if missing:
+        msg = f"Missing required columns: {sorted(missing)}"
+        raise ValueError(msg)
+
+
+# --- Shared helpers for per-sequence features ---
+
+
+def clean_animal_track(
+    g: pd.DataFrame,
+    data_cols: list[str],
+    order_col: str,
+    config: InterpolationConfig,
+) -> pd.DataFrame:
+    """Sort, interpolate, fill, and drop rows with excessive missing data."""
+    g = g.sort_values(order_col).copy()
+    g = g.set_index(order_col)
+    g[data_cols] = g[data_cols].replace([np.inf, -np.inf], np.nan)
+    g[data_cols] = g[data_cols].interpolate(
+        method="linear",
+        limit=config.linear_interp_limit,
+        limit_direction="both",
+    )
+    g[data_cols] = g[data_cols].ffill(limit=config.edge_fill_limit)
+    g[data_cols] = g[data_cols].bfill(limit=config.edge_fill_limit)
+    miss_frac = g[data_cols].isna().mean(axis=1)
+    g = g.loc[miss_frac <= config.max_missing_fraction].copy()
+    if g[data_cols].isna().any().any():
+        med = g[data_cols].median()
+        g[data_cols] = g[data_cols].fillna(med)
+    g = g.reset_index()
+    return g
+
+
+def smooth_1d(x: np.ndarray, win: int) -> np.ndarray:
+    """Moving average with reflected padding."""
+    if win is None or win <= 1:
+        return x
+    pad = win // 2
+    xp = np.pad(x, pad_width=pad, mode="reflect")
+    ker = np.ones(win, dtype=float) / float(win)
+    return np.convolve(xp, ker, mode="valid")
+
+
+def unwrap_diff(theta: np.ndarray, fps: float) -> np.ndarray:
+    """Compute angular velocity from angle array."""
+    d = np.gradient(np.unwrap(theta), edge_order=1)
+    return d * float(fps)
+
+
+def wrap_angle(x: np.ndarray) -> np.ndarray:
+    """Wrap angles to [-pi, pi]."""
+    return (x + np.pi) % (2 * np.pi) - np.pi
+
+
+def ego_rotate(
+    dx: np.ndarray, dy: np.ndarray, heading: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate world-frame deltas into ego frame (heading aligned with +x)."""
+    ct = np.cos(heading)
+    st = np.sin(heading)
+    dx_ego = dx * ct + dy * st
+    dy_ego = -dx * st + dy * ct
+    return dx_ego, dy_ego

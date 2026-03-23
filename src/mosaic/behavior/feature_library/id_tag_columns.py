@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable, final
+from typing import final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
-from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput
+from .spec import COLUMNS as C
+from .spec import Inputs, LabelsSource, Params, TrackInput, register_feature
 
 
 @final
@@ -27,12 +26,13 @@ class IdTagColumns:
     name = "id-tag-columns"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
 
     class Params(Params):
+        labels: LabelsSource = Field(default_factory=lambda: LabelsSource(kind="id_tags"))
         label_kind: str = "id_tags"
         fields: list[str] | None = None
         field_renames: dict[str, str] | None = None
@@ -44,109 +44,70 @@ class IdTagColumns:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._ds = None
         self._labels: dict[tuple[str, str], dict] = {}
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
-    def bind_dataset(self, ds):
-        self._ds = ds
-        try:
-            loaded = ds.load_id_labels(kind=self.params.label_kind)
-        except Exception:
-            loaded = {}
-        # Normalize: {(group, sequence): labels dict}
-        for key, payload in loaded.items():
-            labels = payload.get("labels") or {}
-            self._labels[key] = labels
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        self._labels = {}
+        labels_root = artifact_paths.get("labels")
+        if labels_root is None:
+            return True
+        import json
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+        for path in sorted(labels_root.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                key = tuple(path.stem.split("__", 1)) if "__" in path.stem else ("", path.stem)
+                labels = data.get("labels") or {}
+                self._labels[key] = labels
+            except Exception:
+                continue
+        return True
 
-    # ----------------------- Fit protocol ------------------------
-    def needs_fit(self) -> bool:
-        return False
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    def supports_partial_fit(self) -> bool:
-        return False
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path: Path) -> None:
-        return
-
-    def load_model(self, path: Path) -> None:
-        return
-
-    # ----------------------- Core logic --------------------------
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
-        p = self.params
-        id_col = COLUMNS.id_col
-        frame_col = COLUMNS.frame_col
-        time_col = COLUMNS.time_col
-        group_col = COLUMNS.group_col
-        sequence_col = COLUMNS.seq_col
-
         group_val = (
-            str(df[group_col].iloc[0])
-            if group_col in df.columns and not df.empty
-            else ""
+            str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         )
         sequence_val = (
-            str(df[sequence_col].iloc[0])
-            if sequence_col in df.columns and not df.empty
-            else ""
+            str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
         )
         labels = self._labels.get((group_val, sequence_val))
         if not labels:
-            return pd.DataFrame()  # nothing to attach
+            return pd.DataFrame()
 
-        # Determine fields
-        fields = p.fields
+        fields = self.params.fields
         if fields is None:
-            # union of all fields in labels
-            field_set = set()
+            field_set: set[str] = set()
             for tags in labels.values():
                 if tags:
                     field_set.update(tags.keys())
             fields = sorted(field_set)
-        rename_map = p.field_renames or {}
+        rename_map = self.params.field_renames or {}
 
-        # Build output columns
-        out = pd.DataFrame()
-        if frame_col in df.columns:
-            out[frame_col] = df[frame_col].values
-        if time_col in df.columns:
-            out[time_col] = df[time_col].values
-        if group_col in df.columns:
-            out[group_col] = df[group_col].values
-        else:
-            out[group_col] = group_val
-        if sequence_col in df.columns:
-            out[sequence_col] = df[sequence_col].values
-        else:
-            out[sequence_col] = sequence_val
-        out[id_col] = df[id_col].values if id_col in df.columns else np.nan
+        out = pd.DataFrame(index=df.index)
+        for col in (C.frame_col, C.time_col, C.group_col, C.seq_col, C.id_col):
+            if col in df.columns:
+                out[col] = df[col]
+        if C.group_col not in df.columns:
+            out[C.group_col] = group_val
+        if C.seq_col not in df.columns:
+            out[C.seq_col] = sequence_val
+        if C.id_col not in df.columns:
+            out[C.id_col] = np.nan
 
-        # Vectorized map per field
-        ids_series = out[id_col]
+        ids_series = out[C.id_col]
         for field in fields:
             col_name = rename_map.get(field, field)
             out[col_name] = ids_series.map(
-                lambda i: labels.get(i, {}).get(field, np.nan)
+                lambda i, f=field: labels.get(i, {}).get(f, np.nan)
             )
 
         return out

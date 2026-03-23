@@ -7,7 +7,7 @@ name = "mosaic-behavior"
 version = "0.1.0"
 description = "Mosaic — behavior analysis toolkit for animal tracking, feature extraction, and modeling."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 authors = [{ name = "Ecodylic Science" }]
 dependencies = [
     "numpy>=1.22",
@@ -31,6 +31,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "basedpyright>=1.38.2",
+    "joblib-stubs>=1.4.2.5.20240918",
     "pandas-stubs>=2.2.2.240807",
     "pytest>=8.0",
     "ruff>=0.15.4",

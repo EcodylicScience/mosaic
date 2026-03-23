@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -666,3 +667,108 @@ def test_result_column_from_result_use_latest():
     )
     assert rc.feature == "ward-assign"
     assert rc.run_id is None
+
+
+# --- ArtifactSpec.from_path ---
+
+
+def test_from_path_npz(tmp_path: Path) -> None:
+    import numpy as np
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    p = tmp_path / "data.npz"
+    np.savez(p, templates=np.arange(12, dtype=np.float32).reshape(3, 4))
+    spec = ArtifactSpec(feature="x", load=NpzLoadSpec(key="templates"))
+    result = spec.from_path(p)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (3, 4)
+    assert result.dtype == np.float32
+
+
+def test_from_path_npz_missing_key(tmp_path: Path) -> None:
+    import numpy as np
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    p = tmp_path / "data.npz"
+    np.savez(p, other=np.array([1.0]))
+    spec = ArtifactSpec(feature="x", load=NpzLoadSpec(key="missing"))
+    with pytest.raises(FileNotFoundError, match="missing"):
+        spec.from_path(p)
+
+
+def test_from_path_npz_1d_becomes_2d(tmp_path: Path) -> None:
+    import numpy as np
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, NpzLoadSpec
+
+    p = tmp_path / "vec.npz"
+    np.savez(p, vec=np.array([1.0, 2.0, 3.0]))
+    spec = ArtifactSpec(feature="x", load=NpzLoadSpec(key="vec"))
+    result = spec.from_path(p)
+    assert result.ndim == 2
+    assert result.shape == (1, 3)
+
+
+def test_from_path_joblib(tmp_path: Path) -> None:
+    import joblib
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, JoblibLoadSpec
+
+    p = tmp_path / "model.joblib"
+    joblib.dump({"scaler": "mock_scaler", "model": "mock_model"}, p)
+    spec = ArtifactSpec(feature="x", load=JoblibLoadSpec(key="scaler"))
+    assert spec.from_path(p) == "mock_scaler"
+
+
+def test_from_path_joblib_no_key(tmp_path: Path) -> None:
+    import joblib
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, JoblibLoadSpec
+
+    p = tmp_path / "model.joblib"
+    bundle = {"a": 1, "b": 2}
+    joblib.dump(bundle, p)
+    spec = ArtifactSpec(feature="x", load=JoblibLoadSpec())
+    assert spec.from_path(p) == bundle
+
+
+def test_from_path_parquet(tmp_path: Path) -> None:
+    import pandas as pd
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    p = tmp_path / "sizes.parquet"
+    df = pd.DataFrame({"cluster": [0, 1], "count": [50, 30]})
+    df.to_parquet(p, index=False)
+    spec = ArtifactSpec(feature="x", load=ParquetLoadSpec(numeric_only=False))
+    result = spec.from_path(p)
+    assert isinstance(result, pd.DataFrame)
+    assert list(result.columns) == ["cluster", "count"]
+    assert len(result) == 2
+
+
+def test_from_path_parquet_numeric_only(tmp_path: Path) -> None:
+    import pandas as pd
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    p = tmp_path / "mixed.parquet"
+    df = pd.DataFrame({"name": ["a", "b"], "value": [1.0, 2.0], "score": [3, 4]})
+    df.to_parquet(p, index=False)
+    spec = ArtifactSpec(feature="x", load=ParquetLoadSpec())
+    result = spec.from_path(p)
+    assert isinstance(result, pd.DataFrame)
+    assert "name" not in result.columns
+    assert "value" in result.columns
+    assert "score" in result.columns
+
+
+def test_from_path_parquet_drop_columns(tmp_path: Path) -> None:
+    import pandas as pd
+    from mosaic.behavior.feature_library.spec import ArtifactSpec, ParquetLoadSpec
+
+    p = tmp_path / "drop.parquet"
+    df = pd.DataFrame({"a": [1.0], "b": [2.0], "c": [3.0]})
+    df.to_parquet(p, index=False)
+    spec = ArtifactSpec(
+        feature="x",
+        load=ParquetLoadSpec(drop_columns=["b"], numeric_only=False),
+    )
+    result = spec.from_path(p)
+    assert isinstance(result, pd.DataFrame)
+    assert list(result.columns) == ["a", "c"]

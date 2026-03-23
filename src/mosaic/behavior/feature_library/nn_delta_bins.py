@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Sequence, final
+from collections.abc import Iterator, Sequence
+from typing import final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
-from .spec import Inputs, OutputType, Params, TrackInput
+from .spec import COLUMNS as C
+from .spec import Inputs, Params, TrackInput, register_feature
 
 
 def _binned_mean_fast(
@@ -107,7 +105,7 @@ class NearestNeighborDeltaBins:
     name = "nn-delta-bins"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "summary"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -133,44 +131,22 @@ class NearestNeighborDeltaBins:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._ds = None
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
-    def bind_dataset(self, ds):
-        self._ds = ds
+    # ----------------------- State protocol -----------------------
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    # ----------------------- Fit protocol ------------------------
-    def needs_fit(self) -> bool:
-        return False
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path: Path) -> None:
-        return
-
-    def load_model(self, path: Path) -> None:
-        return
+    def save_state(self, run_root: Path) -> None:
+        pass
 
     # ----------------------- Core logic --------------------------
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
         p = self.params
@@ -478,8 +454,7 @@ class NearestNeighborDeltaBins:
             out_df["center_category"] = pd.to_numeric(
                 out_df["center_category"], errors="coerce"
             ).astype("Int64")
-        # Add sequence/group if present
-        for meta_col in ("group", "sequence"):
+        for meta_col in (C.group_col, C.seq_col):
             if meta_col in df.columns and meta_col not in out_df.columns:
                 out_df[meta_col] = (
                     df[meta_col].iloc[0] if not df[meta_col].empty else ""

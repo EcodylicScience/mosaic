@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable, Optional, final
+from typing import final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
-from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
+from .helpers import ensure_columns
+from .spec import (
+    COLUMNS as C,
+)
+from .spec import (
+    Inputs,
+    Params,
+    TrackInput,
+    register_feature,
+    resolve_order_col,
+)
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
@@ -29,6 +37,35 @@ def _angular_diff(arr: np.ndarray, step: int) -> np.ndarray:
     return raw
 
 
+def _dt(step: int, time_arr: np.ndarray | None, n: int) -> np.ndarray:
+    """Time delta array for a given step size."""
+    if time_arr is not None:
+        dt = _diff_with_step(time_arr, step)
+    else:
+        dt = np.full(n, float(step))
+        dt[:step] = np.nan
+    dt[dt == 0] = np.nan
+    return dt
+
+
+def _compute_speed(
+    x: np.ndarray, y: np.ndarray, step: int, time_arr: np.ndarray | None
+) -> np.ndarray:
+    """Translational speed: displacement / dt."""
+    dx = _diff_with_step(x, step)
+    dy = _diff_with_step(y, step)
+    dist = np.sqrt(dx**2 + dy**2)
+    return dist / _dt(step, time_arr, len(x))
+
+
+def _compute_angvel(
+    angle: np.ndarray, step: int, time_arr: np.ndarray | None
+) -> np.ndarray:
+    """Angular velocity: wrapped angle difference / dt."""
+    dtheta = _angular_diff(angle, step)
+    return dtheta / _dt(step, time_arr, len(angle))
+
+
 @final
 @register_feature
 class SpeedAngvel:
@@ -45,13 +82,13 @@ class SpeedAngvel:
     name = "speed-angvel"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
 
     class Params(Params):
-        step_size: int | None = None
+        step_size: int | None = Field(default=None, ge=1)
 
     def __init__(
         self,
@@ -60,126 +97,65 @@ class SpeedAngvel:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ds = None
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
-    def bind_dataset(self, ds):
-        self._ds = ds
+    # --- State ---
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    # ----------------------- Fit protocol ------------------------
-    def needs_fit(self) -> bool:
-        return False
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    def supports_partial_fit(self) -> bool:
-        return False
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return
+    # --- Apply ---
 
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path: Path) -> None:
-        return
-
-    def load_model(self, path: Path) -> None:
-        return
-
-    # ----------------------- Core logic --------------------------
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
-        p = self.params
         order_col = resolve_order_col(df)
-        df = df.sort_values(order_col).reset_index(drop=True)
-        id_col = COLUMNS.id_col
+        ensure_columns(df, [C.id_col, C.x_col, C.y_col])
+        df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
 
-        if id_col not in df.columns:
-            raise ValueError(f"Missing id column '{id_col}' for per-id speed/angvel.")
-
-        out_parts = []
-        for _, sub in df.groupby(id_col, sort=False):
-            out_parts.append(self._compute_one_id(sub, p, order_col))
+        out_parts: list[pd.DataFrame] = []
+        for _, sub in df.groupby(C.id_col, sort=False):
+            out_parts.append(self._compute_one_id(sub, order_col))
 
         if not out_parts:
             return pd.DataFrame()
         return pd.concat(out_parts, axis=0, ignore_index=True)
 
-    # ------------------ Internal helpers ------------------------
-    def _dt(self, step: int, time_arr: Optional[np.ndarray], n: int) -> np.ndarray:
-        if step < 1:
-            raise ValueError("step must be >= 1")
-        if time_arr is not None:
-            dt = _diff_with_step(time_arr, step)
-        else:
-            dt = np.full(n, float(step))
-            dt[:step] = np.nan
-        dt[dt == 0] = np.nan
-        return dt
-
-    def _compute_speed(
-        self, x: np.ndarray, y: np.ndarray, step: int, time_arr: Optional[np.ndarray]
-    ) -> np.ndarray:
-        dx = _diff_with_step(x, step)
-        dy = _diff_with_step(y, step)
-        dist = np.sqrt(dx**2 + dy**2)
-        dt = self._dt(step, time_arr, len(x))
-        return dist / dt
-
-    def _compute_angvel(
-        self, angle: np.ndarray, step: int, time_arr: Optional[np.ndarray]
-    ) -> np.ndarray:
-        dtheta = _angular_diff(angle, step)
-        dt = self._dt(step, time_arr, len(angle))
-        return dtheta / dt
-
-    def _compute_one_id(self, sub: pd.DataFrame, p, order_col: str) -> pd.DataFrame:
-        sub = sub.sort_values(order_col).reset_index(drop=True)
-        x = sub[COLUMNS.x_col].to_numpy(dtype=float)
-        y = sub[COLUMNS.y_col].to_numpy(dtype=float)
+    def _compute_one_id(self, sub: pd.DataFrame, order_col: str) -> pd.DataFrame:
+        # Already sorted by (id, order_col) in apply()
+        x = sub[C.x_col].to_numpy(dtype=float)
+        y = sub[C.y_col].to_numpy(dtype=float)
         angle = (
-            sub[COLUMNS.orientation_col].to_numpy(dtype=float)
-            if COLUMNS.orientation_col in sub.columns
+            sub[C.orientation_col].to_numpy(dtype=float)
+            if C.orientation_col in sub.columns
             else None
         )
         time_arr = (
-            sub[COLUMNS.time_col].to_numpy(dtype=float)
-            if COLUMNS.time_col in sub.columns
-            else None
+            sub[C.time_col].to_numpy(dtype=float) if C.time_col in sub.columns else None
         )
 
         out = pd.DataFrame(
-            {
-                "speed": self._compute_speed(x, y, step=1, time_arr=time_arr),
-            }
+            {"speed": _compute_speed(x, y, step=1, time_arr=time_arr)},
+            index=sub.index,
         )
         if angle is not None:
-            out["angvel"] = self._compute_angvel(angle, step=1, time_arr=time_arr)
+            out["angvel"] = _compute_angvel(angle, step=1, time_arr=time_arr)
 
-        step_size = p.step_size
-        if step_size:
-            step_size = int(step_size)
-            out["speed_step"] = self._compute_speed(
-                x, y, step=step_size, time_arr=time_arr
-            )
+        step_size = self.params.step_size
+        if step_size is not None:
+            out["speed_step"] = _compute_speed(x, y, step=step_size, time_arr=time_arr)
             if angle is not None:
-                out["angvel_step"] = self._compute_angvel(
+                out["angvel_step"] = _compute_angvel(
                     angle, step=step_size, time_arr=time_arr
                 )
 
-        # Attach meta columns from this sub-id
-        for c in ("frame", "time", COLUMNS.seq_col, COLUMNS.group_col, COLUMNS.id_col):
-            if c in sub.columns:
-                out[c] = sub[c].values
-        return out
+        meta = {C.frame_col, C.time_col, C.seq_col, C.group_col, C.id_col} & set(
+            sub.columns
+        )
+        return out.join(sub[sorted(meta)])

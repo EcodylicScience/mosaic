@@ -1,28 +1,31 @@
 from __future__ import annotations
 
-from itertools import count, groupby
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable, final
+from typing import final
 
-import networkx as nx
 import numpy as np
 import pandas as pd
-from numba import njit
+from numba import njit  # pyright: ignore[reportUnknownVariableType]
 from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
-from scipy.spatial.distance import cdist
 
-from mosaic.core.pipeline._utils import Scope
+from .spec import (
+    COLUMNS as C,
+)
+from .spec import (
+    Inputs,
+    Params,
+    TrackInput,
+    register_feature,
+    resolve_order_col,
+)
 
-from .spec import register_feature
-
-from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
-
-# ===== Numba-accelerated union-find for connected components =====
+# --- Numba-accelerated union-find for connected components ---
 
 
 @njit
-def _union_find_root(parent, i):
+def _union_find_root(parent: np.ndarray, i: int) -> int:
     """Find root with path compression."""
     if parent[i] != i:
         parent[i] = _union_find_root(parent, parent[i])
@@ -30,7 +33,7 @@ def _union_find_root(parent, i):
 
 
 @njit
-def _union_find_union(parent, rank, x, y):
+def _union_find_union(parent: np.ndarray, rank: np.ndarray, x: int, y: int) -> None:
     """Union by rank."""
     rx, ry = _union_find_root(parent, x), _union_find_root(parent, y)
     if rx != ry:
@@ -44,7 +47,7 @@ def _union_find_union(parent, rank, x, y):
 
 
 @njit
-def _connected_components_numba(adj_matrix, n):
+def _connected_components_numba(adj_matrix: np.ndarray, n: int) -> np.ndarray:
     """Find connected components using union-find."""
     parent = np.arange(n, dtype=np.int32)
     rank = np.zeros(n, dtype=np.int32)
@@ -72,7 +75,9 @@ def _connected_components_numba(adj_matrix, n):
 
 
 @njit
-def _calculate_gmembership_numba(pwdf, nparticles, numsteps, threshold):
+def _calculate_gmembership_numba(
+    pwdf: np.ndarray, nparticles: int, numsteps: int, threshold: float
+) -> np.ndarray:
     """Vectorized group membership using Numba."""
     groupmembership = np.zeros((numsteps, nparticles), dtype=np.int32)
 
@@ -93,11 +98,99 @@ def _calculate_gmembership_numba(pwdf, nparticles, numsteps, threshold):
     return groupmembership
 
 
+# --- Event detection helpers ---
+
+
+def _sorted_members(ids: pd.Series) -> tuple[int, ...]:
+    """Aggregate group members into a sorted tuple of int IDs."""
+    return tuple(sorted(ids.astype(int)))
+
+
+def _find_events(
+    df: pd.DataFrame,
+    minimal_length: int,
+    frame_col: str,
+    id_col: str,
+) -> list[tuple[tuple[int, ...], tuple[int, int]]]:
+    """Find contiguous events where stable subgroups persist."""
+    unique_frames = np.unique(df[frame_col].astype(int))
+    if len(unique_frames) == 0:
+        return []
+
+    # Split into runs of consecutive frames (gap > 1 starts a new run)
+    splits = np.flatnonzero(np.diff(unique_frames) > 1) + 1
+
+    finalized: list[tuple[tuple[int, ...], tuple[int, int]]] = []
+    for run in np.split(unique_frames, splits):
+        start, end = int(run[0]), int(run[-1])
+        if end - start < minimal_length:
+            continue
+
+        data = df.loc[(df[frame_col] >= start) & (df[frame_col] <= end)]
+
+        # For each (frame, group_membership), compute sorted tuple of member IDs
+        members = (
+            data.groupby([frame_col, "group_membership"])[id_col]
+            .agg(_sorted_members)
+            .reset_index(name="members")
+        )
+
+        # For each unique member-set, find contiguous frame runs
+        for _, grp in members.groupby("members"):
+            member_key: tuple[int, ...] = grp["members"].iloc[0]
+            member_frames = np.sort(grp[frame_col].to_numpy(dtype=int))
+            member_splits = np.flatnonzero(np.diff(member_frames) > 1) + 1
+            for member_run in np.split(member_frames, member_splits):
+                duration = int(member_run[-1]) - int(member_run[0])
+                if duration >= minimal_length:
+                    finalized.append(
+                        (member_key, (int(member_run[0]), int(member_run[-1])))
+                    )
+
+    return finalized
+
+
+def _get_events_info(
+    df: pd.DataFrame,
+    threshold_ev_duration: int = 1,
+    *,
+    frame_col: str = C.frame_col,
+    id_col: str = C.id_col,
+) -> pd.DataFrame:
+    """Label rows with event IDs for detected fission-fusion events.
+
+    Returns a DataFrame containing only the rows that belong to an event,
+    with an added ``"event"`` column holding the integer event label.
+    """
+    events = _find_events(
+        df, minimal_length=threshold_ev_duration, frame_col=frame_col, id_col=id_col
+    )
+    if not events:
+        return pd.DataFrame(columns=list(df.columns) + ["event"])
+
+    frames = df[frame_col].to_numpy()
+    ids = df[id_col].to_numpy()
+    event_labels = np.full(len(df), -1, dtype=int)
+
+    for event_id, (member_ids, (start, end)) in enumerate(events):
+        id_set = set(member_ids)
+        mask = (frames >= start) & (frames <= end) & np.isin(ids, list(id_set))
+        event_labels[mask] = event_id
+
+    in_event = event_labels >= 0
+    result = df.loc[in_event].copy()
+    result.insert(loc=1, column="event", value=event_labels[in_event])
+    return result.reset_index(drop=True)
+
+
+# --- Feature class ---
+
+
 @final
 @register_feature
 class FFGroups:
     """
-    Per-sequence fission–fusion grouping metrics.
+    Per-sequence fission-fusion grouping metrics.
 
     Inputs: raw tracks (columns: x, y, id, frame/time, group, sequence).
     Outputs per (frame, id):
@@ -109,7 +202,7 @@ class FFGroups:
     name = "ffgroups"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -126,52 +219,26 @@ class FFGroups:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ds = None
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._scope: Scope = Scope()
 
-    # ---- Dataset hooks ----
-    def bind_dataset(self, ds):
-        self._ds = ds
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
-
-    # ---- Fit/transform contract ----
-    def needs_fit(self) -> bool:
-        return False
-
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return None
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        raise NotImplementedError
-
-    def finalize_fit(self) -> None:
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
         pass
 
-    def save_model(self, path: Path) -> None:
-        return None
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    def load_model(self, path: Path) -> None:
-        return None
-
-    # ---- Core logic ----
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
         p = self.params
-        id_col = COLUMNS.id_col
-        x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
-        frame_col = COLUMNS.frame_col
-        time_col = COLUMNS.time_col
-        group_col, seq_col = COLUMNS.group_col, COLUMNS.seq_col
+        id_col = C.id_col
+        x_col, y_col = C.x_col, C.y_col
+        frame_col = C.frame_col
+        time_col = C.time_col
+        group_col, seq_col = C.group_col, C.seq_col
         distance_cutoff = p.distance_cutoff
         win = max(1, p.window_size)
         if np.mod(win, 2) == 0:
@@ -211,8 +278,8 @@ class FFGroups:
         valid = fidx.notna() & iidx.notna()
         fidx = fidx[valid].to_numpy(dtype=int)
         iidx = iidx[valid].to_numpy(dtype=int)
-        x_vals = df_clean.loc[valid.values, x_col].to_numpy(dtype=np.float32)
-        y_vals = df_clean.loc[valid.values, y_col].to_numpy(dtype=np.float32)
+        x_vals = df_clean.loc[valid, x_col].to_numpy(dtype=np.float32)
+        y_vals = df_clean.loc[valid, y_col].to_numpy(dtype=np.float32)
 
         pos = np.full((T, N, 2), np.nan, dtype=np.float32)
         pos[fidx, iidx, 0] = x_vals
@@ -224,7 +291,7 @@ class FFGroups:
         pairwise = np.linalg.norm(diff, axis=-1).astype(np.float32)
         del diff
 
-        # Self-distance → NaN
+        # Self-distance -> NaN
         diag_idx = np.arange(N)
         pairwise[:, diag_idx, diag_idx] = np.nan
 
@@ -286,255 +353,10 @@ class FFGroups:
         else:
             out[group_col] = group_val
 
-        # Event detection (dp.get_events_info expects 'FishID')
-        event_input = out.rename(columns={id_col: "FishID"})
-        try:
-            df_events, _ = _get_events_info(
-                event_input, threshold_ev_duration=min_event
-            )
-            df_events = df_events[["frame", "FishID", "event"]]
-            out = out.merge(
-                df_events.rename(columns={"FishID": id_col, "event": "event"}),
-                how="left",
-                on=[frame_col, id_col],
-            )
-        except Exception:
-            # If event detection fails, still return membership/size
-            out["event"] = np.nan
-
+        # Event detection
+        df_events = _get_events_info(
+            out, min_event, frame_col=frame_col, id_col=id_col
+        )[[frame_col, id_col, "event"]]
+        out = out.merge(df_events, how="left", on=[frame_col, id_col])
         out["event"] = out["event"].fillna(-1).astype(int)
         return out
-
-    def _transform_reference(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Original per-frame groupby implementation, kept for regression testing."""
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        p = self.params
-        id_col = COLUMNS.id_col
-        x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
-        frame_col = COLUMNS.frame_col
-        time_col = COLUMNS.time_col
-        group_col, seq_col = COLUMNS.group_col, COLUMNS.seq_col
-        distance_cutoff = p.distance_cutoff
-        win = max(1, p.window_size)
-        if np.mod(win, 2) == 0:
-            raise ValueError("window_size must be an odd integer")
-
-        min_event = p.min_event_duration
-
-        order_cols = [c for c in (frame_col, time_col) if c in df.columns]
-        if order_cols:
-            df = df.sort_values(order_cols).reset_index(drop=True)
-        group_val = str(df[group_col].iloc[0]) if group_col in df.columns else ""
-        seq_val = str(df[seq_col].iloc[0]) if seq_col in df.columns else ""
-
-        frames = np.asarray(sorted(df[frame_col].dropna().unique()), dtype=int)
-        ids = np.asarray(sorted(df[id_col].dropna().unique()))
-        if frames.size == 0 or ids.size == 0:
-            return pd.DataFrame()
-
-        id_to_idx = {v: i for i, v in enumerate(ids)}
-        T, N = len(frames), len(ids)
-
-        pairwise = np.full((T, N, N), np.nan, dtype=np.float32)
-        frame_to_pos = {f: i for i, f in enumerate(frames)}
-        all_ids_set = set(ids.tolist())
-
-        for f, sub in df.groupby(frame_col):
-            if f not in frame_to_pos:
-                continue
-            t_idx = frame_to_pos[f]
-            coords = sub[[id_col, x_col, y_col]].replace([np.inf, -np.inf], np.nan)
-            coords = coords.dropna(subset=[id_col, x_col, y_col])
-            if coords.empty:
-                continue
-            coords = coords.drop_duplicates(subset=[id_col], keep="last").set_index(
-                id_col
-            )
-            ids_present = coords.index.to_numpy()
-            xy = coords[[x_col, y_col]].to_numpy(dtype=np.float32, copy=False)
-
-            if len(ids_present) == N and set(ids_present) == all_ids_set:
-                order = np.argsort(
-                    [id_to_idx.get(i, N + idx) for idx, i in enumerate(ids_present)]
-                )
-                xy_full = xy[order]
-                dmat = cdist(xy_full, xy_full).astype(np.float32)
-                np.fill_diagonal(dmat, np.nan)
-                pairwise[t_idx] = dmat
-            else:
-                dmat = cdist(xy, xy).astype(np.float32)
-                np.fill_diagonal(dmat, np.nan)
-
-                global_idx = []
-                local_idx = []
-                for local_i, id_i in enumerate(ids_present):
-                    gi = id_to_idx.get(id_i)
-                    if gi is None:
-                        continue
-                    global_idx.append(gi)
-                    local_idx.append(local_i)
-                if not global_idx:
-                    continue
-                global_idx = np.asarray(global_idx, dtype=int)
-                local_idx = np.asarray(local_idx, dtype=int)
-                pairwise[t_idx] = np.nan
-                pairwise[t_idx][np.ix_(global_idx, global_idx)] = dmat[
-                    np.ix_(local_idx, local_idx)
-                ]
-
-        if win > 1 and T > 0:
-            pad = win // 2
-            pad_block = np.full((pad, N, N), np.nan, dtype=np.float32)
-            padded = np.concatenate([pad_block, pairwise, pad_block], axis=0)
-            if padded.shape[0] >= win:
-                windows = sliding_window_view(padded, window_shape=win, axis=0)
-                chunk_size = 1000
-                pairwise_smooth = np.empty((T, N, N), dtype=np.float32)
-                for i in range(0, T, chunk_size):
-                    end = min(i + chunk_size, T)
-                    pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
-                del windows
-            else:
-                pairwise_smooth = pairwise
-            del padded, pad_block
-        else:
-            pairwise_smooth = pairwise
-
-        mask = ~np.eye(N, dtype=bool)
-        pwdf = pairwise_smooth[:, mask].reshape(T, N, N - 1)
-        groupmembership = _calculate_gmembership_numba(pwdf, N, T, distance_cutoff)
-
-        gm = groupmembership.astype(np.int64, copy=False)
-        if gm.size:
-            max_label = int(gm.max(initial=0))
-            counts = np.zeros((T, max_label + 1), dtype=np.int32)
-            np.add.at(counts, (np.arange(T)[:, None], gm), 1)
-            group_sizes = counts[np.arange(T)[:, None], gm]
-        else:
-            group_sizes = np.zeros_like(gm, dtype=np.int32)
-
-        out = pd.DataFrame(
-            {
-                frame_col: np.repeat(frames, N),
-                id_col: np.tile(ids, T),
-                "group_membership": groupmembership.reshape(-1),
-                "group_size": group_sizes.reshape(-1),
-            }
-        )
-
-        if time_col and time_col in df.columns:
-            time_map = df.groupby(frame_col)[time_col].first()
-            out[time_col] = out[frame_col].map(time_map)
-        if seq_col in df.columns:
-            out[seq_col] = seq_val
-        else:
-            out[seq_col] = seq_val
-        if group_col in df.columns:
-            out[group_col] = group_val
-        else:
-            out[group_col] = group_val
-
-        event_input = out.rename(columns={id_col: "FishID"})
-        try:
-            df_events, _ = _get_events_info(
-                event_input, threshold_ev_duration=min_event
-            )
-            df_events = df_events[["frame", "FishID", "event"]]
-            out = out.merge(
-                df_events.rename(columns={"FishID": id_col, "event": "event"}),
-                how="left",
-                on=[frame_col, id_col],
-            )
-        except Exception:
-            out["event"] = np.nan
-
-        out["event"] = out["event"].fillna(-1).astype(int)
-        return out
-
-
-# ===== Embedded helpers (from data_processing.py) =====
-
-
-def _getcomponents(Aij_single: np.ndarray, numfish: int):
-    G = nx.Graph(Aij_single)
-    connected = list(nx.connected_components(G))
-    componentsizes = [len(c) for c in connected]
-    components = np.zeros(numfish, dtype=int) - 1
-    for i in range(len(connected)):
-        components[list(connected[i])] = i
-    largestgroupsize = np.max(componentsizes) if componentsizes else 0
-    numcomponents = len(componentsizes)
-    return components, largestgroupsize, numcomponents
-
-
-def _calculate_gmembership(pwdf, nparticles, numsteps, threshold):
-    mask = np.tile(True, (nparticles, nparticles))
-    mask[range(nparticles), range(nparticles)] = False
-
-    groupmembership = np.zeros((numsteps, nparticles))
-    for idx, step in enumerate(range(numsteps)):
-        Aij = np.zeros((nparticles, nparticles))
-        Aij[mask] = np.reshape(np.heaviside(threshold - pwdf[step], 0), -1)
-        Aij[np.isnan(Aij)] = 0
-        groupmembership[step] = _getcomponents(Aij, numfish=nparticles)[0]
-    return groupmembership
-
-
-def _find_events(df, minimal_length):
-    finalized = []
-    all_data = []
-    for _, g in groupby(
-        np.unique(df.frame.astype(int)), key=lambda n, c=count(): n - next(c)
-    ):
-        frames = list(g)
-        all_data.append((frames[0], frames[-1], frames))
-    for i, (start, end, frames) in enumerate(all_data):
-        if end - start >= minimal_length:
-            data = df.loc[(df.frame >= start) & (df.frame <= end)]
-            clusters = {}
-
-            for frame in frames:
-                found = {c: False for c in clusters}
-                sub = data.loc[data.frame == frame]
-                for clusterid in sub.group_membership.unique():
-                    ids = tuple(
-                        set(
-                            sub.FishID[sub.group_membership == clusterid].values.astype(
-                                int
-                            )
-                        )
-                    )
-                    if ids in clusters:
-                        clusters[ids]["end"] = frame
-                    else:
-                        clusters[ids] = {"start": frame, "end": frame}
-                    found[ids] = True
-
-                for c in list(found):
-                    if not found[c]:
-                        if clusters[c]["end"] - clusters[c]["start"] >= minimal_length:
-                            finalized.append(
-                                (c, (clusters[c]["start"], clusters[c]["end"]))
-                            )
-                        del clusters[c]
-    return finalized
-
-
-def _get_events_info(df, threshold_ev_duration=1):
-    clusters_ = _find_events(df, minimal_length=threshold_ev_duration)
-    concat = []
-    for event, (ids, (start, end)) in enumerate(clusters_):
-        mask0 = (df["frame"] >= start) & (df["frame"] <= end)
-        mask1 = np.zeros_like(mask0, dtype=bool)
-        for ID in ids:
-            mask1[mask0] = np.logical_or(mask1[mask0], df["FishID"][mask0] == ID)
-        mask = np.logical_and(mask0, mask1)
-        df_events = df[mask]
-        df_events.insert(loc=1, column="event", value=event)
-        concat.append(df_events)
-    if not concat:
-        return pd.DataFrame(columns=list(df.columns) + ["event"]), clusters_
-    df_with_events = pd.concat(concat, axis=0).reset_index(drop=True)
-    return df_with_events, clusters_

@@ -14,7 +14,7 @@ import pyarrow as pa
 from ...core.helpers import make_entry_key
 from ._utils import Scope
 from .index import feature_index, feature_index_path, latest_feature_run_root
-from .loading import EntryData, load_entry_data
+from .loading import load_entry_data
 from .types import (
     InputsLike,
     LoadSpec,
@@ -151,7 +151,7 @@ def iter_manifest(
     manifest: Manifest,
     progress_label: str = "",
     progress_interval: int = 10,
-) -> Iterator[tuple[str, "EntryData"]]:
+) -> Iterator[tuple[str, tuple[pd.DataFrame, str]]]:
     """Iterate manifest entries, yielding (entry_key, EntryData) per sequence.
 
     Loads each entry's file specs, merges via inner join on alignment

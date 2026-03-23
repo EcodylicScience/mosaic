@@ -346,76 +346,68 @@ class TestLoadEntryDataUnified:
         return p1, p2
 
     def test_aligned_inputs_merged(self, aligned_parquets: tuple[Path, Path]) -> None:
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1, p2 = aligned_parquets
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
-        assert result.features.shape == (4, 2)
-        np.testing.assert_array_equal(result.frames, [0, 1, 2, 3])
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 4
+        assert "feat_a" in df.columns and "feat_b" in df.columns
+        np.testing.assert_array_equal(df["frame"].to_numpy(), [0, 1, 2, 3])
 
     def test_misaligned_inputs_inner_join(
         self, misaligned_parquets: tuple[Path, Path]
     ) -> None:
         """Overlapping frames only -- the core alignment fix."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1, p2 = misaligned_parquets
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
-        assert result.features.shape == (2, 2)
-        np.testing.assert_array_equal(result.frames, [2, 3])
-        np.testing.assert_array_almost_equal(result.features[:, 0], [3.0, 4.0])
-        np.testing.assert_array_almost_equal(result.features[:, 1], [30.0, 40.0])
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 2
+        np.testing.assert_array_equal(df["frame"].to_numpy(), [2, 3])
+        np.testing.assert_array_almost_equal(df["feat_a"].to_numpy(), [3.0, 4.0])
+        np.testing.assert_array_almost_equal(df["feat_b"].to_numpy(), [30.0, 40.0])
 
     def test_identity_columns_extracted(
         self, identity_parquets: tuple[Path, Path]
     ) -> None:
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1, p2 = identity_parquets
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
-        assert result.entity_level == "pair"
-        assert result.id1 is not None
-        assert result.id2 is not None
-        assert result.features.shape == (4, 2)
-        np.testing.assert_array_equal(result.id1, [1, 2, 1, 2])
-        np.testing.assert_array_equal(result.id2, [2, 1, 2, 1])
+        assert result is not None
+        df, entity_level = result
+        assert entity_level == "pair"
+        assert "id1" in df.columns and "id2" in df.columns
+        assert len(df) == 4
+        np.testing.assert_array_equal(df["id1"].to_numpy(), [1, 2, 1, 2])
+        np.testing.assert_array_equal(df["id2"].to_numpy(), [2, 1, 2, 1])
 
     def test_single_input(self, parquet_path: Path) -> None:
         """Single input should work without merge."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(parquet_path, spec)])
-        assert isinstance(result, EntryData)
-        assert result.features.shape == (3, 2)
-        np.testing.assert_array_equal(result.frames, [0, 1, 2])
-        assert result.entity_level == "individual"
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 3
+        np.testing.assert_array_equal(df["frame"].to_numpy(), [0, 1, 2])
+        assert entity_level == "individual"
 
     def test_no_overlap_returns_none(self, tmp_path: Path) -> None:
         """Two inputs with no shared frames should return None."""
@@ -433,10 +425,7 @@ class TestLoadEntryDataUnified:
         assert result is None
 
     def test_global_entity_level_when_no_id(self, tmp_path: Path) -> None:
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p = tmp_path / "no_id.parquet"
@@ -444,17 +433,13 @@ class TestLoadEntryDataUnified:
 
         helper = StreamingFeatureHelper(None, "test")
         result = helper.load_entry_data([(p, ParquetLoadSpec())])
-        assert isinstance(result, EntryData)
-        assert result.entity_level == "global"
-        assert result.id1 is None
-        assert result.id2 is None
+        assert result is not None
+        df, entity_level = result
+        assert entity_level == "global"
 
     def test_duplicate_column_names_across_inputs(self, tmp_path: Path) -> None:
         """Two inputs with the same feature column names must keep all features."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1 = tmp_path / "a.parquet"
@@ -473,42 +458,34 @@ class TestLoadEntryDataUnified:
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
-        # Must have 4 feature columns (2 from each input), not 2
-        assert result.features.shape == (3, 4)
-        # Input 1 features first, then input 2 features
-        np.testing.assert_array_almost_equal(result.features[:, 0], [1.0, 2.0, 3.0])
-        np.testing.assert_array_almost_equal(result.features[:, 1], [4.0, 5.0, 6.0])
-        np.testing.assert_array_almost_equal(result.features[:, 2], [10.0, 20.0, 30.0])
-        np.testing.assert_array_almost_equal(result.features[:, 3], [40.0, 50.0, 60.0])
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 3
+        # Duplicate columns get suffixed; 4 feature columns total
+        feat_cols = [c for c in df.columns if c != "frame"]
+        assert len(feat_cols) == 4
 
     def test_aligned_values_correct(self, aligned_parquets: tuple[Path, Path]) -> None:
         """Verify feature values, not just shape, for aligned inputs."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1, p2 = aligned_parquets
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
-        # col 0 = feat_a from input 1, col 1 = feat_b from input 2
+        assert result is not None
+        df, entity_level = result
         np.testing.assert_array_almost_equal(
-            result.features[:, 0], [1.0, 2.0, 3.0, 4.0]
+            df["feat_a"].to_numpy(), [1.0, 2.0, 3.0, 4.0]
         )
         np.testing.assert_array_almost_equal(
-            result.features[:, 1], [10.0, 20.0, 30.0, 40.0]
+            df["feat_b"].to_numpy(), [10.0, 20.0, 30.0, 40.0]
         )
 
-    def test_meta_columns_excluded_from_features(self, tmp_path: Path) -> None:
-        """Numeric metadata columns (time, id) must not appear in features."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+    def test_meta_columns_preserved_in_dataframe(self, tmp_path: Path) -> None:
+        """All columns (including meta) are preserved in the returned DataFrame."""
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p = tmp_path / "with_meta.parquet"
@@ -526,18 +503,16 @@ class TestLoadEntryDataUnified:
 
         helper = StreamingFeatureHelper(None, "test")
         result = helper.load_entry_data([(p, ParquetLoadSpec())])
-        assert isinstance(result, EntryData)
-        # Only feat_x, feat_y should be features -- not frame/time/id/id1/id2
-        assert result.features.shape == (3, 2)
-        np.testing.assert_array_almost_equal(result.features[:, 0], [10.0, 20.0, 30.0])
-        np.testing.assert_array_almost_equal(result.features[:, 1], [40.0, 50.0, 60.0])
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 3
+        assert "feat_x" in df.columns and "feat_y" in df.columns
+        np.testing.assert_array_almost_equal(df["feat_x"].to_numpy(), [10.0, 20.0, 30.0])
+        np.testing.assert_array_almost_equal(df["feat_y"].to_numpy(), [40.0, 50.0, 60.0])
 
-    def test_non_numeric_columns_excluded(self, tmp_path: Path) -> None:
-        """String columns must not leak into the feature matrix."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+    def test_non_numeric_columns_preserved(self, tmp_path: Path) -> None:
+        """String columns are preserved in the returned DataFrame."""
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p = tmp_path / "with_strings.parquet"
@@ -552,16 +527,15 @@ class TestLoadEntryDataUnified:
 
         helper = StreamingFeatureHelper(None, "test")
         result = helper.load_entry_data([(p, ParquetLoadSpec())])
-        assert isinstance(result, EntryData)
-        assert result.features.shape == (2, 1)
-        np.testing.assert_array_almost_equal(result.features[:, 0], [1.0, 2.0])
+        assert result is not None
+        df, entity_level = result
+        assert len(df) == 2
+        assert "label" in df.columns
+        np.testing.assert_array_almost_equal(df["feat"].to_numpy(), [1.0, 2.0])
 
     def test_misaligned_row_alignment_correct(self, tmp_path: Path) -> None:
         """Verify row values are correctly aligned after merge, not just shape."""
-        from mosaic.behavior.feature_library.helpers import (
-            EntryData,
-            StreamingFeatureHelper,
-        )
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
         from mosaic.behavior.feature_library.spec import ParquetLoadSpec
 
         p1 = tmp_path / "a.parquet"
@@ -577,11 +551,12 @@ class TestLoadEntryDataUnified:
         helper = StreamingFeatureHelper(None, "test")
         spec = ParquetLoadSpec()
         result = helper.load_entry_data([(p1, spec), (p2, spec)])
-        assert isinstance(result, EntryData)
+        assert result is not None
+        df, entity_level = result
         # Overlap is frames 2,3. Values must be correctly paired by frame.
-        np.testing.assert_array_equal(result.frames, [2, 3])
-        np.testing.assert_array_almost_equal(result.features[:, 0], [300.0, 400.0])
-        np.testing.assert_array_almost_equal(result.features[:, 1], [20.0, 30.0])
+        np.testing.assert_array_equal(df["frame"].to_numpy(), [2, 3])
+        np.testing.assert_array_almost_equal(df["feat_a"].to_numpy(), [300.0, 400.0])
+        np.testing.assert_array_almost_equal(df["feat_b"].to_numpy(), [20.0, 30.0])
 
 
 class TestLoadParquetDataFrame:

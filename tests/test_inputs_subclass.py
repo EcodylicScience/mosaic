@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types import Feature
+
 from mosaic.behavior.feature_library.spec import (
-    Feature,
     Inputs,
     OutputType,
     Params,
@@ -138,9 +140,49 @@ def test_is_empty() -> None:
     assert not also_non_empty.is_empty
 
 
+class _TestFeature:
+    """Minimal feature satisfying the new 4-method protocol."""
+
+    name = "new-test"
+    version = "0.1"
+    parallelizable = True
+    scope_dependent = False
+
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
+        pass
+
+    def __init__(self) -> None:
+        self.inputs = self.Inputs(("tracks",))
+        self._params = self.Params()
+
+    @property
+    def params(self) -> _TestFeature.Params:
+        return self._params
+
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
+
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame({"col": np.ones(len(df))})
+
+
+def test_feature_protocol() -> None:
+    f: Feature = _TestFeature()
+    assert f.scope_dependent is False
+    assert f.load_state(Path("/tmp"), {}) is True
+
+
 def test_satisfies_feature_protocol() -> None:
-    """Both features satisfy the Feature protocol structurally."""
-    f1: Feature = _TrackOnlyFeature()
-    f2: Feature = _MixedInputFeature()
-    assert f1.inputs.is_single_tracks
-    assert f2.inputs.is_multi
+    """_TestFeature satisfies the new Feature protocol structurally."""
+    f: Feature = _TestFeature()
+    assert f.inputs.is_single_tracks
+    assert f.name == "new-test"

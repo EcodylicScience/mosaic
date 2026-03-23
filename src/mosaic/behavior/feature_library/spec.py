@@ -10,6 +10,7 @@ from typing_extensions import TypeVar
 
 from mosaic.core.pipeline.types import (
     ArtifactSpec,
+    BodyScaleResult,
     DictModel,
     Feature,
     FeatureLabelsSource,
@@ -18,6 +19,7 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputsLike,
     JoblibLoadSpec,
+    LabelsSource,
     LabelsSourceSpec,
     LoadSpec,
     NNResult,
@@ -32,6 +34,7 @@ from mosaic.core.pipeline.types import (
 
 __all__ = [
     "ArtifactSpec",
+    "BodyScaleResult",
     "DictModel",
     "Feature",
     "FeatureLabelsSource",
@@ -40,6 +43,7 @@ __all__ = [
     "Inputs",
     "InputsLike",
     "JoblibLoadSpec",
+    "LabelsSource",
     "LabelsSourceSpec",
     "LoadSpec",
     "NNResult",

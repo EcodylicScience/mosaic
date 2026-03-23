@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, KeysView
+from collections.abc import Iterator
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Annotated,
     ClassVar,
     Generic,
     Literal,
@@ -16,48 +15,20 @@ from typing import (
 if TYPE_CHECKING:
     import pandas as pd
 
-    from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline._utils import ChunkedPayload, DataPayload, StreamPayload
-
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import BaseModel, Field, RootModel, model_validator
 from typing_extensions import TypeVar
 
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._loaders import (
+    DictModel,
+    JoblibLoadSpec,
+    LoadSpec,
+    NpzLoadSpec,
+    ParquetLoadSpec,
+    load_from_spec,
+)
 
 OutputType = Literal["per_frame", "global", "summary", "viz"] | None
 InputRequire = Literal["nonempty", "empty", "any"]
-
-
-class DictModel(BaseModel):
-    """BaseModel with dict-like access for backward compatibility.
-
-    Provides __getitem__, get, __contains__, and keys() so that existing
-    code using dict-style access (spec["key"], spec.get("key")) works
-    transparently with typed models.
-    """
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-    def __getitem__(self, key: str) -> object:
-        try:
-            val: object = getattr(self, key)  # pyright: ignore[reportAny]
-            return val
-        except AttributeError:
-            raise KeyError(key)
-
-    def get(self, key: str, default: object = None) -> object:
-        try:
-            val: object = getattr(self, key)  # pyright: ignore[reportAny]
-            return val
-        except AttributeError:
-            return default
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.__class__.model_fields
-
-    def keys(self) -> KeysView[str]:
-        """Support {**params} dict spread and dict(params) conversion."""
-        return self.__class__.model_fields.keys()
 
 
 class Params(DictModel):
@@ -90,61 +61,10 @@ class Params(DictModel):
         return cls.model_validate(merged)
 
 
-class NpzLoadSpec(DictModel):
-    """Load spec for numpy .npz archives.
-
-    Attributes:
-        kind: Discriminator literal "npz".
-        key: Array key to extract from the .npz file. Required.
-        transpose: Transpose the loaded array. Default False.
-    """
-
-    kind: Literal["npz"] = "npz"
-    key: str
-    transpose: bool = False
-
-
-class ParquetLoadSpec(DictModel):
-    """Load spec for parquet files.
-
-    Attributes:
-        kind: Discriminator literal "parquet".
-        transpose: Transpose the loaded array. Default False.
-        columns: Explicit column list. None uses numeric_only filter.
-        drop_columns: Columns to drop before loading.
-        numeric_only: Keep only numeric columns. Default True.
-        frame_column: Column to extract as frame indices.
-    """
-
-    kind: Literal["parquet"] = "parquet"
-    transpose: bool = False
-    columns: list[str] | None = None
-    drop_columns: list[str] | None = None
-    numeric_only: bool = True
-    frame_column: str | None = None
-
-
-class JoblibLoadSpec(DictModel):
-    """Load spec for joblib-serialized objects.
-
-    Attributes:
-        kind: Discriminator literal "joblib".
-        key: Dict key to extract from loaded object. None loads raw.
-    """
-
-    kind: Literal["joblib"] = "joblib"
-    key: str | None = None
-
-
-LoadSpec = Annotated[
-    NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec,
-    Field(discriminator="kind"),
-]
-
-
 TrackInput = Literal["tracks"]
 
 F = TypeVar("F", bound=str, default=str)
+K = TypeVar("K", bound=str, default=str)
 L = TypeVar(
     "L",
     bound=NpzLoadSpec | ParquetLoadSpec | JoblibLoadSpec,
@@ -177,6 +97,12 @@ class NNResult(Result[Literal["nearest-neighbor"]]):
     """Result narrowed to the nearest-neighbor feature."""
 
     feature: Literal["nearest-neighbor"] = "nearest-neighbor"
+
+
+class BodyScaleResult(Result[Literal["body-scale"]]):
+    """Result narrowed to the body-scale feature."""
+
+    feature: Literal["body-scale"] = "body-scale"
 
 
 class ResultColumn(Result[str]):
@@ -240,6 +166,14 @@ class ArtifactSpec(Result[str], Generic[L]):
                 )
         return cls.model_validate({"feature": result.feature, "run_id": result.run_id})
 
+    def from_path(self, path: Path) -> object:
+        """Load artifact from a resolved file path.
+
+        Dispatches on load-spec type via load_from_spec().
+        Subclasses may override for custom loading behavior.
+        """
+        return load_from_spec(path, self.load)
+
 
 class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec]):
     """Labels loaded from a feature's output files."""
@@ -248,7 +182,17 @@ class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec]):
     load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
 
 
-class GroundTruthLabelsSource(DictModel):
+class LabelsSource(DictModel, Generic[K]):
+    """Base class for dataset label dependencies.
+
+    Resolved by _resolve_dependency_paths (Task 9) to
+    <dataset_root>/labels/<kind>/.
+    """
+
+    kind: K
+
+
+class GroundTruthLabelsSource(LabelsSource[Literal["behavior"]]):
     """Labels loaded from labels/<kind>/index.csv."""
 
     source: Literal["labels"] = "labels"
@@ -360,14 +304,12 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
 
 
 class Feature(Protocol):
-    """Interface for a feature/calculation applied over tracks."""
+    """Feature protocol -- 4 attributes, 4 methods."""
 
     name: str
     version: str
-    output_type: OutputType
     parallelizable: bool
-    storage_feature_name: str
-    storage_use_input_suffix: bool
+    scope_dependent: bool
 
     @property
     def inputs(self) -> InputsLike: ...
@@ -375,19 +317,12 @@ class Feature(Protocol):
     @property
     def params(self) -> Params: ...
 
-    def bind_dataset(self, ds: Dataset) -> None: ...
-    def set_scope(self, scope: Scope) -> None: ...
+    def load_state(
+        self, run_root: Path, artifact_paths: dict[str, Path]
+    ) -> bool: ...
 
-    # Fit/transform contract
-    def needs_fit(self) -> bool: ...
-    def supports_partial_fit(self) -> bool: ...
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None: ...
-    def partial_fit(self, df: pd.DataFrame) -> None: ...
-    def finalize_fit(self) -> None: ...
-    def transform(
-        self, df: pd.DataFrame
-    ) -> StreamPayload | ChunkedPayload | DataPayload | pd.DataFrame | None: ...
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None: ...
 
-    # Persistence of model state (if any)
-    def save_model(self, path: Path) -> None: ...
-    def load_model(self, path: Path) -> None: ...
+    def save_state(self, run_root: Path) -> None: ...
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame: ...

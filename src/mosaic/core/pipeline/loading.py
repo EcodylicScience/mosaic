@@ -7,31 +7,26 @@ pipeline infrastructure they depend on.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import pandas as pd
 
+from ._loaders import JoblibLoadSpec, LoadSpec, NpzLoadSpec, ParquetLoadSpec
 from .index import (
     feature_index,
     feature_index_path,
     feature_run_root,
     latest_feature_run_root,
 )
-from .types import (
-    ArtifactSpec,
-    JoblibLoadSpec,
-    LoadSpec,
-    NNResult,
-    NpzLoadSpec,
-    ParquetLoadSpec,
-)
+from .types import ArtifactSpec, NNResult
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
 
+# TODO, also see below: This shares logic, and hardcodes columns defined in feature_library.params.COLUMNS
+# so COLUMNS needs to move to core or pipeline, and we'd need to derive the sets dynamically from it
 _ALIGN_COLS = frozenset({"frame", "time", "id", "id1", "id2"})
 
 _IDENTITY_META_COLS = _ALIGN_COLS | {"id_a", "id_b", "id_A", "id_B"}
@@ -62,6 +57,8 @@ def _concat_into(
     return out
 
 
+# TODO: this shares logic with feature_library.params.PoseConfig
+# so pose config, columns etc should also move to pipeline/core
 def _pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
     """Extract (poseX*, poseY*) column pairs from column names."""
     pose_pairs: list[tuple[str, str]] = []
@@ -74,6 +71,7 @@ def _pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
     return pose_pairs
 
 
+# TODO remove: replaced by load_from_spec() in _loaders.py (Phase D, Tasks 10-12)
 def _load_array_from_spec(
     path: Path,
     load_spec: LoadSpec,
@@ -205,31 +203,6 @@ def _normalize_identity_columns(
     return None, None, "global"
 
 
-@dataclass(frozen=True, slots=True)
-class EntryData:
-    """Result of loading and merging data for a single manifest entry.
-
-    Attributes
-    ----------
-    features : np.ndarray
-        (N, D) feature matrix, float32.
-    frames : np.ndarray
-        (N,) frame indices, int64.
-    id1 : np.ndarray | None
-        (N,) first identity column, float64. None when global.
-    id2 : np.ndarray | None
-        (N,) second identity column, float64. None when global.
-    entity_level : str
-        One of "global", "individual", "pair".
-    """
-
-    features: np.ndarray
-    frames: np.ndarray
-    id1: np.ndarray | None
-    id2: np.ndarray | None
-    entity_level: str
-
-
 def _load_parquet_dataframe(
     path: Path,
     load_spec: LoadSpec,
@@ -286,46 +259,16 @@ def _merge_parquet_inputs(dfs: Iterable[pd.DataFrame]) -> pd.DataFrame | None:
     return merged
 
 
-def _entrydata_from_merged(df: pd.DataFrame) -> EntryData:
-    """Extract EntryData fields from a merged DataFrame."""
-    id1_series, id2_series, entity_level = _normalize_identity_columns(df)
-
-    if "frame" in df.columns:
-        frames = df["frame"].to_numpy(dtype=np.int64, copy=True)
-    elif "time" in df.columns:
-        frames = df["time"].to_numpy(dtype=np.int64, copy=True)
-    else:
-        frames = np.arange(len(df), dtype=np.int64)
-
-    numeric_cols = set(df.select_dtypes(include=[np.number]).columns)
-    feat_cols = [c for c in df.columns if c not in _ALL_META_COLS and c in numeric_cols]
-
-    features = df[feat_cols].to_numpy(dtype=np.float32, copy=True)
-
-    id1 = (
-        id1_series.to_numpy(dtype=np.float64, copy=True)
-        if id1_series is not None
-        else None
-    )
-    id2 = (
-        id2_series.to_numpy(dtype=np.float64, copy=True)
-        if id2_series is not None
-        else None
-    )
-
-    return EntryData(
-        features=features,
-        frames=frames,
-        id1=id1,
-        id2=id2,
-        entity_level=entity_level,
-    )
+def _entrydata_from_merged(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Derive entity level from a merged DataFrame."""
+    _, _, entity_level = _normalize_identity_columns(df)
+    return df, entity_level
 
 
 def load_entry_data(
     file_specs: list[tuple[Path, LoadSpec]],
     df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
-) -> EntryData | None:
+) -> tuple[pd.DataFrame, str] | None:
     """Load and merge data for a single manifest entry.
 
     All manifest entries are parquet. Multiple inputs are merged via
@@ -487,8 +430,6 @@ def _load_joblib_artifact(ds: Dataset, artifact: ArtifactSpec) -> object:
     object
         The loaded object, or obj[key] if load spec has a key
     """
-    import joblib
-
     if not isinstance(artifact.load, JoblibLoadSpec):
         raise ValueError(
             f"_load_joblib_artifact requires JoblibLoadSpec, "
@@ -498,10 +439,10 @@ def _load_joblib_artifact(ds: Dataset, artifact: ArtifactSpec) -> object:
     files = sorted(run_root.glob(artifact.pattern))
     if not files:
         raise FileNotFoundError(f"No files matching '{artifact.pattern}' in {run_root}")
-    obj = joblib.load(files[0])
-    return obj if artifact.load.key is None else obj[artifact.load.key]
+    return artifact.from_path(files[0])
 
 
+# TODO remove: replaced by ArtifactSpec.from_path() (Phase D, Tasks 10-12)
 def _load_artifact_matrix(ds: Dataset, artifact: ArtifactSpec) -> np.ndarray:
     """
     Load a numeric matrix from a feature artifact (npz or parquet).

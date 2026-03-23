@@ -24,20 +24,20 @@ Output columns (per frame × pair):
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from itertools import combinations
-from typing import List, Literal, final
+from pathlib import Path
+from typing import Literal, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
-
+from .helpers import clean_animal_track, ensure_columns
+from .spec import COLUMNS as C
 from .spec import (
-    COLUMNS,
     Inputs,
     InterpolationConfig,
-    OutputType,
     Params,
     SamplingConfig,
     TrackInput,
@@ -73,7 +73,7 @@ class ApproachAvoidance:
     name = "approach-avoidance"
     version = "0.2"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -103,95 +103,47 @@ class ApproachAvoidance:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ds = None
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    def bind_dataset(self, ds):
-        self._ds = ds
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    # ----------------------- Fit protocol ------------------------
-
-    def needs_fit(self) -> bool:
-        return False
-
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter) -> None:
-        return
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path) -> None:
-        raise NotImplementedError("Stateless feature; no model to save.")
-
-    def load_model(self, path) -> None:
-        raise NotImplementedError("Stateless feature; no model to load.")
-
-    # ----------------------- Core logic --------------------------
-
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
         p = self.params
         order_col = resolve_order_col(df)
-        need = [
-            COLUMNS.id_col,
-            COLUMNS.seq_col,
-            order_col,
-            COLUMNS.x_col,
-            COLUMNS.y_col,
-        ]
-        if COLUMNS.group_col in df.columns:
-            need.append(COLUMNS.group_col)
+        required = [C.id_col, C.seq_col, C.x_col, C.y_col]
         if p.orientation_gate_cos is not None:
-            need.append(COLUMNS.orientation_col)
-        missing = [c for c in need if c not in df.columns]
-        if missing:
-            raise ValueError(f"[approach-avoidance] Missing columns: {missing}")
+            required.append(C.orientation_col)
+        ensure_columns(df, required)
 
-        cols = need.copy()
+        cols = [order_col] + required
+        if C.group_col in df.columns:
+            cols.append(C.group_col)
         df_small = df[cols].copy()
         if order_col == "frame":
             df_small[order_col] = df_small[order_col].astype(int, errors="ignore")
 
-        # Clean per-animal, per-sequence
-        group_cols = [COLUMNS.seq_col, COLUMNS.id_col]
-        data_cols = [COLUMNS.x_col, COLUMNS.y_col]
-        if COLUMNS.orientation_col in df_small.columns:
-            data_cols.append(COLUMNS.orientation_col)
-
-        def clean_animal(g):
-            result = self._clean_one_animal(g, data_cols, order_col)
-            if isinstance(g.name, tuple):
-                for col, val in zip(group_cols, g.name):
-                    result[col] = val
-            else:
-                result[group_cols[0]] = g.name
-            return result
+        group_cols = [C.seq_col, C.id_col]
+        data_cols = [C.x_col, C.y_col]
+        if C.orientation_col in df_small.columns:
+            data_cols.append(C.orientation_col)
 
         df_small = df_small.groupby(group_cols, group_keys=False).apply(
-            clean_animal, include_groups=False
+            lambda g: clean_animal_track(g, data_cols, order_col, p.interpolation)
         )
 
-        # Build all pairs for each sequence
-        out_frames: List[pd.DataFrame] = []
+        out_frames: list[pd.DataFrame] = []
 
-        for seq, gseq in df_small.groupby(COLUMNS.seq_col):
-            ids = sorted(gseq[COLUMNS.id_col].unique())
+        for _, gseq in df_small.groupby(C.seq_col):
+            ids = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
             for id_a, id_b in combinations(ids, 2):
@@ -229,11 +181,11 @@ class ApproachAvoidance:
         p = self.params
 
         ori_gate_cos = p.orientation_gate_cos
-        cols = [order_col, COLUMNS.x_col, COLUMNS.y_col]
-        if ori_gate_cos is not None and COLUMNS.orientation_col in gseq.columns:
-            cols.append(COLUMNS.orientation_col)
-        A = gseq[gseq[COLUMNS.id_col] == id_a][cols].copy()
-        B = gseq[gseq[COLUMNS.id_col] == id_b][cols].copy()
+        cols = [order_col, C.x_col, C.y_col]
+        if ori_gate_cos is not None and C.orientation_col in gseq.columns:
+            cols.append(C.orientation_col)
+        A = gseq[gseq[C.id_col] == id_a][cols].copy()
+        B = gseq[gseq[C.id_col] == id_b][cols].copy()
 
         if A.empty or B.empty:
             return None
@@ -256,10 +208,10 @@ class ApproachAvoidance:
                 pass
 
         # Extract positions
-        x_a = j[f"{COLUMNS.x_col}_A"].to_numpy(dtype=np.float64)
-        y_a = j[f"{COLUMNS.y_col}_A"].to_numpy(dtype=np.float64)
-        x_b = j[f"{COLUMNS.x_col}_B"].to_numpy(dtype=np.float64)
-        y_b = j[f"{COLUMNS.y_col}_B"].to_numpy(dtype=np.float64)
+        x_a = j[f"{C.x_col}_A"].to_numpy(dtype=np.float64)
+        y_a = j[f"{C.y_col}_A"].to_numpy(dtype=np.float64)
+        x_b = j[f"{C.x_col}_B"].to_numpy(dtype=np.float64)
+        y_b = j[f"{C.y_col}_B"].to_numpy(dtype=np.float64)
         frames = j["frame"].to_numpy().astype(int)
         n = len(frames)
         eps = 1e-12
@@ -305,16 +257,16 @@ class ApproachAvoidance:
             v1x, v1y = v_ax, v_ay
             v2x, v2y = v_bx, v_by
             speed1, speed2 = speed_a, speed_b
-            ori1 = j.get(f"{COLUMNS.orientation_col}_A")
-            ori2 = j.get(f"{COLUMNS.orientation_col}_B")
+            ori1 = j.get(f"{C.orientation_col}_A")
+            ori2 = j.get(f"{C.orientation_col}_B")
         else:
             dx12 = -dx_ab
             dy12 = -dy_ab
             v1x, v1y = v_bx, v_by
             v2x, v2y = v_ax, v_ay
             speed1, speed2 = speed_b, speed_a
-            ori1 = j.get(f"{COLUMNS.orientation_col}_B")
-            ori2 = j.get(f"{COLUMNS.orientation_col}_A")
+            ori1 = j.get(f"{C.orientation_col}_B")
+            ori2 = j.get(f"{C.orientation_col}_A")
 
         # Cosine metrics equivalent to trajognize:
         # direction 12: id1 approaches id2, id2 avoids id1
@@ -337,7 +289,7 @@ class ApproachAvoidance:
             if ori1 is None or ori2 is None:
                 raise ValueError(
                     "[approach-avoidance] Orientation gate enabled but orientation column "
-                    f"'{COLUMNS.orientation_col}' not available for merged pair."
+                    f"'{C.orientation_col}' not available for merged pair."
                 )
             th1 = ori1.to_numpy(dtype=np.float64)
             th2 = ori2.to_numpy(dtype=np.float64)
@@ -462,7 +414,7 @@ class ApproachAvoidance:
             }
         )
 
-        for col in (COLUMNS.seq_col, COLUMNS.group_col):
+        for col in (C.seq_col, C.group_col):
             if col in gseq.columns:
                 out[col] = gseq[col].iloc[0]
             elif col in orig_df.columns:
@@ -497,14 +449,16 @@ class ApproachAvoidance:
             approacher_id, avoider_id,
             sequence (if present), group (if present).
         """
+        # TODO: These are still hardcoded.
         group_cols = ["id1", "id2"]
         for c in ("sequence", "group"):
             if c in aa_df.columns:
                 group_cols.append(c)
 
-        events: List[dict] = []
+        events: list[dict] = []
         for keys, g in aa_df.groupby(group_cols, sort=True):
             if not isinstance(keys, tuple):
+                # just defensive coding, group_cols always > 2
                 keys = (keys,)
             meta = dict(zip(group_cols, keys))
             id1, id2 = int(meta["id1"]), int(meta["id2"])
@@ -552,37 +506,6 @@ class ApproachAvoidance:
         out = pd.DataFrame(events)
         out = out.sort_values(group_cols + ["start_frame"]).reset_index(drop=True)
         return out
-
-    # ----------------------- Helpers -----------------------------
-
-    def _clean_one_animal(
-        self,
-        g: pd.DataFrame,
-        data_cols: List[str],
-        order_col: str,
-    ) -> pd.DataFrame:
-        p = self.params
-        g = g.sort_values(order_col).copy()
-        g = g.set_index(order_col)
-
-        g[data_cols] = g[data_cols].replace([np.inf, -np.inf], np.nan)
-        g[data_cols] = g[data_cols].interpolate(
-            method="linear",
-            limit=p.interpolation.linear_interp_limit,
-            limit_direction="both",
-        )
-        g[data_cols] = g[data_cols].ffill(limit=p.interpolation.edge_fill_limit)
-        g[data_cols] = g[data_cols].bfill(limit=p.interpolation.edge_fill_limit)
-
-        miss_frac = g[data_cols].isna().mean(axis=1)
-        g = g.loc[miss_frac <= p.interpolation.max_missing_fraction].copy()
-
-        if g[data_cols].isna().any().any():
-            med = g[data_cols].median()
-            g[data_cols] = g[data_cols].fillna(med)
-
-        g = g.reset_index()
-        return g
 
     @staticmethod
     def _sliding_mean(x: np.ndarray, win: int) -> np.ndarray:

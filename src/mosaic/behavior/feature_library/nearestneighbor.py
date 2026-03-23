@@ -1,33 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable, final
+from typing import final
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
-from .spec import COLUMNS, Inputs, OutputType, Params, TrackInput, resolve_order_col
-
-
-def _wrap_angle(x: np.ndarray) -> np.ndarray:
-    """Wrap angles to [-pi, pi]."""
-    return (x + np.pi) % (2 * np.pi) - np.pi
-
-
-def _ego_rotate(dx: np.ndarray, dy: np.ndarray, heading: np.ndarray) -> tuple:
-    """
-    Rotate world-frame deltas into the ego frame of the focal
-    (heading aligned with +x). heading is in radians.
-    """
-    ct = np.cos(heading)
-    st = np.sin(heading)
-    dx_ego = dx * ct + dy * st
-    dy_ego = -dx * st + dy * ct
-    return dx_ego, dy_ego
+from .helpers import ego_rotate, ensure_columns, wrap_angle
+from .spec import COLUMNS as C
+from .spec import Inputs, Params, TrackInput, register_feature, resolve_order_col
 
 
 @final
@@ -47,7 +29,7 @@ class NearestNeighbor:
     name = "nearest-neighbor"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -62,53 +44,31 @@ class NearestNeighbor:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ds = None
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
-    def bind_dataset(self, ds):
-        self._ds = ds
+    # --- State protocol ---
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    # ----------------------- Fit protocol ------------------------
-    def needs_fit(self) -> bool:
-        return False
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    def supports_partial_fit(self) -> bool:
-        return False
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return
+    # --- Apply ---
 
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path: Path) -> None:
-        return
-
-    def load_model(self, path: Path) -> None:
-        return
-
-    # ----------------------- Core logic --------------------------
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
-        p = self.params
         order_col = resolve_order_col(df)
+        ensure_columns(df, [C.id_col, C.x_col, C.y_col])
         df = df.sort_values(order_col).reset_index(drop=True)
 
         angles = (
-            df[COLUMNS.orientation_col].to_numpy(dtype=float)
-            if COLUMNS.orientation_col in df.columns
+            df[C.orientation_col].to_numpy(dtype=float)
+            if C.orientation_col in df.columns
             else None
         )
 
@@ -121,25 +81,15 @@ class NearestNeighbor:
         nn_dx_ego = np.full(n, np.nan, dtype=float)
         nn_dy_ego = np.full(n, np.nan, dtype=float)
 
-        # Work frame by frame to avoid mixing across time
-        if "frame" in df.columns:
-            grouper = df.groupby("frame", sort=False)
-        elif "time" in df.columns:
-            grouper = df.groupby("time", sort=False)
-        else:
-            raise ValueError(
-                "Need either 'frame' or 'time' column to group rows per timestep."
-            )
-
-        for _, g in grouper:
+        for _, g in df.groupby(order_col, sort=False):
             idx = g.index.to_numpy()
             if len(idx) < 2:
                 continue
-            gx = g[COLUMNS.x_col].to_numpy(dtype=float)
-            gy = g[COLUMNS.y_col].to_numpy(dtype=float)
-            gids = g[COLUMNS.id_col].to_numpy()
+            gx = g[C.x_col].to_numpy(dtype=float)
+            gy = g[C.y_col].to_numpy(dtype=float)
+            gids = g[C.id_col].to_numpy()
             gang = (
-                g[COLUMNS.orientation_col].to_numpy(dtype=float)
+                g[C.orientation_col].to_numpy(dtype=float)
                 if angles is not None
                 else None
             )
@@ -156,9 +106,9 @@ class NearestNeighbor:
             nn_dist[idx] = dist_matrix[np.arange(len(idx)), nn_idx]
 
             if nn_dangle is not None:
-                nn_dangle[idx] = _wrap_angle(gang[nn_idx] - gang)
+                nn_dangle[idx] = wrap_angle(gang[nn_idx] - gang)
 
-            dx_ego, dy_ego = _ego_rotate(
+            dx_ego, dy_ego = ego_rotate(
                 nn_dx[idx],
                 nn_dy[idx],
                 gang if angles is not None else np.zeros(len(idx)),
@@ -174,16 +124,13 @@ class NearestNeighbor:
                 "nn_dist": nn_dist,
                 "nn_delta_x_ego": nn_dx_ego,
                 "nn_delta_y_ego": nn_dy_ego,
-            }
+            },
+            index=df.index,
         )
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
 
-        # Attach meta columns
-        for c in ("frame", "time", COLUMNS.seq_col, COLUMNS.group_col, COLUMNS.id_col):
-            if c in df.columns:
-                out[c] = df[c].values
-
-        return out
-
-    # ------------------ Internal helpers ------------------------
+        meta = {C.frame_col, C.time_col, C.seq_col, C.group_col, C.id_col} & set(
+            df.columns
+        )
+        return out.join(df[sorted(meta)])

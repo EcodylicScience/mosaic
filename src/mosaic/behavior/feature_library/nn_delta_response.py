@@ -1,43 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterable, final
+from typing import final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
-
-from .spec import register_feature
-
+from .helpers import ego_rotate, wrap_angle
+from .spec import COLUMNS as C
 from .spec import (
-    COLUMNS,
     Inputs,
-    OutputType,
     Params,
     SamplingConfig,
     TrackInput,
+    register_feature,
     resolve_order_col,
 )
-
-
-def _wrap_angle(x: np.ndarray) -> np.ndarray:
-    """Wrap angles to [-pi, pi]."""
-    return (x + np.pi) % (2 * np.pi) - np.pi
-
-
-def _ego_rotate(
-    dx: np.ndarray, dy: np.ndarray, heading: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Rotate world-frame deltas into the ego frame of the focal (heading aligned with +x).
-    """
-    ct = np.cos(heading)
-    st = np.sin(heading)
-    dx_ego = dx * ct + dy * st
-    dy_ego = -dx * st + dy * ct
-    return dx_ego, dy_ego
 
 
 @final
@@ -62,7 +42,7 @@ class NearestNeighborDelta:
     name = "nn-delta-response"
     version = "0.1"
     parallelizable = True
-    output_type: OutputType = "per_frame"
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -88,52 +68,23 @@ class NearestNeighborDelta:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.storage_feature_name = self.name
-        self.storage_use_input_suffix = True
-        self.skip_existing_outputs = False
-        self._ds = None
-        self._scope: Scope = Scope()
 
-    # ----------------------- Dataset hooks -----------------------
-    def bind_dataset(self, ds):
-        self._ds = ds
+    def load_state(self, run_root: Path, artifact_paths: dict[str, Path]) -> bool:
+        return True
 
-    def set_scope(self, scope: Scope) -> None:
-        self._scope = scope
+    def fit(self, inputs: Iterator[tuple[str, pd.DataFrame]]) -> None:
+        pass
 
-    # ----------------------- Fit protocol ------------------------
-    def needs_fit(self) -> bool:
-        return False
+    def save_state(self, run_root: Path) -> None:
+        pass
 
-    def supports_partial_fit(self) -> bool:
-        return False
-
-    def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
-        return
-
-    def partial_fit(self, df: pd.DataFrame) -> None:
-        return
-
-    def finalize_fit(self) -> None:
-        return
-
-    def save_model(self, path: Path) -> None:
-        return
-
-    def load_model(self, path: Path) -> None:
-        return
-
-    # ----------------------- Core logic --------------------------
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
             return pd.DataFrame()
 
         p = self.params
 
         # Resolve required columns with a few fallbacks
-        id_col = COLUMNS.id_col
-        frame_col = COLUMNS.frame_col
-        angle_col = COLUMNS.orientation_col
         speed_col = (
             p.speed_col
             if p.speed_col in df.columns
@@ -147,58 +98,52 @@ class NearestNeighborDelta:
         if (
             speed_col is None
             or nn_id_col is None
-            or frame_col not in df
-            or id_col not in df
+            or C.frame_col not in df
+            or C.id_col not in df
         ):
-            # Missing critical inputs; nothing to compute.
             return pd.DataFrame()
 
-        # Order for reproducibility
         try:
             order_col = resolve_order_col(df)
         except ValueError:
             return pd.DataFrame()
-        df = df.sort_values([order_col, id_col]).reset_index(drop=True)
+        df = df.sort_values([order_col, C.id_col]).reset_index(drop=True)
 
         diff_n = p.diff_numframes
-        wrap_angles = p.wrap_angle
-        divide_by_frames = p.divide_dangle_by_frames
-        scale_by_fps = p.scale_dangle_by_fps
         fps = p.sampling.fps_default
 
         # Optional neighbor focal lookup (frame + id -> focal flag)
         focal_lookup = None
         if p.focal_col in df.columns:
-            focal_lookup = df[[frame_col, id_col, p.focal_col]].rename(
-                columns={id_col: "_nid", p.focal_col: "neighbor_focal"}
+            focal_lookup = df[[C.frame_col, C.id_col, p.focal_col]].rename(
+                columns={C.id_col: "_nid", p.focal_col: "neighbor_focal"}
             )
 
-        outputs = []
-        for focal_id, g in df.groupby(id_col, sort=False):
+        outputs: list[pd.DataFrame] = []
+        for focal_id, g in df.groupby(C.id_col, sort=False):
             g = g.sort_values(order_col)
-            # Future samples diff_numframes ahead
             future = g[
-                [COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]
+                [C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]
             ].shift(-diff_n)
             delta = (
                 future
-                - g[[COLUMNS.x_col, COLUMNS.y_col, angle_col, speed_col, frame_col]]
+                - g[[C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]]
             )
 
-            valid_mask = delta[frame_col].notna() & (delta[frame_col] == diff_n)
+            valid_mask = delta[C.frame_col].notna() & (delta[C.frame_col] == diff_n)
             if not valid_mask.any():
                 continue
 
             rows = g.loc[valid_mask].copy()
-            rows["dx"] = delta.loc[valid_mask, COLUMNS.x_col].to_numpy()
-            rows["dy"] = delta.loc[valid_mask, COLUMNS.y_col].to_numpy()
-            rows["dt"] = delta.loc[valid_mask, frame_col].to_numpy()
-            dangle = delta.loc[valid_mask, angle_col].to_numpy()
-            if wrap_angles:
-                dangle = _wrap_angle(dangle)
-            if divide_by_frames:
+            rows["dx"] = delta.loc[valid_mask, C.x_col].to_numpy()
+            rows["dy"] = delta.loc[valid_mask, C.y_col].to_numpy()
+            rows["dt"] = delta.loc[valid_mask, C.frame_col].to_numpy()
+            dangle = delta.loc[valid_mask, C.orientation_col].to_numpy()
+            if p.wrap_angle:
+                dangle = wrap_angle(dangle)
+            if p.divide_dangle_by_frames:
                 dangle = dangle / diff_n
-            if scale_by_fps:
+            if p.scale_dangle_by_fps:
                 dangle = dangle * fps
             rows["dangle"] = dangle
             rows["dspeed"] = delta.loc[valid_mask, speed_col].to_numpy()
@@ -210,8 +155,8 @@ class NearestNeighborDelta:
             elif p.nn_dx_world_col in g.columns and p.nn_dy_world_col in g.columns:
                 dx_world = g.loc[valid_mask, p.nn_dx_world_col].to_numpy()
                 dy_world = g.loc[valid_mask, p.nn_dy_world_col].to_numpy()
-                heading = g.loc[valid_mask, angle_col].to_numpy()
-                nx, ny = _ego_rotate(dx_world, dy_world, heading)
+                heading = g.loc[valid_mask, C.orientation_col].to_numpy()
+                nx, ny = ego_rotate(dx_world, dy_world, heading)
                 rows["neighbor_x"] = nx
                 rows["neighbor_y"] = ny
             else:
@@ -220,24 +165,21 @@ class NearestNeighborDelta:
 
             # Neighbor focal flag (if available)
             if focal_lookup is not None:
-                neighbor_meta = rows[[frame_col, nn_id_col]].rename(
+                neighbor_meta = rows[[C.frame_col, nn_id_col]].rename(
                     columns={nn_id_col: "_nid"}
                 )
                 rows["neighbor_focal"] = neighbor_meta.merge(
-                    focal_lookup, on=[frame_col, "_nid"], how="left"
+                    focal_lookup, on=[C.frame_col, "_nid"], how="left"
                 )["neighbor_focal"].to_numpy()
 
-            # Pass through meta columns
             rows["nn_id"] = g.loc[valid_mask, nn_id_col].to_numpy()
-            rows[id_col] = focal_id
-            if COLUMNS.group_col in g.columns:
-                rows[COLUMNS.group_col] = g.loc[
-                    valid_mask, COLUMNS.group_col
-                ].to_numpy()
-            if COLUMNS.seq_col in g.columns:
-                rows[COLUMNS.seq_col] = g.loc[valid_mask, COLUMNS.seq_col].to_numpy()
-            if COLUMNS.time_col in g.columns:
-                rows[COLUMNS.time_col] = g.loc[valid_mask, COLUMNS.time_col].to_numpy()
+            rows[C.id_col] = focal_id
+            if C.group_col in g.columns:
+                rows[C.group_col] = g.loc[valid_mask, C.group_col].to_numpy()
+            if C.seq_col in g.columns:
+                rows[C.seq_col] = g.loc[valid_mask, C.seq_col].to_numpy()
+            if C.time_col in g.columns:
+                rows[C.time_col] = g.loc[valid_mask, C.time_col].to_numpy()
             for passthrough in ("group_size", "event", p.focal_col):
                 if passthrough in g.columns and passthrough not in rows.columns:
                     rows[passthrough] = g.loc[valid_mask, passthrough].to_numpy()
@@ -248,15 +190,14 @@ class NearestNeighborDelta:
             return pd.DataFrame()
 
         out_df = pd.concat(outputs, ignore_index=True)
-        # Ensure stable column order: meta first, then deltas and neighbor info
         col_order = [
             c
             for c in (
-                frame_col,
-                COLUMNS.time_col,
-                COLUMNS.group_col,
-                COLUMNS.seq_col,
-                id_col,
+                C.frame_col,
+                C.time_col,
+                C.group_col,
+                C.seq_col,
+                C.id_col,
                 "nn_id",
             )
             if c in out_df.columns
@@ -272,6 +213,5 @@ class NearestNeighborDelta:
         for c in ("group_size", "event", p.focal_col):
             if c in out_df.columns and c not in col_order:
                 col_order.append(c)
-        # Append any remaining columns (if any) to avoid dropping data
         col_order += [c for c in out_df.columns if c not in col_order]
         return out_df[col_order]

@@ -1029,6 +1029,64 @@ wheels = [
 ]
 
 [[package]]
+name = "joblib-stubs"
+version = "1.4.2.5.20240918"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.10' and platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "python_full_version < '3.10' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version < '3.10' and sys_platform == 'win32'",
+    "(python_full_version < '3.10' and platform_machine != 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.10' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.10' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+]
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/80/2f7a20ecb08aa6f7ba5b981cf91bcc61ad7fc78751d8265716645a8f0bc0/joblib_stubs-1.4.2.5.20240918.tar.gz", hash = "sha256:7434591e8144c79d0070153816c5cb3861a622069847300ca1f3e0d844840f62", size = 19777, upload-time = "2024-09-18T15:39:05.761Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/50/6331457d5d461af09cb57ecaa6d2b856564735506c15357a4a4f6e68c238/joblib_stubs-1.4.2.5.20240918-py3-none-any.whl", hash = "sha256:84df5e7b22955da9c9e4327b995ce6efb6b1d1c6e9e5b7b25eefb6516a554965", size = 35930, upload-time = "2024-09-18T15:39:04.125Z" },
+]
+
+[[package]]
+name = "joblib-stubs"
+version = "1.5.2.0.20250831"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.10.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.10.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version == '3.10.*' and sys_platform == 'win32'",
+    "(python_full_version == '3.10.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.10.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+]
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version == '3.10.*'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/88/80/2e0ea0e43642ab69b33ad0d39c73378f52cc8b961b3dfc2519d53639e518/joblib_stubs-1.5.2.0.20250831.tar.gz", hash = "sha256:1b419c5b5238cbfd2759ef2e463ae3399ba1d3a6cbdc213a9ac339e6312b21ef", size = 19886, upload-time = "2025-08-31T11:39:17.607Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/f7/f73413f8c13d208f291d1430528b415331320868c352b6e8e5442c5ad053/joblib_stubs-1.5.2.0.20250831-py3-none-any.whl", hash = "sha256:2b75f04fbb98975d207cc3d7b686c538ee1b2a749cb63c035ce41ff97a0eb4bc", size = 36252, upload-time = "2025-08-31T11:39:16.447Z" },
+]
+
+[[package]]
+name = "joblib-stubs"
+version = "1.5.3.1.20260117"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version >= '3.12' and sys_platform == 'win32'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version == '3.11.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.11.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
+    "(python_full_version == '3.11.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+]
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5e/4e/a4801406630955fe935d9d99efef72fd7398543f51fe5a787be80c235b4f/joblib_stubs-1.5.3.1.20260117.tar.gz", hash = "sha256:d420f9e26636df01e1bda851bf5bce9a8dbd6db84f08afe1dfdb963e6651e724", size = 14147, upload-time = "2026-01-17T11:16:43.666Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/7c/67ada9621b3c93caa75aba1a0b651dae988b22cdea93b33e7e49261364f5/joblib_stubs-1.5.3.1.20260117-py3-none-any.whl", hash = "sha256:ef9f570617b232263c8166f5b4351a5dcc90669d8b07e7e2cd7b25c3b0f26d5f", size = 21358, upload-time = "2026-01-17T11:16:44.327Z" },
+]
+
+[[package]]
 name = "kiwisolver"
 version = "1.4.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1658,6 +1716,9 @@ wavelets = [
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
+    { name = "joblib-stubs", version = "1.4.2.5.20240918", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "joblib-stubs", version = "1.5.2.0.20250831", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
+    { name = "joblib-stubs", version = "1.5.3.1.20260117", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas-stubs", version = "2.2.2.240807", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pandas-stubs", version = "2.3.3.260113", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
     { name = "pandas-stubs", version = "3.0.0.260204", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1703,6 +1764,7 @@ provides-extras = ["wavelets", "pose", "polo", "localizer", "gpu", "remote", "al
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = ">=1.38.2" },
+    { name = "joblib-stubs", specifier = ">=1.4.2.5.20240918" },
     { name = "pandas-stubs", specifier = ">=2.2.2.240807" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.15.4" },

@@ -9,7 +9,6 @@ import pandas as pd
 
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
-from mosaic.core.pipeline.loading import EntryData
 from mosaic.core.pipeline.manifest import build_manifest, iter_manifest
 from mosaic.core.pipeline.types import Inputs, Result
 
@@ -162,11 +161,10 @@ def test_iter_manifest_yields_keydata(tmp_path):
 
     results = list(iter_manifest(manifest))
     assert len(results) == 2
-    for entry_key, entry_data in results:
+    for entry_key, (df, entity_level) in results:
         assert isinstance(entry_key, str)
-        assert isinstance(entry_data, EntryData)
-        assert entry_data.features.shape[0] == 10
-        assert entry_data.frames.shape == (10,)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 10
 
 
 def test_iter_manifest_mixed_inner_join(tmp_path):
@@ -223,7 +221,6 @@ def test_iter_manifest_mixed_inner_join(tmp_path):
 
     results = list(iter_manifest(manifest))
     assert len(results) == 1
-    entry_key, entry_data = results[0]
+    entry_key, (df, entity_level) = results[0]
     # Inner join on frames 2-7 -> 6 rows
-    assert entry_data.features.shape[0] == 6
-    assert entry_data.frames.shape == (6,)
+    assert len(df) == 6
