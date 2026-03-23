@@ -13,7 +13,7 @@ def from_safe_name(safe: str) -> str:
     return unquote(safe)
 
 
-def entry_key(group: str, sequence: str) -> str:
+def make_entry_key(group: str, sequence: str) -> str:
     """Composite key for a (group, sequence) dataset entry.
 
     Matches the filename stem convention used throughout the pipeline:

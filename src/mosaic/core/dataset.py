@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
 
-from .helpers import ensure_text_column, entry_key, to_safe_name
+from .helpers import ensure_text_column, make_entry_key, to_safe_name
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
 
 
@@ -1606,7 +1606,7 @@ class Dataset:
 
                 # output path
                 tracks_root = self.get_root("tracks")
-                stem = entry_key(out_group_canon, canon_seq)
+                stem = make_entry_key(out_group_canon, canon_seq)
                 out_path = tracks_root / f"{stem}.parquet"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1661,7 +1661,7 @@ class Dataset:
         )
         safe_seq = to_safe_name(seq_value)
         group_value = str(raw_row.get("group", "")) or ""
-        rel_name = f"{entry_key(group_value, seq_value)}.parquet"
+        rel_name = f"{make_entry_key(group_value, seq_value)}.parquet"
         out_path = tracks_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1914,7 +1914,7 @@ class Dataset:
             tracks_root = self.get_root("tracks")
             safe_group = to_safe_name(out_group) if out_group else ""
             safe_seq = to_safe_name(sequence)
-            rel_name = f"{entry_key(out_group, sequence)}.parquet"
+            rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
             out_path = tracks_root / rel_name
             out_path.parent.mkdir(parents=True, exist_ok=True)
             merged_df.to_parquet(out_path, index=False)
@@ -2258,7 +2258,7 @@ class Dataset:
 
         safe_group = to_safe_name(group) if group else ""
         safe_seq = to_safe_name(sequence)
-        fname = f"{entry_key(group, sequence)}.npz"
+        fname = f"{make_entry_key(group, sequence)}.npz"
         out_path = labels_root / fname
         if out_path.exists() and not overwrite:
             raise FileExistsError(

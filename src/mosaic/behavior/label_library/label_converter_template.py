@@ -16,7 +16,7 @@ from typing import Optional, Dict, Any
 import pandas as pd
 import numpy as np
 
-from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key, to_safe_name
 
 
 def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
@@ -175,7 +175,7 @@ class MyLabelConverter:
                 # Create safe filenames
                 safe_group = to_safe_name(group_val) if group_val else ""
                 safe_seq = to_safe_name(seq_val)
-                fname = f"{entry_key(group_val, seq_val)}.npz"
+                fname = f"{make_entry_key(group_val, seq_val)}.npz"
                 out_path = labels_root / fname
 
                 # Build npz payload
@@ -323,7 +323,7 @@ class MyLabelConverter:
 
     def _output_exists(self, labels_root: Path, group: str, sequence: str) -> bool:
         """Check if output file already exists."""
-        fname = f"{entry_key(group, sequence)}.npz"
+        fname = f"{make_entry_key(group, sequence)}.npz"
         return (labels_root / fname).exists()
 
     def _build_npz_payload(self,

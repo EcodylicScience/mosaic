@@ -21,9 +21,11 @@ from sklearn.preprocessing import StandardScaler
 
 from .spec import register_feature
 
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
+    KeyData,
     PartialIndexRow,
     StreamingFeatureHelper,
     _build_index_row,
@@ -115,14 +117,7 @@ class _FaissKNNIndex:
 class GlobalTSNE:
     """
     Global t-SNE over multiple prior features discovered from the dataset's feature indexes.
-    - inputs: a list of dicts describing which feature outputs to include.
-      Each input supports:
-        {
-          "feature": "pair-wavelet",  # prior feature name
-          "run_id":  None,                         # optional, pick latest if None
-          "pattern": "wavelet_social_seq=*persp=*.npz",  # files to glob inside the run folder
-          "load": { "kind": "npz", "key": "spectrogram", "transpose": True }  # loader spec
-        }
+    Inputs are Result references to prior feature outputs (per-frame parquet).
     The loaded arrays are treated as (T x D); arrays from all inputs with the same sequence
     are length-aligned (min T) and concatenated horizontally.
 
@@ -147,18 +142,6 @@ class GlobalTSNE:
 
         feature: str = "global-tsne"
         pattern: str = "global_tsne_templates.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
-
-    class SeqCoordsArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Per-sequence t-SNE coordinates (global_tsne_coords_seq=*.npz).
-
-        TODO: migrate to per-frame parquet outputs (frame, tsne_0, tsne_1)
-        following the standard output format convention. Requires threading
-        frame indices through the mapping pipeline.
-        """
-
-        feature: str = "global-tsne"
-        pattern: str = "global_tsne_coords_seq=*.npz"
         load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="Y"))
 
     class EmbeddingArtifact(ArtifactSpec[JoblibLoadSpec]):
@@ -235,7 +218,7 @@ class GlobalTSNE:
         self._embedding: TSNEEmbedding | None = None
         self._templates: np.ndarray | None = None
         self._template_indices: np.ndarray | None = None
-        self._mapped_coords: dict[str, np.ndarray] = {}
+        self._mapped_coords: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]] = {}
         self._keys: list[str] = []
         self._ds: object = None
         self._scope: Scope = Scope()
@@ -316,11 +299,10 @@ class GlobalTSNE:
         template_samples = []
 
         for ki, key in enumerate(keys):
-            X, _ = helper.load_key_data(
-                key_file_manifest[key], extract_frames=False, key=key
-            )
-            if X is None or X.shape[0] == 0:
+            kd = helper.load_key_data(key_file_manifest[key], key=key)
+            if kd is None or kd.features.shape[0] == 0:
                 continue
+            X = kd.features
 
             # Sample for scaler
             take_scaler = min(X.shape[0], samples_per_key)
@@ -445,9 +427,28 @@ class GlobalTSNE:
 
         # Save per-key coords
         mapped = self._mapped_coords
-        for safe_seq, Y in mapped.items():
-            out_name = f"global_tsne_coords_seq={safe_seq}.npz"
-            np.savez_compressed(run_root / out_name, Y=Y)
+        for entry_key, (Y, frames, id1, id2, entity_level) in mapped.items():
+            group, sequence = _resolve_sequence_identity(
+                entry_key, self._scope.entry_map
+            )
+            out_name = f"{make_entry_key(group, sequence)}.parquet"
+            out_path = run_root / out_name
+            n_rows = int(Y.shape[0])
+            data: dict[str, object] = {
+                "tsne_x": Y[:, 0].astype(np.float32),
+                "tsne_y": Y[:, 1].astype(np.float32),
+                "frame": frames if frames is not None else np.arange(n_rows, dtype=np.int64),
+                "sequence": sequence,
+                "group": group,
+            }
+            if id1 is not None:
+                data["id1"] = pd.array(id1, dtype="Int64")
+            if id2 is not None:
+                data["id2"] = pd.array(id2, dtype="Int64")
+            if entity_level != "global":
+                data["entity_level"] = np.full(n_rows, entity_level, dtype=object)
+            df = pd.DataFrame(data)
+            df.to_parquet(out_path, index=False)
 
     def load_model(self, path: Path) -> None:
         bundle = joblib.load(path)
@@ -552,10 +553,10 @@ class GlobalTSNE:
                 self._templates = templates
 
     def _append_index_row(
-        self, safe_seq: str, out_path: Path, n_rows: int | None
+        self, entry_key: str, out_path: Path, n_rows: int | None
     ) -> None:
         group, sequence = _resolve_sequence_identity(
-            safe_seq, self._scope.entry_map
+            entry_key, self._scope.entry_map
         )
         self._additional_index_rows = [
             r
@@ -566,30 +567,56 @@ class GlobalTSNE:
             _build_index_row(group, sequence, out_path, n_rows)
         )
 
-    def _persist_mapped_coords(self, safe_seq: str, Y: np.ndarray) -> None:
+    def _persist_mapped_coords(
+        self,
+        entry_key: str,
+        Y: np.ndarray,
+        frames: np.ndarray | None,
+        id1: np.ndarray | None = None,
+        id2: np.ndarray | None = None,
+        entity_level: str = "global",
+    ) -> None:
         if self._run_root is None:
             return
-        out_name = f"global_tsne_coords_seq={safe_seq}.npz"
+        group, sequence = _resolve_sequence_identity(
+            entry_key, self._scope.entry_map
+        )
+        out_name = f"{make_entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
-        Y_arr = np.asarray(Y)
-        if Y_arr.dtype != np.float32:
-            Y_arr = Y_arr.astype(np.float32, copy=False)
-        np.savez_compressed(out_path, Y=Y_arr)
-        self._append_index_row(safe_seq, out_path, int(Y.shape[0]))
 
-    def _discover_existing_coord_rows(self) -> list[dict[str, object]]:
+        n_rows = int(Y.shape[0])
+        data: dict[str, object] = {
+            "tsne_x": Y[:, 0].astype(np.float32),
+            "tsne_y": Y[:, 1].astype(np.float32),
+            "frame": frames if frames is not None else np.arange(n_rows, dtype=np.int64),
+            "sequence": sequence,
+            "group": group,
+        }
+        if id1 is not None:
+            data["id1"] = pd.array(id1, dtype="Int64")
+        if id2 is not None:
+            data["id2"] = pd.array(id2, dtype="Int64")
+        if entity_level != "global":
+            data["entity_level"] = np.full(n_rows, entity_level, dtype=object)
+
+        df = pd.DataFrame(data)
+        df.to_parquet(out_path, index=False)
+        self._append_index_row(entry_key, out_path, n_rows)
+
+    def _discover_existing_coord_rows(self) -> list[PartialIndexRow]:
         if self._run_root is None or not self._run_root.exists():
             return []
-        rows: list[dict[str, object]] = []
-        for fp in sorted(self._run_root.glob("global_tsne_coords_seq=*.npz")):
+        rows: list[PartialIndexRow] = []
+        for fp in sorted(self._run_root.glob("*.parquet")):
             stem = fp.stem
-            if "seq=" not in stem:
-                continue
-            safe_seq = stem.split("seq=", 1)[1].strip()
-            if not safe_seq:
+            if stem.startswith("__") or stem in (
+                "cluster_sizes",
+                "global_templates_features",
+                "global_tsne_templates",
+            ):
                 continue
             group, sequence = _resolve_sequence_identity(
-                safe_seq, self._scope.entry_map
+                stem, self._scope.entry_map
             )
             rows.append(_build_index_row(group, sequence, fp))
         return rows
@@ -598,7 +625,7 @@ class GlobalTSNE:
         self,
         key_file_manifest: dict[str, list[tuple[Path, LoadSpec]]],
         helper: StreamingFeatureHelper,
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]]:
         """Map sequences one at a time to minimize memory usage."""
         if self._embedding is None or self._scaler is None:
             raise RuntimeError("GlobalTSNE mapping requires both embedding and scaler.")
@@ -640,17 +667,17 @@ class GlobalTSNE:
 
         import pyarrow as pa
 
-        mapped: dict[str, np.ndarray] = {}
+        mapped: dict[str, tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, str]] = {}
         keys = list(key_file_manifest.keys())
         n_keys = len(keys)
 
         # Use load_key_data directly (NOT iter_sequences generator) to avoid holding extra references
         for i, key in enumerate(keys):
-            X, _ = helper.load_key_data(
-                key_file_manifest[key], extract_frames=False, key=key
-            )
-            if X is None or X.shape[0] == 0:
+            kd = helper.load_key_data(key_file_manifest[key], key=key)
+            if kd is None or kd.features.shape[0] == 0:
                 continue
+            X = kd.features
+            frames = kd.frames
 
             # Scale and map in chunks
             Xs = scaler.transform(X)
@@ -670,10 +697,10 @@ class GlobalTSNE:
                     gc.collect()
 
             if self._run_root is not None:
-                self._persist_mapped_coords(key, Y_seq)
+                self._persist_mapped_coords(key, Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
                 del Y_seq
             else:
-                mapped[key] = Y_seq
+                mapped[key] = (Y_seq, frames, kd.id1, kd.id2, kd.entity_level)
             del Xs
 
             # Force garbage collection after each sequence to prevent openTSNE memory buildup

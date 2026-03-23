@@ -331,7 +331,6 @@ def _load_feature_sequence_index(
             sequence=str(row.get("sequence", "") or ""),
             group=str(row.get("group", "") or ""),
         )
-    _augment_with_saved_sequences(mapping, run_root)
     return mapping, resolved_run, run_root
 
 
@@ -398,52 +397,31 @@ def _load_cluster_labels(
     return_frames: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """
-    Load cluster labels from parquet or npz file.
+    Load cluster labels from a per-sequence parquet file.
 
     Parameters
     ----------
     path : Path
-        Path to cluster labels file
+        Path to cluster labels parquet file.
     column : str
-        Column name for labels (parquet) or key name (npz)
+        Column name for labels.
     return_frames : bool
-        If True, also return the frame indices for each row (if available)
+        If True, also return the frame indices for each row (if available).
 
     Returns
     -------
     If return_frames is False: np.ndarray of cluster labels
     If return_frames is True: tuple of (labels, frames) where frames may be None
     """
-    suffix = path.suffix.lower()
-    frames = None
-
-    if suffix == ".parquet":
-        # Try to load both labels and frame columns
-        cols_to_load = [column]
-        if return_frames:
-            cols_to_load.append("frame")
-        df = pd.read_parquet(path)
-        if column not in df.columns:
-            raise KeyError(f"Column '{column}' missing in {path}")
-        data = df[column].to_numpy(copy=False)
-        if return_frames and "frame" in df.columns:
-            frames = df["frame"].to_numpy(copy=False).astype(np.int64)
-    elif suffix == ".npz":
-        with np.load(path, allow_pickle=True) as npz:
-            key = column if column in npz.files else "labels"
-            if key not in npz.files:
-                raise KeyError(f"Neither '{column}' nor 'labels' present in {path.name}")
-            data = npz[key]
-            if return_frames and "frames" in npz.files:
-                frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
-            elif return_frames and "frame" in npz.files:
-                frames = np.asarray(npz["frame"], dtype=np.int64).ravel()
-    else:
-        raise ValueError(f"Unsupported cluster artifact format: {path.suffix}")
-
-    labels = np.asarray(data, dtype=int).ravel()
+    df = pd.read_parquet(path)
+    if column not in df.columns:
+        raise KeyError(f"Column '{column}' missing in {path}")
+    labels = df[column].to_numpy(dtype=int, copy=False)
 
     if return_frames:
+        frames = None
+        if "frame" in df.columns:
+            frames = df["frame"].to_numpy(dtype=np.int64, copy=False)
         return labels, frames
     return labels
 
@@ -512,27 +490,6 @@ def _contingency_matrix(
     cm = np.zeros((classes.size, clusters.size), dtype=int)
     np.add.at(cm, (row_idx, col_idx), 1)
     return cm
-
-
-def _augment_with_saved_sequences(mapping: Dict[str, SequenceBundle], run_root: Path) -> None:
-    """
-    Some features (e.g., GlobalKMeans assign) persist sequence npz files
-    directly in the run folder rather than via transform outputs.
-    Detect *_labels_seq=*.npz files and add them to the mapping.
-    """
-    if not run_root or not run_root.exists():
-        return
-    pattern_files = run_root.glob("*_labels_seq=*.npz")
-    for fp in pattern_files:
-        if not fp.is_file():
-            continue
-        stem = fp.stem
-        if "labels_seq=" not in stem:
-            continue
-        safe_seq = stem.split("labels_seq=", 1)[1].strip()
-        if not safe_seq or safe_seq in mapping:
-            continue
-        mapping[safe_seq] = SequenceBundle(sequence_safe=safe_seq, path=fp)
 
 
 def _load_model_summary(run_root: Path) -> dict:

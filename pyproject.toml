@@ -52,6 +52,13 @@ all = [
     "websocket-client>=1.8",
 ]
 
+[tool.basedpyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = false
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

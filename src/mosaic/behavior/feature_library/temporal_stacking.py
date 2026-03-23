@@ -154,14 +154,14 @@ class TemporalStackingFeature:
     def load_model(self, path: Path) -> None:
         raise NotImplementedError
 
-    def _get_or_build_nn_lookup(self, safe_seq: str) -> dict:
+    def _get_or_build_nn_lookup(self, entry_key: str) -> dict:
         """Build and cache the nearest-neighbor lookup for a sequence."""
-        if safe_seq in self._nn_lookup_cache:
-            return self._nn_lookup_cache[safe_seq]
+        if entry_key in self._nn_lookup_cache:
+            return self._nn_lookup_cache[entry_key]
         from .helpers import _build_nn_lookup
 
-        lookup = _build_nn_lookup(self._ds, safe_seq, self.params.pair_filter)
-        self._nn_lookup_cache[safe_seq] = lookup
+        lookup = _build_nn_lookup(self._ds, entry_key, self.params.pair_filter)
+        self._nn_lookup_cache[entry_key] = lookup
         return lookup
 
     # ------------- Core logic -------------
@@ -185,18 +185,18 @@ class TemporalStackingFeature:
                 "temporal-stack: unable to infer sequence from dataframe; ensure 'sequence' column exists."
             )
 
-        safe_seq = to_safe_name(sequence)
+        entry_key = to_safe_name(sequence)
         allowed_entry_keys = self._scope.entry_keys or None
         if (
             allowed_entry_keys
-            and safe_seq not in allowed_entry_keys
+            and entry_key not in allowed_entry_keys
         ):
             raise ValueError(
                 f"temporal-stack: sequence '{sequence}' not present in resolved input scope."
             )
 
         base_matrix, base_names, frame_indices, pair_ids = self._load_sequence_matrix(
-            safe_seq
+            entry_key
         )
         if base_matrix is None or base_matrix.size == 0:
             raise ValueError(
@@ -342,7 +342,7 @@ class TemporalStackingFeature:
         return mapping
 
     def _load_sequence_matrix(
-        self, safe_seq: str
+        self, entry_key: str
     ) -> tuple[np.ndarray | None, list[str], np.ndarray | None, np.ndarray | None]:
         """
         Load and concatenate feature matrices for a sequence.
@@ -359,7 +359,7 @@ class TemporalStackingFeature:
         if self.params.pair_filter:
             from .helpers import _nn_pair_mask
 
-            nn_lookup = self._get_or_build_nn_lookup(safe_seq)
+            nn_lookup = self._get_or_build_nn_lookup(entry_key)
             if nn_lookup:
 
                 def df_filter(df: pd.DataFrame) -> pd.DataFrame:
@@ -368,7 +368,7 @@ class TemporalStackingFeature:
 
         loaded: list[dict] = []
         for artifact, mapping in self._resolved_inputs:
-            path = mapping.get(safe_seq)
+            path = mapping.get(entry_key)
             if not path or not path.exists():
                 return None, [], None, None
             df_full = pd.read_parquet(path)

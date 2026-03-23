@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mosaic.core.helpers import entry_key
+from mosaic.core.helpers import make_entry_key
 
 import numpy as np
 from pydantic import BaseModel
@@ -84,11 +84,11 @@ class Scope:
 
     @property
     def entry_keys(self) -> set[str]:
-        return {entry_key(group, seq) for group, seq in self.entries}
+        return {make_entry_key(group, seq) for group, seq in self.entries}
 
     @property
     def entry_map(self) -> dict[str, tuple[str, str]]:
-        return {entry_key(group, seq): (group, seq) for group, seq in self.entries}
+        return {make_entry_key(group, seq): (group, seq) for group, seq in self.entries}
 
 
 @dataclass

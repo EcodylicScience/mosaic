@@ -205,9 +205,9 @@ class GlobalWardClustering:
                 )
             blocks = {}
             for key, entries in manifest.items():
-                X_key, _ = helper.load_key_data(entries, extract_frames=False, key=key)
-                if X_key is not None and X_key.size > 0:
-                    blocks[key] = X_key
+                kd = helper.load_key_data(entries, key=key)
+                if kd is not None and kd.features.size > 0:
+                    blocks[key] = kd.features
             if not blocks:
                 raise RuntimeError(
                     "[global-ward] Result inputs produced no usable matrices."

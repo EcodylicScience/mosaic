@@ -19,7 +19,7 @@ from scipy.cluster.hierarchy import fcluster
 from sklearn.neighbors import NearestNeighbors
 
 from .spec import register_feature
-from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
@@ -38,7 +38,6 @@ from .spec import (
     Inputs,
     JoblibLoadSpec,
     NNResult,
-    NpzLoadSpec,
     OutputType,
     Params,
     Result,
@@ -69,13 +68,6 @@ class WardAssignClustering:
         feature: str = "ward-assign"
         pattern: str = "model.joblib"
         load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
-
-    class SeqLabelsArtifact(ArtifactSpec[NpzLoadSpec]):
-        """Per-sequence cluster labels (global_ward_labels_seq=*.npz)."""
-
-        feature: str = "ward-assign"
-        pattern: str = "global_ward_labels_seq=*.npz"
-        load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
 
     class Inputs(Inputs[Result]):
         pass
@@ -155,7 +147,7 @@ class WardAssignClustering:
 
     def _write_sequence_outputs(
         self,
-        safe_seq: str,
+        entry_key: str,
         labels: np.ndarray,
         frames: np.ndarray | None,
         id1_vals: np.ndarray | None = None,
@@ -164,7 +156,7 @@ class WardAssignClustering:
     ) -> None:
         if self._run_root is None:
             print(
-                f"[ward-assign] WARN: _run_root not set, labels for {safe_seq} not written",
+                f"[ward-assign] WARN: _run_root not set, labels for {entry_key} not written",
                 file=sys.stderr,
             )
             return
@@ -179,22 +171,11 @@ class WardAssignClustering:
         if id2_vals is None or len(id2_vals) != len(labels_arr):
             id2_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
 
-        # Legacy npz artifact (for backward compatibility with viz/analysis code).
-        npz_path = self._run_root / f"global_ward_labels_seq={safe_seq}.npz"
-        np.savez_compressed(
-            npz_path,
-            labels=labels_arr,
-            frames=frame_arr,
-            id1=id1_vals,
-            id2=id2_vals,
-            entity_level=np.array([str(entity_level or "global")], dtype=object),
-        )
-
         # Standard per-sequence parquet artifact for index-based loading.
         group, sequence = _resolve_sequence_identity(
-            safe_seq, self._scope.entry_map
+            entry_key, self._scope.entry_map
         )
-        out_name = f"{entry_key(group, sequence)}.parquet"
+        out_name = f"{make_entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
         df_out = pd.DataFrame(
             {
@@ -213,7 +194,7 @@ class WardAssignClustering:
         self._additional_index_rows.append(
             _build_index_row(group, sequence, out_path, int(len(df_out)))
         )
-        self._processed_sequences.add(safe_seq)
+        self._processed_sequences.add(entry_key)
 
     def fit(self, X_iter: Iterable[pd.DataFrame]) -> None:
         import gc
@@ -283,38 +264,31 @@ class WardAssignClustering:
         # Process sequences one at a time using direct loading
         keys = list(manifest.keys())
         n_keys = len(keys)
-        for i, safe_seq in enumerate(keys):
-            X_full, frames, id1_vals, id2_vals, entity_level = (
-                helper.load_key_data_with_identity(
-                    manifest[safe_seq],
-                    extract_frames=True,
-                    key=safe_seq,
-                )
-            )
-            if X_full is None:
+        for i, entry_key in enumerate(keys):
+            kd = helper.load_key_data(manifest[entry_key], key=entry_key)
+            if kd is None:
                 continue
 
             if self._scaler is not None:
                 if not hasattr(self._scaler, "transform"):
                     raise ValueError("[ward-assign] scaler object missing transform().")
-                X_use = self._scaler.transform(X_full)
-                del X_full
+                X_use = self._scaler.transform(kd.features)
             else:
-                X_use = X_full
+                X_use = kd.features
 
             idxs = self._assign_nn.kneighbors(X_use, return_distance=False)
             labels = self._cluster_ids[idxs.ravel()]
             self._write_sequence_outputs(
-                safe_seq,
+                entry_key,
                 labels,
-                frames,
-                id1_vals=id1_vals,
-                id2_vals=id2_vals,
-                entity_level=entity_level,
+                kd.frames,
+                id1_vals=kd.id1,
+                id2_vals=kd.id2,
+                entity_level=kd.entity_level,
             )
 
             # Free memory after each sequence
-            del X_use, idxs, labels
+            del X_use, kd, idxs, labels
             gc.collect()
             pa.default_memory_pool().release_unused()
 
@@ -331,14 +305,6 @@ class WardAssignClustering:
     def save_model(self, path: Path) -> None:
         run_root = path.parent
         run_root.mkdir(parents=True, exist_ok=True)
-        marker_seq = "__global__"
-        safe_marker_seq = to_safe_name(marker_seq)
-        marker_path = run_root / f"{safe_marker_seq}.parquet"
-        marker_df = pd.DataFrame({"run_marker": [True]})
-        marker_df.to_parquet(marker_path, index=False)
-        self._additional_index_rows.append(
-            _build_index_row("", marker_seq, marker_path, int(len(marker_df)))
-        )
 
         # Labels are already written to disk during fit(); just save model params
         joblib.dump(

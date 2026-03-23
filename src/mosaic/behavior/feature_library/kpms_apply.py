@@ -18,7 +18,7 @@ import pandas as pd
 from pydantic import Field
 
 from .spec import register_feature
-from mosaic.core.helpers import entry_key
+from mosaic.core.helpers import make_entry_key
 
 from .helpers import (
     PartialIndexRow,
@@ -318,7 +318,7 @@ class KpmsApply:
                 df_out["id"] = ind_id
 
             # Write parquet
-            out_name = entry_key(group, effective_seq)
+            out_name = make_entry_key(group, effective_seq)
             if ind_id is not None:
                 out_name += f"__id{ind_id}"
             out_name += ".parquet"

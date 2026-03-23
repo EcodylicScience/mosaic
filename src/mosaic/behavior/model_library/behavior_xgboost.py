@@ -1104,9 +1104,17 @@ class BehaviorXGBoostModel:
             thresh = self.params.get("decision_threshold", 0.5)
         self._predict_threshold = float(thresh)
         raw_sig = bundle.get("input_signature")
-        self._predict_input_signature = (
-            Inputs.model_validate(raw_sig) if raw_sig is not None else None
-        )
+        if raw_sig is not None and isinstance(raw_sig, (list, tuple)):
+            self._predict_input_signature: Inputs | None = Inputs(
+                tuple(
+                    Result(feature=str(item["feature"]), run_id=item.get("run_id"))
+                    if isinstance(item, dict)
+                    else item
+                    for item in raw_sig
+                )
+            )
+        else:
+            self._predict_input_signature = None
 
     def get_prediction_input_signature(self) -> Inputs | None:
         return self._predict_input_signature

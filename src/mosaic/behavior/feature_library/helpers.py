@@ -8,7 +8,6 @@ feature_library to avoid code duplication.
 from __future__ import annotations
 
 import gc
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
 import numpy as np
 import pandas as pd
 
-from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.helpers import to_safe_name
 from mosaic.core.pipeline._utils import Scope
 
 
@@ -183,71 +182,49 @@ def _normalize_identity_columns(
     return None, None, "global"
 
 
-def _build_path_sequence_map(
-    ds, feature_name: str, run_id: str | None
-) -> dict[Path, str]:
-    """
-    Build mapping from absolute file paths to sequence_safe names.
+@dataclass(frozen=True, slots=True)
+class KeyData:
+    """Result of loading and merging data for a single manifest key.
 
-    Uses the dataset's feature index to create a lookup table.
-
-    Parameters
+    Attributes
     ----------
-    ds : Dataset
-        Dataset instance
-    feature_name : str
-        Name of the feature
-    run_id : str or None
-        Run ID to filter by
-
-    Returns
-    -------
-    dict[Path, str]
-        Mapping from absolute path to sequence_safe name
+    features : np.ndarray
+        (N, D) feature matrix, float32.
+    frames : np.ndarray
+        (N,) frame indices, int64.
+    id1 : np.ndarray | None
+        (N,) first identity column, float64. None when global.
+    id2 : np.ndarray | None
+        (N,) second identity column, float64. None when global.
+    entity_level : str
+        One of "global", "individual", "pair".
     """
-    # Import here to avoid circular import
-    from mosaic.core.pipeline.index import feature_index_path
 
-    mapping: dict[Path, str] = {}
-    if ds is None or not feature_name or run_id is None:
-        return mapping
+    features: np.ndarray
+    frames: np.ndarray
+    id1: np.ndarray | None
+    id2: np.ndarray | None
+    entity_level: str
 
-    try:
-        idx_path = feature_index_path(ds, feature_name)
-    except Exception:
-        return mapping
-    if not idx_path.exists():
-        return mapping
 
-    try:
-        df = pd.read_csv(idx_path)
-    except Exception:
-        return mapping
+def _load_parquet_dataframe(
+    path: Path,
+    load_spec: LoadSpec,
+    df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+) -> pd.DataFrame | None:
+    """Load a parquet file as a full DataFrame, applying filter if given.
 
-    run_id_str = str(run_id)
-    df = df[df["run_id"].astype(str) == run_id_str]
+    Returns None for non-parquet specs or if the result is empty after
+    filtering.
+    """
+    if not isinstance(load_spec, ParquetLoadSpec):
+        return None
+    df = pd.read_parquet(path)
+    if df_filter is not None:
+        df = df_filter(df)
     if df.empty:
-        return mapping
-
-    for _, row in df.iterrows():
-        abs_raw = row.get("abs_path")
-        if not isinstance(abs_raw, str) or not abs_raw:
-            continue
-        try:
-            abs_path = (
-                ds.resolve_path(abs_raw)
-                if hasattr(ds, "resolve_path")
-                else Path(abs_raw).resolve()
-            )
-        except Exception:
-            abs_path = Path(abs_raw)
-        seq_val = to_safe_name(str(row.get("sequence", "")))
-        if not seq_val:
-            seq_val = to_safe_name(str(row.get("group", "")))
-        if not seq_val:
-            seq_val = to_safe_name(Path(abs_raw).stem)
-        mapping[abs_path] = seq_val
-    return mapping
+        return None
+    return df
 
 
 # -----------------------------------------------------------------------------
@@ -397,8 +374,8 @@ class StreamingFeatureHelper:
     Usage:
         helper = StreamingFeatureHelper(ds, "my-feature")
         manifest = helper.build_manifest(inputs, scope)
-        for key, X, frames in helper.iter_sequences(manifest, extract_frames=True):
-            # process X, frames
+        for key, kd in helper.iter_sequences(manifest):
+            # process kd.features, kd.frames
             pass
     """
 
@@ -415,7 +392,6 @@ class StreamingFeatureHelper:
         """
         self.ds = ds
         self.feature_name = feature_name
-        self._seq_path_cache: dict[tuple[str, str], dict[Path, str]] = {}
         self._pair_filter_spec: dict | None = None
         self._nn_lookup_cache: dict[str, dict] = {}
 
@@ -515,12 +491,8 @@ class StreamingFeatureHelper:
                 )
                 continue
 
-            seq_map = self._get_seq_map(feat_name, run_id)
-
             for pth in files:
-                key = self._extract_key(pth, seq_map)
-                if key is None:
-                    continue
+                key = self._extract_key(pth)
                 if allowed_keys is not None and key not in allowed_keys:
                     continue
                 if key not in manifest:
@@ -532,44 +504,20 @@ class StreamingFeatureHelper:
     def iter_sequences(
         self,
         manifest: dict[str, list[tuple[Path, LoadSpec]]],
-        extract_frames: bool = False,
         progress_interval: int = 10,
-    ) -> Iterator[tuple[str, np.ndarray, np.ndarray | None]]:
-        """
-        Iterate through manifest, yielding (key, X_combined, frames) one at a time.
-
-        Automatically handles memory cleanup after each sequence.
-
-        Parameters
-        ----------
-        manifest : dict[str, list[tuple[Path, dict]]]
-            Manifest from build_manifest()
-        extract_frames : bool, default False
-            Whether to extract frame column from parquet files
-        progress_interval : int, default 10
-            Log progress every N sequences
-
-        Yields
-        ------
-        tuple[str, np.ndarray, np.ndarray | None]
-            (sequence_key, feature_matrix, frame_indices or None)
-        """
+    ) -> Iterator[tuple[str, KeyData]]:
+        """Iterate through manifest, yielding (key, KeyData) one at a time."""
         import pyarrow as pa
 
         n_keys = len(manifest)
         for i, (key, file_specs) in enumerate(manifest.items()):
-            X, frames = self.load_key_data(
-                file_specs, extract_frames=extract_frames, key=key
-            )
-            if X is None:
+            kd = self.load_key_data(file_specs, key=key)
+            if kd is None:
                 continue
 
-            yield key, X, frames
+            yield key, kd
 
-            # Memory cleanup after yielding
-            del X
-            if frames is not None:
-                del frames
+            del kd
             gc.collect()
             pa.default_memory_pool().release_unused()
 
@@ -579,197 +527,183 @@ class StreamingFeatureHelper:
                     file=sys.stderr,
                 )
 
+    _ALIGN_COLS = ("frame", "time", "id", "id1", "id2")
+
     def load_key_data(
         self,
         file_specs: list[tuple[Path, LoadSpec]],
-        extract_frames: bool = False,
         key: str | None = None,
-    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+    ) -> KeyData | None:
+        """Load and merge data for a single manifest key.
+
+        For parquet inputs, merges on shared frame/identity columns
+        (inner join) so that misaligned inputs are correctly aligned.
+        For non-parquet inputs (npz), falls back to min-trim + hstack.
+
+        Returns None when no usable data is found or when parquet inputs
+        have no overlapping frames.
         """
-        Load and concatenate data for a single key.
-
-        Parameters
-        ----------
-        file_specs : list[tuple[Path, dict]]
-            List of (path, load_spec) tuples
-        extract_frames : bool, default False
-            Whether to extract frame column
-        key : str, optional
-            Sequence key (needed for pair filtering via NN lookup)
-
-        Returns
-        -------
-        tuple[np.ndarray or None, np.ndarray or None]
-            (combined_features, frame_indices or None)
-        """
-        import pyarrow as pa
-
         df_filter = self._make_df_filter(key) if key else None
 
-        mats = []
-        frames = None
+        parquet_dfs: list[pd.DataFrame] = []
+        array_mats: list[np.ndarray] = []
+        array_frames: np.ndarray | None = None
 
-        for pth, load_spec in file_specs:
-            frame_col = "frame" if extract_frames else None
-            arr, frame_vals = _load_array_from_spec(
-                pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter
-            )
-            if arr is None or arr.size == 0:
-                continue
-            mats.append(arr)
-            if frames is None and frame_vals is not None:
-                frames = frame_vals
-
-        if not mats:
-            return None, None
-
-        T_min = min(m.shape[0] for m in mats)
-        mats_trim = [m[:T_min] for m in mats]
-        X_full = np.hstack(mats_trim)
-
-        del mats, mats_trim
-        gc.collect()
-        pa.default_memory_pool().release_unused()
-
-        if frames is not None and len(frames) >= T_min:
-            frames = frames[:T_min]
-        elif frames is None or len(frames) < T_min:
-            frames = np.arange(T_min, dtype=np.int64) if extract_frames else None
-
-        return X_full, frames
-
-    def _load_identity_from_spec(
-        self,
-        path: Path,
-        load_spec: LoadSpec,
-        df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
-    ) -> tuple[np.ndarray | None, np.ndarray | None, str]:
-        """
-        Load identity metadata from a source file.
-
-        Returns
-        -------
-        tuple
-            (id1_values_or_None, id2_values_or_None, entity_level)
-        """
-        if not isinstance(load_spec, ParquetLoadSpec):
-            return None, None, "global"
-
-        df = pd.read_parquet(path)
-        if df_filter is not None:
-            df = df_filter(df)
-            if df.empty:
-                return None, None, "global"
-
-        id1, id2, level = _normalize_identity_columns(df)
-        if id1 is None:
-            return None, None, "global"
-        id1_vals = id1.to_numpy(dtype=np.float64, copy=True)
-        id2_vals = (
-            id2.to_numpy(dtype=np.float64, copy=True)
-            if id2 is not None
-            else np.full(len(df), np.nan, dtype=np.float64)
-        )
-        return id1_vals, id2_vals, level
-
-    def load_key_data_with_identity(
-        self,
-        file_specs: list[tuple[Path, LoadSpec]],
-        extract_frames: bool = False,
-        key: str | None = None,
-    ) -> tuple[
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-        str,
-    ]:
-        """
-        Load and concatenate data for a key, preserving identity metadata.
-
-        Returns
-        -------
-        tuple
-            (combined_features, frame_indices, id1_values, id2_values, entity_level)
-        """
-        import pyarrow as pa
-
-        df_filter = self._make_df_filter(key) if key else None
-        mats = []
-        frames = None
-        id1_vals: np.ndarray | None = None
-        id2_vals: np.ndarray | None = None
-        entity_level = "global"
-
-        for pth, load_spec in file_specs:
-            frame_col = "frame" if extract_frames else None
-            arr, frame_vals = _load_array_from_spec(
-                pth, load_spec, extract_frame_col=frame_col, df_filter=df_filter
-            )
-            if arr is None or arr.size == 0:
-                continue
-
-            if id1_vals is None:
-                cur_id1, cur_id2, cur_level = self._load_identity_from_spec(
-                    pth, load_spec, df_filter=df_filter
-                )
-                if cur_id1 is not None:
-                    id1_vals = cur_id1
-                    id2_vals = cur_id2
-                    entity_level = cur_level
-
-            mats.append(arr)
-            if frames is None and frame_vals is not None:
-                frames = frame_vals
-
-        if not mats:
-            return None, None, None, None, "global"
-
-        T_min = min(m.shape[0] for m in mats)
-        mats_trim = [m[:T_min] for m in mats]
-        X_full = np.hstack(mats_trim)
-
-        del mats, mats_trim
-        gc.collect()
-        pa.default_memory_pool().release_unused()
-
-        if frames is not None and len(frames) >= T_min:
-            frames = frames[:T_min]
-        elif frames is None or len(frames) < T_min:
-            frames = np.arange(T_min, dtype=np.int64) if extract_frames else None
-
-        if id1_vals is not None:
-            id1_vals = id1_vals[:T_min]
-            if id2_vals is None:
-                id2_vals = np.full(T_min, np.nan, dtype=np.float64)
+        for path, load_spec in file_specs:
+            df = _load_parquet_dataframe(path, load_spec, df_filter=df_filter)
+            if df is not None:
+                parquet_dfs.append(df)
             else:
-                id2_vals = id2_vals[:T_min]
+                arr, frame_vals = _load_array_from_spec(
+                    path, load_spec, extract_frame_col="frame", df_filter=df_filter
+                )
+                if arr is not None and arr.size > 0:
+                    array_mats.append(arr)
+                    if array_frames is None and frame_vals is not None:
+                        array_frames = frame_vals
+
+        if not parquet_dfs and not array_mats:
+            return None
+
+        if parquet_dfs:
+            merged = self._merge_parquet_inputs(parquet_dfs)
+            if merged is None or merged.empty:
+                return None
+            return self._keydata_from_merged(merged)
+
+        return self._keydata_from_arrays(array_mats, array_frames)
+
+    def _merge_parquet_inputs(
+        self, dfs: list[pd.DataFrame]
+    ) -> pd.DataFrame | None:
+        """Merge multiple parquet DataFrames on shared alignment columns."""
+        if len(dfs) == 1:
+            return dfs[0]
+
+        merged = dfs[0]
+        for i, df_next in enumerate(dfs[1:], 1):
+            on_cols = [
+                c for c in self._ALIGN_COLS
+                if c in merged.columns and c in df_next.columns
+            ]
+            if not on_cols:
+                on_cols = [
+                    c for c in ("frame", "time")
+                    if c in merged.columns and c in df_next.columns
+                ]
+            if not on_cols:
+                # No shared alignment columns -- fall back to row-aligned concat
+                min_len = min(len(merged), len(df_next))
+                right = df_next.iloc[:min_len].reset_index(drop=True)
+                # Suffix duplicate columns so they survive concat
+                right_rename = {
+                    c: f"{c}__{i}"
+                    for c in right.columns if c in merged.columns
+                }
+                if right_rename:
+                    right = right.rename(columns=right_rename)
+                merged = pd.concat(
+                    [merged.iloc[:min_len].reset_index(drop=True), right],
+                    axis=1,
+                )
+                continue
+            # Suffix duplicate feature columns so they survive the merge
+            # (old hstack kept all columns regardless of name overlap)
+            rename_map = {
+                c: f"{c}__{i}"
+                for c in df_next.columns
+                if c not in on_cols and c in merged.columns
+            }
+            if rename_map:
+                df_next = df_next.rename(columns=rename_map)
+            # Drop non-feature meta columns that already exist in merged
+            meta_dupes = [
+                c for c in df_next.columns
+                if c not in on_cols
+                and c in merged.columns
+                and c not in rename_map.values()
+            ]
+            if meta_dupes:
+                df_next = df_next.drop(columns=meta_dupes)
+            merged = merged.merge(df_next, how="inner", on=on_cols)
+
+        if merged.empty:
+            return None
+        return merged
+
+    def _keydata_from_merged(self, df: pd.DataFrame) -> KeyData:
+        """Extract KeyData fields from a merged DataFrame."""
+        id1_series, id2_series, entity_level = _normalize_identity_columns(df)
+
+        if "frame" in df.columns:
+            frames = df["frame"].to_numpy(dtype=np.int64, copy=True)
+        elif "time" in df.columns:
+            frames = df["time"].to_numpy(dtype=np.int64, copy=True)
         else:
-            id2_vals = None
+            frames = np.arange(len(df), dtype=np.int64)
 
-        return X_full, frames, id1_vals, id2_vals, entity_level
+        meta_cols = {
+            "frame", "time", "id", "id1", "id2",
+            "id_a", "id_b", "id_A", "id_B",
+            "group", "sequence", "entity_level",
+        }
+        numeric_cols = set(df.select_dtypes(include=[np.number]).columns)
+        feat_cols = [
+            c for c in df.columns
+            if c not in meta_cols and c in numeric_cols
+        ]
 
-    def _get_seq_map(self, feature_name: str, run_id: str) -> dict[Path, str]:
-        """Get cached sequence path mapping."""
-        cache_key = (feature_name, str(run_id))
-        if cache_key in self._seq_path_cache:
-            return self._seq_path_cache[cache_key]
-        mapping = _build_path_sequence_map(self.ds, feature_name, run_id)
-        self._seq_path_cache[cache_key] = mapping
-        return mapping
+        features = df[feat_cols].to_numpy(dtype=np.float32, copy=True)
 
-    def _extract_key(self, path: Path, seq_map: dict[Path, str]) -> str | None:
-        """Extract sequence key from file path, or None if not a sequence file."""
-        stem = path.stem
-        # Try to extract from filename pattern: seq=<key>
-        m = re.search(r"seq=(.+?)(?:_persp=.*)?$", stem)
-        if m:
-            return m.group(1)
-        # Fallback to sequence map
-        key = seq_map.get(path.resolve())
-        if key:
-            return str(key)
-        return None
+        id1 = (
+            id1_series.to_numpy(dtype=np.float64, copy=True)
+            if id1_series is not None else None
+        )
+        id2 = (
+            id2_series.to_numpy(dtype=np.float64, copy=True)
+            if id2_series is not None else None
+        )
+
+        return KeyData(
+            features=features,
+            frames=frames,
+            id1=id1,
+            id2=id2,
+            entity_level=entity_level,
+        )
+
+    @staticmethod
+    def _keydata_from_arrays(
+        mats: list[np.ndarray],
+        frames: np.ndarray | None,
+    ) -> KeyData:
+        """Build KeyData from raw numpy arrays (npz fallback)."""
+        import pyarrow as pa
+
+        T_min = min(m.shape[0] for m in mats)
+        trimmed = [m[:T_min] for m in mats]
+        features = np.hstack(trimmed)
+
+        del mats, trimmed
+        gc.collect()
+        pa.default_memory_pool().release_unused()
+
+        if frames is not None and len(frames) >= T_min:
+            frames = frames[:T_min]
+        else:
+            frames = np.arange(T_min, dtype=np.int64)
+
+        return KeyData(
+            features=features,
+            frames=frames,
+            id1=None,
+            id2=None,
+            entity_level="global",
+        )
+
+    def _extract_key(self, path: Path) -> str:
+        """Extract entry key from file path (the bare stem)."""
+        return path.stem
 
 
 # -----------------------------------------------------------------------------
@@ -778,17 +712,16 @@ class StreamingFeatureHelper:
 
 
 def _resolve_sequence_identity(
-    safe_seq: str,
+    entry_key: str,
     entry_map: dict[str, tuple[str, str]],
 ) -> tuple[str, str]:
-    """
-    Map a safe sequence name to (group, sequence).
+    """Map an entry key to (group, sequence).
 
-    Looks up in entry_map, falls back to ("", safe_seq).
+    Looks up in entry_map, falls back to ("", entry_key).
     """
-    if safe_seq in entry_map:
-        return entry_map[safe_seq]
-    return "", safe_seq
+    if entry_key in entry_map:
+        return entry_map[entry_key]
+    return "", entry_key
 
 
 def _get_feature_run_root(

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 # from .spec import register_feature  # <-- uncomment when ready
-from mosaic.core.helpers import entry_key
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
 from .helpers import (
@@ -147,22 +147,18 @@ class MyGlobalFeature:
         # Stream through data
         keys = list(manifest.keys())
         for i, key in enumerate(keys):
-            X, frames = helper.load_key_data(
-                manifest[key],
-                extract_frames=True,
-                key=key,
-            )
-            if X is None or X.shape[0] == 0:
+            kd = helper.load_key_data(manifest[key], key=key)
+            if kd is None or kd.features.shape[0] == 0:
                 continue
 
             # --- YOUR GLOBAL LOGIC HERE ---
-            result = self._process_sequence(key, X, frames)
+            result = self._process_sequence(key, kd.features, kd.frames)
 
             # Write per-sequence output
             if result is not None and self._run_root is not None:
                 self._write_sequence_output(key, result)
 
-            del X, frames, result
+            del kd, result
             gc.collect()
 
             if (i + 1) % 10 == 0 or i == len(keys) - 1:
@@ -207,12 +203,12 @@ class MyGlobalFeature:
             return X[:, :2].astype(np.float32, copy=False)
         return None
 
-    def _write_sequence_output(self, safe_seq: str, data: np.ndarray) -> None:
+    def _write_sequence_output(self, entry_key: str, data: np.ndarray) -> None:
         """Write per-sequence output and register an index row."""
         if self._run_root is None:
             return
-        group, sequence = _resolve_sequence_identity(safe_seq, self._scope.entry_map)
-        out_name = f"{entry_key(group, sequence)}.parquet"
+        group, sequence = _resolve_sequence_identity(entry_key, self._scope.entry_map)
+        out_name = f"{make_entry_key(group, sequence)}.parquet"
         out_path = self._run_root / out_name
 
         cols = [f"feat_{i}" for i in range(data.shape[1])]

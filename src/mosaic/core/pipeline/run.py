@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import (
-    entry_key,
+    make_entry_key,
     filter_time_range,
     resolve_frame_range,
     to_safe_name,
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 
 def build_output_path(group: str, sequence: str, run_root: Path) -> Path:
     """Build the parquet output path for a (group, sequence) entry."""
-    return run_root / f"{entry_key(group, sequence)}.parquet"
+    return run_root / f"{make_entry_key(group, sequence)}.parquet"
 
 
 def build_feature_meta(group: str, sequence: str, run_root: Path) -> FeatureMeta:
@@ -369,12 +369,12 @@ def run_feature(
                     file=sys.stderr,
                 )
 
-        # Skip fit for empty-input features when outputs already exist
+        # Skip fit when outputs already exist and overwrite is not requested
         model_path = run_root / "model.joblib"
         embedding_path = run_root / "global_opentsne_embedding.joblib"
         fit_complete = model_path.exists() or embedding_path.exists()
 
-        skip_fit = not overwrite and inputs.is_empty and fit_complete
+        skip_fit = not overwrite and fit_complete
         if skip_fit:
             print(
                 f"[feature:{feature.name}] fit phase skipped (overwrite=False, outputs exist)",
@@ -444,7 +444,7 @@ def run_feature(
         if row.abs_path:
             abs_path = Path(row.abs_path)
         else:
-            abs_path = run_root / f"{entry_key(group, sequence)}.parquet"
+            abs_path = run_root / f"{make_entry_key(group, sequence)}.parquet"
         n_rows = row.n_rows
         out_rows[:] = [
             r

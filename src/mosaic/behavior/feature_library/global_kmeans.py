@@ -18,7 +18,7 @@ from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
 from .spec import register_feature
-from mosaic.core.helpers import entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope
 
 from .global_tsne import GlobalTSNE
@@ -32,7 +32,6 @@ from .helpers import (
 )
 from .spec import (
     ArtifactSpec,
-    FeatureLabelsSource,
     InputRequire,
     Inputs,
     JoblibLoadSpec,
@@ -107,12 +106,6 @@ class GlobalKMeansClustering:
         feature: str = "global-kmeans"
         pattern: str = "artifact_labels.npz"
         load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
-
-    class SeqLabelsArtifact(FeatureLabelsSource):
-        """Per-sequence cluster labels (global_kmeans_labels_seq=*.npz)."""
-
-        feature: str = "global-kmeans"
-        pattern: str = "global_kmeans_labels_seq=*.npz"
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
@@ -347,16 +340,10 @@ class GlobalKMeansClustering:
             keys = list(manifest.keys())
             n_keys = len(keys)
             for i, key in enumerate(keys):
-                X_full, frames, id1_vals, id2_vals, entity_level = (
-                    helper.load_key_data_with_identity(
-                        manifest[key],
-                        extract_frames=True,
-                        key=key,
-                    )
-                )
-                if X_full is None:
+                kd = helper.load_key_data(manifest[key], key=key)
+                if kd is None:
                     continue
-                D_total = X_full.shape[1]
+                D_total = kd.features.shape[1]
 
                 if scaler is not None:
                     if not hasattr(scaler, "n_features_in_"):
@@ -368,8 +355,7 @@ class GlobalKMeansClustering:
                             f"Scaler expects n_features_in_={getattr(scaler, 'n_features_in_', None)}, "
                             f"got {D_total} columns for key={key}"
                         )
-                    X_use = scaler.transform(X_full)
-                    del X_full
+                    X_use = scaler.transform(kd.features)
                 else:
                     if self._fit_dim is None:
                         raise RuntimeError(
@@ -380,26 +366,22 @@ class GlobalKMeansClustering:
                             f"Assign-without-scaler requires feature dim {self._fit_dim}, "
                             f"but got {D_total} for key={key}. Provide a scaler or align inputs."
                         )
-                    X_use = X_full
+                    X_use = kd.features
 
                 labels = self._kmeans.predict(X_use)
                 self._assign_labels[key] = labels.astype(np.int32)
-                self._assign_frames[key] = (
-                    None
-                    if frames is None
-                    else np.asarray(frames, dtype=np.int64).ravel()
-                )
-                if id1_vals is not None:
+                self._assign_frames[key] = kd.frames
+                if kd.id1 is not None:
                     self._assign_id1[key] = np.asarray(
-                        id1_vals, dtype=np.float64
+                        kd.id1, dtype=np.float64
                     ).ravel()
-                if id2_vals is not None:
+                if kd.id2 is not None:
                     self._assign_id2[key] = np.asarray(
-                        id2_vals, dtype=np.float64
+                        kd.id2, dtype=np.float64
                     ).ravel()
-                self._assign_entity_level[key] = str(entity_level or "global")
+                self._assign_entity_level[key] = kd.entity_level
 
-                del X_use, labels
+                del X_use, kd, labels
                 gc.collect()
                 pa.default_memory_pool().release_unused()
 
@@ -491,24 +473,24 @@ class GlobalKMeansClustering:
                 {"cluster": uniq.astype(int), "count": cnt.astype(int)}
             ).to_parquet(run_root / "cluster_sizes.parquet", index=False)
 
-        for safe_seq, labels in self._assign_labels.items():
+        for entry_key, labels in self._assign_labels.items():
             labels_arr = np.asarray(labels, dtype=np.int32).ravel()
-            frames = self._assign_frames.get(safe_seq)
+            frames = self._assign_frames.get(entry_key)
             if frames is not None and len(frames) != len(labels_arr):
                 frames = None
             if frames is None:
                 frames = np.arange(len(labels_arr), dtype=np.int64)
-            id1_vals = self._assign_id1.get(safe_seq)
-            id2_vals = self._assign_id2.get(safe_seq)
+            id1_vals = self._assign_id1.get(entry_key)
+            id2_vals = self._assign_id2.get(entry_key)
             if id1_vals is None or len(id1_vals) != len(labels_arr):
                 id1_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
             if id2_vals is None or len(id2_vals) != len(labels_arr):
                 id2_vals = np.full(len(labels_arr), np.nan, dtype=np.float64)
-            entity_level = self._assign_entity_level.get(safe_seq, "global")
+            entity_level = self._assign_entity_level.get(entry_key, "global")
             group, sequence = _resolve_sequence_identity(
-                safe_seq, self._scope.entry_map
+                entry_key, self._scope.entry_map
             )
-            out_name = f"{entry_key(group, sequence)}.parquet"
+            out_name = f"{make_entry_key(group, sequence)}.parquet"
             out_path = run_root / out_name
             df_out = pd.DataFrame(
                 {
@@ -527,24 +509,7 @@ class GlobalKMeansClustering:
             self._additional_index_rows.append(
                 _build_index_row(group, sequence, out_path, int(len(df_out)))
             )
-            fname = f"global_kmeans_labels_seq={safe_seq}.npz"
-            np.savez_compressed(
-                run_root / fname,
-                labels=labels_arr,
-                frames=frames,
-                id1=id1_vals,
-                id2=id2_vals,
-                entity_level=np.array([entity_level], dtype=object),
-            )
 
-        marker_seq = "__global__"
-        safe_marker_seq = to_safe_name(marker_seq)
-        marker_path = run_root / f"{safe_marker_seq}.parquet"
-        marker_df = pd.DataFrame({"run_marker": [True]})
-        marker_df.to_parquet(marker_path, index=False)
-        self._additional_index_rows.append(
-            _build_index_row("", marker_seq, marker_path, int(len(marker_df)))
-        )
 
     def load_model(self, path: Path) -> None:
         bundle = joblib.load(path)

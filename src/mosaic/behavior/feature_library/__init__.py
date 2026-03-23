@@ -94,6 +94,7 @@ from .spec import (
     InputsLike,
     OutputType,
     Result,
+    ResultColumn,
     TrackInput,
     register_feature,
 )
@@ -177,6 +178,7 @@ __all__ = [
     "InputsLike",
     "OutputType",
     "Result",
+    "ResultColumn",
     "TrackInput",
     # Helper functions
     "list_features_by_type",

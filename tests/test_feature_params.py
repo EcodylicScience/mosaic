@@ -603,3 +603,66 @@ def test_fi_roundtrip_feature() -> None:
     dumped = orig.model_dump()
     restored = Inputs.model_validate(dumped)
     assert restored.root == orig.root
+
+
+def test_result_column_direct():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(feature="ward-assign", column="cluster")
+    assert rc.feature == "ward-assign"
+    assert rc.column == "cluster"
+    assert rc.run_id is None
+
+
+def test_result_column_with_run_id():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(feature="global-kmeans", column="cluster", run_id="0.1-abc")
+    assert rc.run_id == "0.1-abc"
+
+
+def test_result_column_column_only():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(column="tsne_x")
+    assert rc.feature == ""
+    assert rc.column == "tsne_x"
+    assert rc.run_id is None
+
+
+def test_result_column_column_with_run_id():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(column="tsne_x", run_id="0.1-abc")
+    assert rc.feature == ""
+    assert rc.column == "tsne_x"
+    assert rc.run_id == "0.1-abc"
+
+
+def test_result_column_from_result():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(column="tsne_x").from_result(Result(feature="global-tsne", run_id="0.1-abc"))
+    assert rc.feature == "global-tsne"
+    assert rc.column == "tsne_x"
+    assert rc.run_id == "0.1-abc"
+
+
+def test_result_column_from_result_overwrites_run_id():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(column="tsne_x", run_id="old").from_result(
+        Result(feature="global-tsne", run_id="new")
+    )
+    assert rc.feature == "global-tsne"
+    assert rc.run_id == "new"
+
+
+def test_result_column_from_result_use_latest():
+    from mosaic.behavior.feature_library.spec import ResultColumn
+
+    rc = ResultColumn(column="cluster").from_result(
+        Result(feature="ward-assign", run_id="0.1-abc").use_latest()
+    )
+    assert rc.feature == "ward-assign"
+    assert rc.run_id is None

@@ -7,10 +7,9 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 import fnmatch
-import re
 import sys
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import joblib
 from matplotlib.figure import Figure
@@ -19,26 +18,22 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from mosaic.behavior.feature_library.helpers import _build_path_sequence_map
 from mosaic.behavior.feature_library.spec import (
-    ArtifactSpec,
-    FeatureLabelsSource,
     GroundTruthLabelsSource,
     InputRequire,
     Inputs,
-    JoblibLoadSpec,
-    LoadSpec,
     NpzLoadSpec,
     OutputType,
     Params,
-    ParquetLoadSpec,
-    Result,
+    ResultColumn,
 )
 from mosaic.behavior.feature_library.spec import register_feature
+from mosaic.behavior.feature_library.helpers import _get_feature_run_root
 from mosaic.core.helpers import (
     detect_label_format,
     expand_labels_to_dense,
     load_labels_for_feature_frames,
+    make_entry_key,
     to_safe_name,
 )
 from mosaic.core.pipeline._utils import Scope
@@ -47,26 +42,12 @@ from mosaic.core.pipeline._utils import Scope
 @register_feature
 class VizGlobalColored:
     """
-    Generic wrapper to visualize any global embedding (t-SNE, PCA, UMAP, etc.)
-    colored by arbitrary labels.
+    Generic scatter plot visualization for any global embedding or feature columns.
 
-    Params (defaults target the global t-SNE + k-means workflow):
-      coords: {feature, run_id, pattern, load:{kind:"npz", key:"Y"}}
-      labels: optional spec matching coords (same structure as coords) OR
-              {"source": "labels", "kind": "<label_kind>", "load": {...}}
-              to load from labels/<kind>/index.csv (e.g., CalMS21 ground truth)
-      coord_key_regex: regex applied to coord filenames (default extracts the sequence name)
-      label_key_regex: regex for label filenames (defaults to coord regex)
-      label_missing_value: sentinel for missing labels (default -1 -> gray)
-      label_order: optional list of label values to fix the color ordering
-      label_name_map: optional dict mapping label ids -> display names
-      plot_max: max points to scatter
-      palette: seaborn palette name or list
-      title: plot title
-      point_size / point_alpha: scatter style tweaks
-      debug_save_arrays: if True, save Y_all/L_all (aligned, pre-subsample) as debug_viz_arrays.npz
-    Output:
-      - PNG in run_root plus a single marker parquet row for indexing.
+    Uses ResultColumn params for fully customizable x and y axes. For example,
+    t-SNE coordinates, PCA components, speed vs approach distance, etc.
+    Labels can be from any feature's parquet output (via ResultColumn) or
+    ground truth labels (via GroundTruthLabelsSource).
     """
 
     name = "viz-global-colored"
@@ -74,14 +55,13 @@ class VizGlobalColored:
     output_type: OutputType = "viz"
     parallelizable = False
 
-    class Inputs(Inputs[Result]):
+    class Inputs(Inputs[ResultColumn]):
         _require: ClassVar[InputRequire] = "empty"
 
     class Params(Params):
-        coords: ArtifactSpec
-        labels: FeatureLabelsSource | GroundTruthLabelsSource | None = None
-        coord_key_regex: str = r"seq=(.+?)(?:_persp=.*)?$"
-        label_key_regex: str | None = None
+        x: ResultColumn
+        y: ResultColumn
+        labels: ResultColumn | GroundTruthLabelsSource | None = None
         label_missing_value: int = -1
         label_order: list[int] | None = None
         label_name_map: dict[int, str] | None = None
@@ -91,7 +71,6 @@ class VizGlobalColored:
         point_size: float = 2.0
         point_alpha: float = 0.35
         debug_save_arrays: bool = False
-        frame_source_feature: str | None = None
 
     def __init__(
         self,
@@ -105,10 +84,9 @@ class VizGlobalColored:
         self._ds = None
         self._figs: list[tuple[str, Figure]] = []
         self._marker_written = False
-        self._summary: dict = {}
-        self._seq_path_cache: dict[tuple[str, str], dict[Path, str]] = {}
+        self._summary: dict[str, object] = {}
         self._scope: Scope = Scope()
-        self._debug_arrays: dict | None = None
+        self._debug_arrays: dict[str, object] | None = None
 
     def bind_dataset(self, ds):
         self._ds = ds
@@ -128,68 +106,67 @@ class VizGlobalColored:
     def finalize_fit(self):
         pass
 
-    def _load_artifacts_glob(self, spec: ArtifactSpec):
-        ds = self._ds
-        idx = ds.get_root("features") / spec.feature / "index.csv"
-        df = pd.read_csv(idx)
-        run_id = spec.run_id
-        if run_id is None:
-            if "finished_at" in df.columns:
-                cand = df[df["finished_at"].fillna("").astype(str) != ""]
-                base = cand if len(cand) else df
-                df = base.sort_values(
-                    by=["finished_at" if len(cand) else "started_at"],
-                    ascending=False,
-                    kind="stable",
-                )
-            else:
-                df = df.sort_values(by=["started_at"], ascending=False, kind="stable")
-            run_id = str(df.iloc[0]["run_id"])
-        run_root = ds.get_root("features") / spec.feature / run_id
-        files = sorted(run_root.glob(spec.pattern))
-        return run_id, run_root, files
+    def _resolve_run_root(self, rc: ResultColumn) -> tuple[str, Path]:
+        """Resolve (run_id, run_root) for a ResultColumn reference."""
+        return _get_feature_run_root(self._ds, rc.feature, rc.run_id)
 
-    def _load_one(self, path: Path, load_spec: LoadSpec) -> np.ndarray:
-        if isinstance(load_spec, NpzLoadSpec):
-            npz = np.load(path, allow_pickle=True)
-            A = np.asarray(npz[load_spec.key])
-            if load_spec.transpose:
-                A = A.T
-            return A
-        if isinstance(load_spec, ParquetLoadSpec):
-            df = pd.read_parquet(path)
-            if load_spec.drop_columns:
-                df = df.drop(
-                    columns=[c for c in load_spec.drop_columns if c in df.columns],
-                    errors="ignore",
+    def _load_result_columns(
+        self,
+        *result_columns: ResultColumn,
+        allowed_keys: set[str] | None,
+    ) -> dict[str, pd.DataFrame]:
+        """Load columns from a feature's per-sequence parquet output files.
+
+        All arguments must reference the same feature and run_id.
+        Uses the feature index CSV to discover per-sequence files,
+        avoiding global artifacts (e.g. cluster_sizes.parquet).
+
+        Returns a dict mapping entry_key -> DataFrame with the requested
+        columns plus alignment columns (frame, sequence, group).
+        """
+        from mosaic.core.pipeline.index import feature_index_path
+
+        if self._ds is None:
+            raise RuntimeError("dataset not bound; call bind_dataset() first")
+
+        first = result_columns[0]
+        for rc in result_columns[1:]:
+            if rc.feature != first.feature or rc.run_id != first.run_id:
+                raise ValueError(
+                    "all result columns must reference the same feature/run_id"
                 )
-            if load_spec.columns:
-                use = [c for c in load_spec.columns if c in df.columns]
-                if not use:
-                    return np.empty((0, len(load_spec.columns)), dtype=np.float32)
-                df = df[use]
-            elif load_spec.numeric_only:
-                df = df.select_dtypes(include=[np.number])
-                # Drop metadata columns that are numeric but not features
-                for mc in ("frame", "time", "id1", "id2"):
-                    if mc in df.columns:
-                        df = df.drop(columns=[mc])
-            else:
-                # coerce everything numeric-style to avoid object columns
-                df = df.apply(pd.to_numeric, errors="coerce")
-            arr = df.to_numpy(dtype=np.float32, copy=False)
-            if load_spec.transpose:
-                arr = arr.T
-            return arr
-        if isinstance(load_spec, JoblibLoadSpec):
-            obj = joblib.load(path)
-            return obj if load_spec.key is None else obj[load_spec.key]
-        raise ValueError(f"Unsupported load spec type: {type(load_spec)}")
+        resolved_run_id, _ = self._resolve_run_root(first)
+
+        idx_path = feature_index_path(self._ds, first.feature)
+        if not idx_path.exists():
+            msg = f"feature index not found: {idx_path}"
+            raise FileNotFoundError(msg)
+        idx_df = pd.read_csv(idx_path)
+        idx_df = idx_df[idx_df["run_id"].astype(str) == resolved_run_id]
+
+        columns = [rc.column for rc in result_columns]
+        load_columns = list(columns) + ["frame", "sequence", "group"]
+        result: dict[str, pd.DataFrame] = {}
+        for _, row in idx_df.iterrows():
+            key = make_entry_key(str(row.get("group", "") or ""), str(row.get("sequence", "") or ""))
+            if allowed_keys and key not in allowed_keys:
+                continue
+            abs_path = str(row.get("abs_path", ""))
+            if not abs_path:
+                continue
+            path = self._ds.resolve_path(abs_path)
+            if not path.exists():
+                continue
+            df = pd.read_parquet(path, columns=load_columns)
+            if not all(c in df.columns for c in columns):
+                continue
+            result[key] = df
+        return result
 
     def _load_label_file(
         self,
         path: Path,
-        load_spec: LoadSpec,
+        load_spec: NpzLoadSpec,
         n_frames: int | None = None,
         feature_frames: np.ndarray | None = None,
     ) -> np.ndarray:
@@ -203,7 +180,7 @@ class VizGlobalColored:
         ----------
         path : Path
             Path to the label file (NPZ)
-        load_spec : LoadSpec
+        load_spec : NpzLoadSpec
             Load specification
         n_frames : int, optional
             Number of frames for dense expansion. If None, uses max(frames) + 1.
@@ -215,10 +192,6 @@ class VizGlobalColored:
         np.ndarray
             1D array of labels.
         """
-        if not isinstance(load_spec, NpzLoadSpec):
-            # Non-NPZ files use standard loading
-            return np.asarray(self._load_one(path, load_spec)).ravel()
-
         # If feature_frames provided, use the alignment helper
         if feature_frames is not None:
             return load_labels_for_feature_frames(
@@ -282,35 +255,11 @@ class VizGlobalColored:
             pth = self._ds.resolve_path(abs_raw)
             if pattern and not fnmatch.fnmatch(pth.name, pattern):
                 continue
-            seq_safe = to_safe_name(str(row.get("sequence", "")))
-            if not seq_safe:
-                seq_safe = to_safe_name(pth.stem)
-            entries.append((seq_safe, pth))
+            key = make_entry_key(str(row.get("group", "")), str(row.get("sequence", "")))
+            if not key:
+                key = to_safe_name(pth.stem)
+            entries.append((key, pth))
         return entries
-
-    def _feature_seq_map(
-        self, feature_name: str, run_id: str | None
-    ) -> dict[Path, str]:
-        key = (feature_name, str(run_id))
-        if key in self._seq_path_cache:
-            return self._seq_path_cache[key]
-        mapping = _build_path_sequence_map(self._ds, feature_name, run_id)
-        self._seq_path_cache[key] = mapping
-        return mapping
-
-    def _extract_key(self, path: Path, regex: str | None, seq_map: dict[Path, str]):
-        stem = path.stem
-        m = re.search(regex, stem) if regex else None
-        if not m:
-            safe_seq = seq_map.get(path.resolve())
-            if not safe_seq:
-                safe_seq = to_safe_name(stem)
-            return str(safe_seq)
-        if m.lastindex is None:
-            return m.group(0)
-        if m.lastindex == 1:
-            return m.group(1)
-        return tuple(m.groups())
 
     def _prepare_color_map(self, labels):
         unique_vals = list(pd.unique(pd.Series(labels, dtype="object")))
@@ -348,134 +297,98 @@ class VizGlobalColored:
                 pass
         return str(val)
 
-    def _load_frame_source_map(self, allowed_any: set) -> dict[str, np.ndarray]:
-        """
-        Load frame indices from the frame_source_feature for each sequence.
-
-        Returns a dict mapping sequence key -> frame array.
-        """
-        frame_source = self.params.frame_source_feature
-        if not frame_source or not self._ds:
-            return {}
-
-        # Try to find frame source feature files
-        features_root = self._ds.get_root("features")
-        idx_path = features_root / frame_source / "index.csv"
-        if not idx_path.exists():
-            return {}
-
-        try:
-            df = pd.read_csv(idx_path)
-            # Get the most recent run
-            if "finished_at" in df.columns:
-                cand = df[df["finished_at"].fillna("").astype(str) != ""]
-                base = cand if len(cand) else df
-                df = base.sort_values(
-                    by=["finished_at" if len(cand) else "started_at"],
-                    ascending=False,
-                    kind="stable",
-                )
-            run_id = str(df.iloc[0]["run_id"])
-            run_root = features_root / frame_source / run_id
-
-            frame_map: dict[str, np.ndarray] = {}
-            for _, row in df[df["run_id"].astype(str) == run_id].iterrows():
-                abs_path = row.get("abs_path", "")
-                if not abs_path:
-                    continue
-                pth = self._ds.resolve_path(abs_path)
-                if not pth.exists():
-                    continue
-                # Get sequence key
-                seq_safe = to_safe_name(str(row.get("sequence", "")))
-                if not seq_safe:
-                    seq_safe = to_safe_name(
-                        pth.stem.split("__")[-1] if "__" in pth.stem else pth.stem
-                    )
-
-                if allowed_any and seq_safe not in allowed_any:
-                    continue
-
-                # Load frame column from parquet
-                if pth.suffix.lower() == ".parquet":
-                    try:
-                        feat_df = pd.read_parquet(pth)
-                        if "frame" in feat_df.columns:
-                            frame_map[seq_safe] = feat_df["frame"].to_numpy(
-                                dtype=np.int64
-                            )
-                    except Exception:
-                        pass
-            return frame_map
-        except Exception as e:
-            print(
-                f"[viz-global-colored] WARN: failed to load frame source '{frame_source}': {e}",
-                file=sys.stderr,
-            )
-            return {}
-
     def fit(self, X_iter):
-        coord_spec = self.params.coords
-        coord_run_id, _, coord_files = self._load_artifacts_glob(coord_spec)
-        if not coord_files:
-            raise FileNotFoundError("[viz-global-colored] No coordinate files found.")
+        allowed_keys = self._scope.entry_keys or None
 
-        allowed_any = self._scope.entry_keys
+        x_rc = self.params.x
+        y_rc = self.params.y
 
-        key_regex = self.params.coord_key_regex
-        coord_seq_map = self._feature_seq_map(coord_spec.feature, coord_run_id)
+        # Load x and y columns
+        same_source = (x_rc.feature == y_rc.feature and x_rc.run_id == y_rc.run_id)
+        if same_source:
+            xy_frames: dict[str, pd.DataFrame] = self._load_result_columns(
+                x_rc, y_rc, allowed_keys=allowed_keys
+            )
+        else:
+            x_data = self._load_result_columns(x_rc, allowed_keys=allowed_keys)
+            y_data = self._load_result_columns(y_rc, allowed_keys=allowed_keys)
+            xy_frames = {}
+            for key in set(x_data) & set(y_data):
+                xdf = x_data[key]
+                ydf = y_data[key]
+                shared_columns = [
+                    c for c in ("frame", "sequence", "group")
+                    if c in xdf.columns and c in ydf.columns
+                ]
+                if shared_columns:
+                    y_keep = [y_rc.column] + [c for c in shared_columns if c != y_rc.column]
+                    merged = xdf.merge(ydf[y_keep], on=shared_columns, how="inner")
+                elif len(xdf) == len(ydf):
+                    merged = pd.DataFrame({
+                        x_rc.column: xdf[x_rc.column].values,
+                        y_rc.column: ydf[y_rc.column].values,
+                    })
+                else:
+                    msg = f"cannot align x and y for key={key}: no shared columns and lengths differ ({len(xdf)} vs {len(ydf)})"
+                    raise RuntimeError(msg)
+                xy_frames[key] = merged
+
+        if not xy_frames:
+            raise RuntimeError("[viz-global-colored] No coordinate data loaded.")
+
+        # Build coordinate arrays
         Y_list, key_list, n_list = [], [], []
-        for f in coord_files:
-            key = self._extract_key(f, key_regex, coord_seq_map)
-            key_safe = to_safe_name(key)
-            if allowed_any and key not in allowed_any and key_safe not in allowed_any:
-                continue
-            arr = self._load_one(f, coord_spec.load)
-            if arr.ndim != 2:
-                arr = np.atleast_2d(arr)
-            Y_list.append(arr)
+        for key in sorted(xy_frames):
+            df = xy_frames[key]
+            x_vals = df[x_rc.column].to_numpy(dtype=np.float32)
+            y_vals = df[y_rc.column].to_numpy(dtype=np.float32)
+            Y_list.append(np.column_stack([x_vals, y_vals]))
             key_list.append(key)
-            n_list.append(arr.shape[0])
-        if not Y_list:
-            raise RuntimeError("No coordinate arrays loaded.")
+            n_list.append(len(df))
 
-        # Load frame indices from frame_source_feature if specified
-        frame_source_map = self._load_frame_source_map(allowed_any)
-
+        # Load labels
         labels_spec = self.params.labels
         missing_value = self.params.label_missing_value
         if labels_spec is not None:
-            label_regex = key_regex if self.params.label_key_regex is None else self.params.label_key_regex
-            label_load_spec = labels_spec.load
-            lab_map: dict[Any, np.ndarray] = {}
+            lab_map: dict[str, np.ndarray] = {}
 
-            # Build label entries to load
-            label_entries: list[tuple[str, Path]] = []
             if isinstance(labels_spec, GroundTruthLabelsSource):
                 entries = self._load_labels_from_index(labels_spec)
-                if allowed_any:
-                    entries = [(s, p) for s, p in entries if s in allowed_any]
-                label_entries = entries
-            else:
-                label_run_id, _, label_files = self._load_artifacts_glob(labels_spec)
-                label_seq_map = self._feature_seq_map(
-                    labels_spec.feature, label_run_id
-                )
-                for lf in label_files:
-                    lab_key = self._extract_key(lf, label_regex, label_seq_map)
-                    label_entries.append((lab_key, lf))
+                if allowed_keys:
+                    entries = [(s, p) for s, p in entries if s in allowed_keys]
+                for label_key, path in entries:
+                    lab_map[label_key] = self._load_label_file(path, labels_spec.load)
+            elif isinstance(labels_spec, ResultColumn):
+                label_data = self._load_result_columns(labels_spec, allowed_keys=allowed_keys)
+                for label_key, ldf in label_data.items():
+                    # Align labels to coord frames if possible
+                    coord_df = xy_frames.get(label_key)
+                    if coord_df is not None and len(coord_df) == len(ldf):
+                        # Same row count: assume aligned by construction
+                        # (both produced by StreamingFeatureHelper in same order)
+                        vals = ldf[labels_spec.column].to_numpy()
+                    elif coord_df is not None:
+                        # Different lengths: try merging on shared columns
+                        shared_columns = [
+                            c for c in ("frame", "sequence", "group", "id1", "id2", "id")
+                            if c in coord_df.columns and c in ldf.columns
+                        ]
+                        if shared_columns:
+                            label_keep = [labels_spec.column] + [
+                                c for c in shared_columns if c != labels_spec.column
+                            ]
+                            merged = coord_df[shared_columns].merge(
+                                ldf[label_keep],
+                                on=shared_columns,
+                                how="left",
+                            )
+                            vals = merged[labels_spec.column].fillna(missing_value).to_numpy()
+                        else:
+                            vals = ldf[labels_spec.column].to_numpy()
+                    else:
+                        vals = ldf[labels_spec.column].to_numpy()
+                    lab_map[label_key] = vals
 
-            # Load labels with frame alignment if available
-            seq_map = {pth.resolve(): safe_seq for safe_seq, pth in label_entries}
-            for safe_seq, pth in label_entries:
-                lab_key = self._extract_key(pth, label_regex, seq_map)
-                # Get feature frames for this sequence if available
-                feature_frames = frame_source_map.get(safe_seq)
-                if feature_frames is None:
-                    feature_frames = frame_source_map.get(to_safe_name(safe_seq))
-                lab_map[lab_key] = self._load_label_file(
-                    pth, label_load_spec, feature_frames=feature_frames
-                )
             L_parts = []
             for idx, (key, n) in enumerate(zip(key_list, n_list)):
                 arr = lab_map.get(key)
@@ -489,37 +402,24 @@ class VizGlobalColored:
                     arr = np.full(n, missing_value, dtype=int)
                 else:
                     arr = np.asarray(arr).ravel()
-                    if arr.shape[0] < n:
-                        if n % arr.shape[0] == 0:
-                            # common case: coord stream duplicated per-id/perspective; repeat labels accordingly
-                            factor = n // arr.shape[0]
-                            if factor == 2:
-                                print(
-                                    f"[viz-global-colored] INFO: labels shorter than coords for key={key} "
-                                    f"({arr.shape[0]} vs {n}); repeating labels x{factor} "
-                                    "(likely per-id/perspective duplication in inputs).",
-                                    file=sys.stderr,
-                                )
-                            arr = np.tile(arr, factor)
-                        else:
-                            # lengths differ but not a clean multiple; trim coords to label length
-                            print(
-                                f"[viz-global-colored] INFO: trimming coords for key={key} "
-                                f"from {n} to {arr.shape[0]} (labels length) due to mismatch.",
-                                file=sys.stderr,
-                            )
-                            Y_list[idx] = Y_list[idx][: arr.shape[0]]
-                            n_list[idx] = arr.shape[0]
-                            n = arr.shape[0]
-                    if arr.shape[0] != n:
+                    if arr.shape[0] < n and n % arr.shape[0] == 0:
+                        # Coord stream duplicated per-id/perspective;
+                        # repeat labels to match.
+                        factor = n // arr.shape[0]
+                        print(
+                            f"[viz-global-colored] INFO: labels shorter than coords for key={key} "
+                            f"({arr.shape[0]} vs {n}); repeating labels x{factor}",
+                            file=sys.stderr,
+                        )
+                        arr = np.tile(arr, factor)
+                    elif arr.shape[0] != n:
                         nmin = min(arr.shape[0], n)
                         if nmin <= 0:
                             continue
                         if nmin < n:
-                            # trim coords to match available labels
                             print(
                                 f"[viz-global-colored] INFO: trimming coords for key={key} "
-                                f"from {n} to {nmin} to match labels {arr.shape[0]}",
+                                f"from {n} to {arr.shape[0]} (labels length)",
                                 file=sys.stderr,
                             )
                             Y_list[idx] = Y_list[idx][:nmin]

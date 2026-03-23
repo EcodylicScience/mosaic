@@ -18,6 +18,7 @@ from mosaic.behavior.feature_library.spec import (
     ParquetLoadSpec,
     Result,
 )
+from mosaic.core.pipeline._utils import Scope
 
 # --- Fixtures ---
 
@@ -167,35 +168,6 @@ def test_unsupported_load_spec_raises() -> None:
         _load_array_from_spec(Path("dummy.joblib"), spec)
 
 
-# --- _load_identity_from_spec ---
-
-
-class TestLoadIdentityFromSpec:
-    def test_non_parquet_returns_global(self) -> None:
-        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
-
-        helper = StreamingFeatureHelper(None, "test")
-        spec = NpzLoadSpec(key="x")
-        id1, id2, level = helper._load_identity_from_spec(Path("dummy"), spec)
-        assert id1 is None
-        assert id2 is None
-        assert level == "global"
-
-    def test_parquet_with_ids(self, tmp_path: Path) -> None:
-        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
-
-        p = tmp_path / "pairs.parquet"
-        df = pd.DataFrame({"id1": [1, 1], "id2": [2, 2], "feat": [0.5, 0.6]})
-        df.to_parquet(p, index=False)
-
-        helper = StreamingFeatureHelper(None, "test")
-        spec = ParquetLoadSpec()
-        id1, id2, level = helper._load_identity_from_spec(p, spec)
-        assert level == "pair"
-        assert id1 is not None
-        assert id2 is not None
-
-
 # --- _load_joblib_artifact: type narrowing ---
 
 
@@ -238,27 +210,19 @@ def test_temporal_stacking_bind_produces_artifact_specs() -> None:
 
 
 class TestExtractKey:
-    def test_seq_pattern(self) -> None:
+    def test_returns_bare_stem(self) -> None:
         from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
 
         helper = StreamingFeatureHelper(None, "test")
-        path = Path("/tmp/global_tsne_coords_seq=my_sequence.npz")
-        assert helper._extract_key(path, {}) == "my_sequence"
+        path = Path("/tmp/calms21_task1_test__task1%2Ftest%2Fmouse075.parquet")
+        assert helper._extract_key(path) == "calms21_task1_test__task1%2Ftest%2Fmouse075"
 
-    def test_index_lookup(self) -> None:
+    def test_entry_key_format(self) -> None:
         from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
 
         helper = StreamingFeatureHelper(None, "test")
-        path = Path("/tmp/some_file.parquet")
-        seq_map = {path.resolve(): "indexed_seq"}
-        assert helper._extract_key(path, seq_map) == "indexed_seq"
-
-    def test_unindexed_returns_none(self) -> None:
-        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
-
-        helper = StreamingFeatureHelper(None, "test")
-        path = Path("/tmp/cluster_sizes.parquet")
-        assert helper._extract_key(path, {}) is None
+        path = Path("/tmp/my_group__my_sequence.parquet")
+        assert helper._extract_key(path) == "my_group__my_sequence"
 
 
 # --- build_manifest skips global artifacts ---
@@ -266,7 +230,7 @@ class TestExtractKey:
 
 class TestBuildManifestSkipsGlobalArtifacts:
     def test_global_artifacts_excluded(self, tmp_path: Path) -> None:
-        """build_manifest should skip files not in the index and without seq= naming."""
+        """build_manifest should skip files not in the index."""
         from unittest.mock import patch
 
         from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
@@ -274,11 +238,7 @@ class TestBuildManifestSkipsGlobalArtifacts:
         run_root = tmp_path / "features" / "global-kmeans" / "run_001"
         run_root.mkdir(parents=True)
 
-        # Per-sequence file (seq= naming)
-        seq_file = run_root / "seq=my_sequence.parquet"
-        pd.DataFrame({"feat": [1.0]}).to_parquet(seq_file)
-
-        # Per-sequence file (index-tracked, no seq= naming)
+        # Per-sequence file (index-tracked)
         indexed_file = run_root / "my_group__my_sequence.parquet"
         pd.DataFrame({"feat": [2.0]}).to_parquet(indexed_file)
 
@@ -294,19 +254,384 @@ class TestBuildManifestSkipsGlobalArtifacts:
 
         spec = ArtifactSpec(feature="global-kmeans", load=ParquetLoadSpec())
 
-        seq_map = {indexed_file.resolve(): "my_sequence_2"}
+        # Scope restricts to known entries only
+        scope = Scope(
+            entries={("my_group", "my_sequence")}
+        )
 
-        with (
-            patch.object(helper, "_get_seq_map", return_value=seq_map),
-            patch(
-                "mosaic.core.pipeline.index.latest_feature_run_root",
-                return_value=("run_001", run_root),
-            ),
+        with patch(
+            "mosaic.core.pipeline.index.latest_feature_run_root",
+            return_value=("run_001", run_root),
         ):
-            manifest = helper.build_manifest([spec])
+            manifest = helper.build_manifest([spec], scope=scope)
 
-        assert "my_sequence" in manifest
-        assert "my_sequence_2" in manifest
+        assert "my_group__my_sequence" in manifest
         assert "cluster_sizes" not in manifest
         assert "__global__" not in manifest
-        assert len(manifest) == 2
+        assert len(manifest) == 1
+
+
+class TestLoadKeyDataUnified:
+    """Tests for the unified load_key_data returning KeyData."""
+
+    @pytest.fixture()
+    def aligned_parquets(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Two parquet files with same frames but different feature columns."""
+        p1 = tmp_path / "feat1.parquet"
+        p2 = tmp_path / "feat2.parquet"
+        df1 = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 3],
+                "feat_a": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        df2 = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 3],
+                "feat_b": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+        df1.to_parquet(p1, index=False)
+        df2.to_parquet(p2, index=False)
+        return p1, p2
+
+    @pytest.fixture()
+    def misaligned_parquets(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Two parquets with overlapping but different frame ranges."""
+        p1 = tmp_path / "feat1.parquet"
+        p2 = tmp_path / "feat2.parquet"
+        df1 = pd.DataFrame(
+            {
+                "frame": [0, 1, 2, 3],
+                "feat_a": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        df2 = pd.DataFrame(
+            {
+                "frame": [2, 3, 4, 5],
+                "feat_b": [30.0, 40.0, 50.0, 60.0],
+            }
+        )
+        df1.to_parquet(p1, index=False)
+        df2.to_parquet(p2, index=False)
+        return p1, p2
+
+    @pytest.fixture()
+    def identity_parquets(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Two parquets with identity columns (pair feature)."""
+        p1 = tmp_path / "feat1.parquet"
+        p2 = tmp_path / "feat2.parquet"
+        df1 = pd.DataFrame(
+            {
+                "frame": [0, 0, 1, 1],
+                "id1": [1, 2, 1, 2],
+                "id2": [2, 1, 2, 1],
+                "feat_a": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        df2 = pd.DataFrame(
+            {
+                "frame": [0, 0, 1, 1],
+                "id1": [1, 2, 1, 2],
+                "id2": [2, 1, 2, 1],
+                "feat_b": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+        df1.to_parquet(p1, index=False)
+        df2.to_parquet(p2, index=False)
+        return p1, p2
+
+    def test_aligned_inputs_merged(
+        self, aligned_parquets: tuple[Path, Path]
+    ) -> None:
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1, p2 = aligned_parquets
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        assert result.features.shape == (4, 2)
+        np.testing.assert_array_equal(result.frames, [0, 1, 2, 3])
+
+    def test_misaligned_inputs_inner_join(
+        self, misaligned_parquets: tuple[Path, Path]
+    ) -> None:
+        """Overlapping frames only -- the core alignment fix."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1, p2 = misaligned_parquets
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        assert result.features.shape == (2, 2)
+        np.testing.assert_array_equal(result.frames, [2, 3])
+        np.testing.assert_array_almost_equal(result.features[:, 0], [3.0, 4.0])
+        np.testing.assert_array_almost_equal(
+            result.features[:, 1], [30.0, 40.0]
+        )
+
+    def test_identity_columns_extracted(
+        self, identity_parquets: tuple[Path, Path]
+    ) -> None:
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1, p2 = identity_parquets
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        assert result.entity_level == "pair"
+        assert result.id1 is not None
+        assert result.id2 is not None
+        assert result.features.shape == (4, 2)
+        np.testing.assert_array_equal(result.id1, [1, 2, 1, 2])
+        np.testing.assert_array_equal(result.id2, [2, 1, 2, 1])
+
+    def test_single_input(self, parquet_path: Path) -> None:
+        """Single input should work without merge."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(parquet_path, spec)])
+        assert isinstance(result, KeyData)
+        assert result.features.shape == (3, 2)
+        np.testing.assert_array_equal(result.frames, [0, 1, 2])
+        assert result.entity_level == "individual"
+
+    def test_no_overlap_returns_none(self, tmp_path: Path) -> None:
+        """Two inputs with no shared frames should return None."""
+        from mosaic.behavior.feature_library.helpers import StreamingFeatureHelper
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1 = tmp_path / "a.parquet"
+        p2 = tmp_path / "b.parquet"
+        pd.DataFrame({"frame": [0, 1], "f": [1.0, 2.0]}).to_parquet(p1)
+        pd.DataFrame({"frame": [5, 6], "f": [3.0, 4.0]}).to_parquet(p2)
+
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert result is None
+
+    def test_global_entity_level_when_no_id(self, tmp_path: Path) -> None:
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p = tmp_path / "no_id.parquet"
+        pd.DataFrame({"frame": [0, 1], "feat": [1.0, 2.0]}).to_parquet(p)
+
+        helper = StreamingFeatureHelper(None, "test")
+        result = helper.load_key_data([(p, ParquetLoadSpec())])
+        assert isinstance(result, KeyData)
+        assert result.entity_level == "global"
+        assert result.id1 is None
+        assert result.id2 is None
+
+    def test_npz_input_fallback(self, npz_path: Path) -> None:
+        """NPZ inputs cannot merge on frames -- fall back to hstack."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import NpzLoadSpec
+
+        helper = StreamingFeatureHelper(None, "test")
+        spec = NpzLoadSpec(key="features")
+        result = helper.load_key_data([(npz_path, spec)])
+        assert isinstance(result, KeyData)
+        assert result.features.shape == (3, 4)
+        assert result.entity_level == "global"
+
+    def test_duplicate_column_names_across_inputs(self, tmp_path: Path) -> None:
+        """Two inputs with the same feature column names must keep all features."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1 = tmp_path / "a.parquet"
+        p2 = tmp_path / "b.parquet"
+        pd.DataFrame(
+            {"frame": [0, 1, 2], "feat_0": [1.0, 2.0, 3.0], "feat_1": [4.0, 5.0, 6.0]}
+        ).to_parquet(p1, index=False)
+        pd.DataFrame(
+            {"frame": [0, 1, 2], "feat_0": [10.0, 20.0, 30.0], "feat_1": [40.0, 50.0, 60.0]}
+        ).to_parquet(p2, index=False)
+
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        # Must have 4 feature columns (2 from each input), not 2
+        assert result.features.shape == (3, 4)
+        # Input 1 features first, then input 2 features
+        np.testing.assert_array_almost_equal(result.features[:, 0], [1.0, 2.0, 3.0])
+        np.testing.assert_array_almost_equal(result.features[:, 1], [4.0, 5.0, 6.0])
+        np.testing.assert_array_almost_equal(result.features[:, 2], [10.0, 20.0, 30.0])
+        np.testing.assert_array_almost_equal(result.features[:, 3], [40.0, 50.0, 60.0])
+
+    def test_aligned_values_correct(
+        self, aligned_parquets: tuple[Path, Path]
+    ) -> None:
+        """Verify feature values, not just shape, for aligned inputs."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1, p2 = aligned_parquets
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        # col 0 = feat_a from input 1, col 1 = feat_b from input 2
+        np.testing.assert_array_almost_equal(
+            result.features[:, 0], [1.0, 2.0, 3.0, 4.0]
+        )
+        np.testing.assert_array_almost_equal(
+            result.features[:, 1], [10.0, 20.0, 30.0, 40.0]
+        )
+
+    def test_meta_columns_excluded_from_features(self, tmp_path: Path) -> None:
+        """Numeric metadata columns (time, id) must not appear in features."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p = tmp_path / "with_meta.parquet"
+        pd.DataFrame(
+            {
+                "frame": [0, 1, 2],
+                "time": [0.0, 0.033, 0.066],
+                "id": [1, 1, 1],
+                "id1": [1, 1, 1],
+                "id2": [2, 2, 2],
+                "feat_x": [10.0, 20.0, 30.0],
+                "feat_y": [40.0, 50.0, 60.0],
+            }
+        ).to_parquet(p, index=False)
+
+        helper = StreamingFeatureHelper(None, "test")
+        result = helper.load_key_data([(p, ParquetLoadSpec())])
+        assert isinstance(result, KeyData)
+        # Only feat_x, feat_y should be features -- not frame/time/id/id1/id2
+        assert result.features.shape == (3, 2)
+        np.testing.assert_array_almost_equal(result.features[:, 0], [10.0, 20.0, 30.0])
+        np.testing.assert_array_almost_equal(result.features[:, 1], [40.0, 50.0, 60.0])
+
+    def test_non_numeric_columns_excluded(self, tmp_path: Path) -> None:
+        """String columns must not leak into the feature matrix."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p = tmp_path / "with_strings.parquet"
+        pd.DataFrame(
+            {
+                "frame": [0, 1],
+                "label": ["walk", "run"],
+                "category": ["A", "B"],
+                "feat": [1.0, 2.0],
+            }
+        ).to_parquet(p, index=False)
+
+        helper = StreamingFeatureHelper(None, "test")
+        result = helper.load_key_data([(p, ParquetLoadSpec())])
+        assert isinstance(result, KeyData)
+        assert result.features.shape == (2, 1)
+        np.testing.assert_array_almost_equal(result.features[:, 0], [1.0, 2.0])
+
+    def test_misaligned_row_alignment_correct(self, tmp_path: Path) -> None:
+        """Verify row values are correctly aligned after merge, not just shape."""
+        from mosaic.behavior.feature_library.helpers import (
+            KeyData,
+            StreamingFeatureHelper,
+        )
+        from mosaic.behavior.feature_library.spec import ParquetLoadSpec
+
+        p1 = tmp_path / "a.parquet"
+        p2 = tmp_path / "b.parquet"
+        # Input 1: frames 0-3, input 2: frames 2-5 (reversed order)
+        pd.DataFrame(
+            {"frame": [0, 1, 2, 3], "feat_a": [100.0, 200.0, 300.0, 400.0]}
+        ).to_parquet(p1, index=False)
+        pd.DataFrame(
+            {"frame": [5, 4, 3, 2], "feat_b": [50.0, 40.0, 30.0, 20.0]}
+        ).to_parquet(p2, index=False)
+
+        helper = StreamingFeatureHelper(None, "test")
+        spec = ParquetLoadSpec()
+        result = helper.load_key_data([(p1, spec), (p2, spec)])
+        assert isinstance(result, KeyData)
+        # Overlap is frames 2,3. Values must be correctly paired by frame.
+        np.testing.assert_array_equal(result.frames, [2, 3])
+        np.testing.assert_array_almost_equal(result.features[:, 0], [300.0, 400.0])
+        np.testing.assert_array_almost_equal(result.features[:, 1], [20.0, 30.0])
+
+
+class TestLoadParquetDataFrame:
+    """Tests for _load_parquet_dataframe."""
+
+    def test_basic_load(self, parquet_path: Path) -> None:
+        from mosaic.behavior.feature_library.helpers import _load_parquet_dataframe
+
+        spec = ParquetLoadSpec()
+        df = _load_parquet_dataframe(parquet_path, spec)
+        assert df is not None
+        assert "feat_a" in df.columns
+        assert "feat_b" in df.columns
+        assert "frame" in df.columns
+
+    def test_with_df_filter(self, parquet_path: Path) -> None:
+        from mosaic.behavior.feature_library.helpers import _load_parquet_dataframe
+
+        spec = ParquetLoadSpec()
+        df = _load_parquet_dataframe(
+            parquet_path, spec, df_filter=lambda d: d[d["frame"] >= 1]
+        )
+        assert df is not None
+        assert len(df) == 2
+
+    def test_empty_after_filter_returns_none(self, parquet_path: Path) -> None:
+        from mosaic.behavior.feature_library.helpers import _load_parquet_dataframe
+
+        spec = ParquetLoadSpec()
+        df = _load_parquet_dataframe(
+            parquet_path, spec, df_filter=lambda d: d[d["frame"] > 100]
+        )
+        assert df is None
+
+    def test_non_parquet_returns_none(self, npz_path: Path) -> None:
+        from mosaic.behavior.feature_library.helpers import _load_parquet_dataframe
+
+        spec = NpzLoadSpec(key="features")
+        df = _load_parquet_dataframe(npz_path, spec)
+        assert df is None

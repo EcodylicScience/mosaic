@@ -10,6 +10,7 @@ from typing import (
     Literal,
     Protocol,
     Self,
+    override,
 )
 
 if TYPE_CHECKING:
@@ -18,10 +19,10 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline._utils import ChunkedPayload, DataPayload, StreamPayload
 
-from mosaic.core.pipeline._utils import Scope
-
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from typing_extensions import TypeVar
+
+from mosaic.core.pipeline._utils import Scope
 
 OutputType = Literal["per_frame", "global", "summary", "viz"] | None
 InputRequire = Literal["nonempty", "empty", "any"]
@@ -273,6 +274,7 @@ class Result(DictModel, Generic[F]):
         """Return a copy with run_id=None (resolves to latest run)."""
         return self.model_copy(update={"run_id": None})
 
+    @override
     def __str__(self) -> str:
         return repr(self)
 
@@ -281,6 +283,25 @@ class NNResult(Result[Literal["nearest-neighbor"]]):
     """Result narrowed to the nearest-neighbor feature."""
 
     feature: Literal["nearest-neighbor"] = "nearest-neighbor"
+
+
+class ResultColumn(Result[str]):
+    """Reference to a column in a feature's standard parquet output.
+
+    Attributes:
+        feature: Source feature name.
+        column: Column name to extract from the parquet output.
+        run_id: Specific run ID, or None for latest.
+    """
+
+    feature: str = ""
+    column: str
+
+    def from_result(self, result: Result[str]) -> Self:
+        """Return a copy with feature and run_id set from another Result."""
+        return self.model_copy(
+            update={"feature": result.feature, "run_id": result.run_id}
+        )
 
 
 class ArtifactSpec(Result[str], Generic[L]):
@@ -301,8 +322,7 @@ class ArtifactSpec(Result[str], Generic[L]):
             self.pattern = f"*{kind_ext}"
         elif not self.pattern.endswith(kind_ext):
             raise ValueError(
-                f"pattern {self.pattern!r} extension does not match "
-                f"load kind {self.load.kind!r}"
+                f"pattern {self.pattern!r} extension does not match load kind {self.load.kind!r}"
             )
         return self
 
@@ -315,16 +335,15 @@ class ArtifactSpec(Result[str], Generic[L]):
         """
         from pydantic_core import PydanticUndefined
 
-        field = cls.model_fields["feature"]
-        expected = field.default
-        if expected is not PydanticUndefined and not (
-            result.feature == expected
-            or result.feature.startswith(f"{expected}__from__")
-        ):
-            raise ValueError(
-                f"{cls.__name__} expects feature={expected!r} "
-                f"(or {expected}__from__...), got {result.feature!r}"
-            )
+        expected = cls.model_fields["feature"].default
+        if expected is not PydanticUndefined and isinstance(expected, str):
+            if not (
+                result.feature == expected
+                or result.feature.startswith(f"{expected}__from__")
+            ):
+                raise ValueError(
+                    f"{cls.__name__} expects feature={expected!r} (or {expected}__from__...), got {result.feature!r}"
+                )
         return cls.model_validate({"feature": result.feature, "run_id": result.run_id})
 
 
@@ -344,7 +363,7 @@ class GroundTruthLabelsSource(DictModel):
     pattern: str | None = None
 
 
-LabelsSourceSpec = FeatureLabelsSource | GroundTruthLabelsSource
+LabelsSourceSpec = ResultColumn | GroundTruthLabelsSource
 
 
 InputItem = TypeVar("InputItem", bound=TrackInput | Result, default=TrackInput | Result)
@@ -399,20 +418,6 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
     # "empty": must be empty (no pipeline inputs)
     # "any": both empty and non-empty are valid
     _require: ClassVar[InputRequire] = "nonempty"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_items(cls, data: object) -> object:
-        # model_validate passes a tuple/list of raw items; coerce dicts
-        if isinstance(data, (list, tuple)):
-            items: list[object] = []
-            for item in data:
-                if isinstance(item, dict) and "feature" in item:
-                    items.append(Result(**item))
-                else:
-                    items.append(item)
-            return tuple(items)
-        return data
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
