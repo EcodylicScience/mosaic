@@ -16,6 +16,7 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
+    NNResult,
     Params,
     ParquetArtifact,
     ParquetLoadSpec,
@@ -78,6 +79,7 @@ class ExtractTemplates:
         n_templates: int = Field(ge=1)
         pool: PoolConfig = Field(default_factory=PoolConfig)
         random_state: int = 42
+        pair_filter: NNResult | None = None
 
     def __init__(
         self,
