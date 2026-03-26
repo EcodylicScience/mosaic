@@ -30,6 +30,7 @@ from mosaic.core.helpers import (
 from ._utils import (
     FeatureMeta,
     Scope,
+    derive_storage_name,
     hash_params,
     json_ready,
 )
@@ -56,6 +57,7 @@ from .types import (
     TrackInput,
     TracksColumn,
 )
+from .registry import FeatureRegistry
 from .writers import FeatureOutput, trim_feature_output, write_output
 
 if TYPE_CHECKING:
@@ -261,6 +263,7 @@ def run_feature(
     filter_end_frame: int | None = None,
     filter_start_time: float | None = None,
     filter_end_time: float | None = None,
+    registry: FeatureRegistry | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -295,11 +298,9 @@ def run_feature(
         If set, converted to end frame via fps_default from dataset metadata.
     """
     # Storage name derivation
-    suffix = feature.inputs.storage_suffix()
-    if suffix is not None:
-        storage_feature_name = f"{feature.name}__from__{suffix}"
-    else:
-        storage_feature_name = feature.name
+    storage_feature_name = derive_storage_name(
+        feature.name, feature.inputs.storage_suffix()
+    )
 
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
@@ -357,6 +358,17 @@ def run_feature(
     idx = feature_index(feature_index_path(ds, storage_feature_name))
     idx.ensure()
 
+    # Registry: record run start
+    if registry is not None:
+        registry.record_run_start(
+            feature=storage_feature_name,
+            run_id=run_id,
+            version=feature.version,
+            params_hash=params_hash,
+            params_json=params_path.read_text() if params_path.exists() else None,
+            inputs_json=json.dumps(json_ready(feature.inputs.model_dump())),
+        )
+
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature.params)
 
@@ -394,6 +406,15 @@ def run_feature(
 
     def _record_row(row: FeatureIndexRow) -> None:
         _pending_idx_rows.append(row)
+        if registry is not None:
+            registry.record_entry(
+                feature=row.feature,
+                run_id=row.run_id,
+                group=row.group,
+                sequence=row.sequence,
+                abs_path=row.abs_path,
+                n_rows=row.n_rows,
+            )
         if len(_pending_idx_rows) >= _IDX_FLUSH_EVERY:
             _flush_idx()
 
@@ -570,6 +591,8 @@ def run_feature(
     # Finalize — flush any remaining rows
     _flush_idx()
     idx.mark_finished(run_id)
+    if registry is not None:
+        registry.mark_finished(storage_feature_name, run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(feature=storage_feature_name, run_id=run_id)
 

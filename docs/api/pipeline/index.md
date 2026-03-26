@@ -2,7 +2,40 @@
 
 The composable pipeline infrastructure that orchestrates feature extraction,
 frame sampling, and model training. See the
-[Pipeline Architecture](../../pipeline.md) guide for design details.
+[Pipeline Architecture](../../pipeline.md) guide for design details and the
+[Pipeline Guide](../../guide-pipeline.md) for practical usage.
+
+## Pipeline Orchestrator
+
+Declarative multi-step feature pipeline with automatic caching, staleness
+detection, and dependency chaining.
+
+::: mosaic.core.pipeline.pipeline.Pipeline
+    options:
+      show_source: true
+      members_order: source
+
+::: mosaic.core.pipeline.pipeline.FeatureStep
+    options:
+      show_source: true
+
+::: mosaic.core.pipeline.pipeline.CallbackStep
+    options:
+      show_source: true
+
+## Feature Registry
+
+SQLite-backed registry replacing per-feature CSV indices. Enables cross-feature
+queries, pending-work detection, dependency tracking, and API-friendly reads.
+
+::: mosaic.core.pipeline.registry.FeatureRegistry
+    options:
+      show_source: true
+      members_order: source
+
+::: mosaic.core.pipeline.registry.open_registry
+    options:
+      show_source: true
 
 ## Feature Protocol
 

@@ -55,6 +55,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Guides:
+      - Pipeline Guide: guide-pipeline.md
       - Pipeline Architecture: pipeline.md
       - Migration Guide: migration-guide.md
   - API Reference:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from .index import (
     FeatureIndexRow,
     feature_index_path,
+    feature_registry,
     feature_run_root,
     latest_feature_run_root,
     list_feature_runs,
@@ -19,6 +20,8 @@ from .manifest import (
     iter_manifest,
 )
 from .models import model_run_root
+from .pipeline import CallbackStep, FeatureStep, Pipeline
+from .registry import FeatureRegistry, open_registry
 from .types import (
     Feature,
     Inputs,
@@ -29,24 +32,30 @@ from .types import (
 from .writers import trim_feature_output, write_output
 
 __all__ = [
+    "CallbackStep",
     "Feature",
-    "Inputs",
-    "InputsLike",
-    "Params",
-    "Result",
     "FeatureIndexRow",
-    "IndexCSV",
-    "feature_index_path",
-    "feature_run_root",
+    "FeatureRegistry",
+    "FeatureStep",
     "FileSpecs",
     "FilterFactory",
+    "IndexCSV",
+    "Inputs",
+    "InputsLike",
     "Manifest",
     "ManifestEntry",
+    "Params",
+    "Pipeline",
+    "Result",
     "build_manifest",
+    "feature_index_path",
+    "feature_registry",
+    "feature_run_root",
     "iter_manifest",
     "latest_feature_run_root",
     "list_feature_runs",
     "model_run_root",
+    "open_registry",
     "trim_feature_output",
     "write_output",
 ]

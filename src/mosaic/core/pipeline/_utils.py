@@ -89,3 +89,14 @@ def coerce_np(obj: object) -> object:
     if isinstance(obj, np.generic):
         return obj.item()
     return obj
+
+
+def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
+    """Compute on-disk directory name for a feature run.
+
+    If the feature reads from upstream features, the directory includes
+    a ``__from__`` suffix (e.g. ``speed__from__tracks``).
+    """
+    if inputs_suffix is not None:
+        return f"{feature_name}__from__{inputs_suffix}"
+    return feature_name

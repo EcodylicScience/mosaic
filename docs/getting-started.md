@@ -107,8 +107,29 @@ scaler = GlobalScaler(
 scaler_result = ds.run_feature(scaler)
 ```
 
+### Declarative pipelines
+
+For multi-step workflows, use the `Pipeline` class instead of manual
+chaining. It handles caching, staleness detection, and dependency tracking
+automatically:
+
+```python
+from mosaic.core.pipeline import Pipeline, FeatureStep
+from mosaic.behavior.feature_library import TrajectorySmooth, SpeedAngvel
+
+pipe = Pipeline(default_run_kwargs={"parallel_workers": 8})
+pipe.add(FeatureStep("smooth", TrajectorySmooth, {"window": 5}))
+pipe.add(FeatureStep("speed", SpeedAngvel, {}, ["smooth"]))
+
+pipe.status(ds)         # check what's cached
+results = pipe.run(ds)  # execute — cached steps are skipped
+```
+
+See the [Pipeline Guide](guide-pipeline.md) for the full API and examples.
+
 ## Next steps
 
-- See the [Pipeline Architecture](pipeline.md) guide for the full composable pipeline design
+- See the [Pipeline Guide](guide-pipeline.md) for declarative multi-step pipelines
+- See the [Pipeline Architecture](pipeline.md) guide for the composable pipeline design
 - See the [Migration Guide](migration-guide.md) if upgrading from the older API
 - Browse the [API Reference](api/core/dataset.md) for full method documentation

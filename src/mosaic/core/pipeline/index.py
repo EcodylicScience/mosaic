@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.registry import FeatureRegistry, open_registry
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -52,3 +53,8 @@ def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
     idx = feature_index(feature_index_path(ds, feature_name))
     run_id = idx.latest_run_id()
     return run_id, feature_run_root(ds, feature_name, run_id)
+
+
+def feature_registry(ds: Dataset, *, migrate_csv: bool = True) -> FeatureRegistry:
+    """Open (or create) the SQLite feature registry for a dataset."""
+    return open_registry(ds.get_root("features"), migrate_csv=migrate_csv)
