@@ -483,6 +483,17 @@ class Dataset:
 
     # ---- Helpers ----
     def get_root(self, key: str) -> Path:
+        """Return the absolute path for a named dataset root.
+
+        Args:
+            key: Root name (e.g. ``"media"``, ``"tracks"``, ``"features"``).
+
+        Returns:
+            Absolute path to the root directory.
+
+        Raises:
+            KeyError: If *key* is not set in the manifest.
+        """
         if key not in self.roots or not self.roots[key]:
             raise KeyError(
                 f"Root '{key}' is not set in manifest. "
@@ -508,6 +519,12 @@ class Dataset:
         return "media"
 
     def set_root(self, key: str, path: str | Path) -> None:
+        """Set a named dataset root and create the directory if needed.
+
+        Args:
+            key: Root name (e.g. ``"media_raw"``, ``"tracks"``).
+            path: Directory path (absolute or relative to dataset root).
+        """
         self.roots[key] = str(Path(path))
         self._ensure_roots()
 
@@ -545,6 +562,17 @@ class Dataset:
         self._path_map = list(normalized)
 
     def remap_path(self, path: str | Path) -> Path:
+        """Remap a single path using the dataset's path_map.
+
+        Applies the longest-matching prefix replacement from ``path_map``
+        (set during ``load()``). Returns the path unchanged if no prefix matches.
+
+        Args:
+            path: Path to remap.
+
+        Returns:
+            Remapped path, or the original if no mapping applies.
+        """
         p = Path(str(path).strip())
         if not self._path_map:
             return p
@@ -2707,33 +2735,130 @@ class Dataset:
 
     # --- Pipeline delegation methods ---
 
-    def run_feature(self, feature, **kwargs):
+    def run_feature(self, feature: Any, **kwargs: Any) -> Any:
+        """Execute a feature extraction pipeline over the dataset.
+
+        Runs the feature's ``fit()`` (if needed) and ``apply()`` phases over
+        the chosen scope.  Input routing is determined by ``feature.inputs``:
+        tracks (default), a single upstream feature result, or a multi-input set.
+
+        Args:
+            feature: Feature instance implementing the Feature protocol.
+            **kwargs: Passed to ``pipeline.run.run_feature()``.  Common options:
+                groups, sequences (Iterable[str] | None): Scope filter.
+                overwrite (bool): Re-run even if outputs exist for this run_id.
+                parallel_workers (int | None): Parallelize the apply phase.
+                overlap_frames (int): Extra frames from adjacent segments for
+                    edge-effect handling.
+                filter_start_frame, filter_end_frame (int | None): Frame range
+                    filter (start inclusive, end exclusive).
+
+        Returns:
+            A ``Result`` dataclass with ``feature`` and ``run_id``
+            attributes.  Pass directly to ``Inputs()`` to chain features.
+
+        Example:
+            ```python
+            from mosaic.behavior.feature_library import SpeedAngvel, Inputs
+
+            speed = SpeedAngvel()
+            result = ds.run_feature(speed)
+
+            # Chain into a downstream feature
+            downstream = SomeFeature(Inputs((result,)))
+            ds.run_feature(downstream)
+            ```
+        """
         from .pipeline.run import run_feature
 
         return run_feature(self, feature, **kwargs)
 
+    def extract_frames(self, n_frames: int, method: str = "uniform", **kwargs: Any) -> str:
+        """Extract representative frames from each video in the dataset.
 
-    def extract_frames(self, n_frames, method="uniform", **kwargs):
+        Samples *n_frames* per video using either uniform spacing or k-means
+        diversity selection.  Frames are saved as PNGs under ``media/frames/``.
+
+        Args:
+            n_frames: Number of frames to extract per video.
+            method: ``"uniform"`` (evenly spaced) or ``"kmeans"``
+                (visually diverse via pixel-space k-means).
+            **kwargs: Passed to ``pipeline.frames.extract_frames()``.  Common
+                options: groups, sequences, overwrite, start_frame, end_frame,
+                crop, kmeans_resize, parallel_workers.
+
+        Returns:
+            The ``run_id`` for this extraction batch.
+
+        Example:
+            ```python
+            run_id = ds.extract_frames(n_frames=20, method="kmeans")
+            ```
+        """
         from .pipeline.frames import extract_frames
 
         return extract_frames(self, n_frames, method, **kwargs)
 
-    def list_frame_runs(self, method=None):
+    def list_frame_runs(self, method: str | None = None) -> pd.DataFrame:
+        """List all frame extraction runs tracked in the frames index.
+
+        Args:
+            method: Filter to a specific method (``"uniform"`` or ``"kmeans"``).
+                If None, returns runs across all methods.
+
+        Returns:
+            Index rows for matching extraction runs.
+        """
         from .pipeline.frames import list_frame_runs
 
         return list_frame_runs(self, method)
 
-    def get_frame_paths(self, method, run_id=None, group=None, sequence=None):
+    def get_frame_paths(self, method: str, run_id: str | None = None, group: str | None = None, sequence: str | None = None) -> list[Path]:
+        """Return paths to extracted frame PNGs for a given scope.
+
+        Args:
+            method: Extraction method (``"uniform"`` or ``"kmeans"``).
+            run_id: Specific run_id.  If None, uses the latest run.
+            group: Filter to a specific group.
+            sequence: Filter to a specific sequence.
+
+        Returns:
+            Sorted list of PNG file paths.
+        """
         from .pipeline.frames import get_frame_paths
 
         return get_frame_paths(self, method, run_id, group, sequence)
 
-    def get_frame_manifests(self, method, run_id=None, group=None, sequence=None):
+    def get_frame_manifests(self, method: str, run_id: str | None = None, group: str | None = None, sequence: str | None = None) -> list[dict[str, object]]:
+        """Load run_info.json manifests from extracted frame directories.
+
+        Args:
+            method: Extraction method (``"uniform"`` or ``"kmeans"``).
+            run_id: Specific run_id.  If None, uses the latest run.
+            group: Filter to a specific group.
+            sequence: Filter to a specific sequence.
+
+        Returns:
+            Manifest dicts loaded from run_info.json files,
+            one per sequence directory.
+        """
         from .pipeline.frames import get_frame_manifests
 
         return get_frame_manifests(self, method, run_id, group, sequence)
 
-    def train_model(self, model, config=None, overwrite=False):
+    def train_model(self, model: Any, config: str | Path | dict[str, object] | None = None, overwrite: bool = False) -> str:
+        """Train a registered model using a JSON or dict configuration.
+
+        Args:
+            model: Model/trainer instance implementing ``name``, ``version``,
+                and a ``train()`` method.
+            config: Path to a JSON config file or an in-memory dict of
+                hyperparameters.  Passed to ``model.configure()``.
+            overwrite: Reserved for future use (run_ids are hash-based).
+
+        Returns:
+            The ``run_id`` for this training run.
+        """
         from .pipeline.models import train_model
 
         return train_model(self, model, config, overwrite)

@@ -21,8 +21,7 @@ Optional extras (install only what you need):
 | `pose` | `pip install -e ".[pose]"` | Ultralytics YOLO pose training & inference |
 | `polo` | `pip install -e ".[polo]"` | POLO point-detection models |
 | `localizer` | `pip install -e ".[localizer]"` | PyTorch localizer heatmap training |
-| `remote` | `pip install -e ".[remote]"` | SSH/Jupyter remote execution support |
-| `all` | `pip install -e ".[all]"` | wavelets + remote |
+| `all` | `pip install -e ".[all]"` | wavelets |
 
 Notes:
 - `ffmpeg` provides `ffprobe`, used by media indexing and raw H.264 support.
@@ -139,21 +138,6 @@ Standardized NPZ format aligned to sequences/frames. Converters for CalMS21, BOR
 - Egocentric crop generation
 - Global embedding colored scatter plots
 - Timeline plots
-
-### Remote execution
-
-For GPU-intensive operations (features, model training), the dataset can sync to a remote machine via SSH/rsync and execute jobs through SSH or Jupyter kernels:
-
-```python
-remote_cfg = {
-    "ssh_host": "user@gpu-server",
-    "local_root": "/local/path",
-    "remote_root": "/remote/path",
-}
-ds.sync_to_remote(remote_cfg)
-ds.run_feature_remote("mosaic.behavior.feature_library.global_tsne.GlobalTSNE", params, remote_cfg)
-ds.sync_from_remote(remote_cfg)
-```
 
 ## Run IDs and reproducibility
 

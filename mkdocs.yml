@@ -1,0 +1,75 @@
+site_name: Mosaic
+site_description: Behavior analysis toolkit for animal tracking, feature extraction, and modeling
+repo_url: https://github.com/EcodylicScience/mosaic
+repo_name: EcodylicScience/mosaic
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+            merge_init_into_class: true
+            show_signature_annotations: true
+            separate_signature: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Guides:
+      - Pipeline Architecture: pipeline.md
+      - Migration Guide: migration-guide.md
+  - API Reference:
+      - Core:
+          - Dataset: api/core/dataset.md
+          - Schema: api/core/schema.md
+          - Helpers: api/core/helpers.md
+      - Pipeline:
+          - Overview: api/pipeline/index.md
+      - Behavior:
+          - Feature Library: api/behavior/feature-library.md
+          - Label Library: api/behavior/label-library.md
+          - Visualization: api/behavior/visualization.md
+      - Media:
+          - Video I/O: api/media/video-io.md
+          - Frame Extraction: api/media/extraction.md
+      - Tracking:
+          - Pose Training: api/tracking/pose-training.md
