@@ -32,7 +32,7 @@ class NearestNeighborDelta:
     Per-sequence feature that measures how a focal fish changes position/heading/speed over
     the next `diff_numframes` frames relative to its nearest neighbor at the current frame.
 
-    Expected inputs (via tracks or an inputset that merges tracks + nearest-neighbor feature):
+    Expected inputs (via tracks or an Inputs() that merges tracks + nearest-neighbor feature):
       - position/heading/speed columns for the focal (`x`, `y`, `ANGLE`, `speed_col`)
       - nearest-neighbor id column (`nn_id_col`, default: 'nn_id')
       - neighbor offsets in ego frame (`nn_delta_x_ego` / `nn_delta_y_ego`); if missing, world

@@ -47,7 +47,7 @@ class MyPerSequenceFeature:
       A DataFrame for a single (group, sequence) from either:
         * tracks (input_kind="tracks")
         * another feature (input_kind="feature")
-        * an inputset (input_kind="inputset")
+        * a multi-input Inputs() tuple
 
     Output:
       A DataFrame with one row per frame (or per frame x pair), with:

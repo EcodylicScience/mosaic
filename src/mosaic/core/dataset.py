@@ -224,9 +224,6 @@ try:
 except Exception:
     _YAML_OK = False
 
-INPUTSET_DIRNAME = "inputsets"
-
-
 def _dataset_base_dir(ds) -> Path:
     """
     Resolve the directory that holds dataset-level config (sibling to dataset manifest).
@@ -241,160 +238,19 @@ def _dataset_base_dir(ds) -> Path:
     return base
 
 
-def _inputset_dir(ds) -> Path:
-    base = _dataset_base_dir(ds)
-    path = base / INPUTSET_DIRNAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _inputset_path(ds, name: str) -> Path:
-    safe = to_safe_name(name)
-    if not safe:
-        raise ValueError("Inputset name must contain alphanumeric characters.")
-    return _inputset_dir(ds) / f"{safe}.json"
-
-
-def save_inputset(
-    ds,
-    name: str,
-    inputs: list[dict],
-    description: Optional[str] = None,
-    overwrite: bool = False,
-    filter_start_frame: Optional[int] = None,
-    filter_end_frame: Optional[int] = None,
-    filter_start_time: Optional[float] = None,
-    filter_end_time: Optional[float] = None,
-    pair_filter: Optional[dict] = None,
-) -> Path:
-    """
-    Persist an inputset JSON under <dataset_root>/inputsets/<name>.json.
-
-    Parameters
-    ----------
-    ds : Dataset
-        The dataset instance
-    name : str
-        Name for the inputset
-    inputs : list[dict]
-        List of input specifications
-    description : str, optional
-        Human-readable description
-    overwrite : bool, default False
-        Whether to overwrite existing inputset
-    filter_start_frame : int, optional
-        Discard frames < this value when loading
-    filter_end_frame : int, optional
-        Discard frames >= this value when loading
-    filter_start_time : float, optional
-        Discard rows where time < this value (seconds)
-    filter_end_time : float, optional
-        Discard rows where time >= this value (seconds)
-    pair_filter : dict, optional
-        Pair-level filter applied when loading pair features.  Example for
-        nearest-neighbor filtering::
-
-            {"type": "nearest_neighbor",
-             "feature": "nearest-neighbor",
-             "run_id": None}
-    """
-    path = _inputset_path(ds, name)
-    if path.exists() and not overwrite:
-        raise FileExistsError(f"Inputset '{name}' already exists: {path}")
-    payload = {
-        "name": name,
-        "description": description or "",
-        "inputs": inputs or [],
-    }
-    # Add filter params if any are specified
-    if filter_start_frame is not None:
-        payload["filter_start_frame"] = filter_start_frame
-    if filter_end_frame is not None:
-        payload["filter_end_frame"] = filter_end_frame
-    if filter_start_time is not None:
-        payload["filter_start_time"] = filter_start_time
-    if filter_end_time is not None:
-        payload["filter_end_time"] = filter_end_time
-    if pair_filter is not None:
-        payload["pair_filter"] = pair_filter
-    path.write_text(json.dumps(payload, indent=2))
-    return path
-
-
-def _fingerprint_inputs(inputs: list[dict]) -> str:
-    serialized = json.dumps(inputs or [], sort_keys=True, default=str)
-    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
-
-
-def _load_inputset(ds, name: str) -> tuple[list[dict], dict]:
-    path = _inputset_path(ds, name)
-    if not path.exists():
-        raise FileNotFoundError(f"Inputset '{name}' not found at {path}")
-    data = json.loads(path.read_text())
-    inputs = data.get("inputs") or []
-    fingerprint = _fingerprint_inputs(inputs)
-    meta = {
-        "inputset": name,
-        "inputs_fingerprint": fingerprint,
-        "inputs_source": "inputset",
-        "inputset_path": str(path),
-        "description": data.get("description", ""),
-        # Time/frame filtering params
-        "filter_start_frame": data.get("filter_start_frame"),
-        "filter_end_frame": data.get("filter_end_frame"),
-        "filter_start_time": data.get("filter_start_time"),
-        "filter_end_time": data.get("filter_end_time"),
-        # Pair-level filtering
-        "pair_filter": data.get("pair_filter"),
-    }
-    return inputs, meta
-
-
-def _resolve_inputs(
-    ds,
-    explicit_inputs: Optional[list[dict]],
-    inputset_name: Optional[str],
-    explicit_override: bool = False,
-) -> tuple[list[dict], dict]:
-    """
-    Determine which inputs to use based on explicit params vs. named inputset.
-    If inputset_name is provided, it overrides defaults unless explicit_inputs was
-    explicitly supplied by the caller (explicit_override=True).
-    """
-    if inputset_name:
-        inputs, meta = _load_inputset(ds, inputset_name)
-        if explicit_inputs and explicit_override:
-            inputs = explicit_inputs
-            meta = {
-                "inputset": inputset_name,
-                "inputs_fingerprint": _fingerprint_inputs(inputs),
-                "inputs_source": "explicit",
-            }
-    else:
-        inputs = explicit_inputs or []
-        meta = {
-            "inputset": None,
-            "inputs_fingerprint": _fingerprint_inputs(inputs),
-            "inputs_source": "explicit" if explicit_inputs else "default",
-        }
-
-    if not inputs:
-        raise ValueError(
-            "No inputs resolved; provide params['inputs'] or params['inputset']."
-        )
-    return inputs, meta
-
-
 ############# DATASET
 
 default_roots = {
-    "media": "media",
-    "features": "features",  # calculated features (input to models), e.g. wavelets, projections, embeddings
-    "labels": "labels",  # GT annotations, .npy/.csv
+    # ── raw (external, immutable) ──
+    "media_raw": "media_raw",  # original uploaded videos — don't touch, may be on NAS
+    "tracks_raw": "tracks_raw",  # original tracking files from external tools
+    "labels": "labels",  # GT annotations: behavior labels, keypoints, individual IDs
+    # ── derived (computed by mosaic, regenerable) ──
+    "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
+    "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
+    "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
-    "tracks": "tracks",
-    "tracks_raw": "tracks_raw",
-    "frames": "frames",  # extracted video frames (PNGs), can be very large
+    "frames": "media/frames",  # extracted video frames (PNGs), can be very large
 }
 
 
@@ -450,6 +306,18 @@ def new_dataset_manifest(
     header_comment = """# ==========================================================
 # DATASET MANIFEST (extensible YAML)
 # Minimal required fields above; append optional fields below
+#
+# DIRECTORY STRUCTURE (roots):
+#   Raw (external, immutable — do not modify):
+#     media_raw/    Original uploaded videos (may live on NAS)
+#     tracks_raw/   Original tracking files from external tools
+#     labels/       Ground truth: behavior labels, keypoints, individual IDs
+#   Derived (computed by mosaic, regenerable):
+#     media/        Derived media: low-res copies, re-encoded, thumbnails
+#       frames/     Extracted video frames (PNGs), organised by method/run_id
+#     tracks/       Standardised parquet tracks (converted from tracks_raw)
+#     features/     Per-sequence feature parquets (wavelets, projections, embeddings)
+#     models/       Trained models, reports, plots
 #
 # DATASET TYPES:
 #   dataset_type: "discrete"     # Default: distinct recordings (trials, sessions)
@@ -507,13 +375,14 @@ class Dataset:
     format: str = "yaml"
     roots: Dict[str, str] = field(
         default_factory=lambda: {
+            "media_raw": "",
             "media": "",
             "tracks_raw": "",
             "tracks": "",
-            "tracks_raw": "",
             "features": "",
             "labels": "",
             "models": "",
+            "frames": "",
         }
     )
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -623,6 +492,20 @@ class Dataset:
         if not p.is_absolute():
             return (_dataset_base_dir(self) / p).resolve()
         return p
+
+    def has_root(self, key: str) -> bool:
+        """Return True if *key* is a set (non-empty) root."""
+        return key in self.roots and bool(self.roots[key])
+
+    def resolve_media_root(self) -> str:
+        """Return the root key that holds actual video files.
+
+        Prefers ``media_raw`` (original uploads) when set, falls back to
+        ``media`` for backward compatibility with older datasets.
+        """
+        if self.has_root("media_raw"):
+            return "media_raw"
+        return "media"
 
     def set_root(self, key: str, path: str | Path) -> None:
         self.roots[key] = str(Path(path))
@@ -738,7 +621,7 @@ class Dataset:
         results: dict[str, int] = {}
 
         # All roots that may have index files
-        root_keys = ["tracks", "tracks_raw", "labels", "media", "models", "inputsets"]
+        root_keys = ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]
         for key in root_keys:
             root = self.roots.get(key)
             if not root:
@@ -863,7 +746,7 @@ class Dataset:
             return total_changed
 
         # Walk all roots that have index files
-        for key in ["tracks", "tracks_raw", "media", "models", "inputsets"]:
+        for key in ["tracks", "tracks_raw", "media", "media_raw", "models"]:
             r = self.roots.get(key)
             if not r:
                 continue
@@ -1157,7 +1040,7 @@ class Dataset:
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
             )
 
-        media_root = self.get_root("media")
+        media_root = self.get_root(self.resolve_media_root())
         out_csv = media_root / index_filename
         exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
         seq_key_map = self._build_media_sequence_keymap()
@@ -1291,7 +1174,7 @@ class Dataset:
         For multi-video sequences, returns paths sorted by ``video_order``.
         For single-video sequences, returns a list with one element.
         """
-        media_root = self.get_root("media")
+        media_root = self.get_root(self.resolve_media_root())
         idx_path = media_root / index_filename
         if not idx_path.exists():
             raise FileNotFoundError(f"Media index not found: {idx_path}")

@@ -58,9 +58,12 @@ def list_media_pairs(
     sequences: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Return filtered media index DataFrame with (group, sequence, abs_path, ..., video_order)."""
-    idx_path = ds.get_root("media") / "index.csv"
+    media_key = ds.resolve_media_root()
+    idx_path = ds.get_root(media_key) / "index.csv"
     if not idx_path.exists():
-        raise FileNotFoundError("media/index.csv not found; run index_media() first.")
+        raise FileNotFoundError(
+            f"{media_key}/index.csv not found; run index_media() first."
+        )
     df = pd.read_csv(idx_path)
     df["group"] = df["group"].fillna("").astype(str)
     df["sequence"] = df["sequence"].fillna("").astype(str)

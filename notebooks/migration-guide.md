@@ -302,6 +302,59 @@ df = load_values(
 # df has columns: group, sequence, frame, id1, id2, tsne_x, tsne_y, cluster, labels-behavior
 ```
 
+## Directory structure: raw vs derived
+
+Dataset directories are now split into **raw** (external, immutable) and
+**derived** (computed by mosaic, regenerable):
+
+```
+<dataset_root>/
+  ── raw (external, immutable) ──
+  media_raw/          Original uploaded videos (don't touch, may be on NAS)
+  tracks_raw/         Original tracking files from external tools
+  labels/             Ground truth: behavior labels, keypoints, individual IDs
+
+  ── derived (computed by mosaic, regenerable) ──
+  media/              Derived media: low-res copies, re-encoded, thumbnails
+    frames/           Extracted video frames (PNGs), by method/run_id
+  tracks/             Standardised parquet tracks (converted from tracks_raw)
+  features/           Per-sequence feature parquets
+  models/             Trained models, reports, plots
+```
+
+### What changed
+
+| Before | After | Notes |
+|--------|-------|-------|
+| `media/` held original videos | `media_raw/` holds originals | `media/` is now for derived media |
+| `frames/` was a top-level root | `media/frames/` | Frames are a derived media artifact |
+| `inputsets/` existed | Removed | Use `Inputs()` tuples instead |
+
+### Backward compatibility
+
+**Old datasets work unchanged.** If `media_raw` is not set in your `dataset.yaml`,
+`index_media()` and `resolve_media_paths()` fall back to `media/`. You can check
+with `ds.has_root("media_raw")`.
+
+If your `dataset.yaml` says `"frames": "frames"`, that still resolves correctly.
+Only new datasets created with `new_dataset_manifest()` default to `"media/frames"`.
+
+### Migrating an existing dataset (optional)
+
+```python
+# 1. Rename your video directory
+#    mv media/ media_raw/
+
+# 2. Update manifest
+ds.set_root("media_raw", "media_raw")
+ds.set_root("media", "media")
+ds.set_root("frames", "media/frames")
+ds.save()
+
+# 3. Re-index videos
+ds.index_media([ds.get_root("media_raw")])
+```
+
 All visualization and analysis happens in notebook code using standard pandas/matplotlib.
 
 ## XGBoost: model_library to feature_library

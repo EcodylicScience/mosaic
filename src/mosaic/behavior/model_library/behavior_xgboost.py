@@ -22,7 +22,6 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-from mosaic.core.dataset import _resolve_inputs
 from mosaic.core.helpers import load_labels_for_feature_frames, to_safe_name
 from mosaic.core.pipeline.index import (
     feature_index_path,
@@ -49,9 +48,8 @@ class BehaviorXGBoostModel:
              "drop_columns": [...],
              "numeric_only": true/false}
         (use this path when training from one feature)
-      - OR specify an inputset/multi-input spec:
-            "inputset": "social+ego@v1"   # saved via features.save_inputset
-            # optional "inputs": [...] overrides or supplements the set, same schema as GlobalTSNE/GlobalWardClustering
+      - OR specify a multi-input spec:
+            "inputs": [{"feature": "feat1"}, {"feature": "feat2", "run_id": "..."}]
         Each input entry supports {"feature","run_id","pattern","load":{...}}
       - label_kind: str (default "behavior")
       - train_sequences / test_sequences: optional lists (raw or safe names)
@@ -108,9 +106,9 @@ class BehaviorXGBoostModel:
     def configure(self, config: dict, run_root: Path):
         cfg = dict(self.params)
         cfg.update(config or {})
-        if not (cfg.get("feature") or cfg.get("inputset") or cfg.get("inputs")):
+        if not (cfg.get("feature") or cfg.get("inputs")):
             raise ValueError(
-                "BehaviorXGBoostModel config requires 'feature' or 'inputset/inputs'."
+                "BehaviorXGBoostModel config requires 'feature' or 'inputs'."
             )
         self._config = cfg
         self._run_root = Path(run_root)
@@ -387,8 +385,8 @@ class BehaviorXGBoostModel:
 
     def _collect_sequence_payloads(self, ds, cfg: dict) -> List[dict]:
         label_lookup = self._build_label_lookup(ds, cfg.get("label_kind", "behavior"))
-        if cfg.get("inputset") or cfg.get("inputs"):
-            feature_payloads = self._collect_inputset_features(ds, cfg)
+        if cfg.get("inputs"):
+            feature_payloads = self._collect_multi_input_features(ds, cfg)
         else:
             feature_payloads = self._collect_single_feature(ds, cfg)
 
@@ -556,14 +554,13 @@ class BehaviorXGBoostModel:
         )
         return payloads
 
-    def _collect_inputset_features(self, ds, cfg: dict) -> Dict[str, dict]:
-        explicit_inputs = cfg.get("inputs")
-        inputset_name = cfg.get("inputset")
-        explicit_override = bool(explicit_inputs)
-        inputs, meta = _resolve_inputs(
-            ds, explicit_inputs, inputset_name, explicit_override=explicit_override
-        )
-        pair_filter_spec = meta.get("pair_filter")
+    def _collect_multi_input_features(self, ds, cfg: dict) -> Dict[str, dict]:
+        inputs = cfg.get("inputs") or []
+        if not inputs:
+            raise ValueError(
+                "No inputs specified; provide cfg['inputs'] as a list of feature specs."
+            )
+        pair_filter_spec = cfg.get("pair_filter")
         nn_lookup_cache: dict[tuple[str, str], dict] = {}
         n_inputs = len(inputs)
         per_seq: Dict[str, dict] = {}
@@ -692,7 +689,7 @@ class BehaviorXGBoostModel:
             self._feature_columns = first_columns
         if not feature_payloads:
             raise RuntimeError(
-                "No sequences retained after aligning inputset features."
+                "No sequences retained after aligning multi-input features."
             )
         self._training_input_signature = Inputs(
             *(
