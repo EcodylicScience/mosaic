@@ -369,6 +369,10 @@ def run_feature(
             inputs_json=json.dumps(json_ready(feature.inputs.model_dump())),
         )
 
+    # Bind dataset (for features that need media paths, etc.)
+    if hasattr(feature, "bind_dataset"):
+        feature.bind_dataset(ds)
+
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature.params)
 

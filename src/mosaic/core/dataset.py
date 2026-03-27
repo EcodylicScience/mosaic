@@ -1791,6 +1791,7 @@ class Dataset:
             # Merge TRex NPZ per (group, sequence)
             dfs = []
             first_row = group_df.iloc[0]
+            _merge_failed = False
             for _, row in group_df.iterrows():
                 src_path = self.resolve_path(row["abs_path"])
                 hints = {
@@ -1800,8 +1801,18 @@ class Dataset:
                 call_params = dict(params) if params else {}
                 call_params.update(hints)
                 call_params["group_from"] = group_from
-                df_std = TRACK_CONVERTERS[src_format](src_path, call_params)
+                try:
+                    df_std = TRACK_CONVERTERS[src_format](src_path, call_params)
+                except Exception as e:
+                    print(
+                        f"[WARN] convert failed for {src_path}: {e}; "
+                        f"skipping sequence ({group}, {sequence})"
+                    )
+                    _merge_failed = True
+                    break
                 dfs.append(df_std)
+            if _merge_failed or not dfs:
+                continue
 
             # Align columns across IDs
             all_cols = sorted(set().union(*[set(d.columns) for d in dfs]))
@@ -2735,7 +2746,21 @@ class Dataset:
 
     # --- Pipeline delegation methods ---
 
-    def run_feature(self, feature: Any, **kwargs: Any) -> Any:
+    def run_feature(
+        self,
+        feature: Any,
+        groups: Iterable[str] | None = None,
+        sequences: Iterable[str] | None = None,
+        overwrite: bool = False,
+        parallel_workers: int | None = None,
+        parallel_mode: str | None = "thread",
+        overlap_frames: int = 0,
+        filter_start_frame: int | None = None,
+        filter_end_frame: int | None = None,
+        filter_start_time: float | None = None,
+        filter_end_time: float | None = None,
+        registry: "FeatureRegistry | None" = None,
+    ) -> Any:
         """Execute a feature extraction pipeline over the dataset.
 
         Runs the feature's ``fit()`` (if needed) and ``apply()`` phases over
@@ -2744,14 +2769,23 @@ class Dataset:
 
         Args:
             feature: Feature instance implementing the Feature protocol.
-            **kwargs: Passed to ``pipeline.run.run_feature()``.  Common options:
-                groups, sequences (Iterable[str] | None): Scope filter.
-                overwrite (bool): Re-run even if outputs exist for this run_id.
-                parallel_workers (int | None): Parallelize the apply phase.
-                overlap_frames (int): Extra frames from adjacent segments for
-                    edge-effect handling.
-                filter_start_frame, filter_end_frame (int | None): Frame range
-                    filter (start inclusive, end exclusive).
+            groups: Scope filter — restrict to these group names.
+            sequences: Scope filter — restrict to these sequence names.
+            overwrite: Re-run even if outputs exist for this run_id.
+            parallel_workers: When >1 and the feature declares itself
+                parallelizable, run the apply phase in parallel.
+            parallel_mode: ``'thread'`` (default) or ``'process'`` execution
+                backend when *parallel_workers* > 1.
+            overlap_frames: Extra frames from adjacent segments for
+                edge-effect handling.  Mutually exclusive with frame/time
+                filters.
+            filter_start_frame: Only include frames >= this value.
+            filter_end_frame: Only include frames < this value.
+            filter_start_time: Converted to start frame via *fps_default*
+                from dataset metadata.
+            filter_end_time: Converted to end frame via *fps_default*
+                from dataset metadata.
+            registry: Optional feature registry (advanced usage).
 
         Returns:
             A ``Result`` dataclass with ``feature`` and ``run_id``
@@ -2771,9 +2805,44 @@ class Dataset:
         """
         from .pipeline.run import run_feature
 
-        return run_feature(self, feature, **kwargs)
+        return run_feature(
+            self,
+            feature,
+            groups=groups,
+            sequences=sequences,
+            overwrite=overwrite,
+            parallel_workers=parallel_workers,
+            parallel_mode=parallel_mode,
+            overlap_frames=overlap_frames,
+            filter_start_frame=filter_start_frame,
+            filter_end_frame=filter_end_frame,
+            filter_start_time=filter_start_time,
+            filter_end_time=filter_end_time,
+            registry=registry,
+        )
 
-    def extract_frames(self, n_frames: int, method: str = "uniform", **kwargs: Any) -> str:
+    def extract_frames(
+        self,
+        n_frames: int,
+        method: str = "uniform",
+        *,
+        groups: Iterable[str] | None = None,
+        sequences: Iterable[str] | None = None,
+        overwrite: bool = False,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        candidate_step: int = 1,
+        crop=None,
+        kmeans_resize: tuple[int, int] = (64, 64),
+        kmeans_grayscale: bool = True,
+        kmeans_max_candidates: int | None = 5000,
+        kmeans_batch_size: int = 1024,
+        kmeans_max_iter: int = 100,
+        kmeans_n_init="auto",
+        random_state: int = 42,
+        parallel_workers: int | str | None = "auto",
+        parallel_mode: str = "thread",
+    ) -> str:
         """Extract representative frames from each video in the dataset.
 
         Samples *n_frames* per video using either uniform spacing or k-means
@@ -2783,9 +2852,23 @@ class Dataset:
             n_frames: Number of frames to extract per video.
             method: ``"uniform"`` (evenly spaced) or ``"kmeans"``
                 (visually diverse via pixel-space k-means).
-            **kwargs: Passed to ``pipeline.frames.extract_frames()``.  Common
-                options: groups, sequences, overwrite, start_frame, end_frame,
-                crop, kmeans_resize, parallel_workers.
+            groups: Scope filter — restrict to these group names.
+            sequences: Scope filter — restrict to these sequence names.
+            overwrite: Re-run even if outputs exist.
+            start_frame: Only consider frames >= this value.
+            end_frame: Only consider frames < this value.
+            candidate_step: Step between candidate frames (default 1).
+            crop: Optional crop specification.
+            kmeans_resize: Resize frames to this (w, h) before k-means.
+            kmeans_grayscale: Convert to grayscale before k-means.
+            kmeans_max_candidates: Cap candidate pool size for k-means.
+            kmeans_batch_size: Mini-batch size for k-means.
+            kmeans_max_iter: Max k-means iterations.
+            kmeans_n_init: Number of k-means initializations.
+            random_state: Random seed for reproducibility.
+            parallel_workers: Number of parallel workers (``"auto"``
+                to match CPU count).
+            parallel_mode: ``'thread'`` (default) or ``'process'``.
 
         Returns:
             The ``run_id`` for this extraction batch.
@@ -2797,7 +2880,27 @@ class Dataset:
         """
         from .pipeline.frames import extract_frames
 
-        return extract_frames(self, n_frames, method, **kwargs)
+        return extract_frames(
+            self,
+            n_frames,
+            method,
+            groups=groups,
+            sequences=sequences,
+            overwrite=overwrite,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            candidate_step=candidate_step,
+            crop=crop,
+            kmeans_resize=kmeans_resize,
+            kmeans_grayscale=kmeans_grayscale,
+            kmeans_max_candidates=kmeans_max_candidates,
+            kmeans_batch_size=kmeans_batch_size,
+            kmeans_max_iter=kmeans_max_iter,
+            kmeans_n_init=kmeans_n_init,
+            random_state=random_state,
+            parallel_workers=parallel_workers,
+            parallel_mode=parallel_mode,
+        )
 
     def list_frame_runs(self, method: str | None = None) -> pd.DataFrame:
         """List all frame extraction runs tracked in the frames index.
