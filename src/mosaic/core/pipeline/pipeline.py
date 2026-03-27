@@ -89,6 +89,21 @@ class CallbackStep:
 # ---------------------------------------------------------------------------
 
 
+def _newest_mtime(run_root: "Path") -> str | None:
+    """Return the newest parquet mtime in a run directory as a short timestamp."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    try:
+        parquets = list(run_root.glob("*.parquet"))
+        if not parquets:
+            return None
+        newest = max(f.stat().st_mtime for f in parquets)
+        return datetime.fromtimestamp(newest, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return None
+
+
 def storage_name(feature: object) -> str:
     """Compute on-disk storage name, mirroring ``run_feature`` logic.
 
@@ -146,25 +161,40 @@ class Pipeline:
     def _resolve_step_cache(self, dataset: Dataset) -> list[dict]:
         """Compute expected run_ids and check cache state for all steps."""
         mock_results: dict[str, Result] = {}
-        stale = False
+        stale_steps: set[str] = set()
         resolved: list[dict] = []
 
+        # Inverted DAG: {parent -> [children]} for staleness propagation
+        adj = self.dag()
+        children_of: dict[str, list[str]] = {name: [] for name in adj}
+        for child, parents in adj.items():
+            for parent in parents:
+                if parent in children_of:
+                    children_of[parent].append(child)
+
         for step in self.steps:
+            step_is_stale = step.name in stale_steps
+
             if isinstance(step, CallbackStep):
                 # Mark stale if any dependency is not cached
-                for dep in step.depends_on:
-                    dep_info = next(
-                        (r for r in resolved if r["step"].name == dep), None
-                    )
-                    if dep_info and not dep_info["cached"]:
-                        stale = True
-                        break
+                if not step_is_stale:
+                    for dep in step.depends_on:
+                        dep_info = next(
+                            (r for r in resolved if r["step"].name == dep), None
+                        )
+                        if dep_info and not dep_info["cached"]:
+                            step_is_stale = True
+                            break
+                # Propagate staleness to children if this callback is stale
+                if step_is_stale:
+                    for child_name in children_of.get(step.name, []):
+                        stale_steps.add(child_name)
                 resolved.append({
                     "step": step,
                     "storage_name": None,
                     "expected_run_id": None,
                     "cached": None,
-                    "stale": stale,
+                    "stale": step_is_stale,
                     "mock_result": None,
                 })
                 continue
@@ -207,9 +237,9 @@ class Pipeline:
                 )
                 cached = run_root.exists() and any(run_root.glob("*.parquet"))
 
-                # Staleness propagation: if any upstream is not cached,
-                # downstream cannot be trusted even if files exist
-                if stale:
+                # Staleness: if this step was marked stale by an upstream,
+                # its cache cannot be trusted
+                if step_is_stale:
                     cached = False
 
                 result = Result(
@@ -223,7 +253,7 @@ class Pipeline:
                     "storage_name": feat_storage_name,
                     "expected_run_id": expected_run_id,
                     "cached": cached,
-                    "stale": stale,
+                    "stale": step_is_stale,
                     "mock_result": result,
                     "feature_short": feature.name,
                 })
@@ -237,15 +267,17 @@ class Pipeline:
                     "storage_name": step.feature_cls.name,
                     "expected_run_id": None,
                     "cached": False,
-                    "stale": stale,
+                    "stale": step_is_stale,
                     "mock_result": None,
                     "feature_short": step.feature_cls.name,
                     "error": str(e)[:60],
                 })
 
-            # Once any step is not cached, everything downstream is stale
+            # If this step is not cached, mark its direct children stale
+            # (transitive propagation happens naturally via topological order)
             if not resolved[-1]["cached"]:
-                stale = True
+                for child_name in children_of.get(step.name, []):
+                    stale_steps.add(child_name)
 
         return resolved
 
@@ -267,6 +299,7 @@ class Pipeline:
                     "n_seq": "-",
                     "runs": "-",
                     "cached": "-" if not info["stale"] else "stale",
+                    "modified": "-",
                 })
                 continue
 
@@ -298,6 +331,15 @@ class Pipeline:
                 if info["expected_run_id"] and run_root.exists():
                     cached_display = "stale"
 
+            # Modification timestamp (show even for stale runs if files exist)
+            modified = None
+            if info["expected_run_id"]:
+                rr = feature_run_root(
+                    dataset, info["storage_name"], info["expected_run_id"]
+                )
+                if rr.exists():
+                    modified = _newest_mtime(rr)
+
             row: dict[str, object] = {
                 "step": step.name,
                 "feature": info.get("feature_short", info["storage_name"]),
@@ -307,6 +349,7 @@ class Pipeline:
                 "n_seq": n_seq,
                 "runs": n_runs,
                 "cached": cached_display,
+                "modified": modified,
             }
             if "error" in info:
                 row["error"] = info["error"]
@@ -376,14 +419,17 @@ class Pipeline:
         except Exception:
             registry = None
 
+        if force_from:
+            known = {s.name for s in self.steps}
+            if force_from not in known:
+                msg = f"force_from={force_from!r} is not a known step. Available: {sorted(known)}"
+                raise ValueError(msg)
+
         self.results = {}
-        force = False
+        force_set: set[str] = self._downstream_of(force_from) if force_from else set()
 
         try:
             for step in self.steps:
-                if force_from and step.name == force_from:
-                    force = True
-
                 if isinstance(step, CallbackStep):
                     print(f"  [{step.name}] running callback...")
                     step.fn(dataset, self.results)
@@ -391,7 +437,7 @@ class Pipeline:
 
                 # Check if cached
                 info = cached_map.get(step.name, {})
-                if not force and info.get("cached"):
+                if step.name not in force_set and info.get("cached"):
                     run_id = info["expected_run_id"]
                     self.results[step.name] = Result(
                         feature=info["storage_name"],
@@ -415,7 +461,7 @@ class Pipeline:
                     inputs=Inputs(input_items), params=step.params
                 )
                 kwargs = {**self.default_run_kwargs, **step.run_kwargs}
-                if force:
+                if step.name in force_set:
                     kwargs["overwrite"] = True
                 if registry is not None:
                     kwargs["registry"] = registry
@@ -455,9 +501,10 @@ class Pipeline:
         Returns
         -------
         pd.DataFrame
-            Summary with columns ``[step, feature, run_id, status, n_files, size_mb]``.
+            Summary with columns ``[step, feature, run_id, status, n_files, size_mb, modified]``.
         """
         import shutil
+        from datetime import datetime, timezone
 
         resolved = self._resolve_step_cache(dataset)
         rows: list[dict] = []
@@ -485,10 +532,13 @@ class Pipeline:
                 if run_dir.exists():
                     files = list(run_dir.glob("*"))
                     n_files = len(files)
-                    size_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                    stats = [f.stat() for f in files if f.is_file()]
+                    size_bytes = sum(s.st_size for s in stats)
+                    newest_mtime = max((s.st_mtime for s in stats), default=0)
                 else:
                     n_files = 0
                     size_bytes = 0
+                    newest_mtime = 0
 
                 is_current = rid == expected_rid
                 if is_current:
@@ -508,6 +558,11 @@ class Pipeline:
                     "status": status,
                     "n_files": n_files,
                     "size_mb": round(size_bytes / 1_048_576, 1),
+                    "modified": (
+                        datetime.fromtimestamp(newest_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        if newest_mtime > 0
+                        else None
+                    ),
                 })
 
             # Clean index.csv if not dry_run
@@ -553,3 +608,23 @@ class Pipeline:
             else:
                 adj[step.name] = list(step.depends_on)
         return adj
+
+    def _downstream_of(self, step_name: str) -> set[str]:
+        """Return all step names transitively downstream of *step_name* (inclusive)."""
+        adj = self.dag()
+        # Invert: {parent -> [children]}
+        children: dict[str, list[str]] = {name: [] for name in adj}
+        for child, parents in adj.items():
+            for parent in parents:
+                if parent in children:
+                    children[parent].append(child)
+        # BFS
+        visited: set[str] = set()
+        queue = [step_name]
+        while queue:
+            node = queue.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            queue.extend(children.get(node, []))
+        return visited
