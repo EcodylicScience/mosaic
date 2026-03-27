@@ -42,6 +42,33 @@ class NearestNeighborDelta:
       frame, id, group, sequence, nn_id, neighbor_x/y (ego), neighbor_focal (if available),
       dx, dy, dt, dangle (wrapped; optionally scaled by fps), dspeed, plus passthrough columns
       like group_size/event/Focal_fish when present.
+
+    Params:
+        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
+        speed_col: Column name for speed. Default: "SPEED#wcentroid".
+        nn_id_col: Column name for the nearest-neighbor ID.
+            Default: "nn_id".
+        nn_dx_ego_col: Column for neighbor delta-x in ego frame.
+            Default: "nn_delta_x_ego".
+        nn_dy_ego_col: Column for neighbor delta-y in ego frame.
+            Default: "nn_delta_y_ego".
+        nn_dx_world_col: Fallback column for neighbor delta-x in world
+            frame (used when ego columns are absent).
+            Default: "nn_delta_x".
+        nn_dy_world_col: Fallback column for neighbor delta-y in world
+            frame. Default: "nn_delta_y".
+        focal_col: Column name for the focal-animal flag.
+            Default: "Focal_fish".
+        diff_numframes: Number of frames ahead to compute the future
+            response delta. Default: 4.
+        wrap_angle: If True, wrap heading differences to [-pi, pi].
+            Default: True.
+        divide_dangle_by_frames: If True, divide the heading change by
+            diff_numframes. Default: True.
+        scale_dangle_by_fps: If True, multiply dangle by fps to convert
+            to radians/sec. Default: True.
+        tag_cols: Additional columns to pass through to the output.
+            Default: [].
     """
 
     name = "nn-delta-response"

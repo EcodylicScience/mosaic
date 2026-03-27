@@ -189,7 +189,29 @@ def _pooled_stats(
 @final
 @register_feature
 class TemporalStackingFeature:
-    """Build temporal context windows over per-sequence feature data."""
+    """Build temporal context windows over per-sequence feature data.
+
+    Params:
+        half: Half-width of the temporal window in frames. The full
+            window spans [-half, +half]. Default: 60.
+        skip: Step size between time offsets in the stacking window.
+            Default: 5.
+        use_temporal_stack: If True, concatenate Gaussian-smoothed
+            copies at each time offset. Default: True.
+        sigma_stack: Gaussian sigma (in frames) for smoothing before
+            stacking. 0 disables smoothing. Default: 30.0.
+        add_pool: If True, append pooled statistics (e.g. mean, std)
+            computed over a sliding Gaussian window. Default: True.
+        pool_stats: Tuple of pooled statistics to compute. Supported:
+            "mean", "std", "variance". Default: ("mean",).
+        sigma_pool: Gaussian sigma (in frames) for the pooling window.
+            Default: 30.0.
+        fps: Frames per second; used to convert win_sec to frames.
+            Default: 30.0.
+        win_sec: Pooling window width in seconds. Default: 0.5.
+        pair_filter: Optional NNResult for nearest-neighbor pair
+            filtering during dependency resolution. Default: None.
+    """
 
     name = "temporal-stack"
     version = "0.3"

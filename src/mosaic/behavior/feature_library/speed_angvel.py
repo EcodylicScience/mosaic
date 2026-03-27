@@ -125,6 +125,15 @@ class SpeedAngvel:
 
       For most video-based tracking data, setting ``fps`` is strongly
       recommended to avoid speed artifacts from timestamp jitter.
+
+    Params:
+        step_size: If set, also compute speed_step / angvel_step using
+            this frame step (in addition to step=1). Default: None.
+        smooth_window: If set, apply Savitzky-Golay smoothing (polyorder=1)
+            over this many frames to produce speed_smooth. Default: None.
+        fps: Frames per second. When set, dt is derived from frame_diff/fps
+            instead of the time column — more robust for constant-fps data
+            with jittery timestamps. Default: None.
     """
 
     name = "speed-angvel"

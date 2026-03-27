@@ -71,6 +71,23 @@ class ExtractLabeledTemplates:
     files, assigns train/test splits by sequence, and subsamples per
     class. Produces a templates parquet with feature columns + label
     (int) + split (str).
+
+    Params:
+        labels: GroundTruthLabelsSource specifying where to load
+            per-frame ground-truth labels (required).
+        strategy: Template selection method — "random" or
+            "farthest_first". Default: "random".
+        n_per_class: Number of templates per class. An int applies
+            uniformly; a dict maps class -> count. Exactly one of
+            n_per_class or n_total must be set. Default: None.
+        n_total: Total number of templates across all classes
+            (distributed proportionally). Exactly one of n_per_class
+            or n_total must be set. Default: None.
+        pool: PoolConfig controlling candidate pool size and allocation.
+            Default: PoolConfig().
+        test_fraction: Fraction of sequences held out for the test
+            split. Default: 0.2.
+        random_state: Random seed for reproducibility. Default: 42.
     """
 
     name = "extract-labeled-templates"

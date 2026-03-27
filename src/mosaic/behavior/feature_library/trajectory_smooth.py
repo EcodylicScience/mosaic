@@ -61,14 +61,24 @@ class TrajectorySmooth:
     originals, plus a ``bad_frame`` boolean column. Downstream features
     can consume this via ``Inputs((Result(feature="trajectory-smooth"),))``.
 
-    Parameters
-    ----------
-    speed_threshold : float or None
-        When ``fps`` is set, interpreted as **units/sec** (e.g. 40 cm/s).
-        When ``fps`` is None, interpreted as units/frame (legacy behavior).
-    fps : float or None
-        Frames per second.  When provided, ``speed_threshold`` is treated as
-        units/sec and converted internally to units/frame.
+    Params:
+        speed_threshold: Speed above which a frame is flagged as bad.
+            When ``fps`` is set, interpreted as units/sec (e.g. 40 cm/s);
+            otherwise units/frame. Default: None (no bad-frame detection).
+        fps: Frames per second. When provided, ``speed_threshold`` is
+            converted from units/sec to units/frame internally.
+            Default: None.
+        interpolate_centroid: If True, replace bad-frame centroid positions
+            with linear interpolation. Default: True.
+        interpolate_pose: If True, replace bad-frame pose keypoint positions
+            with linear interpolation. Default: False.
+        expand_frames: Number of frames to expand the bad-frame region in
+            each direction. Default: 2.
+        savgol_window: Window length for Savitzky-Golay smoothing. Must be
+            odd and >= savgol_polyorder + 1. None disables smoothing.
+            Default: None.
+        savgol_polyorder: Polynomial order for Savitzky-Golay filter.
+            Default: 2.
     """
 
     name = "trajectory-smooth"

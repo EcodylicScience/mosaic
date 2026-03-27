@@ -199,6 +199,14 @@ class FFGroups:
       - group_membership (component label)
       - group_size (size of that component)
       - event (event id from dp.get_events_info, -1 if not in an event)
+
+    Params:
+        distance_cutoff: Pairwise distance threshold below which two
+            animals are considered in the same group. Default: 50.0.
+        window_size: Sliding-window size (frames) for smoothing the
+            pairwise distance matrix before thresholding. Default: 5.
+        min_event_duration: Minimum number of contiguous frames for a
+            stable subgroup to be registered as an event. Default: 1.
     """
 
     name = "ffgroups"

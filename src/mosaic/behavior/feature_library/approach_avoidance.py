@@ -71,6 +71,39 @@ class ApproachAvoidance:
     For N animals per sequence, evaluates all N*(N-1)/2 unique unordered pairs.
     The output stores directional events as aa_event_12 and aa_event_21 over
     canonical (id1,id2), plus aa_event/label_id as non-directional union.
+
+    Params:
+        interpolation: Interpolation settings for missing data.
+            Default: InterpolationConfig().
+        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
+        velocity_units: Whether speed thresholds are in "per_frame" or
+            "per_second". Default: "per_frame".
+        angle_units: Unit for heading angles — "radians", "degrees", or
+            "auto" (detect from data range). Default: "radians".
+        consecutive_frame_delta: Expected frame step between consecutive
+            rows; used to detect gaps. Default: 1.0.
+        distance_threshold: Maximum inter-animal distance (in position
+            units) for a frame to be considered AA-eligible. Default: 200.0.
+        approacher_velocity_threshold: Minimum speed of the approaching
+            animal. Default: 5.0.
+        avoider_velocity_threshold: Minimum speed of the avoiding animal.
+            Default: 5.0.
+        cos_approacher_threshold: Minimum cosine between the approacher's
+            velocity vector and the direction toward the partner.
+            Default: 0.8.
+        cos_avoider_threshold: Minimum cosine between the avoider's
+            velocity vector and the direction away from the partner.
+            Default: 0.5.
+        min_event_length: Minimum number of contiguous qualifying frames
+            to form an event. Default: 10.
+        min_event_count: Minimum number of qualifying frames within an
+            event run to keep it. Default: 5.
+        orientation_gate_cos: If set, require the approacher's body
+            orientation to align with its velocity (cos threshold).
+            Default: cos(30°) ≈ 0.866. None disables the gate.
+        smooth_window_sec: If set, apply a sliding-window average (in
+            seconds) to velocities before thresholding. Default: None
+            (disabled; framewise behaviour).
     """
 
     name = "approach-avoidance"

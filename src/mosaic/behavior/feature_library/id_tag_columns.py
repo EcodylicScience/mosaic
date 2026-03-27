@@ -31,6 +31,16 @@ class IdTagColumns:
 
     Outputs per row (same granularity as input tracks/feature):
       frame/time/id/group/sequence + one column per requested label field.
+
+    Params:
+        labels: LabelsSource specifying which labels directory to load.
+            Default: LabelsSource(kind="id_tags").
+        label_kind: Label subdirectory name used for dependency
+            resolution. Default: "id_tags".
+        fields: List of label field names to attach. None means all
+            fields found in the labels file. Default: None.
+        field_renames: Optional mapping of original field names to
+            renamed column names in the output. Default: None.
     """
 
     name = "id-tag-columns"

@@ -58,6 +58,18 @@ class WardModelArtifact(JoblibArtifact[WardModelBundle]):
 class GlobalWardClustering:
     """
     Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
+
+    Params:
+        templates: Templates artifact to cluster (inherited from
+            GlobalModelParams).
+        model: Pre-fitted WardModelArtifact to load (skip fit).
+            Default: WardModelArtifact().
+        n_clusters: Number of clusters to cut from the linkage tree.
+            Default: 20.
+        method: Linkage method passed to scipy.cluster.hierarchy.linkage.
+            Default: "ward".
+        pair_filter: Optional NNResult for nearest-neighbor pair
+            filtering during dependency resolution. Default: None.
     """
 
     name = "global-ward"

@@ -151,7 +151,48 @@ class KpmsModelArtifact(JoblibArtifact[KpmsModelBundle]):
 @final
 @register_feature
 class KpmsFeature:
-    """Unified keypoint-MoSeq feature: fit + apply via persistent subprocess."""
+    """Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
+
+    Params:
+        model: Pre-fitted KpmsModelArtifact to load (skip fit). Default:
+            KpmsModelArtifact().
+        kpms_python: Path to a Python interpreter with keypoint-moseq
+            installed. None uses the bundled external .venv. Default: None.
+        pose: Pose keypoint configuration (indices, column prefixes).
+            Default: PoseConfig().
+        anterior_bodyparts: List of bodypart names forming the anterior
+            reference (required, min 1 element).
+        posterior_bodyparts: List of bodypart names forming the posterior
+            reference (required, min 1 element).
+        fps: Frames per second of the input data. Default: 30.
+        num_iters_ar: Number of AR-only fitting iterations. Default: 50.
+        num_iters_full: Number of full model fitting iterations.
+            Default: 500.
+        kappa_ar: AR transition concentration parameter. None lets
+            keypoint-moseq choose. Default: None.
+        kappa_full: Full-model transition concentration parameter. None
+            lets keypoint-moseq choose. Default: None.
+        latent_dim: Dimensionality of the latent pose space. Must satisfy
+            latent_dim < 2 * num_keypoints. Default: 10.
+        location_aware: If True, include centroid location in the model.
+            Default: False.
+        outlier_scale_factor: Scale factor for outlier detection.
+            Default: 6.0.
+        remove_outliers: If True, remove detected outlier frames before
+            fitting. Default: True.
+        mixed_map_iters: Number of mixed MAP iterations. None uses the
+            keypoint-moseq default. Default: None.
+        parallel_message_passing: Enable parallel message passing. None
+            uses the keypoint-moseq default. Default: None.
+        resume: If True, resume fitting from a previously saved
+            checkpoint. Default: True.
+        downsample_rate: Temporal downsampling factor applied before
+            fitting. None disables downsampling. Default: None.
+        save_every_n_iters: Save a checkpoint every N iterations during
+            fit. Default: 25.
+        num_iters_apply: Number of iterations when applying the model to
+            new data. Default: 500.
+    """
 
     name = "kpms"
     version = "0.1"

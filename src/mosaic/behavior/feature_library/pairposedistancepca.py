@@ -53,6 +53,23 @@ class PairPoseDistancePCA:
     """
     'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and
     fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
+
+    Params:
+        interpolation: Interpolation settings for missing pose data.
+            Default: InterpolationConfig().
+        pose: Pose keypoint configuration (indices, column prefixes).
+            Default: PoseConfig().
+        include_intra_A: If True, include intra-animal A pairwise
+            keypoint distances. Default: True.
+        include_intra_B: If True, include intra-animal B pairwise
+            keypoint distances. Default: True.
+        include_inter: If True, include inter-animal pairwise keypoint
+            distances. Default: True.
+        duplicate_perspective: If True, output both A->B and B->A
+            perspectives per pair. Default: True.
+        n_components: Number of PCA components to retain. Default: 6.
+        batch_size: Batch size for IncrementalPCA partial_fit.
+            Default: 5000.
     """
 
     name = "pair-posedistance-pca"

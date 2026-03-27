@@ -47,6 +47,21 @@ class PairEgocentricFeatures:
     This feature is *stateless* (no fitting). It computes features for all C(n,2)
     pairs per sequence, cleans/interpolates pose per animal, inner-joins by the
     chosen order column, and computes A->B and B->A features for each pair.
+
+    Params:
+        interpolation: Interpolation settings for missing pose data.
+            Default: InterpolationConfig().
+        sampling: Frame rate and smoothing settings.
+            Default: SamplingConfig().
+        pose: Pose keypoint configuration (indices, column prefixes).
+            Default: PoseConfig().
+        neck_idx: Index of the neck keypoint in the pose array, used to
+            compute heading direction. Default: 3.
+        tail_base_idx: Index of the tail-base keypoint, paired with
+            neck_idx for heading vector. Default: 6.
+        center_mode: How to compute the animal's center — "mean"
+            averages all keypoints, other values use a specific keypoint.
+            Default: "mean".
     """
 
     name = "pair-egocentric"

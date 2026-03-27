@@ -103,6 +103,29 @@ class NearestNeighborDeltaBins:
 
     Outputs: tidy DataFrame with mean turn/speed per bin for focal role and neighbor role:
       columns: [group, sequence, exp, trial, role, category, group_size, metric, bin_idx, value]
+
+    Params:
+        nbins: Number of spatial bins along the binning axis. Default: 45.
+        binmax: Maximum absolute value for bin edges. Default: 14.0.
+        max_for_avg: Maximum neighbor distance used when computing
+            binned-mean responses. Default: 5.0.
+        antisymm: If True, use front/back antisymmetric folding for
+            turn-force computation. Default: True.
+        focal_category_col: Column name for the focal animal's category
+            flag. Default: "Focal_fish".
+        neighbor_category_col: Column name for the neighbor's category
+            flag. Default: "neighbor_focal".
+        group_size_col: Column name for group size. Default: "group_size".
+        exp_col: Column name for experimental condition. Default: "Exp".
+        trial_col: Column name for trial identifier. Default: "Trial".
+        category_specs: List of dicts defining derived category columns
+            (keys: source_col, new_col, quantile, op). Default: [].
+        exclude_cols: List of boolean column names whose truthy rows are
+            dropped before computation. Default: [].
+        nonfocal_flag_col: Column used to flag nonfocal animals.
+            Default: "Focal_fish".
+        nonfocal_flag_value: Value in nonfocal_flag_col that marks an
+            animal as nonfocal. Default: False.
     """
 
     name = "nn-delta-bins"

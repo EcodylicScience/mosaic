@@ -59,6 +59,12 @@ class PairPositionFeatures:
       - rel_heading_cos, rel_heading_sin: relative heading
       - B_speed, B_v_para, B_v_perp, B_ang_speed: partner kinematics
       - (optionally) group, sequence for convenience
+
+    Params:
+        interpolation: Interpolation settings for missing position data.
+            Default: InterpolationConfig().
+        sampling: Frame rate and smoothing settings.
+            Default: SamplingConfig().
     """
 
     name = "pair-position"

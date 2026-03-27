@@ -105,6 +105,23 @@ class GlobalKMeansClustering:
     """
     Global K-Means clustering on templates loaded via load_state.
     Per-sequence cluster assignment is done in apply().
+
+    Params:
+        templates: Templates artifact to fit on (inherited from
+            GlobalModelParams).
+        model: Pre-fitted KMeansModelArtifact to load (skip fit).
+            Default: KMeansModelArtifact().
+        k: Number of clusters. Default: 100.
+        random_state: Random seed for KMeans initialization.
+            Default: 42.
+        n_init: Number of KMeans initializations to run. Default: "auto".
+        max_iter: Maximum iterations per KMeans run. Default: 300.
+        device: Compute device — "cpu" or "cuda" (requires cuML).
+            Default: "cpu".
+        label_artifact_points: If True, assign cluster labels to the
+            template points used for fitting. Default: True.
+        pair_filter: Optional NNResult for nearest-neighbor pair
+            filtering during dependency resolution. Default: None.
     """
 
     name: str = "global-kmeans"

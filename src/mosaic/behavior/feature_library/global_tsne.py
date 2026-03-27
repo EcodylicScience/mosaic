@@ -170,6 +170,22 @@ class GlobalTSNE:
     Consumes a templates artifact (from ExtractTemplates, GlobalScaler, or
     any feature producing templates). Produces an embedding model bundle
     and template coordinates.
+
+    Params:
+        templates: Templates artifact to fit embedding on (inherited from
+            GlobalModelParams).
+        model: Pre-fitted TSNEModelArtifact to load (skip fit).
+            Default: TSNEModelArtifact().
+        random_state: Random seed. Default: 42.
+        perplexity: t-SNE perplexity parameter. Default: 50.
+        knn_method: kNN backend — "annoy", "faiss", or "faiss-gpu".
+            Default: "annoy".
+        n_jobs: Number of parallel jobs for openTSNE. Default: 8.
+        fit: TSNEFitConfig controlling learning rate, exaggeration
+            iterations, momentum, etc. Default: TSNEFitConfig().
+        mapping: TSNEMapConfig controlling partial-embedding parameters
+            (k, iterations, chunk_size, etc.).
+            Default: TSNEMapConfig().
     """
 
     name: str = "global-tsne"

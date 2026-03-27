@@ -55,6 +55,12 @@ class GlobalScaler:
     Consumes a templates artifact (from ExtractTemplates or any feature
     producing templates.parquet). Produces a scaler model bundle and
     scaled templates.
+
+    Params:
+        templates: Templates artifact to fit the scaler on (inherited
+            from GlobalModelParams).
+        model: Pre-fitted ScalerModelArtifact to load (skip fit).
+            Default: ScalerModelArtifact().
     """
 
     name = "global-scaler"

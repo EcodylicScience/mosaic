@@ -38,6 +38,21 @@ class FFGroupsMetrics:
       - med_duration_frame
       - ftime_periphery
       - ftime_periphery_norm
+
+    Params:
+        group_col: Column name that identifies group events (e.g. from
+            FFGroups output). Default: "event".
+        speed_col: Column name for speed values. Default: "speed".
+        time_chunk_sec: If set, split each sequence into time-based
+            chunks of this duration (seconds) and compute summaries per
+            chunk. Default: None (whole sequence).
+        frame_chunk: If set, split each sequence into frame-based chunks
+            of this size and compute summaries per chunk. Default: None.
+        centroid_heading_col: Column for centroid heading used in rotation
+            calculations. Default: "centroid_heading".
+        exclude_cols: List of boolean column names (e.g. "bad_frame")
+            whose truthy rows are dropped before computation.
+            Default: [].
     """
 
     name = "ffgroups-metrics"

@@ -58,6 +58,19 @@ class PairWavelet:
     Stateless (no fitting). FPS is inferred from constant df['fps'] if
     present, otherwise from fps_default. Frequencies are dyadically spaced
     in [f_min, f_max].
+
+    Params:
+        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
+        f_min: Minimum frequency in Hz for the CWT band. Default: 0.2.
+        f_max: Maximum frequency in Hz for the CWT band. Default: 5.0.
+        n_freq: Number of frequency bins (dyadically spaced between
+            f_min and f_max). Default: 25.
+        wavelet: PyWavelets wavelet name. Default: "cmor1.5-1.0".
+        log_floor: Floor value for log-power clamping. Default: -3.0.
+        pc_prefix: Column prefix used to auto-detect PC input columns
+            (e.g. "PC0", "PC1", ...). Default: "PC".
+        cols: Explicit list of input column names. If None, columns are
+            auto-detected using pc_prefix. Default: None.
     """
 
     name = "pair-wavelet"

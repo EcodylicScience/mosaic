@@ -52,6 +52,17 @@ class ExtractTemplates:
     Entry point for the global feature pipeline. Streams per-sequence
     inputs, builds a candidate pool with proportional per-entry
     contribution, and selects templates using the configured strategy.
+
+    Params:
+        strategy: Template selection method — "random" for uniform
+            random sampling, "farthest_first" for greedy diversity
+            maximization. Default: "random".
+        n_templates: Number of templates to select (required).
+        pool: PoolConfig controlling candidate pool size, allocation
+            strategy, and per-entry caps. Default: PoolConfig().
+        random_state: Random seed for reproducibility. Default: 42.
+        pair_filter: Optional NNResult for nearest-neighbor pair
+            filtering during dependency resolution. Default: None.
     """
 
     name = "extract-templates"

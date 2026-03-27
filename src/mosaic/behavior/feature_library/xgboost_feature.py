@@ -48,6 +48,33 @@ class XgboostFeature:
 
     Trains on labeled templates (from ExtractLabeledTemplates) and runs
     per-sequence inference. Supports multiclass and one-vs-rest strategies.
+
+    Params:
+        model: Pre-fitted XgboostModelArtifact to load (skip training).
+            Default: XgboostModelArtifact().
+        strategy: Classification strategy — "multiclass" trains a single
+            multi-class model; "one_vs_rest" trains one binary classifier
+            per class. Default: "multiclass".
+        decision_threshold: Probability threshold(s) for positive
+            prediction. A float applies to all classes; a dict maps
+            class -> threshold. None uses argmax. Default: None.
+        default_class: Class label assigned when no class exceeds the
+            decision threshold (required).
+        class_weight: If "balanced", adjust sample weights inversely
+            proportional to class frequency. Default: "balanced".
+        use_smote: If True, apply SMOTE oversampling to the training
+            set. Default: False.
+        undersample_ratio: If set, undersample majority classes to this
+            ratio relative to the minority class before SMOTE.
+            Default: None.
+        n_estimators: Number of boosting rounds. Default: 100.
+        max_depth: Maximum tree depth. Default: 6.
+        learning_rate: Boosting learning rate. Default: 0.1.
+        subsample: Fraction of training samples used per tree.
+            Default: 0.8.
+        colsample_bytree: Fraction of features used per tree.
+            Default: 0.8.
+        random_state: Random seed for reproducibility. Default: 42.
     """
 
     name = "xgboost"
