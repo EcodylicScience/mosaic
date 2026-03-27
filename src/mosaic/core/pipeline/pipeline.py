@@ -23,7 +23,7 @@ import pandas as pd
 from mosaic.core.helpers import resolve_frame_range
 
 from ._utils import derive_storage_name, hash_params
-from .index import feature_run_root, list_feature_runs
+from .index import feature_index_path, feature_run_root, list_feature_runs
 from .registry import open_registry
 from .types import Inputs, Result
 
@@ -433,6 +433,116 @@ class Pipeline:
                 registry.close()
 
         return self.results
+
+    def clean(
+        self,
+        dataset: Dataset,
+        *,
+        dry_run: bool = True,
+    ) -> pd.DataFrame:
+        """Remove orphaned run directories that no longer match the pipeline.
+
+        For each FeatureStep, compares the expected run_id (from current
+        params/inputs) against all run_ids found on disk.  Runs that don't
+        match are deleted.
+
+        Parameters
+        ----------
+        dry_run : bool
+            If True (default), only report what would be deleted.
+            If False, actually delete directories and clean index files.
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary with columns ``[step, feature, run_id, status, n_files, size_mb]``.
+        """
+        import shutil
+
+        resolved = self._resolve_step_cache(dataset)
+        rows: list[dict] = []
+
+        for info in resolved:
+            step = info["step"]
+            if isinstance(step, CallbackStep):
+                continue
+
+            storage = info.get("storage_name")
+            expected_rid = info.get("expected_run_id")
+            if not storage:
+                continue
+
+            # List all run_ids on disk for this feature
+            try:
+                runs_df = list_feature_runs(dataset, storage)
+            except (FileNotFoundError, ValueError):
+                continue
+
+            all_rids = runs_df["run_id"].unique().tolist() if not runs_df.empty else []
+
+            for rid in all_rids:
+                run_dir = feature_run_root(dataset, storage, rid)
+                if run_dir.exists():
+                    files = list(run_dir.glob("*"))
+                    n_files = len(files)
+                    size_bytes = sum(f.stat().st_size for f in files if f.is_file())
+                else:
+                    n_files = 0
+                    size_bytes = 0
+
+                is_current = rid == expected_rid
+                if is_current:
+                    status = "current"
+                elif dry_run:
+                    status = "would remove"
+                else:
+                    # Delete the directory
+                    if run_dir.exists():
+                        shutil.rmtree(run_dir)
+                    status = "removed"
+
+                rows.append({
+                    "step": step.name,
+                    "feature": storage,
+                    "run_id": rid,
+                    "status": status,
+                    "n_files": n_files,
+                    "size_mb": round(size_bytes / 1_048_576, 1),
+                })
+
+            # Clean index.csv if not dry_run
+            if not dry_run:
+                idx_path = feature_index_path(dataset, storage)
+                if idx_path.exists():
+                    idx_df = pd.read_csv(idx_path, keep_default_na=False)
+                    before = len(idx_df)
+                    idx_df = idx_df[
+                        (idx_df["run_id"] == expected_rid)
+                        | ~idx_df["run_id"].isin(all_rids)
+                    ]
+                    if len(idx_df) < before:
+                        idx_df.to_csv(idx_path, index=False)
+
+        summary = pd.DataFrame(rows)
+        if summary.empty:
+            print("Pipeline.clean: no feature runs found on disk.")
+            return summary
+
+        orphaned = summary[summary["status"] != "current"]
+        if orphaned.empty:
+            print("Pipeline.clean: no orphaned runs found — everything is current.")
+        else:
+            action = "Would remove" if dry_run else "Removed"
+            total_mb = orphaned["size_mb"].sum()
+            n_runs = len(orphaned)
+            print(
+                f"Pipeline.clean: {action} {n_runs} orphaned run(s) "
+                f"({total_mb:.1f} MB)."
+            )
+            if dry_run:
+                print("  Pass dry_run=False to delete.")
+
+        return summary
 
     def dag(self) -> dict[str, list[str]]:
         """Return adjacency dict: ``{step_name: [upstream_names]}``."""

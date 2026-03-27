@@ -2,6 +2,10 @@
 
 This module provides the EgocentricCrop feature class for generating
 animal-centered video crops, optionally rotated to align heading with +x axis.
+
+Supports optional body masking (elliptical mask to isolate focal individual),
+CLAHE contrast enhancement, grayscale conversion, center offset along heading,
+and keypoint coordinate transformation into crop space.
 """
 
 from __future__ import annotations
@@ -54,6 +58,28 @@ class EgocentricCrop:
         Heading points FROM tail TO neck (direction animal is facing).
     margin_factor : float
         Extra margin for rotation (1.5 = 50% larger pre-crop before rotation)
+    center_offset_px : float
+        Pixel offset along heading direction from computed center (default 0).
+        Positive shifts forward (toward head). Useful for centering on
+        specific body parts, e.g. 35 for body center in bees.
+    body_mask : bool
+        If True, apply elliptical body mask to isolate the focal individual.
+    body_mask_length_px : int
+        Length (semi-major axis) of the body mask ellipse in pixels.
+    body_mask_width_px : int
+        Width (semi-minor axis) of the body mask ellipse in pixels.
+    use_clahe : bool
+        If True, apply CLAHE (Contrast Limited Adaptive Histogram
+        Equalization) to improve contrast in crops.
+    clahe_clip_limit : float
+        CLAHE clip limit parameter.
+    clahe_tile_grid_size : int
+        CLAHE tile grid size (both dimensions).
+    grayscale : bool
+        If True, convert output to single-channel grayscale.
+    transform_keypoints : bool
+        If True, transform pose keypoint coordinates into crop space and
+        include them in the metadata output as poseX<i>_crop, poseY<i>_crop.
     output_mode : str
         Output format:
         - "video": single video file per individual
@@ -61,6 +87,8 @@ class EgocentricCrop:
         - "both": video + frames
     output_fps : float, optional
         Output video FPS. If None, uses source video FPS.
+    output_root : str, optional
+        Override output directory. If None, outputs to media/egocentric_crops/.
     frame_format : str
         Format for frame images ("png" or "jpg")
     background_color : int
@@ -72,8 +100,15 @@ class EgocentricCrop:
     >>> crop = EgocentricCrop(params={"target_id": 0, "crop_size": (256, 256)})
     >>> dataset.run_feature(crop, sequences=["hex_3"])
 
-    Process all individuals:
-    >>> crop = EgocentricCrop(params={"target_id": None, "output_mode": "video"})
+    Bee-style crop with body masking and CLAHE:
+    >>> crop = EgocentricCrop(params={
+    ...     "crop_size": (192, 192),
+    ...     "center_offset_px": 35.0,
+    ...     "body_mask": True,
+    ...     "use_clahe": True,
+    ...     "grayscale": True,
+    ...     "angle_col": "ANGLE",
+    ... })
     >>> dataset.run_feature(crop, sequences=["hex_3"])
     """
 
@@ -92,8 +127,24 @@ class EgocentricCrop:
         rotate_to_heading: bool = True
         heading_points: tuple[int, int] = (3, 6)
         margin_factor: float = 1.5
+        # Center offset along heading direction (pixels)
+        center_offset_px: float = 0.0
+        # Body masking
+        body_mask: bool = False
+        body_mask_length_px: int = 96
+        body_mask_width_px: int = 64
+        # CLAHE contrast enhancement
+        use_clahe: bool = False
+        clahe_clip_limit: float = 2.0
+        clahe_tile_grid_size: int = 25
+        # Grayscale output
+        grayscale: bool = False
+        # Keypoint transformation
+        transform_keypoints: bool = False
+        # Output settings
         output_mode: str = "video"
         output_fps: float | None = None
+        output_root: str | None = None
         frame_format: str = "png"
         interpolation: int = 1  # cv2.INTER_LINEAR
         background_color: int = 0
@@ -206,8 +257,15 @@ class EgocentricCrop:
 
     # ----------------------- Internal methods --------------------
 
-    def _get_center(self, row: pd.Series) -> tuple[float, float]:
-        """Extract center point (in pixel coords) from a tracks row."""
+    def _get_center(
+        self, row: pd.Series, angle: float | None = None
+    ) -> tuple[float, float]:
+        """Extract center point (in pixel coords) from a tracks row.
+
+        If ``center_offset_px`` is non-zero, the center is shifted along the
+        heading direction by that amount.  Requires *angle* (radians) when
+        the offset is active.
+        """
         p = self.params
         mode = p.center_mode
 
@@ -229,18 +287,25 @@ class EgocentricCrop:
                     ys.append(py)
             if not xs:
                 return (np.nan, np.nan)
-            return (float(np.mean(xs)), float(np.mean(ys)))
+            cx, cy = float(np.mean(xs)), float(np.mean(ys))
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
             x = row.get(f"{p.pose.x_prefix}{idx}")
             y = row.get(f"{p.pose.y_prefix}{idx}")
             if x is None or y is None or not np.isfinite(x) or not np.isfinite(y):
                 return (np.nan, np.nan)
-            return (float(x), float(y))
+            cx, cy = float(x), float(y)
         else:
             raise ValueError(
                 f"Unknown center_mode: {mode}. Use 'default', 'pose0', or an int pose index."
             )
+
+        # Apply offset along heading direction (positive = forward / toward head)
+        if p.center_offset_px != 0.0 and angle is not None and np.isfinite(angle):
+            cx -= np.cos(angle) * p.center_offset_px
+            cy -= np.sin(angle) * p.center_offset_px
+
+        return (cx, cy)
 
     def _get_heading_angle(self, row: pd.Series) -> float:
         """Compute heading angle from anatomical landmarks or angle column."""
@@ -279,7 +344,7 @@ class EgocentricCrop:
         Parameters
         ----------
         frame : np.ndarray
-            Source video frame (H, W, C)
+            Source video frame (H, W, C) or (H, W)
         center : tuple[float, float]
             (cx, cy) center point in pixel coordinates
         angle : float
@@ -288,28 +353,25 @@ class EgocentricCrop:
         Returns
         -------
         np.ndarray
-            Cropped (and optionally rotated) frame
+            Cropped (and optionally rotated) frame with body mask / CLAHE /
+            grayscale applied if configured.
         """
         p = self.params
         crop_w, crop_h = p.crop_size
         cx, cy = center
+        n_channels = frame.shape[2] if frame.ndim == 3 else 1
 
         if not np.isfinite(cx) or not np.isfinite(cy):
-            # Return blank frame if center is invalid
+            if p.grayscale or n_channels == 1:
+                return np.full((crop_h, crop_w), p.background_color, dtype=np.uint8)
             return np.full((crop_h, crop_w, 3), p.background_color, dtype=np.uint8)
 
         if p.rotate_to_heading:
-            # Rotation approach: rotate around animal center, then crop
-            # atan2 in image coords (Y-down) already flips sign vs math convention,
-            # and getRotationMatrix2D uses math convention (CCW-positive, Y-up),
-            # so the two negations cancel -- just convert to degrees directly.
             angle_deg = np.degrees(angle)
 
-            # Compute larger pre-crop to account for rotation
             margin = p.margin_factor
             pre_crop_size = int(max(crop_w, crop_h) * margin)
 
-            # First extract a larger centered crop
             pre_crop = safe_crop_with_padding(
                 frame,
                 (int(cx), int(cy)),
@@ -317,33 +379,118 @@ class EgocentricCrop:
                 pad_value=p.background_color,
             )
 
-            # Rotate around center of pre-crop
             pre_center = (pre_crop_size / 2.0, pre_crop_size / 2.0)
             M = cv2.getRotationMatrix2D(pre_center, angle_deg, 1.0)
+            bv = (p.background_color,) * (n_channels if n_channels > 1 else 1)
             rotated = cv2.warpAffine(
                 pre_crop,
                 M,
                 (pre_crop_size, pre_crop_size),
                 flags=p.interpolation,
                 borderMode=cv2.BORDER_CONSTANT,
-                borderValue=(p.background_color,) * 3,
+                borderValue=bv,
             )
 
-            # Final center crop from rotated image
-            return safe_crop_with_padding(
+            crop = safe_crop_with_padding(
                 rotated,
                 (pre_crop_size // 2, pre_crop_size // 2),
                 (crop_w, crop_h),
                 pad_value=p.background_color,
             )
         else:
-            # Simple centered crop without rotation
-            return safe_crop_with_padding(
+            crop = safe_crop_with_padding(
                 frame,
                 (int(cx), int(cy)),
                 (crop_w, crop_h),
                 pad_value=p.background_color,
             )
+
+        # --- Post-processing pipeline ---
+
+        # Body mask: elliptical mask centered on the crop, aligned to heading
+        if p.body_mask:
+            crop = self._apply_body_mask(crop, crop_w, crop_h)
+
+        # Grayscale conversion
+        if p.grayscale and crop.ndim == 3:
+            crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+        # CLAHE contrast enhancement
+        if p.use_clahe:
+            crop = self._apply_clahe(crop)
+
+        return crop
+
+    def _apply_body_mask(
+        self, crop: np.ndarray, crop_w: int, crop_h: int
+    ) -> np.ndarray:
+        """Apply an elliptical body mask centered on the crop.
+
+        After egocentric rotation the animal faces right (+x), so the
+        ellipse major axis is horizontal.
+        """
+        p = self.params
+        mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
+        center = (crop_w // 2, crop_h // 2)
+        axes = (p.body_mask_length_px // 2, p.body_mask_width_px // 2)
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        if crop.ndim == 3:
+            crop = cv2.bitwise_and(crop, crop, mask=mask)
+        else:
+            crop = np.where(mask > 0, crop, 0).astype(crop.dtype)
+        return crop
+
+    def _apply_clahe(self, crop: np.ndarray) -> np.ndarray:
+        """Apply CLAHE contrast enhancement."""
+        p = self.params
+        clahe = cv2.createCLAHE(
+            clipLimit=p.clahe_clip_limit,
+            tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
+        )
+        if crop.ndim == 2:
+            return clahe.apply(crop)
+        # For color images, convert to LAB, apply CLAHE to L channel
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    def _transform_keypoints(
+        self,
+        row: pd.Series,
+        cx: float,
+        cy: float,
+        angle: float,
+    ) -> dict[str, float]:
+        """Transform pose keypoints into crop coordinate space.
+
+        Returns a dict with keys ``poseX<i>_crop``, ``poseY<i>_crop``.
+        """
+        p = self.params
+        crop_w, crop_h = p.crop_size
+        crop_cx, crop_cy = crop_w / 2.0, crop_h / 2.0
+        cos_a = np.cos(-angle)
+        sin_a = np.sin(-angle)
+
+        kp = {}
+        for i in range(p.pose.pose_n):
+            px = row.get(f"{p.pose.x_prefix}{i}")
+            py = row.get(f"{p.pose.y_prefix}{i}")
+            if px is None or py is None or not np.isfinite(px) or not np.isfinite(py):
+                kp[f"{p.pose.x_prefix}{i}_crop"] = np.nan
+                kp[f"{p.pose.y_prefix}{i}_crop"] = np.nan
+                continue
+            # Translate to center-relative coordinates
+            dx = px - cx
+            dy = py - cy
+            if p.rotate_to_heading:
+                # Rotate into crop space
+                rx = dx * cos_a - dy * sin_a
+                ry = dx * sin_a + dy * cos_a
+            else:
+                rx, ry = dx, dy
+            kp[f"{p.pose.x_prefix}{i}_crop"] = crop_cx + rx
+            kp[f"{p.pose.y_prefix}{i}_crop"] = crop_cy + ry
+        return kp
 
     def _process_single_id(
         self,
@@ -386,11 +533,19 @@ class EgocentricCrop:
         # Determine output crop size
         crop_w, crop_h = p.crop_size
 
-        # Initialize outputs
+        # For grayscale video output, VideoWriter needs isColor=False
         writer = None
         if p.output_mode in ("video", "both"):
             video_out_path = run_root / f"egocentric_id{target_id}.mp4"
-            writer = create_video_writer(video_out_path, output_fps, (crop_w, crop_h))
+            if p.grayscale:
+                path = Path(video_out_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                codec = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(
+                    str(path), codec, float(output_fps), (crop_w, crop_h), isColor=False
+                )
+            else:
+                writer = create_video_writer(video_out_path, output_fps, (crop_w, crop_h))
 
         frames_dir = None
         if p.output_mode in ("frames", "both"):
@@ -415,15 +570,15 @@ class EgocentricCrop:
 
                 row = frame_to_row.get(frame_idx)
                 if row is not None:
-                    center = self._get_center(row)
-                    if p.rotate_to_heading:
+                    # Compute heading angle first (needed for center offset)
+                    if p.rotate_to_heading or p.center_offset_px != 0.0:
                         angle = self._get_heading_angle(row)
-                        # Convert to radians if needed
                         if angle_is_degrees:
                             angle = np.radians(angle)
                     else:
                         angle = 0.0
 
+                    center = self._get_center(row, angle=angle)
                     crop = self._extract_egocentric_crop(frame, center, angle)
 
                     if writer is not None:
@@ -435,17 +590,22 @@ class EgocentricCrop:
                         )
                         cv2.imwrite(str(frame_path), crop)
 
-                    metadata_rows.append(
-                        {
-                            "frame": frame_idx,
-                            "center_x": center[0],
-                            "center_y": center[1],
-                            "heading_angle": angle,
-                            "target_id": target_id,
-                            "group": group,
-                            "sequence": sequence,
-                        }
-                    )
+                    meta = {
+                        "frame": frame_idx,
+                        "center_x": center[0],
+                        "center_y": center[1],
+                        "heading_angle": angle,
+                        "target_id": target_id,
+                        "group": group,
+                        "sequence": sequence,
+                    }
+
+                    if p.transform_keypoints:
+                        meta.update(
+                            self._transform_keypoints(row, center[0], center[1], angle)
+                        )
+
+                    metadata_rows.append(meta)
 
                 frame_idx += 1
 
@@ -467,8 +627,12 @@ class EgocentricCrop:
         return pd.DataFrame(metadata_rows)
 
     def _get_run_root(self, group: str, sequence: str) -> Path:
-        """Get the output directory for this run."""
-        # Use the dataset's feature output structure
-        features_root = Path(self._ds.get_root("features"))
-        # This will be set properly by run_feature, but provide a fallback
-        return features_root / self.name / f"{group}__{sequence}"
+        """Get the output directory for this run.
+
+        Defaults to ``media/egocentric_crops/<group>__<sequence>``.
+        Can be overridden via ``output_root`` param.
+        """
+        if self.params.output_root:
+            return Path(self.params.output_root) / f"{group}__{sequence}"
+        media_root = Path(self._ds.get_root("media"))
+        return media_root / "egocentric_crops" / f"{group}__{sequence}"
