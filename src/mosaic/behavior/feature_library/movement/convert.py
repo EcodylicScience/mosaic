@@ -163,6 +163,9 @@ def to_movement_dataset(
                 valid = np.isfinite(px) & np.isfinite(py)
                 confidence[fidxs, ki, ind_idx] = np.where(valid, 1.0, np.nan)
 
+    # Ensure no inf values reach the movement library
+    position = np.where(np.isinf(position), np.nan, position)
+
     # --- Build movement Dataset ---
     ds = from_numpy(
         position_array=position.astype(np.float32),

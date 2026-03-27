@@ -162,6 +162,10 @@ class TrajectorySmooth:
         x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
         n = len(sub)
 
+        # Standardize inf to NaN so interpolation and smoothing handle gaps correctly
+        for col in sub.select_dtypes(include=[np.floating]).columns:
+            sub[col] = sub[col].replace([np.inf, -np.inf], np.nan)
+
         # --- Step 1: Bad-frame detection ---
         if p.speed_threshold is not None and x_col in sub.columns and y_col in sub.columns:
             # Convert threshold to units/frame when fps is given

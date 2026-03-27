@@ -96,6 +96,11 @@ def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(cols)
 
+    # TRex uses inf for undetected keypoints — standardize to NaN
+    float_cols = df.select_dtypes(include=[np.floating]).columns
+    if len(float_cols):
+        df[float_cols] = df[float_cols].replace([np.inf, -np.inf], np.nan)
+
     # id
     if "id" in data.files and np.ndim(data["id"]) > 0:
         try:
