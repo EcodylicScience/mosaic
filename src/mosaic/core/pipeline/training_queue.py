@@ -264,6 +264,28 @@ class TrainingQueue:
         d["config"] = json.loads(d.pop("config_json", "{}"))
         return d
 
+    def get_progress(self, job_id: str) -> pd.DataFrame:
+        """Return epoch-level progress for a running or completed job.
+
+        Reads from the ``training_progress`` table, which is written to
+        in real time by the training callback.  Safe to call while
+        training is in progress.
+
+        Args:
+            job_id: The job to query.
+
+        Returns:
+            DataFrame with columns ``step_type``, ``step_index``,
+            ``step_total``, ``metrics``, ``message``, ``timestamp``.
+            Metrics is a dict of metric name-value pairs.
+        """
+        from .progress import read_progress
+
+        rows = read_progress(self._db_path, job_id)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
+
     def pending_count(self) -> int:
         """Return the number of pending jobs."""
         row = self._conn.execute(
