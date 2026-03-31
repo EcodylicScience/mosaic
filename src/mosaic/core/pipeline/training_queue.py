@@ -150,6 +150,29 @@ class TrainingQueue:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def clear_stale(self) -> int:
+        """Mark orphaned ``running`` and ``pending`` jobs as ``cancelled``.
+
+        After a kernel restart, jobs that were running or waiting in the
+        in-memory queue will never complete.  This method cleans them up
+        so :meth:`list_jobs` shows an accurate picture.
+
+        Returns:
+            Number of jobs marked as cancelled.
+        """
+        cur = self._conn.execute(
+            """\
+            UPDATE training_jobs SET status = 'cancelled', finished_at = ?
+            WHERE status IN ('running', 'pending')
+            """,
+            (now_iso(),),
+        )
+        self._conn.commit()
+        n = cur.rowcount
+        if n:
+            print(f"[queue] cleared {n} stale job(s)")
+        return n
+
     def resubmit(self, job_id: str, model: Any) -> str:
         """Re-submit a failed or cancelled job with the same config.
 
@@ -277,13 +300,19 @@ class TrainingQueue:
         Returns:
             DataFrame with columns ``step_type``, ``step_index``,
             ``step_total``, ``metrics``, ``message``, ``timestamp``.
-            Metrics is a dict of metric name-value pairs.
+            Metrics is a dict of metric name-value pairs.  Returns an
+            empty DataFrame with these columns if no progress has been
+            recorded yet.
         """
         from .progress import read_progress
 
+        _empty_cols = [
+            "step_type", "step_index", "step_total",
+            "metrics", "message", "timestamp",
+        ]
         rows = read_progress(self._db_path, job_id)
         if not rows:
-            return pd.DataFrame()
+            return pd.DataFrame(columns=_empty_cols)
         return pd.DataFrame(rows)
 
     def pending_count(self) -> int:
