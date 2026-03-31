@@ -20,6 +20,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.types import COLUMNS, Inputs, Params, PoseConfig, TrackInput
+from mosaic.core.pipeline.types.feature import DependencyLookup
 
 from ..feature_library.registry import register_feature
 from .helpers import (
@@ -113,8 +114,9 @@ class EgocentricCrop:
     """
 
     name = "egocentric-crop"
-    version = "0.1"
+    version = "0.2"
     parallelizable = False  # Video I/O is sequential
+    scope_dependent = False
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -159,6 +161,7 @@ class EgocentricCrop:
         self.params = self.Params.from_overrides(params)
         self._ds = None
         self._scope: Scope = Scope()
+        self._run_root: Path | None = None
 
         # Storage settings (for feature pipeline integration)
         self.storage_feature_name = self.name
@@ -197,6 +200,23 @@ class EgocentricCrop:
 
     def load_model(self, path: Path) -> None:
         pass
+
+    # ----------------------- Feature protocol ---------------------
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        self._run_root = run_root
+        return True
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return self.transform(df)
 
     # ----------------------- Core logic --------------------------
 
@@ -629,10 +649,13 @@ class EgocentricCrop:
     def _get_run_root(self, group: str, sequence: str) -> Path:
         """Get the output directory for this run.
 
-        Defaults to ``media/egocentric_crops/<group>__<sequence>``.
+        Uses ``run_root`` from the pipeline (run_id-tagged) when available,
+        falls back to ``media/egocentric_crops/<group>__<sequence>``.
         Can be overridden via ``output_root`` param.
         """
         if self.params.output_root:
             return Path(self.params.output_root) / f"{group}__{sequence}"
+        if self._run_root is not None:
+            return self._run_root / f"{group}__{sequence}"
         media_root = Path(self._ds.get_root("media"))
         return media_root / "egocentric_crops" / f"{group}__{sequence}"
