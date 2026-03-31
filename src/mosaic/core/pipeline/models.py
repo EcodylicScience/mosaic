@@ -4,13 +4,15 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ._utils import hash_params, json_ready
 from .index_csv import IndexCSV, RunIndexRowBase
+from .progress import NullProgressCallback
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from .progress import TrainingProgressCallback
 
 
 # --- Helpers ---
@@ -72,24 +74,32 @@ def train_model(
     model,
     config: str | Path | dict[str, object] | None = None,
     overwrite: bool = False,
+    *,
+    job_id: str | None = None,
+    progress_callback: TrainingProgressCallback | None = None,
 ) -> str:
-    """
-    Train a registered model using a JSON (or dict) configuration.
+    """Train a registered model using a JSON (or dict) configuration.
 
-    Parameters
-    ----------
-    model : object
-        Model/trainer instance implementing:
-          - name (str)
-          - version (str)
-          - bind_dataset(self, ds) optional
-          - configure(self, config: dict, run_root: Path) optional
-          - train(self) -> dict | None
-    config : str | Path | dict | None
-        Path to a JSON config file or an in-memory dict of hyperparameters.
-    overwrite : bool
-        Reserved for future use (run_ids are hash-based, so reruns overwrite same folder).
+    Args:
+        ds: Dataset instance providing model storage roots.
+        model: Model/trainer instance implementing ``name``, ``version``,
+            and a ``train()`` method.  Optionally implements
+            ``bind_dataset(ds)`` and ``configure(config, run_root)``.
+        config: Path to a JSON config file or an in-memory dict of
+            hyperparameters.
+        overwrite: Reserved for future use (run_ids are hash-based).
+        job_id: If called from the training queue, the job_id for
+            status tracking.
+        progress_callback: Callback for reporting training progress
+            (epoch, phase, etc.).  If the model's ``train()`` method
+            accepts a ``callback`` or ``progress_callback`` keyword
+            argument, it is passed through automatically.
+
+    Returns:
+        The ``run_id`` for this training run.
     """
+    if progress_callback is None:
+        progress_callback = NullProgressCallback()
     storage_model_name = getattr(
         model, "storage_model_name", getattr(model, "name", None)
     )
@@ -128,7 +138,14 @@ def train_model(
     status = "success"
     notes = ""
     try:
-        metrics = model.train()
+        import inspect
+
+        train_sig = inspect.signature(model.train)
+        if "callback" in train_sig.parameters or "progress_callback" in train_sig.parameters:
+            cb_name = "callback" if "callback" in train_sig.parameters else "progress_callback"
+            metrics = model.train(**{cb_name: progress_callback})
+        else:
+            metrics = model.train()
     except Exception as exc:
         status = "failed"
         notes = str(exc)

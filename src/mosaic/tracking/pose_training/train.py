@@ -38,6 +38,7 @@ def train_pose_model(
     name: str | None = None,
     patience: int = 50,
     augmentation: str | dict[str, Any] | None = None,
+    callback: Any = None,
     **extra_args: Any,
 ) -> Any:
     """Train a YOLO pose estimation model.
@@ -105,6 +106,9 @@ def train_pose_model(
     if aug_dict:
         train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
+
+    if callback is not None and hasattr(callback, "on_epoch_end"):
+        _register_ultralytics_callback(yolo, callback, epochs)
 
     results = yolo.train(**train_kwargs)
     return results
@@ -245,6 +249,7 @@ def train_point_model(
     dor: float = 0.8,
     augmentation: str | dict[str, Any] | None = None,
     backend: str = "polo",
+    callback: Any = None,
     **extra_args: Any,
 ) -> Any:
     """Train a POLO point-detection model.
@@ -330,6 +335,9 @@ def train_point_model(
         train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
+    if callback is not None and hasattr(callback, "on_epoch_end"):
+        _register_ultralytics_callback(yolo, callback, epochs)
+
     results = yolo.train(**train_kwargs)
     return results
 
@@ -390,3 +398,40 @@ def validate_point_model(
         val_kwargs["radii"] = radii
 
     return yolo.val(**val_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Progress callback bridge for Ultralytics trainers
+# ---------------------------------------------------------------------------
+
+
+def _register_ultralytics_callback(
+    yolo: Any, callback: Any, total_epochs: int
+) -> None:
+    """Register an ``on_train_epoch_end`` hook on a YOLO model instance.
+
+    Ultralytics trainers expose ``add_callback(event, func)`` where *func*
+    receives the trainer instance.  We bridge that to the mosaic
+    :class:`~mosaic.core.pipeline.progress.TrainingProgressCallback` protocol.
+    """
+
+    def _on_epoch_end(trainer: Any) -> None:
+        epoch = getattr(trainer, "epoch", 0)
+        metrics: dict[str, float] = {}
+        # Trainer exposes loss as a tensor and metrics as a dict
+        loss = getattr(trainer, "loss", None)
+        if loss is not None:
+            try:
+                metrics["loss"] = float(loss.item() if hasattr(loss, "item") else loss)
+            except Exception:
+                pass
+        trainer_metrics = getattr(trainer, "metrics", {})
+        if isinstance(trainer_metrics, dict):
+            for k, v in trainer_metrics.items():
+                try:
+                    metrics[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        callback.on_epoch_end(epoch, total_epochs, metrics)
+
+    yolo.add_callback("on_train_epoch_end", _on_epoch_end)

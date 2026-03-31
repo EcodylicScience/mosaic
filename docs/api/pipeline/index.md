@@ -68,3 +68,40 @@ class MyFeature:
       show_source: true
       members:
         - run_feature
+
+## Model Training
+
+::: mosaic.core.pipeline.models.train_model
+    options:
+      show_source: true
+
+## Training Queue
+
+Job queue for sequential model training with persistent status tracking.
+
+::: mosaic.core.pipeline.training_queue.TrainingQueue
+    options:
+      show_source: true
+      members_order: source
+
+## Training Progress
+
+Callback protocol and SQLite implementation for monitoring training
+progress in real time.
+
+::: mosaic.core.pipeline.progress.TrainingProgressCallback
+    options:
+      show_source: true
+
+::: mosaic.core.pipeline.progress.SQLiteProgressCallback
+    options:
+      show_source: true
+      members_order: source
+
+::: mosaic.core.pipeline.progress.CompositeProgressCallback
+    options:
+      show_source: true
+
+::: mosaic.core.pipeline.progress.read_progress
+    options:
+      show_source: true

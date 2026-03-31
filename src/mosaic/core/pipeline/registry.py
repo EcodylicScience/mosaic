@@ -1,4 +1,4 @@
-"""SQLite-backed feature registry.
+"""SQLite-backed feature and training registry.
 
 Replaces per-feature CSV indices with a single ``features/.mosaic.db``
 database per dataset. WAL mode enables concurrent readers with a single
@@ -60,6 +60,32 @@ CREATE TABLE IF NOT EXISTS dependencies (
     FOREIGN KEY (upstream_feature, upstream_run_id)
         REFERENCES feature_runs (feature, run_id),
     PRIMARY KEY (feature, run_id, upstream_feature)
+);
+
+CREATE TABLE IF NOT EXISTS training_jobs (
+    job_id        TEXT PRIMARY KEY,
+    model_name    TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    config_json   TEXT NOT NULL DEFAULT '{}',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    priority      INTEGER DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    started_at    TEXT DEFAULT '',
+    finished_at   TEXT DEFAULT '',
+    run_id        TEXT DEFAULT '',
+    error         TEXT DEFAULT '',
+    worker_pid    INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS training_progress (
+    job_id      TEXT    NOT NULL,
+    step_type   TEXT    NOT NULL,
+    step_index  INTEGER NOT NULL,
+    step_total  INTEGER DEFAULT 0,
+    metric_json TEXT    DEFAULT '{}',
+    message     TEXT    DEFAULT '',
+    timestamp   TEXT    NOT NULL,
+    PRIMARY KEY (job_id, step_type, step_index)
 );
 """
 

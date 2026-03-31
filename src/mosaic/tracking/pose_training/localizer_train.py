@@ -91,6 +91,7 @@ def train_localizer(
     name: str | None = None,
     augment: "bool | str | LocalizerAugmentConfig" = True,
     seed: int = 42,
+    callback: Any = None,
 ) -> TrainingResult:
     """Train a localizer heatmap model.
 
@@ -270,6 +271,14 @@ def train_localizer(
             f"train_loss: {train_loss:.4f}, val_loss: {val_loss:.4f}, "
             f"lr: {current_lr:.1e}, time: {dt:.1f}s"
         )
+
+        if callback is not None and hasattr(callback, "on_epoch_end"):
+            callback.on_epoch_end(epoch, epochs, {
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "lr": current_lr,
+                "time_s": dt,
+            })
 
         # Save last checkpoint (encoder state_dict only)
         torch.save(encoder.state_dict(), str(weights_dir / "last.pt"))

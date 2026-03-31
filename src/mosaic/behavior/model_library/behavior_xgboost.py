@@ -113,7 +113,7 @@ class BehaviorXGBoostModel:
         self._config = cfg
         self._run_root = Path(run_root)
 
-    def train(self) -> dict:
+    def train(self, callback=None) -> dict:
         if self._ds is None:
             raise RuntimeError("BehaviorXGBoostModel requires dataset binding.")
         if self._run_root is None:
@@ -126,6 +126,8 @@ class BehaviorXGBoostModel:
         run_root = self._run_root
         run_root.mkdir(parents=True, exist_ok=True)
 
+        if callback is not None and hasattr(callback, "on_phase"):
+            callback.on_phase("data_prep", "Collecting feature/label sequences")
         payloads = self._collect_sequence_payloads(ds, cfg)
         if not payloads:
             raise RuntimeError("No aligned feature/label sequences found for training.")
@@ -193,7 +195,9 @@ class BehaviorXGBoostModel:
         random_state = int(cfg.get("random_state", 42))
         threshold = float(cfg.get("decision_threshold", 0.5))
 
-        for beh in classes:
+        for class_idx, beh in enumerate(classes):
+            if callback is not None and hasattr(callback, "on_class_start"):
+                callback.on_class_start(class_idx, len(classes), str(beh))
             if use_external:
                 y_train_base = base_train_labels
                 y_test_base = base_test_labels
