@@ -18,7 +18,8 @@ parquet files.
 | Global embed/cluster | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, WardAssign |
 | Template extraction | ExtractTemplates, ExtractLabeledTemplates |
 | Scaling | GlobalScaler |
-| Classification | XgboostFeature |
+| Pair interaction | PairInteractionFilter |
+| Classification | XgboostFeature, FeralFeature |
 | External | KpmsFeature (keypoint-moseq) |
 
 ## Registry

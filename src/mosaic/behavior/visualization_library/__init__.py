@@ -24,6 +24,7 @@ from . import (
     data_loading,
     egocentric_crop,
     helpers,
+    interaction_crop,
     overlay,
     playback,
     video_stream,
@@ -40,6 +41,9 @@ from .data_loading import (
 )
 from .egocentric_crop import (
     EgocentricCrop,
+)
+from .interaction_crop import (
+    InteractionCropPipeline,
 )
 from .overlay import (
     draw_frame,
@@ -74,6 +78,7 @@ __all__ = [
     "playback",
     "visual_spec",
     "egocentric_crop",
+    "interaction_crop",
     "viz_global_colored",
     "viz_timeline",
     # Functions
@@ -91,6 +96,7 @@ __all__ = [
     "list_visual_adapters",
     # Classes
     "EgocentricCrop",
+    "InteractionCropPipeline",
     "VizGlobalColored",
     "TimelinePlot",
 ]

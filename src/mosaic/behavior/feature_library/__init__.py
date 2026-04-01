@@ -58,6 +58,7 @@ from . import (
     nn_delta_response,
     orientation_relative,
     pair_egocentric,
+    pair_interaction_filter,
     pair_position,
     pair_wavelet,
     pairposedistancepca,
@@ -83,6 +84,7 @@ from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
 from .orientation_relative import OrientationRelativeFeature
 from .pair_egocentric import PairEgocentricFeatures
+from .pair_interaction_filter import PairInteractionFilter
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
@@ -95,6 +97,13 @@ from .xgboost_feature import XgboostFeature
 # Optional: movement library integration (requires `movement` package)
 try:
     from .movement import MovementFilterInterpolate, MovementSmooth
+except ImportError:
+    pass
+
+# Optional: FERAL video behavior classifier (requires `feral` package)
+try:
+    from . import feral_feature
+    from .feral_feature import FeralFeature
 except ImportError:
     pass
 
@@ -138,6 +147,7 @@ __all__ = [
     "NearestNeighborDeltaBins",
     "OrientationRelativeFeature",
     "PairEgocentricFeatures",
+    "PairInteractionFilter",
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "PairWavelet",
@@ -163,6 +173,7 @@ __all__ = [
     "nn_delta_response",
     "orientation_relative",
     "pair_egocentric",
+    "pair_interaction_filter",
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",

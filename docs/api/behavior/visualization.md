@@ -8,6 +8,7 @@ Components include:
 - Track + label overlay on video frames
 - Interactive video playback
 - Egocentric crop generation
+- Interaction crop generation (pair-level)
 - Global embedding colored scatter plots
 - Timeline plots
 
