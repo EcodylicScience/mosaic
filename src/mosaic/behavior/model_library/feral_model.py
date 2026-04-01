@@ -180,6 +180,8 @@ class FeralModel:
             If provided, ``on_epoch_end(epoch, total, metrics)`` is called
             after each epoch.
         """
+        cfg = self._config
+
         _ensure_feral_path(cfg.get("feral_code_dir"))
         import torch
 
@@ -191,8 +193,6 @@ class FeralModel:
             calc_frame_level_map,
             calculate_f1_metrics,
         )
-
-        cfg = self._config
         run_root = self._run_root
         run_root.mkdir(parents=True, exist_ok=True)
 
