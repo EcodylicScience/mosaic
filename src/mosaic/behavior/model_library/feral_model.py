@@ -9,10 +9,14 @@ FERAL uses a V-JEPA2 backbone with attention pooling for video chunk
 classification.  Training consumes crop videos + per-frame labels,
 producing per-frame behavior predictions.
 
-Requires the ``feral`` package: ``pip install git+https://github.com/Skovorp/feral.git``
+Requires the FERAL code directory (https://github.com/Skovorp/feral).
+Pass ``feral_code_dir`` in the config dict pointing to a local clone.
 
 Config keys
 -----------
+feral_code_dir : str
+    Path to a local clone of https://github.com/Skovorp/feral
+    containing ``model.py``, ``dataset.py``, etc. (required).
 video_dir : str
     Directory containing crop videos (from InteractionCropPipeline or EgocentricCrop).
 label_json : str
@@ -80,15 +84,16 @@ import numpy as np
 import pandas as pd
 
 
-def _require_feral(module_name: str = "feral"):
-    """Raise a clear error if the feral package is not installed."""
-    try:
-        __import__(module_name)
-    except ImportError:
-        raise ImportError(
-            f"The '{module_name}' package is required for FeralModel. "
-            f"Install it with: pip install git+https://github.com/Skovorp/feral.git"
-        ) from None
+def _ensure_feral_path(feral_code_dir: str | Path | None):
+    """Add the FERAL code directory to sys.path so its modules are importable.
+
+    FERAL is not a pip-installable package — it's a flat directory of scripts.
+    This helper makes ``import model``, ``import dataset``, etc. work.
+    """
+    if feral_code_dir is not None:
+        feral_dir = str(feral_code_dir)
+        if feral_dir not in sys.path:
+            sys.path.insert(0, feral_dir)
 
 
 class FeralModel:
@@ -153,12 +158,12 @@ class FeralModel:
         cfg = dict(self.params)
         cfg.update(config or {})
 
-        required = ["video_dir", "label_json"]
+        required = ["video_dir", "label_json", "feral_code_dir"]
         for key in required:
             if key not in cfg:
                 raise ValueError(
                     f"FeralModel config requires '{key}'. "
-                    f"Provide the path to the video directory and label JSON."
+                    f"Provide the video directory, label JSON, and FERAL code directory."
                 )
 
         self._config = cfg
@@ -175,13 +180,13 @@ class FeralModel:
             If provided, ``on_epoch_end(epoch, total, metrics)`` is called
             after each epoch.
         """
-        _require_feral()
+        _ensure_feral_path(cfg.get("feral_code_dir"))
         import torch
 
-        from feral.model import HFModel
-        from feral.dataset import ClsDataset, collate_fn_val
-        from feral.utils import prep_for_answers, save_model, get_weights
-        from feral.metrics import (
+        from model import HFModel  # type: ignore[import-not-found]
+        from dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
+        from utils import prep_for_answers, save_model, get_weights  # type: ignore[import-not-found]
+        from metrics import (  # type: ignore[import-not-found]
             calculate_multiclass_metrics,
             calc_frame_level_map,
             calculate_f1_metrics,
@@ -458,9 +463,7 @@ class FeralModel:
 
     def load_trained_model(self, run_root: Path):
         """Load a trained FERAL model for inference."""
-        _require_feral()
         import torch
-        from feral.model import HFModel
 
         run_root = Path(run_root)
         config_path = run_root / "config.json"
@@ -471,6 +474,9 @@ class FeralModel:
             self._predict_config = json.load(f)
 
         cfg = self._predict_config
+
+        _ensure_feral_path(cfg.get("feral_code_dir"))
+        from model import HFModel  # type: ignore[import-not-found]
 
         # Load label info
         with open(cfg["label_json"]) as f:
@@ -516,10 +522,10 @@ class FeralModel:
             frame, id_a, id_b, target_id, interaction_id,
             predicted_class, predicted_label, trophallaxis_prob
         """
-        _require_feral()
+        _ensure_feral_path(self._predict_config.get("feral_code_dir"))
         import torch
         import torchvision
-        from feral.dataset import get_frame_ids, read_range_video_decord, get_frame_count
+        from dataset import get_frame_ids, read_range_video_decord, get_frame_count  # type: ignore[import-not-found]
 
         if self._model is None:
             raise RuntimeError("Call load_trained_model() first.")

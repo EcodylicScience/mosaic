@@ -7,14 +7,15 @@ on crop videos produced by InteractionCropPipeline or EgocentricCrop.
 Output follows the same pattern as XgboostFeature: per-frame rows with
 ``prob_<class>`` probability columns and a ``predicted_label`` column.
 
-Requires the ``feral`` package: ``pip install git+https://github.com/Skovorp/feral.git``
+Requires the FERAL code directory (https://github.com/Skovorp/feral).
+Point ``feral_code_dir`` to a local clone of the repository.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar, final
 
@@ -35,14 +36,30 @@ from mosaic.core.pipeline.types import (
 from .registry import register_feature
 
 
-def _require_feral():
-    """Raise a clear error if the feral package is not installed."""
+def _import_feral(feral_code_dir: str | Path | None):
+    """Ensure the FERAL code directory is importable and return its modules.
+
+    FERAL is not an installable Python package — it's a flat directory of
+    scripts.  This helper adds the directory to ``sys.path`` so that
+    ``import model``, ``import dataset``, etc. work.
+
+    Parameters
+    ----------
+    feral_code_dir : str or Path or None
+        Path to the FERAL code directory (containing model.py, dataset.py).
+        If None, assumes FERAL modules are already importable.
+    """
+    if feral_code_dir is not None:
+        feral_dir = str(feral_code_dir)
+        if feral_dir not in sys.path:
+            sys.path.insert(0, feral_dir)
+    # Verify we can import the key module
     try:
-        __import__("feral")
+        importlib.import_module("model")
     except ImportError:
         raise ImportError(
-            "The 'feral' package is required for FeralFeature. "
-            "Install it with: pip install git+https://github.com/Skovorp/feral.git"
+            "Cannot import FERAL modules. Set feral_code_dir to a local clone "
+            "of https://github.com/Skovorp/feral containing model.py, dataset.py, etc."
         ) from None
 
 
@@ -71,6 +88,9 @@ class FeralFeature:
     model_dir : Path
         Directory containing ``model_best.pt`` and ``config.json``
         from a trained FERAL model.
+    feral_code_dir : Path
+        Path to a local clone of https://github.com/Skovorp/feral
+        containing ``model.py``, ``dataset.py``, etc.
     chunk_length : int
         Frames per video chunk (default 64).
     chunk_shift : int
@@ -100,6 +120,7 @@ class FeralFeature:
 
     class Params(Params):
         model_dir: Path
+        feral_code_dir: Path
         # Inference hyperparameters (defaults from official FERAL default_vjepa.yaml)
         chunk_length: int = 64
         chunk_shift: int = 32
@@ -179,9 +200,9 @@ class FeralFeature:
         config_path: Path | None,
     ) -> None:
         """Load FERAL model from checkpoint + config."""
-        _require_feral()
+        _import_feral(self.params.feral_code_dir)
         import torch
-        from feral.model import HFModel
+        from model import HFModel  # type: ignore[import-not-found]  # FERAL sys.path import
 
         # Load config if available
         if config_path is not None and config_path.exists():
@@ -271,10 +292,10 @@ class FeralFeature:
         if df.empty:
             return pd.DataFrame()
 
-        _require_feral()
+        _import_feral(self.params.feral_code_dir)
         import torch
         import torchvision
-        from feral.dataset import get_frame_ids, read_range_video_decord, get_frame_count
+        from dataset import get_frame_ids, read_range_video_decord, get_frame_count  # type: ignore[import-not-found]
 
         p = self.params
         device = next(self._model.parameters()).device

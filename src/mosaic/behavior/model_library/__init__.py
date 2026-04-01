@@ -24,12 +24,9 @@ from . import helpers
 from . import behavior_xgboost
 from .behavior_xgboost import BehaviorXGBoostModel
 
-# Optional: FERAL video behavior classifier (requires `feral` package)
-try:
-    from . import feral_model
-    from .feral_model import FeralModel
-except ImportError:
-    pass
+# FERAL video behavior classifier (requires feral_code_dir at runtime)
+from . import feral_model
+from .feral_model import FeralModel
 
 __all__ = [
     "helpers",

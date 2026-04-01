@@ -100,12 +100,9 @@ try:
 except ImportError:
     pass
 
-# Optional: FERAL video behavior classifier (requires `feral` package)
-try:
-    from . import feral_feature
-    from .feral_feature import FeralFeature
-except ImportError:
-    pass
+# FERAL video behavior classifier (requires feral_code_dir at runtime)
+from . import feral_feature
+from .feral_feature import FeralFeature
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
