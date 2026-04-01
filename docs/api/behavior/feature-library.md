@@ -10,17 +10,12 @@ parquet files.
 | Category | Features |
 |----------|----------|
 | Per-frame kinematic | SpeedAngvel, BodyScale, OrientationRelative |
-| Per-frame spatial | PairEgocentric, PairPosition, ApproachAvoidance |
+| Per-frame spatial | PairEgocentric, PairPosition, PairInteractionFilter, ApproachAvoidance |
 | Per-frame social | NearestNeighbor, FFGroups, FFGroupsMetrics, NNDeltaResponse, NNDeltaBins |
-| Spectral | PairWavelet |
-| Reduction | PairPoseDistancePCA |
-| Context | TemporalStacking |
-| Global embed/cluster | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, WardAssign |
-| Template extraction | ExtractTemplates, ExtractLabeledTemplates |
-| Scaling | GlobalScaler |
-| Pair interaction | PairInteractionFilter |
-| Classification | XgboostFeature, FeralFeature |
-| External | KpmsFeature (keypoint-moseq) |
+| Per-frame context | TemporalStacking, PairWavelet |
+| Dimensionality reduction | PairPoseDistancePCA, GlobalScaler |
+| Embedding & clustering | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, WardAssign, ExtractTemplates, ExtractLabeledTemplates |
+| Classification | XgboostFeature, FeralFeature, KpmsFeature |
 
 ## Registry
 
