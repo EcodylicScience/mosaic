@@ -75,15 +75,6 @@ class MyFeature:
     options:
       show_source: true
 
-## Training Queue
-
-Job queue for sequential model training with persistent status tracking.
-
-::: mosaic.core.pipeline.training_queue.TrainingQueue
-    options:
-      show_source: true
-      members_order: source
-
 ## Training Progress
 
 Callback protocol and SQLite implementation for monitoring training

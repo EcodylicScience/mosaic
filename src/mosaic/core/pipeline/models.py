@@ -75,7 +75,6 @@ def train_model(
     config: str | Path | dict[str, object] | None = None,
     overwrite: bool = False,
     *,
-    job_id: str | None = None,
     progress_callback: TrainingProgressCallback | None = None,
 ) -> str:
     """Train a registered model using a JSON (or dict) configuration.
@@ -88,8 +87,6 @@ def train_model(
         config: Path to a JSON config file or an in-memory dict of
             hyperparameters.
         overwrite: Reserved for future use (run_ids are hash-based).
-        job_id: If called from the training queue, the job_id for
-            status tracking.
         progress_callback: Callback for reporting training progress
             (epoch, phase, etc.).  If the model's ``train()`` method
             accepts a ``callback`` or ``progress_callback`` keyword

@@ -102,7 +102,7 @@ except ImportError:
 
 # FERAL video behavior classifier (requires feral_code_dir at runtime)
 from . import feral_feature
-from .feral_feature import FeralFeature
+from .feral_feature import FeralFeature, FeralTrainingConfig
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
@@ -152,6 +152,8 @@ __all__ = [
     "TemporalStackingFeature",
     "TrajectorySmooth",
     "XgboostFeature",
+    "FeralFeature",
+    "FeralTrainingConfig",
     # Submodules
     "approach_avoidance",
     "body_scale",

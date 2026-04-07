@@ -62,21 +62,6 @@ CREATE TABLE IF NOT EXISTS dependencies (
     PRIMARY KEY (feature, run_id, upstream_feature)
 );
 
-CREATE TABLE IF NOT EXISTS training_jobs (
-    job_id        TEXT PRIMARY KEY,
-    model_name    TEXT NOT NULL,
-    model_version TEXT NOT NULL,
-    config_json   TEXT NOT NULL DEFAULT '{}',
-    status        TEXT NOT NULL DEFAULT 'pending',
-    priority      INTEGER DEFAULT 0,
-    created_at    TEXT NOT NULL,
-    started_at    TEXT DEFAULT '',
-    finished_at   TEXT DEFAULT '',
-    run_id        TEXT DEFAULT '',
-    error         TEXT DEFAULT '',
-    worker_pid    INTEGER DEFAULT 0
-);
-
 CREATE TABLE IF NOT EXISTS training_progress (
     job_id      TEXT    NOT NULL,
     step_type   TEXT    NOT NULL,

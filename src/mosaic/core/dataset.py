@@ -2966,53 +2966,6 @@ class Dataset:
 
         return train_model(self, model, config, overwrite)
 
-    # -- Training queue -----------------------------------------------------
-
-    def training_queue(self) -> "TrainingQueue":
-        """Return a :class:`TrainingQueue` bound to this dataset.
-
-        The queue persists job metadata in the dataset's ``.mosaic.db``
-        and runs training jobs sequentially in a background thread.
-
-        Call :meth:`TrainingQueue.start` to begin processing, and
-        :meth:`TrainingQueue.submit` to enqueue jobs.
-        """
-        from .pipeline.training_queue import TrainingQueue
-
-        return TrainingQueue(self)
-
-    def submit_training(
-        self,
-        model: Any,
-        config: str | Path | dict[str, object] | None = None,
-        priority: int = 0,
-        *,
-        auto_start: bool = True,
-        _queue: Any | None = None,
-    ) -> tuple[str, "TrainingQueue"]:
-        """Submit a model training job to the queue.
-
-        Convenience method that creates a queue (or reuses *_queue*),
-        submits the job, and optionally starts the worker.
-
-        Args:
-            model: Model/trainer instance.
-            config: JSON config path or dict.
-            priority: Higher numbers run first.
-            auto_start: Start the worker thread if not already running.
-            _queue: Reuse an existing queue instance.
-
-        Returns:
-            ``(job_id, queue)`` — the job_id and the queue instance
-            (keep the queue reference to submit more jobs or check status).
-        """
-        from .pipeline.training_queue import TrainingQueue
-
-        q: TrainingQueue = _queue or TrainingQueue(self)
-        job_id = q.submit(model, config, priority=priority)
-        if auto_start and not q.is_running:
-            q.start()
-        return job_id, q
 
 
 # --- Backward compat: track converter helpers moved to core/track_library ---

@@ -24,7 +24,7 @@ from . import helpers
 from . import behavior_xgboost
 from .behavior_xgboost import BehaviorXGBoostModel
 
-# FERAL video behavior classifier (requires feral_code_dir at runtime)
+# FERAL video behavior classifier -- DEPRECATED, use FeralFeature instead
 from . import feral_model
 from .feral_model import FeralModel
 

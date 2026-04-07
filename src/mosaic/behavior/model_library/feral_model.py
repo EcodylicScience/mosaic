@@ -141,6 +141,16 @@ class FeralModel:
     }
 
     def __init__(self, params: Optional[dict] = None):
+        import warnings
+
+        warnings.warn(
+            "FeralModel is deprecated. Use FeralFeature with training params "
+            "instead (video_dir, label_json, training=FeralTrainingConfig(...)). "
+            "See mosaic.behavior.feature_library.feral_feature for details. "
+            "FeralModel will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.params = {**self.DEFAULTS, **(params or {})}
         self._ds = None
         self._config: dict = {}

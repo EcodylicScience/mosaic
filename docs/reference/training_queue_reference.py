@@ -1,5 +1,9 @@
 """SQLite-backed training job queue with a single worker thread.
 
+REFERENCE COPY — removed from mosaic core in April 2026.
+This module will be reimplemented as part of the mosaic API/server layer
+that sits between the backend and UI.
+
 Manages a queue of model training jobs.  Job metadata (status, config,
 timestamps, errors) is persisted in the ``training_jobs`` table of
 ``.mosaic.db`` so that any reader (API, notebook, frontend) can inspect
@@ -425,3 +429,21 @@ class TrainingQueue:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+# --- SQL schema for training_jobs (needed when reimplementing) ---
+#
+# CREATE TABLE IF NOT EXISTS training_jobs (
+#     job_id        TEXT PRIMARY KEY,
+#     model_name    TEXT NOT NULL,
+#     model_version TEXT NOT NULL,
+#     config_json   TEXT NOT NULL DEFAULT '{}',
+#     status        TEXT NOT NULL DEFAULT 'pending',
+#     priority      INTEGER DEFAULT 0,
+#     created_at    TEXT NOT NULL,
+#     started_at    TEXT DEFAULT '',
+#     finished_at   TEXT DEFAULT '',
+#     run_id        TEXT DEFAULT '',
+#     error         TEXT DEFAULT '',
+#     worker_pid    INTEGER DEFAULT 0
+# );
