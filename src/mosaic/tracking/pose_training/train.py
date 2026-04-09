@@ -37,6 +37,7 @@ def train_pose_model(
     project: str | Path | None = None,
     name: str | None = None,
     patience: int = 50,
+    resume: bool | str | Path = False,
     augmentation: str | dict[str, Any] | None = None,
     callback: Any = None,
     **extra_args: Any,
@@ -49,8 +50,10 @@ def train_pose_model(
         Path to data.yaml (must include kpt_shape for pose).
     model : str
         Base model to start from (e.g. "yolo11n-pose.pt", "yolo11s-pose.pt").
+        Ignored when *resume* is used.
     epochs : int
-        Number of training epochs.
+        Number of training epochs.  When resuming, this is the new total
+        epoch target (training continues from the last checkpoint).
     imgsz : int
         Training image size (pixels).
     batch : int
@@ -63,6 +66,17 @@ def train_pose_model(
         Run name.  Defaults to a timestamp.
     patience : int
         Early stopping patience (0 to disable).
+    resume : bool, str, or Path
+        Resume training from a checkpoint.
+
+        - ``False`` (default): train from scratch.
+        - ``True``: find the most recent ``last.pt`` under
+          *project*/*name* (or the latest run in *project*).
+        - A path (str or Path): explicit path to a ``last.pt`` checkpoint.
+
+        When resuming, ultralytics restores all training state (optimizer,
+        scheduler, augmentation) from the checkpoint.  Only *epochs* and
+        *device* are meaningful overrides.
     augmentation : str, dict, or None
         Augmentation configuration.  Can be:
 
@@ -85,10 +99,20 @@ def train_pose_model(
 
     if project is None:
         project = "./runs/pose"
-    if name is None:
+    if name is None and not resume:
         name = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    yolo = YOLO(model)
+    # Resolve resume checkpoint
+    if resume and resume is not True:
+        checkpoint = Path(resume)
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint}")
+        yolo = YOLO(str(checkpoint))
+    elif resume is True:
+        checkpoint = find_last_checkpoint(project, name)
+        yolo = YOLO(str(checkpoint))
+    else:
+        yolo = YOLO(model)
 
     train_kwargs: dict[str, Any] = dict(
         data=str(data_yaml),
@@ -98,13 +122,18 @@ def train_pose_model(
         batch=batch,
         device=device,
         project=str(project),
-        name=name,
         patience=patience,
     )
-    from .augmentation import resolve_augmentation
-    aug_dict = resolve_augmentation(augmentation)
-    if aug_dict:
-        train_kwargs.update(aug_dict)
+    if name is not None:
+        train_kwargs["name"] = name
+    if resume:
+        train_kwargs["resume"] = True
+
+    if not resume:
+        from .augmentation import resolve_augmentation
+        aug_dict = resolve_augmentation(augmentation)
+        if aug_dict:
+            train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
     if callback is not None and hasattr(callback, "on_epoch_end"):
@@ -160,6 +189,52 @@ def find_best_model(project_dir: str | Path) -> Path | None:
         reverse=True,
     )
     return candidates[0] if candidates else None
+
+
+def find_last_checkpoint(
+    project_dir: str | Path, name: str | None = None
+) -> Path:
+    """Find the last.pt checkpoint for resuming training.
+
+    Parameters
+    ----------
+    project_dir : path
+        Project directory containing training runs.
+    name : str, optional
+        Specific run name.  If given, looks for
+        ``project_dir/name/weights/last.pt``.  Otherwise searches all
+        subdirectories and returns the most recently modified checkpoint.
+
+    Returns
+    -------
+    Path
+        Path to the ``last.pt`` checkpoint.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no checkpoint is found.
+    """
+    project_path = Path(project_dir)
+    if name is not None:
+        checkpoint = project_path / name / "weights" / "last.pt"
+        if checkpoint.exists():
+            return checkpoint
+        raise FileNotFoundError(
+            f"No checkpoint at {checkpoint}. "
+            f"Has a training run with name={name!r} completed at least one epoch?"
+        )
+    candidates = sorted(
+        project_path.glob("*/weights/last.pt"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    raise FileNotFoundError(
+        f"No last.pt checkpoint found under {project_path}. "
+        f"Has a training run completed at least one epoch?"
+    )
 
 
 def validate_model(
@@ -247,6 +322,7 @@ def train_point_model(
     loc: float = 5.0,
     loc_loss: str = "mse",
     dor: float = 0.8,
+    resume: bool | str | Path = False,
     augmentation: str | dict[str, Any] | None = None,
     backend: str = "polo",
     callback: Any = None,
@@ -262,8 +338,10 @@ def train_point_model(
         Model config or pretrained weights.  For POLO:
         ``"locate/polov8n.yaml"`` (nano), ``"locate/polov8s.yaml"`` (small),
         etc.  Or a path to a previously trained ``.pt`` file.
+        Ignored when *resume* is used.
     epochs : int
-        Number of training epochs.
+        Number of training epochs.  When resuming, this is the new total
+        epoch target.
     imgsz : int
         Training image size (pixels).
     batch : int
@@ -282,6 +360,16 @@ def train_point_model(
         Localization loss type: ``"mse"``, ``"hausdorff"``, etc.
     dor : float
         Distance of Reference threshold for evaluation (POLO-specific).
+    resume : bool, str, or Path
+        Resume training from a checkpoint.
+
+        - ``False`` (default): train from scratch.
+        - ``True``: find the most recent ``last.pt`` under
+          *project*/*name* (or the latest run in *project*).
+        - A path (str or Path): explicit path to a ``last.pt`` checkpoint.
+
+        When resuming, ultralytics restores all training state from the
+        checkpoint.  Only *epochs* and *device* are meaningful overrides.
     augmentation : str, dict, or None
         Augmentation configuration.  Can be:
 
@@ -310,10 +398,20 @@ def train_point_model(
 
     if project is None:
         project = "./runs/locate"
-    if name is None:
+    if name is None and not resume:
         name = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    yolo = YOLO(model)
+    # Resolve resume checkpoint
+    if resume and resume is not True:
+        checkpoint = Path(resume)
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint}")
+        yolo = YOLO(str(checkpoint))
+    elif resume is True:
+        checkpoint = find_last_checkpoint(project, name)
+        yolo = YOLO(str(checkpoint))
+    else:
+        yolo = YOLO(model)
 
     train_kwargs: dict[str, Any] = dict(
         data=str(data_yaml),
@@ -323,16 +421,21 @@ def train_point_model(
         batch=batch,
         device=device,
         project=str(project),
-        name=name,
         patience=patience,
         loc=loc,
         loc_loss=loc_loss,
         dor=dor,
     )
-    from .augmentation import resolve_augmentation
-    aug_dict = resolve_augmentation(augmentation)
-    if aug_dict:
-        train_kwargs.update(aug_dict)
+    if name is not None:
+        train_kwargs["name"] = name
+    if resume:
+        train_kwargs["resume"] = True
+
+    if not resume:
+        from .augmentation import resolve_augmentation
+        aug_dict = resolve_augmentation(augmentation)
+        if aug_dict:
+            train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
     if callback is not None and hasattr(callback, "on_epoch_end"):

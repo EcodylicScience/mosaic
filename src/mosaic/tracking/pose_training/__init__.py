@@ -17,6 +17,7 @@ from .train import (
     train_pose_model,
     train_point_model,
     find_best_model,
+    find_last_checkpoint,
     validate_model,
     validate_point_model,
     load_training_curves,
