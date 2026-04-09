@@ -322,8 +322,8 @@ class EgocentricCrop:
 
         # Apply offset along heading direction (positive = forward / toward head)
         if p.center_offset_px != 0.0 and angle is not None and np.isfinite(angle):
-            cx -= np.cos(angle) * p.center_offset_px
-            cy -= np.sin(angle) * p.center_offset_px
+            cx += np.cos(angle) * p.center_offset_px
+            cy += np.sin(angle) * p.center_offset_px
 
         return (cx, cy)
 

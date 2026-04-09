@@ -376,8 +376,8 @@ class InteractionCropPipeline:
         # Apply offset
         if p.center_offset_px != 0.0:
             finite_a = np.isfinite(angles)
-            cx[finite_a] -= np.cos(angles[finite_a]) * p.center_offset_px
-            cy[finite_a] -= np.sin(angles[finite_a]) * p.center_offset_px
+            cx[finite_a] += np.cos(angles[finite_a]) * p.center_offset_px
+            cy[finite_a] += np.sin(angles[finite_a]) * p.center_offset_px
 
         return angles, cx, cy
 

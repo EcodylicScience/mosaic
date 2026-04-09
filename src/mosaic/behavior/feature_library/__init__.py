@@ -40,6 +40,7 @@ from mosaic.core.pipeline.types import (
 )
 
 from . import (
+    arhmm,
     approach_avoidance,
     body_scale,
     extract_labeled_templates,
@@ -67,6 +68,7 @@ from . import (
     trajectory_smooth,
     xgboost_feature,
 )
+from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
 from .body_scale import BodyScaleFeature
 from .extract_labeled_templates import ExtractLabeledTemplates
@@ -100,6 +102,13 @@ try:
 except ImportError:
     pass
 
+# Lightning-action temporal classifier (requires `lightning-action` package)
+try:
+    from . import lightning_action_feature
+    from .lightning_action_feature import LightningActionFeature
+except ImportError:
+    pass
+
 # FERAL video behavior classifier (requires feral_code_dir at runtime)
 from . import feral_feature
 from .feral_feature import FeralFeature, FeralTrainingConfig
@@ -126,6 +135,7 @@ __all__ = [
     # Helpers
     "helpers",
     # Feature classes
+    "ArHmmFeature",
     "ApproachAvoidance",
     "BodyScaleFeature",
     "ExtractLabeledTemplates",
@@ -154,7 +164,10 @@ __all__ = [
     "XgboostFeature",
     "FeralFeature",
     "FeralTrainingConfig",
+    "LightningActionFeature",
+    "lightning_action_feature",
     # Submodules
+    "arhmm",
     "approach_avoidance",
     "body_scale",
     "extract_labeled_templates",
