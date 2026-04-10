@@ -24,6 +24,10 @@ from . import helpers
 from . import behavior_xgboost
 from .behavior_xgboost import BehaviorXGBoostModel
 
+# T-Rex-compatible V200 CNN identity classifier (requires PyTorch)
+from . import trex_identity_network
+from .trex_identity_network import TRexIdentityNetwork
+
 # FERAL video behavior classifier -- DEPRECATED, use FeralFeature instead
 from . import feral_model
 from .feral_model import FeralModel
@@ -32,6 +36,8 @@ __all__ = [
     "helpers",
     "behavior_xgboost",
     "BehaviorXGBoostModel",
+    "trex_identity_network",
+    "TRexIdentityNetwork",
     "feral_model",
     "FeralModel",
 ]

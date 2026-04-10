@@ -53,6 +53,7 @@ from . import (
     global_ward,
     helpers,
     id_tag_columns,
+    identity_model,
     kpms,
     nearestneighbor,
     nn_delta_bins,
@@ -80,6 +81,7 @@ from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
+from .identity_model import GlobalIdentityModel
 from .kpms import KpmsFeature
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
@@ -142,6 +144,7 @@ __all__ = [
     "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
+    "GlobalIdentityModel",
     "GlobalKMeansClustering",
     "GlobalModelParams",
     "GlobalScaler",
@@ -179,6 +182,7 @@ __all__ = [
     "global_tsne",
     "global_ward",
     "id_tag_columns",
+    "identity_model",
     "kpms",
     "nearestneighbor",
     "nn_delta_bins",
