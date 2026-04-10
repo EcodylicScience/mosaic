@@ -1,13 +1,17 @@
-"""Training progress callback protocol and SQLite implementation.
+"""Training progress callback protocol and implementations.
 
 Provides a lightweight callback that training loops call at regular
 intervals (per-epoch, per-class, per-phase) to persist progress into the
 ``training_progress`` table of ``.mosaic.db``.  The same table is read by
 the API layer (via SSE) for live monitoring.
+
+Also provides ``CSVProgressCallback`` for append-mode CSV writing that
+is readable mid-training (no database required).
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 from pathlib import Path
@@ -90,6 +94,69 @@ class NullProgressCallback:
 
     def on_phase(self, phase: str, message: str) -> None:
         pass
+
+
+# ---------------------------------------------------------------------------
+# CSV implementation (append-mode, readable mid-training)
+# ---------------------------------------------------------------------------
+
+
+class CSVProgressCallback:
+    """Append-mode CSV writer for epoch metrics.
+
+    Writes one row per ``on_epoch_end`` call.  The file is flushed after
+    each write so it can be read from another process (e.g. a notebook
+    cell or ``cat`` from the terminal) while training is still running.
+
+    Example::
+
+        cb = CSVProgressCallback(run_root / "summary.csv")
+        for epoch in range(n_epochs):
+            ...
+            cb.on_epoch_end(epoch, n_epochs, {"train_loss": 0.3, "val_f1": 0.9})
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._fieldnames: list[str] | None = None
+        self._file = None
+        self._writer = None
+
+    def on_epoch_end(
+        self,
+        epoch: int,
+        total_epochs: int,
+        metrics: dict[str, float],
+    ) -> None:
+        row = {"epoch": epoch, "total_epochs": total_epochs, **metrics}
+
+        if self._file is None:
+            # First call -- open file in append mode
+            write_header = not (self.path.exists() and self.path.stat().st_size > 0)
+            self._fieldnames = list(row.keys())
+            self._file = open(self.path, "a", newline="")
+            self._writer = csv.DictWriter(
+                self._file, fieldnames=self._fieldnames, extrasaction="ignore"
+            )
+            if write_header:
+                self._writer.writeheader()
+
+        self._writer.writerow(row)  # type: ignore[union-attr]
+        self._file.flush()  # type: ignore[union-attr]
+
+    def on_class_start(
+        self, class_idx: int, total_classes: int, class_name: str
+    ) -> None:
+        pass
+
+    def on_phase(self, phase: str, message: str) -> None:
+        pass
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._writer = None
 
 
 # ---------------------------------------------------------------------------

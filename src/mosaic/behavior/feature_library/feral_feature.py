@@ -49,6 +49,8 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 
+from mosaic.core.pipeline.progress import CSVProgressCallback
+
 from .registry import register_feature
 
 log = logging.getLogger(__name__)
@@ -225,6 +227,7 @@ class FeralFeature:
         self._video_dir: Path | None = None
         self._run_root: Path | None = None
         self._metrics: dict | None = None
+        self.progress_callback = None  # optional TrainingProgressCallback
 
     def bind_dataset(self, ds):
         """Store dataset reference for resolving media paths."""
@@ -534,8 +537,34 @@ class FeralFeature:
         best_map = -1.0
         epochs_without_improvement = 0
         training_metrics: list[dict] = []
+        start_epoch = 0
 
-        for epoch in range(tc.epochs):
+        # Resume from checkpoint if training was interrupted
+        checkpoint_path = run_root / "training_checkpoint.pt" if run_root else None
+        if checkpoint_path is not None and checkpoint_path.exists():
+            ckpt = torch.load(str(checkpoint_path), map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            lr_scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            best_map = ckpt.get("best_map", -1.0)
+            epochs_without_improvement = ckpt.get("epochs_without_improvement", 0)
+            training_metrics = ckpt.get("training_metrics", [])
+            start_epoch = ckpt["epoch"] + 1
+            if model_ema is not None and "ema_state_dict" in ckpt:
+                model_ema.ema.load_state_dict(ckpt["ema_state_dict"])
+            log.info(
+                "Resuming training from epoch %d (best_map=%.4f)",
+                start_epoch, best_map,
+            )
+
+        # Progress callback -- writes summary.csv after each epoch
+        csv_progress = (
+            CSVProgressCallback(run_root / "summary.csv")
+            if run_root is not None
+            else None
+        )
+
+        for epoch in range(start_epoch, tc.epochs):
             # --- Train ---
             model.train()
             train_losses: list[float] = []
@@ -652,12 +681,39 @@ class FeralFeature:
             training_metrics.append(epoch_metrics)
             log.info("Epoch %d: %s", epoch, epoch_metrics)
 
+            # Write progress (summary.csv + optional external callback)
+            if csv_progress is not None:
+                csv_progress.on_epoch_end(epoch, tc.epochs, epoch_metrics)
+            if self.progress_callback is not None:
+                self.progress_callback.on_epoch_end(epoch, tc.epochs, epoch_metrics)
+
+            # Save training checkpoint for resume
+            if checkpoint_path is not None:
+                ckpt_data = {
+                    "epoch": epoch,
+                    "best_map": best_map,
+                    "epochs_without_improvement": epochs_without_improvement,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": lr_scheduler.state_dict(),
+                    "model_state_dict": model.state_dict(),
+                    "training_metrics": training_metrics,
+                }
+                if model_ema is not None:
+                    ckpt_data["ema_state_dict"] = model_ema.ema.state_dict()
+                torch.save(ckpt_data, checkpoint_path)
+
             if (
                 tc.patience is not None
                 and epochs_without_improvement >= tc.patience
             ):
                 log.info("Early stopping at epoch %d", epoch)
                 break
+
+        # Training complete -- clean up resume checkpoint
+        if checkpoint_path is not None and checkpoint_path.exists():
+            checkpoint_path.unlink()
+        if csv_progress is not None:
+            csv_progress.close()
 
         # Save EMA model separately
         if model_ema is not None and run_root is not None:
