@@ -162,11 +162,26 @@ class EgocentricCrop:
         self._ds = None
         self._scope: Scope = Scope()
         self._run_root: Path | None = None
+        self._clahe = None  # lazily constructed; reused across frames
 
         # Storage settings (for feature pipeline integration)
         self.storage_feature_name = self.name
         self.storage_use_input_suffix = False
         self.skip_existing_outputs = False
+
+    def _get_clahe(self):
+        """Return a single CLAHE instance, built once from params.
+
+        Building the CLAHE object costs O(tileGridSize^2) for LUT init, so
+        we construct it once per feature-instance rather than per frame.
+        """
+        if self._clahe is None:
+            p = self.params
+            self._clahe = cv2.createCLAHE(
+                clipLimit=p.clahe_clip_limit,
+                tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
+            )
+        return self._clahe
 
     # ----------------------- Dataset hooks -----------------------
 
@@ -327,6 +342,88 @@ class EgocentricCrop:
 
         return (cx, cy)
 
+    def _precompute_geometry(
+        self, df_target: pd.DataFrame, angle_is_degrees: bool
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute heading angles and centers for all frames as numpy arrays.
+
+        Vectorized equivalent of the per-row ``_get_heading_angle`` /
+        ``_get_center`` path. Returns three arrays indexed by the row
+        order of *df_target*:
+
+        - ``angles``: heading in radians (0 = facing +x). 0.0 where invalid
+          or not applicable (no pose points, no angle column).
+        - ``cx``, ``cy``: center in pixel coords, with ``center_offset_px``
+          shift applied along the heading direction. NaN where the center
+          cannot be determined.
+        """
+        p = self.params
+        n = len(df_target)
+
+        # --- Angles ---
+        angles = np.zeros(n, dtype=np.float64)
+        if p.angle_col and p.angle_col in df_target.columns:
+            raw = df_target[p.angle_col].to_numpy(dtype=np.float64)
+            valid = np.isfinite(raw)
+            if angle_is_degrees:
+                angles[valid] = np.radians(raw[valid])
+            else:
+                angles[valid] = raw[valid]
+        else:
+            neck_idx, tail_idx = p.heading_points
+            nx_col = f"{p.pose.x_prefix}{neck_idx}"
+            ny_col = f"{p.pose.y_prefix}{neck_idx}"
+            tx_col = f"{p.pose.x_prefix}{tail_idx}"
+            ty_col = f"{p.pose.y_prefix}{tail_idx}"
+            if all(c in df_target.columns for c in (nx_col, ny_col, tx_col, ty_col)):
+                nx = df_target[nx_col].to_numpy(dtype=np.float64)
+                ny = df_target[ny_col].to_numpy(dtype=np.float64)
+                tx = df_target[tx_col].to_numpy(dtype=np.float64)
+                ty = df_target[ty_col].to_numpy(dtype=np.float64)
+                valid = (
+                    np.isfinite(nx) & np.isfinite(ny)
+                    & np.isfinite(tx) & np.isfinite(ty)
+                )
+                angles[valid] = np.arctan2(ny[valid] - ty[valid], nx[valid] - tx[valid])
+
+        # --- Centers ---
+        mode = p.center_mode
+        if mode == "default":
+            xs_list, ys_list = [], []
+            for i in range(p.pose.pose_n):
+                xc = f"{p.pose.x_prefix}{i}"
+                yc = f"{p.pose.y_prefix}{i}"
+                if xc in df_target.columns and yc in df_target.columns:
+                    xs_list.append(df_target[xc].to_numpy(dtype=np.float64))
+                    ys_list.append(df_target[yc].to_numpy(dtype=np.float64))
+            if xs_list:
+                xs = np.column_stack(xs_list)
+                ys = np.column_stack(ys_list)
+                with np.errstate(invalid="ignore"):
+                    cx = np.nanmean(xs, axis=1)
+                    cy = np.nanmean(ys, axis=1)
+            else:
+                cx = np.full(n, np.nan, dtype=np.float64)
+                cy = np.full(n, np.nan, dtype=np.float64)
+        elif mode == "pose0" or isinstance(mode, int):
+            idx = 0 if mode == "pose0" else int(mode)
+            xc = f"{p.pose.x_prefix}{idx}"
+            yc = f"{p.pose.y_prefix}{idx}"
+            cx = df_target[xc].to_numpy(dtype=np.float64).copy()
+            cy = df_target[yc].to_numpy(dtype=np.float64).copy()
+        else:
+            raise ValueError(
+                f"Unknown center_mode: {mode}. Use 'default', 'pose0', or an int pose index."
+            )
+
+        # Apply offset along heading direction (positive = forward / toward head)
+        if p.center_offset_px != 0.0:
+            finite_a = np.isfinite(angles)
+            cx[finite_a] += np.cos(angles[finite_a]) * p.center_offset_px
+            cy[finite_a] += np.sin(angles[finite_a]) * p.center_offset_px
+
+        return angles, cx, cy
+
     def _get_heading_angle(self, row: pd.Series) -> float:
         """Compute heading angle from anatomical landmarks or angle column."""
         p = self.params
@@ -461,12 +558,8 @@ class EgocentricCrop:
         return crop
 
     def _apply_clahe(self, crop: np.ndarray) -> np.ndarray:
-        """Apply CLAHE contrast enhancement."""
-        p = self.params
-        clahe = cv2.createCLAHE(
-            clipLimit=p.clahe_clip_limit,
-            tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
-        )
+        """Apply CLAHE contrast enhancement (object reused across frames)."""
+        clahe = self._get_clahe()
         if crop.ndim == 2:
             return clahe.apply(crop)
         # For color images, convert to LAB, apply CLAHE to L channel
@@ -541,10 +634,10 @@ class EgocentricCrop:
         reader = MultiVideoReader(video_paths)
         output_fps = p.output_fps or reader.fps
 
-        # Build frame -> row lookup
-        frame_to_row = {
-            int(row[COLUMNS.frame_col]): row for _, row in df_target.iterrows()
-        }
+        # Build frame -> row position lookup (for precomputed geometry arrays
+        # and for optional per-frame lookups like transform_keypoints)
+        frame_array = df_target[COLUMNS.frame_col].to_numpy(dtype=int)
+        frame_to_pos = {int(f): i for i, f in enumerate(frame_array)}
 
         # Prepare output paths
         run_root = self._get_run_root(group, sequence)
@@ -577,6 +670,15 @@ class EgocentricCrop:
         if p.angle_col and p.angle_col in df_target.columns:
             angle_is_degrees = infer_angle_degrees(df_target[p.angle_col])
 
+        # Pre-compute heading + center for every labeled frame (vectorized).
+        # Arrays are indexed by position in df_target (see frame_to_pos above).
+        angles, centers_x, centers_y = self._precompute_geometry(
+            df_target, angle_is_degrees
+        )
+
+        # Keep per-row access for the (rare) transform_keypoints path
+        rows_by_pos = df_target if p.transform_keypoints else None
+
         # Process frames
         metadata_rows = []
         frame_idx = 0
@@ -588,17 +690,10 @@ class EgocentricCrop:
                 if not ret:
                     break
 
-                row = frame_to_row.get(frame_idx)
-                if row is not None:
-                    # Compute heading angle first (needed for center offset)
-                    if p.rotate_to_heading or p.center_offset_px != 0.0:
-                        angle = self._get_heading_angle(row)
-                        if angle_is_degrees:
-                            angle = np.radians(angle)
-                    else:
-                        angle = 0.0
-
-                    center = self._get_center(row, angle=angle)
+                pos = frame_to_pos.get(frame_idx)
+                if pos is not None:
+                    angle = float(angles[pos]) if (p.rotate_to_heading or p.center_offset_px != 0.0) else 0.0
+                    center = (float(centers_x[pos]), float(centers_y[pos]))
                     crop = self._extract_egocentric_crop(frame, center, angle)
 
                     if writer is not None:
@@ -621,6 +716,7 @@ class EgocentricCrop:
                     }
 
                     if p.transform_keypoints:
+                        row = rows_by_pos.iloc[pos]
                         meta.update(
                             self._transform_keypoints(row, center[0], center[1], angle)
                         )

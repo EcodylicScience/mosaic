@@ -118,6 +118,21 @@ class InteractionCropPipeline:
         self._ds = None
         self._scope: Scope = Scope()
         self._run_root: Path | None = None
+        self._clahe = None  # lazily constructed; reused across frames/segments
+
+    def _get_clahe(self):
+        """Return a single CLAHE instance, built once from params.
+
+        Building the CLAHE object costs O(tileGridSize^2) for LUT init, so
+        we construct it once per feature-instance rather than per frame.
+        """
+        if self._clahe is None:
+            p = self.params
+            self._clahe = cv2.createCLAHE(
+                clipLimit=p.clahe_clip_limit,
+                tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
+            )
+        return self._clahe
 
     # --- Dataset hooks ---
 
@@ -446,12 +461,9 @@ class InteractionCropPipeline:
         if p.grayscale and crop.ndim == 3:
             crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-        # CLAHE
+        # CLAHE (object built once, reused across frames)
         if p.use_clahe:
-            clahe = cv2.createCLAHE(
-                clipLimit=p.clahe_clip_limit,
-                tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
-            )
+            clahe = self._get_clahe()
             if crop.ndim == 2:
                 crop = clahe.apply(crop)
             else:
