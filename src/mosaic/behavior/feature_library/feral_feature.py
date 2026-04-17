@@ -255,11 +255,17 @@ class FeralFeature:
                 self._video_dir = some_path.parent
                 break
 
+        # Fallback: use params.video_dir if set (training mode)
+        if self._video_dir is None and self.params.video_dir is not None:
+            self._video_dir = Path(self.params.video_dir)
+
         # Branch 1: cached model in run_root (from prior fit+save_state)
         cached_model = run_root / "feral_model.pt"
         cached_config = run_root / "feral_config.json"
         if cached_model.exists() and cached_config.exists():
             self._load_model(cached_model, cached_config)
+            if self._video_dir is None and self._config.get("video_dir"):
+                self._video_dir = Path(self._config["video_dir"])
             return True
 
         # Branch 2: pre-trained model from params.model_dir
@@ -272,6 +278,8 @@ class FeralFeature:
                     checkpoint,
                     config_path if config_path.exists() else None,
                 )
+                if self._video_dir is None and self._config.get("video_dir"):
+                    self._video_dir = Path(self._config["video_dir"])
                 return True
 
         # Branch 3: training mode -- return False to trigger fit()
@@ -899,12 +907,17 @@ class FeralFeature:
         is_pair_input = "id_a" in df.columns and "id_b" in df.columns
         video_rows = self._normalize_input(df)
 
-        # Resolve video directory
+        # Resolve video directory (fallback chain: cached → config → params)
         video_dir = self._video_dir
+        if video_dir is None and self._config.get("video_dir"):
+            video_dir = Path(self._config["video_dir"])
+        if video_dir is None and self.params.video_dir is not None:
+            video_dir = Path(self.params.video_dir)
         if video_dir is None:
             raise RuntimeError(
                 "Could not resolve crop video directory. "
-                "Ensure the upstream crop feature has been run."
+                "Set video_dir in params or ensure the upstream crop "
+                "feature has been run."
             )
 
         num_classes = len(self._classes)
