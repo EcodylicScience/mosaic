@@ -11,7 +11,15 @@ Requires optional dependency:
 """
 from . import converters
 from .converters import lightning_pose, coco_keypoints, coco_points, coco_localizer, cvat_points, cvat_localizer
-from .converters.base import KeypointSchema, PointDetectionSchema, LocalizerSchema
+from .converters.base import (
+    KeypointSchema,
+    PointDetectionSchema,
+    LocalizerSchema,
+    keypoints_to_bbox,
+    keypoints_to_bbox_isotropic,
+    keypoints_to_bbox_oriented,
+)
+from .bbox_rewrite import rewrite_dataset_bboxes
 from .prep import prepare_yolo_dataset, make_data_yaml, make_polo_data_yaml, check_dataset, tracks_to_yolo_pose
 from .train import (
     train_pose_model,
