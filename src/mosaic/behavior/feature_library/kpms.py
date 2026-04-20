@@ -155,7 +155,7 @@ class KpmsFeature:
 
     Params:
         model: Pre-fitted KpmsModelArtifact to load (skip fit). Default:
-            KpmsModelArtifact().
+            None (fit from scratch).
         kpms_python: Path to a Python interpreter with keypoint-moseq
             installed. None uses the bundled external .venv. Default: None.
         pose: Pose keypoint configuration (indices, column prefixes).
@@ -206,7 +206,7 @@ class KpmsFeature:
         pass
 
     class Params(Params):
-        model: KpmsModelArtifact | None = Field(default_factory=KpmsModelArtifact)
+        model: KpmsModelArtifact | None = None
         kpms_python: str | None = None
         pose: PoseConfig = Field(default_factory=PoseConfig)
         anterior_bodyparts: list[str] = Field(min_length=1)
