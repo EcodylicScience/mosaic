@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Generic, Literal, Self, override
+from typing import Generic, Self, override
 
 from typing_extensions import TypeVar
 
@@ -29,16 +29,40 @@ class Result(StrictModel, Generic[F]):
         return repr(self)
 
 
-class NNResult(Result[Literal["nearest-neighbor"]]):
-    """Result narrowed to the nearest-neighbor feature."""
+class NNResult(Result[str]):
+    """Result for a nearest-neighbor-family feature.
 
-    feature: Literal["nearest-neighbor"] = "nearest-neighbor"
+    Accepts any feature name (default ``"nearest-neighbor"``) so that
+    auto-derived names like ``nearest-neighbor__from__tracks`` or variants
+    computed from different upstream data (e.g. smoothed tracks) can be
+    referenced.  Use ``from_result()`` to copy feature+run_id from an
+    existing run.
+    """
+
+    feature: str = "nearest-neighbor"
+
+    def from_result(self, result: Result[str]) -> Self:
+        """Return a copy with feature and run_id set from another Result."""
+        return self.model_copy(
+            update={"feature": result.feature, "run_id": result.run_id}
+        )
 
 
-class BodyScaleResult(Result[Literal["body-scale"]]):
-    """Result narrowed to the body-scale feature."""
+class BodyScaleResult(Result[str]):
+    """Result for a body-scale-family feature.
 
-    feature: Literal["body-scale"] = "body-scale"
+    Accepts any feature name (default ``"body-scale"``) so that auto-derived
+    names or upstream variants can be referenced.  Use ``from_result()`` to
+    copy feature+run_id from an existing run.
+    """
+
+    feature: str = "body-scale"
+
+    def from_result(self, result: Result[str]) -> Self:
+        """Return a copy with feature and run_id set from another Result."""
+        return self.model_copy(
+            update={"feature": result.feature, "run_id": result.run_id}
+        )
 
 
 class TracksColumn(StrictModel):

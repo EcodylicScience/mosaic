@@ -207,11 +207,19 @@ def test_nn_result_defaults() -> None:
     assert nn.feature == "nearest-neighbor"
 
 
-def test_nn_result_rejects_wrong_feature() -> None:
-    from mosaic.core.pipeline.types import NNResult
+def test_nn_result_accepts_variant_feature_names() -> None:
+    from mosaic.core.pipeline.types import NNResult, Result
 
-    with pytest.raises(ValidationError):
-        NNResult(feature="wrong")
+    # Auto-derived __from__tracks suffix
+    nn = NNResult(feature="nearest-neighbor__from__tracks", run_id="r1")
+    assert nn.feature == "nearest-neighbor__from__tracks"
+    assert nn.run_id == "r1"
+
+    # from_result copies feature + run_id from an existing Result
+    src = Result[str](feature="nearest-neighbor__from__trajectory-smooth", run_id="r2")
+    nn2 = NNResult().from_result(src)
+    assert nn2.feature == "nearest-neighbor__from__trajectory-smooth"
+    assert nn2.run_id == "r2"
 
 
 def test_artifact_spec_auto_pattern() -> None:
