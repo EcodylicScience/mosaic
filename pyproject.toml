@@ -9,6 +9,10 @@ description = "Mosaic — behavior analysis toolkit for animal tracking, feature
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Ecodylic Science" }]
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+]
 dependencies = [
     "numpy>=1.22",
     "pandas>=1.5",
