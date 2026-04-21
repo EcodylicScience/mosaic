@@ -2,20 +2,20 @@
 
 **A Python toolkit for end-to-end animal behavior analysis.**
 
-Mosaic takes you from raw video and tracking output to interpretable behavioral
+Mosaic is a toolkit to go from raw video and tracking output to interpretable behavioral
 features, unsupervised embeddings, and trained behavior classifiers — in a
-single, versioned pipeline. It has been used on mice, fish, bees, and other
+single, versioned pipeline. It can be used on mice, fish, bees, and other
 animals across both lab and field setups.
 
 If you already have tracks (poses, identities, trajectories), mosaic
 standardizes them, extracts behavioral features (kinematic, social, spectral),
 clusters them, lets you train classifiers from human labels, and renders
 annotated overlay videos. If you don't have tracks yet, it can also help you
-extract frames for annotation, train custom pose models, and run inference.
+extract frames for annotation, train custom pose models, and run tracking.
 
 ---
 
-## What you can do with mosaic
+## Example tasks with mosaic
 
 - **Sample frames for annotation** — uniform or k-means diversity-maximizing
   selection across a video collection.
@@ -40,29 +40,6 @@ extract frames for annotation, train custom pose models, and run inference.
   egocentric crops of known individuals.
 - **Render annotated overlay videos**, interactive playback, egocentric crop
   videos, embedding-colored scatter plots, and behavior timelines.
-
-## Why mosaic
-
-- **End-to-end.** One toolkit from video to features to classifier — no tool
-  switching, no glue scripts.
-- **Reproducible by construction.** Every feature/model run is tagged with
-  `<version>-<SHA1(params)>`. Identical params + identical inputs always
-  produce the same `run_id`, so re-running is a no-op and parameter sweeps are
-  trivial to keep organized.
-- **Composable and cached.** A `Pipeline` declares a graph of feature steps;
-  cached steps are skipped automatically and staleness propagates downstream.
-- **Plugin-extensible.** Adding a new feature is one decorator
-  (`@register_feature`) and a 4-method protocol. The library currently ships
-  ~30 features.
-- **Built for messy field data.** Native support for raw H.264 elementary
-  streams from Raspberry Pi cameras, where standard codec metadata is
-  unreliable.
-- **Scales beyond your laptop.** Optional remote execution syncs a dataset to a
-  GPU server and runs features/training there over SSH or a Jupyter kernel.
-- **Plays well with others.** First-class converters/integrations for CVAT,
-  Lightning Pose, COCO, BORIS, CalMS21, MABe22, TREx, keypoint-MoSeq,
-  Lightning-Action, and the [movement](https://movement.neuroinformatics.dev/)
-  xarray library.
 
 ## Features and "models"
 
@@ -188,5 +165,3 @@ extraction). For the full developer-facing map see
 Mosaic is actively developed by Ecodylic Science. It is in early use within
 our group and not yet stable for outside users — the API may change. Internal
 collaborators and curious colleagues, see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Licensed under [MIT](LICENSE).
