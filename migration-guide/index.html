@@ -1,0 +1,2060 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Behavior analysis toolkit for animal tracking, feature extraction, and modeling">
+      
+      
+      
+        <link rel="canonical" href="https://ecodylicscience.github.io/mosaic/migration-guide/">
+      
+      
+        <link rel="prev" href="../pipeline/">
+      
+      
+        <link rel="next" href="../api/core/dataset/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Migration Guide - Mosaic</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#migration-guide-mosaic-feature-api" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Mosaic" class="md-header__button md-logo" aria-label="Mosaic" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Mosaic
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Migration Guide
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/EcodylicScience/mosaic" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    EcodylicScience/mosaic
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Mosaic" class="md-nav__button md-logo" aria-label="Mosaic" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Mosaic
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/EcodylicScience/mosaic" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    EcodylicScience/mosaic
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide-pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inputs-replace-input_kindinput_featureinput_run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs replace input_kind/input_feature/input_run_id
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inputs replace input_kind/input_feature/input_run_id">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multiple-inputs-replace-inputsets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple inputs replace inputsets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use_latest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        use_latest()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-features-are-composable-stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global features are composable stages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Global features are composable stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reusing-a-fitted-model-skip-fit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusing a fitted model (skip fit)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifacts-replace-raw-dicts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifacts replace raw dicts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#label-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#params-are-typed-pydantic-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Params are typed Pydantic models
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run_feature-return-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run_feature() return value
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frametime-filtering-is-now-on-run_feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame/time filtering is now on run_feature()
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frame/time filtering is now on run_feature()">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nearest-neighbor-pair-filter-moved-to-params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nearest-neighbor pair filter moved to params
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#load_values-replaces-visualization-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load_values() replaces visualization features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure-raw-vs-derived" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory structure: raw vs derived
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Directory structure: raw vs derived">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backward-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migrating-an-existing-dataset-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating an existing dataset (optional)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#xgboost-model_library-to-feature_library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        XGBoost: model_library to feature_library
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_1" id="__nav_4_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/core/dataset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/core/schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/core/helpers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helpers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Pipeline
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Behavior
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Behavior
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/behavior/feature-library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/behavior/label-library/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Label Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/behavior/visualization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Visualization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Media
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Media
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/media/video-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Video I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/media/extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Frame Extraction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tracking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tracking/pose-training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pose Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#imports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inputs-replace-input_kindinput_featureinput_run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inputs replace input_kind/input_feature/input_run_id
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inputs replace input_kind/input_feature/input_run_id">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multiple-inputs-replace-inputsets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple inputs replace inputsets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use_latest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        use_latest()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-features-are-composable-stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global features are composable stages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Global features are composable stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reusing-a-fitted-model-skip-fit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusing a fitted model (skip fit)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifacts-replace-raw-dicts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifacts replace raw dicts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#label-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Label sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#params-are-typed-pydantic-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Params are typed Pydantic models
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run_feature-return-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run_feature() return value
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frametime-filtering-is-now-on-run_feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frame/time filtering is now on run_feature()
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frame/time filtering is now on run_feature()">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nearest-neighbor-pair-filter-moved-to-params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nearest-neighbor pair filter moved to params
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#load_values-replaces-visualization-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        load_values() replaces visualization features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure-raw-vs-derived" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory structure: raw vs derived
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Directory structure: raw vs derived">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backward-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migrating-an-existing-dataset-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating an existing dataset (optional)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#xgboost-model_library-to-feature_library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        XGBoost: model_library to feature_library
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="migration-guide-mosaic-feature-api">Migration guide: mosaic feature API<a class="headerlink" href="#migration-guide-mosaic-feature-api" title="Permanent link">&para;</a></h1>
+<p>This covers changes to <code>mosaic.behavior.feature_library</code> and how notebook/script
+code needs to update. Reference implementation: <code>notebooks/calms21-template.ipynb</code>.</p>
+<h2 id="imports">Imports<a class="headerlink" href="#imports" title="Permanent link">&para;</a></h2>
+<p>Features and types are re-exported from <code>__init__.py</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># before</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.behavior</span><span class="w"> </span><span class="kn">import</span> <span class="n">feature_library</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">feature_library</span><span class="o">.</span><span class="n">pairposedistancepca</span><span class="o">.</span><span class="n">PairPoseDistancePCA</span><span class="p">(</span><span class="n">params</span><span class="o">=...</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">feature_library</span><span class="o">.</span><span class="n">global_tsne</span><span class="o">.</span><span class="n">GlobalTSNE</span><span class="p">(</span><span class="n">params</span><span class="o">=...</span><span class="p">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># after</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.behavior.feature_library</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">GlobalTSNE</span><span class="p">,</span> <span class="n">GlobalKMeansClustering</span><span class="p">,</span> <span class="n">PairWavelet</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">ExtractTemplates</span><span class="p">,</span> <span class="n">GlobalScaler</span><span class="p">,</span> <span class="n">ExtractLabeledTemplates</span><span class="p">,</span> <span class="n">XgboostFeature</span><span class="p">,</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">Inputs</span><span class="p">,</span> <span class="n">Result</span><span class="p">,</span> <span class="n">ResultColumn</span><span class="p">,</span> <span class="n">GroundTruthLabelsSource</span><span class="p">,</span> <span class="o">...</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>BehaviorXGBoostModel</code> is deprecated. Use <code>XgboostFeature</code> instead (see below).
+<code>VizTimeline</code> and <code>VizGlobalColored</code> are removed. Use <code>load_values()</code> instead.</p>
+<h2 id="inputs-replace-input_kindinput_featureinput_run_id">Inputs replace input_kind/input_feature/input_run_id<a class="headerlink" href="#inputs-replace-input_kindinput_featureinput_run_id" title="Permanent link">&para;</a></h2>
+<p>The old <code>run_feature()</code> keyword arguments <code>input_kind</code>, <code>input_feature</code>,
+<code>input_run_id</code> are replaced by typed <code>Inputs</code> passed to the feature constructor.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># before</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">feat</span> <span class="o">=</span> <span class="n">PairWavelet</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="n">wavelet_params</span><span class="p">)</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">run</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">feat</span><span class="p">,</span> <span class="n">input_kind</span><span class="o">=</span><span class="s2">&quot;feature&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>                          <span class="n">input_feature</span><span class="o">=</span><span class="s2">&quot;pair-posedistance-pca&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>                          <span class="n">input_run_id</span><span class="o">=</span><span class="n">pose_run</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># after</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">feat</span> <span class="o">=</span> <span class="n">PairWavelet</span><span class="p">(</span><span class="n">Inputs</span><span class="p">((</span><span class="n">pose_result</span><span class="p">,)),</span> <span class="n">params</span><span class="o">=</span><span class="n">wavelet_params</span><span class="p">)</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">feat</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+<p><code>Inputs</code> accepts a tuple of:
+- <code>"tracks"</code> -- raw track data (the default for single-track features)
+- <code>Result(feature=..., run_id=...)</code> -- output of a previous <code>run_feature()</code> call</p>
+<p>Features that only accept tracks default to <code>Inputs(("tracks",))</code>.</p>
+<h3 id="multiple-inputs-replace-inputsets">Multiple inputs replace inputsets<a class="headerlink" href="#multiple-inputs-replace-inputsets" title="Permanent link">&para;</a></h3>
+<p>The old <code>save_inputset()</code> + <code>input_kind="inputset"</code> pattern is replaced by
+passing multiple Results:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># before</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">save_inputset</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="p">[</span><span class="o">...</span><span class="p">])</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">tsne</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;inputset&quot;</span><span class="p">:</span> <span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">})</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">run</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne</span><span class="p">,</span> <span class="n">input_kind</span><span class="o">=</span><span class="s2">&quot;inputset&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>                          <span class="n">input_feature</span><span class="o">=</span><span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># after</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">tsne</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">social_wave_result</span><span class="p">,</span> <span class="n">ego_wave_result</span><span class="p">)),</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;perplexity&quot;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span> <span class="o">...</span><span class="p">},</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="p">)</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+<p>Feature names and run directories are derived automatically:
+<code>global-tsne__from__pair-wavelet__from__pair-posedistance-pca+pair-wavelet__from__pair-egocentric</code>.</p>
+<h3 id="use_latest">use_latest()<a class="headerlink" href="#use_latest" title="Permanent link">&para;</a></h3>
+<p>To reference the latest run of a feature (same as <code>run_id=None</code> before):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">Inputs</span><span class="p">((</span><span class="n">pose_result</span><span class="o">.</span><span class="n">use_latest</span><span class="p">(),))</span>
+</code></pre></div>
+<h2 id="global-features-are-composable-stages">Global features are composable stages<a class="headerlink" href="#global-features-are-composable-stages" title="Permanent link">&para;</a></h2>
+<p>GlobalTSNE no longer handles template extraction and scaling internally.
+These are now separate features chained together:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 1. Extract templates from per-sequence features</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">templates</span> <span class="o">=</span> <span class="n">ExtractTemplates</span><span class="p">(</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">social_wave_result</span><span class="p">,</span> <span class="n">ego_wave_result</span><span class="p">)),</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;n_templates&quot;</span><span class="p">:</span> <span class="mi">2000</span><span class="p">},</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">templates_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">templates</span><span class="p">)</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># 2. Fit scaler on templates, scale per-sequence data</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">scaler</span> <span class="o">=</span> <span class="n">GlobalScaler</span><span class="p">(</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">social_wave_result</span><span class="p">,</span> <span class="n">ego_wave_result</span><span class="p">)),</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        <span class="s2">&quot;templates&quot;</span><span class="p">:</span> <span class="n">ExtractTemplates</span><span class="o">.</span><span class="n">TemplatesArtifact</span><span class="p">()</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">templates_result</span><span class="p">),</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    <span class="p">},</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="p">)</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="n">scaler_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">scaler</span><span class="p">)</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="c1"># 3. Extract templates from scaled data (for embedding/clustering)</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="n">scaled_templates</span> <span class="o">=</span> <span class="n">ExtractTemplates</span><span class="p">(</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">scaler_result</span><span class="p">,)),</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;n_templates&quot;</span><span class="p">:</span> <span class="mi">2000</span><span class="p">,</span> <span class="s2">&quot;strategy&quot;</span><span class="p">:</span> <span class="s2">&quot;farthest_first&quot;</span><span class="p">},</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="p">)</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="n">scaled_templates_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">scaled_templates</span><span class="p">)</span>
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>
+<a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="c1"># 4. Fit t-SNE on scaled templates</span>
+<a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="n">tsne</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span>
+<a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">scaled_templates_result</span><span class="p">,)),</span>
+<a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>        <span class="s2">&quot;perplexity&quot;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span>
+<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>        <span class="s2">&quot;templates&quot;</span><span class="p">:</span> <span class="n">ExtractTemplates</span><span class="o">.</span><span class="n">TemplatesArtifact</span><span class="p">()</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">scaled_templates_result</span><span class="p">),</span>
+<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>    <span class="p">},</span>
+<a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a><span class="p">)</span>
+<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a><span class="n">tsne_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne</span><span class="p">)</span>
+</code></pre></div>
+<p>Each stage caches independently. Re-running with different t-SNE perplexity
+reuses the existing scaler and templates.</p>
+<h3 id="reusing-a-fitted-model-skip-fit">Reusing a fitted model (skip fit)<a class="headerlink" href="#reusing-a-fitted-model-skip-fit" title="Permanent link">&para;</a></h3>
+<p>Global features that extend <code>GlobalModelParams</code> accept either <code>templates</code>
+(fit from scratch) or <code>model</code> (load a previously fitted model). These are
+mutually exclusive -- provide exactly one.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Fit from templates (default workflow above)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">tsne</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">scaled_templates_result</span><span class="p">,)),</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="s2">&quot;templates&quot;</span><span class="p">:</span> <span class="n">ExtractTemplates</span><span class="o">.</span><span class="n">TemplatesArtifact</span><span class="p">()</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">scaled_templates_result</span><span class="p">),</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="s2">&quot;perplexity&quot;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">},</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">)</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">tsne_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne</span><span class="p">)</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="c1"># Reuse the fitted model on different data (skip fit, apply only)</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="n">tsne_reuse</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">other_scaler_result</span><span class="p">,)),</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>        <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="n">GlobalTSNE</span><span class="o">.</span><span class="n">TSNEModelArtifact</span><span class="p">()</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">tsne_result</span><span class="p">),</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        <span class="s2">&quot;perplexity&quot;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span>  <span class="c1"># used during apply for mapping new points</span>
+<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>    <span class="p">},</span>
+<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="p">)</span>
+<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne_reuse</span><span class="p">)</span>
+</code></pre></div>
+<p>This works for all global features: <code>GlobalScaler</code> (<code>ScalerModelArtifact</code>),
+<code>GlobalTSNE</code> (<code>TSNEModelArtifact</code>), <code>GlobalKMeansClustering</code>
+(<code>KMeansModelArtifact</code>), <code>GlobalWardClustering</code> (<code>WardModelArtifact</code>),
+and <code>XgboostFeature</code> (<code>XgboostModelArtifact</code>).</p>
+<h2 id="artifacts-replace-raw-dicts">Artifacts replace raw dicts<a class="headerlink" href="#artifacts-replace-raw-dicts" title="Permanent link">&para;</a></h2>
+<p>Features that produce non-per-frame outputs (models, templates, cluster centers)
+define typed artifact classes. These replace hand-written dicts with <code>feature</code>,
+<code>run_id</code>, <code>pattern</code>, <code>load</code> keys.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># before</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">&quot;artifact&quot;</span><span class="p">:</span> <span class="p">{</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>        <span class="s2">&quot;feature&quot;</span><span class="p">:</span> <span class="n">tsne_feature</span><span class="p">,</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        <span class="s2">&quot;run_id&quot;</span><span class="p">:</span> <span class="n">tsne_run</span><span class="p">,</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>        <span class="s2">&quot;pattern&quot;</span><span class="p">:</span> <span class="s2">&quot;global_templates_features.npz&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>        <span class="s2">&quot;load&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;npz&quot;</span><span class="p">,</span> <span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;templates&quot;</span><span class="p">},</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="p">},</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="p">}</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># after</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    <span class="s2">&quot;templates&quot;</span><span class="p">:</span> <span class="n">ExtractTemplates</span><span class="o">.</span><span class="n">TemplatesArtifact</span><span class="p">()</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">templates_result</span><span class="p">),</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="p">}</span>
+</code></pre></div>
+<p>Each artifact class defines its own <code>pattern</code> and <code>load</code> spec, so the caller
+only needs to specify which run to load from.</p>
+<h2 id="label-sources">Label sources<a class="headerlink" href="#label-sources" title="Permanent link">&para;</a></h2>
+<p>Ground truth labels use a typed source:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># before</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="s2">&quot;labels&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;source&quot;</span><span class="p">:</span> <span class="s2">&quot;labels&quot;</span><span class="p">,</span> <span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;behavior&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>           <span class="s2">&quot;load&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;npz&quot;</span><span class="p">,</span> <span class="s2">&quot;key&quot;</span><span class="p">:</span> <span class="s2">&quot;labels&quot;</span><span class="p">}}</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># after</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.behavior.feature_library</span><span class="w"> </span><span class="kn">import</span> <span class="n">GroundTruthLabelsSource</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">GroundTruthLabelsSource</span><span class="p">()</span>  <span class="c1"># defaults match the above</span>
+</code></pre></div>
+<h2 id="params-are-typed-pydantic-models">Params are typed Pydantic models<a class="headerlink" href="#params-are-typed-pydantic-models" title="Permanent link">&para;</a></h2>
+<p>Feature params are now <code>Params</code> subclasses (Pydantic <code>BaseModel</code> with <code>extra="forbid"</code>).
+Constructors accept <code>dict</code> overrides that get validated:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># still works -- dict overrides merged with field defaults</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">feat</span> <span class="o">=</span> <span class="n">PairWavelet</span><span class="p">(</span><span class="n">Inputs</span><span class="p">((</span><span class="n">pose_result</span><span class="p">,)),</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;f_min&quot;</span><span class="p">:</span> <span class="mf">0.2</span><span class="p">,</span> <span class="o">...</span><span class="p">})</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># params object is a Pydantic model</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">feat</span><span class="o">.</span><span class="n">params</span><span class="o">.</span><span class="n">f_min</span>         <span class="c1"># attribute access</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="n">feat</span><span class="o">.</span><span class="n">params</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span>  <span class="c1"># serialize to dict</span>
+</code></pre></div>
+<p>Nested model fields support partial overrides:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># only override pose_n, other PoseConfig fields keep defaults</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">PairPoseDistancePCA</span><span class="p">(</span><span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;pose&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;pose_n&quot;</span><span class="p">:</span> <span class="mi">7</span><span class="p">}})</span>
+</code></pre></div>
+<h2 id="run_feature-return-value">run_feature() return value<a class="headerlink" href="#run_feature-return-value" title="Permanent link">&para;</a></h2>
+<p><code>run_feature()</code> returns a <code>Result</code> dataclass instead of a raw <code>run_id</code> string:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># before</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">run</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">feat</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>  <span class="c1"># str (a run_id)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># after</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">feat</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>  <span class="c1"># Result</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="n">result</span><span class="o">.</span><span class="n">feature</span>  <span class="c1"># &quot;pair-posedistance-pca&quot;</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="n">result</span><span class="o">.</span><span class="n">run_id</span>   <span class="c1"># &quot;0.1-b1933f9f3d&quot;</span>
+</code></pre></div>
+<p>Results can be passed directly to <code>Inputs()</code> and <code>from_result()</code>.</p>
+<h2 id="frametime-filtering-is-now-on-run_feature">Frame/time filtering is now on run_feature()<a class="headerlink" href="#frametime-filtering-is-now-on-run_feature" title="Permanent link">&para;</a></h2>
+<p>Frame/time filters are direct parameters on <code>run_feature()</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># before -- filters embedded in inputset metadata</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">save_inputset</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="p">[</span><span class="o">...</span><span class="p">],</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>              <span class="n">filter_start_frame</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">filter_end_frame</span><span class="o">=</span><span class="mi">5000</span><span class="p">)</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">run</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">tsne</span><span class="p">,</span> <span class="n">input_kind</span><span class="o">=</span><span class="s2">&quot;inputset&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>                          <span class="n">input_feature</span><span class="o">=</span><span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="c1"># after</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">feat</span><span class="p">,</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>                             <span class="n">filter_start_frame</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>                             <span class="n">filter_end_frame</span><span class="o">=</span><span class="mi">5000</span><span class="p">)</span>
+</code></pre></div>
+<p>Frame and time filters are mutually exclusive per boundary -- you can't set both
+<code>filter_start_frame</code> and <code>filter_start_time</code> (raises <code>ValueError</code>). Mixing is
+fine: <code>filter_start_frame=100, filter_end_time=50.0</code>.</p>
+<p>Semantics: <code>start</code> is inclusive (<code>&gt;=</code>), <code>end</code> is exclusive (<code>&lt;</code>).</p>
+<h3 id="nearest-neighbor-pair-filter-moved-to-params">Nearest-neighbor pair filter moved to params<a class="headerlink" href="#nearest-neighbor-pair-filter-moved-to-params" title="Permanent link">&para;</a></h3>
+<p>The <code>pair_filter</code> dict that was stored in inputset metadata is now a typed
+parameter on feature <code>Params</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># before -- pair_filter in inputset JSON metadata</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">save_inputset</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="s2">&quot;social+ego&quot;</span><span class="p">,</span> <span class="p">[</span><span class="o">...</span><span class="p">],</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>              <span class="n">pair_filter</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;nearest_neighbor&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">})</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="c1"># after -- typed NNResult on feature params</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">tsne</span> <span class="o">=</span> <span class="n">GlobalTSNE</span><span class="p">(</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">social_wave_result</span><span class="p">,</span> <span class="n">ego_wave_result</span><span class="p">)),</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>        <span class="s2">&quot;pair_filter&quot;</span><span class="p">:</span> <span class="n">nn_result</span><span class="p">,</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="p">},</span>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>NNResult</code> is a <code>Result</code> subclass narrowed to only accept <code>"nearest-neighbor"</code>
+feature results. You can pass an existing result directly, pin a specific
+<code>run_id</code> with <code>NNResult(run_id="...")</code>, or use <code>nn_result.use_latest()</code> to
+always resolve to the most recent run.</p>
+<p>Features with <code>pair_filter</code> on their Params: <code>GlobalKMeansClustering</code>,
+<code>GlobalWardClustering</code>, <code>TemporalStackingFeature</code>.</p>
+<h2 id="load_values-replaces-visualization-features">load_values() replaces visualization features<a class="headerlink" href="#load_values-replaces-visualization-features" title="Permanent link">&para;</a></h2>
+<p><code>VizTimeline</code> and <code>VizGlobalColored</code> are removed. Use <code>load_values()</code> to load
+any combination of feature columns, track columns, and ground truth labels into
+a single DataFrame:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.core.pipeline</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_values</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">df</span> <span class="o">=</span> <span class="n">load_values</span><span class="p">(</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="n">dataset</span><span class="p">,</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="p">[</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>        <span class="n">ResultColumn</span><span class="p">(</span><span class="n">column</span><span class="o">=</span><span class="s2">&quot;tsne_x&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">tsne_result</span><span class="p">),</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>        <span class="n">ResultColumn</span><span class="p">(</span><span class="n">column</span><span class="o">=</span><span class="s2">&quot;tsne_y&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">tsne_result</span><span class="p">),</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>        <span class="n">ResultColumn</span><span class="p">(</span><span class="n">column</span><span class="o">=</span><span class="s2">&quot;cluster&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">k_result</span><span class="p">),</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>        <span class="n">GroundTruthLabelsSource</span><span class="p">(),</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>    <span class="p">],</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="p">)</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="c1"># df has columns: group, sequence, frame, id1, id2, tsne_x, tsne_y, cluster, labels-behavior</span>
+</code></pre></div>
+<h2 id="directory-structure-raw-vs-derived">Directory structure: raw vs derived<a class="headerlink" href="#directory-structure-raw-vs-derived" title="Permanent link">&para;</a></h2>
+<p>Dataset directories are now split into <strong>raw</strong> (external, immutable) and
+<strong>derived</strong> (computed by mosaic, regenerable):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>&lt;dataset_root&gt;/
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>  ── raw (external, immutable) ──
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>  media_raw/          Original uploaded videos (don&#39;t touch, may be on NAS)
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>  tracks_raw/         Original tracking files from external tools
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>  labels/             Ground truth: behavior labels, keypoints, individual IDs
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>  ── derived (computed by mosaic, regenerable) ──
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>  media/              Derived media: low-res copies, re-encoded, thumbnails
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>    frames/           Extracted video frames (PNGs), by method/run_id
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>  tracks/             Standardised parquet tracks (converted from tracks_raw)
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>  features/           Per-sequence feature parquets
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>  models/             Trained models, reports, plots
+</code></pre></div>
+<h3 id="what-changed">What changed<a class="headerlink" href="#what-changed" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Before</th>
+<th>After</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>media/</code> held original videos</td>
+<td><code>media_raw/</code> holds originals</td>
+<td><code>media/</code> is now for derived media</td>
+</tr>
+<tr>
+<td><code>frames/</code> was a top-level root</td>
+<td><code>media/frames/</code></td>
+<td>Frames are a derived media artifact</td>
+</tr>
+<tr>
+<td><code>inputsets/</code> existed</td>
+<td>Removed</td>
+<td>Use <code>Inputs()</code> tuples instead</td>
+</tr>
+</tbody>
+</table>
+<h3 id="backward-compatibility">Backward compatibility<a class="headerlink" href="#backward-compatibility" title="Permanent link">&para;</a></h3>
+<p><strong>Old datasets work unchanged.</strong> If <code>media_raw</code> is not set in your <code>dataset.yaml</code>,
+<code>index_media()</code> and <code>resolve_media_paths()</code> fall back to <code>media/</code>. You can check
+with <code>ds.has_root("media_raw")</code>.</p>
+<p>If your <code>dataset.yaml</code> says <code>"frames": "frames"</code>, that still resolves correctly.
+Only new datasets created with <code>new_dataset_manifest()</code> default to <code>"media/frames"</code>.</p>
+<h3 id="migrating-an-existing-dataset-optional">Migrating an existing dataset (optional)<a class="headerlink" href="#migrating-an-existing-dataset-optional" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># 1. Rename your video directory</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1">#    mv media/ media_raw/</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># 2. Update manifest</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="n">ds</span><span class="o">.</span><span class="n">set_root</span><span class="p">(</span><span class="s2">&quot;media_raw&quot;</span><span class="p">,</span> <span class="s2">&quot;media_raw&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="n">ds</span><span class="o">.</span><span class="n">set_root</span><span class="p">(</span><span class="s2">&quot;media&quot;</span><span class="p">,</span> <span class="s2">&quot;media&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="n">ds</span><span class="o">.</span><span class="n">set_root</span><span class="p">(</span><span class="s2">&quot;frames&quot;</span><span class="p">,</span> <span class="s2">&quot;media/frames&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="n">ds</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="c1"># 3. Re-index videos</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="n">ds</span><span class="o">.</span><span class="n">index_media</span><span class="p">([</span><span class="n">ds</span><span class="o">.</span><span class="n">get_root</span><span class="p">(</span><span class="s2">&quot;media_raw&quot;</span><span class="p">)])</span>
+</code></pre></div>
+<p>All visualization and analysis happens in notebook code using standard pandas/matplotlib.</p>
+<h2 id="xgboost-model_library-to-feature_library">XGBoost: model_library to feature_library<a class="headerlink" href="#xgboost-model_library-to-feature_library" title="Permanent link">&para;</a></h2>
+<p><code>BehaviorXGBoostModel</code> + <code>ModelPredictFeature</code> are replaced by two composable
+features: <code>ExtractLabeledTemplates</code> and <code>XgboostFeature</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># before</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.behavior.model_library</span><span class="w"> </span><span class="kn">import</span> <span class="n">BehaviorXGBoostModel</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="n">xgb_model</span> <span class="o">=</span> <span class="n">BehaviorXGBoostModel</span><span class="p">()</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="n">xgb_model</span><span class="o">.</span><span class="n">bind_dataset</span><span class="p">(</span><span class="n">dataset</span><span class="p">)</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="n">xgb_model</span><span class="o">.</span><span class="n">configure</span><span class="p">({</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>    <span class="s2">&quot;feature&quot;</span><span class="p">:</span> <span class="n">ts_stack_result</span><span class="o">.</span><span class="n">feature</span><span class="p">,</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="s2">&quot;feature_run_id&quot;</span><span class="p">:</span> <span class="n">ts_stack_result</span><span class="o">.</span><span class="n">run_id</span><span class="p">,</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="s2">&quot;label_kind&quot;</span><span class="p">:</span> <span class="s2">&quot;behavior&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>    <span class="s2">&quot;train_sequences&quot;</span><span class="p">:</span> <span class="n">train_seqs</span><span class="p">,</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    <span class="s2">&quot;test_sequences&quot;</span><span class="p">:</span> <span class="n">test_seqs</span><span class="p">,</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>    <span class="s2">&quot;standardize&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>    <span class="s2">&quot;foreground_samples&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>    <span class="s2">&quot;undersample_ratio&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">,</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a>    <span class="s2">&quot;xgb_params&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;n_estimators&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">},</span>
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a><span class="p">},</span> <span class="n">run_root</span><span class="p">)</span>
+<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a><span class="n">xgb_model</span><span class="o">.</span><span class="n">train</span><span class="p">()</span>
+<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a>
+<a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a><span class="c1"># prediction required a separate ModelPredictFeature wrapper</span>
+<a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a><span class="n">predict_feat</span> <span class="o">=</span> <span class="n">ModelPredictFeature</span><span class="p">(</span>
+<a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">ts_stack_result</span><span class="p">,)),</span>
+<a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;model_class&quot;</span><span class="p">:</span> <span class="s2">&quot;...BehaviorXGBoostModel&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">},</span>
+<a id="__codelineno-16-23" name="__codelineno-16-23" href="#__codelineno-16-23"></a><span class="p">)</span>
+<a id="__codelineno-16-24" name="__codelineno-16-24" href="#__codelineno-16-24"></a><span class="n">pred_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">predict_feat</span><span class="p">)</span>
+<a id="__codelineno-16-25" name="__codelineno-16-25" href="#__codelineno-16-25"></a>
+<a id="__codelineno-16-26" name="__codelineno-16-26" href="#__codelineno-16-26"></a><span class="c1"># after</span>
+<a id="__codelineno-16-27" name="__codelineno-16-27" href="#__codelineno-16-27"></a><span class="kn">from</span><span class="w"> </span><span class="nn">mosaic.behavior.feature_library</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-16-28" name="__codelineno-16-28" href="#__codelineno-16-28"></a>    <span class="n">ExtractLabeledTemplates</span><span class="p">,</span> <span class="n">XgboostFeature</span><span class="p">,</span>
+<a id="__codelineno-16-29" name="__codelineno-16-29" href="#__codelineno-16-29"></a>    <span class="n">GroundTruthLabelsSource</span><span class="p">,</span> <span class="n">Inputs</span><span class="p">,</span>
+<a id="__codelineno-16-30" name="__codelineno-16-30" href="#__codelineno-16-30"></a><span class="p">)</span>
+<a id="__codelineno-16-31" name="__codelineno-16-31" href="#__codelineno-16-31"></a>
+<a id="__codelineno-16-32" name="__codelineno-16-32" href="#__codelineno-16-32"></a><span class="c1"># 1. Extract labeled templates (handles label alignment + train/test split)</span>
+<a id="__codelineno-16-33" name="__codelineno-16-33" href="#__codelineno-16-33"></a><span class="n">labeled_templates</span> <span class="o">=</span> <span class="n">ExtractLabeledTemplates</span><span class="p">(</span>
+<a id="__codelineno-16-34" name="__codelineno-16-34" href="#__codelineno-16-34"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">ts_stack_result</span><span class="p">,)),</span>
+<a id="__codelineno-16-35" name="__codelineno-16-35" href="#__codelineno-16-35"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-16-36" name="__codelineno-16-36" href="#__codelineno-16-36"></a>        <span class="s2">&quot;labels&quot;</span><span class="p">:</span> <span class="n">GroundTruthLabelsSource</span><span class="p">(),</span>
+<a id="__codelineno-16-37" name="__codelineno-16-37" href="#__codelineno-16-37"></a>        <span class="s2">&quot;n_per_class&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-16-38" name="__codelineno-16-38" href="#__codelineno-16-38"></a>        <span class="s2">&quot;test_fraction&quot;</span><span class="p">:</span> <span class="mf">0.2</span><span class="p">,</span>
+<a id="__codelineno-16-39" name="__codelineno-16-39" href="#__codelineno-16-39"></a>    <span class="p">},</span>
+<a id="__codelineno-16-40" name="__codelineno-16-40" href="#__codelineno-16-40"></a><span class="p">)</span>
+<a id="__codelineno-16-41" name="__codelineno-16-41" href="#__codelineno-16-41"></a><span class="n">labeled_templates_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">labeled_templates</span><span class="p">)</span>
+<a id="__codelineno-16-42" name="__codelineno-16-42" href="#__codelineno-16-42"></a>
+<a id="__codelineno-16-43" name="__codelineno-16-43" href="#__codelineno-16-43"></a><span class="c1"># 2. Train + predict in one step (fit on templates, apply per-sequence)</span>
+<a id="__codelineno-16-44" name="__codelineno-16-44" href="#__codelineno-16-44"></a><span class="n">xgb</span> <span class="o">=</span> <span class="n">XgboostFeature</span><span class="p">(</span>
+<a id="__codelineno-16-45" name="__codelineno-16-45" href="#__codelineno-16-45"></a>    <span class="n">Inputs</span><span class="p">((</span><span class="n">ts_stack_result</span><span class="p">,)),</span>
+<a id="__codelineno-16-46" name="__codelineno-16-46" href="#__codelineno-16-46"></a>    <span class="n">params</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-16-47" name="__codelineno-16-47" href="#__codelineno-16-47"></a>        <span class="s2">&quot;templates&quot;</span><span class="p">:</span> <span class="n">ExtractLabeledTemplates</span><span class="o">.</span><span class="n">LabeledTemplatesArtifact</span><span class="p">()</span>
+<a id="__codelineno-16-48" name="__codelineno-16-48" href="#__codelineno-16-48"></a>            <span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">labeled_templates_result</span><span class="p">),</span>
+<a id="__codelineno-16-49" name="__codelineno-16-49" href="#__codelineno-16-49"></a>        <span class="s2">&quot;strategy&quot;</span><span class="p">:</span> <span class="s2">&quot;multiclass&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-50" name="__codelineno-16-50" href="#__codelineno-16-50"></a>        <span class="s2">&quot;default_class&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-16-51" name="__codelineno-16-51" href="#__codelineno-16-51"></a>        <span class="s2">&quot;n_estimators&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-16-52" name="__codelineno-16-52" href="#__codelineno-16-52"></a>        <span class="s2">&quot;max_depth&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-16-53" name="__codelineno-16-53" href="#__codelineno-16-53"></a>    <span class="p">},</span>
+<a id="__codelineno-16-54" name="__codelineno-16-54" href="#__codelineno-16-54"></a><span class="p">)</span>
+<a id="__codelineno-16-55" name="__codelineno-16-55" href="#__codelineno-16-55"></a><span class="n">xgb_result</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">run_feature</span><span class="p">(</span><span class="n">xgb</span><span class="p">)</span>
+</code></pre></div>
+<p>Key differences:
+- No manual train/test sequence lists. <code>ExtractLabeledTemplates</code> assigns splits
+  automatically (deterministic, guarantees at least 1 test sequence).
+- No internal scaling. Use <code>GlobalScaler</code> upstream.
+- No <code>ModelPredictFeature</code> wrapper. <code>XgboostFeature.apply()</code> runs inference
+  directly during <code>run_feature()</code>.
+- <code>ExtractLabeledTemplates.apply()</code> adds <code>label</code> and <code>split</code> columns to
+  per-sequence outputs, so you can filter to test-only data:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">df</span> <span class="o">=</span> <span class="n">load_values</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="p">[</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="n">ResultColumn</span><span class="p">(</span><span class="n">column</span><span class="o">=</span><span class="s2">&quot;predicted_label&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">xgb_result</span><span class="p">),</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="n">ResultColumn</span><span class="p">(</span><span class="n">column</span><span class="o">=</span><span class="s2">&quot;split&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">from_result</span><span class="p">(</span><span class="n">labeled_templates_result</span><span class="p">),</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>    <span class="n">GroundTruthLabelsSource</span><span class="p">(),</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="p">])</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="n">df_test</span> <span class="o">=</span> <span class="n">df</span><span class="p">[</span><span class="n">df</span><span class="p">[</span><span class="s2">&quot;split&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;test&quot;</span><span class="p">]</span>
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
