@@ -157,8 +157,7 @@ run_feature(...)            ➜ features/<name>/<run_id>/*.parquet
 The package lives under `src/mosaic/` and is organized into `core/`,
 `behavior/` (features, labels, models, visualization), `tracking/`
 (pose-model training/inference + converters), and `media/` (video I/O, frame
-extraction). For the full developer-facing map see
-[mosaic_repo_summary.md](mosaic_repo_summary.md).
+extraction). 
 
 ## Status & contributions
 
