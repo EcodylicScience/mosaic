@@ -33,7 +33,7 @@ extract frames for annotation, train custom pose models, and run tracking.
   [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/) via a managed
   subprocess environment.
 - **Train supervised behavior classifiers** — XGBoost from
-  [BORIS](https://www.boris.coding.systems/) or CalMS21 labels, with optional
+  [BORIS](https://www.boris.unito.it) or other labels, with optional
   temporal context stacking. Lightning-Action temporal classifier also
   supported.
 - **Train a visual identification model** (T-Rex-compatible CNN) from
