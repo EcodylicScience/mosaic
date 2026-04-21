@@ -1,5 +1,6 @@
 site_name: Mosaic
 site_description: Behavior analysis toolkit for animal tracking, feature extraction, and modeling
+site_url: https://ecodylicscience.github.io/mosaic/
 repo_url: https://github.com/EcodylicScience/mosaic
 repo_name: EcodylicScience/mosaic
 

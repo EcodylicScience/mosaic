@@ -58,6 +58,7 @@ from mosaic.core.dataset import register_label_converter
 from . import calms21_behavior
 from . import boris_aggregated_csv
 from . import boris_pandas_pickle
+from . import mabe22_behavior
 
 # Register the CalMS21 converter
 calms21_behavior.CalMS21BehaviorConverter = register_label_converter(
@@ -73,8 +74,14 @@ boris_pandas_pickle.BorisPandasPickleConverter = register_label_converter(
     boris_pandas_pickle.BorisPandasPickleConverter
 )
 
+# Register MABe22 converter
+mabe22_behavior.MABe22BehaviorConverter = register_label_converter(
+    mabe22_behavior.MABe22BehaviorConverter
+)
+
 __all__ = [
     "calms21_behavior",
     "boris_aggregated_csv",
     "boris_pandas_pickle",
+    "mabe22_behavior",
 ]

@@ -110,7 +110,10 @@ def clean_tracks_grouped(
     """
     return (
         df.groupby(group_cols, group_keys=True)
-        .apply(lambda g: clean_animal_track(g, data_cols, order_col, config))
+        .apply(
+            lambda g: clean_animal_track(g, data_cols, order_col, config),
+            include_groups=False,
+        )
         .reset_index(level=group_cols)
         .reset_index(drop=True)
     )

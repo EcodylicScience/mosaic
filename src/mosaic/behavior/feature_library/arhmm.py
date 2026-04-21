@@ -79,7 +79,7 @@ class ArHmmFeature:
 
     Params:
         model: Pre-fitted ArHmmModelArtifact to load (skip fit).
-            Default: ArHmmModelArtifact().
+            Default: None (fit from scratch).
         pca_dim: Number of PCA components for dimensionality reduction
             before fitting.  None skips PCA.  Default: None.
         n_states: Maximum number of HMM states (pruned after fit).
@@ -114,7 +114,7 @@ class ArHmmFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        model: ArHmmModelArtifact | None = Field(default_factory=ArHmmModelArtifact)
+        model: ArHmmModelArtifact | None = None
         pca_dim: int | None = Field(default=None, ge=1)
         n_states: int = Field(default=50, ge=2)
         n_lags: int = Field(default=1, ge=1)

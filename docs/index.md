@@ -1,6 +1,13 @@
 # Mosaic
 
-A Python toolkit for end-to-end animal behavior analysis: video processing, pose estimation, track standardization, behavioral feature extraction, model training, and visualization.
+A Python toolkit for end-to-end animal behavior analysis: video processing,
+pose estimation, track standardization, behavioral feature extraction, model
+training, and visualization.
+
+For an introduction aimed at researchers, see the [project README on
+GitHub](https://github.com/EcodylicScience/mosaic#readme). This site is the
+developer-facing reference: how the pipeline is structured, how to add
+features, and the API.
 
 ## Package structure
 
@@ -8,12 +15,14 @@ A Python toolkit for end-to-end animal behavior analysis: video processing, pose
 src/mosaic/
 ├── core/
 │   ├── dataset.py       # Dataset orchestrator
+│   ├── pipeline/        # Feature execution engine + typed protocol
 │   ├── schema.py        # Track schema validation
 │   ├── analysis.py      # Clustering metrics
-│   └── helpers.py       # Label loading, safe name encoding
+│   ├── helpers.py       # Label loading, safe name encoding
+│   └── track_library/   # Track format converters (CalMS21, MABe22, TREx)
 ├── behavior/
-│   ├── feature_library/ # 30+ registered feature implementations
-│   ├── model_library/   # ML models (XGBoost behavior classifier)
+│   ├── feature_library/ # ~30 registered feature implementations
+│   ├── model_library/   # Legacy — being phased out (see repo summary)
 │   ├── label_library/   # Label converters (BORIS, CalMS21)
 │   └── visualization_library/  # Overlay, playback, egocentric crops, timeline plots
 ├── tracking/
@@ -41,17 +50,17 @@ raw tracks/labels
    ├─ convert_all_tracks()   → tracks/<group>__<seq>.parquet  (standardized)
    ├─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
    │
-   ├─ run_feature()          → features/<name>/<run_id>/*.parquet
-   │     per-frame: speed-angvel, pair-egocentric, nearest-neighbor, ...
-   │     spectral:  pair-wavelet
-   │     reduction: pairposedistancepca (PCA)
-   │     context:   temporal-stacking
-   │     global:    global-tsne, global-kmeans, global-ward
-   │     external:  kpms-fit / kpms-apply (keypoint-moseq)
-   │
-   ├─ train_model()          → models/<name>/<run_id>/
-   │
-   └─ run_feature(xgboost)   → apply trained model back as a feature
+   └─ run_feature()          → features/<name>/<run_id>/*.parquet
+         per-frame:    speed-angvel, pair-egocentric, nearest-neighbor, ...
+         spectral:     pair-wavelet
+         reduction:    pair-posedistance-pca
+         context:      temporal-stack
+         templates:    extract-templates, extract-labeled-templates
+         global:       global-scaler, global-tsne, global-kmeans, global-ward
+         trainable:    xgboost, arhmm, feral, kpms, lightning-action,
+                       global-identity-model
+         visualization: egocentric-crop, viz-timeline, viz-global-colored,
+                        interaction-crop-pipeline
 ```
 
 ## Core concepts
@@ -67,27 +76,33 @@ ds = Dataset(manifest_path="path/to/dataset.yaml")
 ds.load()
 ```
 
-### Features
+### Features and global features
 
-Plugin-based via `@register_feature`. Each feature implements a standard protocol (`name`, `version`, `params`, `fit()`, `apply()`). Features are organized by output type:
+Everything in mosaic is a feature, registered via `@register_feature`. Each feature implements a 4-method protocol (`load_state`, `fit`, `apply`, `save_state`) plus a few attributes (`name`, `version`, `parallelizable`, `scope_dependent`).
+
+Two flavors:
+
+- **Per-frame / per-sequence features** — stateless transforms of tracks or upstream feature output.
+- **Global features** — trainable, fit-then-apply features that learn from a collection of sequences (or labeled examples) and then map per-sequence. This is where mosaic's "models" live.
 
 | Category | Examples |
 |----------|----------|
-| Per-frame kinematic | speed-angvel, body-scale, orientation-relative |
+| Per-frame kinematic | speed-angvel, body-scale, orientation-rel |
 | Per-frame spatial | pair-egocentric, pair-position, approach-avoidance |
-| Per-frame social | nearestneighbor, ffgroups, ffgroups-metrics |
+| Per-frame social | nearest-neighbor, ffgroups, ffgroups-metrics, nn-delta-response, nn-delta-bins |
+| Track preprocessing | trajectory-smooth, movement-smooth, movement-filter-interpolate, pair-interaction-filter, id-tag-columns |
 | Spectral | pair-wavelet |
-| Reduction | pairposedistancepca |
-| Context | temporal-stacking |
-| Global embed/cluster | global-tsne, global-kmeans, global-ward |
-| External | kpms-fit, kpms-apply (keypoint-moseq) |
-| Model prediction | xgboost-feature |
+| Reduction | pair-posedistance-pca |
+| Context | temporal-stack |
+| Templates | extract-templates, extract-labeled-templates |
+| **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model |
+| Visualization | egocentric-crop, viz-global-colored, viz-timeline, interaction-crop-pipeline |
 
 See the [Feature Library API](api/behavior/feature-library.md) for details.
 
 ### Run IDs and reproducibility
 
-Every feature/model run is tagged with a hash-based `run_id` (`<version>-<SHA1(params)>`). Outputs live under `features/<name>/<run_id>/` or `models/<name>/<run_id>/`. Feature params are captured in `params.json`.
+Every feature run is tagged with a hash-based `run_id` (`<version>-<SHA1(params)>`). Outputs live under `features/<name>/<run_id>/`. Feature params are captured in `params.json`. Identical params + identical inputs always produce the same `run_id`, so re-running is a no-op and parameter sweeps stay organized automatically.
 
 ## Installation
 
@@ -95,15 +110,11 @@ Every feature/model run is tagged with a hash-based `run_id` (`<version>-<SHA1(p
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg -y
-pip install -e ".[all]"
+pip install -e ".[recommended]"
 ```
 
-Optional extras (install only what you need):
-
-| Extra | Install | What it adds |
-|-------|---------|-------------|
-| `wavelets` | `pip install -e ".[wavelets]"` | PyWavelets for wavelet features |
-| `pose` | `pip install -e ".[pose]"` | Ultralytics YOLO pose training & inference |
-| `polo` | `pip install -e ".[polo]"` | POLO point-detection models |
-| `localizer` | `pip install -e ".[localizer]"` | PyTorch localizer heatmap training |
-| `all` | `pip install -e ".[all]"` | wavelets |
+The `recommended` bundle covers the typical research workflow (wavelets +
+YOLO pose + PyTorch localizer). See the [project
+README](https://github.com/EcodylicScience/mosaic#installation) for the full
+extras matrix and notes on the mutually exclusive `pose` / `polo` ultralytics
+pins.

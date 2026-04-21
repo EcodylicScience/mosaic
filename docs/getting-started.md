@@ -8,10 +8,13 @@ This guide walks through a typical mosaic workflow from raw data to feature extr
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg -y
-pip install -e ".[all]"
+pip install -e ".[recommended]"
 ```
 
 `ffmpeg` provides `ffprobe`, used by media indexing and raw H.264 support.
+The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer; see
+the [project README](https://github.com/EcodylicScience/mosaic#installation)
+for finer-grained options.
 
 ## Create a dataset
 
