@@ -2,7 +2,6 @@
 
 The composable pipeline infrastructure that orchestrates feature extraction,
 frame sampling, and model training. See the
-[Pipeline Architecture](../../pipeline.md) guide for design details and the
 [Pipeline Guide](../../guide-pipeline.md) for practical usage.
 
 ## Pipeline Orchestrator

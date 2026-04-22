@@ -530,19 +530,19 @@ def parse_compound_name(name: str, separator: str = "__") -> list[str]:
     Parameters
     ----------
     name : str
-        Compound name like "fish_01__speed_3__loop_1"
+        Compound name like "individual_01__speed_3__loop_1"
     separator : str, default "__"
         The separator between hierarchy levels
 
     Returns
     -------
     list[str]
-        List of components, e.g. ["fish_01", "speed_3", "loop_1"]
+        List of components, e.g. ["individual_01", "speed_3", "loop_1"]
 
     Examples
     --------
-    >>> parse_compound_name("fish_01__speed_3__loop_1")
-    ['fish_01', 'speed_3', 'loop_1']
+    >>> parse_compound_name("individual_01__speed_3__loop_1")
+    ['individual_01', 'speed_3', 'loop_1']
 
     >>> parse_compound_name("arena_1__day_015__hour_14")
     ['arena_1', 'day_015', 'hour_14']
@@ -564,19 +564,19 @@ def build_compound_name(*parts: str, separator: str = "__") -> str:
     Parameters
     ----------
     *parts : str
-        Hierarchy components to join, e.g. "fish_01", "speed_3", "loop_1"
+        Hierarchy components to join, e.g. "individual_01", "speed_3", "loop_1"
     separator : str, default "__"
         The separator between hierarchy levels
 
     Returns
     -------
     str
-        Compound name, e.g. "fish_01__speed_3__loop_1"
+        Compound name, e.g. "individual_01__speed_3__loop_1"
 
     Examples
     --------
-    >>> build_compound_name("fish_01", "speed_3", "loop_1")
-    'fish_01__speed_3__loop_1'
+    >>> build_compound_name("individual_01", "speed_3", "loop_1")
+    'individual_01__speed_3__loop_1'
 
     >>> build_compound_name("arena_1", "day_015", "hour_14")
     'arena_1__day_015__hour_14'
@@ -619,17 +619,17 @@ def parse_hierarchy(
 
     Examples
     --------
-    >>> parse_hierarchy("fish_01", "speed_3__loop_1",
-    ...                 level_names=["fish", "speed", "loop"])
-    {'fish': 'fish_01', 'speed': 'speed_3', 'loop': 'loop_1'}
+    >>> parse_hierarchy("individual_01", "speed_3__loop_1",
+    ...                 level_names=["individual", "speed", "loop"])
+    {'individual': 'individual_01', 'speed': 'speed_3', 'loop': 'loop_1'}
 
     >>> parse_hierarchy("experiment_A__arena_1", "day_015__hour_14",
     ...                 level_names=["experiment", "arena", "day", "hour"])
     {'experiment': 'experiment_A', 'arena': 'arena_1', 'day': 'day_015', 'hour': 'hour_14'}
 
     >>> # Handles fewer parts than names (missing levels are None)
-    >>> parse_hierarchy("fish_01", "loop_1", level_names=["fish", "speed", "loop"])
-    {'fish': 'fish_01', 'speed': 'loop_1', 'loop': None}
+    >>> parse_hierarchy("individual_01", "loop_1", level_names=["individual", "speed", "loop"])
+    {'individual': 'individual_01', 'speed': 'loop_1', 'loop': None}
     """
     # Combine group and sequence parts
     group_parts = parse_compound_name(group, separator) if group else []

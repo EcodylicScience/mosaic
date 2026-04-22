@@ -900,7 +900,7 @@ class Dataset:
         level_names : list[str], optional
             Names for hierarchy levels. If provided, parses the full path
             (group + sequence) into columns with these names.
-            E.g., ["fish", "speed", "loop"] for a 3-level hierarchy.
+            E.g., ["individual", "speed", "loop"] for a 3-level hierarchy.
         separator : str, default "__"
             The separator used in compound names.
 
@@ -921,7 +921,7 @@ class Dataset:
         >>> meta[['group', 'sequence']].head()
 
         >>> # Parse into hierarchy levels
-        >>> meta = ds.get_sequence_metadata(level_names=["fish", "speed", "loop"])
+        >>> meta = ds.get_sequence_metadata(level_names=["individual", "speed", "loop"])
         >>> meta.groupby("speed")["sequence"].count()
 
         >>> # 4-level hierarchy for continuous recordings
@@ -991,10 +991,10 @@ class Dataset:
 
         Examples
         --------
-        >>> # Get all sequences for fish_01
-        >>> pairs = ds.query_sequences(group_startswith="fish_01")
+        >>> # Get all sequences for individual_01
+        >>> pairs = ds.query_sequences(group_startswith="individual_01")
 
-        >>> # Get all speed_3 recordings across all fish
+        >>> # Get all speed_3 recordings across all individuals
         >>> pairs = ds.query_sequences(sequence_startswith="speed_3")
 
         >>> # Get all loop_1 recordings at speed_3
@@ -1398,7 +1398,7 @@ class Dataset:
             Examples:
                 r'^(hex|OCI|OLE)_' -> extracts 'hex', 'OCI', or 'OLE' as group
                 r'^([A-Za-z]+)_'   -> extracts letters before first underscore as group
-            Applied AFTER sequence is determined (e.g., after stripping _fish0 suffix).
+            Applied AFTER sequence is determined (e.g., after stripping a TREx ID suffix like _id0).
         exclude_patterns : Iterable[str] | None
             Glob patterns to exclude
         compute_md5 : bool
@@ -2284,7 +2284,7 @@ class Dataset:
 
         Examples
         --------
-        # Focal labels (one focal fish per sequence)
+        # Focal labels (one focal individual per sequence)
         >>> dataset.convert_id_tags_from_csv(
         ...     csv_path="focal_ids.csv",
         ...     csv_type="focal",
@@ -2292,7 +2292,7 @@ class Dataset:
         ...     overwrite=True,
         ... )
 
-        # Category labels (e.g., strain per fish)
+        # Category labels (e.g., strain per individual)
         >>> dataset.convert_id_tags_from_csv(
         ...     csv_path="strain_labels.csv",
         ...     csv_type="category",
@@ -2301,7 +2301,7 @@ class Dataset:
 
         # Multiple fields per individual
         >>> dataset.convert_id_tags_from_csv(
-        ...     csv_path="fish_metadata.csv",
+        ...     csv_path="individual_metadata.csv",
         ...     csv_type="multi",
         ...     field_columns=["strain", "treatment", "sex"],
         ... )

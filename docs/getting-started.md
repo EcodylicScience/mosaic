@@ -44,17 +44,6 @@ ds.index_media(
 This writes `media/index.csv` with columns for group, sequence, path,
 width, height, fps, and codec.
 
-## Extract frames
-
-Sample representative frames for annotation or visualization:
-
-```python
-# Uniform sampling: evenly spaced frames
-run_id = ds.extract_frames(n_frames=20, method="uniform")
-
-# K-means sampling: visually diverse frames
-run_id = ds.extract_frames(n_frames=20, method="kmeans")
-```
 
 ## Index and convert tracks
 
@@ -102,13 +91,34 @@ templates = ExtractTemplates(
 )
 templates_result = ds.run_feature(templates)
 
-# 2. Fit scaler, then t-SNE
+# 2. Fit scaler on those templates, apply per-sequence
 scaler = GlobalScaler(
     Inputs((speed_result, ego_result)),
     params={"templates": ExtractTemplates.TemplatesArtifact().from_result(templates_result)},
 )
 scaler_result = ds.run_feature(scaler)
+
+# 3. Re-extract templates from the scaled output (farthest-first for coverage)
+scaled_templates = ExtractTemplates(
+    Inputs((scaler_result,)),
+    params={"n_templates": 2000, "strategy": "farthest_first"},
+)
+scaled_templates_result = ds.run_feature(scaled_templates)
+
+# 4. Fit t-SNE on the scaled templates, map every sequence
+tsne = GlobalTSNE(
+    Inputs((scaled_templates_result,)),
+    params={
+        "perplexity": 50,
+        "templates": ExtractTemplates.TemplatesArtifact().from_result(scaled_templates_result),
+    },
+)
+tsne_result = ds.run_feature(tsne)
 ```
+
+The full pattern (with k-means/Ward clustering, ground-truth alignment, and
+XGBoost training on top) is shown in the
+[CalMS21 template notebook](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-template.ipynb).
 
 ### Declarative pipelines
 
@@ -133,6 +143,3 @@ See the [Pipeline Guide](guide-pipeline.md) for the full API and examples.
 ## Next steps
 
 - See the [Pipeline Guide](guide-pipeline.md) for declarative multi-step pipelines
-- See the [Pipeline Architecture](pipeline.md) guide for the composable pipeline design
-- See the [Migration Guide](migration-guide.md) if upgrading from the older API
-- Browse the [API Reference](api/core/dataset.md) for full method documentation

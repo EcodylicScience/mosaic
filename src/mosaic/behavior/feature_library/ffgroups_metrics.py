@@ -28,7 +28,7 @@ from .registry import register_feature
 @register_feature
 class FFGroupsMetrics:
     """
-    Per-sequence summary of focal-fish group metrics.
+    Per-sequence summary of focal-individual group metrics.
 
     Per-frame computed (internal):
       - distance_from_centroid, xrot_to_centroid, yrot_to_centroid, dev_speed_to_mean
@@ -182,7 +182,7 @@ class FFGroupsMetrics:
         p = self.params
         frame_key = resolve_order_col(df)
 
-        # Total frames per fish
+        # Total frames per individual
         total_frames = df.groupby(C.id_col)[frame_key].count()
 
         # fractime_norm2: fraction of frames in each group_size (computed as count of frames sharing group in frame)
@@ -199,7 +199,7 @@ class FFGroupsMetrics:
         )
         fractime_norm2 = fractime_norm2.reset_index(name="fractime_norm2")
 
-        # durations of contiguous group_size runs per fish
+        # durations of contiguous group_size runs per individual
         sorted_df = df.sort_values([C.id_col, frame_key])
         ids = sorted_df[C.id_col].to_numpy()
         group_sizes = sorted_df["group_size"].to_numpy()

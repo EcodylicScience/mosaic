@@ -1,4 +1,4 @@
-# Contributing to behavior
+# Contributing to mosaic
 
 Thanks for your interest in contributing.
 
@@ -12,7 +12,7 @@ This repository contains backend tooling for behavioral analysis pipelines. Plea
 2. Make your changes with tests and documentation updates where relevant.
 3. Ensure the project installs and imports cleanly:
    - `pip install -e .`
-   - `python -c "from behavior import Dataset; print('OK')"`
+   - `python -c "from mosaic.core.dataset import Dataset; print('OK')"`
 4. Open a pull request with:
    - clear summary of the change
    - motivation and design notes

@@ -29,7 +29,7 @@ from .types import SamplingConfig
 @register_feature
 class NearestNeighborDelta:
     """
-    Per-sequence feature that measures how a focal fish changes position/heading/speed over
+    Per-sequence feature that measures how a focal individual changes position/heading/speed over
     the next `diff_numframes` frames relative to its nearest neighbor at the current frame.
 
     Expected inputs (via tracks or an Inputs() that merges tracks + nearest-neighbor feature):
