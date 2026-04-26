@@ -599,6 +599,28 @@ class Pipeline:
 
         return summary
 
+    # -- visualization (delegates to mosaic.core.pipeline.viz) -------------
+
+    def show(self, **kwargs):
+        """Render the pipeline as a slide-friendly diagram.
+
+        See :func:`mosaic.core.pipeline.viz.show_pipeline_diagram` for
+        keyword arguments (``highlight``, ``stop_at``, ``show_feature_class``,
+        ``show_inputs``, ``save_path``, etc.).
+        """
+        from .viz import show_pipeline_diagram
+        return show_pipeline_diagram(self, **kwargs)
+
+    def show_text(self, **kwargs):
+        """Print the pipeline as an ASCII tree.
+
+        See :func:`mosaic.core.pipeline.viz.show_pipeline_tree` for
+        keyword arguments (``highlight``, ``stop_at``, ``show_extras``,
+        ``show_feature_class``, ``return_string``, etc.).
+        """
+        from .viz import show_pipeline_tree
+        return show_pipeline_tree(self, **kwargs)
+
     def dag(self) -> dict[str, list[str]]:
         """Return adjacency dict: ``{step_name: [upstream_names]}``."""
         adj: dict[str, list[str]] = {}

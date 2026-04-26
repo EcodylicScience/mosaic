@@ -29,6 +29,7 @@ from .types import (
     Params,
     Result,
 )
+from .viz import show_pipeline_diagram, show_pipeline_tree
 from .writers import trim_feature_output, write_output
 
 __all__ = [
@@ -56,6 +57,8 @@ __all__ = [
     "list_feature_runs",
     "model_run_root",
     "open_registry",
+    "show_pipeline_diagram",
+    "show_pipeline_tree",
     "trim_feature_output",
     "write_output",
 ]
