@@ -143,7 +143,7 @@ def _trex_npz_converter(path: Path, params: dict) -> pd.DataFrame:
     df["sequence"] = sequence
 
     # Validate (non-strict) against trex_v1 schema
-    ensure_track_schema(df, "trex_v1", strict=False)
+    ensure_track_schema(df, "trex_v1", strict=False, source=str(path))
     return df
 
 

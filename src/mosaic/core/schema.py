@@ -20,11 +20,22 @@ TRACK_SCHEMAS: Dict[str, TrackSchema] = {}
 def register_track_schema(schema: TrackSchema):
     TRACK_SCHEMAS[schema.name] = schema
 
-def ensure_track_schema(df: pd.DataFrame, schema_name: str, strict: bool = False) -> tuple[pd.DataFrame, Dict[str, Iterable[str]]]:
+def ensure_track_schema(
+    df: pd.DataFrame,
+    schema_name: str,
+    strict: bool = False,
+    source: str = "",
+) -> tuple[pd.DataFrame, Dict[str, Iterable[str]]]:
     """
     Validate that df satisfies schema. Returns (df, report_dict).
     report_dict contains keys: missing_required, missing_prefixes, missing_recommended.
     If strict=True and required are missing, raises ValueError.
+
+    Parameters
+    ----------
+    source : str
+        Optional identifier (e.g. file path or sequence key) included in log/error
+        messages so the offending file can be located when batch-converting.
     """
     if schema_name not in TRACK_SCHEMAS:
         # no schema registered -> nothing to validate
@@ -44,10 +55,11 @@ def ensure_track_schema(df: pd.DataFrame, schema_name: str, strict: bool = False
         "missing_prefixes": missing_prefixes,
         "missing_recommended": missing_recommended,
     }
+    src_tag = f" {source}" if source else ""
     if strict and (missing_required or missing_prefixes):
-        raise ValueError(f"Schema '{schema_name}' validation failed: {report}")
+        raise ValueError(f"Schema '{schema_name}'{src_tag} validation failed: {report}")
     if missing_required or missing_prefixes or missing_recommended:
-        print(f"[schema:{schema_name}] Validation report -> {report}")
+        print(f"[schema:{schema_name}]{src_tag} Validation report -> {report}")
     return df, report
 
 # Default T-Rex-like schema (flexible): must have these core columns; poseX/poseY are prefix-validated

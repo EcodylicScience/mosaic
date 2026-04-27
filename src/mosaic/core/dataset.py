@@ -1539,7 +1539,10 @@ class Dataset:
 
                 # Ensure schema, then write
                 _, _schema_report = ensure_track_schema(
-                    df_std, std_fmt, strict=bool(params.get("strict_schema", False))
+                    df_std,
+                    std_fmt,
+                    strict=bool(params.get("strict_schema", False)),
+                    source=f"{src_path}::{canon_seq}",
                 )
                 df_std.to_parquet(out_path, index=False)
 
@@ -1587,7 +1590,9 @@ class Dataset:
 
         # Validate/coerce against the declared standard format schema (if any)
         strict_schema = bool(params.get("strict_schema", False))
-        _, _schema_report = ensure_track_schema(df_std, std_fmt, strict=strict_schema)
+        _, _schema_report = ensure_track_schema(
+            df_std, std_fmt, strict=strict_schema, source=str(src_path)
+        )
 
         df_std.to_parquet(out_path, index=False)
 
@@ -1824,7 +1829,12 @@ class Dataset:
                         d[mc] = np.nan
                 aligned.append(d[all_cols])
             merged_df = pd.concat(aligned, ignore_index=True)
-            ensure_track_schema(merged_df, "trex_v1", strict=False)
+            ensure_track_schema(
+                merged_df,
+                "trex_v1",
+                strict=False,
+                source=f"{group}/{sequence} (merged)",
+            )
 
             # Determine output group based on policy
             raw_group_hint = str(first_row.get("group", "")) or ""
