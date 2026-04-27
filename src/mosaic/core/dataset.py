@@ -1794,8 +1794,23 @@ class Dataset:
                 continue
 
             # Merge TRex NPZ per (group, sequence)
-            dfs = []
             first_row = group_df.iloc[0]
+
+            # Determine output path early so we can honor overwrite=False
+            # without re-loading and merging every NPZ.
+            raw_group_hint = str(first_row.get("group", "")) or ""
+            out_group = group  # default: infile (already what we grouped by)
+            if group_from in {"filename", "both"} and raw_group_hint:
+                out_group = raw_group_hint
+            tracks_root = self.get_root("tracks")
+            safe_group = to_safe_name(out_group) if out_group else ""
+            safe_seq = to_safe_name(sequence)
+            rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
+            out_path = tracks_root / rel_name
+            if out_path.exists() and not overwrite:
+                continue
+
+            dfs = []
             _merge_failed = False
             for _, row in group_df.iterrows():
                 src_path = self.resolve_path(row["abs_path"])
@@ -1836,18 +1851,7 @@ class Dataset:
                 source=f"{group}/{sequence} (merged)",
             )
 
-            # Determine output group based on policy
-            raw_group_hint = str(first_row.get("group", "")) or ""
-            out_group = group  # default: infile (already what we grouped by)
-            if group_from in {"filename", "both"} and raw_group_hint:
-                out_group = raw_group_hint
-
-            # Write output
-            tracks_root = self.get_root("tracks")
-            safe_group = to_safe_name(out_group) if out_group else ""
-            safe_seq = to_safe_name(sequence)
-            rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
-            out_path = tracks_root / rel_name
+            # Write output (out_path determined above for overwrite check)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             merged_df.to_parquet(out_path, index=False)
 
