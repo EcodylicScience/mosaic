@@ -109,11 +109,9 @@ def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
             msg = (f"stop_at={stop_at!r} not in pipeline. "
                    f"Available: {all_names}")
             raise ValueError(msg)
-        downstream = pipe._downstream_of(stop_at)  # noqa: SLF001
-        drop = downstream - {stop_at}
+        keep = pipe._upstream_of(stop_at)  # noqa: SLF001
         if not include_stop:
-            drop.add(stop_at)
-        keep -= drop
+            keep -= {stop_at}
 
     steps_by_name = {s.name: s for s in pipe.steps}
 
@@ -200,9 +198,10 @@ def show_pipeline_tree(
     highlight : str | list[str], optional
         Step name(s) to mark with ★.
     stop_at : str, optional
-        Hide steps strictly downstream of this focal step.
+        Show only this focal step and its transitive ancestors. Sibling
+        branches and downstream steps are hidden.
     include_stop : bool
-        If False, also drop the focal step itself.
+        If False, also drop the focal step itself (show ancestors only).
     show_extras : bool
         Show additional parents inline as "← p1, p2".
     show_feature_class : bool
@@ -224,11 +223,9 @@ def show_pipeline_tree(
             msg = (f"stop_at={stop_at!r} not in pipeline. "
                    f"Available: {all_names}")
             raise ValueError(msg)
-        downstream = pipe._downstream_of(stop_at)  # noqa: SLF001
-        drop = downstream - {stop_at}
+        keep = pipe._upstream_of(stop_at)  # noqa: SLF001
         if not include_stop:
-            drop.add(stop_at)
-        keep -= drop
+            keep -= {stop_at}
 
     steps_by_name = {s.name: s for s in pipe.steps}
 
@@ -316,9 +313,10 @@ def show_pipeline_diagram(
     highlight : str | list[str], optional
         Step name(s) to emphasize (bold + soft yellow background).
     stop_at : str, optional
-        Hide steps strictly downstream of this focal step.
+        Show only this focal step and its transitive ancestors. Sibling
+        branches and downstream steps are hidden.
     include_stop : bool
-        If False, also drop the focal step itself.
+        If False, also drop the focal step itself (show ancestors only).
     category_map : dict, optional
         ``{step_name: category}`` overrides class-based detection.
     category_colors : dict, optional

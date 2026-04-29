@@ -650,3 +650,16 @@ class Pipeline:
             visited.add(node)
             queue.extend(children.get(node, []))
         return visited
+
+    def _upstream_of(self, step_name: str) -> set[str]:
+        """Return all step names transitively upstream of *step_name* (inclusive)."""
+        adj = self.dag()
+        visited: set[str] = set()
+        queue = [step_name]
+        while queue:
+            node = queue.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            queue.extend(adj.get(node, []))
+        return visited
