@@ -10,12 +10,12 @@ Two entry points, both also surfaced as ``Pipeline.show_text()`` and
 Categories control color coding in the diagram. Resolution order:
 
 1. ``category_map={step_name: 'category'}`` passed to the call (highest priority)
-2. ``feature_cls.category`` class attribute (opt-in; not currently set on any
-   built-in feature, but features may opt in by adding a string attribute)
-3. Built-in registry :data:`_DEFAULT_CLASS_TO_CATEGORY` for known mosaic features
+2. ``feature_cls.category`` class attribute (preferred; declared by the feature)
+3. Built-in registry :data:`_DEFAULT_CLASS_TO_CATEGORY` — safety net for any
+   feature that doesn't declare ``category`` directly
 4. ``'other'`` fallback
 
-Built-in category names: ``foundation``, ``per-frame``, ``summary``, ``tag``,
+Built-in category names: ``per-frame``, ``summary``, ``tag``, ``global``,
 ``callback``, ``other``. New categories may be introduced ad-hoc by passing
 ``category_colors={'my_cat': '#hex'}``.
 """
@@ -36,26 +36,41 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _CAT_COLORS = {
-    "foundation": "#6c757d",   # gray   — preprocessing / smoothing
     "per-frame":  "#0d6efd",   # blue   — time-resolved features
     "summary":    "#6f42c1",   # purple — per-id collapses
     "tag":        "#fd7e14",   # orange — id label columns
+    "global":     "#20c997",   # teal   — fit-then-apply / templates / models
     "callback":   "#adb5bd",   # light  — orchestration
     "other":      "#495057",
 }
 
-# Fallback registry for built-in feature classes that don't yet declare
-# a `category` attribute. Add features here as they're added to mosaic;
-# remove this registry entirely once all features opt in.
+# Fallback registry for built-in feature classes that don't declare a
+# `category` attribute. The class attribute is the source of truth; this
+# table is a safety net for classes that haven't opted in yet.
 _DEFAULT_CLASS_TO_CATEGORY = {
-    "TrajectorySmooth":         "foundation",
+    "TrajectorySmooth":         "per-frame",
     "FFGroups":                 "per-frame",
     "NearestNeighbor":          "per-frame",
     "SpeedAngvel":              "per-frame",
     "NearestNeighborDelta":     "per-frame",
+    "PairEgocentricFeatures":   "per-frame",
+    "PairWavelet":              "per-frame",
+    "ApproachAvoidance":        "per-frame",
+    "TemporalStackingFeature":  "per-frame",
     "FFGroupsMetrics":          "summary",
     "NearestNeighborDeltaBins": "summary",
     "IdTagColumns":             "tag",
+    "ExtractTemplates":         "global",
+    "ExtractLabeledTemplates":  "global",
+    "GlobalScaler":             "global",
+    "GlobalTSNE":               "global",
+    "GlobalKMeansClustering":   "global",
+    "GlobalWardClustering":     "global",
+    "ArHmmFeature":             "global",
+    "KpmsFeature":              "global",
+    "XgboostFeature":           "global",
+    "GlobalIdentityModel":      "global",
+    "LightningActionFeature":   "global",
 }
 
 

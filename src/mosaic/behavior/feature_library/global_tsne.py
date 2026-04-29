@@ -188,6 +188,7 @@ class GlobalTSNE:
             Default: TSNEMapConfig().
     """
 
+    category = "global"
     name: str = "global-tsne"
     version: str = "0.4"
     parallelizable = False

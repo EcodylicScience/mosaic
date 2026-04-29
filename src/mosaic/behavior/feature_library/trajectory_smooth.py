@@ -81,6 +81,7 @@ class TrajectorySmooth:
             Default: 2.
     """
 
+    category = "per-frame"
     name = "trajectory-smooth"
     version = "0.1"
     parallelizable = True

@@ -64,6 +64,7 @@ class PairEgocentricFeatures:
             Default: "mean".
     """
 
+    category = "per-frame"
     name = "pair-egocentric"
     version = "0.1"
     parallelizable = True
