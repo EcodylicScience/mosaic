@@ -133,6 +133,9 @@ layouts may change between releases.
 See [CONTRIBUTING.md](CONTRIBUTING.md). Please open an issue before making
 large changes.
 
+Working with Claude Code or another AI coding agent? See [CLAUDE.md](CLAUDE.md)
+for repo orientation, development commands, and architectural conventions.
+
 ## License
 
 GNU Affero General Public License v3 or later (AGPLv3+). See
