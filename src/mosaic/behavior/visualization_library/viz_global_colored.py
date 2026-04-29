@@ -50,6 +50,7 @@ class VizGlobalColored:
     ground truth labels (via GroundTruthLabelsSource).
     """
 
+    category = "viz"
     name = "viz-global-colored"
     version = "0.1"
     parallelizable = False

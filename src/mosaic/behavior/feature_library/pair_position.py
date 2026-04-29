@@ -67,6 +67,7 @@ class PairPositionFeatures:
             Default: SamplingConfig().
     """
 
+    category = "per-frame"
     name = "pair-position"
     version = "0.1"
     parallelizable = True

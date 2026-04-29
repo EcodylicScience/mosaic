@@ -71,6 +71,7 @@ class NearestNeighborDelta:
             Default: [].
     """
 
+    category = "per-frame"
     name = "nn-delta-response"
     version = "0.1"
     parallelizable = True

@@ -57,6 +57,7 @@ class MyPerSequenceFeature:
         * your feature columns
     """
 
+    category = "per-frame"  # diagram color: "per-frame" / "summary" / "tag" / "global" / custom
     name = "my-new-feature"
     version = "0.1"
     parallelizable = True

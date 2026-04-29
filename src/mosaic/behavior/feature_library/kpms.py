@@ -194,6 +194,7 @@ class KpmsFeature:
             new data. Default: 500.
     """
 
+    category = "global"
     name = "kpms"
     version = "0.1"
     parallelizable = False

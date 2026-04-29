@@ -122,6 +122,7 @@ class TimelinePlot:
     PNG file(s) in the run folder plus a single marker parquet row for indexing.
     """
 
+    category = "viz"
     name = "viz-timeline"
     version = "0.1"
     parallelizable = False

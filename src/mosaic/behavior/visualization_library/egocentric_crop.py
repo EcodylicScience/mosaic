@@ -113,6 +113,7 @@ class EgocentricCrop:
     >>> dataset.run_feature(crop, sequences=["hex_3"])
     """
 
+    category = "viz"
     name = "egocentric-crop"
     version = "0.2"
     parallelizable = False  # Video I/O is sequential

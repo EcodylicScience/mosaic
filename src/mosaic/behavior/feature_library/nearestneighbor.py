@@ -36,6 +36,7 @@ class NearestNeighbor:
       - nn_delta_x_ego / nn_delta_y_ego: neighbor offset in focal ego frame
     """
 
+    category = "per-frame"
     name = "nearest-neighbor"
     version = "0.1"
     parallelizable = True

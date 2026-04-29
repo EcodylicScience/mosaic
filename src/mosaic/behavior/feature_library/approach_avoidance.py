@@ -106,6 +106,7 @@ class ApproachAvoidance:
             (disabled; framewise behaviour).
     """
 
+    category = "per-frame"
     name = "approach-avoidance"
     version = "0.2"
     parallelizable = True

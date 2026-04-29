@@ -34,6 +34,7 @@ class MovementSmooth:
     ``Inputs((Result(feature="movement-smooth"),))``.
     """
 
+    category = "per-frame"
     name = "movement-smooth"
     version = "0.1"
     parallelizable = True

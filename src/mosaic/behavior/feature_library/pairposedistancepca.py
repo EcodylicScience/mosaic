@@ -72,6 +72,7 @@ class PairPoseDistancePCA:
             Default: 5000.
     """
 
+    category = "per-frame"
     name = "pair-posedistance-pca"
     version = "0.1"
     parallelizable = True

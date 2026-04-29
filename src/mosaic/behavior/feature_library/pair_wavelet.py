@@ -73,6 +73,7 @@ class PairWavelet:
             auto-detected using pc_prefix. Default: None.
     """
 
+    category = "per-frame"
     name = "pair-wavelet"
     version = "0.1"
     parallelizable = True

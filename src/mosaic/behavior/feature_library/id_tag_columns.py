@@ -43,6 +43,7 @@ class IdTagColumns:
             renamed column names in the output. Default: None.
     """
 
+    category = "tag"
     name = "id-tag-columns"
     version = "0.1"
     parallelizable = True

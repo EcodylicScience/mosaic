@@ -63,6 +63,7 @@ class GlobalScaler:
             Default: ScalerModelArtifact().
     """
 
+    category = "global"
     name = "global-scaler"
     version = "0.1"
     parallelizable = True

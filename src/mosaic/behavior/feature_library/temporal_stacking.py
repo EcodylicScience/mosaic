@@ -213,6 +213,7 @@ class TemporalStackingFeature:
             filtering during dependency resolution. Default: None.
     """
 
+    category = "per-frame"
     name = "temporal-stack"
     version = "0.3"
     parallelizable = True

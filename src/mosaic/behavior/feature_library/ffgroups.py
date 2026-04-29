@@ -209,6 +209,7 @@ class FFGroups:
             stable subgroup to be registered as an event. Default: 1.
     """
 
+    category = "per-frame"
     name = "ffgroups"
     version = "0.1"
     parallelizable = True

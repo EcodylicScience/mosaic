@@ -136,6 +136,7 @@ class SpeedAngvel:
             with jittery timestamps. Default: None.
     """
 
+    category = "per-frame"
     name = "speed-angvel"
     version = "0.1"
     parallelizable = True

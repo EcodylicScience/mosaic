@@ -65,6 +65,7 @@ class ExtractTemplates:
             filtering during dependency resolution. Default: None.
     """
 
+    category = "global"
     name = "extract-templates"
     version = "0.1"
     parallelizable = False

@@ -46,6 +46,7 @@ class OrientationRelativeFeature:
         in A's frame, and nearest-k distances.
     """
 
+    category = "per-frame"
     name = "orientation-rel"
     version = "0.1"
     parallelizable = True

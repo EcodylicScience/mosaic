@@ -128,6 +128,7 @@ class NearestNeighborDeltaBins:
             animal as nonfocal. Default: False.
     """
 
+    category = "summary"
     name = "nn-delta-bins"
     version = "0.1"
     parallelizable = True

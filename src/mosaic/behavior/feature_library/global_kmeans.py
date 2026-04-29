@@ -124,6 +124,7 @@ class GlobalKMeansClustering:
             filtering during dependency resolution. Default: None.
     """
 
+    category = "global"
     name: str = "global-kmeans"
     version: str = "0.4"
     parallelizable = False

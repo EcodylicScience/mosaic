@@ -43,6 +43,7 @@ class BodyScaleFeature:
     normalization constant for downstream orientation features.
     """
 
+    category = "per-frame"
     name = "body-scale"
     version = "0.1"
     parallelizable = True

@@ -170,6 +170,7 @@ class FeralFeature:
         Training hyperparameters. None = inference-only mode.
     """
 
+    category = "per-frame"
     name = "feral"
     version = "0.1"
     parallelizable = False

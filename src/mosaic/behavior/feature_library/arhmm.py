@@ -103,6 +103,7 @@ class ArHmmFeature:
         random_state: Random seed.  Default: 42.
     """
 
+    category = "global"
     name = "arhmm"
     version = "0.1"
     parallelizable = False

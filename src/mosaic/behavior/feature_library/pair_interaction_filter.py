@@ -186,6 +186,7 @@ class PairInteractionFilter:
         as the position for distance calculations.
     """
 
+    category = "per-frame"
     name = "pair-interaction-filter"
     version = "0.1"
     parallelizable = True

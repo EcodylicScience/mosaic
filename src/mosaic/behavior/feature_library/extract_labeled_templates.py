@@ -90,6 +90,7 @@ class ExtractLabeledTemplates:
         random_state: Random seed for reproducibility. Default: 42.
     """
 
+    category = "global"
     name = "extract-labeled-templates"
     version = "0.1"
     parallelizable = False

@@ -37,6 +37,7 @@ class MovementFilterInterpolate:
     the originals, so downstream features can chain off the result.
     """
 
+    category = "per-frame"
     name = "movement-filter-interpolate"
     version = "0.1"
     parallelizable = True

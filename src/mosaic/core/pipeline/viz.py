@@ -16,8 +16,8 @@ Categories control color coding in the diagram. Resolution order:
 4. ``'other'`` fallback
 
 Built-in category names: ``per-frame``, ``summary``, ``tag``, ``global``,
-``callback``, ``other``. New categories may be introduced ad-hoc by passing
-``category_colors={'my_cat': '#hex'}``.
+``viz``, ``callback``, ``other``. New categories may be introduced ad-hoc by
+passing ``category_colors={'my_cat': '#hex'}``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ _CAT_COLORS = {
     "summary":    "#6f42c1",   # purple — per-id collapses
     "tag":        "#fd7e14",   # orange — id label columns
     "global":     "#20c997",   # teal   — fit-then-apply / templates / models
+    "viz":        "#e83e8c",   # pink   — overlays / timelines / crops
     "callback":   "#adb5bd",   # light  — orchestration
     "other":      "#495057",
 }

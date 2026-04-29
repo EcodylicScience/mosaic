@@ -127,6 +127,7 @@ class LightningActionFeature:
             decision threshold (required).
     """
 
+    category = "global"
     name = "lightning-action"
     version = "0.1"
     parallelizable = True

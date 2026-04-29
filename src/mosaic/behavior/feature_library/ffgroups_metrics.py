@@ -55,6 +55,7 @@ class FFGroupsMetrics:
             Default: [].
     """
 
+    category = "summary"
     name = "ffgroups-metrics"
     version = "0.1"
     parallelizable = True

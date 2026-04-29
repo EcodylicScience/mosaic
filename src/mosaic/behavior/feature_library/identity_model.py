@@ -77,6 +77,7 @@ class GlobalIdentityModel:
             "identity_model".
     """
 
+    category = "global"
     name: str = "global-identity-model"
     version: str = "0.1"
     parallelizable = False

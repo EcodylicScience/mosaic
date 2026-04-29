@@ -72,6 +72,7 @@ class GlobalWardClustering:
             filtering during dependency resolution. Default: None.
     """
 
+    category = "global"
     name = "global-ward"
     version = "0.3"
     parallelizable = False

@@ -77,6 +77,7 @@ class XgboostFeature:
         random_state: Random seed for reproducibility. Default: 42.
     """
 
+    category = "global"
     name = "xgboost"
     version = "0.1"
     parallelizable = True

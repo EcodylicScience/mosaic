@@ -51,6 +51,7 @@ class MyGlobalFeature:
       4. apply() maps per-sequence data using the fitted model
     """
 
+    category = "global"  # diagram color: "per-frame" / "summary" / "tag" / "global" / custom
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False
