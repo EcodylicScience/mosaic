@@ -49,7 +49,7 @@ from .registry import register_feature
 class TrackSubsample:
     """Subsample tracks rows for downstream per-row features.
 
-    Two methods:
+    Three methods:
 
     - ``"kmeans"`` (default): k-means cluster frames in body-canonical
       pose space (translate to ``(X, Y)`` origin, rotate by ``-ANGLE``),
@@ -58,6 +58,12 @@ class TrackSubsample:
       adjacent frames in dense recordings are highly redundant.
     - ``"uniform"``: pick frames at constant stride. Simple and
       predictable; faster but redundant on slow-moving subjects.
+    - ``"clips"``: pick K seeds via k-means on canonical pose, then
+      take ``clip_len`` consecutive frames starting at each seed. Output
+      is organized as K contiguous spans of ``clip_len`` frames each, for
+      downstream features that consume short clips (e.g. temporal
+      identity heads). With ``method="clips"`` we set
+      ``K = target_frames // clip_len``.
 
     Frames with NaN ``ANGLE`` / ``X`` / ``Y`` / required keypoints are
     excluded from k-means clustering (they cannot be canonicalized). When
@@ -67,9 +73,24 @@ class TrackSubsample:
 
     Output preserves all input columns -- only row count changes.
 
+    .. note::
+       For ``method="clips"``, downstream temporal features (e.g.
+       ``GlobalIdentityDinoV2Temporal``) sort frames alphabetically and
+       slide a window of size ``clip_len`` over them. Each contiguous
+       span of ``clip_len`` frames becomes one clip when the downstream
+       ``clip_stride`` equals ``clip_len`` (the default). Setting
+       ``clip_stride < clip_len`` downstream will produce windows that
+       straddle the gap between two spans -- meaningless temporal
+       samples. Use the default non-overlapping stride.
+
     Params:
-        method: ``"kmeans"`` or ``"uniform"``. Default ``"kmeans"``.
+        method: ``"kmeans"`` (default), ``"uniform"``, or ``"clips"``.
         target_frames: Target output row count per sequence. Default 300.
+            For ``method="clips"`` this is interpreted as
+            ``n_clips * clip_len``; the number of clips is
+            ``target_frames // clip_len``.
+        clip_len: Frames per clip when ``method="clips"``. Default 8.
+            Ignored otherwise.
         pose: Pose-column naming and count config. Default
             ``PoseConfig()`` (``pose_n=7``, ``poseX*`` / ``poseY*``).
         seed: Random seed for k-means. Default 42.
@@ -79,7 +100,7 @@ class TrackSubsample:
 
     category = "per-frame"
     name = "track-subsample"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
 
@@ -87,8 +108,9 @@ class TrackSubsample:
         pass
 
     class Params(Params):
-        method: Literal["kmeans", "uniform"] = "kmeans"
+        method: Literal["kmeans", "uniform", "clips"] = "kmeans"
         target_frames: int = Field(default=300, ge=1)
+        clip_len: int = Field(default=8, ge=2)
         pose: PoseConfig = Field(default_factory=PoseConfig)
         seed: int = 42
         drop_nan: bool = True
@@ -124,13 +146,81 @@ class TrackSubsample:
             return df
 
         p = self.params
-        if len(df) <= p.target_frames:
-            return df.reset_index(drop=True)
 
         if p.method == "uniform":
+            if len(df) <= p.target_frames:
+                return df.reset_index(drop=True)
             return self._uniform(df, p.target_frames)
 
-        # Discover available pose columns (allows pose-subset tracks).
+        if p.method == "kmeans":
+            if len(df) <= p.target_frames:
+                return df.reset_index(drop=True)
+            seeds = self._kmeans_seeds(df, p.target_frames)
+            if seeds is None:
+                return self._uniform(df, p.target_frames)
+            return df.iloc[sorted(seeds)].reset_index(drop=True)
+
+        # method == "clips": pick K seeds, expand each to clip_len consecutive frames.
+        n_clips = max(1, p.target_frames // p.clip_len)
+        if len(df) < p.clip_len:
+            return df.reset_index(drop=True)
+
+        # If video is just barely long enough, fall back to as-many-clips-as-fit.
+        n_clips = min(n_clips, len(df) // p.clip_len)
+        if n_clips < 1:
+            return df.reset_index(drop=True)
+
+        seeds = self._kmeans_seeds(df, n_clips)
+        if seeds is None:
+            # Fallback: K evenly-spaced clip starts.
+            stride = max(p.clip_len, len(df) // n_clips)
+            seeds = [min(i * stride, len(df) - p.clip_len) for i in range(n_clips)]
+
+        # Snap each seed into [0, len(df)-clip_len].
+        max_start = len(df) - p.clip_len
+        snapped = sorted(min(max(int(s), 0), max_start) for s in seeds)
+
+        # Greedy disjoint: when a seed's [s, s+clip_len) overlaps the previous
+        # span, snap it forward to start exactly at the previous span's end.
+        # If snapping forward exceeds max_start, drop the seed. The resulting
+        # spans are strictly non-overlapping, so the downstream sorted-glob +
+        # non-overlapping sliding window aligns each span 1:1 with one clip.
+        disjoint: list[int] = []
+        last_end = -1
+        for s in snapped:
+            if s < last_end:
+                s = last_end
+            if s + p.clip_len > len(df):
+                break
+            disjoint.append(s)
+            last_end = s + p.clip_len
+
+        # If everything collapsed (extreme overlap), at least emit one clip
+        # at row 0 so EgocentricCrop has something to work with.
+        if not disjoint:
+            disjoint = [0] if max_start >= 0 else []
+
+        keep_rows: list[int] = []
+        for s in disjoint:
+            keep_rows.extend(range(s, s + p.clip_len))
+        return df.iloc[keep_rows].reset_index(drop=True)
+
+    @staticmethod
+    def _uniform(df: pd.DataFrame, target_frames: int) -> pd.DataFrame:
+        stride = max(1, len(df) // target_frames)
+        return df.iloc[::stride].head(target_frames).reset_index(drop=True)
+
+    def _kmeans_seeds(
+        self, df: pd.DataFrame, n_clusters: int
+    ) -> list[int] | None:
+        """Pick `n_clusters` seed row indices via k-means on canonical pose.
+
+        Returns row positions in `df` (not `frame` values), or None when the
+        canonical-pose feature space cannot be computed (missing columns,
+        too few valid frames, etc.) so the caller can fall back to uniform.
+        """
+        p = self.params
+
         n_kp = p.pose.pose_n
         x_cols = [
             f"{p.pose.x_prefix}{i}"
@@ -143,16 +233,14 @@ class TrackSubsample:
             if f"{p.pose.y_prefix}{i}" in df.columns
         ]
         if not x_cols or not y_cols or len(x_cols) != len(y_cols):
-            # Pose columns missing or inconsistent — fall back to uniform.
-            return self._uniform(df, p.target_frames)
+            return None
 
-        # Required centroid + heading columns
         if (
             COLUMNS.x_col not in df.columns
             or COLUMNS.y_col not in df.columns
             or COLUMNS.orientation_col not in df.columns
         ):
-            return self._uniform(df, p.target_frames)
+            return None
 
         pose_x = df[x_cols].to_numpy(dtype=np.float64)
         pose_y = df[y_cols].to_numpy(dtype=np.float64)
@@ -168,11 +256,9 @@ class TrackSubsample:
             & np.isfinite(ang)
         )
 
-        if int(valid.sum()) <= p.target_frames:
-            sub = df[valid] if p.drop_nan else df
-            return sub.reset_index(drop=True)
+        if int(valid.sum()) <= n_clusters:
+            return list(np.where(valid)[0])
 
-        # Translate to (X, Y) and rotate by -ANGLE → body-canonical pose.
         rel_x = pose_x[valid] - cx[valid, None]
         rel_y = pose_y[valid] - cy[valid, None]
         a = -ang[valid]
@@ -180,21 +266,16 @@ class TrackSubsample:
         sin_a = np.sin(a)[:, None]
         can_x = rel_x * cos_a - rel_y * sin_a
         can_y = rel_x * sin_a + rel_y * cos_a
-        feats = np.hstack([can_x, can_y])  # (N_valid, 2 * n_kp_avail)
+        feats = np.hstack([can_x, can_y])
 
-        # K-means clustering. Imported lazily to avoid a hard sklearn
-        # dependency for the 'uniform' path.
         from sklearn.cluster import KMeans
 
         km = KMeans(
-            n_clusters=p.target_frames,
-            random_state=p.seed,
-            n_init="auto",
+            n_clusters=n_clusters, random_state=p.seed, n_init="auto"
         ).fit(feats)
 
-        # For each cluster, pick the member closest to the centroid.
         chosen_pos: list[int] = []
-        for c in range(p.target_frames):
+        for c in range(n_clusters):
             members = np.where(km.labels_ == c)[0]
             if len(members) == 0:
                 continue
@@ -202,10 +283,4 @@ class TrackSubsample:
             chosen_pos.append(int(members[np.argmin(d)]))
 
         valid_idx = np.where(valid)[0]
-        chosen_idx = sorted(valid_idx[chosen_pos].tolist())
-        return df.iloc[chosen_idx].reset_index(drop=True)
-
-    @staticmethod
-    def _uniform(df: pd.DataFrame, target_frames: int) -> pd.DataFrame:
-        stride = max(1, len(df) // target_frames)
-        return df.iloc[::stride].head(target_frames).reset_index(drop=True)
+        return [int(valid_idx[i]) for i in chosen_pos]
