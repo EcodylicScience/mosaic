@@ -43,6 +43,7 @@ from . import (
     arhmm,
     approach_avoidance,
     body_scale,
+    dinov2_temporal_identity_model,
     extract_labeled_templates,
     extract_templates,
     ffgroups,
@@ -55,6 +56,7 @@ from . import (
     id_tag_columns,
     identity_model,
     kpms,
+    megadescriptor_identity_model,
     nearestneighbor,
     nn_delta_bins,
     nn_delta_response,
@@ -66,12 +68,14 @@ from . import (
     pairposedistancepca,
     speed_angvel,
     temporal_stacking,
+    track_subsample,
     trajectory_smooth,
     xgboost_feature,
 )
 from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
 from .body_scale import BodyScaleFeature
+from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
 from .extract_labeled_templates import ExtractLabeledTemplates
 from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
@@ -83,6 +87,7 @@ from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .identity_model import GlobalIdentityModel
 from .kpms import KpmsFeature
+from .megadescriptor_identity_model import GlobalIdentityMegaDescriptor
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
@@ -95,6 +100,7 @@ from .pairposedistancepca import PairPoseDistancePCA
 from .registry import FEATURES, register_feature
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
 from .xgboost_feature import XgboostFeature
 
@@ -144,6 +150,8 @@ __all__ = [
     "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
+    "GlobalIdentityDinoV2Temporal",
+    "GlobalIdentityMegaDescriptor",
     "GlobalIdentityModel",
     "GlobalKMeansClustering",
     "GlobalModelParams",
@@ -163,6 +171,7 @@ __all__ = [
     "PairWavelet",
     "SpeedAngvel",
     "TemporalStackingFeature",
+    "TrackSubsample",
     "TrajectorySmooth",
     "XgboostFeature",
     "FeralFeature",
@@ -173,6 +182,7 @@ __all__ = [
     "arhmm",
     "approach_avoidance",
     "body_scale",
+    "dinov2_temporal_identity_model",
     "extract_labeled_templates",
     "extract_templates",
     "ffgroups",
@@ -184,6 +194,7 @@ __all__ = [
     "id_tag_columns",
     "identity_model",
     "kpms",
+    "megadescriptor_identity_model",
     "nearestneighbor",
     "nn_delta_bins",
     "nn_delta_response",
@@ -195,6 +206,7 @@ __all__ = [
     "pairposedistancepca",
     "speed_angvel",
     "temporal_stacking",
+    "track_subsample",
     "trajectory_smooth",
     "xgboost_feature",
 ]

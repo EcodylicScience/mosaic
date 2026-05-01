@@ -19,7 +19,14 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
-from mosaic.core.pipeline.types import COLUMNS, Inputs, Params, PoseConfig, TrackInput
+from mosaic.core.pipeline.types import (
+    COLUMNS,
+    Inputs,
+    Params,
+    PoseConfig,
+    Result,
+    TrackInput,
+)
 from mosaic.core.pipeline.types.feature import DependencyLookup
 
 from ..feature_library.registry import register_feature
@@ -119,7 +126,7 @@ class EgocentricCrop:
     parallelizable = False  # Video I/O is sequential
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

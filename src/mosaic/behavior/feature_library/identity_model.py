@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputRequire,
@@ -303,13 +304,25 @@ class GlobalIdentityModel:
     def _build_label_mapping(
         self, inputs: InputStream
     ) -> tuple[dict[str, int], list[str]]:
-        """Build a mapping from ``"group/sequence"`` key to integer label.
+        """Build a mapping from pipeline ``entry_key`` to integer label.
+
+        The InputStream yields ``entry_key = make_entry_key(group, sequence)``
+        (i.e. ``"safe_group__safe_seq"`` with URL-encoded names).  Users
+        specify ``identities`` with the more readable ``"group/sequence"``
+        form, so we translate every key into the canonical entry-key form
+        before storing.
 
         Returns:
-            Tuple of (seq_key -> label, sorted identity names).
+            Tuple of (entry_key -> label, sorted identity names).
         """
         p = self.params
         seq_to_label: dict[str, int] = {}
+
+        def _normalize(seq_key: str) -> str:
+            if "/" in seq_key:
+                group, sequence = seq_key.split("/", 1)
+                return make_entry_key(group, sequence)
+            return seq_key
 
         if p.identities is not None:
             identity_names = sorted(p.identities.keys())
@@ -317,19 +330,23 @@ class GlobalIdentityModel:
             for name, seqs in p.identities.items():
                 label = name_to_label[name]
                 for seq_key in seqs:
-                    seq_to_label[seq_key] = label
+                    seq_to_label[_normalize(seq_key)] = label
         elif p.group_as_identity:
-            # Discover groups from input stream entry keys
+            # Discover groups from input stream entry keys.
+            # entry_key is "safe_group__safe_seq"; split on "__" once.
             group_set: set[str] = set()
-            for entry_key, _df in inputs():
-                group = entry_key.split("/")[0] if "/" in entry_key else entry_key
+            entry_keys = self._iter_entry_keys(inputs)
+            for entry_key in entry_keys:
+                group = (
+                    entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
+                )
                 group_set.add(group)
             identity_names = sorted(group_set)
             name_to_label = {name: i for i, name in enumerate(identity_names)}
-            # Second pass: assign labels. We'll build the mapping from entry
-            # keys we'll see again in the main fit loop.
-            for entry_key in self._iter_entry_keys(inputs):
-                group = entry_key.split("/")[0] if "/" in entry_key else entry_key
+            for entry_key in entry_keys:
+                group = (
+                    entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
+                )
                 if group in name_to_label:
                     seq_to_label[entry_key] = name_to_label[group]
         else:
@@ -354,68 +371,67 @@ class GlobalIdentityModel:
     ) -> list[np.ndarray]:
         """Load egocentric crop frame images for a sequence.
 
-        Looks for frames in the EgocentricCrop output directory structure:
-        ``<run_root>/<group>__<sequence>/frames_id<N>/frame_XXXXXX.png``
+        Resolves the EgocentricCrop output directory and reads every PNG
+        under ``<crop_root>/<group>__<sequence>/frames_id*/frame_*.png``.
+
+        Resolution order for the crop root:
+        1. ``params.crop_root`` (explicit override -- recommended).
+        2. ``df._source_dir`` if set by the pipeline runner.
+        3. Skip if neither is available.
 
         Args:
             entry_key: ``"group/sequence"`` identifier.
             df: DataFrame from the input stream (may contain crop metadata).
 
         Returns:
-            List of (H, W, C) uint8 arrays.
+            List of (H, W, C) uint8 arrays, capped at
+            ``max_images_per_identity``.
         """
         p = self.params
         frames: list[np.ndarray] = []
 
-        # Try to find frame directories from the input feature's run root
-        # The EgocentricCrop stores frames as:
-        #   <run_root>/<group>__<sequence>/frames_id<N>/frame_XXXXXX.<fmt>
-        # The df from InputStream should contain metadata pointing to frames.
+        # Resolve the per-sequence directory containing frames_id*/ subdirs.
+        # EgocentricCrop writes dirs as f"{group}__{sequence}" using RAW
+        # names (not URL-encoded); the df from the InputStream carries those
+        # raw names in its "group" / "sequence" columns.
+        seq_dir: Path | None = None
 
-        # Strategy 1: look for frame file paths in the input artifacts
-        # The input Result points to an egocentric-crop run directory.
-        for feat_input in self.inputs.feature_inputs:
-            if feat_input.feature != "egocentric-crop":
+        if p.crop_root is not None:
+            crop_root = Path(p.crop_root)
+            if (
+                df is not None
+                and not df.empty
+                and "group" in df.columns
+                and "sequence" in df.columns
+            ):
+                group = str(df["group"].iloc[0])
+                sequence = str(df["sequence"].iloc[0])
+                seq_dir = crop_root / f"{group}__{sequence}"
+            else:
+                # Fallback to entry_key (already in safe_group__safe_seq form;
+                # works when raw names contain no special chars).
+                seq_dir = crop_root / entry_key
+
+        # Fallback: pipeline-provided _source_dir attribute on the df.
+        if seq_dir is None or not seq_dir.is_dir():
+            source_dir = getattr(df, "_source_dir", None)
+            if source_dir is not None and Path(source_dir).is_dir():
+                seq_dir = Path(source_dir)
+
+        if seq_dir is None or not seq_dir.is_dir():
+            return frames
+
+        # Scan all frames_id* subdirectories in deterministic order.
+        cap = self.params.max_images_per_identity
+        for frames_subdir in sorted(seq_dir.glob("frames_id*")):
+            if not frames_subdir.is_dir():
                 continue
-
-        # Strategy 2: scan the df for frame paths or load from known structure
-        # EgocentricCrop metadata df has columns: frame, center_x, center_y,
-        # heading_angle, target_id, group, sequence
-        if df is not None and not df.empty and "group" in df.columns:
-            group = str(df["group"].iloc[0])
-            sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns else ""
-            dir_key = f"{group}__{sequence}"
-
-            # Find frames directories — look for frames_id* subdirs
-            # We need to find the run root of the egocentric-crop feature.
-            # The input stream provides DataFrames; the actual frames are on disk.
-            # Check if there's a path column or use the dependency lookup approach.
-            target_ids = df["target_id"].unique() if "target_id" in df.columns else []
-
-            for tid in target_ids:
-                frames_subdir = f"frames_id{tid}"
-                # The frame paths are relative to the egocentric-crop run root.
-                # We look for the frames via the df metadata.
-                tid_df = df[df["target_id"] == tid] if "target_id" in df.columns else df
-                for _, row in tid_df.iterrows():
-                    frame_num = int(row["frame"]) if "frame" in row.index else None
-                    if frame_num is None:
-                        continue
-                    # Try to locate the frame file
-                    # The input stream iterates over run results; check for
-                    # a _run_root attribute or frame_path column
-                    if "frame_path" in row.index and pd.notna(row["frame_path"]):
-                        fpath = Path(str(row["frame_path"]))
-                        if fpath.exists():
-                            img = self._load_image(fpath)
-                            if img is not None:
-                                frames.append(img)
-                            continue
-
-        # Strategy 3: if the df has a _source_dir or run_root hint, scan it
-        if not frames and df is not None and not df.empty:
-            frames = self._scan_frames_from_df(df)
-
+            for img_path in sorted(frames_subdir.glob("frame_*.png")):
+                img = self._load_image(img_path)
+                if img is not None:
+                    frames.append(img)
+                    if len(frames) >= cap:
+                        return frames
         return frames
 
     def _scan_frames_from_df(self, df: pd.DataFrame) -> list[np.ndarray]:
