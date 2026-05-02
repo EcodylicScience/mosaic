@@ -93,7 +93,12 @@ def _build_v200_native(
             # Head
             self.pool = nn.MaxPool2d(2)
             self.fc1 = nn.Linear(flatten_dim, fc_hidden)
-            self.bn4 = nn.BatchNorm1d(fc_hidden)
+            # T-Rex's bn4 has only `weight`/`bias` in the saved state_dict —
+            # `running_mean`/`running_var` are absent. That's the signature of
+            # ``track_running_stats=False`` (PyTorch makes those buffers
+            # non-persistent when this flag is off). At inference this layer
+            # uses *batch* stats, so predict() requires batch_size > 1.
+            self.bn4 = nn.BatchNorm1d(fc_hidden, track_running_stats=False)
             self.dropout = nn.Dropout(0.05)
             self.fc2 = nn.Linear(fc_hidden, num_classes)
 
