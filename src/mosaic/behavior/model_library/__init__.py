@@ -28,6 +28,10 @@ from .behavior_xgboost import BehaviorXGBoostModel
 from . import trex_identity_network
 from .trex_identity_network import TRexIdentityNetwork
 
+# T-Rex *native* V200 (3-conv variant) — matches T-Rex's actual saved .pth layout
+from . import trex_native_identity
+from .trex_native_identity import TRexNativeIdentityNetwork
+
 # FERAL video behavior classifier -- DEPRECATED, use FeralFeature instead
 from . import feral_model
 from .feral_model import FeralModel
@@ -38,6 +42,8 @@ __all__ = [
     "BehaviorXGBoostModel",
     "trex_identity_network",
     "TRexIdentityNetwork",
+    "trex_native_identity",
+    "TRexNativeIdentityNetwork",
     "feral_model",
     "FeralModel",
 ]
