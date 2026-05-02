@@ -50,6 +50,7 @@ def _build_v200_native(
     flatten_dim: int,
     fc_hidden: int,
     num_classes: int,
+    kernel_size: int = 5,
 ) -> Any:
     """Build the native V200 architecture as a named-layer ``nn.Module``.
 
@@ -79,14 +80,15 @@ def _build_v200_native(
         def __init__(self) -> None:
             super().__init__()
             c1, c2, c3 = conv_channels
+            k = kernel_size
             # Block 1
-            self.conv1 = nn.Conv2d(channels, c1, kernel_size=3, padding="same")
+            self.conv1 = nn.Conv2d(channels, c1, kernel_size=k, padding="same")
             self.bn1 = nn.BatchNorm2d(c1)
             # Block 2
-            self.conv2 = nn.Conv2d(c1, c2, kernel_size=3, padding="same")
+            self.conv2 = nn.Conv2d(c1, c2, kernel_size=k, padding="same")
             self.bn2 = nn.BatchNorm2d(c2)
             # Block 3
-            self.conv3 = nn.Conv2d(c2, c3, kernel_size=3, padding="same")
+            self.conv3 = nn.Conv2d(c2, c3, kernel_size=k, padding="same")
             self.bn3 = nn.BatchNorm2d(c3)
             # Head
             self.pool = nn.MaxPool2d(2)
@@ -109,13 +111,15 @@ def _build_v200_native(
 
 def _infer_dims_from_state_dict(
     state_dict: dict[str, Any],
-) -> tuple[int, tuple[int, int, int], int, int, int, int]:
+) -> tuple[int, tuple[int, int, int], int, int, int, int, int]:
     """Inspect a state_dict (with ``model.`` prefix) and read off layer dims.
 
     Returns:
-        ``(channels, (C1, C2, C3), flatten_dim, fc_hidden, num_classes, spatial_dim)``
-        where ``flatten_dim = fc1.in_features = C3 × spatial_dim²`` and
-        ``spatial_dim`` is the H×W of the post-conv-stack feature map.
+        ``(channels, (C1, C2, C3), flatten_dim, fc_hidden, num_classes, spatial_dim, kernel_size)``
+        where ``flatten_dim = fc1.in_features = C3 × spatial_dim²``,
+        ``spatial_dim`` is the H×W of the post-conv-stack feature map, and
+        ``kernel_size`` is read from ``conv1.weight.shape[-1]`` (assumed
+        consistent across the three conv blocks).
 
     Raises:
         ValueError: when an expected key is missing, has an unexpected shape,
@@ -185,7 +189,20 @@ def _infer_dims_from_state_dict(
             f"cannot infer image_size from state_dict alone"
         )
 
-    return channels, (c1_out, c2_out, c3_out), flatten_dim, fc_hidden, num_classes, spatial_dim
+    # Kernel size from conv1's last dim (assume square + same across all 3 blocks).
+    k1 = s1[-1]
+    k2 = s2[-1]
+    k3 = s3[-1]
+    if k1 != k2 or k2 != k3:
+        raise ValueError(
+            f"inconsistent conv kernel sizes: conv1={k1}, conv2={k2}, conv3={k3}"
+        )
+    kernel_size = k1
+
+    return (
+        channels, (c1_out, c2_out, c3_out), flatten_dim, fc_hidden,
+        num_classes, spatial_dim, kernel_size,
+    )
 
 
 class TRexNativeIdentityNetwork:
@@ -217,17 +234,19 @@ class TRexNativeIdentityNetwork:
     def __init__(
         self,
         num_classes: int,
-        channels: int = 1,
+        channels: int = 3,
         image_size: tuple[int, int] = (48, 48),
-        conv_channels: tuple[int, int, int] = (16, 32, 64),
-        fc_hidden: int = 256,
+        conv_channels: tuple[int, int, int] = (16, 64, 100),
+        fc_hidden: int = 100,
         flatten_dim: int | None = None,
+        kernel_size: int = 5,
     ) -> None:
         self.num_classes = num_classes
         self.channels = channels
         self.image_size = image_size  # (height, width)
         self.conv_channels = conv_channels
         self.fc_hidden = fc_hidden
+        self.kernel_size = kernel_size
 
         # Three MaxPool2d(2) layers ⇒ post-conv H = H_in // 8 (with floor).
         # If flatten_dim wasn't provided, derive from image_size + conv stack.
@@ -242,6 +261,7 @@ class TRexNativeIdentityNetwork:
             flatten_dim=flatten_dim,
             fc_hidden=fc_hidden,
             num_classes=num_classes,
+            kernel_size=kernel_size,
         )
         self._model = _PermuteAxesWrapper(raw_model, channels)
         self._device: Any = None
@@ -425,10 +445,14 @@ class TRexNativeIdentityNetwork:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         h, w = self.image_size
+        # Add `model.` prefix to keys so the saved file matches T-Rex's native
+        # format and round-trips through `from_trex_checkpoint`.
+        inner_sd = self._model.state_dict()
+        prefixed_sd = {f"model.{k}": v for k, v in inner_sd.items()}
         checkpoint = {
-            "state_dict": self._model.state_dict(),
+            "state_dict": prefixed_sd,
             "metadata": {
-                "input_shape": (w, h, self.channels),  # T-Rex order: width, height, channels
+                "input_shape": (h, w, self.channels),  # T-Rex (per observed bees ckpt): (H, W, C)
                 "num_classes": self.num_classes,
                 "video_name":  video_name,
                 "epoch":       self._epoch,
@@ -436,6 +460,7 @@ class TRexNativeIdentityNetwork:
                 "conv_channels": list(self.conv_channels),
                 "flatten_dim": self.flatten_dim,
                 "fc_hidden":   self.fc_hidden,
+                "kernel_size": self.kernel_size,
                 "architecture": "v200-native",
             },
         }
@@ -500,15 +525,25 @@ class TRexNativeIdentityNetwork:
             fc_hidden,
             num_classes,
             spatial_dim,
+            kernel_size,
         ) = _infer_dims_from_state_dict(sd)
 
         # image_size: prefer metadata; otherwise derive from spatial_dim under
         # the assumption of three MaxPool2d(2) blocks (input H = post-conv H × 8).
+        # Note: T-Rex saves input_shape as (H, W, C) (per the user's metadata) —
+        # earlier code assumed (W, H, C); handle both by using the first two
+        # dims as H,W when channels matches.
+        image_size: tuple[int, int]
         if "input_shape" in meta:
             shape = tuple(int(x) for x in meta["input_shape"])
             if len(shape) == 3:
-                w, h, _ = shape
-                image_size: tuple[int, int] = (h, w)
+                a, b, c = shape
+                if c == channels:
+                    # last dim is channels; first two are H, W (or W, H — both equal for square)
+                    image_size = (a, b)
+                else:
+                    # last dim ≠ channels; assume (W, H, C) old convention
+                    image_size = (b, a)
             elif len(shape) == 2:
                 image_size = (shape[0], shape[1])
             else:
@@ -523,16 +558,28 @@ class TRexNativeIdentityNetwork:
             conv_channels=conv_channels,
             fc_hidden=fc_hidden,
             flatten_dim=flatten_dim,
+            kernel_size=kernel_size,
         )
-        net._model.load_state_dict(sd)
+
+        # T-Rex's saved checkpoint keys carry a `model.` prefix because T-Rex
+        # wraps its V200 inside an outer module named `model`. Our wrapper's
+        # inner net is also accessible as `_model.model`, but our wrapper's
+        # `load_state_dict` forwards to that inner net (not the wrapper),
+        # which expects keys WITHOUT the prefix. Strip on load.
+        sd_inner = {
+            (k[len("model."):] if k.startswith("model.") else k): v
+            for k, v in sd.items()
+        }
+        net._model.load_state_dict(sd_inner)
         net._epoch = int(meta.get("epoch", 0))
         net._best_accuracy = float(meta.get("uniqueness", 0.0))
 
         print(
             f"[trex-native] Loaded {path.name}  "
-            f"channels={channels}  conv={conv_channels}  flatten_dim={flatten_dim}  "
-            f"fc_hidden={fc_hidden}  num_classes={num_classes}  "
-            f"image_size={image_size}  (post-conv {spatial_dim}×{spatial_dim})",
+            f"channels={channels}  conv={conv_channels}  k={kernel_size}  "
+            f"flatten_dim={flatten_dim}  fc_hidden={fc_hidden}  "
+            f"num_classes={num_classes}  image_size={image_size}  "
+            f"(post-conv {spatial_dim}×{spatial_dim})",
             file=sys.stderr,
         )
         return net
