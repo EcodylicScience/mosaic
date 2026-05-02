@@ -47,6 +47,7 @@ class _V200NativeNet:
 def _build_v200_native(
     channels: int,
     conv_channels: tuple[int, int, int],
+    flatten_dim: int,
     fc_hidden: int,
     num_classes: int,
 ) -> Any:
@@ -57,9 +58,15 @@ def _build_v200_native(
     - ``conv1`` → ``bn1`` → ReLU → MaxPool2d(2)
     - ``conv2`` → ``bn2`` → ReLU → MaxPool2d(2)
     - ``conv3`` → ``bn3`` → ReLU → MaxPool2d(2)
-    - AdaptiveAvgPool2d((1,1)) → Flatten
+    - Flatten   (NO global average pool — T-Rex flattens directly)
     - ``fc1`` → ``bn4`` → ReLU → Dropout(0.05)
     - ``fc2`` (no batchnorm; final classifier)
+
+    The post-conv spatial dim is determined by the input ``image_size`` and
+    the three MaxPool2d(2) layers (each halves H and W). ``flatten_dim`` is
+    therefore ``conv_channels[-1] × (H/8) × (W/8)`` and is fixed at
+    construction time — this network is NOT spatial-dim-agnostic. Inputs
+    must be resized to the trained image size before calling ``predict``.
 
     Returns:
         An ``nn.Module`` with attributes named exactly as above so its
@@ -83,8 +90,7 @@ def _build_v200_native(
             self.bn3 = nn.BatchNorm2d(c3)
             # Head
             self.pool = nn.MaxPool2d(2)
-            self.gap = nn.AdaptiveAvgPool2d((1, 1))
-            self.fc1 = nn.Linear(c3, fc_hidden)
+            self.fc1 = nn.Linear(flatten_dim, fc_hidden)
             self.bn4 = nn.BatchNorm1d(fc_hidden)
             self.dropout = nn.Dropout(0.05)
             self.fc2 = nn.Linear(fc_hidden, num_classes)
@@ -94,7 +100,6 @@ def _build_v200_native(
             x = self.pool(relu(self.bn1(self.conv1(x))))
             x = self.pool(relu(self.bn2(self.conv2(x))))
             x = self.pool(relu(self.bn3(self.conv3(x))))
-            x = self.gap(x)
             x = x.flatten(1)
             x = self.dropout(relu(self.bn4(self.fc1(x))))
             return self.fc2(x)
@@ -104,20 +109,23 @@ def _build_v200_native(
 
 def _infer_dims_from_state_dict(
     state_dict: dict[str, Any],
-) -> tuple[int, tuple[int, int, int], int, int]:
+) -> tuple[int, tuple[int, int, int], int, int, int, int]:
     """Inspect a state_dict (with ``model.`` prefix) and read off layer dims.
 
     Returns:
-        ``(channels, (C1, C2, C3), fc_hidden, num_classes)``.
+        ``(channels, (C1, C2, C3), flatten_dim, fc_hidden, num_classes, spatial_dim)``
+        where ``flatten_dim = fc1.in_features = C3 × spatial_dim²`` and
+        ``spatial_dim`` is the H×W of the post-conv-stack feature map.
 
     Raises:
-        ValueError: when an expected key is missing or has an unexpected shape.
+        ValueError: when an expected key is missing, has an unexpected shape,
+            or implies a non-square / non-integer spatial dimension.
     """
     expected = {
         "model.conv1.weight": "(C1, channels, 3, 3)",
         "model.conv2.weight": "(C2, C1, 3, 3)",
         "model.conv3.weight": "(C3, C2, 3, 3)",
-        "model.fc1.weight":   "(fc_hidden, C3)",
+        "model.fc1.weight":   "(fc_hidden, flatten_dim)",
         "model.fc2.weight":   "(num_classes, fc_hidden)",
     }
     for key in expected:
@@ -157,12 +165,27 @@ def _infer_dims_from_state_dict(
         raise ValueError(f"conv2 in_channels ({c2_in}) ≠ conv1 out ({c1_out})")
     if c3_in != c2_out:
         raise ValueError(f"conv3 in_channels ({c3_in}) ≠ conv2 out ({c2_out})")
-    if fc1_in != c3_out:
-        raise ValueError(f"fc1 in_features ({fc1_in}) ≠ conv3 out ({c3_out})")
     if fc2_in != fc_hidden:
         raise ValueError(f"fc2 in_features ({fc2_in}) ≠ fc1 out ({fc_hidden})")
 
-    return channels, (c1_out, c2_out, c3_out), fc_hidden, num_classes
+    # T-Rex flattens conv3 output directly (no AdaptiveAvgPool); fc1.in_features
+    # must equal C3 × H_post × W_post, with H_post == W_post for square inputs.
+    flatten_dim = fc1_in
+    if flatten_dim % c3_out != 0:
+        raise ValueError(
+            f"fc1 in_features ({flatten_dim}) is not divisible by conv3 "
+            f"out_channels ({c3_out}); state_dict layout is unexpected"
+        )
+    spatial_pixels = flatten_dim // c3_out
+    spatial_dim = int(round(spatial_pixels ** 0.5))
+    if spatial_dim * spatial_dim != spatial_pixels:
+        # non-square H × W — possible but unusual; require explicit metadata
+        raise ValueError(
+            f"non-square post-conv spatial map (H × W = {spatial_pixels}); "
+            f"cannot infer image_size from state_dict alone"
+        )
+
+    return channels, (c1_out, c2_out, c3_out), flatten_dim, fc_hidden, num_classes, spatial_dim
 
 
 class TRexNativeIdentityNetwork:
@@ -195,9 +218,10 @@ class TRexNativeIdentityNetwork:
         self,
         num_classes: int,
         channels: int = 1,
-        image_size: tuple[int, int] = (80, 80),
+        image_size: tuple[int, int] = (48, 48),
         conv_channels: tuple[int, int, int] = (16, 32, 64),
         fc_hidden: int = 256,
+        flatten_dim: int | None = None,
     ) -> None:
         self.num_classes = num_classes
         self.channels = channels
@@ -205,9 +229,17 @@ class TRexNativeIdentityNetwork:
         self.conv_channels = conv_channels
         self.fc_hidden = fc_hidden
 
+        # Three MaxPool2d(2) layers ⇒ post-conv H = H_in // 8 (with floor).
+        # If flatten_dim wasn't provided, derive from image_size + conv stack.
+        if flatten_dim is None:
+            h, w = image_size
+            flatten_dim = (h // 8) * (w // 8) * conv_channels[-1]
+        self.flatten_dim = flatten_dim
+
         raw_model = _build_v200_native(
             channels=channels,
             conv_channels=conv_channels,
+            flatten_dim=flatten_dim,
             fc_hidden=fc_hidden,
             num_classes=num_classes,
         )
@@ -402,6 +434,7 @@ class TRexNativeIdentityNetwork:
                 "epoch":       self._epoch,
                 "uniqueness":  self._best_accuracy,
                 "conv_channels": list(self.conv_channels),
+                "flatten_dim": self.flatten_dim,
                 "fc_hidden":   self.fc_hidden,
                 "architecture": "v200-native",
             },
@@ -460,9 +493,17 @@ class TRexNativeIdentityNetwork:
                 f"{list(ckpt.keys()) if isinstance(ckpt, dict) else type(ckpt).__name__}"
             )
 
-        channels, conv_channels, fc_hidden, num_classes = _infer_dims_from_state_dict(sd)
+        (
+            channels,
+            conv_channels,
+            flatten_dim,
+            fc_hidden,
+            num_classes,
+            spatial_dim,
+        ) = _infer_dims_from_state_dict(sd)
 
-        # image_size: prefer metadata; fall back to (80, 80) which is T-Rex's default
+        # image_size: prefer metadata; otherwise derive from spatial_dim under
+        # the assumption of three MaxPool2d(2) blocks (input H = post-conv H × 8).
         if "input_shape" in meta:
             shape = tuple(int(x) for x in meta["input_shape"])
             if len(shape) == 3:
@@ -471,9 +512,9 @@ class TRexNativeIdentityNetwork:
             elif len(shape) == 2:
                 image_size = (shape[0], shape[1])
             else:
-                image_size = (80, 80)
+                image_size = (spatial_dim * 8, spatial_dim * 8)
         else:
-            image_size = (80, 80)
+            image_size = (spatial_dim * 8, spatial_dim * 8)
 
         net = cls(
             num_classes=num_classes,
@@ -481,6 +522,7 @@ class TRexNativeIdentityNetwork:
             image_size=image_size,
             conv_channels=conv_channels,
             fc_hidden=fc_hidden,
+            flatten_dim=flatten_dim,
         )
         net._model.load_state_dict(sd)
         net._epoch = int(meta.get("epoch", 0))
@@ -488,8 +530,9 @@ class TRexNativeIdentityNetwork:
 
         print(
             f"[trex-native] Loaded {path.name}  "
-            f"channels={channels}  conv={conv_channels}  fc_hidden={fc_hidden}  "
-            f"num_classes={num_classes}  image_size={image_size}",
+            f"channels={channels}  conv={conv_channels}  flatten_dim={flatten_dim}  "
+            f"fc_hidden={fc_hidden}  num_classes={num_classes}  "
+            f"image_size={image_size}  (post-conv {spatial_dim}×{spatial_dim})",
             file=sys.stderr,
         )
         return net
