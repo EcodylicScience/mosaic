@@ -691,9 +691,17 @@ class EgocentricCrop:
         metadata_rows = []
         frame_idx = 0
         total_frames = reader.total_frames
+        # Last frame in df_target — once we pass this, no further work to do.
+        # Lets a frame-filtered df_target short-circuit the per-id video read,
+        # which otherwise decodes all `total_frames` frames just to skip past
+        # them.  Big speedup when df_target covers a small subrange of the video.
+        max_relevant_frame = int(frame_array.max()) if len(frame_array) else -1
+        progress_total = min(max_relevant_frame + 1, total_frames) if max_relevant_frame >= 0 else total_frames
 
         try:
             while True:
+                if frame_idx > max_relevant_frame:
+                    break  # past the last relevant frame; no more work
                 ret, frame = reader.read()
                 if not ret:
                     break
@@ -736,7 +744,7 @@ class EgocentricCrop:
                 # Progress logging for long videos
                 if frame_idx % 1000 == 0:
                     print(
-                        f"  [egocentric-crop] id={target_id}: {frame_idx}/{total_frames} frames"
+                        f"  [egocentric-crop] id={target_id}: {frame_idx}/{progress_total} frames"
                     )
 
         finally:
