@@ -22,6 +22,7 @@ from .manifest import (
 from .models import model_run_root
 from .pipeline import CallbackStep, FeatureStep, Pipeline
 from .registry import FeatureRegistry, open_registry
+from .run import load_values
 from .types import (
     Feature,
     Inputs,
@@ -55,6 +56,7 @@ __all__ = [
     "iter_manifest",
     "latest_feature_run_root",
     "list_feature_runs",
+    "load_values",
     "model_run_root",
     "open_registry",
     "show_pipeline_diagram",
