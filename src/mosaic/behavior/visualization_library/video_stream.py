@@ -12,7 +12,7 @@ import cv2
 from .helpers import _scaled_size
 from .overlay import draw_frame
 
-_ALLOWED_DRAW_OPTIONS = {"show_labels", "point_radius", "bbox_thickness"}
+_ALLOWED_DRAW_OPTIONS = {"show_labels", "point_radius", "bbox_thickness", "font_scale"}
 
 
 class _FrameStream:

@@ -427,6 +427,7 @@ def draw_frame(
     pair_box_feature: Optional[str] = None,
     pair_box_behaviors: Optional[Iterable[Any]] = None,
     hide_individual_bboxes_for_pair: bool = False,
+    font_scale: float = 1.0,
 ) -> np.ndarray:
     """
     Draw pose points, bounding boxes, and labels for a single frame.
@@ -631,7 +632,7 @@ def draw_frame(
                     str(label_text),
                     pos,
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
+                    0.45 * font_scale,
                     color,
                     1,
                     cv2.LINE_AA,
@@ -654,11 +655,56 @@ def draw_frame(
                     str(lbl),
                     pos,
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.5 * font_scale,
                     color,
                     2,
                     cv2.LINE_AA,
                 )
+
+    # Draw per-id circles centered at each animal's centroid (e.g. ffgroups
+    # FF threshold rings). Filled fills are alpha-blended in one pass for speed,
+    # then outlines and center dots are stamped opaquely on top.
+    id_circles = render_layers.get("id_circles") or []
+    if id_circles:
+        fill_entries = [
+            c for c in id_circles
+            if isinstance(c, dict) and float(c.get("fill_alpha", 0.0)) > 0.0
+        ]
+        if fill_entries:
+            fill_canvas = canvas.copy()
+            blend_alpha = 0.0
+            for c in fill_entries:
+                key = _resolve_id_key(ids, c.get("id"))
+                if key is None:
+                    continue
+                anchor = _anchor_for_id_info(ids.get(key) or {})
+                if anchor is None or not all(np.isfinite(anchor)):
+                    continue
+                center = (int(anchor[0] * sx), int(anchor[1] * sy))
+                r_px = max(1, int(round(float(c.get("radius", 20.0)) * (sx + sy) / 2)))
+                color = _coerce_color(c.get("color"), (200, 200, 200))
+                cv2.circle(fill_canvas, center, r_px, color, -1, lineType=cv2.LINE_AA)
+                blend_alpha = max(blend_alpha, float(c.get("fill_alpha", 0.0)))
+            if blend_alpha > 0:
+                cv2.addWeighted(fill_canvas, blend_alpha, canvas, 1.0 - blend_alpha, 0, canvas)
+        for c in id_circles:
+            if not isinstance(c, dict):
+                continue
+            key = _resolve_id_key(ids, c.get("id"))
+            if key is None:
+                continue
+            anchor = _anchor_for_id_info(ids.get(key) or {})
+            if anchor is None or not all(np.isfinite(anchor)):
+                continue
+            center = (int(anchor[0] * sx), int(anchor[1] * sy))
+            r_px = max(1, int(round(float(c.get("radius", 20.0)) * (sx + sy) / 2)))
+            color = _coerce_color(c.get("color"), (200, 200, 200))
+            outline = int(c.get("outline_thickness", 1))
+            if outline > 0:
+                cv2.circle(canvas, center, r_px, color, outline, lineType=cv2.LINE_AA)
+            dot = int(c.get("center_dot_radius", 0))
+            if dot > 0:
+                cv2.circle(canvas, center, dot, color, -1, lineType=cv2.LINE_AA)
 
     # Draw group-level outlines (union over member ids).
     for item in render_layers.get("group_outlines", []) or []:
@@ -707,7 +753,7 @@ def draw_frame(
                     str(lbl),
                     pos,
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.5 * font_scale,
                     color,
                     2,
                     cv2.LINE_AA,
@@ -822,7 +868,7 @@ def draw_frame(
         if text is None:
             continue
         color = _coerce_color(txt.get("color"), (255, 255, 255))
-        scale_txt = float(txt.get("font_scale", 0.5))
+        scale_txt = float(txt.get("font_scale", 0.5)) * font_scale
         thickness = int(txt.get("thickness", 1))
         cv2.putText(
             canvas,
@@ -844,7 +890,7 @@ def draw_frame(
                 text,
                 (10, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.6 * font_scale,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,

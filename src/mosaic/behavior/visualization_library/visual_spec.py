@@ -405,3 +405,89 @@ def _adapter_pair_focus(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
             pair_labels[feature] = {target: pair_map[target]}
         else:
             pair_labels[feature] = {}
+
+
+@register_visual_adapter("id_circles")
+def _adapter_id_circles(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
+    """Per-id circles centered at each animal's centroid.
+
+    Useful for showing a pairwise-distance threshold (e.g. ffgroups FF cutoff)
+    as overlapping discs: when two centroids are within ``radius * 2`` of each
+    other in the original (track) coordinate system, their discs touch/overlap.
+
+    Layer parameters:
+        feature: optional feature name whose raw labels supply per-(frame, id)
+            values for the color map. If unset, all ids get ``default_color``.
+        frame_col / id_col / value_col: column names in that feature's raw df.
+        color_map: ``{value -> (B, G, R)}`` lookup for the value column.
+        default_color: fallback color for ids whose value isn't in color_map.
+        radius: disc radius, in the same coordinate space as the per-id
+            centroids stored in the overlay. If you pre-scaled tracks to video
+            pixels before calling ``prepare_overlay``, this is video pixels;
+            otherwise it's whatever units ``tracks_df`` holds.
+        fill_alpha: 0..1 translucency for the filled disc (0 disables fill).
+        outline_thickness: outline thickness in pixels (0 disables outline).
+        center_dot_radius: center-dot radius in pixels (0 disables dot).
+    """
+    overlay = ctx["overlay"]
+    labels = ctx["labels"]
+    per_frame = overlay.setdefault("per_frame", {})
+
+    feature = layer.get("feature")
+    frame_col = str(layer.get("frame_col", "frame"))
+    id_col = str(layer.get("id_col", "id"))
+    value_col = str(layer.get("value_col", "")) or None
+    color_map_raw = layer.get("color_map") or {}
+    color_map: dict[int, tuple[int, int, int]] = {}
+    if isinstance(color_map_raw, dict):
+        for k, v in color_map_raw.items():
+            try:
+                color_map[int(k)] = _coerce_color(v, (200, 200, 200))
+            except Exception:
+                continue
+    default_color = _coerce_color(layer.get("default_color"), (200, 200, 200))
+    radius = float(layer.get("radius", 20.0))
+    fill_alpha = float(layer.get("fill_alpha", 0.0))
+    outline_thickness = int(layer.get("outline_thickness", 1))
+    center_dot_radius = int(layer.get("center_dot_radius", 0))
+
+    # (frame, id) -> color, derived from the named feature/value column if any.
+    value_color: dict[tuple[int, int], tuple[int, int, int]] = {}
+    if feature and value_col:
+        raw_df = (labels.get("raw") or {}).get(feature)
+        if raw_df is not None and value_col in raw_df.columns:
+            sub = raw_df[[frame_col, id_col, value_col]].copy()
+            sub[frame_col] = pd.to_numeric(sub[frame_col], errors="coerce")
+            sub[id_col] = pd.to_numeric(sub[id_col], errors="coerce")
+            sub[value_col] = pd.to_numeric(sub[value_col], errors="coerce")
+            sub = sub.dropna()
+            for _, r in sub.iterrows():
+                key = (int(r[frame_col]), int(r[id_col]))
+                val = int(r[value_col])
+                value_color[key] = color_map.get(val, default_color)
+
+    for frame_int, frame_data in per_frame.items():
+        ids_map = frame_data.get("ids") or {}
+        if not ids_map:
+            continue
+        circles: list[dict[str, Any]] = []
+        for id_key in ids_map.keys():
+            try:
+                rid = int(id_key)
+            except (TypeError, ValueError):
+                continue
+            color = value_color.get((int(frame_int), rid), default_color)
+            circles.append(
+                {
+                    "id": rid,
+                    "radius": radius,
+                    "color": color,
+                    "fill_alpha": fill_alpha,
+                    "outline_thickness": outline_thickness,
+                    "center_dot_radius": center_dot_radius,
+                }
+            )
+        if circles:
+            render_layers = frame_data.setdefault("render_layers", {})
+            existing = render_layers.get("id_circles") or []
+            render_layers["id_circles"] = list(existing) + circles

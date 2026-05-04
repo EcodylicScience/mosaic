@@ -229,8 +229,13 @@ def load_ground_truth_labels(
 
     path = ds.resolve_path(hits.iloc[0]["abs_path"])
     payload = np.load(path, allow_pickle=True)
-    frames = payload["frames"]
     label_ids = payload["labels"]
+    if "frames" in payload.files:
+        frames = payload["frames"]
+    else:
+        # Dense label format (e.g. mabe22_behavior): one entry per frame,
+        # implicitly indexed 0..N-1.
+        frames = np.arange(len(label_ids), dtype=np.int64)
     label_id_list = payload.get("label_ids")
     label_name_list = payload.get("label_names")
     id_to_name: dict[int, str] = {}
