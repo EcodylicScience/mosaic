@@ -509,16 +509,25 @@ class Pipeline:
         resolved = self._resolve_step_cache(dataset)
         rows: list[dict] = []
 
+        # Multiple FeatureSteps can share one on-disk storage path (same
+        # feature class + same input chain, different params). Group by
+        # storage so we keep the union of every step's expected run_id,
+        # rather than processing per-step and deleting siblings' runs.
+        keep_by_storage: dict[str, set[str]] = {}
+        steps_by_storage: dict[str, list[str]] = {}
         for info in resolved:
             step = info["step"]
             if isinstance(step, CallbackStep):
                 continue
-
             storage = info.get("storage_name")
-            expected_rid = info.get("expected_run_id")
             if not storage:
                 continue
+            steps_by_storage.setdefault(storage, []).append(step.name)
+            rid = info.get("expected_run_id")
+            if rid:
+                keep_by_storage.setdefault(storage, set()).add(rid)
 
+        for storage, step_names in steps_by_storage.items():
             # List all run_ids on disk for this feature
             try:
                 runs_df = list_feature_runs(dataset, storage)
@@ -526,6 +535,8 @@ class Pipeline:
                 continue
 
             all_rids = runs_df["run_id"].unique().tolist() if not runs_df.empty else []
+            keep_set = keep_by_storage.get(storage, set())
+            step_label = ", ".join(step_names)
 
             for rid in all_rids:
                 run_dir = feature_run_root(dataset, storage, rid)
@@ -540,7 +551,7 @@ class Pipeline:
                     size_bytes = 0
                     newest_mtime = 0
 
-                is_current = rid == expected_rid
+                is_current = rid in keep_set
                 if is_current:
                     status = "current"
                 elif dry_run:
@@ -552,7 +563,7 @@ class Pipeline:
                     status = "removed"
 
                 rows.append({
-                    "step": step.name,
+                    "step": step_label,
                     "feature": storage,
                     "run_id": rid,
                     "status": status,
@@ -572,7 +583,7 @@ class Pipeline:
                     idx_df = pd.read_csv(idx_path, keep_default_na=False)
                     before = len(idx_df)
                     idx_df = idx_df[
-                        (idx_df["run_id"] == expected_rid)
+                        idx_df["run_id"].isin(keep_set)
                         | ~idx_df["run_id"].isin(all_rids)
                     ]
                     if len(idx_df) < before:
