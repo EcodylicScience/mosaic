@@ -8,6 +8,8 @@ delete sibling steps' current directories.
 
 from __future__ import annotations
 
+import shutil
+
 import pandas as pd
 import pytest
 
@@ -211,3 +213,175 @@ class TestCleanSharedStorage:
         assert len(df) == 1
         assert df.iloc[0]["run_id"] == keep_rid
         assert df.iloc[0]["status"] == "current"
+
+
+class TestCleanSafeguards:
+    """Defensive checks that catch silent data loss from a broken keep-set.
+
+    The pre-fix bug (and any future regression that bypasses the
+    storage-grouping logic) would delete a sibling step's "current" run.
+    These tests verify the safeguards raise instead of silently destroying.
+    """
+
+    def test_global_keeper_conflict_raises(
+        self, tmp_path, monkeypatch, fake_dataset
+    ):
+        """Safeguard #1: simulate the pre-fix bug via a broken keep-set."""
+        storage = "ffgroups__from__smooth__from__tracks"
+        rid_a, rid_b = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
+
+        _make_run_dir(tmp_path, storage, rid_a)
+        _make_run_dir(tmp_path, storage, rid_b)
+
+        _patch_clean_helpers(
+            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
+        )
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [
+                _resolved_step("ff_a", storage, rid_a),
+                _resolved_step("ff_b", storage, rid_b),
+            ],
+        )
+        # Simulate the pre-fix bug: keep-set drops rid_b. global_keepers
+        # is built directly from `resolved` so still has both → mismatch.
+        monkeypatch.setattr(
+            pipe,
+            "_build_clean_keep_sets",
+            lambda _resolved: ({storage: {rid_a}}, {storage: ["ff_a", "ff_b"]}),
+        )
+
+        with pytest.raises(RuntimeError, match="expect it as current"):
+            pipe.clean(fake_dataset, dry_run=False)
+
+        # Both directories still on disk — the raise happened before deletion.
+        assert (tmp_path / storage / rid_a).exists()
+        assert (tmp_path / storage / rid_b).exists()
+
+    def test_post_clean_existence_check_raises(
+        self, tmp_path, monkeypatch, fake_dataset
+    ):
+        """Safeguard #3: if rmtree nukes a keeper, post-check catches it."""
+        storage = "ffgroups__from__smooth__from__tracks"
+        rid_a, rid_b = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
+
+        _make_run_dir(tmp_path, storage, rid_a)
+        _make_run_dir(tmp_path, storage, rid_b)
+
+        _patch_clean_helpers(
+            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
+        )
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [
+                _resolved_step("ff_a", storage, rid_a),
+                _resolved_step("ff_b", storage, rid_b),
+            ],
+        )
+
+        # Sabotage: rmtree nukes EVERY run directory under storage, not
+        # just the one it was asked to remove. Both keepers vanish.
+        storage_dir = tmp_path / storage
+        real_rmtree = shutil.rmtree
+
+        def evil_rmtree(_path, *args, **kwargs):
+            for rd in list(storage_dir.iterdir()):
+                if rd.is_dir():
+                    real_rmtree(rd)
+
+        # No orphans exist, so clean() won't actually call rmtree on its own.
+        # Force a call by adding a fake orphan rid to the on-disk listing.
+        rid_orphan = "0.1-cccccccccc"
+        _make_run_dir(tmp_path, storage, rid_orphan)
+        _patch_clean_helpers(
+            monkeypatch, tmp_path, {storage: [rid_a, rid_b, rid_orphan]}
+        )
+        monkeypatch.setattr(shutil, "rmtree", evil_rmtree)
+
+        with pytest.raises(RuntimeError, match="should have been kept"):
+            pipe.clean(fake_dataset, dry_run=False)
+
+    def test_shared_storage_notice_printed(
+        self, tmp_path, monkeypatch, capsys, fake_dataset
+    ):
+        """Safeguard #2: shared-storage steps get a visible notice line."""
+        storage = "ffgroups__from__smooth__from__tracks"
+        rid_a, rid_b = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
+
+        _make_run_dir(tmp_path, storage, rid_a)
+        _make_run_dir(tmp_path, storage, rid_b)
+        _patch_clean_helpers(
+            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
+        )
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [
+                _resolved_step("ff_close", storage, rid_a),
+                _resolved_step("ff_loose", storage, rid_b),
+            ],
+        )
+
+        pipe.clean(fake_dataset, dry_run=True)
+        out = capsys.readouterr().out
+        assert "shared by 2 steps" in out
+        assert "ff_close" in out
+        assert "ff_loose" in out
+        assert storage in out
+
+    def test_no_notice_when_storage_not_shared(
+        self, tmp_path, monkeypatch, capsys, fake_dataset
+    ):
+        """Single-step storages should not produce the shared-by notice."""
+        storage = "speed-angvel__from__smooth__from__tracks"
+        keep_rid = "0.1-1111111111"
+        _make_run_dir(tmp_path, storage, keep_rid)
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [keep_rid]})
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [_resolved_step("speed", storage, keep_rid)],
+        )
+
+        pipe.clean(fake_dataset, dry_run=True)
+        out = capsys.readouterr().out
+        assert "shared by" not in out
+
+    def test_keeper_never_existed_does_not_raise(
+        self, tmp_path, monkeypatch, fake_dataset
+    ):
+        """A keeper whose directory was never created should not false-alarm.
+
+        Step not yet computed → its expected_run_id has no directory →
+        safeguard #3 must not flag it as "destroyed".
+        """
+        storage = "speed-angvel__from__smooth__from__tracks"
+        rid_orphan = "0.1-orphan0000"
+        rid_keeper = "0.1-keeper0000"  # directory never created
+
+        _make_run_dir(tmp_path, storage, rid_orphan)
+        _patch_clean_helpers(
+            monkeypatch, tmp_path, {storage: [rid_orphan]}
+        )
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [_resolved_step("speed", storage, rid_keeper)],
+        )
+
+        df = pipe.clean(fake_dataset, dry_run=False)
+        # Orphan removed cleanly; keeper's missing directory is fine.
+        assert "removed" in df["status"].values
+        assert not (tmp_path / storage / rid_orphan).exists()

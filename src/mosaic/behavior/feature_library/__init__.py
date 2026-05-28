@@ -42,12 +42,14 @@ from mosaic.core.pipeline.types import (
 from . import (
     arhmm,
     approach_avoidance,
+    attention_target,
     body_scale,
     dinov2_temporal_identity_model,
     extract_labeled_templates,
     extract_templates,
     ffgroups,
     ffgroups_metrics,
+    frame_aggregate,
     global_kmeans,
     global_scaler,
     global_tsne,
@@ -62,6 +64,7 @@ from . import (
     nn_delta_response,
     orientation_relative,
     pair_egocentric,
+    pair_facing,
     pair_interaction_filter,
     pair_position,
     pair_wavelet,
@@ -74,12 +77,14 @@ from . import (
 )
 from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
+from .attention_target import AttentionTarget
 from .body_scale import BodyScaleFeature
 from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
 from .extract_labeled_templates import ExtractLabeledTemplates
 from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
 from .ffgroups_metrics import FFGroupsMetrics
+from .frame_aggregate import FrameAggregate
 from .global_kmeans import GlobalKMeansClustering
 from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
@@ -93,6 +98,7 @@ from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
 from .orientation_relative import OrientationRelativeFeature
 from .pair_egocentric import PairEgocentricFeatures
+from .pair_facing import PairFacing
 from .pair_interaction_filter import PairInteractionFilter
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
@@ -150,6 +156,7 @@ __all__ = [
     "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
+    "FrameAggregate",
     "GlobalIdentityDinoV2Temporal",
     "GlobalIdentityMegaDescriptor",
     "GlobalIdentityModel",
@@ -187,6 +194,7 @@ __all__ = [
     "extract_templates",
     "ffgroups",
     "ffgroups_metrics",
+    "frame_aggregate",
     "global_kmeans",
     "global_scaler",
     "global_tsne",

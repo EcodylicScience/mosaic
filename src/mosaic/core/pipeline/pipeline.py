@@ -480,6 +480,35 @@ class Pipeline:
 
         return self.results
 
+    def _build_clean_keep_sets(
+        self, resolved: list[dict]
+    ) -> tuple[dict[str, set[str]], dict[str, list[str]]]:
+        """Group resolved steps by on-disk storage path.
+
+        Multiple FeatureSteps can share one storage path (same feature class
+        + same input chain, different params). The returned ``keep_by_storage``
+        is the union of every step's expected_run_id per storage — clean()
+        must preserve all of them. Without this grouping, clean() would
+        delete a sibling step's current run.
+
+        Factored into its own method so safeguard tests can patch it to
+        simulate a broken keep-set (the pre-fix bug).
+        """
+        keep_by_storage: dict[str, set[str]] = {}
+        steps_by_storage: dict[str, list[str]] = {}
+        for info in resolved:
+            step = info["step"]
+            if isinstance(step, CallbackStep):
+                continue
+            storage = info.get("storage_name")
+            if not storage:
+                continue
+            steps_by_storage.setdefault(storage, []).append(step.name)
+            rid = info.get("expected_run_id")
+            if rid:
+                keep_by_storage.setdefault(storage, set()).add(rid)
+        return keep_by_storage, steps_by_storage
+
     def clean(
         self,
         dataset: Dataset,
@@ -509,23 +538,46 @@ class Pipeline:
         resolved = self._resolve_step_cache(dataset)
         rows: list[dict] = []
 
-        # Multiple FeatureSteps can share one on-disk storage path (same
-        # feature class + same input chain, different params). Group by
-        # storage so we keep the union of every step's expected run_id,
-        # rather than processing per-step and deleting siblings' runs.
-        keep_by_storage: dict[str, set[str]] = {}
-        steps_by_storage: dict[str, list[str]] = {}
-        for info in resolved:
-            step = info["step"]
-            if isinstance(step, CallbackStep):
-                continue
-            storage = info.get("storage_name")
-            if not storage:
-                continue
-            steps_by_storage.setdefault(storage, []).append(step.name)
-            rid = info.get("expected_run_id")
-            if rid:
-                keep_by_storage.setdefault(storage, set()).add(rid)
+        keep_by_storage, steps_by_storage = self._build_clean_keep_sets(resolved)
+
+        # Ground-truth set of (storage, rid) pairs that any step in the
+        # pipeline considers current. Built directly from `resolved` — NOT
+        # derived from keep_by_storage — so safeguard #1 below can catch a
+        # broken grouping (e.g. stale-kernel running pre-fix code).
+        global_keepers: set[tuple[str, str]] = {
+            (info["storage_name"], info["expected_run_id"])
+            for info in resolved
+            if not isinstance(info["step"], CallbackStep)
+            and info.get("storage_name")
+            and info.get("expected_run_id")
+        }
+        step_to_rid: dict[str, str | None] = {
+            info["step"].name: info.get("expected_run_id")
+            for info in resolved
+            if not isinstance(info["step"], CallbackStep)
+        }
+
+        # Safeguard #2: surface shared-storage groupings so the union-keeping
+        # logic is observable. A silently-bypassed clean() would print no
+        # such line even when steps share storage — an easy visual check.
+        for storage, names in steps_by_storage.items():
+            if len(names) > 1:
+                descs = ", ".join(
+                    f"{n} (rid={step_to_rid.get(n) or 'none'})" for n in names
+                )
+                print(
+                    f"Pipeline.clean: storage {storage!r} shared by "
+                    f"{len(names)} steps: {descs} — keeping all."
+                )
+
+        # Safeguard #3 prep: snapshot which keepers exist BEFORE deletion.
+        # After the per-storage loop completes, any keeper that vanished
+        # from this set is a bug. Keepers that never existed on disk
+        # (steps not yet computed) are excluded so they don't false-alarm.
+        keepers_existed_before: set[tuple[str, str]] = {
+            (s, r) for (s, r) in global_keepers
+            if feature_run_root(dataset, s, r).exists()
+        }
 
         for storage, step_names in steps_by_storage.items():
             # List all run_ids on disk for this feature
@@ -552,6 +604,26 @@ class Pipeline:
                     newest_mtime = 0
 
                 is_current = rid in keep_set
+                # Safeguard #1: would we mark a pipeline-wide keeper as
+                # removable? With the current grouping fix this branch is
+                # unreachable; it fires only when the keep-set build was
+                # bypassed (stale kernel, non-editable install, refactor
+                # regression). Hard-raise even in dry_run — the row is
+                # already wrong.
+                if not is_current and (storage, rid) in global_keepers:
+                    owners = [
+                        n for n, r in step_to_rid.items() if r == rid
+                    ]
+                    raise RuntimeError(
+                        f"Pipeline.clean: refusing to mark "
+                        f"(storage={storage!r}, run_id={rid!r}) as removable "
+                        f"— step(s) {owners!r} in this pipeline expect it as "
+                        f"current. The storage-grouping logic in clean() did "
+                        f"not run as expected (possibly a stale Jupyter kernel "
+                        f"or a non-editable mosaic install). Restart your "
+                        f"kernel and verify `mosaic.core.pipeline.pipeline."
+                        f"__file__` points at the current source tree."
+                    )
                 if is_current:
                     status = "current"
                 elif dry_run:
@@ -588,6 +660,23 @@ class Pipeline:
                     ]
                     if len(idx_df) < before:
                         idx_df.to_csv(idx_path, index=False)
+
+        # Safeguard #3: last line of defense. If any keeper directory that
+        # existed before the loop is now gone, something destroyed data it
+        # shouldn't have. Only meaningful on real deletion runs.
+        if not dry_run:
+            destroyed = [
+                (s, r) for (s, r) in keepers_existed_before
+                if not feature_run_root(dataset, s, r).exists()
+            ]
+            if destroyed:
+                details = "\n".join(
+                    f"  - storage={s!r} run_id={r!r}" for s, r in destroyed
+                )
+                raise RuntimeError(
+                    f"Pipeline.clean: destroyed {len(destroyed)} run "
+                    f"directory(ies) that should have been kept:\n{details}"
+                )
 
         summary = pd.DataFrame(rows)
         if summary.empty:
