@@ -195,12 +195,27 @@ def _process_apply_worker(
     artifact_paths_str: dict[str, str],
     dependency_lookups: dict[str, DependencyLookup],
     df: pd.DataFrame,
+    ds_manifest_path: str | None = None,
 ) -> pd.DataFrame:
-    """Reconstruct a feature in a worker process and run apply."""
+    """Reconstruct a feature in a worker process and run apply.
+
+    If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
+    EgocentricCropPipeline, FeralFeature), reconstruct the Dataset from its
+    manifest in this worker and bind it. Without this, features that read
+    media via ``self._ds.resolve_media_paths(...)`` crash with
+    ``'NoneType' object has no attribute 'resolve_media_paths'`` because the
+    main-process bind at ``run_feature`` doesn't propagate across process
+    workers. Features without ``bind_dataset`` are unaffected.
+    """
     mod = importlib.import_module(module_name)
     cls = getattr(mod, class_name)
     inputs_obj = Inputs.model_validate(inputs_dump)
     feature = cls(inputs_obj, params_dump)
+    if ds_manifest_path is not None and hasattr(feature, "bind_dataset"):
+        from mosaic.core.dataset import Dataset
+
+        ds_local = Dataset(manifest_path=Path(ds_manifest_path)).load()
+        feature.bind_dataset(ds_local)
     feature.load_state(
         Path(run_root_str),
         {k: Path(v) for k, v in artifact_paths_str.items()},
@@ -519,6 +534,7 @@ def run_feature(
                         artifact_paths_str,
                         dependency_lookups,
                         df,
+                        str(ds.manifest_path),
                     )
                 ] = (meta, core_start, core_end)
             else:
