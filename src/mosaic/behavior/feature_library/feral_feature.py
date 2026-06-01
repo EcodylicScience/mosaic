@@ -768,73 +768,132 @@ class FeralFeature:
         partition: str,
         device,
     ) -> dict:
-        """Run evaluation on a given partition (e.g. 'test') and return metrics."""
-        import torch
-        from dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
-        from utils import prep_for_answers  # type: ignore[import-not-found]
-        from metrics import (  # type: ignore[import-not-found]
-            calculate_multiclass_metrics,
-            calc_frame_level_map,
-            calculate_f1_metrics,
-        )
+        """Run evaluation on a given partition (e.g. 'test') and return metrics.
 
+        Internal helper used during fit(). For callers outside the training
+        loop, use the public ``evaluate()`` and ``compute_metrics()`` methods.
+        """
         if self._model is None:
             return {}
+        loader = self._build_eval_loader(
+            cfg, labels_json, num_classes, partition,
+        )
+        answers = self._run_inference_loop(
+            self._model, loader, num_classes, is_multilabel, device,
+        )
+        # _evaluate_partition uses partition both as the split name and as
+        # the metric-name prefix (matches pre-refactor behavior).
+        labels_json_with_names = {
+            **labels_json,
+            "class_names": {str(k): v for k, v in class_names.items()},
+        }
+        return self.compute_metrics(
+            answers, labels_json_with_names, partition, prefix=partition,
+        )
+
+    @staticmethod
+    def _build_eval_loader(
+        cfg: dict,
+        labels_json: dict,
+        num_classes: int,
+        partition: str,
+        *,
+        batch_size: int | None = None,
+        num_workers: int | None = None,
+    ):
+        """Construct a DataLoader over `partition` using FERAL's ClsDataset.
+
+        Caller supplies the merged config dict (`cfg["label_json"]`,
+        `cfg["video_dir"]`, chunking params, etc.). Returns ``None`` if the
+        partition is absent or empty.
+        """
+        import torch
+        from dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
+
+        if (
+            partition not in labels_json.get("splits", {})
+            or not labels_json["splits"][partition]
+        ):
+            return None
 
         eval_dataset = ClsDataset(
             partition=partition,
             label_json=str(cfg["label_json"]),
             do_aa=False,
-            predict_per_item=cfg["predict_per_item"],
+            predict_per_item=cfg.get("predict_per_item", 64),
             num_classes=num_classes,
             prefix=str(cfg["video_dir"]),
-            resize_to=cfg["resize_to"],
-            chunk_shift=cfg["chunk_shift"],
-            chunk_length=cfg["chunk_length"],
-            chunk_step=cfg["chunk_step"],
+            resize_to=cfg.get("resize_to", 256),
+            chunk_shift=cfg.get("chunk_shift", 16),
+            chunk_length=cfg.get("chunk_length", 64),
+            chunk_step=cfg.get("chunk_step", 1),
         )
-        eval_loader = torch.utils.data.DataLoader(
+        bs = batch_size if batch_size is not None else cfg.get("val_bs", 4)
+        nw = num_workers if num_workers is not None else cfg.get("num_workers", 4)
+        return torch.utils.data.DataLoader(
             eval_dataset,
             shuffle=False,
-            batch_size=cfg.get("val_bs", 4),
-            num_workers=cfg.get("num_workers", 4),
+            batch_size=bs,
+            num_workers=nw,
             pin_memory=True,
             drop_last=False,
             collate_fn=collate_fn_val,
         )
 
-        answers = []
+    @staticmethod
+    def _run_inference_loop(
+        model,
+        loader,
+        num_classes: int,
+        is_multilabel: bool,
+        device,
+        *,
+        progress_label: str = "",
+        progress_interval: int = 0,
+    ) -> list:
+        """Per-batch inference loop. Returns FERAL `answers` (list of tuples).
+
+        If ``progress_label`` is non-empty and ``progress_interval > 0``,
+        prints a progress line every N batches.
+        """
+        import torch
+        from utils import prep_for_answers  # type: ignore[import-not-found]
+
+        if loader is None:
+            return []
+
+        use_autocast = getattr(device, "type", str(device)) == "cuda"
+        answers: list = []
+        total = len(loader)
         with torch.no_grad():
-            for data, target, names in eval_loader:
+            for i, (data, target, names) in enumerate(loader):
                 data = data.to(device)
                 target = target.to(device).view(-1, num_classes)
-                with torch.amp.autocast(
-                    dtype=torch.bfloat16, device_type="cuda"
-                ):
-                    output = self._model(data)
+                if use_autocast:
+                    ctx = torch.amp.autocast(
+                        dtype=torch.bfloat16, device_type="cuda",
+                    )
+                else:
+                    import contextlib
+                    ctx = contextlib.nullcontext()
+                with ctx:
+                    output = model(data)
                     output_prob = (
                         torch.sigmoid(output)
                         if is_multilabel
                         else torch.nn.functional.softmax(output, 1)
                     )
-                    answers.extend(prep_for_answers(output_prob, target, names))
-
-        if not answers:
-            return {}
-
-        metrics: dict = {}
-        metrics.update(
-            calculate_multiclass_metrics(answers, class_names, partition)
-        )
-        metrics[f"{partition}_frame_level_map"] = calc_frame_level_map(
-            answers, labels_json, partition
-        )
-        metrics.update(
-            calculate_f1_metrics(
-                answers, labels_json, partition, is_multilabel, partition
-            )
-        )
-        return metrics
+                answers.extend(prep_for_answers(output_prob, target, names))
+                if (
+                    progress_label
+                    and progress_interval > 0
+                    and ((i + 1) % progress_interval == 0 or i == total - 1)
+                ):
+                    print(
+                        f"    {progress_label}: batch {i + 1}/{total}",
+                        flush=True,
+                    )
+        return answers
 
     # --- Save state ---
 
@@ -1051,3 +1110,205 @@ class FeralFeature:
                 return self.params.default_class
             return self._classes[int(np.argmax(masked))]
         return self._classes[int(np.argmax(frame_probs))]
+
+    # --- Post-training utilities (operate on a saved run directory) ---
+
+    @classmethod
+    def load_trained_model(
+        cls,
+        run_root: Path,
+        device: str = "cuda",
+        feral_code_dir: str | Path | None = None,
+    ):
+        """Reconstruct the trained ``nn.Module`` from a saved run directory.
+
+        Reads architecture params from ``feral_config.json`` (fallback
+        ``config.json``) and weights from ``model_best.pt`` (fallback
+        ``feral_model.pt``). Moves the model to ``device`` and sets eval
+        mode. Use this when you need just the model -- e.g. to feed it
+        custom batches outside FERAL's ClsDataset.
+
+        Parameters
+        ----------
+        run_root : Path
+            Directory containing model + config (typically a Mosaic feature
+            run directory like
+            ``features/feral__from__.../<run_id>/``).
+        device : str or torch.device
+            Where to load the model.
+        feral_code_dir : str or Path or None
+            Path to a clone of github.com/Skovorp/feral, needed so that
+            ``import model`` resolves. If ``None``, assumes the FERAL
+            modules are already importable.
+        """
+        _import_feral(feral_code_dir)
+        import torch
+        from model import HFModel  # type: ignore[import-not-found]
+
+        config_path = run_root / "feral_config.json"
+        if not config_path.exists():
+            config_path = run_root / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"No feral_config.json or config.json under {run_root}"
+            )
+        with open(config_path) as f:
+            cfg = json.load(f)
+
+        # Resolve num_classes
+        num_classes: int | None = None
+        if "class_names" in cfg:
+            num_classes = len(cfg["class_names"])
+        elif "label_json" in cfg and Path(cfg["label_json"]).exists():
+            with open(cfg["label_json"]) as f:
+                labels_json = json.load(f)
+            num_classes = len(labels_json.get("class_names", {}))
+        if not num_classes:
+            raise ValueError(
+                f"Cannot determine num_classes for run at {run_root}: neither "
+                "config.class_names nor a readable label_json was found."
+            )
+
+        model = HFModel(
+            model_name=cfg.get(
+                "model_name", "facebook/vjepa2-vitl-fpc32-256-diving48"
+            ),
+            num_classes=num_classes,
+            predict_per_item=cfg.get("predict_per_item", 64),
+            fc_drop_rate=cfg.get("fc_drop_rate", 0.5),
+            freeze_encoder_layers=cfg.get("freeze_encoder_layers", 14),
+        )
+
+        ckpt_path = run_root / "model_best.pt"
+        if not ckpt_path.exists():
+            ckpt_path = run_root / "feral_model.pt"
+        if not ckpt_path.exists():
+            raise FileNotFoundError(
+                f"No model_best.pt or feral_model.pt under {run_root}"
+            )
+
+        torch_device = torch.device(device) if isinstance(device, str) else device
+        state_dict = torch.load(str(ckpt_path), map_location=torch_device)
+        model.load_state_dict(state_dict, strict=False)
+        model.to(torch_device).eval()
+        return model
+
+    @classmethod
+    def evaluate(
+        cls,
+        run_root: Path,
+        partition: str,
+        *,
+        video_dir: Path | str | None = None,
+        label_json: Path | str | None = None,
+        device: str = "cuda",
+        batch_size: int | None = None,
+        num_workers: int | None = None,
+        progress_interval: int = 5,
+        feral_code_dir: str | Path | None = None,
+    ) -> list:
+        """Run inference on ``partition`` of the trained model's labels JSON
+        and return the FERAL `answers` list (per-chunk probabilities + truth).
+
+        The saved ``feral_config.json`` records the absolute paths of
+        ``label_json`` and ``video_dir`` at training time. Those paths become
+        stale after dataset relocation -- pass ``label_json`` and
+        ``video_dir`` explicitly to override them. If both are ``None``, the
+        values from the saved config are used (works for in-place
+        re-evaluation only).
+
+        Returns an empty list if the partition is missing or empty.
+        """
+        _import_feral(feral_code_dir)
+        import torch
+
+        config_path = run_root / "feral_config.json"
+        if not config_path.exists():
+            config_path = run_root / "config.json"
+        with open(config_path) as f:
+            cfg = json.load(f)
+
+        if label_json is not None:
+            cfg["label_json"] = str(label_json)
+        if video_dir is not None:
+            cfg["video_dir"] = str(video_dir)
+
+        with open(cfg["label_json"]) as f:
+            labels_json = json.load(f)
+        num_classes = len(labels_json["class_names"])
+        is_multilabel = labels_json.get("is_multilabel", False)
+
+        loader = cls._build_eval_loader(
+            cfg, labels_json, num_classes, partition,
+            batch_size=batch_size, num_workers=num_workers,
+        )
+        if loader is None:
+            return []
+
+        model = cls.load_trained_model(
+            run_root, device=device, feral_code_dir=feral_code_dir,
+        )
+        try:
+            torch_device = next(model.parameters()).device
+            answers = cls._run_inference_loop(
+                model, loader, num_classes, is_multilabel, torch_device,
+                progress_label=partition,
+                progress_interval=progress_interval,
+            )
+        finally:
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return answers
+
+    @staticmethod
+    def compute_metrics(
+        answers: list,
+        labels_json: dict,
+        partition: str,
+        prefix: str | None = None,
+    ) -> dict:
+        """Compute multiclass + F1 + frame-level mAP metrics on ``answers``.
+
+        Thin orchestrator over FERAL's ``calculate_multiclass_metrics``,
+        ``calc_frame_level_map``, and ``calculate_f1_metrics``. Returns a
+        flat dict keyed with ``<prefix>_<metric>``. Returns ``{}`` if
+        ``answers`` is empty. ``prefix`` defaults to ``partition``.
+        """
+        from metrics import (  # type: ignore[import-not-found]
+            calculate_multiclass_metrics,
+            calc_frame_level_map,
+            calculate_f1_metrics,
+        )
+        if not answers:
+            return {}
+        if prefix is None:
+            prefix = partition
+
+        class_names = {int(k): v for k, v in labels_json["class_names"].items()}
+        is_multilabel = labels_json.get("is_multilabel", False)
+
+        metrics: dict = {}
+        metrics.update(calculate_multiclass_metrics(answers, class_names, prefix))
+        metrics[f"{prefix}_frame_level_map"] = calc_frame_level_map(
+            answers, labels_json, partition,
+        )
+        metrics.update(
+            calculate_f1_metrics(
+                answers, labels_json, partition, is_multilabel, prefix,
+            )
+        )
+        return metrics
+
+    @staticmethod
+    def read_reports(run_root: Path) -> dict:
+        """Return the contents of ``reports.json`` -- the metrics persisted
+        by ``save_state()`` at training time (class_names, best_val_map,
+        training_metrics list, test_metrics dict). Returns ``{}`` if the
+        file is missing.
+        """
+        reports_path = run_root / "reports.json"
+        if not reports_path.exists():
+            return {}
+        with open(reports_path) as f:
+            return json.load(f)
