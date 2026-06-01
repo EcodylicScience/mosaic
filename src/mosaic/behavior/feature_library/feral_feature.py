@@ -126,6 +126,22 @@ class FeralFeature:
         Loads a pre-trained FERAL model and runs per-frame behavior
         classification on crop videos.
 
+    **Precision convention**:
+        Training's forward/backward pass runs in bfloat16 autocast --
+        mixed precision is the standard speedup for the inner training
+        loop where the forward/backward runs millions of times. Everything
+        else -- per-epoch validation inside ``fit()``, the post-training
+        test eval (``_evaluate_partition``), the public
+        ``FeralFeature.evaluate()``, and production inference
+        (``apply()``) -- runs in full float32. The eval and apply paths
+        produce numbers that get stored and acted on downstream
+        (reports.json metrics, per-frame prediction parquets, paper
+        figures), so reproducibility wins over the ~1.5-2x speedup that
+        bfloat16 would buy. bfloat16 shifts decision boundaries near
+        probability 0.5 and can move recall by 10+ points on
+        threshold-sensitive classes -- not a trade-off worth taking when
+        the cost is a one-time inference pass.
+
     Supports two input formats for the apply phase:
 
     1. **InteractionCropPipeline** output (pair-level):
@@ -582,6 +598,13 @@ class FeralFeature:
                 target = target.to(device)
 
                 optimizer.zero_grad()
+                # Mixed precision is intentional in the training inner loop:
+                # the forward/backward pass runs many thousands of times per
+                # epoch and the bfloat16 speedup is worth the precision
+                # trade-off here. Every other forward pass in this file
+                # (per-epoch val, _evaluate_partition, public evaluate,
+                # apply) runs full float32 -- see class docstring
+                # "Precision convention".
                 with torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda"):
                     if mixup is not None:
                         N, T, Ch, A, B = data.shape
@@ -616,33 +639,35 @@ class FeralFeature:
                 answers = []
                 val_losses: list[float] = []
                 answers_ema = []
+                # Per-epoch val runs full float32 -- same convention as the
+                # final test eval (_evaluate_partition) and the public
+                # FeralFeature.evaluate(). Ensures summary.csv and
+                # reports.json agree on numerics, and the metric used for
+                # best-epoch selection is deterministic.
                 with torch.no_grad():
                     for data, target, names in val_loader:
                         data = data.to(device)
                         target = target.to(device).view(-1, num_classes)
-                        with torch.amp.autocast(
-                            dtype=torch.bfloat16, device_type="cuda"
-                        ):
-                            output = model(data)
-                            loss = criterion(output, target)
-                            output_prob = (
-                                torch.sigmoid(output)
-                                if is_multilabel
-                                else torch.nn.functional.softmax(output, 1)
-                            )
-                            answers.extend(prep_for_answers(output_prob, target, names))
-                            val_losses.append(loss.item())
+                        output = model(data)
+                        loss = criterion(output, target)
+                        output_prob = (
+                            torch.sigmoid(output)
+                            if is_multilabel
+                            else torch.nn.functional.softmax(output, 1)
+                        )
+                        answers.extend(prep_for_answers(output_prob, target, names))
+                        val_losses.append(loss.item())
 
-                            if model_ema is not None:
-                                output_ema = model_ema.ema(data)
-                                output_ema_prob = (
-                                    torch.sigmoid(output_ema)
-                                    if is_multilabel
-                                    else torch.nn.functional.softmax(output_ema, 1)
-                                )
-                                answers_ema.extend(
-                                    prep_for_answers(output_ema_prob, target, names)
-                                )
+                        if model_ema is not None:
+                            output_ema = model_ema.ema(data)
+                            output_ema_prob = (
+                                torch.sigmoid(output_ema)
+                                if is_multilabel
+                                else torch.nn.functional.softmax(output_ema, 1)
+                            )
+                            answers_ema.extend(
+                                prep_for_answers(output_ema_prob, target, names)
+                            )
 
                 from metrics import (  # type: ignore[import-not-found]
                     calculate_multiclass_metrics,
@@ -778,6 +803,11 @@ class FeralFeature:
         loader = self._build_eval_loader(
             cfg, labels_json, num_classes, partition,
         )
+        # Post-training test eval runs full float32 (no autocast). This is
+        # the canonical test_metrics number that lands in reports.json --
+        # we want it deterministic and consistent with what
+        # FeralFeature.evaluate() will produce when called on this run
+        # later. See class docstring for the full precision convention.
         answers = self._run_inference_loop(
             self._model, loader, num_classes, is_multilabel, device,
         )
@@ -853,6 +883,14 @@ class FeralFeature:
     ) -> list:
         """Per-batch inference loop. Returns FERAL `answers` (list of tuples).
 
+        Runs the forward pass in full float32 -- no bfloat16 autocast.
+        Evaluation is a measurement step; the speed/precision trade-off
+        worth taking inside a training inner loop is not worth taking
+        when computing a number we report. bfloat16 shifts decision
+        boundaries near probability 0.5 and breaks reproducibility of
+        the metric. See class-level docstring for the full precision
+        convention across training, eval, and apply.
+
         If ``progress_label`` is non-empty and ``progress_interval > 0``,
         prints a progress line every N batches.
         """
@@ -862,27 +900,18 @@ class FeralFeature:
         if loader is None:
             return []
 
-        use_autocast = getattr(device, "type", str(device)) == "cuda"
         answers: list = []
         total = len(loader)
         with torch.no_grad():
             for i, (data, target, names) in enumerate(loader):
                 data = data.to(device)
                 target = target.to(device).view(-1, num_classes)
-                if use_autocast:
-                    ctx = torch.amp.autocast(
-                        dtype=torch.bfloat16, device_type="cuda",
-                    )
-                else:
-                    import contextlib
-                    ctx = contextlib.nullcontext()
-                with ctx:
-                    output = model(data)
-                    output_prob = (
-                        torch.sigmoid(output)
-                        if is_multilabel
-                        else torch.nn.functional.softmax(output, 1)
-                    )
+                output = model(data)
+                output_prob = (
+                    torch.sigmoid(output)
+                    if is_multilabel
+                    else torch.nn.functional.softmax(output, 1)
+                )
                 answers.extend(prep_for_answers(output_prob, target, names))
                 if (
                     progress_label
@@ -1011,14 +1040,17 @@ class FeralFeature:
                 video_tensor = norm(video_tensor * scale)
                 video_tensor = video_tensor.unsqueeze(0).to(device)
 
-                device_type = str(device).split(":")[0]
+                # Production inference runs in full float32 -- same
+                # convention as the eval paths. Inference results land
+                # in stored parquet outputs that get acted on downstream
+                # (event counts, aggregate analyses, paper figures), so
+                # reproducibility wins over the ~1.5-2x speedup that
+                # bfloat16 autocast would buy. See class docstring
+                # "Precision convention".
                 with torch.no_grad():
-                    with torch.amp.autocast(
-                        dtype=torch.bfloat16, device_type=device_type
-                    ):
-                        output = self._model(video_tensor)
-                        probs = torch.nn.functional.softmax(output, dim=1)
-                        probs = probs.cpu().numpy()
+                    output = self._model(video_tensor)
+                    probs = torch.nn.functional.softmax(output, dim=1)
+                    probs = probs.cpu().numpy()
 
                 for i, frame_idx in enumerate(frames):
                     if i < len(probs):
