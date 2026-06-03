@@ -2773,6 +2773,7 @@ class Dataset:
         filter_end_frame: int | None = None,
         filter_start_time: float | None = None,
         filter_end_time: float | None = None,
+        check_output: bool = False,
         registry: "FeatureRegistry | None" = None,
     ) -> Any:
         """Execute a feature extraction pipeline over the dataset.
@@ -2799,6 +2800,10 @@ class Dataset:
                 from dataset metadata.
             filter_end_time: Converted to end frame via *fps_default*
                 from dataset metadata.
+            check_output: When True, deeply validate cached outputs before
+                skipping them (default validator fully reads the parquet; a
+                feature may override via ``check_output``). When False
+                (default), a cache hit only requires the output to exist.
             registry: Optional feature registry (advanced usage).
 
         Returns:
@@ -2832,6 +2837,7 @@ class Dataset:
             filter_end_frame=filter_end_frame,
             filter_start_time=filter_start_time,
             filter_end_time=filter_end_time,
+            check_output=check_output,
             registry=registry,
         )
 

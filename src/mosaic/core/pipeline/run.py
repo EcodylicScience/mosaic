@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
 from mosaic.core.helpers import (
     filter_time_range,
@@ -58,7 +57,13 @@ from .types import (
     TracksColumn,
 )
 from .registry import FeatureRegistry
-from .writers import FeatureOutput, trim_feature_output, write_output
+from .writers import (
+    FeatureOutput,
+    default_check_output,
+    output_n_rows,
+    trim_feature_output,
+    write_output,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -278,6 +283,7 @@ def run_feature(
     filter_end_frame: int | None = None,
     filter_start_time: float | None = None,
     filter_end_time: float | None = None,
+    check_output: bool = False,
     registry: FeatureRegistry | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
@@ -311,6 +317,16 @@ def run_feature(
         If set, converted to start frame via fps_default from dataset metadata.
     filter_end_time : float | None
         If set, converted to end frame via fps_default from dataset metadata.
+    check_output : bool, default False
+        When False, a cache hit only requires the output parquet to exist
+        (footer metadata is read for n_rows). When True, each candidate cache
+        hit is deeply validated before being skipped: the default validator
+        fully reads the parquet (pq.read_table); a feature may override
+        validation by defining ``check_output(self, meta, run_root) -> bool``
+        (e.g. to verify side-car media). If validation fails the entry is
+        recomputed. No effect when overwrite=True or when state is not cached.
+        The deep read costs roughly an input-load per entry, so leave it off
+        for routine runs.
     """
     # Storage name derivation
     storage_feature_name = derive_storage_name(
@@ -437,6 +453,73 @@ def run_feature(
         if len(_pending_idx_rows) >= _IDX_FLUSH_EVERY:
             _flush_idx()
 
+    # --- Cache-hit pre-pass --------------------------------------------------
+    # When state is cached and we are not overwriting, resolve which entries
+    # already have valid outputs WITHOUT loading their input parquet (the apply
+    # loop would otherwise deserialize each input only to discard it). Validated
+    # hits are recorded immediately; their keys are excluded from the compute
+    # manifest so iter_manifest never loads them.
+    skip_keys: set[str] = set()
+    if state_ready and not overwrite:
+        # NOTE: ``check_output`` here is the run_feature *parameter* (a bool);
+        # the feature's optional validator is the *attribute* feature.check_output.
+        custom_check = getattr(feature, "check_output", None) if check_output else None
+        if custom_check is not None and not callable(custom_check):
+            custom_check = None  # not a validator method; use the default
+        for entry_key in manifest:
+            group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+            meta = build_feature_meta(group, sequence, run_root)
+            if not meta.out_path.exists():
+                continue
+            if check_output:
+                # A buggy/edge-case validator must not abort the whole run; treat
+                # any failure as "invalid output" so the entry is recomputed.
+                try:
+                    ok = (
+                        custom_check(meta, run_root)
+                        if custom_check is not None
+                        else default_check_output(meta, run_root)
+                    )
+                except Exception as exc:
+                    print(
+                        f"[feature:{feature.name}] check_output raised for "
+                        f"({group},{sequence}): {exc}; recomputing.",
+                        file=sys.stderr,
+                    )
+                    ok = False
+                if not ok:
+                    continue  # corrupt/incomplete -> fall through to recompute
+            # Reading the footer can fail on a truncated/half-written parquet
+            # (e.g. an OOM-killed prior run). Recompute rather than crash.
+            try:
+                n_rows = output_n_rows(meta.out_path)
+            except Exception as exc:
+                print(
+                    f"[feature:{feature.name}] unreadable cached output for "
+                    f"({group},{sequence}): {exc}; recomputing.",
+                    file=sys.stderr,
+                )
+                continue
+            _record_row(
+                FeatureIndexRow(
+                    run_id=run_id,
+                    feature=storage_feature_name,
+                    version=feature.version,
+                    group=meta.group,
+                    sequence=meta.sequence,
+                    abs_path=meta.out_path,
+                    n_rows=n_rows,
+                    params_hash=params_hash,
+                )
+            )
+            skip_keys.add(entry_key)
+
+    compute_manifest = (
+        {k: v for k, v in manifest.items() if k not in skip_keys}
+        if skip_keys
+        else manifest
+    )
+
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
     )
@@ -501,23 +584,8 @@ def run_feature(
         group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
         meta = build_feature_meta(group, sequence, run_root)
 
-        # Skip existing outputs when state was loaded from cache
-        if state_ready and not overwrite and meta.out_path.exists():
-            n_rows = int(pq.read_metadata(meta.out_path).num_rows)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            _record_row(
-                FeatureIndexRow(
-                    run_id=run_id,
-                    feature=storage_feature_name,
-                    version=feature.version,
-                    group=meta.group,
-                    sequence=meta.sequence,
-                    abs_path=meta.out_path,
-                    n_rows=n_rows,
-                    params_hash=params_hash,
-                )
-            )
-            return
-
+        # Cache hits are resolved up-front in the pre-pass; any entry reaching
+        # here needs (re)computation.
         if executor is not None:
             while len(pending) >= max_workers:
                 _drain_completed()
@@ -573,7 +641,7 @@ def run_feature(
     # Iterate manifest entries
     if apply_overlap is not None:
         for entry_key, df, core_start, core_end in iter_manifest(
-            manifest,
+            compute_manifest,
             filter_factory=filter_factory,
             overlap_frames=apply_overlap,
             progress_label=storage_feature_name,
@@ -581,7 +649,7 @@ def run_feature(
             _process_entry(entry_key, df, core_start, core_end)
     else:
         for entry_key, df in iter_manifest(
-            manifest,
+            compute_manifest,
             filter_factory=filter_factory,
             progress_label=storage_feature_name,
         ):

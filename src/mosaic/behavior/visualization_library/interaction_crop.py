@@ -154,6 +154,28 @@ class InteractionCropPipeline:
         self._run_root = run_root
         return True
 
+    def check_output(self, meta, run_root) -> bool:
+        """Deep cache-hit validation for this non-idempotent feature.
+
+        The parquet alone is insufficient: each row references an .mp4 side-car
+        (``video_path``) in the output dir. Returns True only if the parquet
+        reads cleanly AND every referenced mp4 exists. ``run_root`` is unused;
+        the output dir is resolved via ``_get_output_dir`` to match ``apply``.
+        """
+        try:
+            df = pd.read_parquet(meta.out_path)
+        except Exception:
+            return False
+        if df.empty:
+            return True  # no clips for this sequence -> nothing to verify
+        if "video_path" not in df.columns:
+            return False  # non-empty but structurally wrong -> recompute
+        out_dir = self._get_output_dir(meta.group, meta.sequence)
+        for name in df["video_path"].astype(str):
+            if not (out_dir / name).exists():
+                return False
+        return True
+
     def fit(self, inputs: InputStream) -> None:
         pass
 

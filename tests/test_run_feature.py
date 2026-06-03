@@ -399,3 +399,186 @@ def test_result_type(tmp_path: Path) -> None:
     assert isinstance(result, Result)
     assert isinstance(result.feature, str)
     assert isinstance(result.run_id, str)
+
+
+# --- check_output / cache-hit pre-pass ---
+
+
+class _CountingStateless(_StatelessFeature):
+    """Stateless feature that records how many times apply() runs."""
+
+    name = "test-counting"
+
+    def __init__(
+        self,
+        inputs: _StatelessFeature.Inputs | None = None,
+        params: dict[str, object] | None = None,
+    ):
+        super().__init__(inputs, params)
+        self.apply_calls = 0
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.apply_calls += 1
+        return super().apply(df)
+
+
+class _SidecarFeature(_StatelessFeature):
+    """Feature whose output is only valid if a side-car file also exists.
+
+    Models non-idempotent features (e.g. the crop pipeline writing .mp4s)
+    via a custom check_output() override.
+    """
+
+    name = "test-sidecar"
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        self._run_root = run_root
+        return True
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        (self._run_root / "sidecar.flag").write_text("x")
+        return super().apply(df)
+
+    def check_output(self, meta, run_root) -> bool:
+        return (run_root / "sidecar.flag").exists()
+
+
+class _RaisingCheckFeature(_CountingStateless):
+    """Feature whose custom check_output raises (a buggy validator)."""
+
+    name = "test-raising-check"
+
+    def check_output(self, meta, run_root) -> bool:
+        raise RuntimeError("validator boom")
+
+
+class _NonCallableCheckFeature(_CountingStateless):
+    """Feature that mistakenly defines check_output as a non-callable flag."""
+
+    name = "test-noncallable-check"
+    check_output = True  # type: ignore[assignment]
+
+
+def test_cache_hit_skips_without_loading_input(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+
+    f1 = _CountingStateless()
+    run_feature(ds, f1)
+    assert f1.apply_calls == 2  # first run computes both entries
+
+    f2 = _CountingStateless()
+    run_feature(ds, f2)
+    assert f2.apply_calls == 0  # all cache hits -> nothing recomputed
+
+    # Corrupt the INPUT parquet but leave it on disk (stays in the manifest).
+    # A cache hit must NOT deserialize it; loading would raise on the garbage.
+    (ds.get_root("tracks") / "g__s1.parquet").write_bytes(b"not a parquet")
+
+    f3 = _CountingStateless()
+    run_feature(ds, f3)  # must not raise: cached input is never loaded
+    assert f3.apply_calls == 0
+
+
+def test_check_output_recomputes_corrupt_parquet(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+    from mosaic.core.pipeline.index import feature_run_root
+
+    r1 = run_feature(ds, _StatelessFeature())
+    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    s1_out = run_root / "g__s1.parquet"
+    s2_mtime = os.path.getmtime(run_root / "g__s2.parquet")
+
+    # Corrupt s1's OUTPUT so a deep read fails (footer + data unreadable).
+    s1_out.write_bytes(b"PAR1 not a valid parquet PAR1")
+
+    # check_output=True: deep validation fails for s1 -> recompute; s2 stays cached.
+    r2 = run_feature(ds, _StatelessFeature(), check_output=True)
+    assert r2.run_id == r1.run_id
+
+    out = pd.read_parquet(s1_out)  # readable again
+    assert "value" in out.columns
+    assert len(out) == 10
+    # s2 was a valid cache hit and must not have been rewritten.
+    assert os.path.getmtime(run_root / "g__s2.parquet") == s2_mtime
+
+
+def test_corrupt_output_recomputes_on_default_path(tmp_path: Path) -> None:
+    # check_output=False (the default) must not crash on an unreadable cached
+    # output: a truncated/corrupt footer falls through to recompute that entry.
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+    from mosaic.core.pipeline.index import feature_run_root
+
+    f1 = _CountingStateless()
+    r1 = run_feature(ds, f1)
+    assert f1.apply_calls == 2
+    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    s1_out = run_root / "g__s1.parquet"
+    s2_mtime = os.path.getmtime(run_root / "g__s2.parquet")
+
+    # Truncate s1's output so the footer is unreadable (output_n_rows would raise).
+    s1_out.write_bytes(b"PAR1 truncated garbage")
+
+    f2 = _CountingStateless()
+    run_feature(ds, f2)  # must not raise
+    assert f2.apply_calls == 1  # only s1 recomputed; s2 stayed a cache hit
+    out = pd.read_parquet(s1_out)  # readable again
+    assert "value" in out.columns
+    assert len(out) == 10
+    assert os.path.getmtime(run_root / "g__s2.parquet") == s2_mtime
+
+
+def test_custom_check_output_triggers_recompute(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1")])
+    from mosaic.core.pipeline.index import feature_run_root
+
+    r1 = run_feature(ds, _SidecarFeature())
+    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    flag = run_root / "sidecar.flag"
+    assert flag.exists()
+    flag.unlink()
+
+    # Default fast path: cache hit on existence -> skipped, side-car NOT restored.
+    run_feature(ds, _SidecarFeature(), check_output=False)
+    assert not flag.exists()
+
+    # check_output=True: custom validator fails -> recompute restores the side-car.
+    run_feature(ds, _SidecarFeature(), check_output=True)
+    assert flag.exists()
+
+
+def test_raising_custom_check_recomputes_instead_of_crashing(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1")])
+
+    f1 = _RaisingCheckFeature()
+    run_feature(ds, f1)
+    assert f1.apply_calls == 1  # first run computes
+
+    # check_output=True: the custom validator raises -> caught -> recompute.
+    f2 = _RaisingCheckFeature()
+    run_feature(ds, f2, check_output=True)  # must not raise
+    assert f2.apply_calls == 1  # recomputed, not skipped, not crashed
+
+
+def test_noncallable_check_output_falls_back_to_default(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1")])
+
+    f1 = _NonCallableCheckFeature()
+    run_feature(ds, f1)
+    assert f1.apply_calls == 1
+
+    # A non-callable check_output attribute must not cause a TypeError; the
+    # default validator is used instead, so a valid output is a cache hit.
+    f2 = _NonCallableCheckFeature()
+    run_feature(ds, f2, check_output=True)  # must not raise
+    assert f2.apply_calls == 0
