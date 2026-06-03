@@ -10,14 +10,14 @@ import pytest
 
 pytest.importorskip("imgstore")
 
-from mosaic.media.imgstore_io import (  # noqa: E402
+from mosaic.core.media.imgstore_io import (  # noqa: E402
     ImgStoreCapture,
     ImgStoreFrameReader,
     imgstore_metadata,
     imgstore_probe,
     is_imgstore,
 )
-from mosaic.media.video_io import (  # noqa: E402
+from mosaic.core.media.video_io import (  # noqa: E402
     FFmpegFrameReader,
     MultiVideoReader,
     get_video_metadata,
@@ -219,7 +219,7 @@ def test_open_frame_reader_dispatch(make_imgstore, tmp_path):
     reader.close()
 
     # A plain mp4 → FFmpegFrameReader (skip if ffmpeg is unavailable).
-    from mosaic.media.video_io import _ffmpeg_available
+    from mosaic.core.media.video_io import _ffmpeg_available
 
     if not _ffmpeg_available():
         pytest.skip("ffmpeg not available")

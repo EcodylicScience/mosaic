@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import maximum_filter
 
-from mosaic.media.video_io import open_capture
+from mosaic.core.media.video_io import open_capture
 
 
 def _require_torch():

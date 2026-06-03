@@ -144,8 +144,8 @@ def extract_frames(
     str
         The run_id for this extraction batch.
     """
-    from mosaic.media.extraction import extract_frames as _extract_frames
-    from mosaic.media.extraction import extract_frames_multi as _extract_frames_multi
+    from mosaic.core.media.extraction import extract_frames as _extract_frames
+    from mosaic.core.media.extraction import extract_frames_multi as _extract_frames_multi
 
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:

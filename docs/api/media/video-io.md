@@ -6,6 +6,6 @@ Video reading utilities with support for raw H.264 elementary streams
 Handles frame counting, FPS detection via ffprobe, and sequential reading
 for non-seekable streams.
 
-::: mosaic.media.video_io
+::: mosaic.core.media.video_io
     options:
       show_source: true

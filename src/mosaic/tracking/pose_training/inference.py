@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from mosaic.media.video_io import SupportsCapture, open_capture
+from mosaic.core.media.video_io import SupportsCapture, open_capture
 
 
 def _require_ultralytics():
@@ -197,7 +197,7 @@ def run_inference(
     import queue
     import threading
 
-    from mosaic.media.video_io import (
+    from mosaic.core.media.video_io import (
         _ffmpeg_available,
         get_video_metadata,
         open_frame_reader,
@@ -256,7 +256,7 @@ def run_inference(
             )
             try:
                 if prefetch:
-                    from mosaic.media.video_io import _prefetch_batches
+                    from mosaic.core.media.video_io import _prefetch_batches
 
                     frame_queue: queue.Queue = queue.Queue(maxsize=2)
                     worker = threading.Thread(
@@ -726,7 +726,7 @@ def run_point_inference(
     import queue
     import threading
 
-    from mosaic.media.video_io import (
+    from mosaic.core.media.video_io import (
         _ffmpeg_available,
         get_video_metadata,
         open_frame_reader,
@@ -787,7 +787,7 @@ def run_point_inference(
             )
             try:
                 if prefetch:
-                    from mosaic.media.video_io import _prefetch_batches
+                    from mosaic.core.media.video_io import _prefetch_batches
 
                     frame_queue: queue.Queue = queue.Queue(maxsize=2)
                     worker = threading.Thread(
@@ -1184,7 +1184,7 @@ def visualize_inference(
     - **d**: Step one frame (while paused)
     - **s**: Save current frame as PNG
     """
-    from mosaic.media.video_io import get_video_metadata
+    from mosaic.core.media.video_io import get_video_metadata
 
     if not results:
         raise ValueError("results list is empty")
@@ -1222,7 +1222,7 @@ def visualize_inference(
         out_path = Path(output_path).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            from mosaic.media.video_io import FFmpegVideoWriter
+            from mosaic.core.media.video_io import FFmpegVideoWriter
             writer = FFmpegVideoWriter(
                 out_path, meta.width, meta.height,
                 fps=meta.fps, crf=crf,

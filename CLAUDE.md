@@ -196,6 +196,11 @@ src/mosaic/
 │   │   ├── index_csv.py        # generic typed IndexCSV
 │   │   ├── writers.py          # parquet output writing, overlap trimming
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
+│   ├── media/                  # foundational media I/O (read/decode/encode frames)
+│   │   ├── video_io.py         # video I/O, raw H.264 fallback, ffmpeg hw accel
+│   │   ├── imgstore_io.py      # native imgstore (Motif / Loopbio) support
+│   │   ├── extraction.py       # uniform / k-means frame extraction
+│   │   └── sampling.py         # frame selection algorithms
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
@@ -207,15 +212,20 @@ src/mosaic/
 │   ├── label_library/          # label converters (BORIS, CalMS21)
 │   ├── model_library/          # legacy models (being phased out)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
-├── tracking/
-│   └── pose_training/          # YOLO pose, POLO point, localizer training
-│       ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
-│       └── augmentation.py     # YOLO + localizer augmentation presets
-└── media/
-    ├── video_io.py             # video I/O, raw H.264 fallback, ffmpeg hw accel
-    ├── extraction.py           # uniform / k-means frame extraction
-    └── sampling.py             # frame selection algorithms
+└── tracking/
+    └── pose_training/          # YOLO pose, POLO point, localizer training
+        ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
+        └── augmentation.py     # YOLO + localizer augmentation presets
+
+# `mosaic.media` remains importable as a deprecated shim re-exporting core.media.
 ```
+
+**Layering.** `core` is the foundation: data model, schema, the pipeline engine,
+and low-level **media I/O** (`core/media/` — read/decode/encode frames). `behavior`
+and `tracking` are domain packages: they import `core` (including `core.media`)
+but **never each other**, and they exchange data only through on-disk artifacts
+(parquet tracks, feature/model files, index CSVs). `core.media` imports nothing
+from `mosaic`, so it stays a dependency-free leaf.
 
 ## Data Flow Pipeline
 
@@ -257,9 +267,10 @@ transparently:
   `egocentric-crop`, `interaction-crop-pipeline`, playback, and `extract_frames`
   work unchanged.
 - Tracking inference uses `open_frame_reader()` (returns `ImgStoreFrameReader`
-  for stores, else `FFmpegFrameReader`) and `_open_capture()` for the OpenCV
-  fallback — both in [`media/imgstore_io.py`](src/mosaic/media/imgstore_io.py) /
-  [`media/video_io.py`](src/mosaic/media/video_io.py).
+  for stores, else `FFmpegFrameReader`) and `open_capture()` for the OpenCV
+  fallback — both in
+  [`core/media/imgstore_io.py`](src/mosaic/core/media/imgstore_io.py) /
+  [`core/media/video_io.py`](src/mosaic/core/media/video_io.py).
 - Frame addressing: the track-table `frame` column is the 0-based contiguous
   video frame index, which maps to imgstore's `frame_index` (**not** the
   camera-provided `frame_number`). Detection (`is_imgstore`) is import-free; the
@@ -321,7 +332,7 @@ for path expectations before running.
 2. **Raw `.h264` files (Raspberry Pi)** have no container. OpenCV's
    `CAP_PROP_FRAME_COUNT` and `CAP_PROP_FPS` return garbage; random seeking
    silently corrupts the decoder. Always go through
-   [`media/video_io.py`](src/mosaic/media/video_io.py) (`_has_container`,
+   [`core/media/video_io.py`](src/mosaic/core/media/video_io.py) (`_has_container`,
    `_ffprobe_fps`, `_count_frames_by_decoding`) — don't open raw streams with
    `cv2.VideoCapture` directly.
 3. **`ffmpeg` / `ffprobe` must be on `PATH`** — install via

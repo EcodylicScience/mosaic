@@ -5,9 +5,9 @@ from . import feature_library, label_library, model_library, visualization_libra
 
 def __getattr__(name):
     if name == "media":
-        warnings.warn("behavior.media is deprecated. Use 'from mosaic import media' directly.",
+        warnings.warn("behavior.media is deprecated. Use 'from mosaic.core import media' directly.",
                        DeprecationWarning, stacklevel=2)
-        from mosaic import media
+        from mosaic.core import media
         return media
     if name == "tracking":
         warnings.warn("behavior.tracking is deprecated. Use 'from mosaic import tracking' directly.",

@@ -118,11 +118,12 @@ run_feature(...)             → features/<name>/<run_id>/*.parquet
 
 ```
 src/mosaic/
-├── core/        # Dataset orchestrator, pipeline engine, schema, helpers
+├── core/        # Dataset orchestrator, pipeline engine, schema, media I/O (core/media/)
 ├── behavior/    # feature_library, label_library, visualization_library
-├── tracking/    # pose-model training/inference and annotation converters
-└── media/       # video I/O, frame extraction, sampling
+└── tracking/    # pose-model training/inference and annotation converters
 ```
+
+`mosaic.media` is still importable as a deprecated shim re-exporting `mosaic.core.media`.
 
 ## Status
 

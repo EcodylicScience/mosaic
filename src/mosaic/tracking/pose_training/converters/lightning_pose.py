@@ -6,7 +6,7 @@ Lightning Pose CSVs use a DeepLabCut-style multi-header format:
     Row 2: coordinate type ("x", "y", "likelihood")
     Row 3+: frame_index, then triplets of (x, y, likelihood) per keypoint
 
-This converter reads pre-extracted frames (from ``behavior.media.extract_frames``)
+This converter reads pre-extracted frames (from ``mosaic.core.media.extract_frames``)
 and produces YOLO pose label files for the frame indices present in the extraction
 manifest, avoiding redundant video decoding.
 """

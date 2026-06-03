@@ -141,7 +141,7 @@ def render_stream(video_paths: Union[list[Path], Path, str],
     _FrameStream
         Iterator yielding (frame_index, frame_bgr) tuples
     """
-    from mosaic.media.video_io import MultiVideoReader
+    from mosaic.core.media.video_io import MultiVideoReader
 
     reader = MultiVideoReader(video_paths)
     base_size = (reader.width, reader.height)

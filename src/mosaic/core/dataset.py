@@ -1072,7 +1072,7 @@ class Dataset:
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
             )
 
-        from ..media.imgstore_io import imgstore_probe, is_imgstore
+        from .media.imgstore_io import imgstore_probe, is_imgstore
 
         media_root = self.get_root(self.resolve_media_root())
         out_csv = media_root / index_filename

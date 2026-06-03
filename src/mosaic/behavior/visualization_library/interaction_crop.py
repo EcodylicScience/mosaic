@@ -194,7 +194,7 @@ class InteractionCropPipeline:
         if df.empty:
             return pd.DataFrame()
 
-        from mosaic.media.video_io import MultiVideoReader
+        from mosaic.core.media.video_io import MultiVideoReader
 
         cv2.setNumThreads(2)  # prevent OpenCV from saturating all cores
 
@@ -310,7 +310,7 @@ class InteractionCropPipeline:
         use_ffmpeg_writer = False
         if not p.grayscale:
             try:
-                from mosaic.media.video_io import FFmpegVideoWriter
+                from mosaic.core.media.video_io import FFmpegVideoWriter
                 writer = FFmpegVideoWriter(
                     video_out, crop_w, crop_h, fps=output_fps,
                     hwaccel=True, preset="fast",

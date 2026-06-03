@@ -631,7 +631,7 @@ class EgocentricCrop:
 
         Returns metadata DataFrame with crop info per frame.
         """
-        from mosaic.media.video_io import MultiVideoReader
+        from mosaic.core.media.video_io import MultiVideoReader
 
         p = self.params
 
