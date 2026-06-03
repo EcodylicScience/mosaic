@@ -11,7 +11,7 @@ import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Protocol
 
 import cv2
 import numpy as np
@@ -26,6 +26,53 @@ class VideoMetadata:
     height: int
     fps: float
     frame_count: int
+
+
+class SupportsCapture(Protocol):
+    """The ``cv2.VideoCapture`` subset that :class:`MultiVideoReader` relies on.
+
+    Both ``cv2.VideoCapture`` and
+    :class:`mosaic.media.imgstore_io.ImgStoreCapture` satisfy this structurally,
+    so the reader works over plain videos and imgstores alike.
+    """
+
+    def isOpened(self) -> bool: ...
+    def read(self) -> tuple[bool, np.ndarray | None]: ...
+    # Param names match cv2.VideoCapture (`propId`) so it satisfies this protocol.
+    def set(self, propId: int, value: float) -> bool: ...
+    def get(self, propId: int) -> float: ...
+    def release(self) -> None: ...
+
+
+class FrameReader(Protocol):
+    """High-throughput sequential reader interface (FFmpeg- or imgstore-backed).
+
+    :class:`FFmpegFrameReader` and
+    :class:`mosaic.media.imgstore_io.ImgStoreFrameReader` both satisfy this.
+    """
+
+    @property
+    def width(self) -> int: ...
+    @property
+    def height(self) -> int: ...
+    @property
+    def fps(self) -> float: ...
+    @property
+    def frame_count(self) -> int: ...
+    def read(self) -> tuple[bool, np.ndarray | None]: ...
+    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]: ...
+    def __iter__(self) -> Iterator[tuple[int, np.ndarray]]: ...
+    def close(self) -> None: ...
+    def __len__(self) -> int: ...
+
+
+def open_capture(path: Path | str) -> SupportsCapture:
+    """Open *path* as a capture: an imgstore adapter if it is a store, else cv2."""
+    from .imgstore_io import ImgStoreCapture, is_imgstore
+
+    if is_imgstore(path):
+        return ImgStoreCapture(path)
+    return cv2.VideoCapture(str(path))
 
 
 def _ffprobe_fps(path: Path) -> float:
@@ -128,8 +175,16 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
 
     For containerless streams (e.g. raw .h264) where OpenCV cannot determine
     fps or frame count from headers, falls back to ffprobe for fps and
-    decode-counting for frame count.
+    decode-counting for frame count. imgstore directories are read via the
+    imgstore index (no cv2/ffprobe).
     """
+    from .imgstore_io import imgstore_metadata, is_imgstore
+
+    if is_imgstore(video_path):
+        # Resolve happens inside imgstore_metadata; a store is a directory and
+        # cannot be opened by cv2.VideoCapture, so dispatch before the cv2 open.
+        return imgstore_metadata(video_path)
+
     path = Path(video_path).expanduser().resolve()
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
@@ -221,11 +276,12 @@ def apply_crop(frame: np.ndarray, crop_rect: Optional[tuple[int, int, int, int]]
     return frame[y:y + h, x:x + w]
 
 
-def _has_container(cap: cv2.VideoCapture) -> bool:
+def _has_container(cap: SupportsCapture) -> bool:
     """Check if the video has a proper container with seekable metadata.
 
     Raw elementary streams (e.g. .h264) report garbage or zero for
     CAP_PROP_FRAME_COUNT. This is a reliable, non-destructive indicator.
+    imgstore captures report their true frame count, so they read as seekable.
     """
     raw_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     return 0 < raw_count < 1e12
@@ -251,7 +307,7 @@ def extract_candidate_features(
     if resize[0] <= 0 or resize[1] <= 0:
         raise ValueError("resize must be (width>0, height>0)")
 
-    cap = cv2.VideoCapture(str(Path(video_path).expanduser().resolve()))
+    cap = open_capture(Path(video_path).expanduser().resolve())
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
 
@@ -271,7 +327,7 @@ def extract_candidate_features(
 
         while frame_idx <= int(end_frame):
             ok, frame = cap.read()
-            if not ok:
+            if not ok or frame is None:
                 break
             if frame_idx >= int(start_frame):
                 if (frame_idx - int(start_frame)) % int(candidate_step) == 0:
@@ -308,7 +364,7 @@ def save_frames_as_png(
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cap = cv2.VideoCapture(str(Path(video_path).expanduser().resolve()))
+    cap = open_capture(Path(video_path).expanduser().resolve())
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
 
@@ -323,7 +379,7 @@ def save_frames_as_png(
             for frame_idx in target_indices:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ok, frame = cap.read()
-                if not ok:
+                if not ok or frame is None:
                     raise RuntimeError(f"Failed to decode frame {frame_idx} from {video_path}")
                 frame = apply_crop(frame, crop_rect)
                 out_name = f"frame_{frame_idx:06d}.png"
@@ -345,7 +401,7 @@ def save_frames_as_png(
             frame_idx = 0
             while frame_idx <= max_target:
                 ok, frame = cap.read()
-                if not ok:
+                if not ok or frame is None:
                     break
                 if frame_idx in target_set:
                     frame = apply_crop(frame, crop_rect)
@@ -406,7 +462,7 @@ class MultiVideoReader:
     def __init__(self, video_paths: list[Path] | Path | str):
         # Set _closed early so __del__ is safe if __init__ fails partway
         self._closed: bool = False
-        self._current_cap: Optional[cv2.VideoCapture] = None
+        self._current_cap: Optional[SupportsCapture] = None
 
         if isinstance(video_paths, (str, Path)):
             video_paths = [Path(video_paths)]
@@ -424,13 +480,20 @@ class MultiVideoReader:
         self._global_frame: int = 0
 
     def _build_segments(self, paths: list[Path]) -> None:
+        from .imgstore_io import is_imgstore
+
         cumulative = 0
         for p in paths:
             meta = get_video_metadata(p)
-            # Check seekability without keeping the capture open
-            cap = cv2.VideoCapture(str(meta.path))
-            seekable = _has_container(cap) if cap.isOpened() else False
-            cap.release()
+            if is_imgstore(p):
+                # imgstores support random access by frame_index; a store is a
+                # directory and cannot be probed via cv2.VideoCapture.
+                seekable = True
+            else:
+                # Check seekability without keeping the capture open
+                cap = cv2.VideoCapture(str(meta.path))
+                seekable = _has_container(cap) if cap.isOpened() else False
+                cap.release()
             seg = VideoSegment(
                 path=meta.path,
                 frame_count=meta.frame_count,
@@ -509,7 +572,7 @@ class MultiVideoReader:
         if self._current_cap is not None:
             self._current_cap.release()
         seg = self._segments[seg_idx]
-        self._current_cap = cv2.VideoCapture(str(seg.path))
+        self._current_cap = open_capture(seg.path)
         if not self._current_cap.isOpened():
             raise RuntimeError(f"Failed to open video: {seg.path}")
         self._current_seg_idx = seg_idx
@@ -534,8 +597,8 @@ class MultiVideoReader:
         if need_reopen:
             self._open_segment(seg_idx)
 
-        if local_frame == 0:
-            # Already at the start of the segment after open
+        if need_reopen and local_frame == 0:
+            # Freshly opened segment is already positioned at its first frame.
             pass
         elif seg.seekable:
             self._current_cap.set(cv2.CAP_PROP_POS_FRAMES, local_frame)
@@ -837,8 +900,43 @@ class FFmpegFrameReader:
         return self.frame_count
 
 
+def open_frame_reader(
+    video_path: Path | str,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    frame_step: int = 1,
+    resize: tuple[int, int] | None = None,
+    hwaccel: bool = False,
+) -> FrameReader:
+    """Open a high-throughput sequential reader, dispatching on the path type.
+
+    Returns an :class:`mosaic.media.imgstore_io.ImgStoreFrameReader` for imgstore
+    directories, otherwise an :class:`FFmpegFrameReader`. Both satisfy
+    :class:`FrameReader`, so callers (e.g. tracking inference) are unchanged.
+    """
+    from .imgstore_io import ImgStoreFrameReader, is_imgstore
+
+    if is_imgstore(video_path):
+        return ImgStoreFrameReader(
+            video_path,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            frame_step=frame_step,
+            resize=resize,
+            hwaccel=hwaccel,
+        )
+    return FFmpegFrameReader(
+        video_path,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        frame_step=frame_step,
+        resize=resize,
+        hwaccel=hwaccel,
+    )
+
+
 def _prefetch_batches(
-    reader: FFmpegFrameReader,
+    reader: FrameReader,
     queue: Any,
     batch_size: int,
 ) -> None:

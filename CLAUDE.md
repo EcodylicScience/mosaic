@@ -46,6 +46,9 @@ table, see [README.md](README.md). Notable points:
 - `lightning-action` and `gpu` are intentionally excluded from `recommended`.
 - `gpu` installs `faiss-cpu` by default; on Linux + CUDA, install `faiss-gpu`
   manually for GPU-accelerated kNN in `global-tsne`.
+- `imgstore` adds native support for imgstore (Motif / Loopbio) recordings — a
+  store *directory* is indexed and read as a normal media entry (see "imgstore
+  support" below). Not bundled in `recommended`.
 
 ### Smoke import
 
@@ -240,6 +243,27 @@ Standardized tracks are validated by `core/schema.py`. The `trex_v1` schema,
 for example, requires columns: `frame, time, id, group, sequence, X, Y, ANGLE,
 SPEED` plus `poseX*` / `poseY*` for keypoints. New track converters must emit
 schema-valid parquet.
+
+### imgstore support
+
+imgstore (Motif / Loopbio) recordings are *directories* (a `metadata.yaml` plus
+chunk files), not single video files. mosaic treats a store as a normal media
+entry — `index_media()` discovers stores natively (one entry per store,
+`media_type="imgstore"`, internal chunks excluded), and reading dispatches
+transparently:
+
+- All frame-consuming features route through `MultiVideoReader`, which opens a
+  store via `ImgStoreCapture` (a `cv2.VideoCapture`-compatible adapter) — so
+  `egocentric-crop`, `interaction-crop-pipeline`, playback, and `extract_frames`
+  work unchanged.
+- Tracking inference uses `open_frame_reader()` (returns `ImgStoreFrameReader`
+  for stores, else `FFmpegFrameReader`) and `_open_capture()` for the OpenCV
+  fallback — both in [`media/imgstore_io.py`](src/mosaic/media/imgstore_io.py) /
+  [`media/video_io.py`](src/mosaic/media/video_io.py).
+- Frame addressing: the track-table `frame` column is the 0-based contiguous
+  video frame index, which maps to imgstore's `frame_index` (**not** the
+  camera-provided `frame_number`). Detection (`is_imgstore`) is import-free; the
+  `imgstore` package is only needed to actually read a store (`[imgstore]` extra).
 
 ### Params are Pydantic
 

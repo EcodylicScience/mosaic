@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import maximum_filter
 
+from mosaic.media.video_io import open_capture
+
 
 def _require_torch():
     try:
@@ -222,8 +224,8 @@ def run_localizer_inference(
     encoder.to(dev)
     encoder.eval()
 
-    # Open video
-    cap = cv2.VideoCapture(str(video_path))
+    # Open video (imgstore-aware)
+    cap = open_capture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video: {video_path}")
 
@@ -250,7 +252,7 @@ def run_localizer_inference(
             break
 
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
             break
 
         if (frame_idx - start_frame) % frame_step != 0:

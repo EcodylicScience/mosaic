@@ -16,6 +16,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from mosaic.media.video_io import SupportsCapture, open_capture
+
 
 def _require_ultralytics():
     try:
@@ -77,7 +79,7 @@ def run_inference_opencv(
     YOLO = _require_ultralytics()
     model = YOLO(str(model_path))
 
-    cap = cv2.VideoCapture(str(video_path))
+    cap = open_capture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video: {video_path}")
 
@@ -100,7 +102,7 @@ def run_inference_opencv(
             break
 
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
             break
 
         if (frame_idx - start_frame) % frame_step != 0:
@@ -196,9 +198,9 @@ def run_inference(
     import threading
 
     from mosaic.media.video_io import (
-        FFmpegFrameReader,
         _ffmpeg_available,
         get_video_metadata,
+        open_frame_reader,
     )
 
     YOLO = _require_ultralytics()
@@ -245,7 +247,7 @@ def run_inference(
 
     try:
         if use_ffmpeg:
-            reader = FFmpegFrameReader(
+            reader = open_frame_reader(
                 video_path,
                 start_frame=start_frame,
                 end_frame=end_frame,
@@ -329,7 +331,7 @@ def run_inference(
             finally:
                 reader.close()
         else:
-            cap = cv2.VideoCapture(str(video_path))
+            cap = open_capture(video_path)
             if not cap.isOpened():
                 raise FileNotFoundError(f"Cannot open video: {video_path}")
             try:
@@ -555,7 +557,7 @@ def run_point_inference_opencv(
     YOLO = _require_polo()
     model = YOLO(str(model_path))
 
-    cap = cv2.VideoCapture(str(video_path))
+    cap = open_capture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video: {video_path}")
 
@@ -587,7 +589,7 @@ def run_point_inference_opencv(
             break
 
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
             break
 
         if (frame_idx - start_frame) % frame_step != 0:
@@ -629,7 +631,7 @@ def _compute_resize(source_w: int, source_h: int, imgsz: int) -> tuple[int, int]
 
 
 def _read_batch_opencv(
-    cap: cv2.VideoCapture,
+    cap: SupportsCapture,
     batch_size: int,
     frame_idx: int,
     start_frame: int,
@@ -647,7 +649,7 @@ def _read_batch_opencv(
         if end_frame is not None and frame_idx >= end_frame:
             break
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
             break
         if (frame_idx - start_frame) % frame_step == 0:
             indices.append(frame_idx)
@@ -725,9 +727,9 @@ def run_point_inference(
     import threading
 
     from mosaic.media.video_io import (
-        FFmpegFrameReader,
         _ffmpeg_available,
         get_video_metadata,
+        open_frame_reader,
     )
 
     YOLO = _require_polo()
@@ -776,7 +778,7 @@ def run_point_inference(
 
     try:
         if use_ffmpeg:
-            reader = FFmpegFrameReader(
+            reader = open_frame_reader(
                 video_path,
                 start_frame=start_frame,
                 end_frame=end_frame,
@@ -863,7 +865,7 @@ def run_point_inference(
                 reader.close()
         else:
             # OpenCV fallback — still batched for GPU utilization
-            cap = cv2.VideoCapture(str(video_path))
+            cap = open_capture(video_path)
             if not cap.isOpened():
                 raise FileNotFoundError(f"Cannot open video: {video_path}")
             try:
@@ -1209,7 +1211,7 @@ def visualize_inference(
             scale_y = meta.height / inf_h
 
     # Open video
-    cap = cv2.VideoCapture(str(video_path))
+    cap = open_capture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video: {video_path}")
 
@@ -1248,7 +1250,7 @@ def visualize_inference(
             target_frame = start_frame + i * frame_step
             cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame is None:
                 break
 
             # Annotate

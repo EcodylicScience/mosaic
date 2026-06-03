@@ -58,6 +58,10 @@ localizer = ["torch>=2.0", "h5py>=3.0"]
 # needs no extra dep.
 identity = ["torch>=2.0", "timm>=1.0"]
 gpu = ["faiss-cpu>=1.7"]  # use faiss-gpu on Linux+CUDA for GPU-accelerated kNN in global-tsne
+# Native imgstore (Motif / Loopbio) video support: directory-based stores work as
+# media entries (indexing, reading, tracking inference). Deliberately NOT in
+# `recommended` — only needed for imgstore-format recordings.
+imgstore = ["imgstore>=0.4"]
 # Curated bundle for typical research workflows. Excludes `polo` (incompatible
 # ultralytics pin with `pose`), `lightning-action` (large standalone dep),
 # and `gpu` (platform-specific).

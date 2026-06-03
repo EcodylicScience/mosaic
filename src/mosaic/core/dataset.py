@@ -1043,7 +1043,11 @@ class Dataset:
         """
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
         - No symlinks created; absolute paths recorded.
-        - Columns: name, abs_path, size_bytes, mtime_iso, group, sequence, group_safe, sequence_safe, video_order
+        - imgstore directories (Motif / Loopbio) are discovered natively: each
+          store becomes one entry (``media_type="imgstore"``) and its internal
+          chunk files are excluded from the plain file glob.
+        - Columns: name, group, sequence, group_safe, sequence_safe, abs_path,
+          size_bytes, mtime_iso, width, height, fps, codec, media_type, video_order
 
         Parameters
         ----------
@@ -1068,12 +1072,27 @@ class Dataset:
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
             )
 
+        from ..media.imgstore_io import imgstore_probe, is_imgstore
+
         media_root = self.get_root(self.resolve_media_root())
         out_csv = media_root / index_filename
         exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
         seq_key_map = self._build_media_sequence_keymap()
 
-        rows = []
+        # Discover imgstore directories first. A store is a directory (not a file
+        # with an extension), and it contains its own chunk video files — so we
+        # must (a) emit one entry per store and (b) exclude those internal chunks
+        # from the plain file glob below.
+        imgstore_dirs: set[Path] = set()
+        for d in map(Path, search_dirs):
+            if not d.exists():
+                continue
+            candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
+            for cand in candidates:
+                if cand.is_dir() and is_imgstore(cand):
+                    imgstore_dirs.add(cand.resolve())
+
+        rows: list[dict[str, object]] = []
         for d in map(Path, search_dirs):
             if not d.exists():
                 print(f"[WARN] search dir missing: {d}", file=sys.stderr)
@@ -1084,6 +1103,11 @@ class Dataset:
                     continue
                 # Skip macOS resource forks (._* files)
                 if p.name.startswith("._"):
+                    continue
+                # Skip files that live inside an imgstore directory (its chunks).
+                if imgstore_dirs and any(
+                    sd in p.resolve().parents for sd in imgstore_dirs
+                ):
                     continue
                 if p.suffix.lower() in exts:
                     try:
@@ -1121,10 +1145,50 @@ class Dataset:
                                 "height": probe.get("height", ""),
                                 "fps": probe.get("fps", ""),
                                 "codec": probe.get("codec", ""),
+                                "media_type": "video",
                             }
                         )
                     except OSError as e:
                         print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+
+        # One entry per imgstore directory (each store is a single sequence).
+        for store_dir in sorted(imgstore_dirs):
+            try:
+                st = store_dir.stat()
+                meta = self._match_media_sequence(
+                    seq_key_map, store_dir.stem, mode=sequence_match_mode
+                )
+                probe = imgstore_probe(store_dir)
+                fallback_seq = store_dir.stem
+                fallback_safe = to_safe_name(store_dir.stem)
+                rows.append(
+                    {
+                        "name": store_dir.name,
+                        "group": meta.get("group", "") if meta else "",
+                        "sequence": meta.get("sequence", fallback_seq)
+                        if meta
+                        else fallback_seq,
+                        "group_safe": meta.get("group_safe", "") if meta else "",
+                        "sequence_safe": meta.get("sequence_safe", fallback_safe)
+                        if meta
+                        else fallback_safe,
+                        "abs_path": str(store_dir.resolve()),
+                        "size_bytes": st.st_size,
+                        "mtime_iso": _to_iso(st.st_mtime),
+                        "width": probe.get("width", ""),
+                        "height": probe.get("height", ""),
+                        "fps": probe.get("fps", ""),
+                        "codec": probe.get("codec", ""),
+                        "media_type": "imgstore",
+                    }
+                )
+            except OSError as e:
+                print(f"[WARN] skip imgstore {store_dir}: {e}", file=sys.stderr)
+            except Exception as e:
+                print(
+                    f"[WARN] failed to probe imgstore {store_dir}: {e}",
+                    file=sys.stderr,
+                )
 
         # De-duplicate by absolute path
         seen = set()
@@ -1154,9 +1218,12 @@ class Dataset:
                     "height",
                     "fps",
                     "codec",
+                    "media_type",
                 ]
             )
         )
+        if "media_type" not in df_out.columns:
+            df_out["media_type"] = "video"
         df_out["video_order"] = 0
         if not df_out.empty:
             for (g, s), sub in df_out.groupby(["group", "sequence"]):
@@ -1179,6 +1246,7 @@ class Dataset:
             "height",
             "fps",
             "codec",
+            "media_type",
             "video_order",
         ]
         df_out[fieldnames].to_csv(out_csv, index=False)
@@ -1276,7 +1344,7 @@ class Dataset:
             )
         return paths[0]
 
-    def _build_media_sequence_keymap(self) -> dict[str, list[dict]]:
+    def _build_media_sequence_keymap(self) -> dict[str, list[dict[str, str]]]:
         """
         Build a lookup of various sequence keys -> metadata for mapping media files to sequences.
         """
@@ -1284,7 +1352,7 @@ class Dataset:
         if not idx_path.exists():
             return {}
         df = pd.read_csv(idx_path)
-        keymap: dict[str, list[dict]] = {}
+        keymap: dict[str, list[dict[str, str]]] = {}
         for _, row in df.iterrows():
             group = str(row.get("group", "") or "")
             sequence = str(row.get("sequence", "") or "")
@@ -1318,10 +1386,10 @@ class Dataset:
 
     @staticmethod
     def _match_media_sequence(
-        seq_key_map: dict[str, list[dict]],
+        seq_key_map: dict[str, list[dict[str, str]]],
         stem: str,
         mode: str = "exact",
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, str]]:
         if not seq_key_map or not stem:
             return None
         candidates = [
