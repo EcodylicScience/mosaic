@@ -41,8 +41,8 @@ Data flows through the `Dataset` orchestrator (everything is versioned by `run_i
 ```
 video files
    │
-   ├─ index_media()          → media/index.csv  (ffprobe metadata)
-   ├─ extract_frames()       → media/frames/    (uniform or k-means sampled PNGs)
+   ├─ index_media()                       → media/index.csv  (ffprobe metadata)
+   ├─ tracking.extract_frames(ds, …)      → media/frames/    (uniform or k-means sampled PNGs)
    │
 raw tracks/labels
    │

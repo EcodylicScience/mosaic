@@ -28,6 +28,7 @@ import yaml
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
+from mosaic.tracking.frame_extraction import get_frame_manifests
 from mosaic.tracking.pose_training.converters.cvat_points import (
     _default_group_key,
     split_filenames,
@@ -860,7 +861,7 @@ def tracks_to_yolo_pose(
                 stem_to_idx[stem] = seq_to_idx[seq_name]
 
     # ── Match manifests to tracks ──
-    all_manifests = ds.get_frame_manifests(extraction_method)
+    all_manifests = get_frame_manifests(ds, extraction_method)
     pairs: list[tuple[dict, Path, str]] = []
     unmatched: list[str] = []
 

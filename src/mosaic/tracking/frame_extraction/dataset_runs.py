@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key, to_safe_name
+from mosaic.core.pipeline._utils import hash_params, json_ready
+from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
-from ._utils import hash_params, json_ready
-from .index_csv import IndexCSV, RunIndexRowBase
+from .extraction import extract_frames as _extract_frames
+from .extraction import extract_frames_multi as _extract_frames_multi
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -144,9 +146,6 @@ def extract_frames(
     str
         The run_id for this extraction batch.
     """
-    from mosaic.core.media.extraction import extract_frames as _extract_frames
-    from mosaic.core.media.extraction import extract_frames_multi as _extract_frames_multi
-
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:
         raise ValueError("method must be one of: 'uniform', 'kmeans'")

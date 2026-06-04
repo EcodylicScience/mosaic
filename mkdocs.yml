@@ -69,6 +69,6 @@ nav:
           - Visualization: api/behavior/visualization.md
       - Media:
           - Video I/O: api/media/video-io.md
-          - Frame Extraction: api/media/extraction.md
       - Tracking:
+          - Frame Extraction: api/tracking/frame-extraction.md
           - Pose Training: api/tracking/pose-training.md

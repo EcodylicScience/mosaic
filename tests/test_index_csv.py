@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.frames import FramesIndexRow, frames_index
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.models import ModelIndexRow, model_index
@@ -309,114 +308,6 @@ class TestFeatureIndexRow:
         df = idx.read()
         assert len(df) == 1
         assert df.iloc[0]["feature"] == "speed"
-
-
-# --- Frames Index ---
-
-
-class TestFramesIndex:
-    def test_schema_has_required_columns(self) -> None:
-        names = {f.name for f in dataclasses.fields(FramesIndexRow)}
-        assert "method" in names
-        assert "n_frames_extracted" in names
-
-    def test_factory_returns_index_csv(self, tmp_path: Path) -> None:
-        idx = frames_index(tmp_path / "index.csv")
-        assert isinstance(idx, IndexCSV)
-
-    def test_ensure_creates(self, tmp_path: Path) -> None:
-        idx = frames_index(tmp_path / "index.csv")
-        idx.ensure()
-        df = pd.read_csv(tmp_path / "index.csv")
-        assert "method" in df.columns
-
-    def test_dedup(self, tmp_path: Path) -> None:
-        idx = frames_index(tmp_path / "index.csv")
-        p = tmp_path / "frames_dir"
-        p.mkdir()
-        row = FramesIndexRow(
-            run_id="r1",
-            method="uniform",
-            group="g",
-            sequence="s",
-            abs_path=str(p),
-            video_abs_path=str(p),
-            params_hash="h",
-            n_frames_extracted=10,
-        )
-        idx.append([row])
-        row2 = FramesIndexRow(
-            run_id="r1",
-            method="uniform",
-            group="g",
-            sequence="s",
-            abs_path=str(p),
-            video_abs_path=str(p),
-            params_hash="h",
-            n_frames_extracted=20,
-        )
-        idx.append([row2])
-        df = idx.read()
-        assert len(df) == 1
-
-
-class TestFramesIndexRow:
-    def test_fields_match_schema(self, tmp_path: Path) -> None:
-        p = tmp_path / "G1__S1"
-        p.mkdir()
-        v = tmp_path / "v1.mp4"
-        v.touch()
-        row = FramesIndexRow(
-            run_id="r1",
-            method="uniform",
-            group="G1",
-            sequence="S1",
-            abs_path=str(p),
-            n_frames_extracted=50,
-            n_frames_requested=50,
-            video_abs_path=str(v),
-            params_hash="abc",
-        )
-        df = pd.DataFrame([row])
-        assert set(df.columns) == {f.name for f in dataclasses.fields(FramesIndexRow)}
-        assert df.iloc[0]["method"] == "uniform"
-        assert df.iloc[0]["n_frames_extracted"] == 50
-
-    def test_finished_at_default(self, tmp_path: Path) -> None:
-        p = tmp_path / "frames"
-        p.mkdir()
-        row = FramesIndexRow(
-            run_id="r",
-            method="m",
-            group="",
-            sequence="s",
-            abs_path=str(p),
-            n_frames_extracted=0,
-            n_frames_requested=0,
-            video_abs_path=str(p),
-            params_hash="h",
-        )
-        assert row.finished_at == ""
-
-    def test_appendable_to_frames_index(self, tmp_path: Path) -> None:
-        idx = frames_index(tmp_path / "index.csv")
-        p = tmp_path / "frames"
-        p.mkdir()
-        row = FramesIndexRow(
-            run_id="r1",
-            method="uniform",
-            group="G1",
-            sequence="S1",
-            abs_path=str(p),
-            n_frames_extracted=10,
-            n_frames_requested=50,
-            video_abs_path=str(p),
-            params_hash="h",
-        )
-        idx.append([row])
-        df = idx.read()
-        assert len(df) == 1
-        assert df.iloc[0]["method"] == "uniform"
 
 
 # --- Model Index ---

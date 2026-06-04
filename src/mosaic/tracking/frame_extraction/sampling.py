@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
 
 
 def _ordered_unique(values: np.ndarray) -> np.ndarray:
@@ -93,6 +90,10 @@ def select_kmeans_frames(
     """
     Select representative frames using k-means over candidate frame features.
     """
+    # Imported lazily so `import mosaic.tracking` stays light (sklearn is only
+    # needed when k-means sampling actually runs).
+    from sklearn.cluster import MiniBatchKMeans
+
     candidates = np.asarray(candidate_indices, dtype=np.int32).ravel()
     X = np.asarray(features, dtype=np.float32)
 

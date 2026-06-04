@@ -1,6 +1,5 @@
-"""Media utilities for behavior datasets."""
+"""Low-level media I/O: video/imgstore reading, decoding, and encoding."""
 
-from .extraction import extract_frames, extract_frames_multi, load_extraction_manifest
 from .imgstore_io import (
     ImgStoreCapture,
     ImgStoreFrameReader,
@@ -21,8 +20,6 @@ from .video_io import (
 )
 
 __all__ = [
-    "extract_frames",
-    "extract_frames_multi",
     "FFmpegFrameReader",
     "FFmpegVideoWriter",
     "FrameReader",
@@ -31,7 +28,6 @@ __all__ = [
     "imgstore_metadata",
     "imgstore_probe",
     "is_imgstore",
-    "load_extraction_manifest",
     "MultiVideoReader",
     "open_capture",
     "open_frame_reader",

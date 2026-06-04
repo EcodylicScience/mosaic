@@ -198,9 +198,7 @@ src/mosaic/
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
 │   ├── media/                  # foundational media I/O (read/decode/encode frames)
 │   │   ├── video_io.py         # video I/O, raw H.264 fallback, ffmpeg hw accel
-│   │   ├── imgstore_io.py      # native imgstore (Motif / Loopbio) support
-│   │   ├── extraction.py       # uniform / k-means frame extraction
-│   │   └── sampling.py         # frame selection algorithms
+│   │   └── imgstore_io.py      # native imgstore (Motif / Loopbio) support
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
@@ -213,6 +211,7 @@ src/mosaic/
 │   ├── model_library/          # legacy models (being phased out)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
+    ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
     └── pose_training/          # YOLO pose, POLO point, localizer training
         ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
         └── augmentation.py     # YOLO + localizer augmentation presets
@@ -225,14 +224,17 @@ and low-level **media I/O** (`core/media/` — read/decode/encode frames). `beha
 and `tracking` are domain packages: they import `core` (including `core.media`)
 but **never each other**, and they exchange data only through on-disk artifacts
 (parquet tracks, feature/model files, index CSVs). `core.media` imports nothing
-from `mosaic`, so it stays a dependency-free leaf.
+from `mosaic`, so it stays a dependency-free leaf. Frame *sampling/extraction*
+(`tracking/frame_extraction/`, exposed as `mosaic.tracking.extract_frames(ds, …)`)
+is a tracking-domain concern — it reads `media/frames` via `ds.get_root("frames")`
+(downward) and is **not** a `Dataset` method; `core` has no frame-extraction code.
 
 ## Data Flow Pipeline
 
 ```
 video files
-   ├─ index_media()          → media/index.csv          (ffprobe metadata)
-   └─ extract_frames()       → media/frames/            (uniform or k-means PNGs)
+   ├─ index_media()                    → media/index.csv   (ffprobe metadata)
+   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
    ├─ index_tracks_raw()     → tracks_raw/index.csv
@@ -264,8 +266,8 @@ transparently:
 
 - All frame-consuming features route through `MultiVideoReader`, which opens a
   store via `ImgStoreCapture` (a `cv2.VideoCapture`-compatible adapter) — so
-  `egocentric-crop`, `interaction-crop-pipeline`, playback, and `extract_frames`
-  work unchanged.
+  `egocentric-crop`, `interaction-crop-pipeline`, playback, and tracking's
+  `extract_frames` work unchanged.
 - Tracking inference uses `open_frame_reader()` (returns `ImgStoreFrameReader`
   for stores, else `FFmpegFrameReader`) and `open_capture()` for the OpenCV
   fallback — both in

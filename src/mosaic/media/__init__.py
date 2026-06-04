@@ -14,8 +14,10 @@ import sys as _sys
 from mosaic.core.media import *  # noqa: F401,F403
 
 # Preserve old deep-import paths, e.g. ``from mosaic.media.video_io import X``, by
-# aliasing the real modules under the legacy ``mosaic.media.*`` names.
-for _name in ("video_io", "imgstore_io", "extraction", "sampling"):
+# aliasing the real modules under the legacy ``mosaic.media.*`` names. (Frame
+# extraction/sampling moved to ``mosaic.tracking.frame_extraction``, so only the
+# low-level I/O modules are aliased here.)
+for _name in ("video_io", "imgstore_io"):
     _sys.modules[f"{__name__}.{_name}"] = _importlib.import_module(
         f"mosaic.core.media.{_name}"
     )

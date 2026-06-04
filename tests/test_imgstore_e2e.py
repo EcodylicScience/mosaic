@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("imgstore")
 
 from mosaic.core.dataset import Dataset  # noqa: E402
+from mosaic.tracking import extract_frames  # noqa: E402
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -32,7 +33,7 @@ def test_extract_frames_from_imgstore(tmp_path, make_imgstore, method):
     make_imgstore(name="rec", nframes=20, parent=search)
     ds.index_media([search])
 
-    ds.extract_frames(n_frames=4, method=method)
+    extract_frames(ds, n_frames=4, method=method)
 
     pngs = list((tmp_path / "frames").rglob("*.png"))
     assert len(pngs) == 4

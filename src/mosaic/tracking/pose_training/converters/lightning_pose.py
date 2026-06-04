@@ -6,7 +6,7 @@ Lightning Pose CSVs use a DeepLabCut-style multi-header format:
     Row 2: coordinate type ("x", "y", "likelihood")
     Row 3+: frame_index, then triplets of (x, y, likelihood) per keypoint
 
-This converter reads pre-extracted frames (from ``mosaic.core.media.extract_frames``)
+This converter reads pre-extracted frames (from ``mosaic.tracking.extract_frames``)
 and produces YOLO pose label files for the frame indices present in the extraction
 manifest, avoiding redundant video decoding.
 """
@@ -145,7 +145,7 @@ def convert_lightning_pose(
     """Convert LP CSV to YOLO pose labels using pre-extracted frames.
 
     Instead of re-decoding the video, this function takes the frame records
-    produced by ``behavior.media.extract_frames`` (via the manifest's
+    produced by ``mosaic.tracking.extract_frames`` (via the manifest's
     ``files`` list or ``FrameExtractionResult.files``).  For each frame
     that has a matching row in the LP CSV it writes a YOLO pose label and
     symlinks (or copies) the already-extracted image into the YOLO dataset

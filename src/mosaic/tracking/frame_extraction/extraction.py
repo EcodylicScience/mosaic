@@ -13,8 +13,7 @@ import uuid
 
 import numpy as np
 
-from .sampling import select_kmeans_frames, select_uniform_frames
-from .video_io import (
+from mosaic.core.media.video_io import (
     MultiVideoReader,
     extract_candidate_features,
     extract_candidate_features_multi,
@@ -24,6 +23,8 @@ from .video_io import (
     save_frames_as_png,
     save_frames_as_png_multi,
 )
+
+from .sampling import select_kmeans_frames, select_uniform_frames
 
 
 CropSpec = tuple[int, int, int, int] | dict[str, Any]

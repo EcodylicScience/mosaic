@@ -103,8 +103,8 @@ Each feature run is tagged with a `run_id` of the form
 
 ```
 video files
-   ├─ index_media()          → media/index.csv          (ffprobe metadata)
-   └─ extract_frames()       → media/frames/            (uniform or k-means PNGs)
+   ├─ index_media()                    → media/index.csv   (ffprobe metadata)
+   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
    ├─ index_tracks_raw()     → tracks_raw/index.csv
