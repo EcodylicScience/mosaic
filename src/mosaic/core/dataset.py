@@ -895,6 +895,14 @@ class Dataset:
         by arbitrary hierarchy levels, supporting datasets with different organizational
         structures (2, 3, 4+ levels).
 
+        Note
+        ----
+        Hierarchy parsing reads structure out of the ``__``-delimited group/sequence
+        names. This is *legacy convenience* for datasets that encode factors in
+        names. The canonical, redefinable way to group/categorize sequences is
+        tags (owned by mosaic-api); a tag-resolved subset is run via
+        ``run_feature(entries=[(group, sequence), ...])``.
+
         Parameters
         ----------
         level_names : list[str], optional
@@ -968,6 +976,14 @@ class Dataset:
 
         Provides flexible filtering for hierarchical datasets where group and/or
         sequence names encode multiple factors.
+
+        Note
+        ----
+        This is *legacy convenience* based on substring/prefix matching of the
+        ``__``-delimited names. The canonical, redefinable grouping of sequences
+        is tags (owned by mosaic-api). The returned ``(group, sequence)`` pairs
+        can be passed straight to ``run_feature(entries=...)`` to run a feature
+        over exactly that subset.
 
         Parameters
         ----------
@@ -2833,6 +2849,7 @@ class Dataset:
         feature: Any,
         groups: Iterable[str] | None = None,
         sequences: Iterable[str] | None = None,
+        entries: Iterable[tuple[str, str]] | None = None,
         overwrite: bool = False,
         parallel_workers: int | None = None,
         parallel_mode: str | None = "thread",
@@ -2854,6 +2871,11 @@ class Dataset:
             feature: Feature instance implementing the Feature protocol.
             groups: Scope filter — restrict to these group names.
             sequences: Scope filter — restrict to these sequence names.
+            entries: Scope filter — restrict to these explicit
+                ``(group, sequence)`` pairs. Selects an arbitrary subset
+                (unambiguous when sequence names repeat across groups), e.g. a
+                tag-resolved set of sequences. Intersects with
+                ``groups``/``sequences`` when those are also given.
             overwrite: Re-run even if outputs exist for this run_id.
             parallel_workers: When >1 and the feature declares itself
                 parallelizable, run the apply phase in parallel.
@@ -2897,6 +2919,7 @@ class Dataset:
             feature,
             groups=groups,
             sequences=sequences,
+            entries=entries,
             overwrite=overwrite,
             parallel_workers=parallel_workers,
             parallel_mode=parallel_mode,

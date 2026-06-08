@@ -144,6 +144,62 @@ def test_build_manifest_group_filter(tmp_path):
     assert scope.entries == {("g1", "s1")}
 
 
+def test_build_manifest_entries_filter(tmp_path):
+    """entries= selects an arbitrary (group, sequence) subset.
+
+    Critically, the sequence name "s1" is reused across groups g1 and g2, so a
+    bare sequences= filter would be ambiguous; entries= picks exactly the pairs
+    requested and excludes (g1, s2).
+    """
+    ds = _MockDataset(tmp_path)
+    entries = []
+    for g, s in [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]:
+        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
+        _make_parquet(p)
+        entries.append((g, s, p))
+    _write_tracks_index(ds, entries)
+
+    inputs = Inputs(("tracks",))
+    manifest, scope = build_manifest(
+        ds, inputs, entries={("g1", "s1"), ("g2", "s1")}
+    )
+    assert scope.entries == {("g1", "s1"), ("g2", "s1")}
+    assert set(manifest.keys()) == {"g1__s1", "g2__s1"}
+
+
+def test_build_manifest_entries_intersects_groups(tmp_path):
+    """entries= intersects with groups= when both are given."""
+    ds = _MockDataset(tmp_path)
+    entries = []
+    for g, s in [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]:
+        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
+        _make_parquet(p)
+        entries.append((g, s, p))
+    _write_tracks_index(ds, entries)
+
+    inputs = Inputs(("tracks",))
+    # entries asks for two pairs; groups restricts to g1 -> only (g1, s1) survives
+    manifest, scope = build_manifest(
+        ds, inputs, groups={"g1"}, entries={("g1", "s1"), ("g2", "s1")}
+    )
+    assert scope.entries == {("g1", "s1")}
+
+
+def test_build_manifest_entries_feature_input(tmp_path):
+    """entries= also scopes a feature-result input (via IndexCSV.read)."""
+    ds = _MockDataset(tmp_path)
+    run_id = _setup_feature(
+        ds, "speed-angvel", [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]
+    )
+    inputs = Inputs((Result(feature="speed-angvel", run_id=run_id),))
+
+    manifest, scope = build_manifest(
+        ds, inputs, entries={("g1", "s2"), ("g2", "s1")}
+    )
+    assert scope.entries == {("g1", "s2"), ("g2", "s1")}
+    assert set(manifest.keys()) == {"g1__s2", "g2__s1"}
+
+
 def test_build_manifest_adjacency(tmp_path):
     """Verify prev/next adjacency pointers are set correctly."""
     ds = _MockDataset(tmp_path)

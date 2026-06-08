@@ -48,11 +48,21 @@ def build_manifest(
     inputs: InputsLike,
     groups: set[str] | None = None,
     sequences: set[str] | None = None,
+    entries: set[tuple[str, str]] | None = None,
 ) -> tuple[Manifest, Scope]:
     """Build unified manifest for all input types.
 
     Returns the manifest (entry_key -> ManifestEntry) and the
     resolved Scope (entries present in ALL inputs after intersection).
+
+    Scope can be narrowed three ways (all applied, intersecting):
+
+    - ``groups`` / ``sequences`` -- keep entries whose group / sequence is in
+      the given set. These combine as a *cross-product* filter.
+    - ``entries`` -- keep only these explicit ``(group, sequence)`` pairs. Use
+      this when an arbitrary subset is required (e.g. a tag-resolved selection),
+      especially when sequence names are not unique across groups, where a bare
+      ``sequences`` filter would be ambiguous.
     """
     per_input_entries: list[set[tuple[str, str]]] = []
     per_input_paths: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
@@ -61,18 +71,19 @@ def build_manifest(
 
     for i, item in enumerate(inputs.root):
         if item == "tracks":
-            entries, path_map, full_order, path_map_all = _resolve_tracks(
-                ds, groups, sequences
+            resolved, path_map, full_order, path_map_all = _resolve_tracks(
+                ds, groups, sequences, entries
             )
         else:
-            entries, path_map, full_order, path_map_all = _resolve_feature(
+            resolved, path_map, full_order, path_map_all = _resolve_feature(
                 ds,
                 item.feature,
                 item.run_id,
                 groups,
                 sequences,
+                entries,
             )
-        per_input_entries.append(entries)
+        per_input_entries.append(resolved)
         per_input_paths.append(path_map)
         per_input_paths_all.append(path_map_all)
         if i == 0:
@@ -85,7 +96,14 @@ def build_manifest(
 
     scope = Scope(entries=shared_entries)
 
-    # Build per-group ordering from first input's full order
+    # Build per-group ordering from first input's full order.
+    #
+    # `group` here defines *temporal contiguity*: the prev/next adjacency below
+    # (used for overlap_frames) is computed only within a group, never across
+    # group boundaries. This is the one structural role of `group`; it is dormant
+    # for discrete datasets and becomes load-bearing for the future `continuous`
+    # dataset type (arbitrary time-window sequences). Preserve when softening
+    # `group` elsewhere. See also iteration.yield_sequences_with_overlap.
     group_order: dict[str, list[tuple[str, str]]] = {}
     for entry in first_full_order:
         group_order.setdefault(entry[0], []).append(entry)
@@ -147,6 +165,7 @@ def _resolve_tracks(
     ds: Dataset,
     groups: set[str] | None,
     sequences: set[str] | None,
+    entries: set[tuple[str, str]] | None = None,
 ) -> tuple[
     set[tuple[str, str]],
     dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -180,7 +199,7 @@ def _resolve_tracks(
     full_order = sorted(set(all_entries))
 
     # Filter for scoped subset
-    entries: set[tuple[str, str]] = set()
+    scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     for entry, spec in path_map_all.items():
         g, s = entry
@@ -188,10 +207,12 @@ def _resolve_tracks(
             continue
         if sequences and s not in sequences:
             continue
-        entries.add(entry)
+        if entries is not None and entry not in entries:
+            continue
+        scoped.add(entry)
         path_map[entry] = spec
 
-    return entries, path_map, full_order, path_map_all
+    return scoped, path_map, full_order, path_map_all
 
 
 def _resolve_feature(
@@ -200,6 +221,7 @@ def _resolve_feature(
     run_id: str | None,
     groups: set[str] | None,
     sequences: set[str] | None,
+    entries: set[tuple[str, str]] | None = None,
 ) -> tuple[
     set[tuple[str, str]],
     dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -236,16 +258,17 @@ def _resolve_feature(
         filter_ext=".parquet",
         groups=groups,
         sequences=sequences,
+        entries=entries,
     )
 
-    entries: set[tuple[str, str]] = set()
+    scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     for _, row in df.iterrows():
         entry = (row["group"], row["sequence"])
-        entries.add(entry)
+        scoped.add(entry)
         path_map[entry] = (ds.resolve_path(row["abs_path"]), ParquetLoadSpec())
 
-    return entries, path_map, full_order, path_map_all
+    return scoped, path_map, full_order, path_map_all
 
 
 def _load_neighbor(

@@ -275,6 +275,7 @@ def run_feature(
     feature: Feature,
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
+    entries: Iterable[tuple[str, str]] | None = None,
     overwrite: bool = False,
     parallel_workers: int | None = None,
     parallel_mode: str | None = "thread",
@@ -297,7 +298,14 @@ def run_feature(
         The feature object implementing the Feature protocol.  Its ``inputs``
         attribute controls where data is read from.
     groups, sequences : optional iterables
-        Scope filter (applies to whichever input source is used).
+        Scope filter (applies to whichever input source is used). These combine
+        as a cross-product filter (any matching group AND any matching sequence).
+    entries : optional iterable of (group, sequence)
+        Restrict the run to exactly these ``(group, sequence)`` pairs. Unlike
+        ``groups``/``sequences`` this selects an arbitrary subset and is
+        unambiguous when sequence names repeat across groups -- e.g. running a
+        feature over a tag-resolved set of sequences. Intersects with
+        ``groups``/``sequences`` when those are also given.
     overwrite : bool
         Overwrite existing outputs for this run_id.
     parallel_workers : int | None
@@ -348,13 +356,18 @@ def run_feature(
     # Scope sets
     groups_set = {str(g) for g in groups} if groups is not None else None
     sequences_set = {str(s) for s in sequences} if sequences is not None else None
+    entries_set = (
+        {(str(g), str(s)) for g, s in entries} if entries is not None else None
+    )
 
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}
         scope = Scope()
     else:
-        manifest, scope = build_manifest(ds, feature.inputs, groups_set, sequences_set)
+        manifest, scope = build_manifest(
+            ds, feature.inputs, groups_set, sequences_set, entries_set
+        )
 
     # Run ID hash
     hashable: dict[str, object] = {
@@ -749,6 +762,7 @@ def load_values(
     *,
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
+    entries: Iterable[tuple[str, str]] | None = None,
     filter_start_frame: int | None = None,
     filter_end_frame: int | None = None,
     filter_start_time: float | None = None,
@@ -806,8 +820,13 @@ def load_values(
     # Scope
     groups_set = {str(g) for g in groups} if groups is not None else None
     sequences_set = {str(s) for s in sequences} if sequences is not None else None
+    entries_set = (
+        {(str(g), str(s)) for g, s in entries} if entries is not None else None
+    )
 
-    manifest, scope = build_manifest(ds, synthetic_inputs, groups_set, sequences_set)
+    manifest, scope = build_manifest(
+        ds, synthetic_inputs, groups_set, sequences_set, entries_set
+    )
 
     # Frame range
     frame_start, frame_end = resolve_frame_range(

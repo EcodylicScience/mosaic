@@ -114,6 +114,11 @@ raw tracks/labels
 run_feature(...)             → features/<name>/<run_id>/*.parquet
 ```
 
+`group` in the `<group>__<seq>` name is an optional namespace (it may be empty),
+not the canonical grouping — flexible, redefinable grouping of sequences is done
+with tags, and a feature can be run over an arbitrary subset of sequences via
+`run_feature(ds, feature, entries=[(group, sequence), ...])`.
+
 ## Repository layout
 
 ```

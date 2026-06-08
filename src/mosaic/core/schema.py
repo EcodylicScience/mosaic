@@ -62,7 +62,16 @@ def ensure_track_schema(
         print(f"[schema:{schema_name}]{src_tag} Validation report -> {report}")
     return df, report
 
-# Default T-Rex-like schema (flexible): must have these core columns; poseX/poseY are prefix-validated
+# Default T-Rex-like schema (flexible): must have these core columns; poseX/poseY are prefix-validated.
+#
+# Note on `group`: it is a *required column* but may be the empty string. `group`
+# is an optional, coarse namespace that — together with `sequence` — forms the
+# composite identity/filename key (`<group>__<seq>`, or just `<seq>` when group is
+# empty). It is NOT the canonical way to categorize/group sequences for analysis:
+# flexible, redefinable grouping is done with tags (owned by mosaic-api), and an
+# arbitrary tag-resolved subset can be run via `run_feature(entries=[(group, seq), ...])`.
+# `group` keeps a structural meaning only as a temporal-contiguity key for the
+# future `continuous` dataset type (see core/pipeline/manifest.py).
 register_track_schema(TrackSchema(
     name="trex_v1",
     required={
@@ -72,5 +81,7 @@ register_track_schema(TrackSchema(
     recommended={
         "X#wcentroid", "Y#wcentroid", "SPEED", "ANGLE",
     },
-    description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns."
+    description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
+                "`group` is required but may be empty (an optional namespace, not the "
+                "canonical grouping — use tags / run_feature(entries=...) for that)."
 ))

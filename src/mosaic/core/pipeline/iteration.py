@@ -126,7 +126,16 @@ def yield_sequences_with_overlap(
     # Single index read for path lookup, adjacency, and filtering
     df_idx = _read_tracks_index(ds)
 
-    # Build path lookup and sorted sequence list per group (for adjacency)
+    # Build path lookup and sorted sequence list per group (for adjacency).
+    #
+    # `group` here defines *temporal contiguity*: prev/next neighbors are found
+    # only among sequences sharing a group, so overlap is never pulled across a
+    # group boundary. This is the one role where `group` is structural rather
+    # than a soft/optional label. It is dormant for discrete datasets (sequences
+    # are independent) and becomes load-bearing for the planned `continuous`
+    # dataset type, where a `sequence` is an arbitrary time window and the group
+    # (or a future `recording_id`) marks which windows are adjacent in time.
+    # Keep this intact when softening `group` elsewhere.
     path_lookup: dict[tuple[str, str], str] = {}
     seqs_by_group: dict[str, list[tuple[str, str]]] = {}
     for _, row in df_idx.sort_values(["group", "sequence"]).iterrows():

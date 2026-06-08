@@ -262,6 +262,31 @@ def test_stateless_basic(tmp_path: Path) -> None:
     assert all(idx_df["finished_at"] != "")
 
 
+def test_entries_selects_arbitrary_subset(tmp_path: Path) -> None:
+    """run_feature(entries=...) runs exactly the requested (group, sequence) pairs.
+
+    Sequence name "s1" repeats across groups g1 and g2, so a bare sequences=
+    filter would be ambiguous; entries= selects (g1, s1) and (g2, s1) while
+    excluding (g1, s2) -- the arbitrary, tag-resolvable subset case.
+    """
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g1", "s1"), ("g1", "s2"), ("g2", "s1")])
+
+    feature = _StatelessFeature()
+    result = run_feature(ds, feature, entries=[("g1", "s1"), ("g2", "s1")])
+
+    from mosaic.core.pipeline.index import feature_run_root
+
+    run_root = feature_run_root(ds, result.feature, result.run_id)
+    parquets = sorted(p.name for p in run_root.glob("*.parquet"))
+    assert parquets == ["g1__s1.parquet", "g2__s1.parquet"]
+
+    idx = feature_index(feature_index_path(ds, result.feature))
+    idx_df = idx.read(run_id=result.run_id)
+    produced = set(zip(idx_df["group"], idx_df["sequence"]))
+    assert produced == {("g1", "s1"), ("g2", "s1")}
+
+
 def test_stateful_fit_and_apply(tmp_path: Path) -> None:
     ds = _MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
