@@ -24,11 +24,13 @@ accessible from mosaic.core.dataset module.
 # Import all converter modules to trigger registration.
 # Each module calls register_track_converter() at module level.
 from . import calms21
+from . import deeplabcut
 from . import mabe22
 from . import trex
 
 __all__ = [
     "calms21",
+    "deeplabcut",
     "mabe22",
     "trex",
 ]
