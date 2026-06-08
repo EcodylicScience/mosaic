@@ -1011,6 +1011,7 @@ class FeralFeature:
 
         num_classes = len(self._classes)
         all_predictions: list[dict] = []
+        skipped_missing = 0
 
         for _, row in video_rows.iterrows():
             video_path_str = row.get("video_path")
@@ -1020,6 +1021,7 @@ class FeralFeature:
             # Resolve absolute path
             abs_video_path = video_dir / video_path_str
             if not abs_video_path.exists():
+                skipped_missing += 1
                 continue
 
             total_frames = get_frame_count(str(abs_video_path))
@@ -1086,6 +1088,18 @@ class FeralFeature:
                 pred_row["predicted_label"] = self._predict_label(frame_preds[i])
 
                 all_predictions.append(pred_row)
+
+        if skipped_missing:
+            log.warning(
+                "FeralFeature.apply: %d of %d crop videos not found under %s; "
+                "produced %d predictions. If all are missing, the crop "
+                "directory failed to resolve (check the upstream crop run / a "
+                "stale video_dir in feral_config.json).",
+                skipped_missing,
+                len(video_rows),
+                video_dir,
+                len(all_predictions),
+            )
 
         if not all_predictions:
             return pd.DataFrame()

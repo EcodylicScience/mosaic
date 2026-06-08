@@ -86,17 +86,42 @@ def build_feature_meta(group: str, sequence: str, run_root: Path) -> FeatureMeta
 # --- Dependency resolution ---
 
 
+def _build_result_lookup(
+    ds: Dataset, feature_name: str, run_id: str | None
+) -> DependencyLookup:
+    """Build a (group, sequence) -> Path lookup for an upstream feature's run.
+
+    Reads the upstream feature's index and resolves each entry's parquet path.
+    Shared by the params-field and ``feature.inputs`` dependency-resolution
+    paths in :func:`_resolve_dependencies`.
+    """
+    dep_index = feature_index(feature_index_path(ds, feature_name))
+    if run_id is None:
+        run_id = dep_index.latest_run_id()
+    index_df = dep_index.read(run_id=run_id, filter_ext=".parquet")
+    lookup: DependencyLookup = {}
+    for _, row in index_df.iterrows():
+        group = str(row.get("group", ""))
+        sequence = str(row.get("sequence", ""))
+        abs_path = str(row.get("abs_path", ""))
+        if abs_path:
+            lookup[(group, sequence)] = ds.resolve_path(abs_path)
+    return lookup
+
+
 def _resolve_dependencies(
-    ds: Dataset, params: Params
+    ds: Dataset, feature: Feature
 ) -> tuple[dict[str, Path], dict[str, DependencyLookup]]:
-    """Introspect params fields to resolve upstream dependencies.
+    """Resolve upstream dependencies from params fields and feature inputs.
 
     Returns (artifact_paths, dependency_lookups) where:
     - artifact_paths maps field name to resolved file/directory Path
-    - dependency_lookups maps field name to (group, sequence) -> Path dict
+    - dependency_lookups maps field name (or ``_input_<i>`` for Results
+      referenced via ``feature.inputs``) to a (group, sequence) -> Path dict
     """
     from .index import latest_feature_run_root as _latest_feature_run_root
 
+    params = feature.params
     artifact_paths: dict[str, Path] = {}
     dependency_lookups: dict[str, DependencyLookup] = {}
 
@@ -132,20 +157,9 @@ def _resolve_dependencies(
                         f"feature but is typed as Result, not NNResult"
                     )
                     raise TypeError(msg)
-                dep_index = feature_index(feature_index_path(ds, feature_name))
-                if _run_id is None:
-                    _run_id = dep_index.latest_run_id()
-                index_df = dep_index.read(
-                    run_id=_run_id, filter_ext=".parquet"
+                dependency_lookups[field_name] = _build_result_lookup(
+                    ds, feature_name, _run_id
                 )
-                lookup: DependencyLookup = {}
-                for _, row in index_df.iterrows():
-                    group = str(row.get("group", ""))
-                    sequence = str(row.get("sequence", ""))
-                    abs_path = str(row.get("abs_path", ""))
-                    if abs_path:
-                        lookup[(group, sequence)] = ds.resolve_path(abs_path)
-                dependency_lookups[field_name] = lookup
 
             case LabelsSource(kind=str(kind)):
                 if not kind:
@@ -161,6 +175,19 @@ def _resolve_dependencies(
 
             case _:
                 pass
+
+    # Also resolve dependencies referenced via feature.inputs (typed Result
+    # items), not just params fields. Features like FeralFeature carry their
+    # upstream output location here rather than in a params field. Appended
+    # after the params loop so params-derived lookups keep priority for
+    # consumers that select the first non-empty lookup.
+    for idx, result in enumerate(feature.inputs.feature_inputs):
+        feature_name = result.feature
+        if not feature_name or feature_name == "nearest-neighbor":
+            continue
+        lookup = _build_result_lookup(ds, feature_name, result.run_id)
+        if lookup:  # skip empty so first-non-empty consumers aren't misled
+            dependency_lookups[f"_input_{idx}"] = lookup
 
     return artifact_paths, dependency_lookups
 
@@ -418,7 +445,7 @@ def run_feature(
         feature.bind_dataset(ds)
 
     # Resolve dependencies
-    artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature.params)
+    artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature)
 
     # Resolve pair filter
     pair_filter_spec = _resolve_pair_filter(feature.params)
