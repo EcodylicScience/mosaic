@@ -83,6 +83,12 @@ def _import_feral(feral_code_dir: str | Path | None):
         ) from None
 
 
+def _chunked(seq, k):
+    """Yield successive k-sized sublists of ``seq`` (last may be shorter)."""
+    for i in range(0, len(seq), k):
+        yield seq[i:i + k]
+
+
 class FeralTrainingConfig(StrictModel):
     """Training hyperparameters for FERAL ViT fine-tuning.
 
@@ -179,6 +185,14 @@ class FeralFeature:
         Input resolution for ViT (default 256).
     device : str
         PyTorch device (default "cuda").
+    infer_batch_size : int
+        Chunks per forward pass during apply() (default 4). Pure
+        throughput knob -- batching is numerically equivalent to the
+        per-chunk path (eval() freezes BatchNorm1d, attention is
+        within-sample). Raise for more GPU utilization; lower on OOM.
+    inference_autocast : bool
+        Run apply()'s forward pass in bfloat16 autocast (default False =
+        full float32). See "Precision convention" above.
     class_names : dict | None
         Class index -> name mapping. Auto-detected from model config.
     decision_threshold : float | None
@@ -215,6 +229,12 @@ class FeralFeature:
         chunk_step: int = 1
         resize_to: int = 256
         device: str = "cuda"
+        # Chunks per forward pass during apply(). Pure throughput knob:
+        # batching is numerically equivalent to the per-chunk path
+        # (eval() freezes BatchNorm1d + disables dropout; all attention is
+        # within-sample). Raise for GPU utilization, lower on OOM. Propagates
+        # to parallel workers via params.model_dump() like any other field.
+        infer_batch_size: int = 4
         # Production inference precision override. Default False = full float32,
         # matching the class-level "Precision convention". Set True for ~1.5-2x
         # speedup at the cost of bfloat16's decision-boundary noise (~10pp
@@ -1008,6 +1028,63 @@ class FeralFeature:
         )
         scale = 0.00392156862745098  # 1/255
 
+        # Batched-inference setup (all constant across videos -- built once).
+        # out_tokens = predictions the attention pooler emits per chunk
+        # (== predict_per_item); the model output is chunk-major, so chunk n's
+        # rows are the contiguous slice [n*out_tokens : (n+1)*out_tokens].
+        out_tokens = self._config.get("predict_per_item", p.predict_per_item)
+        infer_bs = max(1, p.infer_batch_size)
+
+        # Precision regime, built once and reused across batches. Default full
+        # float32 -- same convention as the eval paths -- because inference
+        # results land in stored parquet outputs that get acted on downstream
+        # (event counts, aggregate analyses, paper figures), so reproducibility
+        # wins over the ~1.5-2x speedup bfloat16 autocast would buy. Opt in via
+        # params.inference_autocast=True when wall-clock dominates over the
+        # ~10pp recall shift on threshold-sensitive classes. See class docstring
+        # "Precision convention".
+        if p.inference_autocast and device.type == "cuda":
+            import torch.amp
+            ac_ctx = torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda")
+        else:
+            import contextlib
+            ac_ctx = contextlib.nullcontext()
+
+        def _run_chunk_batch(abs_video_path, batch_frames):
+            """Run the model on a list of chunks -> list of per-chunk prob
+            arrays (one (out_tokens, num_classes) array per chunk).
+
+            Batching does not change per-sample outputs: model.eval() freezes
+            BatchNorm1d running stats and disables dropout, and all attention is
+            within-sample -- so this is numerically equivalent to the old
+            per-chunk path. On CUDA OOM the batch is split in half and retried
+            recursively, down to a single chunk.
+            """
+            tensors = []
+            for frames in batch_frames:
+                vt = read_range_video_decord(str(abs_video_path), frames)  # (T, C, H, W)
+                vt = resize(vt)
+                vt = norm(vt * scale)
+                tensors.append(vt)
+            batch_tensor = torch.stack(tensors, dim=0).to(device)  # (K, T, C, H, W)
+            try:
+                with torch.no_grad(), ac_ctx:
+                    output = self._model(batch_tensor)  # (K*out_tokens, num_classes)
+                    probs = torch.nn.functional.softmax(output, dim=1)
+                    probs = probs.cpu().numpy()
+            except torch.cuda.OutOfMemoryError:
+                del batch_tensor
+                torch.cuda.empty_cache()
+                if len(batch_frames) == 1:
+                    raise
+                mid = len(batch_frames) // 2
+                return (_run_chunk_batch(abs_video_path, batch_frames[:mid])
+                        + _run_chunk_batch(abs_video_path, batch_frames[mid:]))
+            return [
+                probs[n * out_tokens:(n + 1) * out_tokens]
+                for n in range(len(batch_frames))
+            ]
+
         # Detect input format and normalize to per-video rows
         is_pair_input = "id_a" in df.columns and "id_b" in df.columns
         video_rows = self._normalize_input(df)
@@ -1052,38 +1129,17 @@ class FeralFeature:
             frame_preds = np.zeros((total_frames, num_classes), dtype=np.float32)
             frame_counts = np.zeros(total_frames, dtype=np.float32)
 
-            for frames in frame_ids:
-                video_tensor = read_range_video_decord(str(abs_video_path), frames)
-                video_tensor = resize(video_tensor)
-                video_tensor = norm(video_tensor * scale)
-                video_tensor = video_tensor.unsqueeze(0).to(device)
-
-                # Default: full float32 -- same convention as the eval
-                # paths. Inference results land in stored parquet outputs
-                # that get acted on downstream (event counts, aggregate
-                # analyses, paper figures), so reproducibility wins over
-                # the ~1.5-2x speedup that bfloat16 autocast would buy.
-                # Opt-in via params.inference_autocast=True for the
-                # speedup when wall-clock dominates over the ~10pp recall
-                # shift on threshold-sensitive classes. See class docstring
-                # "Precision convention".
-                if p.inference_autocast and device.type == "cuda":
-                    import torch.amp
-                    ac_ctx = torch.amp.autocast(
-                        dtype=torch.bfloat16, device_type="cuda",
-                    )
-                else:
-                    import contextlib
-                    ac_ctx = contextlib.nullcontext()
-                with torch.no_grad(), ac_ctx:
-                    output = self._model(video_tensor)
-                    probs = torch.nn.functional.softmax(output, dim=1)
-                    probs = probs.cpu().numpy()
-
-                for i, frame_idx in enumerate(frames):
-                    if i < len(probs):
-                        frame_preds[frame_idx] += probs[i]
-                        frame_counts[frame_idx] += 1
+            # Batch chunks through the model to amortize kernel-launch overhead
+            # and fill the GPU (~infer_bs x fewer forward passes). The output is
+            # chunk-major, so each chunk's predictions map back to its frames
+            # exactly as in the old per-chunk path.
+            for batch_frames in _chunked(frame_ids, infer_bs):
+                chunk_probs_list = _run_chunk_batch(abs_video_path, batch_frames)
+                for chunk_probs, frames in zip(chunk_probs_list, batch_frames):
+                    for i, frame_idx in enumerate(frames):
+                        if i < len(chunk_probs):
+                            frame_preds[frame_idx] += chunk_probs[i]
+                            frame_counts[frame_idx] += 1
 
             # Average overlapping predictions
             valid = frame_counts > 0
