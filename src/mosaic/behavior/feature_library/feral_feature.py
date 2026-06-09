@@ -133,14 +133,23 @@ class FeralFeature:
         else -- per-epoch validation inside ``fit()``, the post-training
         test eval (``_evaluate_partition``), the public
         ``FeralFeature.evaluate()``, and production inference
-        (``apply()``) -- runs in full float32. The eval and apply paths
-        produce numbers that get stored and acted on downstream
+        (``apply()``) -- defaults to full float32. The eval and apply
+        paths produce numbers that get stored and acted on downstream
         (reports.json metrics, per-frame prediction parquets, paper
         figures), so reproducibility wins over the ~1.5-2x speedup that
         bfloat16 would buy. bfloat16 shifts decision boundaries near
         probability 0.5 and can move recall by 10+ points on
         threshold-sensitive classes -- not a trade-off worth taking when
         the cost is a one-time inference pass.
+
+        **Opt-in override for apply()**: set
+        ``params.inference_autocast = True`` to run apply()'s forward
+        pass in bfloat16 autocast. Trades the ~10pp recall shift for the
+        speedup; useful when wall-clock dominates (e.g., dense crop
+        pipelines with chunk_shift << chunk_length) and per-frame
+        argmax precision can be re-validated downstream. The flag is
+        persisted in feral_config.json so consumers can tell at a glance
+        which precision regime produced any given run's parquets.
 
     Supports two input formats for the apply phase:
 
@@ -206,6 +215,13 @@ class FeralFeature:
         chunk_step: int = 1
         resize_to: int = 256
         device: str = "cuda"
+        # Production inference precision override. Default False = full float32,
+        # matching the class-level "Precision convention". Set True for ~1.5-2x
+        # speedup at the cost of bfloat16's decision-boundary noise (~10pp
+        # recall shift on threshold-sensitive classes). Stored in
+        # feral_config.json so re-runs and downstream readers know which
+        # precision regime produced the parquets.
+        inference_autocast: bool = False
         # Class configuration (auto-detected from model config if None)
         class_names: dict[str, str] | None = None
         # Decision threshold (matches XgboostFeature pattern)
@@ -1042,14 +1058,24 @@ class FeralFeature:
                 video_tensor = norm(video_tensor * scale)
                 video_tensor = video_tensor.unsqueeze(0).to(device)
 
-                # Production inference runs in full float32 -- same
-                # convention as the eval paths. Inference results land
-                # in stored parquet outputs that get acted on downstream
-                # (event counts, aggregate analyses, paper figures), so
-                # reproducibility wins over the ~1.5-2x speedup that
-                # bfloat16 autocast would buy. See class docstring
+                # Default: full float32 -- same convention as the eval
+                # paths. Inference results land in stored parquet outputs
+                # that get acted on downstream (event counts, aggregate
+                # analyses, paper figures), so reproducibility wins over
+                # the ~1.5-2x speedup that bfloat16 autocast would buy.
+                # Opt-in via params.inference_autocast=True for the
+                # speedup when wall-clock dominates over the ~10pp recall
+                # shift on threshold-sensitive classes. See class docstring
                 # "Precision convention".
-                with torch.no_grad():
+                if p.inference_autocast and device.type == "cuda":
+                    import torch.amp
+                    ac_ctx = torch.amp.autocast(
+                        dtype=torch.bfloat16, device_type="cuda",
+                    )
+                else:
+                    import contextlib
+                    ac_ctx = contextlib.nullcontext()
+                with torch.no_grad(), ac_ctx:
                     output = self._model(video_tensor)
                     probs = torch.nn.functional.softmax(output, dim=1)
                     probs = probs.cpu().numpy()
