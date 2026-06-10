@@ -396,9 +396,10 @@ def run_feature(
             ds, feature.inputs, groups_set, sequences_set, entries_set
         )
 
-    # Run ID hash
+    # Run ID hash. identity_dump() drops HASH_EXCLUDE-marked params (throughput
+    # knobs like infer_batch_size) so retuning them doesn't bust the cache.
     hashable: dict[str, object] = {
-        "_params": feature.params.model_dump(),
+        "_params": feature.params.identity_dump(),
         "_inputs": feature.inputs.model_dump(),
         "_frame_range": [frame_start, frame_end],
     }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import pytest
 from pydantic import BaseModel as _PydanticBaseModel
@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError
 from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
 from mosaic.core.pipeline.types import (
     COLUMNS,
+    HASH_EXCLUDE,
     Inputs,
     Params,
     Result,
@@ -150,6 +151,75 @@ def test_hash_stability_all_converted_features() -> None:
         assert _hash_params(model) == _hash_params(as_dict), (
             f"{name}: hash mismatch between model and dict"
         )
+
+
+# --- HASH_EXCLUDE / identity_dump (run_id hash exclusion) ---
+
+
+class _ThroughputParams(Params):
+    """Params with a hash-excluded throughput knob alongside a real field."""
+
+    real_field: int = 1
+    batch_size: Annotated[int, HASH_EXCLUDE] = 4
+
+
+def _runid_hash(p: Params) -> str:
+    """Mirror the run.py / pipeline.py run_id hashable shape."""
+    from mosaic.core.pipeline._utils import hash_params as _hash_params
+
+    return _hash_params(
+        {"_params": p.identity_dump(), "_inputs": {}, "_frame_range": [None, None]}
+    )
+
+
+def test_identity_dump_drops_marked_field_but_model_dump_keeps_it() -> None:
+    p = _ThroughputParams(batch_size=8)
+    # Excluded from the identity dump (run_id hash input)...
+    assert "batch_size" not in p.identity_dump()
+    assert "real_field" in p.identity_dump()
+    # ...but still present in the full dump (params.json + worker propagation).
+    assert p.model_dump()["batch_size"] == 8
+
+
+def test_identity_dump_equals_model_dump_when_nothing_marked() -> None:
+    """Backward-compat: unmarked Params hash exactly as before."""
+
+    class _Plain(Params):
+        a: int = 1
+        b: str = "x"
+
+    assert _Plain().identity_dump() == _Plain().model_dump()
+
+
+def test_hash_excluded_field_does_not_change_run_id() -> None:
+    assert _runid_hash(_ThroughputParams(batch_size=4)) == _runid_hash(
+        _ThroughputParams(batch_size=8)
+    )
+
+
+def test_real_field_still_changes_run_id() -> None:
+    assert _runid_hash(_ThroughputParams(real_field=1)) != _runid_hash(
+        _ThroughputParams(real_field=2)
+    )
+
+
+def test_feral_infer_batch_size_excluded_from_run_id() -> None:
+    """The motivating case: FeralFeature.infer_batch_size is hash-excluded."""
+    from mosaic.behavior.feature_library.feral_feature import FeralFeature
+
+    base = {"feral_code_dir": "/tmp/feral", "model_dir": "/tmp/model"}
+    p4 = FeralFeature.Params.from_overrides({**base, "infer_batch_size": 4})
+    p8 = FeralFeature.Params.from_overrides({**base, "infer_batch_size": 8})
+    pcs = FeralFeature.Params.from_overrides(
+        {**base, "infer_batch_size": 4, "chunk_shift": 16}
+    )
+
+    # Persisted (provenance) but invisible to the run_id hash.
+    assert p8.model_dump()["infer_batch_size"] == 8
+    assert "infer_batch_size" not in p4.identity_dump()
+    assert _runid_hash(p4) == _runid_hash(p8)
+    # A real hyperparameter still moves the cache key.
+    assert _runid_hash(p4) != _runid_hash(pcs)
 
 
 # --- Spec models ---

@@ -32,7 +32,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import ClassVar, Self, final
+from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
@@ -42,6 +42,7 @@ from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     DependencyLookup,
+    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
@@ -234,7 +235,9 @@ class FeralFeature:
         # (eval() freezes BatchNorm1d + disables dropout; all attention is
         # within-sample). Raise for GPU utilization, lower on OOM. Propagates
         # to parallel workers via params.model_dump() like any other field.
-        infer_batch_size: int = 4
+        # HASH_EXCLUDE: omitted from the run_id hash (it doesn't affect output),
+        # so changing it never invalidates cached FERAL outputs.
+        infer_batch_size: Annotated[int, HASH_EXCLUDE] = 4
         # Production inference precision override. Default False = full float32,
         # matching the class-level "Precision convention". Set True for ~1.5-2x
         # speedup at the cost of bfloat16's decision-boundary noise (~10pp

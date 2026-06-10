@@ -223,9 +223,11 @@ class Pipeline:
                     kwargs.get("filter_end_time"),
                 )
 
-                # Compute expected run_id (same logic as run_feature)
+                # Compute expected run_id (same logic as run_feature).
+                # identity_dump() drops HASH_EXCLUDE-marked throughput params so
+                # this stays in sync with run_feature's cache key.
                 hashable: dict[str, object] = {
-                    "_params": feature.params.model_dump(),
+                    "_params": feature.params.identity_dump(),
                     "_inputs": feature.inputs.model_dump(),
                     "_frame_range": [frame_start, frame_end],
                 }

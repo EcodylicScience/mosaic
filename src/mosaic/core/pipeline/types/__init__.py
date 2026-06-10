@@ -31,7 +31,11 @@ from mosaic.core.pipeline.types.labels import (
     LabelsSource,
     LabelsSourceSpec,
 )
-from mosaic.core.pipeline.types.params import GlobalModelParams, Params
+from mosaic.core.pipeline.types.params import (
+    HASH_EXCLUDE,
+    GlobalModelParams,
+    Params,
+)
 from mosaic.core.pipeline.types.results import (
     BodyScaleResult,
     NNResult,
@@ -50,6 +54,7 @@ __all__ = [
     "FeatureLabelsSource",
     "GlobalModelParams",
     "GroundTruthLabelsSource",
+    "HASH_EXCLUDE",
     "InputStream",
     "InputItem",
     "InputRequire",

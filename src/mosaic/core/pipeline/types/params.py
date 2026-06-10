@@ -13,12 +13,41 @@ from mosaic.core.pipeline.types.artifacts import (
 )
 
 
+class _HashExclude:
+    """Marker for ``Annotated[T, HASH_EXCLUDE]`` Params fields omitted from the
+    run_id hash. Use for throughput-only knobs (batch sizes, worker counts)
+    that change runtime but not output, so retuning them never invalidates
+    cached results. The field still appears in model_dump(), params.json, and
+    propagates to workers -- only the run identity hash ignores it.
+    """
+
+    __slots__ = ()
+
+
+HASH_EXCLUDE = _HashExclude()
+
+
 class Params(StrictModel):
     """Base for all feature parameter models.
 
     Provides from_overrides() constructor for user-config dicts.
     Subclasses declare feature-specific fields.
     """
+
+    def identity_dump(self) -> dict[str, object]:
+        """model_dump() minus HASH_EXCLUDE-marked fields -- the run_id hash
+        input.
+
+        Fields tagged ``Annotated[T, HASH_EXCLUDE]`` are throughput-only knobs
+        that don't affect output, so they're stripped here to keep them out of
+        run identity. Top-level fields only (throughput knobs are top-level);
+        nested config models are not recursed into.
+        """
+        dumped = self.model_dump()
+        for name, info in type(self).model_fields.items():
+            if any(isinstance(m, _HashExclude) for m in info.metadata):
+                dumped.pop(name, None)
+        return dumped
 
     @classmethod
     def from_overrides(cls, overrides: dict[str, object] | None = None) -> Self:

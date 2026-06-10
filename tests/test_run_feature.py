@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ import pytest
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
+    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
@@ -607,3 +608,45 @@ def test_noncallable_check_output_falls_back_to_default(tmp_path: Path) -> None:
     f2 = _NonCallableCheckFeature()
     run_feature(ds, f2, check_output=True)  # must not raise
     assert f2.apply_calls == 0
+
+
+# --- HASH_EXCLUDE: throughput-only params don't bust the cache ---
+
+
+class _ThroughputFeature(_StatelessFeature):
+    """Like _StatelessFeature but with a hash-excluded throughput knob."""
+
+    name = "test-throughput"
+
+    class Params(Params):
+        real: int = 0
+        batch_size: Annotated[int, HASH_EXCLUDE] = 4
+
+
+def test_hash_excluded_param_reuses_cache(tmp_path: Path) -> None:
+    from mosaic.core.pipeline.index import feature_run_root
+
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1")])
+
+    # First run at batch_size=4.
+    r1 = run_feature(ds, _ThroughputFeature(params={"batch_size": 4}))
+    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    parquet = sorted(run_root.glob("*.parquet"))[0]
+    mtime_before = os.path.getmtime(parquet)
+
+    # Re-run at batch_size=8: same run_id, output untouched (cache reused).
+    r2 = run_feature(
+        ds, _ThroughputFeature(params={"batch_size": 8}), overwrite=False
+    )
+    assert r2.run_id == r1.run_id
+    assert os.path.getmtime(parquet) == mtime_before
+
+
+def test_real_param_change_busts_cache(tmp_path: Path) -> None:
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1")])
+
+    r1 = run_feature(ds, _ThroughputFeature(params={"real": 0}))
+    r2 = run_feature(ds, _ThroughputFeature(params={"real": 1}))
+    assert r2.run_id != r1.run_id

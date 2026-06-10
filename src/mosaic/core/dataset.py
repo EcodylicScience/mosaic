@@ -395,6 +395,13 @@ class Dataset:
     segment_duration: str | None = None  # e.g., "1H", "30min", "1D"
     time_column: str | None = None  # column name for timestamps
 
+    def __post_init__(self) -> None:
+        # Normalize manifest_path: callers may pass a str (e.g. from
+        # os.path.join). Coercing to Path keeps methods like save() — which
+        # call self.manifest_path.write_text(...) — working regardless of
+        # whether a str or Path was supplied.
+        self.manifest_path = Path(self.manifest_path)
+
     @property
     def is_continuous(self) -> bool:
         """Check if this is a continuous recording dataset."""
