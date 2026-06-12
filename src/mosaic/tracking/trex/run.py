@@ -5,12 +5,28 @@ enabling headless (``-nowindow``) batch conversion and tracking of
 animal videos.
 
 Requires:
-    The ``trex`` binary must be installed and available on ``$PATH``.
+    The ``trex`` binary. Because the TRex conda package pins ``python=3.11`` and
+    ``numpy=1.26``, it usually lives in its **own** conda env (e.g. ``track``)
+    rather than the mosaic env. Point the wrappers at it one of three ways
+    (highest precedence first), via per-call args or env vars:
+
+    * ``trex_conda_env=`` / ``MOSAIC_TREX_CONDA_ENV`` — run via
+      ``conda run -n <env> trex`` (recommended for the two-env setup);
+    * ``trex_bin=`` / ``MOSAIC_TREX_BIN`` — an explicit path to the binary;
+    * otherwise ``trex`` is looked up on ``$PATH`` (single-env install).
+
+    TRex initialises an OpenGL/GLFW context even headless, so on a server you
+    need a display: run a virtual framebuffer (``Xvfb :99 -screen 0 ...``) and
+    pass ``display=":99"`` (or set ``DISPLAY`` / ``MOSAIC_TREX_DISPLAY``). Do
+    **not** wrap ``trex`` in ``xvfb-run`` on ``$PATH`` — TRex relaunches itself,
+    so a per-call ``xvfb-run`` wrapper fork-bombs; one persistent ``Xvfb`` is
+    correct.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
@@ -27,13 +43,16 @@ logger = logging.getLogger(__name__)
 
 
 class TRexNotFoundError(FileNotFoundError):
-    """Raised when the ``trex`` binary is not found on ``$PATH``."""
+    """Raised when the ``trex`` binary (or ``conda``) cannot be located."""
 
-    def __init__(self) -> None:
+    def __init__(self, message: str | None = None) -> None:
         super().__init__(
-            "The 'trex' binary was not found on $PATH.  "
-            "Install T-Rex and ensure it is accessible.  "
-            "See https://trex.run for installation instructions."
+            message
+            or (
+                "The 'trex' binary was not found on $PATH.  "
+                "Install T-Rex and ensure it is accessible.  "
+                "See https://trex.run for installation instructions."
+            )
         )
 
 
@@ -99,6 +118,70 @@ def _ensure_trex() -> str:
     return path
 
 
+def _conda_invocation(env_name: str) -> list[str]:
+    """Return an argv prefix that runs ``trex`` inside conda env *env_name*.
+
+    Uses ``conda run`` so the target env is fully activated — TRex's embedded
+    Python and shared libraries resolve against that env's ``CONDA_PREFIX``
+    (required when TRex lives in a different env than the caller, e.g. a
+    py3.11 ``track`` env driven from a py3.12 ``mosaic`` kernel). ``conda run``
+    puts the target env's ``bin`` first on ``PATH``, so any self-relaunch of
+    ``trex`` resolves to the real binary (no wrapper recursion).
+    """
+    conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
+    if conda is None:
+        raise TRexNotFoundError(
+            f"'conda' was not found on $PATH; cannot run trex in env "
+            f"'{env_name}'. Set MOSAIC_TREX_BIN to an explicit trex path "
+            f"instead, or make conda available."
+        )
+    return [conda, "run", "--no-capture-output", "-n", env_name, "trex"]
+
+
+def _trex_invocation(
+    *,
+    trex_conda_env: str | None = None,
+    trex_bin: str | Path | None = None,
+) -> list[str]:
+    """Resolve how to launch ``trex``, returned as an argv prefix.
+
+    Precedence (first match wins):
+
+    1. ``trex_conda_env`` argument → ``conda run -n <env> trex``
+    2. ``trex_bin`` argument → ``[<binary>]``
+    3. ``MOSAIC_TREX_CONDA_ENV`` env var → ``conda run -n <env> trex``
+    4. ``MOSAIC_TREX_BIN`` env var → ``[<binary>]``
+    5. ``shutil.which("trex")`` (default; raises :class:`TRexNotFoundError`)
+
+    The default (case 5) preserves the original single-env behaviour, so
+    existing callers are unaffected.
+    """
+    if trex_conda_env:
+        return _conda_invocation(trex_conda_env)
+    if trex_bin:
+        return [str(trex_bin)]
+    env_conda = os.environ.get("MOSAIC_TREX_CONDA_ENV")
+    if env_conda:
+        return _conda_invocation(env_conda)
+    env_bin = os.environ.get("MOSAIC_TREX_BIN")
+    if env_bin:
+        return [env_bin]
+    return [_ensure_trex()]
+
+
+def _resolve_display(display: str | None) -> dict[str, str] | None:
+    """Return an env overlay setting ``DISPLAY`` for the trex subprocess.
+
+    TRex initialises a GLFW/OpenGL context even with ``-nowindow``, so it needs
+    a display. On a headless host run a virtual framebuffer (``Xvfb :99 ...``)
+    and either export ``DISPLAY`` (inherited automatically) or pass *display*
+    here. Falls back to the ``MOSAIC_TREX_DISPLAY`` env var; ``None`` means use
+    whatever ``DISPLAY`` is already in the environment.
+    """
+    d = display or os.environ.get("MOSAIC_TREX_DISPLAY")
+    return {"DISPLAY": d} if d else None
+
+
 def _build_args(params: dict[str, Any]) -> list[str]:
     """Flatten a param dict into CLI ``-key value`` pairs.
 
@@ -120,20 +203,31 @@ def _build_args(params: dict[str, Any]) -> list[str]:
     return args
 
 
-def _run_trex(args: list[str], *, timeout: int) -> tuple[str, str]:
+def _run_trex(
+    args: list[str],
+    *,
+    timeout: int,
+    invocation: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[str, str]:
     """Execute ``trex`` with *args* and return (stdout, stderr).
+
+    *invocation* is the argv prefix from :func:`_trex_invocation` (defaults to
+    the ``$PATH`` lookup). *env* is an overlay merged onto ``os.environ`` for
+    the subprocess (e.g. ``{"DISPLAY": ":99"}``).
 
     Raises :class:`TRexError` on non-zero exit.
     """
-    trex = _ensure_trex()
-    cmd = [trex, *args]
+    cmd = [*(invocation or _trex_invocation()), *args]
     logger.info("Running: %s", " ".join(cmd))
 
+    run_env = {**os.environ, **(env or {})}
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=run_env,
     )
 
     if result.returncode != 0:
@@ -160,6 +254,9 @@ def run_trex_convert(
     meta_encoding: str = "gray",
     extra_settings: dict[str, Any] | None = None,
     timeout: int = 600,
+    trex_conda_env: str | None = None,
+    trex_bin: Path | str | None = None,
+    display: str | None = None,
 ) -> TRexConvertResult:
     """Convert a raw video to T-Rex ``.pv`` format.
 
@@ -190,6 +287,16 @@ def run_trex_convert(
         Additional T-Rex parameters passed as ``-key value`` pairs.
     timeout : int
         Subprocess timeout in seconds (default 600).
+    trex_conda_env : str, optional
+        Run ``trex`` inside this conda env via ``conda run -n <env>`` (e.g.
+        ``"track"``). Use when TRex lives in a different env than the caller.
+        Overrides ``MOSAIC_TREX_CONDA_ENV``. See :func:`_trex_invocation`.
+    trex_bin : path, optional
+        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
+    display : str, optional
+        ``DISPLAY`` value for the subprocess (e.g. ``":99"`` for a headless
+        ``Xvfb``). Overrides ``MOSAIC_TREX_DISPLAY``; ``None`` inherits the
+        current ``DISPLAY``.
 
     Returns
     -------
@@ -227,7 +334,12 @@ def run_trex_convert(
     if extra_settings:
         params.update(extra_settings)
 
-    stdout, stderr = _run_trex(_build_args(params), timeout=timeout)
+    stdout, stderr = _run_trex(
+        _build_args(params),
+        timeout=timeout,
+        invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
+        env=_resolve_display(display),
+    )
 
     # Locate output files
     stem = video_path.stem
@@ -272,6 +384,9 @@ def run_trex_track(
     auto_train: bool = False,
     extra_settings: dict[str, Any] | None = None,
     timeout: int = 600,
+    trex_conda_env: str | None = None,
+    trex_bin: Path | str | None = None,
+    display: str | None = None,
 ) -> TRexTrackResult:
     """Track individuals in a converted ``.pv`` video.
 
@@ -302,6 +417,14 @@ def run_trex_track(
         Additional T-Rex parameters passed as ``-key value`` pairs.
     timeout : int
         Subprocess timeout in seconds (default 600).
+    trex_conda_env : str, optional
+        Run ``trex`` inside this conda env via ``conda run -n <env>``
+        (overrides ``MOSAIC_TREX_CONDA_ENV``). See :func:`_trex_invocation`.
+    trex_bin : path, optional
+        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
+    display : str, optional
+        ``DISPLAY`` for the subprocess (e.g. ``":99"`` for headless ``Xvfb``;
+        overrides ``MOSAIC_TREX_DISPLAY``).
 
     Returns
     -------
@@ -341,7 +464,12 @@ def run_trex_track(
     if extra_settings:
         params.update(extra_settings)
 
-    stdout, stderr = _run_trex(_build_args(params), timeout=timeout)
+    stdout, stderr = _run_trex(
+        _build_args(params),
+        timeout=timeout,
+        invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
+        env=_resolve_display(display),
+    )
 
     # Locate output files
     data_dir = output_dir / "data"
@@ -373,6 +501,9 @@ def _convert_and_track_single(
     detect_model: Path | None,
     track_max_individuals: int,
     common_settings: dict[str, Any] | None,
+    trex_conda_env: str | None = None,
+    trex_bin: Path | str | None = None,
+    display: str | None = None,
 ) -> TRexTrackResult:
     """Convert and track a single video (for use with ProcessPoolExecutor)."""
     vid_output = output_dir / video_path.stem
@@ -382,12 +513,18 @@ def _convert_and_track_single(
         detect_model=detect_model,
         track_max_individuals=track_max_individuals,
         extra_settings=common_settings,
+        trex_conda_env=trex_conda_env,
+        trex_bin=trex_bin,
+        display=display,
     )
     return run_trex_track(
         convert_result.pv_path,
         vid_output,
         track_max_individuals=track_max_individuals,
         extra_settings=common_settings,
+        trex_conda_env=trex_conda_env,
+        trex_bin=trex_bin,
+        display=display,
     )
 
 
@@ -399,6 +536,9 @@ def run_trex_batch(
     track_max_individuals: int = 1,
     common_settings: dict[str, Any] | None = None,
     parallel_workers: int = 1,
+    trex_conda_env: str | None = None,
+    trex_bin: Path | str | None = None,
+    display: str | None = None,
 ) -> list[TRexTrackResult]:
     """Convert and track multiple videos.
 
@@ -419,6 +559,14 @@ def run_trex_batch(
         Additional T-Rex parameters applied to every video.
     parallel_workers : int
         Number of parallel workers (default 1 = sequential).
+    trex_conda_env : str, optional
+        Run ``trex`` inside this conda env via ``conda run -n <env>``
+        (overrides ``MOSAIC_TREX_CONDA_ENV``). See :func:`_trex_invocation`.
+    trex_bin : path, optional
+        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
+    display : str, optional
+        ``DISPLAY`` for the subprocesses (e.g. ``":99"`` for headless ``Xvfb``;
+        overrides ``MOSAIC_TREX_DISPLAY``).
 
     Returns
     -------
@@ -435,7 +583,14 @@ def run_trex_batch(
         for vp in paths:
             logger.info("Processing %s ...", vp.name)
             r = _convert_and_track_single(
-                vp, output_dir, dm, track_max_individuals, common_settings
+                vp,
+                output_dir,
+                dm,
+                track_max_individuals,
+                common_settings,
+                trex_conda_env,
+                trex_bin,
+                display,
             )
             results.append(r)
         return results
@@ -449,6 +604,9 @@ def run_trex_batch(
                 dm,
                 track_max_individuals,
                 common_settings,
+                trex_conda_env,
+                trex_bin,
+                display,
             )
             for vp in paths
         ]

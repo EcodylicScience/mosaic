@@ -4,8 +4,12 @@ This module wraps the T-Rex command-line interface, enabling Mosaic to
 convert raw videos into T-Rex .pv format and run tracking headlessly.
 
 Requires:
-    The ``trex`` binary must be installed and available on ``$PATH``.
-    See https://trex.run for installation instructions.
+    The ``trex`` binary (https://trex.run). TRex pins ``python=3.11`` /
+    ``numpy=1.26``, so it usually lives in its **own** conda env; point the
+    wrappers at it with ``trex_conda_env=`` / ``MOSAIC_TREX_CONDA_ENV`` (or
+    ``trex_bin=`` / ``MOSAIC_TREX_BIN``), else ``trex`` is found on ``$PATH``.
+    TRex needs a display even headless — run one persistent ``Xvfb`` and pass
+    ``display=`` (see :mod:`mosaic.tracking.trex.run`).
 
 Usage
 -----
@@ -14,6 +18,16 @@ Usage
 >>> result = run_trex_convert("video.mp4", "output/", detect_model="model.pt")
 >>> result = run_trex_track("video.pv", "output/", track_max_individuals=4)
 >>> results = run_trex_batch(["v1.mp4", "v2.mp4"], "output/", detect_model="model.pt")
+
+When TRex lives in its own conda env (the usual case), drive it cross-env and
+give it a headless display (one persistent ``Xvfb :99`` running):
+
+>>> result = run_trex_convert(
+...     "video.mp4", "output/", detect_model="model.pt",
+...     trex_conda_env="track", display=":99",
+... )
+
+Equivalently set ``MOSAIC_TREX_CONDA_ENV=track`` and ``DISPLAY=:99`` once.
 """
 
 from mosaic.tracking.trex.run import (

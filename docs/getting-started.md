@@ -58,6 +58,40 @@ ds.index_tracks_raw(
 ds.convert_all_tracks()
 ```
 
+### Tracking videos with TRex (optional)
+
+If you don't already have tracks, mosaic can drive [TRex](https://trex.run) to
+detect and track animals, producing per-id `.npz` you then convert with
+`src_format="trex_npz"`:
+
+```python
+from mosaic.tracking.trex import run_trex_convert, run_trex_track
+
+conv = run_trex_convert("video.mp4", "out/", detect_model="yolo.pt",
+                        track_max_individuals=4, trex_conda_env="track", display=":99")
+trk  = run_trex_track(conv.pv_path, "out/", track_max_individuals=4,
+                      trex_conda_env="track", display=":99")
+```
+
+**Two-env setup (recommended).** TRex's conda package pins `python=3.11` /
+`numpy=1.26`, so install it in its **own** env rather than the mosaic env:
+
+```bash
+conda create -n track -c conda-forge -c trexing trex      # dedicated TRex env (py3.11)
+pip install ultralytics torch                              # into `track`, for YOLO detection
+```
+
+Then point the mosaic caller at it with `trex_conda_env="track"` (or set
+`MOSAIC_TREX_CONDA_ENV=track`); use `trex_bin=`/`MOSAIC_TREX_BIN` for an explicit
+binary, or omit both for a `trex` already on `$PATH`. TRex needs an OpenGL/GLFW
+display even headless — run **one** persistent virtual framebuffer and pass its
+display (don't wrap `trex` in `xvfb-run`, which fork-bombs since TRex relaunches
+itself):
+
+```bash
+Xvfb :99 -screen 0 1280x1024x24 &     # one persistent display; pass display=":99"
+```
+
 ## Run features
 
 Features are composable pipeline stages. Each produces per-sequence
