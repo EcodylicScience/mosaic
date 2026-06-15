@@ -222,6 +222,14 @@ def _run_trex(
     logger.info("Running: %s", " ".join(cmd))
 
     run_env = {**os.environ, **(env or {})}
+    # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into
+    # the kernel environment; inherited by the trex subprocess it makes matplotlib
+    # (imported by ultralytics inside TRex) fail at import time, which TRex's
+    # pybind11 glue turns into ``terminate()`` -> SIGABRT (exit 134). TRex never
+    # needs an interactive backend, so neutralise an inherited IPython ``module://``
+    # backend with a headless-safe one (explicit non-module backends are kept).
+    if run_env.get("MPLBACKEND", "").startswith("module://"):
+        run_env["MPLBACKEND"] = "Agg"
     result = subprocess.run(
         cmd,
         capture_output=True,

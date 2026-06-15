@@ -62,6 +62,11 @@ gpu = ["faiss-cpu>=1.7"]  # use faiss-gpu on Linux+CUDA for GPU-accelerated kNN 
 # media entries (indexing, reading, tracking inference). Deliberately NOT in
 # `recommended` — only needed for imgstore-format recordings.
 imgstore = ["imgstore>=0.4"]
+# FERAL V-JEPA video behavior classifier (FeralFeature, training + inference).
+# Pulls the feral package (which declares its own torch/transformers/timm/decord
+# deps); tracks main like `polo`. Deliberately NOT in `recommended` (large model
+# stack, GPU-oriented).
+feral = ["feral @ git+https://github.com/Skovorp/feral.git@main"]
 # Curated bundle for typical research workflows. Excludes `polo` (incompatible
 # ultralytics pin with `pose`), `lightning-action` (large standalone dep),
 # and `gpu` (platform-specific).

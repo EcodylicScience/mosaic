@@ -21,17 +21,18 @@ and ``config.json`` from a previous training run.
 Output follows the same pattern as XgboostFeature: per-frame rows with
 ``prob_<class>`` probability columns and a ``predicted_label`` column.
 
-Requires the FERAL code directory (https://github.com/Skovorp/feral).
-Point ``feral_code_dir`` to a local clone of the repository.
+Requires the FERAL package (``pip install 'mosaic[feral]'``, which pulls
+https://github.com/Skovorp/feral). Optionally set ``feral_code_dir`` to a
+local checkout of the package to override the installed one.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
@@ -57,30 +58,137 @@ from .registry import register_feature
 log = logging.getLogger(__name__)
 
 
-def _import_feral(feral_code_dir: str | Path | None):
-    """Ensure the FERAL code directory is importable and return its modules.
+def _import_feral(feral_code_dir: str | Path | None = None):
+    """Ensure the installed ``feral`` package is importable and return its modules.
 
-    FERAL is not an installable Python package — it's a flat directory of
-    scripts.  This helper adds the directory to ``sys.path`` so that
-    ``import model``, ``import dataset``, etc. work.
+    FERAL is a pip-installable package (``pip install 'mosaic[feral]'``, which
+    pulls https://github.com/Skovorp/feral). ``feral_code_dir`` is an *optional*
+    ``sys.path`` override for a local editable/pinned checkout of the package;
+    when ``None`` the already-installed ``feral`` package is used.
+
+    Returns a namespace exposing the ``model``, ``dataset``, ``utils`` and
+    ``metrics`` submodules so callers can reach e.g. ``f.model.FeralModel``.
 
     Parameters
     ----------
     feral_code_dir : str or Path or None
-        Path to the FERAL code directory (containing model.py, dataset.py).
-        If None, assumes FERAL modules are already importable.
+        Optional path to a local checkout of the ``feral`` package, prepended to
+        ``sys.path``. ``None`` (default) uses the installed package.
     """
     if feral_code_dir is not None:
         feral_dir = str(feral_code_dir)
         if feral_dir not in sys.path:
             sys.path.insert(0, feral_dir)
-    # Verify we can import the key module
     try:
-        importlib.import_module("model")
+        from feral import dataset, metrics, model, utils
+    except ImportError as e:
+        raise ImportError(
+            "FERAL is not installed. Install it with `pip install 'mosaic[feral]'` "
+            "(pulls feral from https://github.com/Skovorp/feral), or set "
+            "feral_code_dir to a local checkout of the package."
+        ) from e
+    return SimpleNamespace(
+        model=model, dataset=dataset, utils=utils, metrics=metrics
+    )
+
+
+def _resolve_backbone_key(value: str) -> str:
+    """Translate a FERAL backbone identifier into a ``feral.backbones.BACKBONES`` key.
+
+    Accepts either a BACKBONES key (returned as-is) or a HuggingFace slug such as
+    ``"facebook/vjepa2-vitl-fpc32-256-diving48"`` (reverse-looked-up to its key,
+    e.g. ``"vjepa2_vitl_diving48"``). Mosaic's saved configs store the old
+    ``model_name`` HF slug, so this keeps those runs loading unchanged.
+    """
+    from feral.backbones import BACKBONES
+
+    if value in BACKBONES:
+        return value
+    for key, entry in BACKBONES.items():
+        if entry.get("slug") == value:
+            return key
+    raise ValueError(
+        f"Unknown FERAL backbone/model_name {value!r}. Pass a BACKBONES key "
+        f"({sorted(BACKBONES)}) or a known HuggingFace slug."
+    )
+
+
+def _load_checkpoint_state_dict(raw):
+    """Normalize a ``torch.load`` blob into ``(state_dict, metadata | None)``.
+
+    Handles every checkpoint shape FeralFeature may encounter:
+
+    * **New dict format** (``{'state_dict': ..., 'class_names': ..., ...}``,
+      written by FERAL's ``save_model``) -- unwraps ``state_dict`` and returns the
+      embedded ``class_names`` / ``is_multilabel`` / ``cfg`` as ``metadata``.
+    * **Bare state_dict** (legacy save) -- used directly.
+    * **Old ``HFModel`` layout** -- keys prefixed ``model.*`` (the encoder lived at
+      ``HFModel.self.model``) are remapped to ``backbone.model.*`` so they load
+      into the new ``FeralModel`` (whose encoder lives at
+      ``FeralModel.self.backbone.model``). The classifier keys
+      (``clip_projector.*``, ``fc_norm.*``, ``head.*``) are unchanged.
+    """
+    meta = None
+    if isinstance(raw, dict) and "state_dict" in raw:
+        state_dict = raw["state_dict"]
+        meta = {
+            k: raw[k]
+            for k in ("class_names", "is_multilabel", "cfg")
+            if k in raw
+        }
+    else:
+        state_dict = raw
+    is_old_hfmodel = any(
+        k.startswith("model.") for k in state_dict
+    ) and not any(k.startswith("backbone.") for k in state_dict)
+    if is_old_hfmodel:
+        state_dict = {
+            ("backbone." + k if k.startswith("model.") else k): v
+            for k, v in state_dict.items()
+        }
+    return state_dict, meta
+
+
+def _load_into(model, state_dict) -> None:
+    """Load ``state_dict`` into ``model`` and fail loudly on any key mismatch.
+
+    Uses ``strict=False`` then asserts there are no missing/unexpected keys
+    (ignoring ``num_batches_tracked`` buffers). This converts a silent
+    architecture-drift mismatch -- which would otherwise leave the backbone at
+    random initialization -- into an actionable error.
+    """
+    result = model.load_state_dict(state_dict, strict=False)
+    missing = [
+        k for k in result.missing_keys if "num_batches_tracked" not in k
+    ]
+    if missing or result.unexpected_keys:
+        raise RuntimeError(
+            "FERAL checkpoint does not match FeralModel "
+            f"(missing={missing[:8]}, unexpected={list(result.unexpected_keys)[:8]}). "
+            "The checkpoint was likely trained with a different backbone or "
+            "number of classes."
+        )
+
+
+def _check_feral(feral_code_dir: str | Path | None = None) -> None:
+    """Raise a helpful ImportError if the ``feral`` package is not importable.
+
+    Applies the optional ``feral_code_dir`` ``sys.path`` override first so a
+    local checkout is honored. Lightweight -- importing the ``feral`` package
+    does not pull torch (its public API is lazily loaded).
+    """
+    if feral_code_dir is not None:
+        feral_dir = str(feral_code_dir)
+        if feral_dir not in sys.path:
+            sys.path.insert(0, feral_dir)
+    try:
+        import feral  # noqa: F401
     except ImportError:
         raise ImportError(
-            "Cannot import FERAL modules. Set feral_code_dir to a local clone "
-            "of https://github.com/Skovorp/feral containing model.py, dataset.py, etc."
+            "FERAL is required for FeralFeature. Install it with "
+            "`pip install 'mosaic[feral]'` (pulls feral from "
+            "https://github.com/Skovorp/feral), or set feral_code_dir to a "
+            "local checkout of the package."
         ) from None
 
 
@@ -114,6 +222,7 @@ class FeralTrainingConfig(StrictModel):
     do_aa: bool = True
     seed: int = 0
     part_sample: float = Field(default=1.0, gt=0, le=1)
+    multilabel_threshold: float = Field(default=0.85, ge=0, le=1)
     wandb_project: str | None = None
 
 
@@ -170,10 +279,13 @@ class FeralFeature:
 
     Params
     ------
-    feral_code_dir : Path
-        Path to a local clone of https://github.com/Skovorp/feral.
+    feral_code_dir : Path | None
+        Optional path to a local checkout of the ``feral`` package, prepended
+        to ``sys.path``. ``None`` (default) uses the pip-installed package.
     model_name : str
-        HuggingFace model name (default: V-JEPA2 ViT-L).
+        FERAL backbone: a ``feral.backbones.BACKBONES`` key (e.g.
+        ``"vjepa2_vitl_diving48"``) or the equivalent HuggingFace slug
+        (default: ``facebook/vjepa2-vitl-fpc32-256-diving48``).
     predict_per_item : int
         Predictions per chunk (default 64).
     chunk_length : int
@@ -220,7 +332,9 @@ class FeralFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        feral_code_dir: Path
+        # Optional sys.path override for a local checkout of the `feral`
+        # package; None uses the pip-installed package (mosaic[feral]).
+        feral_code_dir: Path | None = None
         # Shared model config
         model_name: str = "facebook/vjepa2-vitl-fpc32-256-diving48"
         predict_per_item: int = 64
@@ -275,6 +389,7 @@ class FeralFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        _check_feral(self.params.feral_code_dir)
         self._model = None  # torch.nn.Module
         self._config: dict = {}
         self._classes: list[int] = []
@@ -349,7 +464,7 @@ class FeralFeature:
         """Load FERAL model from checkpoint + config."""
         _import_feral(self.params.feral_code_dir)
         import torch
-        from model import HFModel  # type: ignore[import-not-found]
+        from feral.model import FeralModel  # type: ignore[import-not-found]
 
         # Load config if available
         if config_path is not None and config_path.exists():
@@ -358,6 +473,12 @@ class FeralFeature:
 
         p = self.params
         num_classes = 2  # default
+
+        # Read the checkpoint once: unwrap the new dict format and remap old
+        # HFModel keys (model.* -> backbone.model.*) so they load into FeralModel.
+        ckpt_state_dict, ckpt_meta = _load_checkpoint_state_dict(
+            torch.load(str(checkpoint_path), map_location="cpu")
+        )
 
         # Try to get class info from config -> label_json
         if "label_json" in self._config:
@@ -371,8 +492,15 @@ class FeralFeature:
 
         # Try class_names from config itself (saved by save_state)
         if not self._class_names and "class_names" in self._config:
-            raw = self._config["class_names"]
-            self._class_names = {int(k): v for k, v in raw.items()}
+            cfg_names = self._config["class_names"]
+            self._class_names = {int(k): v for k, v in cfg_names.items()}
+            num_classes = len(self._class_names)
+
+        # Fall back to checkpoint-embedded metadata (new dict-format checkpoints)
+        if not self._class_names and ckpt_meta and ckpt_meta.get("class_names"):
+            self._class_names = {
+                int(k): v for k, v in ckpt_meta["class_names"].items()
+            }
             num_classes = len(self._class_names)
 
         # Override from params if explicitly set
@@ -384,22 +512,31 @@ class FeralFeature:
 
         device = torch.device(p.device)
 
-        # Use config values for architecture params, falling back to self.params
-        model_name = self._config.get("model_name", p.model_name)
-        predict_per_item = self._config.get("predict_per_item", p.predict_per_item)
+        # Architecture params from config, falling back to self.params or the
+        # cfg embedded in a new-format checkpoint. backbone + predict_per_item
+        # must match the saved weights; fc_drop_rate/freeze are weight-agnostic.
+        ckpt_cfg = (ckpt_meta or {}).get("cfg") or {}
+        model_name = self._config.get(
+            "model_name", ckpt_cfg.get("backbone", p.model_name)
+        )
+        predict_per_item = self._config.get(
+            "predict_per_item",
+            ckpt_cfg.get("predict_per_item", p.predict_per_item),
+        )
         fc_drop_rate = self._config.get("fc_drop_rate", 0.5)
         freeze_encoder_layers = self._config.get("freeze_encoder_layers", 14)
 
-        model = HFModel(
-            model_name=model_name,
+        # Inference: build the architecture only (pretrained=False -> no HF
+        # weight download); trained weights come from the checkpoint below.
+        model = FeralModel(
+            backbone=_resolve_backbone_key(model_name),
             num_classes=num_classes,
             predict_per_item=predict_per_item,
             fc_drop_rate=fc_drop_rate,
             freeze_encoder_layers=freeze_encoder_layers,
+            pretrained=False,
         )
-
-        state_dict = torch.load(str(checkpoint_path), map_location=device)
-        model.load_state_dict(state_dict, strict=False)
+        _load_into(model, ckpt_state_dict)
         model.to(device)
         model.eval()
         self._model = model
@@ -431,9 +568,9 @@ class FeralFeature:
 
         _import_feral(p.feral_code_dir)
         import torch
-        from model import HFModel  # type: ignore[import-not-found]
-        from dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
-        from utils import prep_for_answers, save_model, get_weights  # type: ignore[import-not-found]
+        from feral.model import FeralModel  # type: ignore[import-not-found]
+        from feral.dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
+        from feral.utils import prep_for_answers, save_model, get_weights  # type: ignore[import-not-found]
 
         tc = p.training  # FeralTrainingConfig
         run_root = self._run_root
@@ -470,6 +607,7 @@ class FeralFeature:
             "do_aa": tc.do_aa,
             "seed": tc.seed,
             "part_sample": tc.part_sample,
+            "multilabel_threshold": tc.multilabel_threshold,
             "wandb_project": tc.wandb_project,
         }
         self._config = cfg
@@ -493,9 +631,10 @@ class FeralFeature:
 
         device = torch.device(cfg["device"])
 
-        # Build datasets
+        # Build datasets. The refactored ClsDataset takes a parsed labels dict
+        # (label_json_dict), not a path.
         data_kwargs = {
-            "label_json": str(p.label_json),
+            "label_json_dict": labels_json,
             "prefix": str(p.video_dir),
             "chunk_shift": cfg["chunk_shift"],
             "chunk_length": cfg["chunk_length"],
@@ -541,13 +680,15 @@ class FeralFeature:
                 collate_fn=collate_fn_val,
             )
 
-        # Build model
-        model = HFModel(
-            model_name=cfg["model_name"],
+        # Build model. Training fine-tunes from the pretrained backbone weights
+        # (pretrained=True downloads the HF base on first use).
+        model = FeralModel(
+            backbone=_resolve_backbone_key(cfg["model_name"]),
             num_classes=num_classes,
             predict_per_item=p.predict_per_item,
             fc_drop_rate=tc.fc_drop_rate,
             freeze_encoder_layers=tc.freeze_encoder_layers,
+            pretrained=True,
         )
         model.to(device)
 
@@ -566,6 +707,16 @@ class FeralFeature:
             train_dataset.json_data, tc.class_weights, device
         )
         is_multilabel = labels_json.get("is_multilabel", False)
+
+        # Metadata embedded in every checkpoint by FERAL's save_model (new dict
+        # format). Lets checkpoints reload without a separate config/label JSON
+        # and makes them usable by feral.run_inference_folder.
+        ckpt_metadata = {
+            "class_names": {str(k): v for k, v in class_names.items()},
+            "is_multilabel": is_multilabel,
+            "cfg": cfg,
+        }
+
         if is_multilabel:
             criterion = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
         else:
@@ -708,7 +859,7 @@ class FeralFeature:
                                 prep_for_answers(output_ema_prob, target, names)
                             )
 
-                from metrics import (  # type: ignore[import-not-found]
+                from feral.metrics import (  # type: ignore[import-not-found]
                     calculate_multiclass_metrics,
                     calc_frame_level_map,
                     calculate_f1_metrics,
@@ -716,7 +867,8 @@ class FeralFeature:
 
                 val_metrics = calculate_multiclass_metrics(answers, class_names, "val")
                 val_f1 = calculate_f1_metrics(
-                    answers, labels_json, "val", is_multilabel, "val"
+                    answers, labels_json, "val", is_multilabel, "val",
+                    cfg.get("multilabel_threshold", 0.85),
                 )
                 val_map = calc_frame_level_map(answers, labels_json, "val")
 
@@ -733,7 +885,7 @@ class FeralFeature:
                 # Checkpoint best model
                 if val_map > ema_map and val_map > best_map:
                     if best_checkpoint_path is not None:
-                        save_model(model, str(best_checkpoint_path))
+                        save_model(model, str(best_checkpoint_path), ckpt_metadata)
                     best_map = val_map
                     epochs_without_improvement = 0
                 elif (
@@ -742,14 +894,14 @@ class FeralFeature:
                     and ema_map > best_map
                 ):
                     if best_checkpoint_path is not None:
-                        save_model(model_ema.ema, str(best_checkpoint_path))
+                        save_model(model_ema.ema, str(best_checkpoint_path), ckpt_metadata)
                     best_map = ema_map
                     epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
             else:
                 if best_checkpoint_path is not None:
-                    save_model(model, str(best_checkpoint_path))
+                    save_model(model, str(best_checkpoint_path), ckpt_metadata)
 
             training_metrics.append(epoch_metrics)
             log.info("Epoch %d: %s", epoch, epoch_metrics)
@@ -790,7 +942,7 @@ class FeralFeature:
 
         # Save EMA model separately
         if model_ema is not None and run_root is not None:
-            save_model(model_ema.ema, str(run_root / "model_ema.pt"))
+            save_model(model_ema.ema, str(run_root / "model_ema.pt"), ckpt_metadata)
 
         # Load best checkpoint into self._model for apply phase
         if best_checkpoint_path is not None and best_checkpoint_path.exists():
@@ -858,6 +1010,7 @@ class FeralFeature:
         }
         return self.compute_metrics(
             answers, labels_json_with_names, partition, prefix=partition,
+            multilabel_threshold=cfg.get("multilabel_threshold", 0.85),
         )
 
     @staticmethod
@@ -877,7 +1030,7 @@ class FeralFeature:
         partition is absent or empty.
         """
         import torch
-        from dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
+        from feral.dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
 
         if (
             partition not in labels_json.get("splits", {})
@@ -887,7 +1040,7 @@ class FeralFeature:
 
         eval_dataset = ClsDataset(
             partition=partition,
-            label_json=str(cfg["label_json"]),
+            label_json_dict=labels_json,
             do_aa=False,
             predict_per_item=cfg.get("predict_per_item", 64),
             num_classes=num_classes,
@@ -934,7 +1087,7 @@ class FeralFeature:
         prints a progress line every N batches.
         """
         import torch
-        from utils import prep_for_answers  # type: ignore[import-not-found]
+        from feral.utils import prep_for_answers  # type: ignore[import-not-found]
 
         if loader is None:
             return []
@@ -973,11 +1126,21 @@ class FeralFeature:
 
         run_root.mkdir(parents=True, exist_ok=True)
 
-        # Save model state dict (handle compiled models)
+        # Save model in FERAL's new dict format (handle compiled models). Embeds
+        # class_names / is_multilabel / cfg so the checkpoint reloads without a
+        # separate config and is usable by feral.run_inference_folder.
         model = self._model
         if hasattr(model, "_orig_mod"):
             model = model._orig_mod
-        torch.save(model.state_dict(), run_root / "feral_model.pt")
+        torch.save(
+            {
+                "state_dict": model.state_dict(),
+                "class_names": {str(k): v for k, v in self._class_names.items()},
+                "is_multilabel": self._config.get("is_multilabel", False),
+                "cfg": self._config,
+            },
+            run_root / "feral_model.pt",
+        )
 
         # Save config
         config_to_save = {
@@ -1018,7 +1181,7 @@ class FeralFeature:
         _import_feral(self.params.feral_code_dir)
         import torch
         import torchvision
-        from dataset import get_frame_ids, read_range_video_decord, get_frame_count  # type: ignore[import-not-found]
+        from feral.dataset import get_frame_ids, read_range_video_decord, get_frame_count  # type: ignore[import-not-found]
 
         p = self.params
         device = next(self._model.parameters()).device
@@ -1268,13 +1431,13 @@ class FeralFeature:
         device : str or torch.device
             Where to load the model.
         feral_code_dir : str or Path or None
-            Path to a clone of github.com/Skovorp/feral, needed so that
-            ``import model`` resolves. If ``None``, assumes the FERAL
-            modules are already importable.
+            Optional path to a local checkout of the ``feral`` package,
+            prepended to ``sys.path``. ``None`` (default) uses the
+            pip-installed package.
         """
         _import_feral(feral_code_dir)
         import torch
-        from model import HFModel  # type: ignore[import-not-found]
+        from feral.model import FeralModel  # type: ignore[import-not-found]
 
         config_path = run_root / "feral_config.json"
         if not config_path.exists():
@@ -1300,14 +1463,15 @@ class FeralFeature:
                 "config.class_names nor a readable label_json was found."
             )
 
-        model = HFModel(
-            model_name=cfg.get(
-                "model_name", "facebook/vjepa2-vitl-fpc32-256-diving48"
+        model = FeralModel(
+            backbone=_resolve_backbone_key(
+                cfg.get("model_name", "facebook/vjepa2-vitl-fpc32-256-diving48")
             ),
             num_classes=num_classes,
             predict_per_item=cfg.get("predict_per_item", 64),
             fc_drop_rate=cfg.get("fc_drop_rate", 0.5),
             freeze_encoder_layers=cfg.get("freeze_encoder_layers", 14),
+            pretrained=False,
         )
 
         ckpt_path = run_root / "model_best.pt"
@@ -1319,8 +1483,10 @@ class FeralFeature:
             )
 
         torch_device = torch.device(device) if isinstance(device, str) else device
-        state_dict = torch.load(str(ckpt_path), map_location=torch_device)
-        model.load_state_dict(state_dict, strict=False)
+        state_dict, _meta = _load_checkpoint_state_dict(
+            torch.load(str(ckpt_path), map_location="cpu")
+        )
+        _load_into(model, state_dict)
         model.to(torch_device).eval()
         return model
 
@@ -1398,6 +1564,7 @@ class FeralFeature:
         labels_json: dict,
         partition: str,
         prefix: str | None = None,
+        multilabel_threshold: float = 0.85,
     ) -> dict:
         """Compute multiclass + F1 + frame-level mAP metrics on ``answers``.
 
@@ -1405,8 +1572,10 @@ class FeralFeature:
         ``calc_frame_level_map``, and ``calculate_f1_metrics``. Returns a
         flat dict keyed with ``<prefix>_<metric>``. Returns ``{}`` if
         ``answers`` is empty. ``prefix`` defaults to ``partition``.
+        ``multilabel_threshold`` is forwarded to ``calculate_f1_metrics``
+        (only affects multilabel runs; matches FERAL's default of 0.85).
         """
-        from metrics import (  # type: ignore[import-not-found]
+        from feral.metrics import (  # type: ignore[import-not-found]
             calculate_multiclass_metrics,
             calc_frame_level_map,
             calculate_f1_metrics,
@@ -1427,6 +1596,7 @@ class FeralFeature:
         metrics.update(
             calculate_f1_metrics(
                 answers, labels_json, partition, is_multilabel, prefix,
+                multilabel_threshold,
             )
         )
         return metrics
@@ -1443,3 +1613,162 @@ class FeralFeature:
             return {}
         with open(reports_path) as f:
             return json.load(f)
+
+
+def feral_setup_check(
+    checkpoint_path: str | Path | None = None,
+    *,
+    backbone: str = "vjepa2_vitl_diving48",
+    feral_code_dir: str | Path | None = None,
+    num_classes: int | None = None,
+    build_model: bool = False,
+    device: str = "cpu",
+) -> dict:
+    """Diagnose a FERAL setup (and optionally a checkpoint) for notebooks.
+
+    Verifies the ``feral`` package imports, resolves the backbone, and -- when
+    ``checkpoint_path`` is given -- reports the checkpoint format (new dict /
+    bare / remapped legacy ``HFModel``) and whether it structurally matches
+    ``FeralModel``. With ``build_model=True`` it constructs ``FeralModel``
+    (``pretrained=False`` -- no weight download, but the backbone *config* is
+    fetched from the HF hub) and does a strict load to fully validate.
+
+    Prints a human-readable report and returns a summary dict. Designed to
+    replace the old cryptic failures (``HFModel`` ImportError, silent state_dict
+    mismatch) with an actionable diagnostic.
+
+    Parameters
+    ----------
+    checkpoint_path : str or Path or None
+        A ``model_best.pt`` / ``feral_model.pt`` to inspect. ``None`` checks only
+        the package + backbone.
+    backbone : str
+        BACKBONES key or HF slug (default the trophallaxis ViT-L diving48 model).
+    feral_code_dir : str or Path or None
+        Optional ``sys.path`` override for a local checkout of the package.
+    num_classes : int or None
+        Needed for ``build_model=True`` when the checkpoint carries no metadata.
+    build_model : bool
+        Build FeralModel and strict-load the checkpoint (needs torch + network).
+    device : str
+        Where to place the built model (only used with ``build_model=True``).
+    """
+    summary: dict = {"feral_importable": False}
+    print("=== FERAL setup check ===")
+
+    # 1. Package import
+    try:
+        _import_feral(feral_code_dir)
+    except ImportError as e:
+        print(f"[FAIL] {e}")
+        if feral_code_dir is not None:
+            print(
+                "       Note: for a source checkout, feral_code_dir must be the "
+                "directory CONTAINING the `feral/` package (the repo root with "
+                "pyproject.toml), not the inner package directory."
+            )
+        return summary
+    import feral
+
+    version = getattr(feral, "__version__", "?")
+    summary["feral_importable"] = True
+    summary["feral_version"] = version
+    print(f"[ OK ] feral {version} importable")
+
+    # 2. Backbone resolution
+    from feral.backbones import BACKBONES
+
+    try:
+        key = _resolve_backbone_key(backbone)
+    except ValueError as e:
+        print(f"[FAIL] {e}")
+        print(f"       Available backbones: {sorted(BACKBONES)}")
+        return summary
+    entry = BACKBONES[key]
+    summary["backbone_key"] = key
+    print(
+        f"[ OK ] backbone {backbone!r} -> {key!r} "
+        f"(hidden_dim={entry.get('hidden_dim')}, img_size={entry.get('img_size')})"
+    )
+
+    # 3. Checkpoint
+    if checkpoint_path is None:
+        print("(no checkpoint_path -- skipping checkpoint check)")
+        return summary
+
+    import torch
+
+    ckpt_path = Path(checkpoint_path)
+    if not ckpt_path.exists():
+        print(f"[FAIL] checkpoint not found: {ckpt_path}")
+        return summary
+
+    raw = torch.load(str(ckpt_path), map_location="cpu")
+    is_new_dict = isinstance(raw, dict) and "state_dict" in raw
+    is_old = (
+        not is_new_dict
+        and isinstance(raw, dict)
+        and any(k.startswith("model.") for k in raw)
+        and not any(k.startswith("backbone.") for k in raw)
+    )
+    state_dict, meta = _load_checkpoint_state_dict(raw)
+    if is_new_dict:
+        fmt = "new dict format (embedded metadata)"
+    elif is_old:
+        fmt = "legacy HFModel bare state_dict (remapped model.* -> backbone.model.*)"
+    else:
+        fmt = "bare state_dict (new layout)"
+    summary["checkpoint_format"] = fmt
+    prefixes = sorted({k.split(".")[0] for k in state_dict})
+    print(f"[ OK ] checkpoint loaded: {fmt}")
+    print(f"       top-level key groups: {prefixes}")
+    if meta:
+        if meta.get("class_names"):
+            print(f"       embedded class_names: {meta['class_names']}")
+        if "is_multilabel" in meta:
+            print(f"       is_multilabel: {meta['is_multilabel']}")
+
+    has_head = any(k.startswith("head.") for k in state_dict)
+    has_backbone = any(k.startswith("backbone.model.") for k in state_dict)
+    if not (has_head and has_backbone):
+        print(
+            "[WARN] checkpoint is missing expected FeralModel key groups "
+            "(head.* and/or backbone.model.*) -- it may not load."
+        )
+
+    # 4. Optional full build + strict load
+    if build_model:
+        nclasses = num_classes
+        if nclasses is None and meta and meta.get("class_names"):
+            nclasses = len(meta["class_names"])
+        if not nclasses:
+            print(
+                "[WARN] build_model=True but num_classes is unknown "
+                "(pass num_classes=...). Skipping strict load."
+            )
+            return summary
+        from feral.model import FeralModel
+
+        predict_per_item = 64
+        if meta and isinstance(meta.get("cfg"), dict):
+            predict_per_item = meta["cfg"].get("predict_per_item", 64)
+        model = FeralModel(
+            backbone=key,
+            num_classes=nclasses,
+            predict_per_item=predict_per_item,
+            fc_drop_rate=0.5,
+            freeze_encoder_layers=0,
+            pretrained=False,
+        )
+        try:
+            _load_into(model, state_dict)
+            model.to(device).eval()
+            summary["strict_load_ok"] = True
+            print(
+                f"[ OK ] strict load into FeralModel(num_classes={nclasses}) succeeded"
+            )
+        except RuntimeError as e:
+            summary["strict_load_ok"] = False
+            print(f"[FAIL] strict load failed: {e}")
+
+    return summary

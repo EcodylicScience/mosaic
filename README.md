@@ -54,6 +54,7 @@ individually:
 | `lightning-action` | Lightning-Action temporal action classifier                                         |
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
+| `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
 
 ## Quick start
 

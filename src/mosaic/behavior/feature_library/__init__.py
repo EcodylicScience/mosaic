@@ -123,9 +123,12 @@ try:
 except ImportError:
     pass
 
-# FERAL video behavior classifier (requires feral_code_dir at runtime)
-from . import feral_feature
-from .feral_feature import FeralFeature, FeralTrainingConfig
+# FERAL V-JEPA behavior classifier (optional: requires `pip install 'mosaic[feral]'`)
+try:
+    from . import feral_feature
+    from .feral_feature import FeralFeature, FeralTrainingConfig, feral_setup_check
+except ImportError:
+    pass
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence
@@ -183,6 +186,7 @@ __all__ = [
     "XgboostFeature",
     "FeralFeature",
     "FeralTrainingConfig",
+    "feral_setup_check",
     "LightningActionFeature",
     "lightning_action_feature",
     # Submodules
