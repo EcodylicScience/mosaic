@@ -147,3 +147,4 @@ for repo orientation, development commands, and architectural conventions.
 
 GNU Affero General Public License v3 or later (AGPLv3+). See
 [LICENSE](LICENSE).
+
