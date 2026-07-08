@@ -10,13 +10,14 @@ training, and annotated video output.
 
 Given pose tracks (per-frame keypoints with identities), mosaic produces:
 
-- standardized parquet track tables from CalMS21, MABe22, TREx, or user-defined
-  formats;
+- standardized parquet track tables from CalMS21, MABe22, TREx, DeepLabCut, or
+  user-defined formats;
 - per-frame and per-sequence behavioral features — kinematic, social, spectral,
   and reduction;
 - unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,
   [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/));
-- supervised classifiers (XGBoost, Lightning-Action) trained from manual labels;
+- supervised classifiers (XGBoost, Lightning-Action, FERAL) trained from manual
+  labels;
 - visual identification models from egocentric crops;
 - annotated overlay videos, embedding scatters, and behavior timelines.
 
@@ -50,6 +51,7 @@ individually:
 | `pose`             | Ultralytics YOLO pose training and inference                                        |
 | `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
 | `localizer`        | PyTorch heatmap localizer training                                                  |
+| `identity`         | Foundation-model identity backbones (MegaDescriptor, DINOv2 + temporal); `torch` + `timm` |
 | `lightning-action` | Lightning-Action temporal action classifier                                         |
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
@@ -85,7 +87,8 @@ Features are either:
   `pair-wavelet`, `temporal-stack`, `body-scale`);
 - **global** — fit-then-apply transforms trained on a collection of sequences
   (e.g. `global-scaler`, `global-tsne`, `global-kmeans`, `global-ward`,
-  `xgboost`, `arhmm`, `kpms`, `lightning-action`, `global-identity-model`).
+  `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
+  `global-identity-model`).
 
 Visualization (`egocentric-crop`, `viz-timeline`, `viz-global-colored`,
 `interaction-crop-pipeline`) is exposed as features and shares the same caching

@@ -10,7 +10,7 @@ behavior analysis. Given pose tracks (per-frame keypoints with identities), it
 produces standardized parquet track tables, behavioral features (kinematic,
 social, spectral, reduction), unsupervised embeddings and clusters
 (t-SNE / k-means / Ward / ARHMM / keypoint-MoSeq), supervised classifiers
-(XGBoost, Lightning-Action), visual identification models from egocentric
+(XGBoost, Lightning-Action, FERAL), visual identification models from egocentric
 crops, and annotated overlay videos / timelines.
 
 If pose tracks are not yet available, mosaic also covers the upstream pipeline:
@@ -49,6 +49,11 @@ table, see [README.md](README.md). Notable points:
 - `imgstore` adds native support for imgstore (Motif / Loopbio) recordings — a
   store *directory* is indexed and read as a normal media entry (see "imgstore
   support" below). Not bundled in `recommended`.
+- `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
+  infer) from a git pin (`Skovorp/feral@main`). It runs in-process (not
+  sandboxed like keypoint-MoSeq) and is deliberately excluded from `recommended`.
+- `identity` installs `torch` + `timm` for the foundation-model identity
+  backbones (MegaDescriptor, DINOv2 + temporal); also excluded from `recommended`.
 
 ### Smoke import
 
@@ -159,12 +164,20 @@ Two flavors:
   `body-scale`).
 - **global** (fit-then-apply) — trained on a collection of sequences, then
   applied (e.g. `global-scaler`, `global-tsne`, `global-kmeans`,
-  `global-ward`, `xgboost`, `arhmm`, `kpms`, `lightning-action`,
+  `global-ward`, `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
   `global-identity-model`).
 
 Visualization features (`egocentric-crop`, `viz-timeline`,
 `viz-global-colored`, `interaction-crop-pipeline`) use the same protocol and
 caching machinery.
+
+`feral` (the FERAL V-JEPA behavior classifier) is a global fit-then-apply
+feature but runs **in-process** — it imports the installed `feral` package
+directly, unlike the sandboxed keypoint-MoSeq runner in
+`feature_library/external/`. Each feature also declares a `category` used for
+grouping/display; beyond per-frame / global / visualization, the taxonomy
+includes `summary` (per-sequence aggregations, e.g. `frame-aggregate`) and
+`tag` (e.g. `id-tag-columns`).
 
 ### Pipeline package
 
@@ -176,11 +189,13 @@ computation only.** The public typed surface lives in `pipeline/types/`:
 
 ### `run_id` reproducibility
 
-Each feature run is tagged with `run_id = "<version>-<SHA1(params)>"`.
-Identical inputs + params → identical `run_id` → no recompute. Parameter
-sweeps stay organized under `features/<name>/<run_id>/`. Never bypass
-`run_feature()` to write feature outputs directly — it would desync indexes
-and break reproducibility.
+Each feature run is tagged with `run_id = "<version>-<hash>"`, where `<hash>`
+is a 10-char SHA1 over the feature's params, inputs, and frame range (computed
+from `Params.identity_dump()`, so `HASH_EXCLUDE`-tagged throughput knobs are
+omitted — see "Params are Pydantic"). Identical inputs + params → identical
+`run_id` → no recompute. Parameter sweeps stay organized under
+`features/<name>/<run_id>/`. Never bypass `run_feature()` to write feature
+outputs directly — it would desync indexes and break reproducibility.
 
 ## Module Organization
 
@@ -202,19 +217,20 @@ src/mosaic/
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
-│   └── track_library/          # track converters (CalMS21, MABe22, TREx)
+│   └── track_library/          # track converters (CalMS21, MABe22, TREx, DeepLabCut)
 ├── behavior/
-│   ├── feature_library/        # ~30 per-frame + global features (plugin)
+│   ├── feature_library/        # ~35+ per-frame + global features (plugin)
 │   │   ├── movement/           # optional movement-library integration
 │   │   └── external/           # keypoint-moseq subprocess runner (own venv)
-│   ├── label_library/          # label converters (BORIS, CalMS21)
-│   ├── model_library/          # legacy models (being phased out)
+│   ├── label_library/          # label converters (BORIS, CalMS21, MABe22)
+│   ├── model_library/          # identity-network backbones (TRex V200 CNNs, DINOv2 / MegaDescriptor)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
     ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
-    └── pose_training/          # YOLO pose, POLO point, localizer training
-        ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
-        └── augmentation.py     # YOLO + localizer augmentation presets
+    ├── pose_training/          # YOLO pose, POLO point, localizer training
+    │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
+    │   └── augmentation.py     # YOLO + localizer augmentation presets
+    └── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
 
 # `mosaic.media` remains importable as a deprecated shim re-exporting core.media.
 ```
@@ -242,7 +258,7 @@ raw tracks/labels
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 
 run_feature(...)             → features/<name>/<run_id>/*.parquet
-                                                 └── run_id = <version>-<SHA1(params)>
+                                                 └── run_id = <version>-<SHA1 of params+inputs+frame range>
 ```
 
 Models follow the same shape: `models/<name>/<run_id>/`.
@@ -297,10 +313,14 @@ transparently:
 ### Params are Pydantic
 
 Per-feature `Params` are Pydantic models — never pass raw `dict[str, Any]`
-across feature boundaries. The `run_id` is a SHA1 of the serialized params, so
-every field affects reproducibility. Add new params as typed fields with
-defaults; don't reuse one field for two meanings across versions — bump
-`version` instead.
+across feature boundaries. The `run_id` hash covers the serialized params (plus
+inputs and frame range), so every params field affects reproducibility
+**except** those tagged `Annotated[T, HASH_EXCLUDE]` — throughput-only knobs
+(e.g. `FeralFeature.infer_batch_size`) that `Params.identity_dump()` strips from
+the hash so retuning them never busts the cache, even though they still appear
+in `params.json` and propagate to parallel workers. Add new params as typed
+fields with defaults; don't reuse one field for two meanings across versions —
+bump `version` instead.
 
 ### Determinism
 
