@@ -16,8 +16,7 @@ Given pose tracks (per-frame keypoints with identities), mosaic produces:
   and reduction;
 - unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,
   [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/));
-- supervised classifiers (XGBoost, Lightning-Action) trained from
-  [BORIS](https://www.boris.unito.it) or other manual labels;
+- supervised classifiers (XGBoost, Lightning-Action) trained from manual labels;
 - visual identification models from egocentric crops;
 - annotated overlay videos, embedding scatters, and behavior timelines.
 
