@@ -9,7 +9,6 @@ import pytest
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
-from mosaic.core.pipeline.models import ModelIndexRow, model_index
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,87 +307,6 @@ class TestFeatureIndexRow:
         df = idx.read()
         assert len(df) == 1
         assert df.iloc[0]["feature"] == "speed"
-
-
-# --- Model Index ---
-
-
-class TestModelIndex:
-    def test_schema_has_required_columns(self) -> None:
-        names = {f.name for f in dataclasses.fields(ModelIndexRow)}
-        assert "model" in names
-        assert "config_hash" in names
-
-    def test_factory_returns_index_csv(self, tmp_path: Path) -> None:
-        idx = model_index(tmp_path / "index.csv")
-        assert isinstance(idx, IndexCSV)
-
-    def test_ensure_creates(self, tmp_path: Path) -> None:
-        idx = model_index(tmp_path / "index.csv")
-        idx.ensure()
-        df = pd.read_csv(tmp_path / "index.csv")
-        assert "model" in df.columns
-
-    def test_append_no_dedup(self, tmp_path: Path) -> None:
-        idx = model_index(tmp_path / "index.csv")
-        p = tmp_path / "model_dir"
-        p.mkdir()
-        row = ModelIndexRow(
-            run_id="r1",
-            abs_path=str(p),
-            model="m1",
-            version="v1",
-            config_path="c",
-            config_hash="h",
-            metrics_path="",
-            status="ok",
-            notes="",
-        )
-        idx.append([row])
-        idx.append([row])
-        df = idx.read()
-        assert len(df) == 2  # model index is append-only, no dedup
-
-
-class TestModelIndexRow:
-    def test_fields_match_schema(self, tmp_path: Path) -> None:
-        p = tmp_path / "model_dir"
-        p.mkdir()
-        row = ModelIndexRow(
-            run_id="0.1-abc",
-            abs_path=str(p),
-            model="xgb",
-            version="0.1",
-            config_path="/path/config.json",
-            config_hash="abc",
-            metrics_path="/path/metrics.json",
-            status="success",
-            notes="",
-        )
-        df = pd.DataFrame([row])
-        assert set(df.columns) == {f.name for f in dataclasses.fields(ModelIndexRow)}
-        assert df.iloc[0]["model"] == "xgb"
-        assert df.iloc[0]["status"] == "success"
-
-    def test_appendable_to_model_index(self, tmp_path: Path) -> None:
-        idx = model_index(tmp_path / "index.csv")
-        p = tmp_path / "model_dir"
-        p.mkdir()
-        row = ModelIndexRow(
-            run_id="r1",
-            abs_path=str(p),
-            model="xgb",
-            version="0.1",
-            config_path="c",
-            config_hash="h",
-            metrics_path="",
-            status="success",
-            notes="",
-        )
-        idx.append([row])
-        df = idx.read()
-        assert len(df) == 1
-        assert df.iloc[0]["model"] == "xgb"
 
 
 # --- latest_run_id ---

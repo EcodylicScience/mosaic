@@ -1,4 +1,4 @@
-"""Computation pipeline for Dataset: feature runs, frame extraction, model training."""
+"""Computation pipeline for Dataset: feature runs, frame extraction."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from .manifest import (
     build_manifest,
     iter_manifest,
 )
-from .models import model_run_root
 from .pipeline import CallbackStep, FeatureStep, Pipeline
 from .registry import FeatureRegistry, open_registry
 from .run import load_values
@@ -57,7 +56,6 @@ __all__ = [
     "latest_feature_run_root",
     "list_feature_runs",
     "load_values",
-    "model_run_root",
     "open_registry",
     "show_pipeline_diagram",
     "show_pipeline_tree",

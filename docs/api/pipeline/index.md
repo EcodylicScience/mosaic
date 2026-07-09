@@ -68,12 +68,6 @@ class MyFeature:
       members:
         - run_feature
 
-## Model Training
-
-::: mosaic.core.pipeline.models.train_model
-    options:
-      show_source: true
-
 ## Training Progress
 
 Callback protocol and SQLite implementation for monitoring training

@@ -2966,41 +2966,6 @@ class Dataset:
             cancel_token=cancel_token,
         )
 
-    def train_model(self, model: Any, config: str | Path | dict[str, object] | None = None, overwrite: bool = False) -> str:
-        """Train a registered model using a JSON or dict configuration.
-
-        .. deprecated::
-            Model training in mosaic is done by running the corresponding
-            *global* fit-then-apply feature (XGBoost, FERAL, kpms, identity,
-            ARHMM, ...) through :meth:`run_feature`, which carries the full Job
-            Contract (attempt record, progress, cancellation). This scaffold has
-            no in-tree implementer and is not tracked in ``.mosaic.db``; it is
-            retained only for backward compatibility.
-
-        Args:
-            model: Model/trainer instance implementing ``name``, ``version``,
-                and a ``train()`` method.
-            config: Path to a JSON config file or an in-memory dict of
-                hyperparameters.  Passed to ``model.configure()``.
-            overwrite: Reserved for future use (run_ids are hash-based).
-
-        Returns:
-            The ``run_id`` for this training run.
-        """
-        import warnings
-
-        warnings.warn(
-            "Dataset.train_model is deprecated and not covered by the Job "
-            "Contract; train models by running the corresponding global feature "
-            "via Dataset.run_feature instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from .pipeline.models import train_model
-
-        return train_model(self, model, config, overwrite)
-
-
 
 # --- Backward compat: track converter helpers moved to core/track_library ---
 
