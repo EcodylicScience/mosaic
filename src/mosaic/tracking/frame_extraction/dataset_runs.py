@@ -2,24 +2,29 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 import sys
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.job import Cancelled, JobContext
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.tracking.registry import TrackingOp, register_tracking_op, run_tracking_op
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.progress import ProgressCallback
 
 
 # --- Frame extraction index helpers ---
@@ -84,7 +89,298 @@ def list_media_pairs(
     return df[mask].reset_index(drop=True)
 
 
-# --- Frame extraction Dataset methods ---
+# --- Frame extraction op (registered under the Job Contract) ---
+
+
+class ExtractFramesParams(Params):
+    """Typed parameters for the ``extract-frames`` tracking op.
+
+    Scope selectors (``groups``/``sequences``), ``overwrite``, and the
+    parallelism knobs are ``HASH_EXCLUDE``: they select *which* work runs or
+    *how fast*, but the run_id addresses only the extraction *settings* (so the
+    same settings share a run_id and add per-sequence subdirs, like frames/trex).
+    """
+
+    n_frames: int
+    method: str = "uniform"
+    start_frame: int | None = None
+    end_frame: int | None = None
+    candidate_step: int = 1
+    crop: tuple[int, int, int, int] | None = None
+    random_state: int = 42
+    kmeans_resize: tuple[int, int] = (64, 64)
+    kmeans_grayscale: bool = True
+    kmeans_max_candidates: int | None = 5000
+    kmeans_batch_size: int = 1024
+    kmeans_max_iter: int = 100
+    kmeans_n_init: str | int = "auto"
+    # scope + throughput (excluded from the content run_id)
+    groups: Annotated[list[str] | None, HASH_EXCLUDE] = None
+    sequences: Annotated[list[str] | None, HASH_EXCLUDE] = None
+    overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    parallel_workers: Annotated[int | str | None, HASH_EXCLUDE] = "auto"
+    parallel_mode: Annotated[str, HASH_EXCLUDE] = "thread"
+
+
+@dataclass(frozen=True, slots=True)
+class _ExtractSpec:
+    """Picklable unit of work for one (group, sequence) -- process-safe."""
+
+    group: str
+    sequence: str
+    video_paths: tuple[Path, ...]
+    seq_dir: Path
+    run_id: str
+    params_hash: str
+    n_frames: int
+    method: str
+    start_frame: int | None
+    end_frame: int | None
+    candidate_step: int
+    crop: tuple[int, int, int, int] | None
+    random_state: int
+    kmeans_resize: tuple[int, int]
+    kmeans_grayscale: bool
+    kmeans_max_candidates: int | None
+    kmeans_batch_size: int
+    kmeans_max_iter: int
+    kmeans_n_init: str | int
+    overwrite: bool
+
+
+def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
+    """Extract one sequence. Module-scope (picklable) so process mode works.
+
+    Manifest path-rewriting (which needs the Dataset) is done by the caller.
+    """
+    seq_dir = spec.seq_dir
+    if seq_dir.exists() and not spec.overwrite:
+        print(
+            f"[extract_frames] skip {make_entry_key(spec.group, spec.sequence)} "
+            f"(exists, overwrite=False)"
+        )
+        return None
+    if spec.overwrite and seq_dir.exists():
+        shutil.rmtree(seq_dir)
+
+    kmeans_kw = dict(
+        kmeans_resize=spec.kmeans_resize,
+        kmeans_grayscale=spec.kmeans_grayscale,
+        kmeans_max_candidates=spec.kmeans_max_candidates,
+        kmeans_batch_size=spec.kmeans_batch_size,
+        kmeans_max_iter=spec.kmeans_max_iter,
+        kmeans_n_init=spec.kmeans_n_init,
+    )
+    try:
+        if len(spec.video_paths) == 1:
+            result = _extract_frames(
+                video_path=spec.video_paths[0],
+                n_frames=spec.n_frames,
+                method=spec.method,
+                start_frame=spec.start_frame,
+                end_frame=spec.end_frame,
+                candidate_step=spec.candidate_step,
+                crop=spec.crop,
+                random_state=spec.random_state,
+                run_id=spec.run_id,
+                output_dir=seq_dir,
+                **kmeans_kw,
+            )
+        else:
+            result = _extract_frames_multi(
+                video_paths=list(spec.video_paths),
+                n_frames=spec.n_frames,
+                method=spec.method,
+                start_frame=spec.start_frame,
+                end_frame=spec.end_frame,
+                candidate_step=spec.candidate_step,
+                crop=spec.crop,
+                random_state=spec.random_state,
+                run_id=spec.run_id,
+                output_dir=seq_dir,
+                **kmeans_kw,
+            )
+    except Exception as exc:
+        print(
+            f"[extract_frames] ERROR processing "
+            f"{make_entry_key(spec.group, spec.sequence)}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+    return FramesIndexRow(
+        run_id=spec.run_id,
+        method=spec.method,
+        group=spec.group,
+        sequence=spec.sequence,
+        abs_path=seq_dir,
+        n_frames_extracted=result.n_extracted,
+        n_frames_requested=result.n_requested,
+        video_abs_path=json.dumps([str(p) for p in spec.video_paths])
+        if len(spec.video_paths) > 1
+        else str(spec.video_paths[0]),
+        params_hash=spec.params_hash,
+    )
+
+
+def _rewrite_manifest(ds: Dataset, seq_dir: Path) -> None:
+    """Rewrite run_info.json with dataset-relative paths for portability."""
+    manifest_path = seq_dir / "run_info.json"
+    if not manifest_path.exists():
+        return
+    try:
+        mdata = json.loads(manifest_path.read_text())
+        mdata["output_dir"] = ds._relative_to_root(seq_dir)
+        if "video_path" in mdata:
+            mdata["video_path"] = ds._relative_to_root(Path(mdata["video_path"]))
+        manifest_path.write_text(json.dumps(mdata, indent=2))
+    except Exception as exc:
+        print(
+            f"[extract_frames] manifest rewrite failed for {seq_dir}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _resolve_max_workers(parallel_workers: int | str | None) -> int:
+    if parallel_workers == "auto":
+        import os as _os
+
+        return min(_os.cpu_count() or 1, 8)
+    try:
+        n = int(parallel_workers)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1
+    return n if n > 1 else 1
+
+
+def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) -> str:
+    """Extraction body executed inside a job_context (the op's payload)."""
+    method_norm = str(p.method).strip().lower()
+    if method_norm not in {"uniform", "kmeans"}:
+        raise ValueError("method must be one of: 'uniform', 'kmeans'")
+
+    params_hash = hash_params(p.identity_dump())
+    run_id = f"{method_norm}-{params_hash}"
+    ctx.set_run_id(run_id)
+
+    run_root = frames_run_root(ds, method_norm, run_id)
+    run_root.mkdir(parents=True, exist_ok=True)
+    try:
+        (run_root / "run_params.json").write_text(
+            json.dumps(json_ready(p.identity_dump()), indent=2)
+        )
+    except Exception as exc:
+        print(
+            f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
+            file=sys.stderr,
+        )
+
+    media_df = list_media_pairs(ds, groups=p.groups, sequences=p.sequences)
+    if media_df.empty:
+        print(
+            "[extract_frames] No media entries match the given scope.", file=sys.stderr
+        )
+        return run_id
+
+    # Build picklable per-sequence work specs (multi-video sequences merged).
+    specs: list[_ExtractSpec] = []
+    for (g, s), sub in media_df.groupby(["group", "sequence"]):
+        g, s = str(g), str(s)
+        sub = sub.sort_values("video_order")
+        paths = tuple(ds.resolve_path(r["abs_path"]) for _, r in sub.iterrows())
+        if not g and not to_safe_name(s):
+            s = paths[0].stem
+        specs.append(
+            _ExtractSpec(
+                group=g,
+                sequence=s,
+                video_paths=paths,
+                seq_dir=run_root / make_entry_key(g, s),
+                run_id=run_id,
+                params_hash=params_hash,
+                n_frames=int(p.n_frames),
+                method=method_norm,
+                start_frame=p.start_frame,
+                end_frame=p.end_frame,
+                candidate_step=int(p.candidate_step),
+                crop=p.crop,
+                random_state=int(p.random_state),
+                kmeans_resize=p.kmeans_resize,
+                kmeans_grayscale=p.kmeans_grayscale,
+                kmeans_max_candidates=p.kmeans_max_candidates,
+                kmeans_batch_size=int(p.kmeans_batch_size),
+                kmeans_max_iter=int(p.kmeans_max_iter),
+                kmeans_n_init=p.kmeans_n_init,
+                overwrite=p.overwrite,
+            )
+        )
+
+    ctx.set_total(len(specs))
+    idx = frames_index(frames_index_path(ds, method_norm))
+    idx.ensure()
+    index_rows: list[FramesIndexRow] = []
+
+    def _collect(row: FramesIndexRow | None) -> None:
+        if row is not None:
+            _rewrite_manifest(ds, row.abs_path)
+            index_rows.append(row)
+
+    max_workers = _resolve_max_workers(p.parallel_workers)
+    p_mode = (p.parallel_mode or "thread").lower()
+    if p_mode not in {"thread", "process"}:
+        p_mode = "thread"
+
+    try:
+        if max_workers > 1:
+            PoolCls = ProcessPoolExecutor if p_mode == "process" else ThreadPoolExecutor
+            with PoolCls(max_workers=max_workers) as pool:
+                futures = {pool.submit(_extract_one, spec): spec for spec in specs}
+                done = 0
+                for future in as_completed(futures):
+                    if ctx.cancel_token.is_cancelled():
+                        for f in futures:
+                            f.cancel()
+                        raise Cancelled()
+                    row = future.result()
+                    done += 1
+                    spec = futures[future]
+                    ctx.progress.on_entry_end(
+                        done, len(specs), make_entry_key(spec.group, spec.sequence)
+                    )
+                    ctx.heartbeat(done)
+                    _collect(row)
+        else:
+            for i, spec in enumerate(specs):
+                ctx.check_cancel()
+                key = make_entry_key(spec.group, spec.sequence)
+                ctx.progress.on_entry_start(i, len(specs), key)
+                _collect(_extract_one(spec))
+                ctx.progress.on_entry_end(i + 1, len(specs), key)
+                ctx.heartbeat(i + 1)
+    finally:
+        if index_rows:
+            idx.append(index_rows)
+            idx.mark_finished(run_id)
+
+    print(
+        f"[extract_frames:{method_norm}] completed run_id={run_id} "
+        f"({len(index_rows)}/{len(specs)} sequences) -> {run_root}"
+    )
+    return run_id
+
+
+@register_tracking_op
+class ExtractFramesOp(TrackingOp[ExtractFramesParams]):
+    kind = "extract-frames"
+    category = "extract"
+    version = "0.1"
+    Params = ExtractFramesParams
+
+    def target(self, params: ExtractFramesParams) -> str:
+        return f"extract-{params.method}"
+
+    def run(self, ds: Dataset, params: ExtractFramesParams, ctx: JobContext) -> str:
+        return _run_extract_frames(ds, params, ctx)
 
 
 def extract_frames(
@@ -98,248 +394,66 @@ def extract_frames(
     start_frame: int | None = None,
     end_frame: int | None = None,
     candidate_step: int = 1,
-    crop=None,
-    # k-means params
+    crop: tuple[int, int, int, int] | None = None,
     kmeans_resize: tuple[int, int] = (64, 64),
     kmeans_grayscale: bool = True,
     kmeans_max_candidates: int | None = 5000,
     kmeans_batch_size: int = 1024,
     kmeans_max_iter: int = 100,
-    kmeans_n_init="auto",
+    kmeans_n_init: str | int = "auto",
     random_state: int = 42,
-    # parallelism
     parallel_workers: int | str | None = "auto",
     parallel_mode: str = "thread",
+    # Job Contract
+    execution_id: str | None = None,
+    owner: str = "",
+    track: bool = True,
+    progress_callback: "ProgressCallback | None" = None,
+    cancel_token=None,
 ) -> str:
+    """Extract representative frames from media as a tracked Job-Contract run.
+
+    Ergonomic typed front door for the ``extract-frames`` tracking op: builds
+    :class:`ExtractFramesParams` and dispatches via
+    :func:`mosaic.tracking.run_tracking_op`, which records the attempt, reports
+    per-sequence progress, and supports cooperative cancellation. Returns the
+    content ``run_id``.
+
+    Parameters mirror the previous signature (``method`` = "uniform"|"kmeans",
+    ``groups``/``sequences`` scope, k-means knobs, ``parallel_workers``/
+    ``parallel_mode``) plus the standard contract knobs
+    (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
     """
-    Extract representative frames from media files in the dataset.
-
-    Parameters
-    ----------
-    n_frames : int
-        Number of frames to extract per video.
-    method : str
-        "uniform" or "kmeans".
-    groups, sequences : optional iterables
-        Scope filter -- only process matching entries in media/index.csv.
-    overwrite : bool
-        If True, re-extract even if the output directory already exists.
-    start_frame, end_frame : optional int
-        Inclusive frame range; defaults to full video.
-    candidate_step : int
-        Frame stride for candidate selection (>=1).
-    crop : optional
-        Crop rectangle as (x, y, w, h) or {"x","y","w","h"}.
-    kmeans_* : various
-        K-means sampling parameters (only used when method="kmeans").
-    random_state : int
-        Random seed for reproducibility.
-    parallel_workers : int, "auto", or None
-        Number of videos to process concurrently. ``"auto"`` (default)
-        uses ``min(cpu_count, 8)`` workers. Set to ``1`` or ``None``
-        to disable parallelism.
-    parallel_mode : str
-        "thread" (default) or "process".
-
-    Returns
-    -------
-    str
-        The run_id for this extraction batch.
-    """
-    method_norm = str(method).strip().lower()
-    if method_norm not in {"uniform", "kmeans"}:
-        raise ValueError("method must be one of: 'uniform', 'kmeans'")
-
-    # Build params dict for hashing and persistence
-    extraction_params = {
-        "n_frames": int(n_frames),
-        "method": method_norm,
-        "start_frame": start_frame,
-        "end_frame": end_frame,
-        "candidate_step": int(candidate_step),
-        "crop": crop,
-        "random_state": int(random_state),
-    }
-    if method_norm == "kmeans":
-        extraction_params.update(
-            {
-                "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
-                "kmeans_grayscale": bool(kmeans_grayscale),
-                "kmeans_max_candidates": kmeans_max_candidates,
-                "kmeans_batch_size": int(kmeans_batch_size),
-                "kmeans_max_iter": int(kmeans_max_iter),
-                "kmeans_n_init": kmeans_n_init,
-            }
-        )
-
-    params_hash = hash_params(extraction_params)
-    run_id = f"{method_norm}-{params_hash}"
-    run_root = frames_run_root(ds, method_norm, run_id)
-    run_root.mkdir(parents=True, exist_ok=True)
-
-    # Persist params
-    params_path = run_root / "run_params.json"
-    try:
-        params_path.write_text(json.dumps(json_ready(extraction_params), indent=2))
-    except Exception as exc:
-        print(
-            f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
-            file=sys.stderr,
-        )
-
-    # Resolve scope from media index
-    media_df = list_media_pairs(ds, groups=groups, sequences=sequences)
-    if media_df.empty:
-        print(
-            "[extract_frames] No media entries match the given scope.", file=sys.stderr
-        )
-        return run_id
-
-    idx_path = frames_index_path(ds, method_norm)
-    idx = frames_index(idx_path)
-    idx.ensure()
-
-    if parallel_workers == "auto":
-        import os as _os
-
-        max_workers = min(_os.cpu_count() or 1, 8)
-    elif parallel_workers and int(parallel_workers) > 1:
-        max_workers = int(parallel_workers)
-    else:
-        max_workers = 1
-    p_mode = (parallel_mode or "thread").lower()
-    if p_mode not in {"thread", "process"}:
-        p_mode = "thread"
-
-    # Group media rows by (group, sequence) to handle multi-video sequences
-    def _extract_sequence(
-        group: str, sequence: str, video_paths: list[Path]
-    ) -> FramesIndexRow | None:
-        seq_label = make_entry_key(group, sequence)
-        seq_dir = run_root / seq_label
-
-        if seq_dir.exists() and not overwrite:
-            print(f"[extract_frames] skip {seq_label} (exists, overwrite=False)")
-            return None
-
-        if overwrite and seq_dir.exists():
-            import shutil
-
-            shutil.rmtree(seq_dir)
-
-        try:
-            if len(video_paths) == 1:
-                result = _extract_frames(
-                    video_path=video_paths[0],
-                    n_frames=int(n_frames),
-                    method=method_norm,
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    candidate_step=int(candidate_step),
-                    crop=crop,
-                    kmeans_resize=kmeans_resize,
-                    kmeans_grayscale=kmeans_grayscale,
-                    kmeans_max_candidates=kmeans_max_candidates,
-                    kmeans_batch_size=int(kmeans_batch_size),
-                    kmeans_max_iter=int(kmeans_max_iter),
-                    kmeans_n_init=kmeans_n_init,
-                    random_state=int(random_state),
-                    run_id=run_id,
-                    output_dir=seq_dir,
-                )
-            else:
-                result = _extract_frames_multi(
-                    video_paths=video_paths,
-                    n_frames=int(n_frames),
-                    method=method_norm,
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    candidate_step=int(candidate_step),
-                    crop=crop,
-                    kmeans_resize=kmeans_resize,
-                    kmeans_grayscale=kmeans_grayscale,
-                    kmeans_max_candidates=kmeans_max_candidates,
-                    kmeans_batch_size=int(kmeans_batch_size),
-                    kmeans_max_iter=int(kmeans_max_iter),
-                    kmeans_n_init=kmeans_n_init,
-                    random_state=int(random_state),
-                    run_id=run_id,
-                    output_dir=seq_dir,
-                )
-            # Re-write run_info.json with relative paths for portability
-            _manifest_path = seq_dir / "run_info.json"
-            if _manifest_path.exists():
-                _mdata = json.loads(_manifest_path.read_text())
-                _mdata["output_dir"] = ds._relative_to_root(seq_dir)
-                if "video_path" in _mdata:
-                    _mdata["video_path"] = ds._relative_to_root(
-                        Path(_mdata["video_path"])
-                    )
-                _manifest_path.write_text(json.dumps(_mdata, indent=2))
-            return FramesIndexRow(
-                run_id=run_id,
-                method=method_norm,
-                group=group,
-                sequence=sequence,
-                abs_path=seq_dir,
-                n_frames_extracted=result.n_extracted,
-                n_frames_requested=result.n_requested,
-                video_abs_path=json.dumps([str(p) for p in video_paths])
-                if len(video_paths) > 1
-                else str(video_paths[0]),
-                params_hash=params_hash,
-            )
-        except Exception as exc:
-            print(
-                f"[extract_frames] ERROR processing {seq_label}: {exc}", file=sys.stderr
-            )
-            return None
-
-    # Build per-sequence work items from (possibly multi-video) media index
-    work_items = []
-    grouped = media_df.groupby(["group", "sequence"])
-    for (g, s), sub in grouped:
-        g, s = str(g), str(s)
-        sub = sub.sort_values("video_order")
-        paths = [ds.resolve_path(r["abs_path"]) for _, r in sub.iterrows()]
-
-        # When group/sequence are empty (no tracks indexed yet), use video stem
-        if not g and not to_safe_name(s):
-            video_stem = paths[0].stem
-            s = video_stem
-
-        work_items.append((g, s, paths))
-
-    # Execute extraction
-    index_rows: list[FramesIndexRow] = []
-
-    if max_workers > 1:
-        PoolCls = ProcessPoolExecutor if p_mode == "process" else ThreadPoolExecutor
-        with PoolCls(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_extract_sequence, g, s, vp): (g, s)
-                for g, s, vp in work_items
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    index_rows.append(result)
-    else:
-        for g, s, vp in work_items:
-            result = _extract_sequence(g, s, vp)
-            if result is not None:
-                index_rows.append(result)
-
-    # Update index
-    if index_rows:
-        idx.append(index_rows)
-        idx.mark_finished(run_id)
-
-    print(
-        f"[extract_frames:{method_norm}] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(work_items)} sequences) -> {run_root}"
+    params = ExtractFramesParams(
+        n_frames=n_frames,
+        method=str(method).strip().lower(),
+        start_frame=start_frame,
+        end_frame=end_frame,
+        candidate_step=candidate_step,
+        crop=crop,
+        random_state=random_state,
+        kmeans_resize=kmeans_resize,
+        kmeans_grayscale=kmeans_grayscale,
+        kmeans_max_candidates=kmeans_max_candidates,
+        kmeans_batch_size=kmeans_batch_size,
+        kmeans_max_iter=kmeans_max_iter,
+        kmeans_n_init=kmeans_n_init,
+        groups=list(groups) if groups is not None else None,
+        sequences=list(sequences) if sequences is not None else None,
+        overwrite=overwrite,
+        parallel_workers=parallel_workers,
+        parallel_mode=parallel_mode,
     )
-    return run_id
+    return run_tracking_op(
+        ds,
+        "extract-frames",
+        params,
+        execution_id=execution_id,
+        owner=owner,
+        track=track,
+        progress_callback=progress_callback,
+        cancel_token=cancel_token,
+    )
 
 
 def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:

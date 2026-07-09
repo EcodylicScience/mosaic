@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def _require_ultralytics():
@@ -40,6 +40,7 @@ def train_pose_model(
     resume: bool | str | Path = False,
     augmentation: str | dict[str, Any] | None = None,
     callback: Any = None,
+    cancel_check: Callable[[], bool] | None = None,
     **extra_args: Any,
 ) -> Any:
     """Train a YOLO pose estimation model.
@@ -136,8 +137,8 @@ def train_pose_model(
             train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
-    if callback is not None and hasattr(callback, "on_epoch_end"):
-        _register_ultralytics_callback(yolo, callback, epochs)
+    if (callback is not None and hasattr(callback, "on_epoch_end")) or cancel_check:
+        _register_ultralytics_callback(yolo, callback, epochs, cancel_check)
 
     results = yolo.train(**train_kwargs)
     return results
@@ -326,6 +327,7 @@ def train_point_model(
     augmentation: str | dict[str, Any] | None = None,
     backend: str = "polo",
     callback: Any = None,
+    cancel_check: Callable[[], bool] | None = None,
     **extra_args: Any,
 ) -> Any:
     """Train a POLO point-detection model.
@@ -438,8 +440,8 @@ def train_point_model(
             train_kwargs.update(aug_dict)
     train_kwargs.update(extra_args)
 
-    if callback is not None and hasattr(callback, "on_epoch_end"):
-        _register_ultralytics_callback(yolo, callback, epochs)
+    if (callback is not None and hasattr(callback, "on_epoch_end")) or cancel_check:
+        _register_ultralytics_callback(yolo, callback, epochs, cancel_check)
 
     results = yolo.train(**train_kwargs)
     return results
@@ -509,13 +511,19 @@ def validate_point_model(
 
 
 def _register_ultralytics_callback(
-    yolo: Any, callback: Any, total_epochs: int
+    yolo: Any,
+    callback: Any,
+    total_epochs: int,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """Register an ``on_train_epoch_end`` hook on a YOLO model instance.
 
     Ultralytics trainers expose ``add_callback(event, func)`` where *func*
     receives the trainer instance.  We bridge that to the mosaic
-    :class:`~mosaic.core.pipeline.progress.TrainingProgressCallback` protocol.
+    :class:`~mosaic.core.pipeline.progress.TrainingProgressCallback` protocol,
+    and, when *cancel_check* is supplied, request a graceful stop by setting
+    ``trainer.stop = True`` between epochs (ultralytics cannot be interrupted
+    mid-epoch).
     """
 
     def _on_epoch_end(trainer: Any) -> None:
@@ -535,6 +543,9 @@ def _register_ultralytics_callback(
                     metrics[k] = float(v)
                 except (TypeError, ValueError):
                     pass
-        callback.on_epoch_end(epoch, total_epochs, metrics)
+        if callback is not None and hasattr(callback, "on_epoch_end"):
+            callback.on_epoch_end(epoch, total_epochs, metrics)
+        if cancel_check is not None and cancel_check():
+            trainer.stop = True
 
     yolo.add_callback("on_train_epoch_end", _on_epoch_end)

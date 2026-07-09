@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -92,6 +92,7 @@ def train_localizer(
     augment: "bool | str | LocalizerAugmentConfig" = True,
     seed: int = 42,
     callback: Any = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> TrainingResult:
     """Train a localizer heatmap model.
 
@@ -219,6 +220,11 @@ def train_localizer(
     )
 
     for epoch in range(epochs):
+        # Cooperative cancel between epochs; last.pt is written every epoch so
+        # a stop here loses no work. (Can't interrupt an in-flight epoch.)
+        if cancel_check is not None and cancel_check():
+            print(f"[localizer] cancel requested; stopping at epoch {epoch}")
+            break
         t0 = time.time()
 
         # ---- train ----

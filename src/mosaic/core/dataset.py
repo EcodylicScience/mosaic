@@ -254,6 +254,7 @@ default_roots = {
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
     "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
     "trex": "tracks_raw/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
+    "predictions": "predictions",  # run-addressed model-inference outputs (before -> tracks)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
     "frames": "media/frames",  # extracted video frames (PNGs), can be very large
@@ -386,6 +387,7 @@ class Dataset:
             "tracks_raw": "",
             "tracks": "",
             "trex": "",
+            "predictions": "",
             "features": "",
             "labels": "",
             "models": "",
