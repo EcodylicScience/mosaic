@@ -123,23 +123,21 @@ def test_resolve_display_env(monkeypatch: pytest.MonkeyPatch):
     assert _resolve_display(None) == {"DISPLAY": ":7"}
 
 
-# --- _run_trex wires invocation + env into the subprocess call ---
+# --- _run_trex wires invocation + env into the supervised subprocess call ---
 
 
 def test_run_trex_passes_invocation_and_env(monkeypatch: pytest.MonkeyPatch):
+    """_run_trex now runs via the killable ``run_supervised`` helper; verify it
+    still threads the resolved invocation prefix, args, and env overlay through."""
     captured: dict = {}
 
-    class _Result:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
+    def fake_supervised(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
         captured["env"] = kwargs.get("env")
-        return _Result()
+        captured["cancel_check"] = kwargs.get("cancel_check")
+        return ("ok", "", 0)  # (stdout, stderr, returncode)
 
-    monkeypatch.setattr(trex_run.subprocess, "run", fake_run)
+    monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
     out, err = trex_run._run_trex(
         ["-task", "convert"],
         timeout=5,

@@ -1,9 +1,15 @@
-"""Training progress callback protocol and implementations.
+"""Progress callback protocol and implementations.
 
-Provides a lightweight callback that training loops call at regular
-intervals (per-epoch, per-class, per-phase) to persist progress into the
-``training_progress`` table of ``.mosaic.db``.  The same table is read by
-the API layer (via SSE) for live monitoring.
+Provides a lightweight callback that jobs call at regular intervals to
+persist progress into the ``training_progress`` table of ``.mosaic.db``.
+Granularities span per-epoch / per-class training progress, per-entry
+feature-run progress (``on_entry_*``), and coarse per-phase transitions
+(e.g. trex convert/track).  The same table is read by the API layer (via
+SSE) for live monitoring, keyed by ``job_id`` (which the Job Contract sets
+to the attempt's ``execution_id``).
+
+The protocol is exported both as ``TrainingProgressCallback`` (historical
+name) and ``ProgressCallback`` (its broader current role).
 
 Also provides ``CSVProgressCallback`` for append-mode CSV writing that
 is readable mid-training (no database required).
@@ -73,6 +79,26 @@ class TrainingProgressCallback(Protocol):
         """
         ...
 
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        """Called just before a per-entry unit of work begins.
+
+        Args:
+            index: Zero-based index of the entry about to be processed.
+            total: Total number of entries planned for this run.
+            key: Human-readable entry identifier (e.g. ``"group/sequence"``).
+        """
+        ...
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
+        """Called after a per-entry unit of work completes.
+
+        Args:
+            index: One-based count of entries completed so far.
+            total: Total number of entries planned for this run.
+            key: Human-readable entry identifier (e.g. ``"group/sequence"``).
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Null implementation (no-op default)
@@ -93,6 +119,12 @@ class NullProgressCallback:
         pass
 
     def on_phase(self, phase: str, message: str) -> None:
+        pass
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        pass
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
         pass
 
 
@@ -150,6 +182,12 @@ class CSVProgressCallback:
         pass
 
     def on_phase(self, phase: str, message: str) -> None:
+        pass
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        pass
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
         pass
 
     def close(self) -> None:
@@ -224,6 +262,14 @@ class SQLiteProgressCallback:
             message: Free-text description.
         """
         self._write("phase", 0, 0, message=f"{phase}: {message}")
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        """Record that a per-entry unit of work has begun."""
+        self._write("entry_start", index, total, message=key)
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
+        """Record that a per-entry unit of work has completed."""
+        self._write("entry", index, total, message=key)
 
     # -- query helper -------------------------------------------------------
 
@@ -320,6 +366,19 @@ class CompositeProgressCallback:
     def on_phase(self, phase: str, message: str) -> None:
         for b in self._backends:
             b.on_phase(phase, message)
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        for b in self._backends:
+            b.on_entry_start(index, total, key)
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
+        for b in self._backends:
+            b.on_entry_end(index, total, key)
+
+
+# ``ProgressCallback`` is the broader current name for the same protocol; the
+# ``TrainingProgressCallback`` alias is retained for existing imports.
+ProgressCallback = TrainingProgressCallback
 
 
 # ---------------------------------------------------------------------------

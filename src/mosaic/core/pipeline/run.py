@@ -56,6 +56,8 @@ from .types import (
     TrackInput,
     TracksColumn,
 )
+from .job import CancelToken, Cancelled, JobContext, job_context
+from .progress import ProgressCallback
 from .registry import FeatureRegistry
 from .writers import (
     FeatureOutput,
@@ -297,6 +299,32 @@ def _make_filter_factory(
 # --- Main entry point ---
 
 
+def compute_run_id(
+    feature: Feature,
+    frame_start: int | None,
+    frame_end: int | None,
+    scope: Scope,
+) -> tuple[str, str]:
+    """Compute the content-addressed ``(run_id, params_hash)`` for a run.
+
+    Pure and side-effect-free -- it does *not* execute anything -- so callers
+    (e.g. an API dedup check) can learn the ``run_id`` a submission *would*
+    produce and consult ``feature_runs`` before spawning any work.
+
+    ``identity_dump()`` drops ``HASH_EXCLUDE``-marked params (throughput knobs
+    like ``infer_batch_size``) so retuning them doesn't bust the cache.
+    """
+    hashable: dict[str, object] = {
+        "_params": feature.params.identity_dump(),
+        "_inputs": feature.inputs.model_dump(),
+        "_frame_range": [frame_start, frame_end],
+    }
+    if feature.scope_dependent:
+        hashable["_scope_entries"] = sorted(scope.entries)
+    params_hash = hash_params(hashable)
+    return f"{feature.version}-{params_hash}", params_hash
+
+
 def run_feature(
     ds: Dataset,
     feature: Feature,
@@ -313,6 +341,12 @@ def run_feature(
     filter_end_time: float | None = None,
     check_output: bool = False,
     registry: FeatureRegistry | None = None,
+    *,
+    execution_id: str | None = None,
+    owner: str = "",
+    track: bool = True,
+    progress_callback: ProgressCallback | None = None,
+    cancel_token: CancelToken | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -362,12 +396,90 @@ def run_feature(
         recomputed. No effect when overwrite=True or when state is not cached.
         The deep read costs roughly an input-load per entry, so leave it off
         for routine runs.
+    registry : FeatureRegistry | None
+        A caller-owned registry (e.g. from ``Pipeline.run``). Used but not
+        closed here. When None and ``track`` is set, one is opened and owned.
+    execution_id : str | None
+        Reuse an externally minted ULID attempt id (how a Layer-2 subprocess
+        inherits its identity); otherwise a fresh one is generated.
+    owner : str
+        Free-form attribution recorded on the attempt row.
+    track : bool, default True
+        Record this attempt (status/progress/heartbeat) into ``.mosaic.db``.
+        Set False to run without leaving any attempt record (the legacy
+        behaviour). Ignored when an explicit ``registry`` is supplied.
+    progress_callback : ProgressCallback | None
+        Receives per-entry (and, for trainers, per-epoch) progress. Defaults to
+        a SQLite backend keyed by ``execution_id`` when tracking is on.
+    cancel_token : CancelToken | None
+        Cooperative cancellation, polled between entries. The default token is
+        inert.
+
+    Returns
+    -------
+    Result
+        Carries ``feature`` and ``run_id`` (the content id), plus ``execution_id``
+        and ``cache_hit`` (excluded from serialization, so they never perturb a
+        downstream feature's ``run_id``).
     """
-    # Storage name derivation
     storage_feature_name = derive_storage_name(
         feature.name, feature.inputs.storage_suffix()
     )
+    with job_context(
+        ds,
+        kind="feature",
+        target=storage_feature_name,
+        execution_id=execution_id,
+        owner=owner,
+        registry=registry,
+        track=track,
+        progress_callback=progress_callback,
+        cancel_token=cancel_token,
+    ) as ctx:
+        return _run_feature_impl(
+            ds,
+            feature,
+            ctx,
+            storage_feature_name,
+            groups=groups,
+            sequences=sequences,
+            entries=entries,
+            overwrite=overwrite,
+            parallel_workers=parallel_workers,
+            parallel_mode=parallel_mode,
+            overlap_frames=overlap_frames,
+            filter_start_frame=filter_start_frame,
+            filter_end_frame=filter_end_frame,
+            filter_start_time=filter_start_time,
+            filter_end_time=filter_end_time,
+            check_output=check_output,
+        )
 
+
+def _run_feature_impl(
+    ds: Dataset,
+    feature: Feature,
+    ctx: JobContext,
+    storage_feature_name: str,
+    *,
+    groups: Iterable[str] | None = None,
+    sequences: Iterable[str] | None = None,
+    entries: Iterable[tuple[str, str]] | None = None,
+    overwrite: bool = False,
+    parallel_workers: int | None = None,
+    parallel_mode: str | None = "thread",
+    overlap_frames: int = 0,
+    filter_start_frame: int | None = None,
+    filter_end_frame: int | None = None,
+    filter_start_time: float | None = None,
+    filter_end_time: float | None = None,
+    check_output: bool = False,
+) -> Result:
+    """Body of :func:`run_feature`, executed inside a :func:`job_context`.
+
+    ``ctx`` owns the attempt lifecycle (status/progress/cancel); ``registry``
+    references throughout are ``ctx.registry``.
+    """
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
         ds.meta.get("fps_default"),
@@ -396,17 +508,11 @@ def run_feature(
             ds, feature.inputs, groups_set, sequences_set, entries_set
         )
 
-    # Run ID hash. identity_dump() drops HASH_EXCLUDE-marked params (throughput
-    # knobs like infer_batch_size) so retuning them doesn't bust the cache.
-    hashable: dict[str, object] = {
-        "_params": feature.params.identity_dump(),
-        "_inputs": feature.inputs.model_dump(),
-        "_frame_range": [frame_start, frame_end],
-    }
-    if feature.scope_dependent:
-        hashable["_scope_entries"] = sorted(scope.entries)
-    params_hash = hash_params(hashable)
-    run_id = f"{feature.version}-{params_hash}"
+    # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
+    # identity (execution_id, progress, cancel) is deliberately NOT part of it.
+    run_id, params_hash = compute_run_id(feature, frame_start, frame_end, scope)
+    ctx.set_run_id(run_id)
+    ctx.set_total(len(manifest))
 
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
@@ -430,9 +536,9 @@ def run_feature(
     idx = feature_index(feature_index_path(ds, storage_feature_name))
     idx.ensure()
 
-    # Registry: record run start
-    if registry is not None:
-        registry.record_run_start(
+    # Registry: record run start (feature_runs content ledger)
+    if ctx.registry is not None:
+        ctx.registry.record_run_start(
             feature=storage_feature_name,
             run_id=run_id,
             version=feature.version,
@@ -459,8 +565,17 @@ def run_feature(
         ds, scope, pair_filter_spec, frame_start, frame_end
     )
 
+    # Wire the Job Contract into the feature: trainers (FERAL/kpms/...) that
+    # expose a ``progress_callback``/``cancel_token`` attribute get epoch-level
+    # progress and cooperative cancel routed to this attempt.
+    if hasattr(feature, "progress_callback"):
+        setattr(feature, "progress_callback", ctx.progress)
+    if hasattr(feature, "cancel_token"):
+        setattr(feature, "cancel_token", ctx.cancel_token)
+
     # Fit phase (if not state_ready)
     if not state_ready:
+        ctx.check_cancel()
 
         def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
             return iter_manifest(manifest, filter_factory=filter_factory)
@@ -482,8 +597,8 @@ def run_feature(
 
     def _record_row(row: FeatureIndexRow) -> None:
         _pending_idx_rows.append(row)
-        if registry is not None:
-            registry.record_entry(
+        if ctx.registry is not None:
+            ctx.registry.record_entry(
                 feature=row.feature,
                 run_id=row.run_id,
                 group=row.group,
@@ -491,6 +606,13 @@ def run_feature(
                 abs_path=row.abs_path,
                 n_rows=row.n_rows,
             )
+        # Single per-entry choke point (fires on cache-hit, inline, and
+        # parallel-drain paths): report progress + refresh the liveness heartbeat.
+        done = _total_written + len(_pending_idx_rows)
+        ctx.progress.on_entry_end(
+            done, ctx.total, make_entry_key(row.group, row.sequence)
+        )
+        ctx.heartbeat(done)
         if len(_pending_idx_rows) >= _IDX_FLUSH_EVERY:
             _flush_idx()
 
@@ -561,6 +683,15 @@ def run_feature(
         else manifest
     )
 
+    # A full cache hit: state needed no fit and every manifest entry was already
+    # valid on disk. Surfaced on Result (does not alter the run's flow).
+    cache_hit = (
+        state_ready
+        and not overwrite
+        and len(manifest) > 0
+        and len(skip_keys) == len(manifest)
+    )
+
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
     )
@@ -622,6 +753,9 @@ def run_feature(
         core_start: int,
         core_end: int,
     ) -> None:
+        # Cooperative cancel checkpoint: covers both apply loops and both the
+        # executor and inline branches. Completed entries are already durable.
+        ctx.check_cancel()
         group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
         meta = build_feature_meta(group, sequence, run_root)
 
@@ -679,28 +813,36 @@ def run_feature(
             del result_df
             gc.collect()
 
-    # Iterate manifest entries
-    if apply_overlap is not None:
-        for entry_key, df, core_start, core_end in iter_manifest(
-            compute_manifest,
-            filter_factory=filter_factory,
-            overlap_frames=apply_overlap,
-            progress_label=storage_feature_name,
-        ):
-            _process_entry(entry_key, df, core_start, core_end)
-    else:
-        for entry_key, df in iter_manifest(
-            compute_manifest,
-            filter_factory=filter_factory,
-            progress_label=storage_feature_name,
-        ):
-            _process_entry(entry_key, df, 0, len(df))
+    # Iterate manifest entries. A cooperative cancel (raised at the top of
+    # _process_entry) stops dispatch; completed entries stay recorded, so a
+    # later identical run resumes from registry.pending_entries.
+    try:
+        if apply_overlap is not None:
+            for entry_key, df, core_start, core_end in iter_manifest(
+                compute_manifest,
+                filter_factory=filter_factory,
+                overlap_frames=apply_overlap,
+                progress_label=storage_feature_name,
+            ):
+                _process_entry(entry_key, df, core_start, core_end)
+        else:
+            for entry_key, df in iter_manifest(
+                compute_manifest,
+                filter_factory=filter_factory,
+                progress_label=storage_feature_name,
+            ):
+                _process_entry(entry_key, df, 0, len(df))
 
-    # Drain remaining futures
-    if executor is not None:
-        while pending:
-            _drain_completed()
-        executor.shutdown(wait=True)
+        # Drain remaining futures
+        if executor is not None:
+            while pending:
+                _drain_completed()
+            executor.shutdown(wait=True)
+    except Cancelled:
+        _flush_idx()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+        raise
 
     # Global marker (for empty-input features)
     if _total_written == 0 and not _pending_idx_rows and not manifest:
@@ -720,10 +862,15 @@ def run_feature(
     # Finalize — flush any remaining rows
     _flush_idx()
     idx.mark_finished(run_id)
-    if registry is not None:
-        registry.mark_finished(storage_feature_name, run_id)
+    if ctx.registry is not None:
+        ctx.registry.mark_finished(storage_feature_name, run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
-    return Result(feature=storage_feature_name, run_id=run_id)
+    return Result(
+        feature=storage_feature_name,
+        run_id=run_id,
+        execution_id=ctx.execution_id,
+        cache_hit=cache_hit,
+    )
 
 
 # --- load_values ---

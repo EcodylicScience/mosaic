@@ -4,7 +4,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ._utils import hash_params, json_ready
 from .index_csv import IndexCSV, RunIndexRowBase
@@ -78,6 +78,12 @@ def train_model(
     progress_callback: TrainingProgressCallback | None = None,
 ) -> str:
     """Train a registered model using a JSON (or dict) configuration.
+
+    .. deprecated::
+        This is a legacy scaffold with no in-tree implementer and is *not*
+        covered by the Job Contract (no ``.mosaic.db`` attempt record). Real
+        model training in mosaic runs as a *global* feature via ``run_feature``.
+        Retained for backward compatibility only.
 
     Args:
         ds: Dataset instance providing model storage roots.

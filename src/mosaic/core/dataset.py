@@ -13,7 +13,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,11 @@ import yaml  # pip install pyyaml
 
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
+
+if TYPE_CHECKING:
+    from .pipeline.job import CancelToken
+    from .pipeline.progress import ProgressCallback
+    from .pipeline.registry import FeatureRegistry
 
 
 def _probe_video_metadata(path: Path) -> dict[str, Any]:
@@ -248,6 +253,7 @@ default_roots = {
     # ── derived (computed by mosaic, regenerable) ──
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
     "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
+    "trex": "tracks_raw/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
     "frames": "media/frames",  # extracted video frames (PNGs), can be very large
@@ -379,6 +385,7 @@ class Dataset:
             "media": "",
             "tracks_raw": "",
             "tracks": "",
+            "trex": "",
             "features": "",
             "labels": "",
             "models": "",
@@ -2867,6 +2874,12 @@ class Dataset:
         filter_end_time: float | None = None,
         check_output: bool = False,
         registry: "FeatureRegistry | None" = None,
+        *,
+        execution_id: str | None = None,
+        owner: str = "",
+        track: bool = True,
+        progress_callback: "ProgressCallback | None" = None,
+        cancel_token: "CancelToken | None" = None,
     ) -> Any:
         """Execute a feature extraction pipeline over the dataset.
 
@@ -2902,10 +2915,17 @@ class Dataset:
                 feature may override via ``check_output``). When False
                 (default), a cache hit only requires the output to exist.
             registry: Optional feature registry (advanced usage).
+            execution_id: Reuse an externally minted ULID attempt id.
+            owner: Free-form attribution recorded on the attempt row.
+            track: Record this attempt (status/progress/heartbeat) into
+                ``.mosaic.db`` (default). Set False to run without a trace.
+            progress_callback: Optional progress backend (per-entry / per-epoch).
+            cancel_token: Optional cooperative cancellation signal.
 
         Returns:
-            A ``Result`` dataclass with ``feature`` and ``run_id``
-            attributes.  Pass directly to ``Inputs()`` to chain features.
+            A ``Result`` with ``feature`` and ``run_id`` (plus attempt-only
+            ``execution_id``/``cache_hit``).  Pass directly to ``Inputs()`` to
+            chain features.
 
         Example:
             ```python
@@ -2937,10 +2957,23 @@ class Dataset:
             filter_end_time=filter_end_time,
             check_output=check_output,
             registry=registry,
+            execution_id=execution_id,
+            owner=owner,
+            track=track,
+            progress_callback=progress_callback,
+            cancel_token=cancel_token,
         )
 
     def train_model(self, model: Any, config: str | Path | dict[str, object] | None = None, overwrite: bool = False) -> str:
         """Train a registered model using a JSON or dict configuration.
+
+        .. deprecated::
+            Model training in mosaic is done by running the corresponding
+            *global* fit-then-apply feature (XGBoost, FERAL, kpms, identity,
+            ARHMM, ...) through :meth:`run_feature`, which carries the full Job
+            Contract (attempt record, progress, cancellation). This scaffold has
+            no in-tree implementer and is not tracked in ``.mosaic.db``; it is
+            retained only for backward compatibility.
 
         Args:
             model: Model/trainer instance implementing ``name``, ``version``,
@@ -2952,6 +2985,15 @@ class Dataset:
         Returns:
             The ``run_id`` for this training run.
         """
+        import warnings
+
+        warnings.warn(
+            "Dataset.train_model is deprecated and not covered by the Job "
+            "Contract; train models by running the corresponding global feature "
+            "via Dataset.run_feature instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from .pipeline.models import train_model
 
         return train_model(self, model, config, overwrite)

@@ -30,6 +30,11 @@ give it a headless display (one persistent ``Xvfb :99`` running):
 Equivalently set ``MOSAIC_TREX_CONDA_ENV=track`` and ``DISPLAY=:99`` once.
 """
 
+from mosaic.tracking.trex.dataset_runs import (
+    TRexIndexRow,
+    list_trex_runs,
+    run_trex,
+)
 from mosaic.tracking.trex.run import (
     TRexConvertResult,
     TRexError,
@@ -44,9 +49,12 @@ from mosaic.tracking.trex.settings import generate_settings_file
 __all__ = [
     "TRexConvertResult",
     "TRexError",
+    "TRexIndexRow",
     "TRexNotFoundError",
     "TRexTrackResult",
     "generate_settings_file",
+    "list_trex_runs",
+    "run_trex",
     "run_trex_batch",
     "run_trex_convert",
     "run_trex_track",

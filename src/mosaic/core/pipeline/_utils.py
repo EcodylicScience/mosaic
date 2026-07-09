@@ -4,6 +4,8 @@ import dataclasses
 import datetime
 import hashlib
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,6 +85,35 @@ def hash_params(d: object) -> str:
 
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+# Crockford base32 (excludes I, L, O, U to avoid ambiguity) -- the ULID alphabet.
+_CROCKFORD_B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def new_execution_id() -> str:
+    """Return a fresh ULID identifying one execution *attempt*.
+
+    A ULID is a 128-bit id: a 48-bit millisecond timestamp in the high bits
+    followed by 80 bits of randomness, rendered as 26 Crockford-base32
+    characters. The timestamp prefix makes ids lexicographically sortable by
+    creation time (unlike ``uuid4``), which the run-attempt ledger and the
+    downstream Dolt ``Run`` primary key both rely on.
+
+    This is the identity of an *attempt* and is intentionally
+    non-deterministic. It is never hashed into a ``run_id`` and never written
+    into a feature/model output -- only into the ``runs`` attempt table and the
+    ``training_progress.job_id`` column. Determinism of ``run_id`` is therefore
+    unaffected.
+    """
+    timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    randomness = int.from_bytes(os.urandom(10), "big")  # 80 bits
+    value = (timestamp_ms << 80) | randomness
+    chars = [""] * 26
+    for i in range(25, -1, -1):
+        chars[i] = _CROCKFORD_B32[value & 0x1F]
+        value >>= 5
+    return "".join(chars)
 
 
 def coerce_np(obj: object) -> object:

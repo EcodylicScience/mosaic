@@ -72,6 +72,29 @@ CREATE TABLE IF NOT EXISTS training_progress (
     timestamp   TEXT    NOT NULL,
     PRIMARY KEY (job_id, step_type, step_index)
 );
+
+CREATE TABLE IF NOT EXISTS runs (
+    execution_id   TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    target         TEXT    NOT NULL,
+    run_id         TEXT    DEFAULT '',
+    status         TEXT    NOT NULL,
+    owner          TEXT    DEFAULT '',
+    host           TEXT    DEFAULT '',
+    pid            INTEGER DEFAULT 0,
+    created_at     TEXT    NOT NULL,
+    started_at     TEXT    DEFAULT '',
+    heartbeat_at   TEXT    DEFAULT '',
+    finished_at    TEXT    DEFAULT '',
+    error_json     TEXT    DEFAULT '',
+    progress_done  INTEGER DEFAULT 0,
+    progress_total INTEGER DEFAULT 0,
+    PRIMARY KEY (execution_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_run_id ON runs (run_id);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status);
+CREATE INDEX IF NOT EXISTS idx_runs_target ON runs (kind, target);
 """
 
 
@@ -195,6 +218,164 @@ class FeatureRegistry:
             (feature, run_id, upstream_feature, upstream_run_id),
         )
         self._conn.commit()
+
+    # -- runs attempt ledger ------------------------------------------------
+    #
+    # The ``runs`` table records one row per execution *attempt*, keyed by a
+    # ULID ``execution_id``. This is deliberately distinct from ``feature_runs``
+    # (the content-addressed *result* ledger, keyed by ``run_id``): a retry or a
+    # cache hit is a new attempt (new ``execution_id``) but may share -- or, for
+    # a not-yet-computed / trex run, lack -- a ``run_id``. Status/error/heartbeat
+    # live here so ``feature_runs`` stays a pure content ledger with no failure
+    # history to overwrite.
+
+    def record_attempt(
+        self,
+        execution_id: str,
+        kind: str,
+        target: str,
+        *,
+        owner: str = "",
+        host: str = "",
+        pid: int = 0,
+        run_id: str = "",
+        status: str = "running",
+        progress_total: int = 0,
+    ) -> None:
+        """Insert (or claim) a run attempt row and mark it started.
+
+        Upserts on ``execution_id`` so an attempt pre-created elsewhere (e.g. a
+        ``queued`` row inserted by the API before it spawns the subprocess) is
+        flipped to ``running`` when the library actually begins work.
+        ``created_at`` is preserved across the conflict; ``started_at`` is set
+        each time the attempt (re)enters this method.
+        """
+        now = now_iso()
+        self._conn.execute(
+            """\
+            INSERT INTO runs
+                (execution_id, kind, target, run_id, status, owner, host, pid,
+                 created_at, started_at, heartbeat_at, progress_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(execution_id) DO UPDATE SET
+                status = excluded.status,
+                started_at = excluded.started_at,
+                heartbeat_at = excluded.heartbeat_at,
+                host = excluded.host,
+                pid = excluded.pid,
+                run_id = CASE WHEN excluded.run_id != '' THEN excluded.run_id
+                              ELSE runs.run_id END,
+                progress_total = excluded.progress_total
+            """,
+            (
+                execution_id, kind, target, run_id, status, owner, host, pid,
+                now, now, now, progress_total,
+            ),
+        )
+        self._conn.commit()
+
+    def set_attempt_run_id(self, execution_id: str, run_id: str) -> None:
+        """Backfill the content-addressed ``run_id`` once the job computes it."""
+        self._conn.execute(
+            "UPDATE runs SET run_id = ? WHERE execution_id = ?",
+            (run_id, execution_id),
+        )
+        self._conn.commit()
+
+    def heartbeat_attempt(
+        self,
+        execution_id: str,
+        *,
+        progress_done: int | None = None,
+        progress_total: int | None = None,
+    ) -> None:
+        """Refresh ``heartbeat_at`` (and optionally progress counters).
+
+        A running attempt whose heartbeat goes stale is how a supervisor
+        (Layer-2 runs-sweeper) detects a dead worker and reclaims the row.
+        """
+        self._conn.execute(
+            """\
+            UPDATE runs SET
+                heartbeat_at = ?,
+                progress_done = COALESCE(?, progress_done),
+                progress_total = COALESCE(?, progress_total)
+            WHERE execution_id = ?
+            """,
+            (now_iso(), progress_done, progress_total, execution_id),
+        )
+        self._conn.commit()
+
+    def finish_attempt(
+        self,
+        execution_id: str,
+        status: str,
+        *,
+        error_json: str = "",
+    ) -> None:
+        """Record a terminal state (``finished``/``failed``/``cancelled``)."""
+        now = now_iso()
+        self._conn.execute(
+            """\
+            UPDATE runs SET
+                status = ?, finished_at = ?, heartbeat_at = ?, error_json = ?
+            WHERE execution_id = ?
+            """,
+            (status, now, now, error_json, execution_id),
+        )
+        self._conn.commit()
+
+    def get_attempt(self, execution_id: str) -> dict[str, object] | None:
+        """Return the attempt row as a dict, or ``None`` if absent."""
+        cur = self._conn.execute(
+            "SELECT * FROM runs WHERE execution_id = ?", (execution_id,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, row))
+
+    def list_attempts(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        target: str | None = None,
+    ) -> pd.DataFrame:
+        """Return run attempts (newest first), optionally filtered."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if target is not None:
+            clauses.append("target = ?")
+            params.append(target)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return pd.read_sql_query(
+            f"SELECT * FROM runs {where} ORDER BY execution_id DESC",
+            self._conn,
+            params=params,
+        )
+
+    def stale_running_attempts(self, older_than_iso: str) -> list[dict[str, object]]:
+        """Return ``running`` attempts whose heartbeat predates *older_than_iso*."""
+        cur = self._conn.execute(
+            """\
+            SELECT * FROM runs
+            WHERE status = 'running'
+              AND heartbeat_at != ''
+              AND heartbeat_at < ?
+            ORDER BY heartbeat_at
+            """,
+            (older_than_iso,),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
     # -- reads --------------------------------------------------------------
 
@@ -419,3 +600,63 @@ def open_registry(features_root: Path, *, migrate_csv: bool = True) -> FeatureRe
         if n > 0:
             print(f"[registry] migrated {n} entries from CSV indices into {db_path}")
     return reg
+
+
+# ---------------------------------------------------------------------------
+# Standalone attempt readers (for external tools -- no mosaic import required)
+# ---------------------------------------------------------------------------
+#
+# These mirror ``progress.read_progress``: they open a short-lived WAL
+# connection, query the ``runs`` table, and close. They let mosaic-api's
+# runs-sweeper / status endpoints read attempt state (and reclaim stale ones)
+# without constructing a ``FeatureRegistry`` or importing the rest of mosaic.
+
+
+def _query_runs(db_path: Path, sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
+    conn = sqlite3.connect(str(db_path), timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    try:
+        cur = conn.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def read_run(db_path: Path, execution_id: str) -> dict[str, object] | None:
+    """Read one run attempt by ``execution_id`` (or ``None`` if absent)."""
+    rows = _query_runs(
+        db_path, "SELECT * FROM runs WHERE execution_id = ?", (execution_id,)
+    )
+    return rows[0] if rows else None
+
+
+def read_runs(
+    db_path: Path,
+    *,
+    kind: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, object]]:
+    """Read run attempts (newest first), optionally filtered by kind/status."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if kind is not None:
+        clauses.append("kind = ?")
+        params.append(kind)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return _query_runs(
+        db_path, f"SELECT * FROM runs {where} ORDER BY execution_id DESC", tuple(params)
+    )
+
+
+def read_runs_by_run_id(db_path: Path, run_id: str) -> list[dict[str, object]]:
+    """Read all attempts that produced (or targeted) a given content ``run_id``."""
+    return _query_runs(
+        db_path,
+        "SELECT * FROM runs WHERE run_id = ? ORDER BY execution_id DESC",
+        (run_id,),
+    )

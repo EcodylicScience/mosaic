@@ -28,11 +28,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
+
+from mosaic.core.pipeline.subprocess_util import run_supervised
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +210,19 @@ def _run_trex(
     timeout: int,
     invocation: list[str] | None = None,
     env: dict[str, str] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[str, str]:
     """Execute ``trex`` with *args* and return (stdout, stderr).
 
     *invocation* is the argv prefix from :func:`_trex_invocation` (defaults to
     the ``$PATH`` lookup). *env* is an overlay merged onto ``os.environ`` for
-    the subprocess (e.g. ``{"DISPLAY": ":99"}``).
+    the subprocess (e.g. ``{"DISPLAY": ":99"}``). *cancel_check*, when supplied,
+    is polled while TRex runs; if it fires, TRex's whole process group is
+    killed (it relaunches itself, so a group kill is required) and
+    :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
+
+    The subprocess always runs in its own process group (killable, orphan-safe)
+    via :func:`run_supervised`.
 
     Raises :class:`TRexError` on non-zero exit.
     """
@@ -230,18 +238,18 @@ def _run_trex(
     # backend with a headless-safe one (explicit non-module backends are kept).
     if run_env.get("MPLBACKEND", "").startswith("module://"):
         run_env["MPLBACKEND"] = "Agg"
-    result = subprocess.run(
+
+    stdout, stderr, returncode = run_supervised(
         cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
         env=run_env,
+        cancel_check=cancel_check,
+        timeout=timeout,
     )
 
-    if result.returncode != 0:
-        raise TRexError(cmd, result.returncode, result.stdout, result.stderr)
+    if returncode != 0:
+        raise TRexError(cmd, returncode, stdout, stderr)
 
-    return result.stdout, result.stderr
+    return stdout, stderr
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +273,7 @@ def run_trex_convert(
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
     display: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> TRexConvertResult:
     """Convert a raw video to T-Rex ``.pv`` format.
 
@@ -347,6 +356,7 @@ def run_trex_convert(
         timeout=timeout,
         invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
         env=_resolve_display(display),
+        cancel_check=cancel_check,
     )
 
     # Locate output files
@@ -395,6 +405,7 @@ def run_trex_track(
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
     display: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> TRexTrackResult:
     """Track individuals in a converted ``.pv`` video.
 
@@ -477,6 +488,7 @@ def run_trex_track(
         timeout=timeout,
         invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
         env=_resolve_display(display),
+        cancel_check=cancel_check,
     )
 
     # Locate output files
