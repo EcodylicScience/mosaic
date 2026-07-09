@@ -12,6 +12,7 @@ mosaic.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -598,7 +599,12 @@ def open_registry(features_root: Path, *, migrate_csv: bool = True) -> FeatureRe
     if is_new and migrate_csv:
         n = reg.migrate_from_csv(features_root)
         if n > 0:
-            print(f"[registry] migrated {n} entries from CSV indices into {db_path}")
+            # stderr, not stdout: a `mosaic run --json` invocation on a legacy
+            # CSV-only dataset must keep stdout a single clean JSON object.
+            print(
+                f"[registry] migrated {n} entries from CSV indices into {db_path}",
+                file=sys.stderr,
+            )
     return reg
 
 
