@@ -21,10 +21,9 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     BodyScaleResult,
     DependencyLookup,
-    Inputs,
     InputStream,
     Params,
-    TrackInput,
+    TrackInputs,
 )
 
 from .helpers import (
@@ -52,7 +51,7 @@ class OrientationRelativeFeature:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

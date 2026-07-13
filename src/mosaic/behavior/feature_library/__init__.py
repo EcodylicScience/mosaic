@@ -37,6 +37,7 @@ from mosaic.core.pipeline.types import (
     Result,
     ResultColumn,
     TrackInput,
+    TrackInputs,
 )
 
 from . import (
@@ -146,6 +147,7 @@ __all__ = [
     "GroundTruthLabelsSource",
     "Inputs",
     "InputsLike",
+    "TrackInputs",
     "Result",
     "ResultColumn",
     "TrackInput",

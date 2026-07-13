@@ -15,7 +15,7 @@ from scipy.spatial.distance import pdist
 
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, TrackInput
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, Params, TrackInputs
 
 from .helpers import ensure_columns
 from .registry import register_feature
@@ -49,7 +49,7 @@ class BodyScaleFeature:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

@@ -25,6 +25,8 @@ from mosaic.core.pipeline.types.inputs import (
     Inputs,
     InputsLike,
     TrackInput,
+    TrackInputs,
+    TrackLike,
 )
 from mosaic.core.pipeline.types.labels import (
     GroundTruthLabelsSource,
@@ -75,6 +77,8 @@ __all__ = [
     "Result",
     "ResultColumn",
     "TrackInput",
+    "TrackInputs",
+    "TrackLike",
     "TracksColumn",
     "load_from_spec",
     "resolve_order_col",

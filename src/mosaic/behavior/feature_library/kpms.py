@@ -22,13 +22,12 @@ from pydantic import Field, model_validator
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    Inputs,
     InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     Params,
     PoseConfig,
-    TrackInput,
+    TrackInputs,
 )
 
 from .registry import register_feature
@@ -203,7 +202,7 @@ class KpmsFeature:
     KpmsModelBundle = KpmsModelBundle
     KpmsModelArtifact = KpmsModelArtifact
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

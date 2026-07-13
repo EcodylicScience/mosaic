@@ -10,11 +10,9 @@ import pandas as pd
 
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    Inputs,
     InputStream,
     Params,
-    Result,
-    TrackInput,
+    TrackInputs,
 )
 
 from ..registry import register_feature
@@ -43,7 +41,7 @@ class MovementFilterInterpolate:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

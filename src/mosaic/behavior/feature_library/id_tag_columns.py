@@ -12,11 +12,10 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    Inputs,
     InputStream,
     LabelsSource,
     Params,
-    TrackInput,
+    TrackInputs,
 )
 
 from .registry import register_feature
@@ -49,7 +48,7 @@ class IdTagColumns:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

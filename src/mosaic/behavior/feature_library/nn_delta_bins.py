@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params, Result, TrackInput
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, Params, TrackInputs
 
 from .helpers import apply_exclude_cols
 from .registry import register_feature
@@ -134,7 +134,7 @@ class NearestNeighborDeltaBins:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

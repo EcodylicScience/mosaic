@@ -14,10 +14,9 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    Inputs,
     InputStream,
     Params,
-    TrackInput,
+    TrackInputs,
     resolve_order_col,
 )
 
@@ -215,7 +214,7 @@ class FFGroups:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

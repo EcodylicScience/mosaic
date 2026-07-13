@@ -34,11 +34,10 @@ from pydantic import Field
 from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
-    Inputs,
     InputStream,
     Params,
     PoseConfig,
-    TrackInput,
+    TrackInputs,
 )
 
 from .registry import register_feature
@@ -104,7 +103,7 @@ class TrackSubsample:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):

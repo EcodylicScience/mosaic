@@ -7,16 +7,18 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, cast, overload
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from ...core.helpers import make_entry_key
 from ._utils import Scope
 from .index import feature_index, feature_index_path, latest_feature_run_root
 from .loading import load_entry_data
 from .types import (
+    COLUMNS,
     InputsLike,
     LoadSpec,
     ParquetLoadSpec,
@@ -41,6 +43,44 @@ class ManifestEntry:
 
 
 Manifest = dict[str, ManifestEntry]
+
+
+def _ensure_track_shaped(
+    feature_name: str,
+    path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]],
+) -> None:
+    """Enforce the track-input contract for a ``Result`` feeding a track feature.
+
+    A feature declaring ``TrackInputs`` consumes a *track-shaped* table, so a
+    ``Result`` input must come from a **track-producing** feature -- one that
+    passes the track frame through (keeping ``X``/``Y``), e.g. ``trajectory-smooth``
+    or ``track-subsample``. Derived features (``speed-angvel``, ``nearest-neighbor``,
+    ``pair-*``) join back only ``COLUMNS.meta_set()`` and drop ``X``/``Y``, so their
+    output is a valid ``Result`` but not a valid track input.
+
+    The check is truth-based -- it peeks the resolved output's parquet schema for
+    the position columns -- so it needs no producer registry (``core`` must not
+    import ``behavior``) and self-maintains as new track producers are added. It is
+    a no-op when nothing resolved (empty upstream -> empty manifest, as before).
+    """
+    if not path_map_all:
+        return
+    path = next(iter(path_map_all.values()))[0]
+    if not path.exists():
+        return
+    # pyarrow ships no type stubs here, so read_schema().names is Unknown; pin it.
+    names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
+    columns = set(names)
+    required = {COLUMNS.x_col, COLUMNS.y_col}
+    missing = required - columns
+    if missing:
+        raise ValueError(
+            f"Feature {feature_name!r} does not produce a track-shaped table "
+            f"(missing {sorted(missing)}); it cannot be used as a track input. "
+            f"A track input must be raw 'tracks' or the Result of a track-producing "
+            f"feature (trajectory-smooth, track-subsample, movement-smooth, "
+            f"movement-filter-interpolate)."
+        )
 
 
 def build_manifest(
@@ -83,6 +123,8 @@ def build_manifest(
                 sequences,
                 entries,
             )
+            if getattr(type(inputs), "_track_input", False):
+                _ensure_track_shaped(item.feature, path_map_all)
         per_input_entries.append(resolved)
         per_input_paths.append(path_map)
         per_input_paths_all.append(path_map_all)

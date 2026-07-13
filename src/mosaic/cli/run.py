@@ -174,6 +174,11 @@ def run_command(
         fail(str(exc))
     except ValidationError as exc:
         fail(f"Invalid params: {exc}")
+    except ValueError as exc:
+        # e.g. an invalid input chain (a Result that isn't track-shaped). Present
+        # it cleanly rather than as a traceback. (ValidationError, a ValueError
+        # subclass, is handled above, so this only catches plain ValueErrors.)
+        fail(str(exc))
 
     if as_json:
         emit_json(payload)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.manifest import (
@@ -14,7 +15,7 @@ from mosaic.core.pipeline.manifest import (
     build_manifest,
     iter_manifest,
 )
-from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result
+from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
 
 
 class _MockDataset:
@@ -31,15 +32,18 @@ class _MockDataset:
         return p if p.is_absolute() else self._root / p
 
 
-def _make_parquet(path: Path, n_rows: int = 10) -> None:
-    df = pd.DataFrame(
-        {
-            "frame": range(n_rows),
-            "time": [f / 30.0 for f in range(n_rows)],
-            "id": [0] * n_rows,
-            "feat_a": np.random.randn(n_rows),
-        }
-    )
+def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:
+    data: dict[str, object] = {
+        "frame": range(n_rows),
+        "time": [f / 30.0 for f in range(n_rows)],
+        "id": [0] * n_rows,
+        "feat_a": np.random.randn(n_rows),
+    }
+    if track_shaped:
+        # A track-producing feature passes the track frame through, keeping X/Y.
+        data["X"] = np.linspace(0.0, 5.0, n_rows)
+        data["Y"] = np.linspace(0.0, 2.0, n_rows)
+    df = pd.DataFrame(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path)
 
@@ -50,7 +54,7 @@ def _write_tracks_index(ds, entries):
     pd.DataFrame(rows).to_csv(idx_path, index=False)
 
 
-def _setup_feature(ds, feat_name, pairs, run_id="v1-abc"):
+def _setup_feature(ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False):
     feat_dir = ds.get_root("features") / feat_name
     run_dir = feat_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -59,7 +63,7 @@ def _setup_feature(ds, feat_name, pairs, run_id="v1-abc"):
     rows = []
     for g, s in pairs:
         p = run_dir / f"{g}__{s}.parquet"
-        _make_parquet(p)
+        _make_parquet(p, track_shaped=track_shaped)
         rows.append(
             FeatureIndexRow(
                 run_id=run_id,
@@ -106,6 +110,48 @@ def test_build_manifest_feature_result(tmp_path):
     manifest, scope = build_manifest(ds, inputs)
     assert len(manifest) == 2
     assert scope.entries == {("g1", "s1"), ("g1", "s2")}
+
+
+def test_track_inputs_accepts_result_type():
+    """The widened track-input type accepts a feature Result (the CLI-facing fix).
+
+    Previously ``Inputs[TrackInput]`` rejected any ``{"feature": ...}`` reference
+    (``Input should be 'tracks'``), so ``mosaic run --feature speed-angvel --inputs
+    '[{"feature":"trajectory-smooth__from__tracks"}]'`` could not be expressed.
+    """
+    inp = TrackInputs.model_validate([{"feature": "trajectory-smooth__from__tracks"}])
+    assert inp.feature_inputs[0].feature == "trajectory-smooth__from__tracks"
+    assert TrackInputs.model_validate(["tracks"]).has_tracks
+    assert getattr(TrackInputs, "_track_input", False) is True
+
+
+def test_build_manifest_track_result_ok(tmp_path):
+    """A Result from a track-producing feature (output keeps X/Y) is a valid track input."""
+    ds = _MockDataset(tmp_path)
+    run_id = _setup_feature(
+        ds, "trajectory-smooth__from__tracks", [("g1", "s1"), ("g1", "s2")],
+        track_shaped=True,
+    )
+    inputs = TrackInputs((Result(feature="trajectory-smooth__from__tracks", run_id=run_id),))
+    manifest, scope = build_manifest(ds, inputs)
+    assert scope.entries == {("g1", "s1"), ("g1", "s2")}
+    assert len(manifest) == 2
+
+
+def test_build_manifest_derived_result_rejected(tmp_path):
+    """A Result from a derived feature (no X/Y) is refused as a track input.
+
+    speed-angvel's output drops X/Y, so chaining speed-angvel -> a track feature is
+    a type-valid Result but not a track-shaped one; resolution must reject it with a
+    clear error rather than silently KeyError at apply time.
+    """
+    ds = _MockDataset(tmp_path)
+    run_id = _setup_feature(
+        ds, "speed-angvel__from__tracks", [("g1", "s1")], track_shaped=False,
+    )
+    inputs = TrackInputs((Result(feature="speed-angvel__from__tracks", run_id=run_id),))
+    with pytest.raises(ValueError, match="track-shaped|track-producing"):
+        build_manifest(ds, inputs)
 
 
 def test_build_manifest_mixed_intersects(tmp_path):

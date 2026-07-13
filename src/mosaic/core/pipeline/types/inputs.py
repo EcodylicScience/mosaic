@@ -11,6 +11,12 @@ InputRequire = Literal["nonempty", "empty", "any"]
 
 TrackInput = Literal["tracks"]
 
+# A track-shaped input: raw ``tracks`` OR a Result whose producing feature
+# preserves the track frame (X/Y/pose passthrough). The producer constraint is
+# not expressible in the type (it's an open set of features), so it is enforced
+# at input resolution -- see ``TrackInputs`` and ``build_manifest``.
+TrackLike = TrackInput | Result
+
 InputItem = TypeVar("InputItem", bound=TrackInput | Result, default=TrackInput | Result)
 
 
@@ -111,3 +117,21 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
             else:
                 parts.append(item.feature)
         return "+".join(parts)
+
+
+class TrackInputs(Inputs[TrackLike]):
+    """Inputs for a feature that consumes a *track-shaped* table.
+
+    Accepts raw ``tracks`` or the ``Result`` of a **track-producing** feature --
+    one whose output preserves the ``trex_v1`` track frame (positions/pose passed
+    through), e.g. ``trajectory-smooth``, ``track-subsample``, ``movement-smooth``,
+    ``movement-filter-interpolate``. A ``Result`` from a feature that emits only
+    derived columns (``speed-angvel``, ``nearest-neighbor``, ``pair-*``, ...) is a
+    type-valid ``Result`` but **not** a valid track input; that constraint can't be
+    expressed in the type (the producer set is open), so it is enforced at input
+    resolution in ``build_manifest`` by checking the resolved output carries the
+    track position columns. The ``_track_input`` marker is how resolution knows to
+    apply that check.
+    """
+
+    _track_input: ClassVar[bool] = True

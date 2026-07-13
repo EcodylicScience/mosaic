@@ -10,10 +10,9 @@ from scipy.signal import savgol_filter
 from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
-    Inputs,
     InputStream,
     Params,
-    TrackInput,
+    TrackInputs,
     resolve_order_col,
 )
 
@@ -87,7 +86,7 @@ class TrajectorySmooth:
     parallelizable = True
     scope_dependent = False
 
-    class Inputs(Inputs[TrackInput]):
+    class Inputs(TrackInputs):
         pass
 
     class Params(Params):
