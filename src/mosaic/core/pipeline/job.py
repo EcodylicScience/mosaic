@@ -239,6 +239,8 @@ def job_context(
         progress = NullProgressCallback()
 
     token = cancel_token or CancelToken()
+    host = socket.gethostname()
+    pid = os.getpid()
     ctx = JobContext(
         execution_id=execution_id,
         kind=kind,
@@ -256,8 +258,8 @@ def job_context(
             kind,
             target,
             owner=owner,
-            host=socket.gethostname(),
-            pid=os.getpid(),
+            host=host,
+            pid=pid,
             status="running",
             progress_total=total,
         )

@@ -49,6 +49,41 @@ class TestWriteOutput:
         assert meta.out_path.exists()
         assert n_rows == 0
 
+    def test_failed_write_leaves_no_partial_or_temp(self, meta, monkeypatch):
+        """A write that raises mid-way leaves no output and no temp residue."""
+
+        def boom(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+        with pytest.raises(RuntimeError):
+            write_output(meta, pd.DataFrame({"a": [1, 2]}))
+        assert not meta.out_path.exists()
+        assert list(meta.out_path.parent.glob("*.tmp")) == []
+
+    def test_failed_write_preserves_existing_output(self, meta, monkeypatch):
+        """A failed re-write never clobbers a pre-existing valid output."""
+        write_output(meta, pd.DataFrame({"a": [1, 2, 3]}))
+        assert len(pd.read_parquet(meta.out_path)) == 3
+
+        def boom(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+        with pytest.raises(RuntimeError):
+            write_output(meta, pd.DataFrame({"a": [9]}))
+        # Old file intact, temp cleaned up.
+        assert len(pd.read_parquet(meta.out_path)) == 3
+        assert list(meta.out_path.parent.glob("*.tmp")) == []
+
+    def test_output_permissions_respect_umask(self, meta):
+        """Output is not left at mkstemp's private 0600 mode."""
+        from mosaic.core.pipeline._utils import _UMASK
+
+        write_output(meta, pd.DataFrame({"a": [1]}))
+        mode = meta.out_path.stat().st_mode & 0o777
+        assert mode == (0o666 & ~_UMASK)  # umask-respecting, not 0o600
+
 
 class TestBuildFeatureMeta:
     def test_basic(self, tmp_path):

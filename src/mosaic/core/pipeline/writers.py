@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
-from ._utils import FeatureMeta
+from ._utils import FeatureMeta, atomic_write
 
 FeatureOutput = pd.DataFrame | None
 
@@ -34,15 +34,14 @@ def write_output(
     meta: FeatureMeta,
     df_feat: FeatureOutput,
 ) -> int:
-    """Write feature output to parquet. Returns n_rows written."""
-    out_path = meta.out_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    """Write feature output to parquet atomically. Returns n_rows written.
 
-    if df_feat is None:
-        df_feat = pd.DataFrame()
-
-    n_rows = len(df_feat)
-    df_feat.to_parquet(out_path, index=False)
+    The parquet is written to a temp file and renamed onto ``meta.out_path``, so
+    a concurrent/interrupted write never leaves a torn file at the final path.
+    """
+    df = pd.DataFrame() if df_feat is None else df_feat
+    n_rows = len(df)
+    atomic_write(meta.out_path, lambda p: df.to_parquet(p, index=False))
     return n_rows
 
 

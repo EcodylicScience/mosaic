@@ -5,7 +5,9 @@ import datetime
 import hashlib
 import json
 import os
+import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,6 +87,38 @@ def hash_params(d: object) -> str:
 
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+# Process umask, read once at import (single-threaded startup). Used to restore
+# sensible permissions on temp files, which ``mkstemp`` creates mode 0600.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
+    """Write *final_path* atomically: *write_fn* fills a temp file, then rename.
+
+    ``write_fn`` receives a temp path in the same directory and must write the
+    full contents there. On success the temp is ``os.replace``-d onto
+    *final_path* (an atomic same-filesystem rename); a concurrent reader never
+    sees a partial file, and a failed/interrupted write never clobbers a
+    pre-existing *final_path*. The temp is removed if anything raises. The temp
+    name is a leading-dot, ``.tmp``-suffixed hidden file so an orphan left by a
+    hard kill never matches ``*.parquet`` output filters.
+    """
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=final_path.parent, prefix=f".{final_path.stem}-", suffix=".tmp"
+    )
+    os.close(fd)  # mkstemp returns an open fd; the writer reopens tmp by path
+    tmp_path = Path(tmp)
+    try:
+        os.chmod(tmp_path, 0o666 & ~_UMASK)  # mkstemp is 0600; restore umask perms
+        write_fn(tmp_path)
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # Crockford base32 (excludes I, L, O, U to avoid ambiguity) -- the ULID alphabet.

@@ -87,6 +87,25 @@ class TestAppend:
         df = pd.read_csv(tmp_csv)
         assert df.iloc[0]["name"] == "x"
 
+    def test_append_is_atomic_on_failure(
+        self, tmp_csv: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A to_csv that raises mid-append leaves the prior CSV and no temp."""
+        idx = IndexCSV(tmp_csv, SampleRow)
+        idx.append([_sample_row(tmp_path, name="a", value=1, status="ok")])
+
+        def boom(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(pd.DataFrame, "to_csv", boom)
+        with pytest.raises(RuntimeError):
+            idx.append([_sample_row(tmp_path, name="b", value=2, status="ok")])
+        monkeypatch.undo()
+        df = pd.read_csv(tmp_csv)
+        assert len(df) == 1  # prior content intact
+        assert df.iloc[0]["name"] == "a"
+        assert list(tmp_csv.parent.glob("*.tmp")) == []
+
 
 class TestDedup:
     def test_dedup_by_keys(self, tmp_csv: Path, tmp_path: Path) -> None:

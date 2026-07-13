@@ -622,13 +622,15 @@ def _run_feature_impl(
     # loop would otherwise deserialize each input only to discard it). Validated
     # hits are recorded immediately; their keys are excluded from the compute
     # manifest so iter_manifest never loads them.
+    # NOTE: ``check_output`` here is the run_feature *parameter* (a bool); the
+    # feature's optional validator is the *attribute* feature.check_output.
+    # Resolved once and reused by the cache-hit pre-pass.
+    custom_check = getattr(feature, "check_output", None) if check_output else None
+    if custom_check is not None and not callable(custom_check):
+        custom_check = None  # not a validator method; use the default
+
     skip_keys: set[str] = set()
     if state_ready and not overwrite:
-        # NOTE: ``check_output`` here is the run_feature *parameter* (a bool);
-        # the feature's optional validator is the *attribute* feature.check_output.
-        custom_check = getattr(feature, "check_output", None) if check_output else None
-        if custom_check is not None and not callable(custom_check):
-            custom_check = None  # not a validator method; use the default
         for entry_key in manifest:
             group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
             meta = build_feature_meta(group, sequence, run_root)
@@ -861,9 +863,20 @@ def _run_feature_impl(
 
     # Finalize — flush any remaining rows
     _flush_idx()
-    idx.mark_finished(run_id)
-    if ctx.registry is not None:
-        ctx.registry.mark_finished(storage_feature_name, run_id)
+    # Mark the run finished only when every manifest entry is present in the
+    # shared result ledger. Under concurrency the last finisher marks it once;
+    # a run that skipped entries owned by a still-live (or crashed-within-window)
+    # peer stays unfinished, so it is resumable rather than falsely finished.
+    all_entries = {
+        resolve_sequence_identity(entry_key, scope.entry_map) for entry_key in manifest
+    }
+    complete = ctx.registry is None or not ctx.registry.pending_entries(
+        storage_feature_name, run_id, all_entries
+    )
+    if complete:
+        idx.mark_finished(run_id)
+        if ctx.registry is not None:
+            ctx.registry.mark_finished(storage_feature_name, run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(
         feature=storage_feature_name,
@@ -897,9 +910,7 @@ def _deduplicate_column_names(names: list[str]) -> list[str]:
     return result
 
 
-def _build_labels_lookup(
-    ds: Dataset, kind: str
-) -> dict[tuple[str, str], Path]:
+def _build_labels_lookup(ds: Dataset, kind: str) -> dict[tuple[str, str], Path]:
     try:
         labels_root = Path(ds.get_root("labels")) / kind
     except KeyError:
@@ -920,9 +931,7 @@ def _build_labels_lookup(
     return lookup
 
 
-def _find_merged_column(
-    column: str, input_index: int, df: pd.DataFrame
-) -> str | None:
+def _find_merged_column(column: str, input_index: int, df: pd.DataFrame) -> str | None:
     if input_index == 0:
         return column if column in df.columns else None
     suffixed = f"{column}__{input_index}"

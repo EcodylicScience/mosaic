@@ -328,3 +328,35 @@ def test_registry_attempt_methods(tmp_path: Path):
         assert any(s["execution_id"] == eid2 for s in stale)
     finally:
         reg.close()
+
+
+# --- completeness gate -----------------------------------------------------
+
+
+def test_completeness_gate_finishes_only_when_all_entries_present(tmp_path: Path):
+    """``mark_finished`` must fire only once every manifest entry is present in
+    ``feature_entries``.
+
+    This is the composition ``run_feature`` enforces at the end of a run:
+    ``complete = not pending_entries(...)`` gates ``mark_finished``. A run with a
+    missing entry stays unfinished (resumable) rather than being falsely marked
+    complete.
+    """
+    reg = open_registry(tmp_path)
+    try:
+        feat, run_id = "feat", "0.1-abcdef0123"
+        all_entries = {("g", "s1"), ("g", "s2")}
+        reg.record_run_start(feat, run_id, "0.1", "hash")
+
+        # Only one of two entries recorded -> incomplete -> gate withholds finish.
+        reg.record_entry(feat, run_id, "g", "s1", tmp_path / "s1.parquet", n_rows=8)
+        assert reg.pending_entries(feat, run_id, all_entries) == [("g", "s2")]
+        assert reg.run_is_finished(feat, run_id) is False
+
+        # Second entry lands -> complete -> gate fires mark_finished.
+        reg.record_entry(feat, run_id, "g", "s2", tmp_path / "s2.parquet", n_rows=8)
+        assert reg.pending_entries(feat, run_id, all_entries) == []
+        reg.mark_finished(feat, run_id)
+        assert reg.run_is_finished(feat, run_id) is True
+    finally:
+        reg.close()

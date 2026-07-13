@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 
 import pandas as pd
 
-from ._utils import now_iso
+from ._utils import atomic_write, now_iso
 
 RowT = TypeVar("RowT", bound="IndexRowBase")
 
@@ -113,7 +113,7 @@ class IndexCSV(Generic[RowT]):
         df = pd.DataFrame(
             {col: pd.Series(dtype=dtype) for col, dtype in self.schema.items()}
         )
-        df.to_csv(self.path, index=False)
+        atomic_write(self.path, lambda p: df.to_csv(p, index=False))
 
     def read(
         self,
@@ -206,8 +206,12 @@ class IndexCSV(Generic[RowT]):
                     mask &= df[key] == new_row[key]
                 df = df[~mask]
 
-        df = pd.concat([df, df_new], ignore_index=True)
-        df.to_csv(self.path, index=False)
+        merged: pd.DataFrame = pd.concat([df, df_new], ignore_index=True)
+
+        def _write(p: Path) -> None:
+            merged.to_csv(p, index=False)
+
+        atomic_write(self.path, _write)
 
     def ordered_entries(
         self,
@@ -245,4 +249,4 @@ class IndexCSV(Generic[RowT]):
         sel = (df["run_id"] == run_id) & (df["finished_at"] == "")
         if sel.any():
             df.loc[sel, "finished_at"] = now_iso()
-            df.to_csv(self.path, index=False)
+            atomic_write(self.path, lambda p: df.to_csv(p, index=False))
