@@ -235,6 +235,9 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     assert r1.startswith("train-pose-")
     row = read_run(_db(ds), read_runs(_db(ds), kind="train-pose")[0]["execution_id"])
     assert row["status"] == "finished" and row["run_id"] == r1
+    # per-epoch on_epoch_end advances the coarse runs-row counter (2 epochs -> 2/2),
+    # so `status --json` progress_done tracks training epochs, not just the stream.
+    assert row["progress_done"] == 2 and row["progress_total"] == 2
 
     # model index row written with the best.pt path
     from mosaic.tracking.ops.train import trained_model_index

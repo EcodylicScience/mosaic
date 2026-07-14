@@ -238,6 +238,20 @@ class SQLiteProgressCallback:
             metrics: Metric name-value pairs.
         """
         self._write("epoch", epoch, total_epochs, metrics)
+        # Also advance the coarse ``runs`` counter so ``status --json``
+        # ``progress_done`` tracks epochs. Entry-based work advances it via
+        # ``JobContext.heartbeat`` in its loop; a training op's only per-step hook
+        # is here. Guarded: the ``runs`` table is absent when a progress callback
+        # is used standalone (outside the Job Contract).
+        try:
+            self._conn.execute(
+                "UPDATE runs SET progress_done = ?, progress_total = ? "
+                "WHERE execution_id = ?",
+                (epoch + 1, total_epochs, self.job_id),
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
     def on_class_start(
         self,
