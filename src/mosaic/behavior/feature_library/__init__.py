@@ -70,6 +70,7 @@ from . import (
     pair_position,
     pair_wavelet,
     pairposedistancepca,
+    social_motion_summary,
     speed_angvel,
     temporal_stacking,
     track_subsample,
@@ -105,6 +106,7 @@ from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
 from .registry import FEATURES, register_feature
+from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
 from .track_subsample import TrackSubsample
@@ -181,6 +183,7 @@ __all__ = [
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "PairWavelet",
+    "SocialMotionSummary",
     "SpeedAngvel",
     "TemporalStackingFeature",
     "TrackSubsample",
@@ -218,6 +221,7 @@ __all__ = [
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
+    "social_motion_summary",
     "speed_angvel",
     "temporal_stacking",
     "track_subsample",
