@@ -14,13 +14,13 @@ Example
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
-from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.helpers import make_entry_key, resolve_frame_range
 
 from ._utils import derive_storage_name, hash_params
 from .index import feature_index_path, feature_run_root, list_feature_runs
@@ -28,6 +28,8 @@ from .registry import open_registry
 from .types import Inputs, Result
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from mosaic.core.dataset import Dataset
 
 
@@ -92,14 +94,15 @@ class CallbackStep:
 def _newest_mtime(run_root: "Path") -> str | None:
     """Return the newest parquet mtime in a run directory as a short timestamp."""
     from datetime import datetime, timezone
-    from pathlib import Path
 
     try:
         parquets = list(run_root.glob("*.parquet"))
         if not parquets:
             return None
         newest = max(f.stat().st_mtime for f in parquets)
-        return datetime.fromtimestamp(newest, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(newest, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M"
+        )
     except OSError:
         return None
 
@@ -111,6 +114,106 @@ def storage_name(feature: object) -> str:
     a ``__from__`` suffix (e.g. ``speed__from__tracks``).
     """
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
+
+
+def _read_track_universe(ds: "Dataset") -> frozenset[tuple[str, str]]:
+    """All ``(group, sequence)`` pairs the dataset can process, from tracks.
+
+    This is the *intended* sequence universe — the pipeline's target scope
+    before any per-step ``groups``/``sequences``/``entries`` narrowing — read
+    once and reused for every step's cache check. Mirrors ``_resolve_tracks``
+    (``manifest.py``): only rows whose track file actually exists are kept.
+    Returns an empty set if the tracks index is absent (e.g. a fresh dataset),
+    which makes the cache check fall back to the legacy "any parquet" glob.
+    """
+    idx_path = ds.get_root("tracks") / "index.csv"
+    if not idx_path.exists():
+        return frozenset()
+    df = pd.read_csv(idx_path, keep_default_na=False)
+    out: set[tuple[str, str]] = set()
+    for _, row in df.iterrows():
+        abs_path = str(cast(object, row["abs_path"]))
+        if ds.resolve_path(abs_path).exists():
+            out.add(
+                (str(cast(object, row["group"])), str(cast(object, row["sequence"])))
+            )
+    return frozenset(out)
+
+
+def _as_set(x: object) -> set[str] | None:
+    """Coerce a ``groups``/``sequences`` run_kwarg to ``set[str] | None``."""
+    return {str(v) for v in cast(Iterable[object], x)} if x else None
+
+
+def _as_entry_set(x: object) -> set[tuple[str, str]] | None:
+    """Coerce an ``entries`` run_kwarg to ``set[(group, sequence)] | None``."""
+    if not x:
+        return None
+    return {(str(g), str(s)) for g, s in cast(Iterable[tuple[object, object]], x)}
+
+
+def _narrow_target(
+    universe: frozenset[tuple[str, str]],
+    groups: object = None,
+    sequences: object = None,
+    entries: object = None,
+) -> set[tuple[str, str]]:
+    """Narrow the track universe by a step's scope restriction.
+
+    Applies the same intersecting ``groups`` ∧ ``sequences`` ∧ ``entries``
+    filter as ``build_manifest``/``_resolve_tracks`` (``manifest.py:98-106``),
+    so the target matches what ``run_feature`` would actually process. Values
+    may arrive as lists or sets from ``run_kwargs``; ``None``/empty means "no
+    restriction on this axis".
+    """
+    g = _as_set(groups)
+    s = _as_set(sequences)
+    e = _as_entry_set(entries)
+    result: set[tuple[str, str]] = set()
+    for grp, seq in universe:
+        if g is not None and grp not in g:
+            continue
+        if s is not None and seq not in s:
+            continue
+        if e is not None and (grp, seq) not in e:
+            continue
+        result.add((grp, seq))
+    return result
+
+
+def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
+    """Query-relative completeness test for a feature run.
+
+    A run counts as cached only when *every* ``(group, sequence)`` in ``target``
+    has its output parquet on disk — not merely when the run dir is non-empty.
+    This is what makes a partial/interrupted run (e.g. 30 of 90 sequences) read
+    as *not* cached, so ``pipe.run`` resumes it. Checking files directly (rather
+    than the ``.mosaic.db`` ``finished_at`` flag) is deliberate: ``finished_at``
+    is *scope-relative* to whatever manifest an invocation saw — a downstream
+    step whose partial upstream truncated its manifest can be honestly
+    "finished" at 30/90 — and a file check also catches outputs deleted after
+    the fact.
+
+    Falls back to the legacy "any parquet" glob for the empty-input/global
+    marker (a single ``__global__`` artifact, see ``run.py`` global marker) and
+    when no target is known.
+
+    Known limitation: a feature that *legitimately* produces fewer outputs than
+    inputs — when an input filter empties a sequence and ``iter_manifest`` drops
+    it (``manifest.py``/``loading.py``) — will read as not-cached and recompute
+    each run. Distinguishing "not yet processed" from "processed and empty"
+    needs a processed-entry ledger and is deferred.
+    """
+    if not run_root.exists():
+        return False
+    present = {
+        p.stem for p in run_root.glob("*.parquet")
+    }  # stem == make_entry_key(g, s)
+    if "__global__" in present:
+        return True
+    if not target:
+        return bool(present)
+    return all(make_entry_key(g, s) in present for g, s in target)
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +243,7 @@ class Pipeline:
             raise ValueError(msg)
 
         # Validate that referenced inputs exist
-        refs = (
-            step.input_names
-            if isinstance(step, FeatureStep)
-            else step.depends_on
-        )
+        refs = step.input_names if isinstance(step, FeatureStep) else step.depends_on
         for ref in refs:
             if ref not in existing:
                 msg = (
@@ -163,6 +262,11 @@ class Pipeline:
         mock_results: dict[str, Result] = {}
         stale_steps: set[str] = set()
         resolved: list[dict] = []
+
+        # The intended sequence universe (all tracks), read once. Each step's
+        # target scope is this universe narrowed by that step's restriction; a
+        # step is "cached" only when every target sequence is present on disk.
+        track_universe = _read_track_universe(dataset)
 
         # Inverted DAG: {parent -> [children]} for staleness propagation
         adj = self.dag()
@@ -189,22 +293,22 @@ class Pipeline:
                 if step_is_stale:
                     for child_name in children_of.get(step.name, []):
                         stale_steps.add(child_name)
-                resolved.append({
-                    "step": step,
-                    "storage_name": None,
-                    "expected_run_id": None,
-                    "cached": None,
-                    "stale": step_is_stale,
-                    "mock_result": None,
-                })
+                resolved.append(
+                    {
+                        "step": step,
+                        "storage_name": None,
+                        "expected_run_id": None,
+                        "cached": None,
+                        "stale": step_is_stale,
+                        "mock_result": None,
+                    }
+                )
                 continue
 
             try:
                 # Build inputs from upstream results
                 if step.input_names:
-                    input_items = tuple(
-                        mock_results[n] for n in step.input_names
-                    )
+                    input_items = tuple(mock_results[n] for n in step.input_names)
                 else:
                     input_items = ("tracks",)
 
@@ -223,6 +327,17 @@ class Pipeline:
                     kwargs.get("filter_end_time"),
                 )
 
+                # Target scope for this step: the intended sequence universe
+                # narrowed by any groups/sequences/entries restriction. Used
+                # both for the completeness check and (for scope_dependent
+                # features) the run_id hash.
+                target = _narrow_target(
+                    track_universe,
+                    kwargs.get("groups"),
+                    kwargs.get("sequences"),
+                    kwargs.get("entries"),
+                )
+
                 # Compute expected run_id (same logic as run_feature).
                 # identity_dump() drops HASH_EXCLUDE-marked throughput params so
                 # this stays in sync with run_feature's cache key.
@@ -231,13 +346,39 @@ class Pipeline:
                     "_inputs": feature.inputs.model_dump(),
                     "_frame_range": [frame_start, frame_end],
                 }
+                # Scope-dependent features fold the resolved entry set into the
+                # hash (matching compute_run_id in run.py); without this term the
+                # predicted run_id would never match disk for arhmm/kpms/etc.
+                if getattr(feature, "scope_dependent", False):
+                    try:
+                        from .manifest import build_manifest
+
+                        _, scope = build_manifest(
+                            dataset,
+                            feature.inputs,
+                            _as_set(kwargs.get("groups")),
+                            _as_set(kwargs.get("sequences")),
+                            _as_entry_set(kwargs.get("entries")),
+                        )
+                        hashable["_scope_entries"] = sorted(scope.entries)
+                    except Exception:
+                        # Resolution hiccup: fall back to the scope-free hash
+                        # rather than crashing the preview.
+                        pass
                 expected_run_id = f"{feature.version}-{hash_params(hashable)}"
 
-                # Check cache on disk
-                run_root = feature_run_root(
-                    dataset, feat_storage_name, expected_run_id
+                # Check cache on disk: cached only when the run is *complete*
+                # for this step's target scope, not merely non-empty.
+                run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
+                cached = _run_is_complete(run_root, target)
+                present: set[str] = (
+                    {p.stem for p in run_root.glob("*.parquet")}
+                    if run_root.exists()
+                    else set()
                 )
-                cached = run_root.exists() and any(run_root.glob("*.parquet"))
+                target_keys = {make_entry_key(g, s) for g, s in target}
+                n_present = len(present & target_keys) if target else len(present)
+                n_target = len(target)
 
                 # Staleness: if this step was marked stale by an upstream,
                 # its cache cannot be trusted
@@ -250,30 +391,36 @@ class Pipeline:
                 )
                 mock_results[step.name] = result
 
-                resolved.append({
-                    "step": step,
-                    "storage_name": feat_storage_name,
-                    "expected_run_id": expected_run_id,
-                    "cached": cached,
-                    "stale": step_is_stale,
-                    "mock_result": result,
-                    "feature_short": feature.name,
-                })
+                resolved.append(
+                    {
+                        "step": step,
+                        "storage_name": feat_storage_name,
+                        "expected_run_id": expected_run_id,
+                        "cached": cached,
+                        "stale": step_is_stale,
+                        "mock_result": result,
+                        "feature_short": feature.name,
+                        "n_present": n_present,
+                        "n_target": n_target,
+                    }
+                )
 
             except Exception as e:
                 mock_results[step.name] = Result(
                     feature=step.feature_cls.name, run_id=None
                 )
-                resolved.append({
-                    "step": step,
-                    "storage_name": step.feature_cls.name,
-                    "expected_run_id": None,
-                    "cached": False,
-                    "stale": step_is_stale,
-                    "mock_result": None,
-                    "feature_short": step.feature_cls.name,
-                    "error": str(e)[:60],
-                })
+                resolved.append(
+                    {
+                        "step": step,
+                        "storage_name": step.feature_cls.name,
+                        "expected_run_id": None,
+                        "cached": False,
+                        "stale": step_is_stale,
+                        "mock_result": None,
+                        "feature_short": step.feature_cls.name,
+                        "error": str(e)[:60],
+                    }
+                )
 
             # If this step is not cached, mark its direct children stale
             # (transitive propagation happens naturally via topological order)
@@ -294,44 +441,40 @@ class Pipeline:
             step = info["step"]
 
             if isinstance(step, CallbackStep):
-                rows.append({
-                    "step": step.name,
-                    "feature": "(callback)",
-                    "run_id": "-",
-                    "n_seq": "-",
-                    "runs": "-",
-                    "cached": "-" if not info["stale"] else "stale",
-                    "modified": "-",
-                })
+                rows.append(
+                    {
+                        "step": step.name,
+                        "feature": "(callback)",
+                        "run_id": "-",
+                        "n_seq": "-",
+                        "runs": "-",
+                        "cached": "-" if not info["stale"] else "stale",
+                        "modified": "-",
+                    }
+                )
                 continue
 
             try:
                 runs_df = list_feature_runs(dataset, info["storage_name"])
                 n_runs = len(runs_df["run_id"].unique())
-                if info["cached"]:
-                    matched = runs_df[
-                        runs_df["run_id"] == info["expected_run_id"]
-                    ]
-                    n_seq = (
-                        int(matched.iloc[0].get("n_entries", 0))
-                        if not matched.empty
-                        else 0
-                    )
-                else:
-                    n_seq = 0
             except (FileNotFoundError, ValueError):
                 n_runs = 0
-                n_seq = 0
 
+            # Show how many of the target sequences are present (e.g. "30/90"),
+            # so a partial run is visible instead of masked as 0.
+            n_present = cast(int, info.get("n_present", 0))
+            n_target = cast(int, info.get("n_target", 0))
+            n_seq: object = f"{n_present}/{n_target}" if n_target else n_present
+
+            # cached (complete) / partial (some files, not complete) / stale
+            # (upstream invalidated) / False (nothing on disk).
             cached_display = info["cached"]
-            if info["stale"] and not info["cached"]:
+            if not info["cached"] and info["expected_run_id"]:
                 run_root = feature_run_root(
-                    dataset,
-                    info["storage_name"],
-                    info["expected_run_id"] or "",
+                    dataset, info["storage_name"], info["expected_run_id"]
                 )
-                if info["expected_run_id"] and run_root.exists():
-                    cached_display = "stale"
+                if run_root.exists() and any(run_root.glob("*.parquet")):
+                    cached_display = "stale" if info["stale"] else "partial"
 
             # Modification timestamp (show even for stale runs if files exist)
             modified = None
@@ -345,9 +488,7 @@ class Pipeline:
             row: dict[str, object] = {
                 "step": step.name,
                 "feature": info.get("feature_short", info["storage_name"]),
-                "run_id": (
-                    info["expected_run_id"] if info["cached"] else "\u2014"
-                ),
+                "run_id": (info["expected_run_id"] if info["cached"] else "\u2014"),
                 "n_seq": n_seq,
                 "runs": n_runs,
                 "cached": cached_display,
@@ -378,11 +519,7 @@ class Pipeline:
                 )
                 loaded.append(step.name)
             else:
-                reason = (
-                    "stale (upstream changed)"
-                    if info["stale"]
-                    else "not cached"
-                )
+                reason = "stale (upstream changed)" if info["stale"] else "not cached"
                 missing.append((step.name, reason))
 
         total = len(loaded) + len(missing)
@@ -390,9 +527,7 @@ class Pipeline:
         if loaded:
             print(f"  Loaded: {', '.join(loaded)}")
         if missing:
-            print(
-                f"  Missing: {', '.join(f'{n} ({r})' for n, r in missing)}"
-            )
+            print(f"  Missing: {', '.join(f'{n} ({r})' for n, r in missing)}")
         return self.results
 
     def run(
@@ -453,9 +588,7 @@ class Pipeline:
 
                 # Not cached — execute
                 if step.input_names:
-                    input_items = tuple(
-                        self.results[n] for n in step.input_names
-                    )
+                    input_items = tuple(self.results[n] for n in step.input_names)
                 else:
                     input_items = ("tracks",)
 
@@ -577,7 +710,8 @@ class Pipeline:
         # from this set is a bug. Keepers that never existed on disk
         # (steps not yet computed) are excluded so they don't false-alarm.
         keepers_existed_before: set[tuple[str, str]] = {
-            (s, r) for (s, r) in global_keepers
+            (s, r)
+            for (s, r) in global_keepers
             if feature_run_root(dataset, s, r).exists()
         }
 
@@ -613,9 +747,7 @@ class Pipeline:
                 # regression). Hard-raise even in dry_run — the row is
                 # already wrong.
                 if not is_current and (storage, rid) in global_keepers:
-                    owners = [
-                        n for n, r in step_to_rid.items() if r == rid
-                    ]
+                    owners = [n for n, r in step_to_rid.items() if r == rid]
                     raise RuntimeError(
                         f"Pipeline.clean: refusing to mark "
                         f"(storage={storage!r}, run_id={rid!r}) as removable "
@@ -636,19 +768,23 @@ class Pipeline:
                         shutil.rmtree(run_dir)
                     status = "removed"
 
-                rows.append({
-                    "step": step_label,
-                    "feature": storage,
-                    "run_id": rid,
-                    "status": status,
-                    "n_files": n_files,
-                    "size_mb": round(size_bytes / 1_048_576, 1),
-                    "modified": (
-                        datetime.fromtimestamp(newest_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-                        if newest_mtime > 0
-                        else None
-                    ),
-                })
+                rows.append(
+                    {
+                        "step": step_label,
+                        "feature": storage,
+                        "run_id": rid,
+                        "status": status,
+                        "n_files": n_files,
+                        "size_mb": round(size_bytes / 1_048_576, 1),
+                        "modified": (
+                            datetime.fromtimestamp(
+                                newest_mtime, tz=timezone.utc
+                            ).strftime("%Y-%m-%d %H:%M")
+                            if newest_mtime > 0
+                            else None
+                        ),
+                    }
+                )
 
             # Clean index.csv if not dry_run
             if not dry_run:
@@ -668,7 +804,8 @@ class Pipeline:
         # shouldn't have. Only meaningful on real deletion runs.
         if not dry_run:
             destroyed = [
-                (s, r) for (s, r) in keepers_existed_before
+                (s, r)
+                for (s, r) in keepers_existed_before
                 if not feature_run_root(dataset, s, r).exists()
             ]
             if destroyed:
@@ -711,6 +848,7 @@ class Pipeline:
         ``show_inputs``, ``save_path``, etc.).
         """
         from .viz import show_pipeline_diagram
+
         return show_pipeline_diagram(self, **kwargs)
 
     def show_text(self, **kwargs):
@@ -721,6 +859,7 @@ class Pipeline:
         ``show_feature_class``, ``return_string``, etc.).
         """
         from .viz import show_pipeline_tree
+
         return show_pipeline_tree(self, **kwargs)
 
     def dag(self) -> dict[str, list[str]]:

@@ -82,7 +82,11 @@ class GlobalIdentityModel:
     name: str = "global-identity-model"
     version: str = "0.1"
     parallelizable = False
-    scope_dependent = False
+    # The trained model depends on which sequences are in scope: fit() collects
+    # training images from the scoped entries and (under group_as_identity)
+    # discovers the label set from them. Fold the scope into the run_id so two
+    # training subsets with identical params+inputs don't collide on one run.
+    scope_dependent = True
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
