@@ -11,9 +11,11 @@ This module has **no** mosaic imports and can be tested independently.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
+from numba import njit  # pyright: ignore[reportUnknownVariableType]
 from scipy.linalg import cho_factor, cho_solve
 from scipy.special import logsumexp
 
@@ -103,9 +105,7 @@ class ARHMM:
                 msg = f"Feature dim mismatch: expected {D}, got {s.shape[1]}"
                 raise ValueError(msg)
             if s.shape[0] <= self.n_lags:
-                msg = (
-                    f"Sequence length {s.shape[0]} must exceed n_lags={self.n_lags}"
-                )
+                msg = f"Sequence length {s.shape[0]} must exceed n_lags={self.n_lags}"
                 raise ValueError(msg)
 
         self.n_features_ = D
@@ -124,7 +124,15 @@ class ARHMM:
             for it in range(self.n_iter):
                 # ----- E-step -----
                 total_ll, suff = self._e_step(
-                    sequences, A, Q, Q_cho, Q_logdet, log_trans, log_start, K, D,
+                    sequences,
+                    A,
+                    Q,
+                    Q_cho,
+                    Q_logdet,
+                    log_trans,
+                    log_start,
+                    K,
+                    D,
                 )
 
                 # Convergence check
@@ -132,7 +140,9 @@ class ARHMM:
                 if it > 0 and rel_change < self.tol:
                     log.info(
                         "restart %d converged at iter %d  LL=%.4f",
-                        restart, it, total_ll,
+                        restart,
+                        it,
+                        total_ll,
                     )
                     break
                 prev_ll = total_ll
@@ -143,7 +153,9 @@ class ARHMM:
             else:
                 log.info(
                     "restart %d reached max iter %d  LL=%.4f",
-                    restart, self.n_iter, total_ll,
+                    restart,
+                    self.n_iter,
+                    total_ll,
                 )
 
             if total_ll > best_ll:
@@ -151,7 +163,14 @@ class ARHMM:
                 best_params = (A, Q, Q_cho, Q_logdet, log_trans, log_start)
 
         assert best_params is not None
-        self.A_, self.Q_, self.Q_cho_, self.Q_logdet_, self.log_transmat_, self.log_startprob_ = best_params
+        (
+            self.A_,
+            self.Q_,
+            self.Q_cho_,
+            self.Q_logdet_,
+            self.log_transmat_,
+            self.log_startprob_,
+        ) = best_params
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -172,7 +191,12 @@ class ARHMM:
         assert self.A_ is not None  # for type-checker
         K = self.A_.shape[0]
         log_lik = _ar_log_likelihoods(
-            X, self.A_, self.Q_cho_, self.Q_logdet_, self.n_lags, K,
+            X,
+            self.A_,
+            self.Q_cho_,
+            self.Q_logdet_,
+            self.n_lags,
+            K,
         )
         T_eff = log_lik.shape[0]
 
@@ -204,12 +228,19 @@ class ARHMM:
         assert self.A_ is not None
         K = self.A_.shape[0]
         log_lik = _ar_log_likelihoods(
-            X, self.A_, self.Q_cho_, self.Q_logdet_, self.n_lags, K,
+            X,
+            self.A_,
+            self.Q_cho_,
+            self.Q_logdet_,
+            self.n_lags,
+            K,
         )
         log_alpha = _forward(log_lik, self.log_transmat_, self.log_startprob_)
         return float(logsumexp(log_alpha[-1]))
 
-    def prune_states(self, sequences: list[np.ndarray], threshold: float = 0.01) -> None:
+    def prune_states(
+        self, sequences: list[np.ndarray], threshold: float = 0.01
+    ) -> None:
         """Drop states whose posterior mass is below *threshold*.
 
         Re-indexes the remaining states to 0..K'-1.
@@ -223,7 +254,12 @@ class ARHMM:
         total_frames = 0
         for X in sequences:
             log_lik = _ar_log_likelihoods(
-                X, self.A_, self.Q_cho_, self.Q_logdet_, self.n_lags, K,
+                X,
+                self.A_,
+                self.Q_cho_,
+                self.Q_logdet_,
+                self.n_lags,
+                K,
             )
             log_alpha = _forward(log_lik, self.log_transmat_, self.log_startprob_)
             log_beta = _backward(log_lik, self.log_transmat_)
@@ -242,7 +278,9 @@ class ARHMM:
 
         log.info(
             "Pruning: keeping %d of %d states (threshold=%.3f)",
-            len(keep), K, threshold,
+            len(keep),
+            K,
+            threshold,
         )
         self.A_ = self.A_[keep]
         self.Q_ = self.Q_[keep]
@@ -545,9 +583,13 @@ def _forward(
     log_alpha[0] = log_start + log_lik[0]
     for t in range(1, T):
         # log_alpha[t, k] = logsumexp_j(log_alpha[t-1, j] + log_trans[j, k]) + log_lik[t, k]
-        log_alpha[t] = logsumexp(
-            log_alpha[t - 1, :, None] + log_trans, axis=0,
-        ) + log_lik[t]
+        log_alpha[t] = (
+            logsumexp(
+                log_alpha[t - 1, :, None] + log_trans,
+                axis=0,
+            )
+            + log_lik[t]
+        )
     return log_alpha
 
 
@@ -566,3 +608,500 @@ def _backward(
             axis=1,
         )
     return log_beta
+
+
+# ---------------------------------------------------------------------------
+# Numba-accelerated backend
+# ---------------------------------------------------------------------------
+#
+# The ``@njit`` functions below mirror the pure-numpy math above but compile the
+# per-timestep forward / backward / xi / Viterbi recurrences to native code,
+# removing the Python-interpreter + scipy-dispatch overhead that dominates EM
+# wall-clock on long / many-sequence fits.  They populate a plain numpy
+# :class:`ARHMM` (via :func:`fit_numba`), so serialization and the pure-numpy
+# fallback/oracle are untouched, and a model fitted with numba loads and applies
+# identically with the numpy path.  This section has **no** mosaic imports and
+# can be unit-tested against the numpy free functions above.
+#
+# Numerical convention: numba uses a *lower*-triangular Cholesky ``L`` (Q = L Lᵀ)
+# instead of scipy's ``cho_factor`` tuple.  The Mahalanobis term is then
+# ``rᵀ Q⁻¹ r = ‖L⁻¹ r‖²`` (a single forward-substitution), which equals the
+# numpy ``cho_solve`` result to floating-point precision.
+
+
+@njit(cache=True)
+def _cholesky_stack(Q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Lower-Cholesky each (D, D) covariance in *Q* (K, D, D).
+
+    Returns ``(L, logdet)`` with ``L`` shape (K, D, D) lower-triangular and
+    ``logdet`` shape (K,) equal to ``log det(Q_k)``.
+    """
+    K = Q.shape[0]
+    D = Q.shape[1]
+    L = np.empty((K, D, D), dtype=np.float64)
+    logdet = np.empty(K, dtype=np.float64)
+    for k in range(K):
+        Lk = np.linalg.cholesky(Q[k])
+        L[k] = Lk
+        s = 0.0
+        for i in range(D):
+            s += math.log(Lk[i, i])
+        logdet[k] = 2.0 * s
+    return L, logdet
+
+
+@njit(cache=True)
+def _ar_log_likelihoods_nb(
+    x_in: np.ndarray,
+    x_out: np.ndarray,
+    A: np.ndarray,
+    L: np.ndarray,
+    logdet: np.ndarray,
+) -> np.ndarray:
+    """AR emission log-likelihoods (numba). Returns shape (T_eff, K).
+
+    ``x_in`` (T_eff, dim_in) and ``x_out`` (T_eff, D) are the pre-built lagged
+    design and target; ``L`` is the stacked lower-Cholesky of Q.
+    """
+    T_eff = x_out.shape[0]
+    D = x_out.shape[1]
+    K = A.shape[0]
+    log_const = -0.5 * D * math.log(2.0 * math.pi)
+    log_lik = np.empty((T_eff, K), dtype=np.float64)
+    for k in range(K):
+        Akt = np.ascontiguousarray(A[k].T)  # (dim_in, D)
+        resid = x_out - x_in @ Akt  # (T_eff, D)
+        # Forward-solve L[k] Z = residᵀ  →  Z (D, T_eff); mahalanobis = Σ Z²
+        Z = np.empty((D, T_eff), dtype=np.float64)
+        for i in range(D):
+            for t in range(T_eff):
+                Z[i, t] = resid[t, i]
+            for j in range(i):
+                lij = L[k, i, j]
+                for t in range(T_eff):
+                    Z[i, t] -= lij * Z[j, t]
+            lii = L[k, i, i]
+            for t in range(T_eff):
+                Z[i, t] /= lii
+        for t in range(T_eff):
+            m = 0.0
+            for i in range(D):
+                m += Z[i, t] * Z[i, t]
+            log_lik[t, k] = log_const - 0.5 * logdet[k] - 0.5 * m
+    return log_lik
+
+
+@njit(cache=True)
+def _forward_nb(
+    log_lik: np.ndarray,
+    log_trans: np.ndarray,
+    log_start: np.ndarray,
+) -> np.ndarray:
+    """Forward pass (log-space, numba).  Returns log_alpha (T, K)."""
+    T, K = log_lik.shape
+    log_alpha = np.empty((T, K), dtype=np.float64)
+    for k in range(K):
+        log_alpha[0, k] = log_start[k] + log_lik[0, k]
+    for t in range(1, T):
+        for k in range(K):
+            mx = -np.inf
+            for j in range(K):
+                v = log_alpha[t - 1, j] + log_trans[j, k]
+                if v > mx:
+                    mx = v
+            s = 0.0
+            for j in range(K):
+                s += math.exp(log_alpha[t - 1, j] + log_trans[j, k] - mx)
+            log_alpha[t, k] = mx + math.log(s) + log_lik[t, k]
+    return log_alpha
+
+
+@njit(cache=True)
+def _backward_nb(
+    log_lik: np.ndarray,
+    log_trans: np.ndarray,
+) -> np.ndarray:
+    """Backward pass (log-space, numba).  Returns log_beta (T, K)."""
+    T, K = log_lik.shape
+    log_beta = np.empty((T, K), dtype=np.float64)
+    for k in range(K):
+        log_beta[T - 1, k] = 0.0
+    for t in range(T - 2, -1, -1):
+        for k in range(K):
+            mx = -np.inf
+            for j in range(K):
+                v = log_trans[k, j] + log_lik[t + 1, j] + log_beta[t + 1, j]
+                if v > mx:
+                    mx = v
+            s = 0.0
+            for j in range(K):
+                s += math.exp(
+                    log_trans[k, j] + log_lik[t + 1, j] + log_beta[t + 1, j] - mx
+                )
+            log_beta[t, k] = mx + math.log(s)
+    return log_beta
+
+
+@njit(cache=True)
+def _viterbi_nb(
+    log_lik: np.ndarray,
+    log_trans: np.ndarray,
+    log_start: np.ndarray,
+) -> np.ndarray:
+    """Viterbi decode (numba).  Returns int32 states (T_eff,).
+
+    Ties are broken toward the lowest index (strict ``>``), matching the numpy
+    ``predict`` argmax semantics so cross-backend labels are identical.
+    """
+    T, K = log_lik.shape
+    V = np.empty((T, K), dtype=np.float64)
+    ptr = np.empty((T, K), dtype=np.int64)
+    for k in range(K):
+        V[0, k] = log_start[k] + log_lik[0, k]
+        ptr[0, k] = 0
+    for t in range(1, T):
+        for k in range(K):
+            best = V[t - 1, 0] + log_trans[0, k]
+            arg = 0
+            for j in range(1, K):
+                v = V[t - 1, j] + log_trans[j, k]
+                if v > best:
+                    best = v
+                    arg = j
+            V[t, k] = best + log_lik[t, k]
+            ptr[t, k] = arg
+    states = np.empty(T, dtype=np.int32)
+    best = V[T - 1, 0]
+    arg = 0
+    for k in range(1, K):
+        if V[T - 1, k] > best:
+            best = V[T - 1, k]
+            arg = k
+    states[T - 1] = arg
+    for t in range(T - 2, -1, -1):
+        states[t] = ptr[t + 1, states[t + 1]]
+    return states
+
+
+@njit(cache=True)
+def _e_step_seq_nb(
+    x_in: np.ndarray,
+    x_out: np.ndarray,
+    A: np.ndarray,
+    L: np.ndarray,
+    logdet: np.ndarray,
+    log_trans: np.ndarray,
+    log_start: np.ndarray,
+    K: int,
+    D: int,
+    dim_in: int,
+) -> tuple[
+    float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
+    """E-step for a single sequence (numba).
+
+    Returns ``(ll_seq, S_out_in, S_in_in, S_out_out, gamma_sum, xi_sum,
+    start_sum)`` -- the per-sequence contributions the driver sums.
+    """
+    log_lik = _ar_log_likelihoods_nb(x_in, x_out, A, L, logdet)
+    T_eff = log_lik.shape[0]
+    log_alpha = _forward_nb(log_lik, log_trans, log_start)
+    log_beta = _backward_nb(log_lik, log_trans)
+
+    # Sequence evidence
+    mx = -np.inf
+    for k in range(K):
+        if log_alpha[T_eff - 1, k] > mx:
+            mx = log_alpha[T_eff - 1, k]
+    s = 0.0
+    for k in range(K):
+        s += math.exp(log_alpha[T_eff - 1, k] - mx)
+    ll_seq = mx + math.log(s)
+
+    # State posteriors gamma (row-normalized)
+    gamma = np.empty((T_eff, K), dtype=np.float64)
+    for t in range(T_eff):
+        mm = -np.inf
+        for k in range(K):
+            v = log_alpha[t, k] + log_beta[t, k]
+            if v > mm:
+                mm = v
+        ss = 0.0
+        for k in range(K):
+            ss += math.exp(log_alpha[t, k] + log_beta[t, k] - mm)
+        norm = mm + math.log(ss)
+        for k in range(K):
+            gamma[t, k] = math.exp(log_alpha[t, k] + log_beta[t, k] - norm)
+
+    # Transition posteriors xi (full-matrix normalization per t, matching numpy)
+    xi_sum = np.zeros((K, K), dtype=np.float64)
+    log_xi = np.empty((K, K), dtype=np.float64)
+    for t in range(T_eff - 1):
+        mxi = -np.inf
+        for j in range(K):
+            aj = log_alpha[t, j]
+            for k in range(K):
+                v = aj + log_trans[j, k] + log_lik[t + 1, k] + log_beta[t + 1, k]
+                log_xi[j, k] = v
+                if v > mxi:
+                    mxi = v
+        sxi = 0.0
+        for j in range(K):
+            for k in range(K):
+                e = math.exp(log_xi[j, k] - mxi)
+                log_xi[j, k] = e
+                sxi += e
+        for j in range(K):
+            for k in range(K):
+                xi_sum[j, k] += log_xi[j, k] / sxi
+
+    start_sum = np.empty(K, dtype=np.float64)
+    for k in range(K):
+        start_sum[k] = gamma[0, k]
+
+    # AR sufficient statistics
+    S_out_in = np.zeros((K, D, dim_in), dtype=np.float64)
+    S_in_in = np.zeros((K, dim_in, dim_in), dtype=np.float64)
+    S_out_out = np.zeros((K, D, D), dtype=np.float64)
+    gamma_sum = np.zeros(K, dtype=np.float64)
+    wx_out = np.empty((T_eff, D), dtype=np.float64)
+    wx_in = np.empty((T_eff, dim_in), dtype=np.float64)
+    for k in range(K):
+        gk = 0.0
+        for t in range(T_eff):
+            w = gamma[t, k]
+            gk += w
+            for d in range(D):
+                wx_out[t, d] = x_out[t, d] * w
+            for d in range(dim_in):
+                wx_in[t, d] = x_in[t, d] * w
+        gamma_sum[k] = gk
+        S_out_in[k] = np.ascontiguousarray(wx_out.T) @ x_in
+        S_in_in[k] = np.ascontiguousarray(wx_in.T) @ x_in
+        S_out_out[k] = np.ascontiguousarray(wx_out.T) @ x_out
+    return ll_seq, S_out_in, S_in_in, S_out_out, gamma_sum, xi_sum, start_sum
+
+
+@njit(cache=True)
+def _m_step_nb(
+    S_out_in: np.ndarray,
+    S_in_in: np.ndarray,
+    S_out_out: np.ndarray,
+    gamma_sum: np.ndarray,
+    xi_sum: np.ndarray,
+    start_sum: np.ndarray,
+    K: int,
+    D: int,
+    dim_in: int,
+    sticky_weight: float,
+    reg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """M-step (numba).  Returns ``(A, Q, log_trans, log_start)``."""
+    A = np.zeros((K, D, dim_in), dtype=np.float64)
+    Q = np.zeros((K, D, D), dtype=np.float64)
+    eye_d = np.eye(D)
+    eye_in = np.eye(dim_in)
+    for k in range(K):
+        n_k = gamma_sum[k]
+        if n_k < 1e-10:
+            for d in range(D):
+                A[k, d, d] = 0.9
+                Q[k, d, d] = 1.0
+            continue
+        S_in = S_in_in[k] + reg * eye_in
+        sol = np.linalg.solve(S_in, np.ascontiguousarray(S_out_in[k].T))  # (dim_in, D)
+        A[k] = np.ascontiguousarray(sol.T)
+        Qk = (S_out_out[k] - A[k] @ np.ascontiguousarray(S_out_in[k].T)) / n_k
+        Qk = 0.5 * (Qk + Qk.T) + reg * eye_d
+        ev = np.linalg.eigvalsh(Qk)
+        mn = ev[0]
+        for i in range(1, D):
+            if ev[i] < mn:
+                mn = ev[i]
+        if mn < reg:
+            Qk = Qk + (abs(mn) + reg) * eye_d
+        Q[k] = Qk
+
+    log_trans = np.empty((K, K), dtype=np.float64)
+    for k in range(K):
+        rs = 0.0
+        for j in range(K):
+            val = xi_sum[k, j] + 1e-10
+            if k == j:
+                val += sticky_weight
+            log_trans[k, j] = val  # temporarily store unnormalized
+            rs += val
+        for j in range(K):
+            v = log_trans[k, j] / rs
+            if v < 1e-300:
+                v = 1e-300
+            log_trans[k, j] = math.log(v)
+
+    log_start = np.empty(K, dtype=np.float64)
+    ss = 0.0
+    for k in range(K):
+        ss += start_sum[k] + 1e-10
+    for k in range(K):
+        v = (start_sum[k] + 1e-10) / ss
+        if v < 1e-300:
+            v = 1e-300
+        log_start[k] = math.log(v)
+    return A, Q, log_trans, log_start
+
+
+def _e_step_all_nb(
+    x_ins: list[np.ndarray],
+    x_outs: list[np.ndarray],
+    A: np.ndarray,
+    L: np.ndarray,
+    logdet: np.ndarray,
+    log_trans: np.ndarray,
+    log_start: np.ndarray,
+    K: int,
+    D: int,
+    dim_in: int,
+) -> tuple[float, tuple[np.ndarray, ...]]:
+    """Sum the per-sequence numba E-step over all sequences (Python driver)."""
+    S_out_in = np.zeros((K, D, dim_in), dtype=np.float64)
+    S_in_in = np.zeros((K, dim_in, dim_in), dtype=np.float64)
+    S_out_out = np.zeros((K, D, D), dtype=np.float64)
+    gamma_sum = np.zeros(K, dtype=np.float64)
+    xi_sum = np.zeros((K, K), dtype=np.float64)
+    start_sum = np.zeros(K, dtype=np.float64)
+    total_ll = 0.0
+    for x_in, x_out in zip(x_ins, x_outs):
+        ll, soi, sii, soo, gs, xs, sts = _e_step_seq_nb(
+            x_in, x_out, A, L, logdet, log_trans, log_start, K, D, dim_in
+        )
+        total_ll += ll
+        S_out_in += soi
+        S_in_in += sii
+        S_out_out += soo
+        gamma_sum += gs
+        xi_sum += xs
+        start_sum += sts
+    return total_ll, (S_out_in, S_in_in, S_out_out, gamma_sum, xi_sum, start_sum)
+
+
+def fit_numba(
+    sequences: list[np.ndarray],
+    *,
+    n_states: int = 50,
+    n_lags: int = 1,
+    sticky_weight: float = 100.0,
+    n_iter: int = 200,
+    tol: float = 1e-4,
+    n_restarts: int = 1,
+    random_state: int | None = None,
+) -> ARHMM:
+    """Fit an :class:`ARHMM` via EM using the numba backend.
+
+    Numerically equivalent to :meth:`ARHMM.fit` (same K-means init, same math),
+    but the per-timestep recurrences run in compiled code.  Returns a populated
+    numpy :class:`ARHMM` whose ``Q_cho_`` scipy factors are rebuilt at the end,
+    so the result serializes identically to a numpy-fitted model.
+    """
+    if not sequences:
+        msg = "No sequences provided for fitting."
+        raise ValueError(msg)
+
+    D = sequences[0].shape[1]
+    for s in sequences:
+        if s.shape[1] != D:
+            msg = f"Feature dim mismatch: expected {D}, got {s.shape[1]}"
+            raise ValueError(msg)
+        if s.shape[0] <= n_lags:
+            msg = f"Sequence length {s.shape[0]} must exceed n_lags={n_lags}"
+            raise ValueError(msg)
+
+    model = ARHMM(
+        n_states=n_states,
+        n_lags=n_lags,
+        sticky_weight=sticky_weight,
+        n_iter=n_iter,
+        tol=tol,
+        n_restarts=n_restarts,
+        random_state=random_state,
+    )
+    model.n_features_ = D
+    dim_in = D * n_lags + 1
+
+    # Pre-build lagged design matrices once (constant across EM iterations).
+    x_ins = [np.ascontiguousarray(_build_design(X, n_lags)) for X in sequences]
+    x_outs = [np.ascontiguousarray(X[n_lags:]) for X in sequences]
+
+    rng = np.random.default_rng(random_state)
+    best_ll = -np.inf
+    best_params: tuple | None = None
+
+    for restart in range(n_restarts):
+        seed = int(rng.integers(0, 2**31))
+        A, Q, log_trans, log_start = model._init_params(sequences, n_states, D, seed)
+        kc = A.shape[0]  # effective states from init (== n_states in normal use)
+        L, logdet = _cholesky_stack(Q)
+
+        prev_ll = -np.inf
+        total_ll = -np.inf
+        for it in range(n_iter):
+            total_ll, suff = _e_step_all_nb(
+                x_ins, x_outs, A, L, logdet, log_trans, log_start, kc, D, dim_in
+            )
+            rel_change = abs(total_ll - prev_ll) / max(abs(prev_ll), 1.0)
+            if it > 0 and rel_change < tol:
+                log.info(
+                    "restart %d converged at iter %d  LL=%.4f", restart, it, total_ll
+                )
+                break
+            prev_ll = total_ll
+            A, Q, log_trans, log_start = _m_step_nb(
+                suff[0],
+                suff[1],
+                suff[2],
+                suff[3],
+                suff[4],
+                suff[5],
+                kc,
+                D,
+                dim_in,
+                float(sticky_weight),
+                _REG,
+            )
+            L, logdet = _cholesky_stack(Q)
+        else:
+            log.info(
+                "restart %d reached max iter %d  LL=%.4f", restart, n_iter, total_ll
+            )
+
+        if total_ll > best_ll:
+            best_ll = total_ll
+            best_params = (A, Q, log_trans, log_start)
+
+    assert best_params is not None
+    A, Q, log_trans, log_start = best_params
+    model.A_ = A
+    model.Q_ = Q
+    model.log_transmat_ = log_trans
+    model.log_startprob_ = log_start
+    model.Q_cho_, model.Q_logdet_ = _cholesky_all(Q)
+    model.n_states = A.shape[0]
+    return model
+
+
+def predict_numba(model: ARHMM, X: np.ndarray) -> np.ndarray:
+    """Viterbi decode with the numba backend → int32 states (T,).
+
+    Equivalent to :meth:`ARHMM.predict`; leading ``n_lags`` frames get the first
+    decoded state.
+    """
+    model._check_fitted()
+    assert model.A_ is not None and model.Q_ is not None
+    nlags = model.n_lags
+    x_in = np.ascontiguousarray(_build_design(X, nlags))
+    x_out = np.ascontiguousarray(X[nlags:])
+    L, logdet = _cholesky_stack(model.Q_)
+    log_lik = _ar_log_likelihoods_nb(x_in, x_out, model.A_, L, logdet)
+    states = _viterbi_nb(log_lik, model.log_transmat_, model.log_startprob_)
+    full = np.empty(X.shape[0], dtype=np.int32)
+    full[:nlags] = states[0]
+    full[nlags:] = states
+    return full
