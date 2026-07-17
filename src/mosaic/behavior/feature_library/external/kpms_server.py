@@ -129,6 +129,9 @@ class KpmsServer:
         self.metadata: object | None = None
         self.kpms_config: KpmsConfig | None = None
         self.bodyparts: list[str] | None = None
+        # Message-passing mode chosen at fit time; reused for apply so the
+        # (memory-heavy) parallel scan can't reappear on the apply pass.
+        self.parallel_mp: bool | None = None
 
     def handle_add_track(self, request: AddTrackRequest) -> None:
         self.coordinates[request.key] = decode_array(request.coords)
@@ -247,6 +250,7 @@ class KpmsServer:
             log.info("set_mixed_map_iters(%d)", config.mixed_map_iters)
 
         parallel_mp = config.parallel_message_passing
+        self.parallel_mp = parallel_mp
         save_every = config.save_every_n_iters
 
         # Kappa for AR-HMM
@@ -337,6 +341,7 @@ class KpmsServer:
         self.metadata = bundle["metadata"]
         self.kpms_config = bundle["kpms_config"]
         self.bodyparts = bundle["bodyparts"]
+        self.parallel_mp = bundle.get("parallel_mp")
 
     def handle_apply(self, request: ApplyRequest) -> ApplyResponse:
         assert self.kpms_config is not None, (
@@ -373,6 +378,7 @@ class KpmsServer:
             model_name=model_name,
             num_iters=request.num_iters,
             return_model=True,
+            parallel_message_passing=self.parallel_mp,
             **kpms_config,
         )
 
@@ -391,6 +397,7 @@ class KpmsServer:
                 "metadata": self.metadata,
                 "kpms_config": self.kpms_config,
                 "bodyparts": self.bodyparts,
+                "parallel_mp": self.parallel_mp,
             },
             request.path,
         )
