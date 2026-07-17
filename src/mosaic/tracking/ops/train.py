@@ -105,11 +105,13 @@ def _finalize_training(
                 kind=kind,
                 base_model=base_model,
                 base_run_id=base_run_id,
-                best_model_path=str(best_model_path),
-                metrics_path=str(metrics_path) if metrics_path.exists() else "",
+                best_model_path=ds.relative_to_root(best_model_path),
+                metrics_path=(
+                    ds.relative_to_root(metrics_path) if metrics_path.exists() else ""
+                ),
                 n_epochs=int(n_epochs),
                 status="finished",
-                abs_path=run_root,
+                abs_path=Path(ds.relative_to_root(run_root)),
             )
         ]
     )

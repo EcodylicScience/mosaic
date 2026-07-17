@@ -229,6 +229,7 @@ try:
 except Exception:
     _YAML_OK = False
 
+
 def _dataset_base_dir(ds) -> Path:
     """
     Resolve the directory that holds dataset-level config (sibling to dataset manifest).
@@ -622,6 +623,16 @@ class Dataset:
         except ValueError:
             return str(abs_path.resolve())
 
+    def relative_to_root(self, path: str | Path) -> str:
+        """Public: dataset-root-relative storage form of *path* (abs stays abs).
+
+        Preferred at cross-module index-writer call sites so stored ``abs_path``
+        values are portable across machines / synced datasets. The reader side
+        (:meth:`resolve_path`) reverses it. External paths (outside the dataset
+        tree) are returned absolute unchanged.
+        """
+        return self._relative_to_root(Path(path))
+
     def rewrite_index_paths(
         self, path_map: Mapping[str, str], dry_run: bool = False
     ) -> dict[str, int]:
@@ -877,6 +888,81 @@ class Dataset:
                         if not dry_run:
                             ri_path.write_text(json.dumps(data, indent=2, default=str))
                         results[str(ri_path)] = changed
+
+        return results
+
+    def reindex_features(
+        self,
+        feature: str | None = None,
+        *,
+        dry_run: bool = True,
+        reconcile_registry: bool = True,
+    ) -> dict[str, int]:
+        """Reconcile feature index CSVs with the parquet files on disk.
+
+        Drops index rows whose ``abs_path`` no longer resolves to an existing
+        file (e.g. outputs deleted by hand), leaving every still-present entry
+        intact. Paths are resolved with :meth:`resolve_path`, so rows that are
+        merely *relocated* (a moved or synced dataset) are **kept**, not pruned
+        -- for those, use :meth:`make_portable` / :meth:`rewrite_index_paths`.
+        Never deletes parquet files; touches the index (and registry) only.
+
+        Args:
+            feature: Restrict to a single feature storage name. If None, every
+                feature under ``features/`` is reconciled.
+            dry_run: If True (default), report what would be dropped without
+                writing. Set False to actually rewrite the indexes.
+            reconcile_registry: If True, also delete the pruned entries from the
+                SQLite mirror (``features/.mosaic.db``) when it exists, so
+                completeness checks (``pending_entries``) stay accurate.
+
+        Returns:
+            ``{index_csv_path: num_rows_dropped}`` for every index with drops.
+        """
+        from .pipeline.index import feature_index, feature_index_path
+        from .pipeline.registry import open_registry
+
+        if not self.roots.get("features"):
+            return {}
+        fp = self.get_root("features")
+        if not fp.exists():
+            return {}
+
+        if feature is not None:
+            names = [feature]
+        else:
+            names = sorted(sub.name for sub in fp.iterdir() if sub.is_dir())
+
+        results: dict[str, int] = {}
+        dropped_keys: list[tuple[str, str, str, str]] = []
+        for name in names:
+            idx_path = feature_index_path(self, name)
+            if not idx_path.exists():
+                continue
+            dropped = feature_index(idx_path).prune_missing(
+                self.resolve_path, dry_run=dry_run
+            )
+            if len(dropped) == 0:
+                continue
+            results[str(idx_path)] = len(dropped)
+            for _, row in dropped.iterrows():
+                dropped_keys.append(
+                    (
+                        str(row.get("feature", name)),
+                        str(row.get("run_id", "")),
+                        str(row.get("group", "")),
+                        str(row.get("sequence", "")),
+                    )
+                )
+
+        if reconcile_registry and not dry_run and dropped_keys:
+            db_path = fp / ".mosaic.db"
+            if db_path.exists():
+                reg = open_registry(fp, migrate_csv=False)
+                try:
+                    _ = reg.prune_entries(dropped_keys)
+                finally:
+                    reg.close()
 
         return results
 
@@ -2094,6 +2180,12 @@ class Dataset:
 
         # Update index and metadata
         if new_rows:
+            # Store dataset-root-relative abs_path so the labels index stays
+            # portable across machines / synced datasets (converters emit
+            # absolute paths).
+            for _r in new_rows:
+                if _r.get("abs_path"):
+                    _r["abs_path"] = self.relative_to_root(_r["abs_path"])
             _append_labels_index(idx_path, new_rows)
 
             # Update metadata with converter's metadata
@@ -2251,6 +2343,10 @@ class Dataset:
 
         # Update index and metadata
         if new_rows:
+            # Store dataset-root-relative abs_path (see convert_all_labels).
+            for _r in new_rows:
+                if _r.get("abs_path"):
+                    _r["abs_path"] = self.relative_to_root(_r["abs_path"])
             _append_labels_index(idx_path, new_rows)
 
             # Update dataset metadata
@@ -2970,6 +3066,7 @@ class Dataset:
 # --- Backward compat: track converter helpers moved to core/track_library ---
 
 from mosaic.core.track_library.trex import _strip_trex_seq
+
 
 def _is_empty_like(x: Optional[Any]) -> bool:
     """True for None/NaN/''/'nan'/'none' (case-insensitive)."""

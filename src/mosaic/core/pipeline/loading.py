@@ -196,7 +196,7 @@ def build_nn_lookup(
     if idx_df.empty:
         return {}
 
-    nn_path = idx_df.iloc[0]["abs_path"]
+    nn_path = ds.resolve_path(idx_df.iloc[0]["abs_path"])
     df_nn = pd.read_parquet(nn_path)
 
     # below is probably too defensive, NNResult (as a per sequence result) has a known parquet schema

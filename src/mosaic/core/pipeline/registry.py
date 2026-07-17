@@ -191,6 +191,25 @@ class FeatureRegistry:
         )
         self._conn.commit()
 
+    def prune_entries(self, keys: list[tuple[str, str, str, str]]) -> int:
+        """Delete ``feature_entries`` rows for the given keys.
+
+        Keeps the SQLite mirror in sync after stale rows are pruned from a CSV
+        index (see ``Dataset.reindex_features``). Each key is
+        ``(feature, run_id, group, sequence)``. Returns the number of rows
+        actually deleted.
+        """
+        if not keys:
+            return 0
+        before = self._conn.total_changes
+        self._conn.executemany(
+            "DELETE FROM feature_entries "
+            "WHERE feature = ? AND run_id = ? AND group_ = ? AND sequence = ?",
+            keys,
+        )
+        self._conn.commit()
+        return self._conn.total_changes - before
+
     def mark_finished(self, feature: str, run_id: str) -> None:
         """Set ``finished_at`` on a run."""
         self._conn.execute(

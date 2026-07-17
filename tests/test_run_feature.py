@@ -39,6 +39,12 @@ class _MockDataset:
         path = Path(str(stored_path))
         return path if path.is_absolute() else self._root / path
 
+    def relative_to_root(self, path: object) -> str:
+        try:
+            return str(Path(str(path)).resolve().relative_to(self._root.resolve()))
+        except ValueError:
+            return str(path)
+
     @property
     def meta(self) -> dict[str, object]:
         return {"fps_default": 30.0}
@@ -636,9 +642,7 @@ def test_hash_excluded_param_reuses_cache(tmp_path: Path) -> None:
     mtime_before = os.path.getmtime(parquet)
 
     # Re-run at batch_size=8: same run_id, output untouched (cache reused).
-    r2 = run_feature(
-        ds, _ThroughputFeature(params={"batch_size": 8}), overwrite=False
-    )
+    r2 = run_feature(ds, _ThroughputFeature(params={"batch_size": 8}), overwrite=False)
     assert r2.run_id == r1.run_id
     assert os.path.getmtime(parquet) == mtime_before
 

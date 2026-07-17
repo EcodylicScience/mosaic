@@ -43,6 +43,12 @@ class _MockDataset:
         path = Path(str(stored_path))
         return path if path.is_absolute() else self._root / path
 
+    def relative_to_root(self, path: object) -> str:
+        try:
+            return str(Path(str(path)).resolve().relative_to(self._root.resolve()))
+        except ValueError:
+            return str(path)
+
     @property
     def meta(self) -> dict[str, object]:
         return {"fps_default": 30.0}

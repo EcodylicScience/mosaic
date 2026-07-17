@@ -15,17 +15,16 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, TypedDict, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, TypedDict, final
 
 import joblib
 import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
-from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
-    COLUMNS as C,
     DependencyLookup,
+    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
@@ -35,7 +34,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 
-from .arhmm_model import ARHMM
+from .arhmm_model import ARHMM, fit_numba, predict_numba
 from .helpers import feature_columns
 from .registry import register_feature
 
@@ -101,10 +100,20 @@ class ArHmmFeature:
         prune_threshold: Drop states with posterior mass below this
             fraction.  Default: 0.01.
         random_state: Random seed.  Default: 42.
+        backend: Compute backend for EM/Viterbi.  ``"auto"`` (default) uses the
+            numba-compiled path when available and falls back to numpy;
+            ``"numba"`` / ``"numpy"`` force a choice; ``"jax"`` is reserved for a
+            future GPU path.  All backends are numerically equivalent, so this
+            knob is excluded from the ``run_id`` hash — switching it never busts
+            the cache.
     """
 
     category = "global"
     name = "arhmm"
+    # NOTE: bump only when the *model math* changes, not for a backend swap.
+    # Backends are numerically-equivalent implementations of the same algorithm,
+    # so a stable version lets numpy- and numba-computed runs share one cache
+    # entry (run_id = f"{version}-{params_hash}", and `backend` is HASH_EXCLUDE).
     version = "0.1"
     parallelizable = False
     scope_dependent = True
@@ -127,6 +136,11 @@ class ArHmmFeature:
         downsample_rate: int | None = Field(default=None, ge=1)
         prune_threshold: float = Field(default=0.01, ge=0, le=1)
         random_state: int = 42
+        # HASH_EXCLUDE: backends are numerically equivalent, so this is dropped
+        # from the run_id hash (a numpy run and a numba run share one cache entry).
+        backend: Annotated[Literal["auto", "numpy", "numba", "jax"], HASH_EXCLUDE] = (
+            "auto"
+        )
 
     def __init__(
         self,
@@ -210,9 +224,7 @@ class ArHmmFeature:
             self._scaler_mean = all_data.mean(axis=0)
             self._scaler_std = all_data.std(axis=0)
             self._scaler_std[self._scaler_std < 1e-10] = 1.0
-            sequences = [
-                (s - self._scaler_mean) / self._scaler_std for s in sequences
-            ]
+            sequences = [(s - self._scaler_mean) / self._scaler_std for s in sequences]
 
         # PCA
         if p.pca_dim is not None and p.pca_dim < D:
@@ -226,17 +238,36 @@ class ArHmmFeature:
                 file=sys.stderr,
             )
 
-        # Fit AR-HMM
-        self._model = ARHMM(
-            n_states=p.n_states,
-            n_lags=p.n_lags,
-            sticky_weight=p.sticky_weight,
-            n_iter=p.n_iter,
-            tol=p.tol,
-            n_restarts=p.n_restarts,
-            random_state=p.random_state,
-        )
-        self._model.fit(sequences)
+        # Fit AR-HMM (backend-dispatched; numpy is the always-available fallback)
+        backend = self._select_backend()
+        if backend == "numba":
+            try:
+                self._model = fit_numba(
+                    sequences,
+                    n_states=p.n_states,
+                    n_lags=p.n_lags,
+                    sticky_weight=p.sticky_weight,
+                    n_iter=p.n_iter,
+                    tol=p.tol,
+                    n_restarts=p.n_restarts,
+                    random_state=p.random_state,
+                )
+            except Exception as exc:  # noqa: BLE001 - any numba failure → numpy
+                log.warning(
+                    "[arhmm] numba backend failed (%s); falling back to numpy.",
+                    exc,
+                )
+                backend = "numpy"
+        if backend == "numpy":
+            self._model = ARHMM(
+                n_states=p.n_states,
+                n_lags=p.n_lags,
+                sticky_weight=p.sticky_weight,
+                n_iter=p.n_iter,
+                tol=p.tol,
+                n_restarts=p.n_restarts,
+                random_state=p.random_state,
+            ).fit(sequences)
 
         # Prune unused states
         if p.prune_threshold > 0:
@@ -268,9 +299,7 @@ class ArHmmFeature:
         else:
             syllables = self._apply_one(df, cols)
             results.append(
-                pd.DataFrame(
-                    {"frame": df["frame"].values, "syllable": syllables}
-                )
+                pd.DataFrame({"frame": df["frame"].values, "syllable": syllables})
             )
 
         return pd.concat(results, ignore_index=True)
@@ -293,6 +322,28 @@ class ArHmmFeature:
 
     # --- Helpers ---
 
+    def _select_backend(self) -> str:
+        """Resolve the compute backend.
+
+        ``"auto"`` prefers the numba path (a core dependency) and falls back to
+        numpy if numba can't be imported.  ``"jax"`` is reserved for a future GPU
+        path and raises until implemented.
+        """
+        b = self.params.backend
+        if b == "jax":
+            msg = (
+                "backend='jax' (GPU) is not yet implemented for arhmm; use "
+                "'numba' (default) for the accelerated CPU path, or 'numpy'."
+            )
+            raise NotImplementedError(msg)
+        if b in ("numpy", "numba"):
+            return b
+        try:  # auto
+            import numba  # noqa: F401
+        except Exception:  # pragma: no cover - numba is a core dependency
+            return "numpy"
+        return "numba"
+
     def _load_bundle(self, bundle: ArHmmModelBundle) -> None:
         self._model = bundle["model"]
         self._pca = bundle["pca"]
@@ -300,9 +351,7 @@ class ArHmmFeature:
         self._scaler_std = bundle["scaler_std"]
         self._feature_columns = bundle["feature_columns"]
 
-    def _df_to_array(
-        self, df: pd.DataFrame, cols: list[str]
-    ) -> np.ndarray | None:
+    def _df_to_array(self, df: pd.DataFrame, cols: list[str]) -> np.ndarray | None:
         """Convert a DataFrame to a numpy array for AR-HMM, with
         downsampling and NaN handling."""
         arr = df[cols].to_numpy(dtype=np.float64)
@@ -347,8 +396,15 @@ class ArHmmFeature:
         if self._pca is not None:
             arr = self._pca.transform(arr)
 
-        # Viterbi decode
-        syllables = self._model.predict(arr)
+        # Viterbi decode (numba when available; labels identical to numpy)
+        if self._select_backend() == "numba":
+            try:
+                syllables = predict_numba(self._model, arr)
+            except Exception as exc:  # noqa: BLE001 - any numba failure → numpy
+                log.warning("[arhmm] numba predict failed (%s); using numpy.", exc)
+                syllables = self._model.predict(arr)
+        else:
+            syllables = self._model.predict(arr)
 
         # Upsample if downsampled
         if ds_rate is not None and ds_rate > 1:

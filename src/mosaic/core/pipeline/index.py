@@ -21,6 +21,36 @@ def feature_index_path(ds: Dataset, feature_name: str) -> Path:
     return ds.get_root("features") / feature_name / "index.csv"
 
 
+def missing_outputs_error(
+    feature_name: str, run_id: str, missing: list[Path], total: int
+) -> FileNotFoundError:
+    """Build an actionable error for a feature run whose outputs all resolve missing.
+
+    Raised when *every* output file for a run is unreachable after
+    ``Dataset.resolve_path`` — the classic "dataset moved / synced with
+    non-portable absolute paths" signal. Preferred over a raw
+    ``FileNotFoundError`` (loud + fixable) and over silently skipping every
+    entry (which would compute a downstream feature over an empty manifest).
+
+    Args:
+        feature_name: Storage name of the feature whose run is stale.
+        run_id: The run whose outputs are missing.
+        missing: Resolved paths that do not exist (non-empty).
+        total: Total number of output rows examined for the run.
+    """
+    first = missing[0]
+    return FileNotFoundError(
+        f"Feature {feature_name!r} run {run_id!r}: all {len(missing)} of "
+        f"{total} output file(s) are missing, first: {first}. The index likely "
+        f"points at another machine's paths (dataset moved, or synced with "
+        f"non-portable absolute paths). Repair a moved/synced dataset with "
+        f"ds.make_portable() on the machine whose root matches the stored "
+        f"paths, or ds.rewrite_index_paths({{old_prefix: new_prefix}}); if the "
+        f"outputs were deleted, recompute the feature (or ds.reindex_features() "
+        f"to drop the stale index rows)."
+    )
+
+
 # --- Feature Index ---
 
 

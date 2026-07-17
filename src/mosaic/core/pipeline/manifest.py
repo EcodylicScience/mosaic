@@ -15,7 +15,12 @@ import pyarrow.parquet as pq
 
 from ...core.helpers import make_entry_key
 from ._utils import Scope
-from .index import feature_index, feature_index_path, latest_feature_run_root
+from .index import (
+    feature_index,
+    feature_index_path,
+    latest_feature_run_root,
+    missing_outputs_error,
+)
 from .loading import load_entry_data
 from .types import (
     COLUMNS,
@@ -283,32 +288,59 @@ def _resolve_feature(
 
     idx = feature_index(idx_path)
 
-    # Read full (unscoped) index for all entries
-    df_all = idx.read(run_id=run_id, filter_ext=".parquet")
+    # Read full (unscoped) index for all entries. Resolve each stored path
+    # through the dataset (relative -> root; remap for relocated absolutes) and
+    # check existence there -- mirroring _resolve_tracks -- rather than trusting
+    # the raw string via IndexCSV's naive validate_paths (which false-fails on a
+    # moved/synced dataset whose index carries another machine's paths).
+    df_all = idx.read(run_id=run_id, filter_ext=".parquet", validate_paths=False)
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
+    missing_all: list[Path] = []
     for _, row in df_all.iterrows():
         entry = (row["group"], row["sequence"])
-        path_map_all[entry] = (ds.resolve_path(row["abs_path"]), ParquetLoadSpec())
+        resolved = ds.resolve_path(row["abs_path"])
+        if not resolved.exists():
+            missing_all.append(resolved)
+            continue
+        path_map_all[entry] = (resolved, ParquetLoadSpec())
         all_entries.append(entry)
+
+    if missing_all and not all_entries:
+        # Every output resolved missing: dataset moved / non-portable paths.
+        # Fail loudly and actionably instead of computing over an empty scope.
+        raise missing_outputs_error(feature_name, run_id, missing_all, len(df_all))
+    if missing_all:
+        # Partial: skip the missing entries. In a Pipeline the upstream step's
+        # completeness check reports it not-cached and recomputes them.
+        print(
+            f"[manifest] feature {feature_name!r} run {run_id!r}: "
+            f"{len(missing_all)} of {len(df_all)} output(s) missing; skipping "
+            f"(will be recomputed upstream).",
+            file=sys.stderr,
+        )
 
     full_order = sorted(set(all_entries))
 
-    # Read scoped subset
+    # Read scoped subset (same resolve-then-skip policy).
     df = idx.read(
         run_id=run_id,
         filter_ext=".parquet",
         groups=groups,
         sequences=sequences,
         entries=entries,
+        validate_paths=False,
     )
 
     scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     for _, row in df.iterrows():
         entry = (row["group"], row["sequence"])
+        resolved = ds.resolve_path(row["abs_path"])
+        if not resolved.exists():
+            continue
         scoped.add(entry)
-        path_map[entry] = (ds.resolve_path(row["abs_path"]), ParquetLoadSpec())
+        path_map[entry] = (resolved, ParquetLoadSpec())
 
     return scoped, path_map, full_order, path_map_all
 

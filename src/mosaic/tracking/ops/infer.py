@@ -204,7 +204,7 @@ def _run_inference_op(
                     model_run_id=base_run_id,
                     group=group,
                     sequence=sequence,
-                    abs_path=seq_dir,
+                    abs_path=Path(ds.relative_to_root(seq_dir)),
                     video_abs_path=str(video_path),
                     start_frame=int(params.start_frame),
                     end_frame=int(params.end_frame)

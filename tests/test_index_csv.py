@@ -171,15 +171,66 @@ class TestRead:
         assert len(df_pq) == 1
         assert df_pq.iloc[0]["name"] == "pq"
 
-    def test_stale_path_raises(self, tmp_path: Path) -> None:
+    def test_stale_path_raises_when_validated(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "index.csv"
         idx = IndexCSV(csv_path, SampleRow)
         p = tmp_path / "will_delete.parquet"
         p.touch()
         idx.append([_sample_row(tmp_path, name="x", abs_path=str(p))])
         p.unlink()
+        # Opt-in validation still raises...
         with pytest.raises(FileNotFoundError, match="Stale index"):
-            idx.read()
+            idx.read(validate_paths=True)
+        # ...but the default (validate_paths=False) does not: dataset-aware
+        # callers resolve + check existence themselves via resolve_path.
+        assert len(idx.read()) == 1
+
+    def test_prune_missing(self, tmp_path: Path) -> None:
+        csv_path = tmp_path / "index.csv"
+        idx = IndexCSV(csv_path, SampleRow)
+        present = tmp_path / "present.parquet"
+        present.touch()
+        missing = tmp_path / "missing.parquet"
+        missing.touch()
+        idx.append(
+            [
+                _sample_row(tmp_path, name="keep", abs_path=str(present)),
+                _sample_row(tmp_path, name="drop", abs_path=str(missing)),
+            ]
+        )
+        missing.unlink()
+
+        # dry_run reports the drop without rewriting.
+        dropped = idx.prune_missing(Path, dry_run=True)
+        assert len(dropped) == 1
+        assert dropped.iloc[0]["name"] == "drop"
+        assert len(idx.read()) == 2  # unchanged on disk
+
+        # apply: only the missing row is removed; the present one survives.
+        dropped = idx.prune_missing(Path)
+        assert len(dropped) == 1
+        remaining = idx.read()
+        assert len(remaining) == 1
+        assert remaining.iloc[0]["name"] == "keep"
+
+    def test_prune_missing_keeps_relocated(self, tmp_path: Path) -> None:
+        # A resolver that maps a stored (relative) path under a *different*
+        # root simulates a moved/synced dataset: the file exists there, so the
+        # row must be kept, not pruned.
+        root_a = tmp_path / "a"
+        root_b = tmp_path / "b"
+        root_a.mkdir(parents=True)
+        (root_b / "features").mkdir(parents=True)
+        real = root_b / "features" / "x.parquet"
+        real.touch()
+        csv_path = root_a / "index.csv"
+        idx = IndexCSV(csv_path, SampleRow)
+        # Store a relative path; the file does NOT exist under root_a.
+        idx.append([_sample_row(root_a, name="reloc", abs_path="features/x.parquet")])
+
+        dropped = idx.prune_missing(lambda p: root_b / p)
+        assert len(dropped) == 0
+        assert len(idx.read()) == 1
 
 
 # --- Feature Index ---
@@ -307,6 +358,22 @@ class TestFeatureIndexRow:
                 abs_path="/no/such/file.parquet",
                 params_hash="h",
             )
+
+    def test_relative_abs_path_accepted(self) -> None:
+        # Relative paths are the portable storage form; they carry no dataset
+        # context here, so the existence check is skipped (validated later at
+        # resolve time). Construction must NOT raise even though the relative
+        # path does not exist relative to CWD.
+        row = FeatureIndexRow(
+            run_id="r",
+            feature="f",
+            version="v",
+            group="",
+            sequence="s",
+            abs_path="features/f/v-hash/g__s.parquet",
+            params_hash="h",
+        )
+        assert not row.abs_path.is_absolute()
 
     def test_appendable_to_feature_index(self, tmp_path: Path) -> None:
         idx = feature_index(tmp_path / "index.csv")

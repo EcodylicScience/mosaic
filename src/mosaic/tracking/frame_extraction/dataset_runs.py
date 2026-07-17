@@ -322,8 +322,14 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
 
     def _collect(row: FramesIndexRow | None) -> None:
         if row is not None:
+            # _rewrite_manifest needs the absolute seq_dir; store the row with a
+            # dataset-root-relative abs_path so the index stays portable.
             _rewrite_manifest(ds, row.abs_path)
-            index_rows.append(row)
+            index_rows.append(
+                dataclasses.replace(
+                    row, abs_path=Path(ds.relative_to_root(row.abs_path))
+                )
+            )
 
     max_workers = _resolve_max_workers(p.parallel_workers)
     p_mode = (p.parallel_mode or "thread").lower()

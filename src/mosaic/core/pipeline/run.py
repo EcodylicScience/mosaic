@@ -38,6 +38,7 @@ from .index import (
     feature_index,
     feature_index_path,
     feature_run_root,
+    missing_outputs_error,
 )
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
@@ -100,14 +101,33 @@ def _build_result_lookup(
     dep_index = feature_index(feature_index_path(ds, feature_name))
     if run_id is None:
         run_id = dep_index.latest_run_id()
-    index_df = dep_index.read(run_id=run_id, filter_ext=".parquet")
+    index_df = dep_index.read(
+        run_id=run_id, filter_ext=".parquet", validate_paths=False
+    )
     lookup: DependencyLookup = {}
+    missing: list[Path] = []
     for _, row in index_df.iterrows():
         group = str(row.get("group", ""))
         sequence = str(row.get("sequence", ""))
         abs_path = str(row.get("abs_path", ""))
-        if abs_path:
-            lookup[(group, sequence)] = ds.resolve_path(abs_path)
+        if not abs_path:
+            continue
+        # Resolve via the dataset (handles relative/relocated paths); check
+        # existence here rather than trusting the raw stored string.
+        resolved = ds.resolve_path(abs_path)
+        if not resolved.exists():
+            missing.append(resolved)
+            continue
+        lookup[(group, sequence)] = resolved
+    if missing and not lookup:
+        # Every resolved output is missing: dataset moved / non-portable paths.
+        raise missing_outputs_error(feature_name, run_id, missing, len(index_df))
+    if missing:
+        print(
+            f"[deps] feature {feature_name!r} run {run_id!r}: {len(missing)} of "
+            f"{len(index_df)} output(s) missing; skipping.",
+            file=sys.stderr,
+        )
     return lookup
 
 
@@ -672,7 +692,7 @@ def _run_feature_impl(
                     version=feature.version,
                     group=meta.group,
                     sequence=meta.sequence,
-                    abs_path=meta.out_path,
+                    abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
                 )
@@ -741,7 +761,7 @@ def _run_feature_impl(
                     version=feature.version,
                     group=meta.group,
                     sequence=meta.sequence,
-                    abs_path=meta.out_path,
+                    abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
                 )
@@ -807,7 +827,7 @@ def _run_feature_impl(
                     version=feature.version,
                     group=group,
                     sequence=sequence,
-                    abs_path=meta.out_path,
+                    abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
                 )
@@ -855,7 +875,7 @@ def _run_feature_impl(
                 version=feature.version,
                 group="",
                 sequence="__global__",
-                abs_path=run_root,
+                abs_path=Path(ds.relative_to_root(run_root)),
                 n_rows=0,
                 params_hash=params_hash,
             )

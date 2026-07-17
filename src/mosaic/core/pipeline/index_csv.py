@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import typing
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -26,7 +26,11 @@ class IndexRowBase:
                 msg = f"{type(self).__name__}.abs_path cannot be empty"
                 raise ValueError(msg)
             object.__setattr__(self, "abs_path", Path(raw))
-        if not self.abs_path.exists():
+        # Only absolute paths can be existence-checked here. Relative paths are
+        # dataset-root-relative (the portable storage form) and carry no dataset
+        # context in this deliberately Dataset-agnostic class; they are resolved
+        # and validated later by the dataset-aware layer (``Dataset.resolve_path``).
+        if self.abs_path.is_absolute() and not self.abs_path.exists():
             msg = f"{type(self).__name__}.abs_path does not exist: {self.abs_path}"
             raise FileNotFoundError(msg)
 
@@ -122,7 +126,7 @@ class IndexCSV(Generic[RowT]):
         groups: Iterable[str] | None = None,
         sequences: Iterable[str] | None = None,
         entries: Iterable[tuple[str, str]] | None = None,
-        validate_paths: bool = True,
+        validate_paths: bool = False,
     ) -> pd.DataFrame:
         """Read the CSV with optional filtering and validation.
 
@@ -143,9 +147,16 @@ class IndexCSV(Generic[RowT]):
             If set, only rows whose ``(group, sequence)`` pair is in
             this set.
         validate_paths : bool
-            If True (default), raise FileNotFoundError when abs_path
-            entries point to missing files. Set to False for discovery
-            operations like list_runs().
+            If True, raise FileNotFoundError when abs_path entries point to
+            missing files. Defaults to False. This check is deliberately
+            naive: it stats the *raw* stored path (relative paths resolved
+            only against the index's dataset root) and does NOT apply
+            ``Dataset.resolve_path`` remapping. Dataset-aware callers must
+            therefore resolve each ``abs_path`` via ``Dataset.resolve_path``
+            and check existence themselves (see ``manifest._resolve_feature``
+            and ``run._build_result_lookup``) so that relative/relocated
+            paths on a moved or synced dataset resolve correctly instead of
+            false-failing here.
         """
         if not self.path.exists():
             raise FileNotFoundError(f"Index not found: {self.path}")
@@ -212,6 +223,41 @@ class IndexCSV(Generic[RowT]):
             merged.to_csv(p, index=False)
 
         atomic_write(self.path, _write)
+
+    def prune_missing(
+        self,
+        resolver: Callable[[str], Path],
+        *,
+        dry_run: bool = False,
+    ) -> pd.DataFrame:
+        """Drop rows whose ``abs_path`` resolves to a non-existent file.
+
+        Reconciles the index against disk, keeping only rows whose ``abs_path``
+        -- resolved through *resolver* -- exists. The resolver decouples this
+        deliberately Dataset-agnostic class from ``Dataset.resolve_path`` (pass
+        ``ds.resolve_path``), so relocated-but-present paths are preserved and
+        only genuinely-missing rows are dropped.
+
+        Args:
+            resolver: Maps a stored ``abs_path`` string to an absolute
+                filesystem path (e.g. ``ds.resolve_path``).
+            dry_run: If True, report what would be dropped without rewriting.
+
+        Returns:
+            The dropped rows as a DataFrame (empty if none). The index file is
+            rewritten (unless *dry_run*) only when at least one row is dropped.
+        """
+        if not self.path.exists():
+            return pd.DataFrame()
+        df = pd.read_csv(self.path, keep_default_na=False)
+        if df.empty or "abs_path" not in df.columns:
+            return df.iloc[0:0]
+        keep_mask = [resolver(str(p)).exists() for p in df["abs_path"]]
+        keep = df[keep_mask].reset_index(drop=True)
+        dropped = df[[not m for m in keep_mask]].reset_index(drop=True)
+        if len(dropped) > 0 and not dry_run:
+            atomic_write(self.path, lambda p: keep.to_csv(p, index=False))
+        return dropped
 
     def ordered_entries(
         self,

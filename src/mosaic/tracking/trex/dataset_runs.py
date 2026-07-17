@@ -362,11 +362,13 @@ def run_trex(
                         run_id=run_id,
                         group=group,
                         sequence=sequence,
-                        abs_path=seq_dir,
+                        abs_path=Path(ds.relative_to_root(seq_dir)),
                         video_abs_path=str(video_path),
                         params_hash=params_hash,
                         n_individuals=len(npz_paths),
-                        pv_path=str(pv_matches[0]) if pv_matches else "",
+                        pv_path=(
+                            ds.relative_to_root(pv_matches[0]) if pv_matches else ""
+                        ),
                     )
                 )
 
