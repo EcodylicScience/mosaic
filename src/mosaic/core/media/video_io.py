@@ -32,7 +32,7 @@ class SupportsCapture(Protocol):
     """The ``cv2.VideoCapture`` subset that :class:`MultiVideoReader` relies on.
 
     Both ``cv2.VideoCapture`` and
-    :class:`mosaic.media.imgstore_io.ImgStoreCapture` satisfy this structurally,
+    :class:`mosaic.core.media.imgstore_io.ImgStoreCapture` satisfy this structurally,
     so the reader works over plain videos and imgstores alike.
     """
 
@@ -48,7 +48,7 @@ class FrameReader(Protocol):
     """High-throughput sequential reader interface (FFmpeg- or imgstore-backed).
 
     :class:`FFmpegFrameReader` and
-    :class:`mosaic.media.imgstore_io.ImgStoreFrameReader` both satisfy this.
+    :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` both satisfy this.
     """
 
     @property
@@ -910,7 +910,7 @@ def open_frame_reader(
 ) -> FrameReader:
     """Open a high-throughput sequential reader, dispatching on the path type.
 
-    Returns an :class:`mosaic.media.imgstore_io.ImgStoreFrameReader` for imgstore
+    Returns an :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` for imgstore
     directories, otherwise an :class:`FFmpegFrameReader`. Both satisfy
     :class:`FrameReader`, so callers (e.g. tracking inference) are unchanged.
     """

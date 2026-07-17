@@ -231,8 +231,6 @@ src/mosaic/
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
     └── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
-
-# `mosaic.media` remains importable as a deprecated shim re-exporting core.media.
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,

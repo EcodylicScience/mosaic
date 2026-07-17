@@ -131,8 +131,6 @@ src/mosaic/
 └── tracking/    # pose-model training/inference and annotation converters
 ```
 
-`mosaic.media` is still importable as a deprecated shim re-exporting `mosaic.core.media`.
-
 ## Status
 
 Mosaic is in early development (0.x). Public APIs, feature names, and on-disk

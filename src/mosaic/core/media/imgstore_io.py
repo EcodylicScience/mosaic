@@ -8,10 +8,10 @@ store like any other video source so the rest of the pipeline is unchanged:
 * :func:`is_imgstore` — detect a store directory *without* importing imgstore.
 * :func:`imgstore_metadata` / :func:`imgstore_probe` — read width/height/fps/frames.
 * :class:`ImgStoreCapture` — adapt a store to the subset of the
-  ``cv2.VideoCapture`` API that :class:`mosaic.media.video_io.MultiVideoReader`
+  ``cv2.VideoCapture`` API that :class:`mosaic.core.media.video_io.MultiVideoReader`
   relies on, so every frame-consuming feature works unchanged.
 * :class:`ImgStoreFrameReader` — mirror
-  :class:`mosaic.media.video_io.FFmpegFrameReader` for high-throughput, batched
+  :class:`mosaic.core.media.video_io.FFmpegFrameReader` for high-throughput, batched
   sequential reads (tracking inference).
 
 Frame addressing: mosaic treats the track-table ``frame`` column as the 0-based
@@ -192,7 +192,7 @@ def _to_bgr(img: np.ndarray) -> np.ndarray:
 class ImgStoreCapture:
     """Adapt an imgstore to the ``cv2.VideoCapture`` subset MultiVideoReader uses.
 
-    Implements :class:`mosaic.media.video_io.SupportsCapture`:
+    Implements :class:`mosaic.core.media.video_io.SupportsCapture`:
     ``isOpened``/``read``/``set``/``get``/``release``. Frames are addressed by
     ``frame_index`` (0-based, contiguous). Sequential reads use imgstore's
     ``get_next_image`` fast path; a pending ``CAP_PROP_POS_FRAMES`` seek triggers
@@ -270,7 +270,7 @@ class ImgStoreCapture:
 class ImgStoreFrameReader:
     """High-throughput sequential reader for imgstores.
 
-    Mirrors :class:`mosaic.media.video_io.FFmpegFrameReader` (same constructor and
+    Mirrors :class:`mosaic.core.media.video_io.FFmpegFrameReader` (same constructor and
     ``read``/``read_batch``/``__iter__``/``close`` + ``width``/``height``/``fps``/
     ``frame_count``) so tracking inference works unchanged. Backed by
     :class:`ImgStoreCapture`, so contiguous reads use the ``get_next_image`` fast
