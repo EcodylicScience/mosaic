@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import base64
 import socket
-from typing import Annotated, Literal, Self, TypeAlias
+import sys
+from typing import Annotated, Literal, TypeAlias
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:  # Self landed in typing in 3.11; fall back for 3.10 kpms envs
+    from typing_extensions import Self
 
 import numpy as np
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
