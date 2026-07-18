@@ -255,8 +255,8 @@ def _process_apply_worker(
     If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
     EgocentricCropPipeline, FeralFeature), reconstruct the Dataset from its
     manifest in this worker and bind it. Without this, features that read
-    media via ``self._ds.resolve_media_paths(...)`` crash with
-    ``'NoneType' object has no attribute 'resolve_media_paths'`` because the
+    media via ``self._ds.resolve_media(...)`` crash with
+    ``'NoneType' object has no attribute 'resolve_media'`` because the
     main-process bind at ``run_feature`` doesn't propagate across process
     workers. Features without ``bind_dataset`` are unaffected.
     """

@@ -8,9 +8,9 @@ import importlib
 import json
 import os
 import re
-import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
@@ -18,8 +18,24 @@ from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
 import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
+from mosaic_media import (
+    CHROME_149,
+    DEFAULT_THRESHOLDS,
+    MediaFacts,
+    MediaProbeError,
+    derive,
+    probe_media,
+)
 
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
+from .media._facts_columns import (
+    FACTS_COLUMNS,
+    ProbeMetadata,
+    facts_to_row,
+    row_mapping,
+    row_to_facts,
+    series_facts_or_none,
+)
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
 
 if TYPE_CHECKING:
@@ -27,59 +43,22 @@ if TYPE_CHECKING:
     from .pipeline.progress import ProgressCallback
 
 
-def _probe_video_metadata(path: Path) -> dict[str, Any]:
-    """
-    Use ffprobe to collect width/height/fps/codec metadata.
-    """
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,avg_frame_rate,r_frame_rate,codec_name",
-        "-of",
-        "json",
-        str(path),
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        payload = json.loads(proc.stdout or "{}")
-        streams = payload.get("streams") or []
-        if not streams:
-            return {}
-        stream = streams[0]
-        width = int(stream.get("width") or 0)
-        height = int(stream.get("height") or 0)
-        rate_raw = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
-        fps = _parse_ffprobe_rate(rate_raw)
-        codec = stream.get("codec_name") or ""
-        return {
-            "width": width if width > 0 else "",
-            "height": height if height > 0 else "",
-            "fps": fps if fps else "",
-            "codec": codec,
-        }
-    except Exception as exc:
-        print(f"[index_media] ffprobe failed for {path}: {exc}", file=sys.stderr)
-        return {}
+def _probe_video_metadata(path: Path) -> ProbeMetadata:
+    """Probe width/height/fps/codec plus the injectable MediaFacts JSON and verdict.
 
-
-def _parse_ffprobe_rate(rate: Optional[str]) -> Optional[float]:
-    if not rate:
-        return None
-    try:
-        if "/" in rate:
-            num, den = rate.split("/", 1)
-            num = float(num)
-            den = float(den)
-            if den == 0:
-                return None
-            return num / den
-        return float(rate)
-    except Exception:
-        return None
+    Stores CODED width/height (un-oriented); get_video_metadata returns display
+    dims, and row_to_facts injects coded dims + rotation so the reader orients
+    once. Raises MediaProbeError on an unreadable file.
+    """
+    facts = probe_media(path)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    return {
+        "width": facts.width,
+        "height": facts.height,
+        "fps": facts.fps,
+        "codec": facts.codec_name,
+        **facts_to_row(facts, verdict),
+    }
 
 
 def _normalize_patterns(pats) -> tuple[str, ...]:
@@ -372,6 +351,56 @@ def new_dataset_manifest(
 # --------------------------
 # Dataset manifest + manager
 # --------------------------
+
+
+MEDIA_INDEX_COLUMNS: list[str] = [
+    "name",
+    "group",
+    "sequence",
+    "group_safe",
+    "sequence_safe",
+    "abs_path",
+    "size_bytes",
+    "mtime_iso",
+    "width",
+    "height",
+    "fps",
+    "codec",
+    "media_type",
+    *FACTS_COLUMNS,
+    "video_order",
+]
+
+
+def _media_cell(row: "pd.Series", key: str) -> str:
+    """Read a media-index cell as a trimmed string, treating NaN/None as empty.
+
+    pandas yields ``float('nan')`` for an empty CSV cell; this collapses that
+    (and a literal ``"nan"``) to ``""`` so routing never mistakes an absent
+    value for a real one.
+    """
+    value = row.get(key, "")
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+@dataclass(frozen=True)
+class ResolvedMedia:
+    """Resolved media file paths for one (group, sequence), plus stored facts.
+
+    ``paths`` are ordered by ``video_order`` (one element for a single-file
+    sequence). ``facts`` -- when not ``None`` -- is a parallel list of
+    :class:`~mosaic_media.MediaFacts`, one per path, that readers inject instead
+    of re-probing. It is all-or-nothing: if any resolved path lacks stored facts
+    (an index written without the ``media_facts`` column), ``facts`` is ``None``
+    and the reader probes uniformly (``MultiVideoReader`` accepts facts only for
+    every path or none).
+    """
+
+    paths: list[Path]
+    facts: list[MediaFacts] | None
 
 
 @dataclass
@@ -1152,7 +1181,12 @@ class Dataset:
           store becomes one entry (``media_type="imgstore"``) and its internal
           chunk files are excluded from the plain file glob.
         - Columns: name, group, sequence, group_safe, sequence_safe, abs_path,
-          size_bytes, mtime_iso, width, height, fps, codec, media_type, video_order
+          size_bytes, mtime_iso, width, height, fps, codec, media_type,
+          frame_count, analysis_transcode, stream_transcode,
+          analysis_derivative_path, playback_derivative_path, source_path,
+          media_facts, video_order. ``media_facts`` is the full injectable
+          MediaFacts serialized as JSON; the other new columns duplicate a few
+          of its fields (plus the verdict) for untyped pandas readers and routing.
 
         Parameters
         ----------
@@ -1198,6 +1232,11 @@ class Dataset:
                     imgstore_dirs.add(cand.resolve())
 
         rows: list[dict[str, object]] = []
+
+        # Serial glob: collect (path, stat) probe_candidates only. Probing
+        # (ffprobe / MediaFacts, I/O bound) happens afterward through a bounded
+        # thread pool so many-file search dirs index in parallel.
+        probe_candidates: list[tuple[Path, os.stat_result]] = []
         for d in map(Path, search_dirs):
             if not d.exists():
                 print(f"[WARN] search dir missing: {d}", file=sys.stderr)
@@ -1214,47 +1253,58 @@ class Dataset:
                     sd in p.resolve().parents for sd in imgstore_dirs
                 ):
                     continue
-                if p.suffix.lower() in exts:
-                    try:
-                        st = p.stat()
-                        meta = self._match_media_sequence(
-                            seq_key_map,
-                            p.stem,
-                            mode=sequence_match_mode,
-                        )
-                        probe = _probe_video_metadata(p)
-                        # When no track match, use video stem as sequence
-                        # so each video is its own sequence (not all lumped
-                        # together under an empty key).
-                        fallback_seq = p.stem
-                        fallback_safe = to_safe_name(p.stem)
-                        rows.append(
-                            {
-                                "name": p.name,
-                                "group": meta.get("group", "") if meta else "",
-                                "sequence": meta.get("sequence", fallback_seq)
-                                if meta
-                                else fallback_seq,
-                                "group_safe": meta.get("group_safe", "")
-                                if meta
-                                else "",
-                                "sequence_safe": meta.get(
-                                    "sequence_safe", fallback_safe
-                                )
-                                if meta
-                                else fallback_safe,
-                                "abs_path": str(p.resolve()),
-                                "size_bytes": st.st_size,
-                                "mtime_iso": _to_iso(st.st_mtime),
-                                "width": probe.get("width", ""),
-                                "height": probe.get("height", ""),
-                                "fps": probe.get("fps", ""),
-                                "codec": probe.get("codec", ""),
-                                "media_type": "video",
-                            }
-                        )
-                    except OSError as e:
-                        print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+                if p.suffix.lower() not in exts:
+                    continue
+                try:
+                    st = p.stat()
+                except OSError as e:
+                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+                    continue
+                probe_candidates.append((p, st))
+
+        # Probe deterministically by resolved path so pool completion order
+        # never affects the written row order.
+        probe_candidates.sort(key=lambda item: str(item[0].resolve()))
+        max_probe_workers = min(4, (os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=max_probe_workers) as executor:
+            pending = [
+                (p, st, executor.submit(_probe_video_metadata, p))
+                for p, st in probe_candidates
+            ]
+            for p, st, future in pending:
+                try:
+                    probe = future.result()
+                except (OSError, MediaProbeError) as e:
+                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+                    continue
+                meta = self._match_media_sequence(
+                    seq_key_map,
+                    p.stem,
+                    mode=sequence_match_mode,
+                )
+                # When no track match, use video stem as sequence
+                # so each video is its own sequence (not all lumped
+                # together under an empty key).
+                fallback_seq = p.stem
+                fallback_safe = to_safe_name(p.stem)
+                rows.append(
+                    {
+                        "name": p.name,
+                        "group": meta.get("group", "") if meta else "",
+                        "sequence": meta.get("sequence", fallback_seq)
+                        if meta
+                        else fallback_seq,
+                        "group_safe": meta.get("group_safe", "") if meta else "",
+                        "sequence_safe": meta.get("sequence_safe", fallback_safe)
+                        if meta
+                        else fallback_safe,
+                        "abs_path": str(p.resolve()),
+                        "size_bytes": st.st_size,
+                        "mtime_iso": _to_iso(st.st_mtime),
+                        "media_type": "video",
+                        **probe,
+                    }
+                )
 
         # One entry per imgstore directory (each store is a single sequence).
         for store_dir in sorted(imgstore_dirs):
@@ -1280,11 +1330,8 @@ class Dataset:
                         "abs_path": str(store_dir.resolve()),
                         "size_bytes": st.st_size,
                         "mtime_iso": _to_iso(st.st_mtime),
-                        "width": probe.get("width", ""),
-                        "height": probe.get("height", ""),
-                        "fps": probe.get("fps", ""),
-                        "codec": probe.get("codec", ""),
                         "media_type": "imgstore",
+                        **probe,
                     }
                 )
             except OSError as e:
@@ -1309,23 +1356,7 @@ class Dataset:
         df_out = (
             pd.DataFrame(dedup)
             if dedup
-            else pd.DataFrame(
-                columns=[
-                    "name",
-                    "group",
-                    "sequence",
-                    "group_safe",
-                    "sequence_safe",
-                    "abs_path",
-                    "size_bytes",
-                    "mtime_iso",
-                    "width",
-                    "height",
-                    "fps",
-                    "codec",
-                    "media_type",
-                ]
-            )
+            else pd.DataFrame(columns=MEDIA_INDEX_COLUMNS)
         )
         if "media_type" not in df_out.columns:
             df_out["media_type"] = "video"
@@ -1338,23 +1369,8 @@ class Dataset:
                         df_out.loc[idx, "video_order"] = rank
 
         out_csv.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = [
-            "name",
-            "group",
-            "sequence",
-            "group_safe",
-            "sequence_safe",
-            "abs_path",
-            "size_bytes",
-            "mtime_iso",
-            "width",
-            "height",
-            "fps",
-            "codec",
-            "media_type",
-            "video_order",
-        ]
-        df_out[fieldnames].to_csv(out_csv, index=False)
+        self._carry_forward_derivative_links(df_out, out_csv)
+        df_out[MEDIA_INDEX_COLUMNS].to_csv(out_csv, index=False)
 
         multi_count = 0
         if not df_out.empty:
@@ -1366,46 +1382,68 @@ class Dataset:
         )
         return out_csv
 
-    def resolve_media_paths(
-        self, group: str, sequence: str, index_filename: str = "index.csv"
-    ) -> list[Path]:
+    def _carry_forward_derivative_links(
+        self, df_new: "pd.DataFrame", index_path: Path
+    ) -> None:
+        """Preserve per-target derivative links across a media reindex.
+
+        :meth:`index_media` rebuilds the originals index wholesale, freshly
+        measuring every column -- which would reset the transcode-written
+        ``analysis_derivative_path`` / ``playback_derivative_path`` links to
+        empty. Those links record a transcode decision, not a measurement, so
+        carry them forward: for each freshly probed row whose resolved original
+        matches a row in the prior index (*index_path*, read here before it is
+        overwritten), copy the two link cells over. A link whose derivative file
+        no longer exists is dropped rather than carried as a dangling reference.
         """
-        Resolve all media file paths for a given (group, sequence), ordered.
+        if not index_path.exists() or not self.has_root("media"):
+            return
+        prior = pd.read_csv(index_path)
+        if "abs_path" not in prior.columns:
+            return
+        link_columns = ["analysis_derivative_path", "playback_derivative_path"]
+        media_root = self.get_root("media")
+        prior_links: dict[str, dict[str, str]] = {}
+        for _, prior_row in prior.iterrows():
+            abs_cell = _media_cell(prior_row, "abs_path")
+            if not abs_cell:
+                continue
+            carried = {
+                column: link
+                for column in link_columns
+                if (link := _media_cell(prior_row, column))
+                and (media_root / link).exists()
+            }
+            if carried:
+                prior_links[str(self.resolve_path(abs_cell).resolve())] = carried
+        if not prior_links:
+            return
+        for idx in df_new.index:
+            carried = prior_links.get(
+                str(self.resolve_path(str(df_new.at[idx, "abs_path"])).resolve())
+            )
+            if not carried:
+                continue
+            for column, link in carried.items():
+                df_new.at[idx, column] = link
 
-        For multi-video sequences, returns paths sorted by ``video_order``.
-        For single-video sequences, returns a list with one element.
+    def _match_media_rows(
+        self, df: "pd.DataFrame", group: str, sequence: str
+    ) -> "pd.DataFrame | None":
+        """Return the media-index rows for (group, sequence), video_order-sorted.
+
+        Matches in the same order as the historical resolver: direct
+        (group, sequence), then safe-name, then a filename-stem substring
+        fallback. Returns ``None`` when nothing matches.
         """
-        media_root = self.get_root(self.resolve_media_root())
-        idx_path = media_root / index_filename
-        if not idx_path.exists():
-            raise FileNotFoundError(f"Media index not found: {idx_path}")
-        df = pd.read_csv(idx_path)
-        if df.empty:
-            raise FileNotFoundError("Media index is empty.")
-
-        # Ensure video_order column (backward compat with old indexes)
-        if "video_order" not in df.columns:
-            df["video_order"] = 0
-
-        def _resolve_matches(df_match):
-            if df_match.empty:
-                return None
-            df_sorted = df_match.sort_values("video_order")
-            return [
-                self.resolve_path(row["abs_path"]) for _, row in df_sorted.iterrows()
-            ]
-
-        # Direct match by (group, sequence)
         if "group" in df.columns and "sequence" in df.columns:
             df_match = df[
                 (df["group"].fillna("") == str(group))
                 & (df["sequence"].fillna("") == str(sequence))
             ]
-            paths = _resolve_matches(df_match)
-            if paths:
-                return paths
+            if not df_match.empty:
+                return df_match.sort_values("video_order")
 
-        # Safe-name fallback
         safe_group = to_safe_name(group) if group else ""
         safe_sequence = to_safe_name(sequence)
         if {"group_safe", "sequence_safe"}.issubset(df.columns):
@@ -1413,41 +1451,321 @@ class Dataset:
                 (df["group_safe"].fillna("") == safe_group)
                 & (df["sequence_safe"].fillna("") == safe_sequence)
             ]
-            paths = _resolve_matches(df_match)
-            if paths:
-                return paths
+            if not df_match.empty:
+                return df_match.sort_values("video_order")
 
-        # Fallback: by filename stem
         tail = Path(sequence).name
         stem = tail.lower()
+        df = df.copy()
         df["name_lower"] = df["name"].astype(str).str.lower()
         candidates = df[df["name_lower"].str.contains(stem, na=False)]
         if candidates.empty:
+            return None
+        return candidates.sort_values("video_order")
+
+    def _load_media_index(self, index_filename: str = "index.csv") -> "pd.DataFrame":
+        """Read and normalize the originals media index for scoped resolution.
+
+        Reads ``<resolve_media_root()>/<index_filename>`` and normalizes the
+        identity columns so downstream masking and grouping are string-typed and
+        NaN-free: ``group`` / ``sequence`` / ``group_safe`` / ``sequence_safe``
+        (each only when present) are filled to ``""`` and coerced to ``str``, and
+        ``video_order`` is coerced to an int column (created as ``0`` when
+        absent). Shared by :meth:`match_media_rows` and
+        :meth:`resolve_media_scope` so the read-and-normalize lives in one place.
+
+        Raises:
+            FileNotFoundError: If the index file does not exist.
+        """
+        media_key = self.resolve_media_root()
+        idx_path = self.get_root(media_key) / index_filename
+        if not idx_path.exists():
+            raise FileNotFoundError(
+                f"{media_key}/{index_filename} not found; run index_media() first."
+            )
+        df = pd.read_csv(idx_path)
+        for column in ("group", "sequence", "group_safe", "sequence_safe"):
+            if column in df.columns:
+                df[column] = df[column].fillna("").astype(str)
+        if "video_order" not in df.columns:
+            df["video_order"] = 0
+        else:
+            df["video_order"] = df["video_order"].fillna(0).astype(int)
+        return df
+
+    def match_media_rows(
+        self, group: str, sequence: str, index_filename: str = "index.csv"
+    ) -> "pd.DataFrame":
+        """Return the originals-index rows for (group, sequence), video_order-sorted.
+
+        Reads the originals index (:meth:`resolve_media_root`) and matches by
+        direct ``(group, sequence)``, then safe-name, then filename-stem
+        substring -- **without** applying transcode-verdict routing (unlike
+        :meth:`resolve_media`). The transcode job needs the originals, not their
+        derivatives.
+
+        Raises:
+            FileNotFoundError: If the index is missing/empty or no row matches.
+        """
+        df = self._load_media_index(index_filename)
+        if df.empty:
+            raise FileNotFoundError("Media index is empty.")
+        matched = self._match_media_rows(df, group, sequence)
+        if matched is None:
             raise FileNotFoundError(
                 f"No media file found matching sequence '{sequence}'."
             )
-        paths = _resolve_matches(candidates)
-        if paths:
-            return paths
+        return matched
 
-        raise FileNotFoundError(f"No media file found matching sequence '{sequence}'.")
+    def _derivative_facts(
+        self,
+        group: str,
+        sequence: str,
+        derivative_path: Path,
+        original_abs: str,
+        derivative_df: "pd.DataFrame | None",
+    ) -> MediaFacts:
+        """Look up an analysis derivative's stored facts in the ``media`` index.
 
-    def resolve_media_path(
-        self, group: str, sequence: str, index_filename: str = "index.csv"
-    ) -> Path:
+        Two passes, exact file first. Pass 1 returns the row whose ``abs_path``
+        resolves to *derivative_path* -- the unambiguous match, since that is the
+        file the caller opens. Pass 2 is a fallback for a row that lacks a
+        resolvable ``abs_path``: it matches on ``source_path`` resolving to this
+        entry's original, but only for a row whose ``abs_path`` basename equals
+        the requested derivative's, so a per-target sibling (the playback
+        derivative shares ``source_path`` with the analysis one) can never cross
+        into the wrong target's facts. Raises
+        :class:`~mosaic_media.MediaProbeError` when the derivative file, its row,
+        or its stored facts cannot be found.
         """
-        Resolve a single media file path for a given (group, sequence).
-
-        For multi-video sequences, raises ``RuntimeError`` with a message
-        to use :meth:`resolve_media_paths` instead.
-        """
-        paths = self.resolve_media_paths(group, sequence, index_filename)
-        if len(paths) > 1:
-            raise RuntimeError(
-                f"Sequence '{sequence}' has {len(paths)} video files. "
-                f"Use resolve_media_paths() for multi-video sequences."
+        if not derivative_path.exists():
+            message = (
+                f"entry {group}/{sequence} points at derivative "
+                f"{derivative_path} which does not exist"
             )
-        return paths[0]
+            raise MediaProbeError(message)
+        if derivative_df is None or derivative_df.empty:
+            message = (
+                f"entry {group}/{sequence} has a derivative but the media index "
+                f"holds no derivative rows"
+            )
+            raise MediaProbeError(message)
+
+        target = derivative_path.resolve()
+        target_name = derivative_path.name
+        original_target = self.resolve_path(original_abs).resolve()
+        raw_root = self.get_root(self.resolve_media_root())
+
+        # Pass 1: exact resolved-file match on abs_path.
+        for _, drow in derivative_df.iterrows():
+            abs_cell = _media_cell(drow, "abs_path")
+            if abs_cell and self.resolve_path(abs_cell).resolve() == target:
+                return row_to_facts(row_mapping(drow))
+
+        # Pass 2: source_path fallback, restricted to a row whose derivative
+        # basename matches the requested one so per-target siblings never cross.
+        for _, drow in derivative_df.iterrows():
+            abs_cell = _media_cell(drow, "abs_path")
+            if abs_cell and Path(abs_cell).name != target_name:
+                continue
+            source_cell = _media_cell(drow, "source_path")
+            if (
+                source_cell
+                and self.resolve_path(source_cell, anchor=raw_root).resolve()
+                == original_target
+            ):
+                return row_to_facts(row_mapping(drow))
+
+        message = (
+            f"entry {group}/{sequence} derivative {derivative_path} has no "
+            f"matching row with stored facts in the media index"
+        )
+        raise MediaProbeError(message)
+
+    def media_routing_context(
+        self, index_filename: str = "index.csv"
+    ) -> tuple[bool, "pd.DataFrame | None"]:
+        """Load the shared context for routing media-index rows by transcode verdict.
+
+        Returns ``(route_derivatives, derivative_df)``:
+
+        * ``route_derivatives`` is ``True`` only when a distinct ``media_raw``
+          root holds the originals (so the ``media`` root can hold derivatives to
+          route to); a legacy ``media``-only dataset yields ``False``.
+        * ``derivative_df`` is the ``media`` index (one row per derivative) when
+          it exists, else ``None``.
+
+        Load once, then pass both to :meth:`route_media_row` for each row, so a
+        batch of routings reads each index only once.
+        """
+        route_derivatives = self.resolve_media_root() == "media_raw"
+        derivative_df: pd.DataFrame | None = None
+        if route_derivatives:
+            derivative_idx = self.get_root("media") / index_filename
+            if derivative_idx.exists():
+                derivative_df = pd.read_csv(derivative_idx)
+        return route_derivatives, derivative_df
+
+    def route_media_row(
+        self,
+        group: str,
+        sequence: str,
+        row: "pd.Series",
+        route_derivatives: bool,
+        derivative_df: "pd.DataFrame | None",
+    ) -> tuple[Path, MediaFacts | None]:
+        """Route one media-index row to the file a per-frame read must open.
+
+        mosaic's per-frame reads are analysis reads, so this routes on the
+        ``analysis_transcode`` verdict and the ``analysis_derivative_path`` link:
+
+        * a row marked ``analysis_transcode="required"`` resolves to its
+          registered analysis derivative under the ``media`` root, carrying the
+          derivative's stored facts;
+        * a clean row resolves to the original file, carrying its stored facts
+          (when present).
+
+        A ``required`` row is defective for analysis reads, so it must resolve to
+        a clean derivative or fail. If it has no analysis derivative -- whether
+        the link is missing or the dataset is legacy ``media``-only with no
+        ``media_raw`` split (*route_derivatives* is ``False``) -- this raises
+        :class:`~mosaic_media.MediaProbeError` telling the caller to transcode
+        first. There is no silent-degrade arm that opens the defective original.
+
+        *route_derivatives* and *derivative_df* come from
+        :meth:`media_routing_context`; load them once and reuse across a batch.
+        """
+        if _media_cell(row, "analysis_transcode") == "required":
+            if route_derivatives:
+                derivative = _media_cell(row, "analysis_derivative_path")
+                if derivative:
+                    derivative_path = self.get_root("media") / derivative
+                    facts = self._derivative_facts(
+                        group,
+                        sequence,
+                        derivative_path,
+                        _media_cell(row, "abs_path"),
+                        derivative_df,
+                    )
+                    return derivative_path, facts
+            message = (
+                f"entry {group}/{sequence} requires an analysis transcode but "
+                f"has no analysis derivative; transcode it first"
+            )
+            raise MediaProbeError(message)
+
+        routed = self.resolve_path(row["abs_path"])
+        return routed, series_facts_or_none(row)
+
+    def resolve_media(
+        self, group: str, sequence: str, index_filename: str = "index.csv"
+    ) -> ResolvedMedia:
+        """Resolve media for (group, sequence), routing by transcode verdict.
+
+        Reads the originals index (:meth:`resolve_media_root`), then routes each
+        matched row: a row whose stored verdict marks
+        ``analysis_transcode="required"`` resolves to its analysis derivative
+        under the ``media`` root; a clean row resolves to the original file.
+        Stored facts travel with each path (see :class:`ResolvedMedia`), so
+        readers need not re-probe. Paths are ordered by ``video_order``; a
+        single-file sequence yields one element.
+
+        Raises:
+            FileNotFoundError: If the index is missing/empty or no row matches.
+            MediaProbeError: If a row requires a transcode but has no derivative,
+                or a derivative's file/facts cannot be found.
+        """
+        matched = self.match_media_rows(group, sequence, index_filename)
+        route_derivatives, derivative_df = self.media_routing_context(index_filename)
+        return self._resolve_matched_rows(
+            group, sequence, matched, route_derivatives, derivative_df
+        )
+
+    def _resolve_matched_rows(
+        self,
+        group: str,
+        sequence: str,
+        matched: "pd.DataFrame",
+        route_derivatives: bool,
+        derivative_df: "pd.DataFrame | None",
+    ) -> ResolvedMedia:
+        """Route one entry's matched rows into a :class:`ResolvedMedia`.
+
+        Shared body for :meth:`resolve_media` and :meth:`resolve_media_scope`:
+        routes each row through :meth:`route_media_row` and applies the
+        all-or-nothing facts rule (``facts`` is ``None`` unless every routed path
+        carries stored facts). *matched* must already be ``video_order``-sorted.
+        """
+        paths: list[Path] = []
+        facts: list[MediaFacts] = []
+        all_have_facts = True
+        for _, row in matched.iterrows():
+            routed_path, routed_facts = self.route_media_row(
+                group, sequence, row, route_derivatives, derivative_df
+            )
+            paths.append(routed_path)
+            if routed_facts is None:
+                all_have_facts = False
+            else:
+                facts.append(routed_facts)
+        return ResolvedMedia(paths=paths, facts=facts if all_have_facts else None)
+
+    def resolve_media_scope(
+        self,
+        groups: Iterable[str] | None,
+        sequences: Iterable[str] | None,
+        entries: Iterable[tuple[str, str]] | None = None,
+        index_filename: str = "index.csv",
+    ) -> list[tuple[str, str, ResolvedMedia]]:
+        """Enumerate the scoped ``(group, sequence)`` entries with routed media.
+
+        Reads the originals index once, filters it to the given *groups* /
+        *sequences* scope (either may be ``None`` to keep all), and returns one
+        entry per distinct ``(group, sequence)`` in deterministic order. When
+        *entries* is given, the scope is further restricted to rows whose
+        ``(group, sequence)`` pair is in that set -- an explicit enumeration that
+        pins an arbitrary subset even when sequence names repeat across groups
+        (unlike the *groups*/*sequences* cross-product). Each entry's
+        :class:`ResolvedMedia` carries its ``video_order``-sorted paths and
+        all-or-nothing stored facts, routed by transcode verdict exactly as
+        :meth:`resolve_media` does. When an entry has an empty group and a
+        sequence whose safe name is empty, the returned sequence label falls back
+        to the first original file's stem.
+
+        Raises:
+            FileNotFoundError: If the originals index does not exist.
+            MediaProbeError: If an entry requires a transcode but has no
+                derivative, or a derivative's file/facts cannot be found.
+        """
+        # Media-index resolution is a Dataset concern, so a scoped enumeration lives
+        # here as a method (mirroring resolve_media) rather than as a free function in
+        # a consumer package: the read-and-route logic stays in one layer instead of
+        # being duplicated upward.
+        df = self._load_media_index(index_filename)
+
+        mask = pd.Series(True, index=df.index)
+        if groups is not None:
+            mask &= df["group"].isin({str(g) for g in groups})
+        if sequences is not None:
+            mask &= df["sequence"].isin({str(s) for s in sequences})
+        if entries is not None:
+            wanted = {(str(group), str(sequence)) for group, sequence in entries}
+            pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
+            mask &= pd.Series(pairs.isin(wanted), index=df.index)
+        scoped = df[mask]
+
+        route_derivatives, derivative_df = self.media_routing_context(index_filename)
+        resolved_entries: list[tuple[str, str, ResolvedMedia]] = []
+        for (group, sequence), sub in scoped.groupby(["group", "sequence"]):
+            group, sequence = str(group), str(sequence)
+            sub = sub.sort_values("video_order")
+            resolved = self._resolve_matched_rows(
+                group, sequence, sub, route_derivatives, derivative_df
+            )
+            if not group and not to_safe_name(sequence):
+                sequence = self.resolve_path(str(sub.iloc[0]["abs_path"])).stem
+            resolved_entries.append((group, sequence, resolved))
+        return resolved_entries
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict[str, str]]]:
         """
