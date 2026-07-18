@@ -4,7 +4,9 @@
 TREx CLI wrappers (:mod:`mosaic.tracking.trex.run`) into a Job-Contract stage,
 mirroring :func:`mosaic.tracking.extract_frames`:
 
-* it resolves input videos from ``media/index.csv``;
+* it resolves input videos through ``Dataset.resolve_media_scope``, routing
+  each entry by its transcode verdict (an analysis-required entry tracks its
+  constant-rate analysis derivative, not the defective original);
 * computes a content-addressed ``run_id = "trex-<hash(settings)>"`` and writes
   run-addressed artifacts under ``<trex_root>/<run_id>/<group>__<seq>/``;
 * records the attempt in its JSONL run-log (``kind="trex"``, under
@@ -73,41 +75,6 @@ class TRexIndexRow(RunIndexRowBase):
 
 def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
     return IndexCSV(path, TRexIndexRow, dedup_keys=["run_id", "group", "sequence"])
-
-
-# --- media resolution -----------------------------------------------------
-
-
-def _list_media(
-    ds: Dataset,
-    groups: Iterable[str] | None,
-    sequences: Iterable[str] | None,
-    entries: Iterable[tuple[str, str]] | None,
-) -> pd.DataFrame:
-    """Return the scoped media rows (group, sequence, abs_path, video_order)."""
-    media_key = ds.resolve_media_root()
-    idx_path = ds.get_root(media_key) / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError(
-            f"{media_key}/index.csv not found; run index_media() first."
-        )
-    df = pd.read_csv(idx_path)
-    df["group"] = df["group"].fillna("").astype(str)
-    df["sequence"] = df["sequence"].fillna("").astype(str)
-    if "video_order" not in df.columns:
-        df["video_order"] = 0
-    else:
-        df["video_order"] = df["video_order"].fillna(0).astype(int)
-
-    mask = pd.Series(True, index=df.index)
-    if groups is not None:
-        mask &= df["group"].isin({str(g) for g in groups})
-    if sequences is not None:
-        mask &= df["sequence"].isin({str(s) for s in sequences})
-    if entries is not None:
-        wanted = {(str(g), str(s)) for g, s in entries}
-        mask &= df.apply(lambda r: (r["group"], r["sequence"]) in wanted, axis=1)
-    return df[mask].reset_index(drop=True)
 
 
 # --- NPZ -> standardized tracks bridge ------------------------------------
@@ -288,26 +255,29 @@ def run_trex(
     except Exception as exc:
         print(f"[run_trex] failed to save run_params.json: {exc}", file=sys.stderr)
 
-    media_df = _list_media(ds, groups, sequences, entries)
-    if media_df.empty:
+    # Route each scoped entry through the transcode verdict: a clean entry
+    # resolves to its original, an analysis-required entry to its constant-rate
+    # analysis derivative (so tracks land in the same frame space as the rest of
+    # the pipeline), and a required-but-unlinked entry raises MediaProbeError
+    # here -- before any TREx subprocess opens a known-defective original. TREx
+    # decodes the file itself, so only the routed path is needed, not the facts.
+    scope = ds.resolve_media_scope(groups, sequences, entries)
+    if not scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return run_id
 
     # One work item per (group, sequence); first video when several exist.
     work_items: list[tuple[str, str, Path]] = []
-    for (g, s), sub in media_df.groupby(["group", "sequence"]):
-        g, s = str(g), str(s)
-        sub = sub.sort_values("video_order")
-        paths = [ds.resolve_path(r["abs_path"]) for _, r in sub.iterrows()]
+    for group, sequence, resolved in scope:
+        paths = resolved.paths
         if len(paths) > 1:
             print(
-                f"[run_trex] ({g}, {s}) has {len(paths)} videos; using the first "
-                f"({paths[0].name}). Multi-video sequences are not yet merged.",
+                f"[run_trex] ({group}, {sequence}) has {len(paths)} videos; using "
+                f"the first ({paths[0].name}). Multi-video sequences are not yet "
+                f"merged.",
                 file=sys.stderr,
             )
-        if not g and not to_safe_name(s):
-            s = paths[0].stem
-        work_items.append((g, s, paths[0]))
+        work_items.append((group, sequence, paths[0]))
 
     idx = trex_index(trex_index_path(ds))
     idx.ensure()

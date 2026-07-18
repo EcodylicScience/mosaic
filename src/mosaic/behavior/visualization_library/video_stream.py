@@ -6,8 +6,9 @@ This module contains the video streaming infrastructure:
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Tuple, Optional, Iterable, Any, Dict, Union
+from typing import Tuple, Optional, Iterable, Any, Dict, Sequence, Union
 import cv2
+from mosaic_media import MediaFacts
 
 from .helpers import _scaled_size
 from .overlay import draw_frame
@@ -108,7 +109,8 @@ def render_stream(video_paths: Union[list[Path], Path, str],
                   pair_box_feature: Optional[str] = None,
                   pair_box_behaviors: Optional[Iterable[Any]] = None,
                   hide_individual_bboxes_for_pair: bool = False,
-                  draw_options: Optional[Dict[str, Any]] = None) -> _FrameStream:
+                  draw_options: Optional[Dict[str, Any]] = None,
+                  facts: Sequence[MediaFacts] | None = None) -> _FrameStream:
     """
     Return an iterable that yields (frame_index, frame_bgr_with_overlay).
 
@@ -117,6 +119,9 @@ def render_stream(video_paths: Union[list[Path], Path, str],
     video_paths : list[Path], Path, or str
         Path(s) to the video file(s). For multi-video sequences, pass an
         ordered list of Paths. A single Path/str is also accepted.
+    facts : sequence of MediaFacts, optional
+        Stored media facts parallel to *video_paths*; injected into the reader
+        so it does not re-probe. When ``None`` the reader probes each path.
     overlay_data : dict
         Output from prepare_overlay()
     start : int
@@ -143,7 +148,7 @@ def render_stream(video_paths: Union[list[Path], Path, str],
     """
     from mosaic.core.media.video_io import MultiVideoReader
 
-    reader = MultiVideoReader(video_paths)
+    reader = MultiVideoReader(video_paths, facts=facts)
     base_size = (reader.width, reader.height)
     fps = reader.fps
     scaled_size = _scaled_size(base_size, downscale)

@@ -111,17 +111,6 @@ def _extract_centroid(row: pd.Series, candidates: list[Tuple[str, str]]) -> Opti
 # Video I/O Utilities
 # =============================================================================
 
-def _open_video_capture(path: Path | str) -> Tuple[cv2.VideoCapture, float, Tuple[int, int]]:
-    """Initialize OpenCV VideoCapture. Returns (cap, fps, (width, height))."""
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {path}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    return cap, float(fps), (width, height)
-
-
 def _scaled_size(base_size: Tuple[int, int], downscale: float) -> Tuple[int, int]:
     """Compute resized dimensions with downscale factor."""
     w, h = base_size

@@ -14,9 +14,10 @@ from typing import Any
 import cv2
 import numpy as np
 import pandas as pd
+from mosaic_media import MediaFacts
 from scipy.ndimage import maximum_filter
 
-from mosaic.core.media.video_io import open_capture
+from mosaic.core.media.video_io import open_frame_reader
 
 
 def _require_torch():
@@ -169,6 +170,7 @@ def run_localizer_inference(
     refine_window: int = 7,
     point_radius: int = 4,
     class_colors: dict[int, tuple[int, int, int]] | None = None,
+    facts: MediaFacts | None = None,
 ) -> list[list[dict]]:
     """Run localizer inference on a video.
 
@@ -225,15 +227,14 @@ def run_localizer_inference(
     encoder.eval()
 
     # Open video (imgstore-aware)
-    cap = open_capture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
-
-    raw_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    total_frames = int(raw_count) if 0 < raw_count < 1e12 else None
-
-    if start_frame > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    reader = open_frame_reader(
+        video_path,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        frame_step=frame_step,
+        facts=facts,
+    )
+    total_str = str(reader.frame_count)
 
     if output_dir is not None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -244,46 +245,34 @@ def run_localizer_inference(
         class_colors = {i: palette[i % len(palette)] for i in range(num_classes)}
 
     all_results: list[list[dict]] = []
-    frame_idx = start_frame
     processed = 0
 
-    while True:
-        if end_frame is not None and frame_idx >= end_frame:
-            break
+    try:
+        for frame_idx, frame in reader:
+            detections = detect_locations(
+                encoder, frame, thresholds,
+                device=device,
+                min_distance=min_distance,
+                refine_window=refine_window,
+            )
+            all_results.append(detections)
 
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            break
+            if save_images and output_dir is not None:
+                annotated = frame.copy()
+                for det in detections:
+                    pt = (int(round(det["x"])), int(round(det["y"])))
+                    color = class_colors.get(det["class_id"], (0, 255, 0))
+                    cv2.circle(annotated, pt, point_radius, color, -1)
+                fname = f"frame_{frame_idx:08d}.jpg"
+                cv2.imwrite(str(Path(output_dir) / fname), annotated)
 
-        if (frame_idx - start_frame) % frame_step != 0:
-            frame_idx += 1
-            continue
+            processed += 1
 
-        detections = detect_locations(
-            encoder, frame, thresholds,
-            device=device,
-            min_distance=min_distance,
-            refine_window=refine_window,
-        )
-        all_results.append(detections)
+            if max_frames is not None and processed >= max_frames:
+                break
+    finally:
+        reader.close()
 
-        if save_images and output_dir is not None:
-            annotated = frame.copy()
-            for det in detections:
-                pt = (int(round(det["x"])), int(round(det["y"])))
-                color = class_colors.get(det["class_id"], (0, 255, 0))
-                cv2.circle(annotated, pt, point_radius, color, -1)
-            fname = f"frame_{frame_idx:08d}.jpg"
-            cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-        processed += 1
-        frame_idx += 1
-
-        if max_frames is not None and processed >= max_frames:
-            break
-
-    cap.release()
-    total_str = str(total_frames) if total_frames is not None else "?"
     print(
         f"[localizer_inference] Processed {processed}/{total_str} "
         f"frames from {video_path}"

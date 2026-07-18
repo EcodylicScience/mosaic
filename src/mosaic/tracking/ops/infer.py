@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable
 
 import pandas as pd
+from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params
@@ -22,7 +23,6 @@ from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.schema import ensure_track_schema
-from mosaic.tracking.frame_extraction.dataset_runs import list_media_pairs
 from mosaic.tracking.registry import TrackingOp, register_tracking_op, resolve_model
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ def _run_inference_op(
     *,
     kind: str,
     train_kind: str,
-    per_video: Callable[[str, Path, Path], pd.DataFrame | None],
+    per_video: Callable[[str, Path, Path, MediaFacts | None], pd.DataFrame | None],
 ) -> str:
     """Shared scaffold: resolve model, loop scoped videos, predict, bridge."""
     if not ds.has_root("predictions"):
@@ -156,19 +156,20 @@ def _run_inference_op(
     )
     ctx.set_run_id(run_id)
 
-    media_df = list_media_pairs(ds, groups=params.groups, sequences=params.sequences)
-    if media_df.empty:
+    scope = ds.resolve_media_scope(params.groups, params.sequences)
+    if not scope:
         print(f"[{kind}] No media entries match the given scope.")
         return run_id
 
-    work: list[tuple[str, str, Path]] = []
-    for (g, s), sub in media_df.groupby(["group", "sequence"]):
-        g, s = str(g), str(s)
-        sub = sub.sort_values("video_order")
-        paths = [ds.resolve_path(r["abs_path"]) for _, r in sub.iterrows()]
-        if not g and not to_safe_name(s):
-            s = paths[0].stem
-        work.append((g, s, paths[0]))
+    work: list[tuple[str, str, Path, MediaFacts | None]] = []
+    for group, sequence, resolved in scope:
+        # The op reads the first path; carry the routed entry's stored facts (the
+        # analysis derivative's when the verdict routed there, else the
+        # original's) so the reader injects them instead of re-probing. A
+        # required-but-unlinked entry already raised in resolve_media_scope,
+        # before any defective original was opened.
+        facts = resolved.facts[0] if resolved.facts is not None else None
+        work.append((group, sequence, resolved.paths[0], facts))
 
     ctx.set_total(len(work))
     run_root = prediction_run_root(ds, kind, run_id)
@@ -178,7 +179,7 @@ def _run_inference_op(
     rows: list[InferenceIndexRow] = []
 
     try:
-        for i, (group, sequence, video_path) in enumerate(work):
+        for i, (group, sequence, video_path, facts) in enumerate(work):
             ctx.check_cancel()
             key = make_entry_key(group, sequence)
             ctx.progress.on_entry_start(i, len(work), key)
@@ -186,7 +187,7 @@ def _run_inference_op(
 
             seq_dir = run_root / key
             seq_dir.mkdir(parents=True, exist_ok=True)
-            df = per_video(str(model_pt), video_path, seq_dir)
+            df = per_video(str(model_pt), video_path, seq_dir, facts)
             pred_path = seq_dir / "predictions.parquet"
             if df is not None and not df.empty:
                 df.to_parquet(pred_path, index=False)
@@ -240,7 +241,9 @@ class InferPoseOp(TrackingOp[PoseInferParams]):
             run_inference,
         )
 
-        def per_video(model: str, video: Path, out_dir: Path) -> pd.DataFrame:
+        def per_video(
+            model: str, video: Path, out_dir: Path, facts: MediaFacts | None
+        ) -> pd.DataFrame:
             results = run_inference(
                 model,
                 video,
@@ -255,6 +258,7 @@ class InferPoseOp(TrackingOp[PoseInferParams]):
                 imgsz=params.imgsz,
                 batch_size=params.batch_size,
                 verbose=False,
+                facts=facts,
             )
             return inference_to_dataframe(results)
 
@@ -281,7 +285,9 @@ class InferPointsOp(TrackingOp[PointInferParams]):
             run_point_inference,
         )
 
-        def per_video(model: str, video: Path, out_dir: Path) -> pd.DataFrame:
+        def per_video(
+            model: str, video: Path, out_dir: Path, facts: MediaFacts | None
+        ) -> pd.DataFrame:
             results = run_point_inference(
                 model,
                 video,
@@ -297,6 +303,7 @@ class InferPointsOp(TrackingOp[PointInferParams]):
                 imgsz=params.imgsz,
                 batch_size=params.batch_size,
                 verbose=False,
+                facts=facts,
             )
             return locations_to_dataframe(results)
 
@@ -323,7 +330,9 @@ class InferLocalizerOp(TrackingOp[LocalizerInferParams]):
             run_localizer_inference,
         )
 
-        def per_video(model: str, video: Path, out_dir: Path) -> pd.DataFrame:
+        def per_video(
+            model: str, video: Path, out_dir: Path, facts: MediaFacts | None
+        ) -> pd.DataFrame:
             detections = run_localizer_inference(
                 model,
                 video,
@@ -337,6 +346,7 @@ class InferLocalizerOp(TrackingOp[LocalizerInferParams]):
                 max_frames=params.max_frames,
                 device=params.device,
                 save_images=params.save_images,
+                facts=facts,
             )
             return localizer_detections_to_dataframe(detections)
 
