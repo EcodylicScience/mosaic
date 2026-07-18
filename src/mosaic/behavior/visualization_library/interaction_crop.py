@@ -19,6 +19,8 @@ from typing import Any, final
 import cv2
 import numpy as np
 import pandas as pd
+from mosaic_media import MediaProbeError
+from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
@@ -203,7 +205,7 @@ class InteractionCropPipeline:
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
 
         # Resolve video
-        video_paths = self._ds.resolve_media_paths(group, sequence)
+        resolved = self._ds.resolve_media(group, sequence)
 
         # Group by interaction segment
         required = ["id_a", "id_b", "interaction_id", "interaction_start", "interaction_end"]
@@ -220,7 +222,7 @@ class InteractionCropPipeline:
         seg_groups.sort(key=lambda x: int(x[1]["interaction_start"].iloc[0]))
 
         # Open video reader once for the whole sequence
-        reader = MultiVideoReader(video_paths)
+        reader = MultiVideoReader(resolved.paths, facts=resolved.facts)
         output_fps = p.output_fps or reader.fps
 
         clip_records = []
@@ -307,16 +309,13 @@ class InteractionCropPipeline:
 
         # FFmpegVideoWriter supports NVENC GPU encoding for BGR output;
         # grayscale requires cv2.VideoWriter (FFmpeg writer expects BGR24)
-        use_ffmpeg_writer = False
         if not p.grayscale:
             try:
-                from mosaic.core.media.video_io import FFmpegVideoWriter
                 writer = FFmpegVideoWriter(
                     video_out, crop_w, crop_h, fps=output_fps,
                     hwaccel=True, preset="fast",
                 )
-                use_ffmpeg_writer = True
-            except (ImportError, RuntimeError):
+            except (RuntimeError, MediaProbeError):
                 writer = create_video_writer(video_out, output_fps, (crop_w, crop_h))
         else:
             codec = cv2.VideoWriter_fourcc(*"mp4v")
@@ -342,10 +341,10 @@ class InteractionCropPipeline:
                 writer.write(crop)
                 n_written += 1
         finally:
-            if use_ffmpeg_writer:
-                writer.close()
-            else:
+            if isinstance(writer, cv2.VideoWriter):
                 writer.release()
+            else:
+                writer.close()
 
         if n_written == 0:
             video_out.unlink(missing_ok=True)

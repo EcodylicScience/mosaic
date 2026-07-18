@@ -16,6 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 import pandas as pd
+from mosaic_media import MediaFacts
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
@@ -271,7 +272,7 @@ class EgocentricCrop:
         )
 
         # Resolve video paths (supports multi-video sequences)
-        video_paths = self._ds.resolve_media_paths(group, sequence)
+        resolved = self._ds.resolve_media(group, sequence)
 
         # Determine which IDs to process
         if p.target_id is None:
@@ -283,7 +284,7 @@ class EgocentricCrop:
                 if df_target.empty:
                     continue
                 metadata = self._process_single_id(
-                    video_paths, df_target, group, sequence, uid
+                    resolved.paths, resolved.facts, df_target, group, sequence, uid
                 )
                 all_metadata.append(metadata)
             if all_metadata:
@@ -295,7 +296,7 @@ class EgocentricCrop:
             if df_target.empty:
                 raise ValueError(f"No data for target_id={p.target_id}")
             return self._process_single_id(
-                video_paths, df_target, group, sequence, p.target_id
+                resolved.paths, resolved.facts, df_target, group, sequence, p.target_id
             )
 
     # ----------------------- Internal methods --------------------
@@ -616,6 +617,7 @@ class EgocentricCrop:
     def _process_single_id(
         self,
         video_paths: list[Path],
+        facts: list[MediaFacts] | None,
         df_target: pd.DataFrame,
         group: str,
         sequence: str,
@@ -628,6 +630,9 @@ class EgocentricCrop:
         ----------
         video_paths : list[Path]
             Ordered list of video paths for this sequence.
+        facts : list[MediaFacts] or None
+            Stored media facts parallel to *video_paths*, injected into the
+            reader so it does not re-probe. ``None`` when unavailable.
 
         Returns metadata DataFrame with crop info per frame.
         """
@@ -639,7 +644,7 @@ class EgocentricCrop:
         df_target = df_target.sort_values(COLUMNS.frame_col).reset_index(drop=True)
 
         # Open video(s) via MultiVideoReader
-        reader = MultiVideoReader(video_paths)
+        reader = MultiVideoReader(video_paths, facts=facts)
         output_fps = p.output_fps or reader.fps
 
         # Build frame -> row position lookup (for precomputed geometry arrays

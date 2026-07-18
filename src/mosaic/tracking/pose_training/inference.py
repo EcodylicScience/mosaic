@@ -9,14 +9,43 @@ Requires:
 """
 from __future__ import annotations
 
+import queue
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
 import pandas as pd
+from mosaic_media import MediaFacts, MediaProbeError
+from mosaic_media.io import FFmpegVideoWriter
 
-from mosaic.core.media.video_io import SupportsCapture, open_capture
+from mosaic.core.media.video_io import (
+    FrameReader,
+    get_video_metadata,
+    open_frame_reader,
+    prefetch_batches,
+)
+
+
+class _InferenceResult(Protocol):
+    """The ultralytics ``Results`` surface used while consuming a batch."""
+
+    def plot(self) -> np.ndarray: ...
+
+
+class _InferenceModel(Protocol):
+    """The ultralytics model surface the batched predict loop calls."""
+
+    def predict(
+        self, source: list[np.ndarray], **kwargs: object
+    ) -> list[_InferenceResult]: ...
+
+
+class _ProgressBar(Protocol):
+    """The tqdm progress-bar surface the batched predict loop advances."""
+
+    def update(self, n: int) -> object: ...
 
 
 def _require_ultralytics():
@@ -28,6 +57,88 @@ def _require_ultralytics():
             "ultralytics is required for inference. "
             "Install it with: pip install ultralytics"
         )
+
+
+def _run_predict_loop(
+    model: _InferenceModel,
+    reader: FrameReader,
+    predict_kwargs: dict[str, Any],
+    *,
+    output_dir: str | Path | None,
+    save_images: bool,
+    max_frames: int | None,
+    batch_size: int,
+    prefetch: bool,
+    pbar: _ProgressBar | None,
+) -> tuple[list[Any], int]:
+    """Read frames from *reader* in batches, call ``model.predict`` per batch,
+    and optionally save annotated frames.
+
+    Shared by every inference entry point (pose and point-detection, single-frame
+    and throughput-batched): the reader's decode-time resize/facts, the batch
+    size, and the prefetch cadence are supplied by the caller and are the only
+    things that differ between them. A single-frame call site passes
+    ``batch_size=1, prefetch=False``, which reproduces the same per-frame
+    predict/save behavior as reading one frame at a time.
+    """
+    all_results: list[Any] = []
+    processed = 0
+
+    def _consume_batch(indices: np.ndarray, batch_frames: np.ndarray) -> bool:
+        """Predict and save one batch; return True once max_frames is reached."""
+        nonlocal processed
+        if max_frames is not None:
+            remaining = max_frames - processed
+            if remaining <= 0:
+                return True
+            if len(indices) > remaining:
+                indices = indices[:remaining]
+                batch_frames = batch_frames[:remaining]
+
+        frames_list = [batch_frames[i] for i in range(len(indices))]
+        results = model.predict(source=frames_list, **predict_kwargs)
+        all_results.extend(results)
+
+        if save_images and output_dir is not None:
+            for i, result in enumerate(results):
+                annotated = result.plot()
+                fname = f"frame_{indices[i]:08d}.jpg"
+                cv2.imwrite(str(Path(output_dir) / fname), annotated)
+
+        processed += len(indices)
+        if pbar is not None:
+            pbar.update(len(indices))
+        return max_frames is not None and processed >= max_frames
+
+    if prefetch:
+        frame_queue: queue.Queue[tuple[np.ndarray, np.ndarray] | None] = queue.Queue(
+            maxsize=2
+        )
+        worker = threading.Thread(
+            target=prefetch_batches,
+            args=(reader, frame_queue, batch_size),
+            daemon=True,
+        )
+        worker.start()
+
+        while True:
+            item = frame_queue.get()
+            if item is None:
+                break
+            indices, batch_frames = item
+            if _consume_batch(indices, batch_frames):
+                break
+
+        worker.join(timeout=5)
+    else:
+        while True:
+            indices, batch_frames = reader.read_batch(batch_size)
+            if len(indices) == 0:
+                break
+            if _consume_batch(indices, batch_frames):
+                break
+
+    return all_results, processed
 
 
 def run_inference_opencv(
@@ -44,7 +155,15 @@ def run_inference_opencv(
     save_images: bool = True,
     imgsz: int = 640,
 ) -> list[Any]:
-    """Run pose inference on a video using single-frame OpenCV decoding.
+    """Run pose inference on a video, one frame at a time.
+
+    Decodes sequentially through
+    :func:`~mosaic.core.media.video_io.open_frame_reader` (in-process libav,
+    not OpenCV) at the video's native resolution -- there is no decode-time
+    resize, so returned keypoints stay in the source video's pixel coordinate
+    space. Use :func:`run_inference` for higher-throughput batched decoding
+    (which resizes to fit ``imgsz`` at decode time, so its returned coordinates
+    are in that resized space instead).
 
     Parameters
     ----------
@@ -79,58 +198,39 @@ def run_inference_opencv(
     YOLO = _require_ultralytics()
     model = YOLO(str(model_path))
 
-    cap = open_capture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
-
-    raw_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    total_frames = int(raw_count) if 0 < raw_count < 1e12 else None
-
-    if start_frame > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
     if output_dir is not None:
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    all_results = []
-    frame_idx = start_frame
-    processed = 0
+    predict_kwargs: dict[str, Any] = dict(
+        device=device,
+        conf=conf_threshold,
+        imgsz=imgsz,
+        verbose=False,
+    )
 
-    while True:
-        if end_frame is not None and frame_idx >= end_frame:
-            break
+    reader = open_frame_reader(
+        video_path,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        frame_step=frame_step,
+    )
+    total_str = str(reader.frame_count)
 
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            break
-
-        if (frame_idx - start_frame) % frame_step != 0:
-            frame_idx += 1
-            continue
-
-        results = model.predict(
-            source=frame,
-            device=device,
-            conf=conf_threshold,
-            imgsz=imgsz,
-            verbose=False,
+    try:
+        all_results, processed = _run_predict_loop(
+            model,
+            reader,
+            predict_kwargs,
+            output_dir=output_dir,
+            save_images=save_images,
+            max_frames=max_frames,
+            batch_size=1,
+            prefetch=False,
+            pbar=None,
         )
-        all_results.extend(results)
+    finally:
+        reader.close()
 
-        if save_images and output_dir is not None:
-            annotated = results[0].plot()
-            fname = f"frame_{frame_idx:08d}.jpg"
-            cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-        processed += 1
-        frame_idx += 1
-
-        if max_frames is not None and processed >= max_frames:
-            break
-
-    cap.release()
-    total_str = str(total_frames) if total_frames is not None else "?"
     print(f"[inference] Processed {processed}/{total_str} frames from {video_path}")
 
     return all_results
@@ -151,14 +251,14 @@ def run_inference(
     imgsz: int = 640,
     batch_size: int = 8,
     prefetch: bool = True,
-    use_ffmpeg: bool | None = None,
     verbose: bool = True,
+    facts: MediaFacts | None = None,
 ) -> list[Any]:
     """Run pose inference on a video and optionally save annotated frames.
 
-    Uses ffmpeg for decode-time resize and batched ``model.predict()``
-    calls for higher GPU utilization. Falls back to OpenCV when ffmpeg
-    is not available.
+    Reads frames in-process via :func:`~mosaic.core.media.video_io.open_frame_reader`
+    with decode-time resize and batched ``model.predict()`` calls for higher GPU
+    utilization.
 
     Parameters
     ----------
@@ -184,8 +284,6 @@ def run_inference(
         Number of frames per batch for ``model.predict()``.
     prefetch : bool
         Use a background thread to read frames ahead of inference.
-    use_ffmpeg : bool or None
-        ``None`` = auto-detect, ``True`` = require ffmpeg, ``False`` = OpenCV only.
     verbose : bool
         Show tqdm progress bar.
 
@@ -194,15 +292,6 @@ def run_inference(
     list
         List of ultralytics Results objects, one per processed frame.
     """
-    import queue
-    import threading
-
-    from mosaic.core.media.video_io import (
-        _ffmpeg_available,
-        get_video_metadata,
-        open_frame_reader,
-    )
-
     YOLO = _require_ultralytics()
     model = YOLO(str(model_path))
 
@@ -216,12 +305,6 @@ def run_inference(
         imgsz=imgsz,
         verbose=False,
     )
-
-    # Determine whether to use ffmpeg
-    if use_ffmpeg is None:
-        use_ffmpeg = _ffmpeg_available()
-    elif use_ffmpeg and not _ffmpeg_available():
-        raise RuntimeError("use_ffmpeg=True but ffmpeg is not available on PATH")
 
     # Get video metadata for resize computation and progress bar
     meta = get_video_metadata(video_path)
@@ -242,133 +325,29 @@ def run_inference(
         except ImportError:
             pass
 
-    all_results: list[Any] = []
-    processed = 0
-
     try:
-        if use_ffmpeg:
-            reader = open_frame_reader(
-                video_path,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                frame_step=frame_step,
-                resize=resize_dims,
+        reader = open_frame_reader(
+            video_path,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            frame_step=frame_step,
+            resize=resize_dims,
+            facts=facts,
+        )
+        try:
+            all_results, processed = _run_predict_loop(
+                model,
+                reader,
+                predict_kwargs,
+                output_dir=output_dir,
+                save_images=save_images,
+                max_frames=max_frames,
+                batch_size=batch_size,
+                prefetch=prefetch,
+                pbar=pbar,
             )
-            try:
-                if prefetch:
-                    from mosaic.core.media.video_io import _prefetch_batches
-
-                    frame_queue: queue.Queue = queue.Queue(maxsize=2)
-                    worker = threading.Thread(
-                        target=_prefetch_batches,
-                        args=(reader, frame_queue, batch_size),
-                        daemon=True,
-                    )
-                    worker.start()
-
-                    while True:
-                        item = frame_queue.get()
-                        if item is None:
-                            break
-                        indices, batch_frames = item
-
-                        if max_frames is not None:
-                            remaining = max_frames - processed
-                            if remaining <= 0:
-                                break
-                            if len(indices) > remaining:
-                                indices = indices[:remaining]
-                                batch_frames = batch_frames[:remaining]
-
-                        frames_list = [batch_frames[i] for i in range(len(indices))]
-                        results = model.predict(source=frames_list, **predict_kwargs)
-                        all_results.extend(results)
-
-                        if save_images and output_dir is not None:
-                            for i, r in enumerate(results):
-                                annotated = r.plot()
-                                fname = f"frame_{indices[i]:08d}.jpg"
-                                cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                        processed += len(indices)
-                        if pbar is not None:
-                            pbar.update(len(indices))
-
-                        if max_frames is not None and processed >= max_frames:
-                            break
-
-                    worker.join(timeout=5)
-                else:
-                    while True:
-                        indices, batch_frames = reader.read_batch(batch_size)
-                        if len(indices) == 0:
-                            break
-
-                        if max_frames is not None:
-                            remaining = max_frames - processed
-                            if remaining <= 0:
-                                break
-                            if len(indices) > remaining:
-                                indices = indices[:remaining]
-                                batch_frames = batch_frames[:remaining]
-
-                        frames_list = [batch_frames[i] for i in range(len(indices))]
-                        results = model.predict(source=frames_list, **predict_kwargs)
-                        all_results.extend(results)
-
-                        if save_images and output_dir is not None:
-                            for i, r in enumerate(results):
-                                annotated = r.plot()
-                                fname = f"frame_{indices[i]:08d}.jpg"
-                                cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                        processed += len(indices)
-                        if pbar is not None:
-                            pbar.update(len(indices))
-
-                        if max_frames is not None and processed >= max_frames:
-                            break
-            finally:
-                reader.close()
-        else:
-            cap = open_capture(video_path)
-            if not cap.isOpened():
-                raise FileNotFoundError(f"Cannot open video: {video_path}")
-            try:
-                if start_frame > 0:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                frame_idx = start_frame
-
-                while True:
-                    if max_frames is not None and processed >= max_frames:
-                        break
-
-                    indices, frames, frame_idx = _read_batch_opencv(
-                        cap, batch_size, frame_idx, start_frame, end_frame, frame_step
-                    )
-                    if not frames:
-                        break
-
-                    if max_frames is not None:
-                        remaining = max_frames - processed
-                        if len(indices) > remaining:
-                            indices = indices[:remaining]
-                            frames = frames[:remaining]
-
-                    results = model.predict(source=frames, **predict_kwargs)
-                    all_results.extend(results)
-
-                    if save_images and output_dir is not None:
-                        for i, r in enumerate(results):
-                            annotated = r.plot()
-                            fname = f"frame_{indices[i]:08d}.jpg"
-                            cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                    processed += len(indices)
-                    if pbar is not None:
-                        pbar.update(len(indices))
-            finally:
-                cap.release()
+        finally:
+            reader.close()
     finally:
         if pbar is not None:
             pbar.close()
@@ -522,7 +501,15 @@ def run_point_inference_opencv(
     save_images: bool = True,
     imgsz: int = 640,
 ) -> list[Any]:
-    """Run POLO point-detection inference using single-frame OpenCV decoding.
+    """Run POLO point-detection inference on a video, one frame at a time.
+
+    Decodes sequentially through
+    :func:`~mosaic.core.media.video_io.open_frame_reader` (in-process libav,
+    not OpenCV) at the video's native resolution -- there is no decode-time
+    resize, so returned locations stay in the source video's pixel coordinate
+    space. Use :func:`run_point_inference` for higher-throughput batched
+    decoding (which resizes to fit ``imgsz`` at decode time, so its returned
+    coordinates are in that resized space instead).
 
     Parameters
     ----------
@@ -557,19 +544,8 @@ def run_point_inference_opencv(
     YOLO = _require_polo()
     model = YOLO(str(model_path))
 
-    cap = open_capture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
-
-    raw_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    total_frames = int(raw_count) if 0 < raw_count < 1e12 else None
-
-    if start_frame > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
     if output_dir is not None:
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     predict_kwargs: dict[str, Any] = dict(
         device=device,
@@ -580,38 +556,29 @@ def run_point_inference_opencv(
     if radii is not None:
         predict_kwargs["radii"] = radii
 
-    all_results = []
-    frame_idx = start_frame
-    processed = 0
+    reader = open_frame_reader(
+        video_path,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        frame_step=frame_step,
+    )
+    total_str = str(reader.frame_count)
 
-    while True:
-        if end_frame is not None and frame_idx >= end_frame:
-            break
+    try:
+        all_results, processed = _run_predict_loop(
+            model,
+            reader,
+            predict_kwargs,
+            output_dir=output_dir,
+            save_images=save_images,
+            max_frames=max_frames,
+            batch_size=1,
+            prefetch=False,
+            pbar=None,
+        )
+    finally:
+        reader.close()
 
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            break
-
-        if (frame_idx - start_frame) % frame_step != 0:
-            frame_idx += 1
-            continue
-
-        results = model.predict(source=frame, **predict_kwargs)
-        all_results.extend(results)
-
-        if save_images and output_dir is not None:
-            annotated = results[0].plot()
-            fname = f"frame_{frame_idx:08d}.jpg"
-            cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-        processed += 1
-        frame_idx += 1
-
-        if max_frames is not None and processed >= max_frames:
-            break
-
-    cap.release()
-    total_str = str(total_frames) if total_frames is not None else "?"
     print(f"[point_inference] Processed {processed}/{total_str} frames from {video_path}")
 
     return all_results
@@ -628,35 +595,6 @@ def _compute_resize(source_w: int, source_h: int, imgsz: int) -> tuple[int, int]
     w = w if w % 2 == 0 else w + 1
     h = h if h % 2 == 0 else h + 1
     return w, h
-
-
-def _read_batch_opencv(
-    cap: SupportsCapture,
-    batch_size: int,
-    frame_idx: int,
-    start_frame: int,
-    end_frame: int | None,
-    frame_step: int,
-) -> tuple[list[int], list[np.ndarray], int]:
-    """Read a batch of frames from OpenCV VideoCapture with frame stepping.
-
-    Returns (frame_indices, frames, updated_frame_idx).
-    """
-    indices: list[int] = []
-    frames: list[np.ndarray] = []
-
-    while len(frames) < batch_size:
-        if end_frame is not None and frame_idx >= end_frame:
-            break
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            break
-        if (frame_idx - start_frame) % frame_step == 0:
-            indices.append(frame_idx)
-            frames.append(frame)
-        frame_idx += 1
-
-    return indices, frames, frame_idx
 
 
 def run_point_inference(
@@ -676,14 +614,14 @@ def run_point_inference(
     imgsz: int = 640,
     batch_size: int = 8,
     prefetch: bool = True,
-    use_ffmpeg: bool | None = None,
     verbose: bool = True,
+    facts: MediaFacts | None = None,
 ) -> list[Any]:
     """Run POLO point-detection inference on a video.
 
-    Uses ffmpeg for decode-time resize and batched ``model.predict()``
-    calls for higher GPU utilization. Falls back to OpenCV when ffmpeg
-    is not available.
+    Reads frames in-process via :func:`~mosaic.core.media.video_io.open_frame_reader`
+    with decode-time resize and batched ``model.predict()`` calls for higher GPU
+    utilization.
 
     Parameters
     ----------
@@ -713,8 +651,6 @@ def run_point_inference(
         Number of frames per batch for ``model.predict()``.
     prefetch : bool
         Use a background thread to read frames ahead of inference.
-    use_ffmpeg : bool or None
-        ``None`` = auto-detect, ``True`` = require ffmpeg, ``False`` = OpenCV only.
     verbose : bool
         Show tqdm progress bar.
 
@@ -723,15 +659,6 @@ def run_point_inference(
     list
         List of ultralytics Results objects with ``.locations`` attribute.
     """
-    import queue
-    import threading
-
-    from mosaic.core.media.video_io import (
-        _ffmpeg_available,
-        get_video_metadata,
-        open_frame_reader,
-    )
-
     YOLO = _require_polo()
     model = YOLO(str(model_path))
 
@@ -747,12 +674,6 @@ def run_point_inference(
     )
     if radii is not None:
         predict_kwargs["radii"] = radii
-
-    # Determine whether to use ffmpeg
-    if use_ffmpeg is None:
-        use_ffmpeg = _ffmpeg_available()
-    elif use_ffmpeg and not _ffmpeg_available():
-        raise RuntimeError("use_ffmpeg=True but ffmpeg is not available on PATH")
 
     # Get video metadata for resize computation and progress bar
     meta = get_video_metadata(video_path)
@@ -773,136 +694,29 @@ def run_point_inference(
         except ImportError:
             pass
 
-    all_results: list[Any] = []
-    processed = 0
-
     try:
-        if use_ffmpeg:
-            reader = open_frame_reader(
-                video_path,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                frame_step=frame_step,
-                resize=resize_dims,
+        reader = open_frame_reader(
+            video_path,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            frame_step=frame_step,
+            resize=resize_dims,
+            facts=facts,
+        )
+        try:
+            all_results, processed = _run_predict_loop(
+                model,
+                reader,
+                predict_kwargs,
+                output_dir=output_dir,
+                save_images=save_images,
+                max_frames=max_frames,
+                batch_size=batch_size,
+                prefetch=prefetch,
+                pbar=pbar,
             )
-            try:
-                if prefetch:
-                    from mosaic.core.media.video_io import _prefetch_batches
-
-                    frame_queue: queue.Queue = queue.Queue(maxsize=2)
-                    worker = threading.Thread(
-                        target=_prefetch_batches,
-                        args=(reader, frame_queue, batch_size),
-                        daemon=True,
-                    )
-                    worker.start()
-
-                    while True:
-                        item = frame_queue.get()
-                        if item is None:
-                            break
-                        indices, batch_frames = item
-
-                        # Trim batch if max_frames would be exceeded
-                        if max_frames is not None:
-                            remaining = max_frames - processed
-                            if remaining <= 0:
-                                break
-                            if len(indices) > remaining:
-                                indices = indices[:remaining]
-                                batch_frames = batch_frames[:remaining]
-
-                        frames_list = [batch_frames[i] for i in range(len(indices))]
-                        results = model.predict(source=frames_list, **predict_kwargs)
-                        all_results.extend(results)
-
-                        if save_images and output_dir is not None:
-                            for i, r in enumerate(results):
-                                annotated = r.plot()
-                                fname = f"frame_{indices[i]:08d}.jpg"
-                                cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                        processed += len(indices)
-                        if pbar is not None:
-                            pbar.update(len(indices))
-
-                        if max_frames is not None and processed >= max_frames:
-                            break
-
-                    worker.join(timeout=5)
-                else:
-                    # Direct (no prefetch) ffmpeg path
-                    while True:
-                        indices, batch_frames = reader.read_batch(batch_size)
-                        if len(indices) == 0:
-                            break
-
-                        if max_frames is not None:
-                            remaining = max_frames - processed
-                            if remaining <= 0:
-                                break
-                            if len(indices) > remaining:
-                                indices = indices[:remaining]
-                                batch_frames = batch_frames[:remaining]
-
-                        frames_list = [batch_frames[i] for i in range(len(indices))]
-                        results = model.predict(source=frames_list, **predict_kwargs)
-                        all_results.extend(results)
-
-                        if save_images and output_dir is not None:
-                            for i, r in enumerate(results):
-                                annotated = r.plot()
-                                fname = f"frame_{indices[i]:08d}.jpg"
-                                cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                        processed += len(indices)
-                        if pbar is not None:
-                            pbar.update(len(indices))
-
-                        if max_frames is not None and processed >= max_frames:
-                            break
-            finally:
-                reader.close()
-        else:
-            # OpenCV fallback — still batched for GPU utilization
-            cap = open_capture(video_path)
-            if not cap.isOpened():
-                raise FileNotFoundError(f"Cannot open video: {video_path}")
-            try:
-                if start_frame > 0:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                frame_idx = start_frame
-
-                while True:
-                    if max_frames is not None and processed >= max_frames:
-                        break
-
-                    indices, frames, frame_idx = _read_batch_opencv(
-                        cap, batch_size, frame_idx, start_frame, end_frame, frame_step
-                    )
-                    if not frames:
-                        break
-
-                    if max_frames is not None:
-                        remaining = max_frames - processed
-                        if len(indices) > remaining:
-                            indices = indices[:remaining]
-                            frames = frames[:remaining]
-
-                    results = model.predict(source=frames, **predict_kwargs)
-                    all_results.extend(results)
-
-                    if save_images and output_dir is not None:
-                        for i, r in enumerate(results):
-                            annotated = r.plot()
-                            fname = f"frame_{indices[i]:08d}.jpg"
-                            cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-                    processed += len(indices)
-                    if pbar is not None:
-                        pbar.update(len(indices))
-            finally:
-                cap.release()
+        finally:
+            reader.close()
     finally:
         if pbar is not None:
             pbar.close()
@@ -1184,8 +998,6 @@ def visualize_inference(
     - **d**: Step one frame (while paused)
     - **s**: Save current frame as PNG
     """
-    from mosaic.core.media.video_io import get_video_metadata
-
     if not results:
         raise ValueError("results list is empty")
 
@@ -1210,10 +1022,12 @@ def visualize_inference(
             scale_x = meta.width / inf_w
             scale_y = meta.height / inf_h
 
-    # Open video
-    cap = open_capture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
+    # Open video: a sequential windowed reader in lockstep with `results`,
+    # rather than a per-result seek - `results[i]` always corresponds to
+    # frame `start_frame + i * frame_step`, exactly the sequence this reader
+    # yields.
+    reader = open_frame_reader(video_path, start_frame=start_frame, frame_step=frame_step)
+    frame_iterator = iter(reader)
 
     # Open writer
     writer = None
@@ -1222,12 +1036,11 @@ def visualize_inference(
         out_path = Path(output_path).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            from mosaic.core.media.video_io import FFmpegVideoWriter
             writer = FFmpegVideoWriter(
                 out_path, meta.width, meta.height,
                 fps=meta.fps, crf=crf,
             )
-        except (RuntimeError, ImportError):
+        except (RuntimeError, MediaProbeError):
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(
                 str(out_path), fourcc, meta.fps, (meta.width, meta.height),
@@ -1248,9 +1061,9 @@ def visualize_inference(
     try:
         for i, result in enumerate(results):
             target_frame = start_frame + i * frame_step
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            ret, frame = cap.read()
-            if not ret or frame is None:
+            try:
+                _yielded_index, frame = next(frame_iterator)
+            except StopIteration:
                 break
 
             # Annotate
@@ -1335,7 +1148,7 @@ def visualize_inference(
             if pbar is not None:
                 pbar.update(1)
     finally:
-        cap.release()
+        reader.close()
         if writer is not None:
             if isinstance(writer, cv2.VideoWriter):
                 writer.release()

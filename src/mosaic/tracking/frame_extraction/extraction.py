@@ -12,11 +12,13 @@ import math
 import uuid
 
 import numpy as np
+from mosaic_media import MediaFacts
 
 from mosaic.core.media.video_io import (
     MultiVideoReader,
     extract_candidate_features,
     extract_candidate_features_multi,
+    facts_to_video_metadata,
     get_video_metadata,
     normalize_crop_rect,
     normalize_frame_range,
@@ -86,6 +88,7 @@ def extract_frames(
     random_state: int = 42,
     run_id: Optional[str] = None,
     output_dir: Optional[Path | str] = None,
+    facts: MediaFacts | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a single video.
@@ -121,6 +124,9 @@ def extract_frames(
         directly into this directory instead of the auto-computed path under
         output_root. Useful for Dataset integration where the caller controls
         the directory layout. If set, output_root is ignored.
+    facts
+        Stored media facts for *video_path*, injected into the candidate-frame
+        reader so it does not re-probe. ``None`` for bare-path callers.
     """
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:
@@ -130,7 +136,14 @@ def extract_frames(
     if int(candidate_step) <= 0:
         raise ValueError("candidate_step must be > 0")
 
-    meta = get_video_metadata(video_path)
+    if facts is not None:
+        # A holder of stored facts must not re-probe; build metadata through the
+        # shared display-dimension swap instead of re-probing.
+        meta = facts_to_video_metadata(
+            Path(video_path).expanduser().resolve(), facts
+        )
+    else:
+        meta = get_video_metadata(video_path)
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 
@@ -157,6 +170,7 @@ def extract_frames(
             grayscale=bool(kmeans_grayscale),
             crop_rect=crop_rect,
             max_candidates=None,
+            facts=facts,
         )
         selected = select_kmeans_frames(
             candidate_indices=candidates,
@@ -200,6 +214,7 @@ def extract_frames(
         frame_indices=selected,
         output_dir=out_dir,
         crop_rect=crop_rect,
+        facts=facts,
     )
 
     created_utc = (
@@ -253,6 +268,7 @@ def extract_frames_multi(
     random_state: int = 42,
     run_id: Optional[str] = None,
     output_dir: Optional[Path | str] = None,
+    facts: Sequence[MediaFacts] | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a multi-video sequence.
@@ -266,6 +282,9 @@ def extract_frames_multi(
     ----------
     video_paths : list[Path | str]
         Ordered list of video file paths forming the sequence.
+    facts : sequence of MediaFacts, optional
+        Stored media facts parallel to *video_paths*, injected into the reader
+        so it does not re-probe. ``None`` for bare-path callers.
     """
     method_norm = str(method).strip().lower()
     if method_norm not in {"uniform", "kmeans"}:
@@ -275,7 +294,7 @@ def extract_frames_multi(
     if int(candidate_step) <= 0:
         raise ValueError("candidate_step must be > 0")
 
-    reader = MultiVideoReader([Path(p) for p in video_paths])
+    reader = MultiVideoReader([Path(p) for p in video_paths], facts=facts)
     total_frames = reader.total_frames
     start, end = normalize_frame_range(total_frames, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, reader.width, reader.height)

@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import pandas as pd
+from mosaic_media import MediaFacts
 
-from mosaic.core.helpers import make_entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, JobContext
@@ -59,36 +60,6 @@ def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
     )
 
 
-def list_media_pairs(
-    ds: Dataset,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-) -> pd.DataFrame:
-    """Return filtered media index DataFrame with (group, sequence, abs_path, ..., video_order)."""
-    media_key = ds.resolve_media_root()
-    idx_path = ds.get_root(media_key) / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError(
-            f"{media_key}/index.csv not found; run index_media() first."
-        )
-    df = pd.read_csv(idx_path)
-    df["group"] = df["group"].fillna("").astype(str)
-    df["sequence"] = df["sequence"].fillna("").astype(str)
-    df["group_safe"] = df["group_safe"].fillna("").astype(str)
-    df["sequence_safe"] = df["sequence_safe"].fillna("").astype(str)
-    # Ensure video_order column exists (backward compat with old indexes)
-    if "video_order" not in df.columns:
-        df["video_order"] = 0
-    else:
-        df["video_order"] = df["video_order"].fillna(0).astype(int)
-    mask = pd.Series(True, index=df.index)
-    if groups is not None:
-        mask &= df["group"].isin({str(g) for g in groups})
-    if sequences is not None:
-        mask &= df["sequence"].isin({str(s) for s in sequences})
-    return df[mask].reset_index(drop=True)
-
-
 # --- Frame extraction op (registered under the Job Contract) ---
 
 
@@ -129,6 +100,7 @@ class _ExtractSpec:
     group: str
     sequence: str
     video_paths: tuple[Path, ...]
+    facts: tuple[MediaFacts, ...] | None
     seq_dir: Path
     run_id: str
     params_hash: str
@@ -184,6 +156,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 random_state=spec.random_state,
                 run_id=spec.run_id,
                 output_dir=seq_dir,
+                facts=spec.facts[0] if spec.facts else None,
                 **kmeans_kw,
             )
         else:
@@ -198,6 +171,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 random_state=spec.random_state,
                 run_id=spec.run_id,
                 output_dir=seq_dir,
+                facts=list(spec.facts) if spec.facts else None,
                 **kmeans_kw,
             )
     except Exception as exc:
@@ -275,27 +249,28 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
             file=sys.stderr,
         )
 
-    media_df = list_media_pairs(ds, groups=p.groups, sequences=p.sequences)
-    if media_df.empty:
+    scope = ds.resolve_media_scope(p.groups, p.sequences)
+    if not scope:
         print(
             "[extract_frames] No media entries match the given scope.", file=sys.stderr
         )
         return run_id
 
     # Build picklable per-sequence work specs (multi-video sequences merged).
+    # resolve_media_scope routes each entry by its transcode verdict: a
+    # required-but-unlinked entry raises (fail loud) rather than opening a
+    # defective original, and a routed entry carries the analysis derivative's
+    # facts.
     specs: list[_ExtractSpec] = []
-    for (g, s), sub in media_df.groupby(["group", "sequence"]):
-        g, s = str(g), str(s)
-        sub = sub.sort_values("video_order")
-        paths = tuple(ds.resolve_path(r["abs_path"]) for _, r in sub.iterrows())
-        if not g and not to_safe_name(s):
-            s = paths[0].stem
+    for group, sequence, resolved in scope:
+        facts = tuple(resolved.facts) if resolved.facts is not None else None
         specs.append(
             _ExtractSpec(
-                group=g,
-                sequence=s,
-                video_paths=paths,
-                seq_dir=run_root / make_entry_key(g, s),
+                group=group,
+                sequence=sequence,
+                video_paths=tuple(resolved.paths),
+                facts=facts,
+                seq_dir=run_root / make_entry_key(group, sequence),
                 run_id=run_id,
                 params_hash=params_hash,
                 n_frames=int(p.n_frames),

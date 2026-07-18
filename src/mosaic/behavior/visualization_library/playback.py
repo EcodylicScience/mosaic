@@ -158,10 +158,10 @@ def play_video(ds,
         spec_playback.get("hide_individual_bboxes_for_pair", hide_individual_bboxes_for_pair)
     )
 
-    video_paths = ds.resolve_media_paths(group, sequence)
+    resolved = ds.resolve_media(group, sequence)
 
     stream = render_stream(
-        video_paths,
+        resolved.paths,
         overlay,
         start=start,
         end=end,
@@ -171,6 +171,7 @@ def play_video(ds,
         pair_box_feature=pair_box_feature,
         pair_box_behaviors=pair_box_behaviors,
         hide_individual_bboxes_for_pair=hide_individual_bboxes_for_pair,
+        facts=resolved.facts,
     )
     writer = None
     out_path = None

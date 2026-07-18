@@ -16,7 +16,6 @@ from .dataset_runs import (
     get_frame_manifests,
     get_frame_paths,
     list_frame_runs,
-    list_media_pairs,
 )
 from .extraction import (
     FrameExtractionResult,
@@ -36,7 +35,6 @@ __all__ = [
     "get_frame_manifests",
     "get_frame_paths",
     "list_frame_runs",
-    "list_media_pairs",
     "load_extraction_manifest",
     "select_kmeans_frames",
     "select_uniform_frames",
