@@ -30,6 +30,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         dtype: type = np.uint8,
         chunksize: int = 5,
         parent: Path | None = None,
+        fps: float = 30.0,
     ) -> tuple[Path, list[np.ndarray]]:
         base = parent if parent is not None else tmp_path
         base.mkdir(parents=True, exist_ok=True)
@@ -47,7 +48,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
             img = np.zeros(shape, dtype=dtype)
             img.reshape(-1)[0] = i % 256  # unique per-frame tag at [0, 0(, 0)]
             frames.append(img)
-            store.add_image(img, frame_number=i, frame_time=float(i) / 30.0)
+            store.add_image(img, frame_number=i, frame_time=float(i) / fps)
         store.close()
         return dest, frames
 
