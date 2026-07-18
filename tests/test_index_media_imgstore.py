@@ -66,13 +66,13 @@ def test_index_media_discovers_store_and_excludes_chunks(tmp_path, make_imgstore
     assert int(store_rows.iloc[0]["height"]) == 48
 
 
-def test_resolve_media_paths_returns_store_dir(tmp_path, make_imgstore):
+def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
     ds = _make_dataset(tmp_path)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(name="seqA", nframes=8, parent=search)
     ds.index_media([search])
 
-    paths = ds.resolve_media_paths("", "seqA")
+    paths = ds.resolve_media("", "seqA").paths
     assert len(paths) == 1
     assert paths[0].resolve() == store_dir.resolve()
 
