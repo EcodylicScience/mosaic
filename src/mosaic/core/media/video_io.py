@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import bisect
-import json
-import shutil
-import subprocess
-import sys
-import threading
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol, Sequence
 
 import cv2
 import numpy as np
+from mosaic_media import MediaFacts, MediaProbeError, probe_media
+from mosaic_media.io import MultiVideoReader as _PlainMultiReader
+from mosaic_media.io import SeekIndex
+from mosaic_media.io import VideoReader
+
+# Downscale filter for candidate-feature frames. Read at call time so it stays
+# monkeypatchable. INTER_AREA is the area-averaging filter suited to downscaling
+# (no aliasing), and using one filter across every extraction path keeps k-means
+# candidate features comparable and their selections reproducible.
+RESIZE_INTERPOLATION = cv2.INTER_AREA
 
 
 @dataclass(frozen=True)
@@ -29,11 +33,11 @@ class VideoMetadata:
 
 
 class SupportsCapture(Protocol):
-    """The ``cv2.VideoCapture`` subset that :class:`MultiVideoReader` relies on.
+    """The ``cv2.VideoCapture`` subset that :class:`_ImgStoreMultiReader` relies on.
 
-    Both ``cv2.VideoCapture`` and
-    :class:`mosaic.core.media.imgstore_io.ImgStoreCapture` satisfy this structurally,
-    so the reader works over plain videos and imgstores alike.
+    :class:`mosaic.core.media.imgstore_io.ImgStoreCapture` satisfies this
+    structurally. Every segment :class:`_ImgStoreMultiReader` handles is
+    imgstore-backed, so it constructs an ``ImgStoreCapture`` directly.
     """
 
     def isOpened(self) -> bool: ...
@@ -44,10 +48,33 @@ class SupportsCapture(Protocol):
     def release(self) -> None: ...
 
 
-class FrameReader(Protocol):
-    """High-throughput sequential reader interface (FFmpeg- or imgstore-backed).
+class SupportsSeekRead(Protocol):
+    """The lean read/seek surface shared by VideoReader and ImgStoreCapture.
 
-    :class:`FFmpegFrameReader` and
+    Narrower than :class:`SupportsCapture`: an absolute-frame ``seek`` plus a
+    sequential ``read``, without the ``cv2`` CAP_PROP idiom. Both
+    :class:`mosaic_media.io.VideoReader` and
+    :class:`mosaic.core.media.imgstore_io.ImgStoreCapture` satisfy this
+    structurally.
+    """
+
+    @property
+    def width(self) -> int: ...
+    @property
+    def height(self) -> int: ...
+    @property
+    def fps(self) -> float: ...
+    @property
+    def frame_count(self) -> int: ...
+    def read(self) -> tuple[bool, np.ndarray | None]: ...
+    def seek(self, frame_index: int) -> None: ...
+    def close(self) -> None: ...
+
+
+class FrameReader(Protocol):
+    """High-throughput sequential reader interface (in-process- or imgstore-backed).
+
+    :class:`mosaic_media.io.VideoReader` and
     :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` both satisfy this.
     """
 
@@ -66,153 +93,56 @@ class FrameReader(Protocol):
     def __len__(self) -> int: ...
 
 
-def open_capture(path: Path | str) -> SupportsCapture:
-    """Open *path* as a capture: an imgstore adapter if it is a store, else cv2."""
-    from .imgstore_io import ImgStoreCapture, is_imgstore
-
-    if is_imgstore(path):
-        return ImgStoreCapture(path)
-    return cv2.VideoCapture(str(path))
+# Static check: VideoReader satisfies the lean seek/read surface structurally,
+# same as ImgStoreCapture (see the mirrored check in imgstore_io.py).
+_: type[SupportsSeekRead] = VideoReader
 
 
-def _ffprobe_fps(path: Path) -> float:
-    """Get fps from ffprobe via r_frame_rate (works for raw H.264 streams)."""
-    try:
-        proc = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=r_frame_rate",
-                "-of", "json",
-                str(path),
-            ],
-            capture_output=True, text=True, check=True,
-        )
-        data = json.loads(proc.stdout or "{}")
-        streams = data.get("streams") or []
-        if streams:
-            rate_str = streams[0].get("r_frame_rate", "")
-            if "/" in rate_str:
-                num, den = rate_str.split("/", 1)
-                den = float(den)
-                if den > 0:
-                    return float(num) / den
-            elif rate_str:
-                return float(rate_str)
-    except Exception as exc:
-        print(f"[WARN] ffprobe fps fallback failed for {path}: {exc}", file=sys.stderr)
-    return 0.0
+def facts_to_video_metadata(path: Path, facts: MediaFacts) -> VideoMetadata:
+    """Build display-oriented :class:`VideoMetadata` from media facts.
 
-
-def _count_frames_by_decoding(path: Path) -> int:
-    """Count frames by decoding the entire video (reliable for raw streams)."""
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        return 0
-    count = 0
-    try:
-        while True:
-            ok, _ = cap.read()
-            if not ok:
-                break
-            count += 1
-    finally:
-        cap.release()
-    return count
-
-
-_FFMPEG_OK: bool | None = None
-_NVDEC_OK: bool | None = None
-_NVENC_OK: bool | None = None
-
-
-def _ffmpeg_available() -> bool:
-    """Check if ffmpeg is available on PATH (cached)."""
-    global _FFMPEG_OK
-    if _FFMPEG_OK is None:
-        _FFMPEG_OK = shutil.which("ffmpeg") is not None
-    return _FFMPEG_OK
-
-
-def _nvdec_available() -> bool:
-    """Check if ffmpeg supports CUDA/NVDEC hardware acceleration (cached)."""
-    global _NVDEC_OK
-    if _NVDEC_OK is None:
-        if not _ffmpeg_available():
-            _NVDEC_OK = False
-        else:
-            try:
-                proc = subprocess.run(
-                    ["ffmpeg", "-hwaccels"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                _NVDEC_OK = "cuda" in proc.stdout.lower()
-            except Exception:
-                _NVDEC_OK = False
-    return _NVDEC_OK
-
-
-def _nvenc_available() -> bool:
-    """Check if ffmpeg supports NVENC (h264_nvenc) hardware encoding (cached)."""
-    global _NVENC_OK
-    if _NVENC_OK is None:
-        if not _ffmpeg_available():
-            _NVENC_OK = False
-        else:
-            try:
-                proc = subprocess.run(
-                    ["ffmpeg", "-encoders"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                _NVENC_OK = "h264_nvenc" in proc.stdout
-            except Exception:
-                _NVENC_OK = False
-    return _NVENC_OK
+    Swaps coded width/height on a quarter-turn rotation so the returned
+    dimensions are display-oriented. The single place this swap lives: both the
+    probe path (:func:`get_video_metadata`) and stored-facts callers (frame
+    extraction) build metadata through it, so they cannot drift.
+    """
+    if facts.rotation_degrees % 180 == 90:
+        width, height = facts.height, facts.width
+    else:
+        width, height = facts.width, facts.height
+    return VideoMetadata(
+        path=path,
+        width=width,
+        height=height,
+        fps=facts.fps,
+        frame_count=facts.frame_count,
+    )
 
 
 def get_video_metadata(video_path: Path | str) -> VideoMetadata:
     """Read basic metadata from a video file.
 
-    For containerless streams (e.g. raw .h264) where OpenCV cannot determine
-    fps or frame count from headers, falls back to ffprobe for fps and
-    decode-counting for frame count. imgstore directories are read via the
-    imgstore index (no cv2/ffprobe).
+    imgstore directories dispatch to the imgstore metadata reader (no
+    cv2/ffprobe). Everything else is probed via ``mosaic_media.probe_media``
+    and returns display-oriented width/height (coded dimensions swapped on a
+    quarter-turn rotation).
     """
     from .imgstore_io import imgstore_metadata, is_imgstore
 
     if is_imgstore(video_path):
-        # Resolve happens inside imgstore_metadata; a store is a directory and
-        # cannot be opened by cv2.VideoCapture, so dispatch before the cv2 open.
+        # Resolve happens inside imgstore_metadata; a store is a directory,
+        # read through the imgstore index rather than mosaic_media's
+        # ffprobe-based probe, so dispatch before that probe.
         return imgstore_metadata(video_path)
 
     path = Path(video_path).expanduser().resolve()
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {path}")
     try:
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    finally:
-        cap.release()
+        facts = probe_media(path)
+    except MediaProbeError as exc:
+        message = f"Failed to probe video: {path}"
+        raise MediaProbeError(message) from exc
 
-    # Detect bad metadata (containerless streams return 0 or garbage negatives)
-    needs_fallback = frame_count <= 0 or fps <= 0
-
-    if needs_fallback:
-        if fps <= 0:
-            fps = _ffprobe_fps(path)
-        if frame_count <= 0:
-            frame_count = _count_frames_by_decoding(path)
-
-    return VideoMetadata(
-        path=path,
-        width=width,
-        height=height,
-        fps=fps,
-        frame_count=frame_count,
-    )
+    return facts_to_video_metadata(path, facts)
 
 
 def normalize_frame_range(
@@ -276,17 +206,6 @@ def apply_crop(frame: np.ndarray, crop_rect: Optional[tuple[int, int, int, int]]
     return frame[y:y + h, x:x + w]
 
 
-def _has_container(cap: SupportsCapture) -> bool:
-    """Check if the video has a proper container with seekable metadata.
-
-    Raw elementary streams (e.g. .h264) report garbage or zero for
-    CAP_PROP_FRAME_COUNT. This is a reliable, non-destructive indicator.
-    imgstore captures report their true frame count, so they read as seekable.
-    """
-    raw_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    return 0 < raw_count < 1e12
-
-
 def extract_candidate_features(
     video_path: Path | str,
     start_frame: int,
@@ -296,53 +215,71 @@ def extract_candidate_features(
     grayscale: bool,
     crop_rect: Optional[tuple[int, int, int, int]],
     max_candidates: Optional[int] = None,
+    facts: MediaFacts | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Decode candidate frames and return:
       - candidate frame indices (N,)
       - flattened feature vectors (N, D)
+
+    When *facts* is supplied (a dataset-scoped caller holding the media index
+    row) the plain-video reader injects them instead of re-probing; a bare-path
+    caller passes ``None`` and the file is probed.
     """
+    from .imgstore_io import is_imgstore
+
     if candidate_step <= 0:
         raise ValueError("candidate_step must be > 0")
     if resize[0] <= 0 or resize[1] <= 0:
         raise ValueError("resize must be (width>0, height>0)")
 
-    cap = open_capture(Path(video_path).expanduser().resolve())
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-
+    resolved = Path(video_path).expanduser().resolve()
     indices: list[int] = []
     features: list[np.ndarray] = []
     max_n = None if max_candidates is None else max(1, int(max_candidates))
 
-    try:
-        seekable = _has_container(cap)
-        # For seekable videos, jump to start_frame; otherwise read sequentially
-        if seekable and int(start_frame) > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_frame))
-            frame_idx = int(start_frame)
-        else:
-            # Read sequentially from the beginning, skip frames before start
-            frame_idx = 0
+    def _accumulate(frame_idx: int, frame: np.ndarray) -> bool:
+        """Crop/resize/flatten one candidate frame; return True once max_n is hit."""
+        work = apply_crop(frame, crop_rect)
+        work = cv2.resize(work, resize, interpolation=RESIZE_INTERPOLATION)
+        if grayscale:
+            work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+        vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
+        indices.append(frame_idx)
+        features.append(vec)
+        return max_n is not None and len(indices) >= max_n
 
-        while frame_idx <= int(end_frame):
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                break
-            if frame_idx >= int(start_frame):
-                if (frame_idx - int(start_frame)) % int(candidate_step) == 0:
-                    work = apply_crop(frame, crop_rect)
-                    work = cv2.resize(work, resize, interpolation=cv2.INTER_AREA)
-                    if grayscale:
-                        work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-                    vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
-                    indices.append(frame_idx)
-                    features.append(vec)
-                    if max_n is not None and len(indices) >= max_n:
-                        break
-            frame_idx += 1
-    finally:
-        cap.release()
+    if is_imgstore(resolved):
+        # imgstore has no cv2/av-decodable container; route through the
+        # imgstore-native windowed reader instead of VideoReader. It has no
+        # decode-time resize/grayscale option, so crop/resize/grayscale are
+        # always applied afterward here (mirrors the plain-video path below).
+        reader = open_frame_reader(
+            resolved,
+            start_frame=int(start_frame),
+            end_frame=int(end_frame) + 1,
+            frame_step=int(candidate_step),
+        )
+        try:
+            for frame_idx, frame in reader:
+                if _accumulate(frame_idx, frame):
+                    break
+        finally:
+            reader.close()
+    else:
+        # Candidate features resize through cv2, not the reader's libswscale resize,
+        # so single-, multi-, crop-, and imgstore paths share one filter and produce
+        # comparable k-means features (RESIZE_INTERPOLATION, monkeypatchable).
+        with VideoReader(
+            resolved,
+            facts=facts if facts is not None else probe_media(resolved),
+            start_frame=int(start_frame),
+            end_frame=int(end_frame) + 1,
+            frame_step=int(candidate_step),
+        ) as reader:
+            for frame_idx, frame in reader:
+                if _accumulate(frame_idx, frame):
+                    break
 
     if not indices:
         raise RuntimeError("No candidate frames available in the requested range.")
@@ -355,71 +292,60 @@ def save_frames_as_png(
     frame_indices: np.ndarray,
     output_dir: Path | str,
     crop_rect: Optional[tuple[int, int, int, int]],
+    facts: MediaFacts | None = None,
 ) -> list[dict[str, Any]]:
     """Decode selected frames and save each as PNG.
 
-    For non-seekable streams (e.g. raw .h264), reads sequentially and
-    captures target frames as they are reached.
+    When *facts* is supplied (a dataset-scoped caller holding the media index
+    row) the plain-video reader injects them instead of re-probing; a bare-path
+    caller passes ``None`` and ``VideoReader`` probes the file as before.
     """
+    from .imgstore_io import ImgStoreCapture, is_imgstore
+
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cap = open_capture(Path(video_path).expanduser().resolve())
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-
+    resolved = Path(video_path).expanduser().resolve()
     target_indices = sorted(set(int(i) for i in frame_indices))
     records: list[dict[str, Any]] = []
+    if not target_indices:
+        return records
 
-    try:
-        seekable = _has_container(cap)
+    def _write(frame_idx: int, frame: np.ndarray) -> None:
+        frame = apply_crop(frame, crop_rect)
+        out_name = f"frame_{frame_idx:06d}.png"
+        out_path = out_dir / out_name
+        ok_write = cv2.imwrite(str(out_path), frame)
+        if not ok_write:
+            raise RuntimeError(f"Failed to write PNG frame: {out_path}")
+        h, w = frame.shape[:2]
+        records.append({
+            "frame_index": frame_idx,
+            "path": out_name,
+            "width": int(w),
+            "height": int(h),
+        })
 
-        if seekable:
-            # Original seek-based approach
+    if is_imgstore(resolved):
+        # imgstore is always randomly addressable by frame_index, so a plain
+        # seek-then-read per target mirrors the old seekable branch exactly.
+        capture: SupportsSeekRead = ImgStoreCapture(resolved)
+        try:
             for frame_idx in target_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ok, frame = cap.read()
+                capture.seek(frame_idx)
+                ok, frame = capture.read()
                 if not ok or frame is None:
-                    raise RuntimeError(f"Failed to decode frame {frame_idx} from {video_path}")
-                frame = apply_crop(frame, crop_rect)
-                out_name = f"frame_{frame_idx:06d}.png"
-                out_path = out_dir / out_name
-                ok_write = cv2.imwrite(str(out_path), frame)
-                if not ok_write:
-                    raise RuntimeError(f"Failed to write PNG frame: {out_path}")
-                h, w = frame.shape[:2]
-                records.append({
-                    "frame_index": frame_idx,
-                    "path": out_name,
-                    "width": int(w),
-                    "height": int(h),
-                })
-        else:
-            # Sequential read for non-seekable streams
-            target_set = set(target_indices)
-            max_target = target_indices[-1]
-            frame_idx = 0
-            while frame_idx <= max_target:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    break
-                if frame_idx in target_set:
-                    frame = apply_crop(frame, crop_rect)
-                    out_name = f"frame_{frame_idx:06d}.png"
-                    out_path = out_dir / out_name
-                    ok_write = cv2.imwrite(str(out_path), frame)
-                    if not ok_write:
-                        raise RuntimeError(f"Failed to write PNG frame: {out_path}")
-                    h, w = frame.shape[:2]
-                    records.append({
-                        "frame_index": frame_idx,
-                        "path": out_name,
-                        "width": int(w),
-                        "height": int(h),
-                    })
-                frame_idx += 1
-    finally:
-        cap.release()
+                    message = f"Failed to decode frame {frame_idx} from {video_path}"
+                    raise MediaProbeError(message)
+                _write(frame_idx, frame)
+        finally:
+            capture.close()
+    else:
+        # read_frames groups targets by GOP and seeks/decodes in one pass,
+        # regardless of whether the container is seekable metadata-wise.
+        with VideoReader(resolved, facts=facts) as reader:
+            for frame_idx, frame in reader.read_frames(target_indices):
+                _write(frame_idx, frame)
 
     # Restore original order from frame_indices
     record_map = {r["frame_index"]: r for r in records}
@@ -428,7 +354,7 @@ def save_frames_as_png(
     return records
 
 
-# ─── Multi-video support ───
+# --- Multi-video support ---
 
 
 @dataclass(frozen=True)
@@ -441,28 +367,29 @@ class VideoSegment:
     width: int
     height: int
     start_frame: int  # global frame index where this segment starts
-    seekable: bool  # True if container-based (not raw H.264)
 
 
-class MultiVideoReader:
-    """Unified read interface across N ordered video files.
+class _ImgStoreMultiReader:
+    """Unified read interface across N ordered imgstore sequences.
 
-    Provides a single virtual frame index space across N video files.
-    Video 0 has frames [0, N0), video 1 has frames [N0, N0+N1), etc.
+    Provides a single virtual frame index space across N imgstore
+    directories. Store 0 has frames [0, N0), store 1 has frames
+    [N0, N0+N1), etc. Every segment is imgstore-backed and therefore
+    always randomly addressable by frame index.
 
-    For single-video sequences, accepts a single Path and works as a
+    For single-store sequences, accepts a single Path and works as a
     thin wrapper with minimal overhead.
 
     Parameters
     ----------
     video_paths : list[Path] | Path | str
-        One or more video file paths, in playback order.
+        One or more imgstore directory paths, in playback order.
     """
 
     def __init__(self, video_paths: list[Path] | Path | str):
         # Set _closed early so __del__ is safe if __init__ fails partway
         self._closed: bool = False
-        self._current_cap: Optional[SupportsCapture] = None
+        self._current_cap: Optional[SupportsSeekRead] = None
 
         if isinstance(video_paths, (str, Path)):
             video_paths = [Path(video_paths)]
@@ -480,20 +407,11 @@ class MultiVideoReader:
         self._global_frame: int = 0
 
     def _build_segments(self, paths: list[Path]) -> None:
-        from .imgstore_io import is_imgstore
-
         cumulative = 0
         for p in paths:
             meta = get_video_metadata(p)
-            if is_imgstore(p):
-                # imgstores support random access by frame_index; a store is a
-                # directory and cannot be probed via cv2.VideoCapture.
-                seekable = True
-            else:
-                # Check seekability without keeping the capture open
-                cap = cv2.VideoCapture(str(meta.path))
-                seekable = _has_container(cap) if cap.isOpened() else False
-                cap.release()
+            # Every segment is imgstore-backed: stores support random access
+            # by frame_index and are always seekable.
             seg = VideoSegment(
                 path=meta.path,
                 frame_count=meta.frame_count,
@@ -501,7 +419,6 @@ class MultiVideoReader:
                 width=meta.width,
                 height=meta.height,
                 start_frame=cumulative,
-                seekable=seekable,
             )
             self._segments.append(seg)
             self._seg_starts.append(cumulative)
@@ -515,15 +432,16 @@ class MultiVideoReader:
                 "All videos must have the same resolution."
             )
 
-        # Warn on fps mismatch
-        fps_vals = {round(s.fps, 4) for s in self._segments}
+        # Property mismatch (fps) raises the same way the plain multi-video
+        # reader does (mosaic_media.io.multi.uniform_properties), so callers
+        # see one consistent failure mode across both backends instead of a
+        # silent fall-back to the first video's rate.
+        fps_vals = sorted({round(s.fps, 4) for s in self._segments})
         if len(fps_vals) > 1:
-            warnings.warn(
-                f"FPS mismatch across videos in sequence: {fps_vals}. "
-                f"Using first video's fps ({self._segments[0].fps})."
-            )
+            message = f"property mismatch across sequence: fps {fps_vals[0]} vs {fps_vals[1]}"
+            raise ValueError(message)
 
-    # ── Properties ──
+    # -- Properties --
 
     @property
     def total_frames(self) -> int:
@@ -553,7 +471,7 @@ class MultiVideoReader:
     def frame_position(self) -> int:
         return self._global_frame
 
-    # ── Frame-to-segment mapping ──
+    # -- Frame-to-segment mapping --
 
     def segment_for_frame(self, global_frame: int) -> tuple[int, int]:
         """Return (segment_index, local_frame) for a global frame index."""
@@ -566,28 +484,38 @@ class MultiVideoReader:
         local = global_frame - self._seg_starts[idx]
         return idx, local
 
-    # ── Open / close helpers ──
+    # -- Open / close helpers --
 
     def _open_segment(self, seg_idx: int) -> None:
+        from .imgstore_io import ImgStoreCapture  # local: breaks the video_io <-> imgstore_io cycle
+
         if self._current_cap is not None:
-            self._current_cap.release()
+            self._current_cap.close()
         seg = self._segments[seg_idx]
-        self._current_cap = open_capture(seg.path)
-        if not self._current_cap.isOpened():
-            raise RuntimeError(f"Failed to open video: {seg.path}")
+        self._current_cap = ImgStoreCapture(seg.path)
         self._current_seg_idx = seg_idx
         self._current_local_frame = 0
 
-    # ── Seeking ──
+    def _ensure_open(self) -> SupportsSeekRead:
+        """Return the current segment's capture, opening segment 0 lazily if needed."""
+        if self._current_cap is None:
+            self._open_segment(self._current_seg_idx)
+        cap = self._current_cap
+        if cap is None:
+            # _open_segment always assigns _current_cap; unreachable in practice.
+            message = "imgstore multi-reader failed to open a segment"
+            raise MediaProbeError(message)
+        return cap
+
+    # -- Seeking --
 
     def seek(self, global_frame: int) -> None:
         """Seek to a global frame position.
 
-        For seekable videos, uses CAP_PROP_POS_FRAMES. For non-seekable
-        streams (raw H.264), reopens the segment and skips sequentially.
+        Every segment is imgstore-backed and therefore always randomly
+        addressable by frame_index.
         """
         seg_idx, local_frame = self.segment_for_frame(global_frame)
-        seg = self._segments[seg_idx]
 
         need_reopen = (
             self._current_cap is None
@@ -600,22 +528,13 @@ class MultiVideoReader:
         if need_reopen and local_frame == 0:
             # Freshly opened segment is already positioned at its first frame.
             pass
-        elif seg.seekable:
-            self._current_cap.set(cv2.CAP_PROP_POS_FRAMES, local_frame)
-            self._current_local_frame = local_frame
         else:
-            # Non-seekable: may need to reopen and skip forward
-            if local_frame < self._current_local_frame:
-                self._open_segment(seg_idx)
-            while self._current_local_frame < local_frame:
-                ok, _ = self._current_cap.read()
-                if not ok:
-                    break
-                self._current_local_frame += 1
+            self._ensure_open().seek(local_frame)
+            self._current_local_frame = local_frame
 
         self._global_frame = global_frame
 
-    # ── Reading ──
+    # -- Reading --
 
     def read(self) -> tuple[bool, Optional[np.ndarray]]:
         """Read the next frame, automatically transitioning between videos.
@@ -627,17 +546,14 @@ class MultiVideoReader:
         if self._global_frame >= self.total_frames:
             return False, None
 
-        if self._current_cap is None:
-            self._open_segment(self._current_seg_idx)
-
-        ok, frame = self._current_cap.read()
+        ok, frame = self._ensure_open().read()
         if not ok:
-            # Current segment exhausted — try next
+            # Current segment exhausted -- try next
             next_idx = self._current_seg_idx + 1
             if next_idx >= len(self._segments):
                 return False, None
             self._open_segment(next_idx)
-            ok, frame = self._current_cap.read()
+            ok, frame = self._ensure_open().read()
             if not ok:
                 return False, None
 
@@ -645,12 +561,12 @@ class MultiVideoReader:
         self._current_local_frame += 1
         return True, frame
 
-    # ── Cleanup ──
+    # -- Cleanup --
 
     def close(self) -> None:
         if not self._closed:
             if self._current_cap is not None:
-                self._current_cap.release()
+                self._current_cap.close()
                 self._current_cap = None
             self._closed = True
 
@@ -667,237 +583,42 @@ class MultiVideoReader:
         return self.total_frames
 
 
-class FFmpegFrameReader:
-    """Sequential frame reader using ffmpeg subprocess pipe.
+# Annotation alias for either multi-video backend; both expose
+# seek/read/total_frames/width/height/fps.
+type MultiVideoReaderLike = _ImgStoreMultiReader | _PlainMultiReader
 
-    Spawns an ffmpeg process that decodes video and pipes raw BGR frames
-    to stdout. Supports decode-time resize, frame stepping, and optional
-    NVDEC hardware acceleration.
 
-    This reader is optimised for high-throughput sequential access (e.g.
-    batched inference). It does **not** support random seeking — frame
-    selection is handled by ffmpeg's ``select`` filter at spawn time.
+def open_multi_video_reader(
+    video_paths: list[Path] | Path | str,
+    *,
+    facts: Sequence[MediaFacts] | None = None,
+    indices: Sequence[SeekIndex] | None = None,
+) -> "MultiVideoReaderLike":
+    """Dispatch a sequence of video paths to the matching multi-file reader.
 
-    Parameters
-    ----------
-    video_path : path
-        Path to input video file.
-    start_frame : int
-        First frame to output (0-based).
-    end_frame : int, optional
-        Stop before this frame (exclusive). ``None`` = to end of video.
-    frame_step : int
-        Output every Nth frame (relative to *start_frame*).
-    resize : (width, height), optional
-        Resize frames during decode. ``None`` = original resolution.
-    hwaccel : bool
-        Attempt NVDEC hardware decoding if available.
+    An all-imgstore sequence routes to :class:`_ImgStoreMultiReader`; an
+    all-plain-video sequence routes to the ``mosaic_media`` reader. Mixing
+    imgstore directories and plain video files within one sequence is not
+    supported.
     """
+    from .imgstore_io import is_imgstore  # local: breaks the video_io <-> imgstore_io cycle
 
-    def __init__(
-        self,
-        video_path: Path | str,
-        start_frame: int = 0,
-        end_frame: int | None = None,
-        frame_step: int = 1,
-        resize: tuple[int, int] | None = None,
-        hwaccel: bool = False,
-    ):
-        if not _ffmpeg_available():
-            raise RuntimeError(
-                "ffmpeg not found on PATH. Install ffmpeg or use OpenCV fallback."
-            )
+    paths = (
+        [Path(video_paths)]
+        if isinstance(video_paths, (str, Path))
+        else [Path(p) for p in video_paths]
+    )
+    stores = [is_imgstore(p) for p in paths]
+    if any(stores) and not all(stores):
+        raise ValueError("mixed video-plus-imgstore sequences are not supported")
+    if all(stores):
+        return _ImgStoreMultiReader(paths)
+    return _PlainMultiReader(paths, facts=facts, indices=indices)
 
-        self._path = Path(video_path).expanduser().resolve()
-        meta = get_video_metadata(self._path)
-        self._source_width = meta.width
-        self._source_height = meta.height
-        self._fps = meta.fps
-        self._source_frame_count = meta.frame_count
 
-        self._start_frame = max(0, int(start_frame))
-        self._end_frame = (
-            min(int(end_frame), self._source_frame_count)
-            if end_frame is not None
-            else self._source_frame_count
-        )
-        self._frame_step = max(1, int(frame_step))
-
-        if resize is not None:
-            self._width, self._height = int(resize[0]), int(resize[1])
-        else:
-            self._width, self._height = self._source_width, self._source_height
-
-        self._hwaccel = hwaccel and _nvdec_available()
-        self._frame_nbytes = self._width * self._height * 3
-        self._proc: subprocess.Popen | None = None
-        self._closed = False
-
-        # Precompute the frame indices we will output
-        self._output_indices = list(
-            range(self._start_frame, self._end_frame, self._frame_step)
-        )
-        self._output_pos = 0  # index into _output_indices
-
-    # ── Properties ──
-
-    @property
-    def width(self) -> int:
-        return self._width
-
-    @property
-    def height(self) -> int:
-        return self._height
-
-    @property
-    def fps(self) -> float:
-        return self._fps
-
-    @property
-    def frame_count(self) -> int:
-        """Number of frames this reader will output."""
-        return len(self._output_indices)
-
-    # ── FFmpeg command ──
-
-    def _build_cmd(self) -> list[str]:
-        cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-
-        if self._hwaccel:
-            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-
-        cmd.extend(["-i", str(self._path)])
-
-        # Build video filter chain
-        filters: list[str] = []
-
-        # Frame selection filter — always needed unless reading all frames
-        need_select = (
-            self._start_frame > 0
-            or self._end_frame < self._source_frame_count
-            or self._frame_step > 1
-        )
-        if need_select:
-            parts: list[str] = []
-            if self._start_frame > 0:
-                parts.append(f"gte(n\\,{self._start_frame})")
-            if self._end_frame < self._source_frame_count:
-                parts.append(f"lt(n\\,{self._end_frame})")
-            if self._frame_step > 1:
-                parts.append(
-                    f"not(mod(n-{self._start_frame}\\,{self._frame_step}))"
-                )
-            expr = "*".join(parts)
-            filters.append(f"select='{expr}'")
-
-        # Resize filter
-        if (self._width, self._height) != (self._source_width, self._source_height):
-            scale_name = "scale_cuda" if self._hwaccel else "scale"
-            filters.append(f"{scale_name}={self._width}:{self._height}")
-
-        if filters:
-            cmd.extend(["-vf", ",".join(filters)])
-
-        cmd.extend(["-vsync", "drop", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"])
-        return cmd
-
-    # ── Start / stop ──
-
-    def _ensure_started(self) -> None:
-        if self._proc is None and not self._closed:
-            cmd = self._build_cmd()
-            self._proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-
-    # ── Reading ──
-
-    def read(self) -> tuple[bool, np.ndarray | None]:
-        """Read the next frame.
-
-        Returns ``(True, frame)`` or ``(False, None)`` at EOF.
-        Frame is BGR uint8 with shape ``(height, width, 3)``.
-        """
-        if self._closed or self._output_pos >= len(self._output_indices):
-            return False, None
-
-        self._ensure_started()
-        assert self._proc is not None and self._proc.stdout is not None
-
-        raw = self._proc.stdout.read(self._frame_nbytes)
-        if len(raw) < self._frame_nbytes:
-            return False, None
-
-        frame = np.frombuffer(raw, dtype=np.uint8).reshape(
-            self._height, self._width, 3
-        )
-        self._output_pos += 1
-        return True, frame
-
-    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
-        """Read up to *batch_size* frames.
-
-        Returns
-        -------
-        indices : ndarray, shape (N,)
-            Global frame indices for each frame in the batch.
-        frames : ndarray, shape (N, H, W, 3)
-            BGR uint8 frames.  ``N`` may be less than *batch_size* at EOF.
-        """
-        indices: list[int] = []
-        frames: list[np.ndarray] = []
-        for _ in range(batch_size):
-            ok, frame = self.read()
-            if not ok:
-                break
-            idx = self._output_indices[self._output_pos - 1]
-            indices.append(idx)
-            frames.append(frame)
-
-        if not frames:
-            return np.array([], dtype=np.int64), np.empty(
-                (0, self._height, self._width, 3), dtype=np.uint8
-            )
-        return np.array(indices, dtype=np.int64), np.stack(frames)
-
-    def __iter__(self) -> Iterator[tuple[int, np.ndarray]]:
-        """Yield ``(frame_index, frame)`` tuples."""
-        while True:
-            ok, frame = self.read()
-            if not ok:
-                break
-            idx = self._output_indices[self._output_pos - 1]
-            yield idx, frame
-
-    # ── Cleanup ──
-
-    def close(self) -> None:
-        """Kill the ffmpeg subprocess and close pipes."""
-        if not self._closed:
-            self._closed = True
-            if self._proc is not None:
-                try:
-                    if self._proc.stdout:
-                        self._proc.stdout.close()
-                    self._proc.kill()
-                    self._proc.wait(timeout=5)
-                except Exception:
-                    pass
-                self._proc = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
-    def __del__(self):
-        self.close()
-
-    def __len__(self) -> int:
-        return self.frame_count
+# The public name callers use for construction stays a callable with the same
+# call shape; existing `MultiVideoReader(paths)` sites are unaffected.
+MultiVideoReader = open_multi_video_reader
 
 
 def open_frame_reader(
@@ -907,12 +628,17 @@ def open_frame_reader(
     frame_step: int = 1,
     resize: tuple[int, int] | None = None,
     hwaccel: bool = False,
+    facts: MediaFacts | None = None,
 ) -> FrameReader:
     """Open a high-throughput sequential reader, dispatching on the path type.
 
     Returns an :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` for imgstore
-    directories, otherwise an :class:`FFmpegFrameReader`. Both satisfy
+    directories, otherwise a :class:`mosaic_media.io.VideoReader`. Both satisfy
     :class:`FrameReader`, so callers (e.g. tracking inference) are unchanged.
+
+    When *facts* is supplied (a dataset-scoped caller holding the media index
+    row) the plain-video reader injects them instead of re-probing; a bare-path
+    caller passes ``None`` and the file is probed.
     """
     from .imgstore_io import ImgStoreFrameReader, is_imgstore
 
@@ -925,22 +651,28 @@ def open_frame_reader(
             resize=resize,
             hwaccel=hwaccel,
         )
-    return FFmpegFrameReader(
+    return VideoReader(
         video_path,
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
         resize=resize,
         hwaccel=hwaccel,
+        facts=facts if facts is not None else probe_media(Path(video_path)),
     )
 
 
-def _prefetch_batches(
+def prefetch_batches(
     reader: FrameReader,
     queue: Any,
     batch_size: int,
 ) -> None:
-    """Worker function for prefetch thread. Reads batches and puts them on queue."""
+    """Worker function for a prefetch thread: reads batches and puts them on a queue.
+
+    Public because batched inference callers (e.g.
+    :mod:`mosaic.tracking.pose_training.inference`) run it in a background
+    thread to overlap decode with model inference.
+    """
     try:
         while True:
             indices, batch = reader.read_batch(batch_size)
@@ -951,167 +683,11 @@ def _prefetch_batches(
         queue.put(None)  # sentinel
 
 
-# ─── FFmpeg-based video writer ───
-
-
-class FFmpegVideoWriter:
-    """Write BGR frames to an H.264 MP4 file via an ffmpeg subprocess pipe.
-
-    This is the write counterpart to :class:`FFmpegFrameReader`.  Frames are
-    piped as raw BGR24 to ffmpeg's stdin, which encodes them with libx264
-    (or h264_nvenc when *hwaccel=True* and hardware encoding is available).
-
-    Parameters
-    ----------
-    output_path : Path or str
-        Destination MP4 file.  Parent directory is created if needed.
-    width, height : int
-        Frame dimensions (must match every frame passed to :meth:`write`).
-    fps : float
-        Output frame rate.
-    crf : int
-        Constant Rate Factor for libx264 (0–51, lower = higher quality).
-        Ignored when NVENC is used (replaced by ``-cq``).
-    preset : str
-        Encoding speed/quality preset (e.g. ``"ultrafast"``, ``"medium"``).
-    hwaccel : bool
-        If *True* **and** ``h264_nvenc`` is available, use GPU encoding.
-
-    Raises
-    ------
-    RuntimeError
-        If ffmpeg is not found on ``PATH``.
-
-    Examples
-    --------
-    >>> with FFmpegVideoWriter("out.mp4", 640, 480, fps=30) as writer:
-    ...     for frame in frames:
-    ...         writer.write(frame)
-    """
-
-    def __init__(
-        self,
-        output_path: Path | str,
-        width: int,
-        height: int,
-        fps: float = 30.0,
-        crf: int = 23,
-        preset: str = "medium",
-        hwaccel: bool = False,
-    ) -> None:
-        if not _ffmpeg_available():
-            raise RuntimeError(
-                "ffmpeg not found on PATH; install ffmpeg to use FFmpegVideoWriter"
-            )
-
-        self._output_path = Path(output_path).expanduser().resolve()
-        self._output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._width = width
-        self._height = height
-        self._fps = fps
-        self._closed = False
-        self._frames_written = 0
-
-        use_nvenc = hwaccel and _nvenc_available()
-
-        cmd: list[str] = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{width}x{height}",
-            "-r", str(fps),
-            "-i", "pipe:0",
-        ]
-
-        if use_nvenc:
-            cmd += ["-c:v", "h264_nvenc", "-preset", preset, "-cq", str(crf)]
-        else:
-            cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]
-
-        cmd += ["-pix_fmt", "yuv420p", str(self._output_path)]
-
-        self._proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    # ── Properties ──
-
-    @property
-    def output_path(self) -> Path:
-        return self._output_path
-
-    @property
-    def width(self) -> int:
-        return self._width
-
-    @property
-    def height(self) -> int:
-        return self._height
-
-    @property
-    def fps(self) -> float:
-        return self._fps
-
-    @property
-    def frames_written(self) -> int:
-        return self._frames_written
-
-    # ── Writing ──
-
-    def write(self, frame: np.ndarray) -> None:
-        """Write a single BGR uint8 frame.
-
-        Parameters
-        ----------
-        frame : ndarray, shape (H, W, 3), dtype uint8
-            BGR frame matching the writer's width and height.
-        """
-        if self._closed:
-            raise RuntimeError("Writer is closed")
-        if self._proc is None or self._proc.stdin is None:
-            raise RuntimeError("ffmpeg process is not running")
-        self._proc.stdin.write(frame.tobytes())
-        self._frames_written += 1
-
-    # ── Cleanup ──
-
-    def close(self) -> None:
-        """Flush and close the ffmpeg encoder."""
-        if not self._closed:
-            self._closed = True
-            if self._proc is not None:
-                try:
-                    if self._proc.stdin:
-                        self._proc.stdin.close()
-                    self._proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
-                    self._proc.wait(timeout=5)
-                except Exception:
-                    try:
-                        self._proc.kill()
-                    except Exception:
-                        pass
-                self._proc = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
-    def __del__(self):
-        self.close()
-
-
-# ─── Multi-video extraction helpers ───
+# --- Multi-video extraction helpers ---
 
 
 def extract_candidate_features_multi(
-    reader: MultiVideoReader,
+    reader: "MultiVideoReaderLike",
     start_frame: int,
     end_frame: int,
     candidate_step: int,
@@ -1143,7 +719,7 @@ def extract_candidate_features_multi(
             break
         if (frame_idx - start_frame) % candidate_step == 0:
             work = apply_crop(frame, crop_rect)
-            work = cv2.resize(work, resize, interpolation=cv2.INTER_AREA)
+            work = cv2.resize(work, resize, interpolation=RESIZE_INTERPOLATION)
             if grayscale:
                 work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
             vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
@@ -1160,15 +736,15 @@ def extract_candidate_features_multi(
 
 
 def save_frames_as_png_multi(
-    reader: MultiVideoReader,
+    reader: "MultiVideoReaderLike",
     frame_indices: np.ndarray,
     output_dir: Path | str,
     crop_rect: Optional[tuple[int, int, int, int]],
 ) -> list[dict[str, Any]]:
-    """Save selected frames from a MultiVideoReader as PNG files.
+    """Save selected frames from a multi-video reader as PNG files.
 
-    For seekable sequences, seeks to each frame. For non-seekable,
-    reads sequentially and captures target frames.
+    Every backend (imgstore or plain video) seeks directly to each target
+    frame; the reader owns any GOP-aware seek strategy internally.
     """
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1176,55 +752,25 @@ def save_frames_as_png_multi(
     target_indices = sorted(set(int(i) for i in frame_indices))
     records: list[dict[str, Any]] = []
 
-    # Check if all segments are seekable
-    all_seekable = all(s.seekable for s in reader.segments)
-
-    if all_seekable:
-        for frame_idx in target_indices:
-            reader.seek(frame_idx)
-            ok, frame = reader.read()
-            if not ok:
-                raise RuntimeError(
-                    f"Failed to decode global frame {frame_idx}"
-                )
-            frame = apply_crop(frame, crop_rect)
-            out_name = f"frame_{frame_idx:06d}.png"
-            out_path = out_dir / out_name
-            ok_write = cv2.imwrite(str(out_path), frame)
-            if not ok_write:
-                raise RuntimeError(f"Failed to write PNG frame: {out_path}")
-            h, w = frame.shape[:2]
-            records.append({
-                "frame_index": frame_idx,
-                "path": out_name,
-                "width": int(w),
-                "height": int(h),
-            })
-    else:
-        # Sequential read through all segments
-        target_set = set(target_indices)
-        max_target = target_indices[-1]
-        reader.seek(0)
-        frame_idx = 0
-        while frame_idx <= max_target:
-            ok, frame = reader.read()
-            if not ok:
-                break
-            if frame_idx in target_set:
-                frame = apply_crop(frame, crop_rect)
-                out_name = f"frame_{frame_idx:06d}.png"
-                out_path = out_dir / out_name
-                ok_write = cv2.imwrite(str(out_path), frame)
-                if not ok_write:
-                    raise RuntimeError(f"Failed to write PNG frame: {out_path}")
-                h, w = frame.shape[:2]
-                records.append({
-                    "frame_index": frame_idx,
-                    "path": out_name,
-                    "width": int(w),
-                    "height": int(h),
-                })
-            frame_idx += 1
+    for frame_idx in target_indices:
+        reader.seek(frame_idx)
+        ok, frame = reader.read()
+        if not ok:
+            message = f"Failed to decode global frame {frame_idx}"
+            raise MediaProbeError(message)
+        frame = apply_crop(frame, crop_rect)
+        out_name = f"frame_{frame_idx:06d}.png"
+        out_path = out_dir / out_name
+        ok_write = cv2.imwrite(str(out_path), frame)
+        if not ok_write:
+            raise RuntimeError(f"Failed to write PNG frame: {out_path}")
+        h, w = frame.shape[:2]
+        records.append({
+            "frame_index": frame_idx,
+            "path": out_name,
+            "width": int(w),
+            "height": int(h),
+        })
 
     # Restore original order from frame_indices
     record_map = {r["frame_index"]: r for r in records}
