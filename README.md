@@ -38,7 +38,11 @@ conda install -c conda-forge ffmpeg -y
 pip install -e ".[recommended]"
 ```
 
-`ffmpeg` provides `ffprobe`, used by media indexing and raw H.264 support.
+Frame decoding runs in-process via the `av` wheel (installed with
+`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
+`ffprobe` is still used for media indexing and probing (`mosaic_media.probe_media`),
+and system `ffmpeg` >= 5.1 is required for the transcode path (`mosaic media
+transcode`). Installing `ffmpeg` via conda covers both.
 
 The `recommended` extra bundles wavelets, YOLO pose training/inference, and the
 PyTorch localizer. For lighter or alternative installs, select extras
@@ -106,7 +110,7 @@ Each feature run is tagged with a `run_id` of the form
 
 ```
 video files
-   ├─ index_media()                    → media/index.csv   (ffprobe metadata)
+   ├─ index_media()                    → media/index.csv   (probed via mosaic_media/ffprobe)
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels

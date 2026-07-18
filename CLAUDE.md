@@ -212,8 +212,10 @@ src/mosaic/
 │   │   ├── writers.py          # parquet output writing, overlap trimming
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
 │   ├── media/                  # foundational media I/O (read/decode/encode frames)
-│   │   ├── video_io.py         # video I/O, raw H.264 fallback, ffmpeg hw accel
-│   │   └── imgstore_io.py      # native imgstore (Motif / Loopbio) support
+│   │   ├── video_io.py         # media I/O facade: libav reader/writer + dispatchers (mosaic-media)
+│   │   ├── imgstore_io.py      # imgstore (Motif / Loopbio) dispatch + capture adapter
+│   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
+│   │   └── _facts_columns.py   # MediaFacts / verdict <-> media-index row mapping
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
@@ -295,18 +297,23 @@ entry — `index_media()` discovers stores natively (one entry per store,
 transparently:
 
 - All frame-consuming features route through `MultiVideoReader`, which opens a
-  store via `ImgStoreCapture` (a `cv2.VideoCapture`-compatible adapter) — so
-  `egocentric-crop`, `interaction-crop-pipeline`, playback, and tracking's
-  `extract_frames` work unchanged.
-- Tracking inference uses `open_frame_reader()` (returns `ImgStoreFrameReader`
-  for stores, else `FFmpegFrameReader`) and `open_capture()` for the OpenCV
-  fallback — both in
+  store via `ImgStoreCapture` (a seek/read capture adapter) — so `egocentric-crop`,
+  `interaction-crop-pipeline`, playback, and tracking's `extract_frames` work
+  unchanged.
+- Tracking inference uses `open_frame_reader()`: `ImgStoreFrameReader` for stores,
+  else the in-process libav `VideoReader` for plain files — both in
   [`core/media/imgstore_io.py`](src/mosaic/core/media/imgstore_io.py) /
   [`core/media/video_io.py`](src/mosaic/core/media/video_io.py).
+- Native decode: video-codec chunks (`.mp4` / h264) decode through the same
+  `VideoReader`, raw-pixel chunks (`npy` / `npz`) load via numpy, and Bayer/YUV
+  chunks convert through a local color map
+  ([`core/media/imgstore_native.py`](src/mosaic/core/media/imgstore_native.py)),
+  so the `imgstore` package leaves the read path.
 - Frame addressing: the track-table `frame` column is the 0-based contiguous
   video frame index, which maps to imgstore's `frame_index` (**not** the
-  camera-provided `frame_number`). Detection (`is_imgstore`) is import-free; the
-  `imgstore` package is only needed to actually read a store (`[imgstore]` extra).
+  camera-provided `frame_number`). Detection (`is_imgstore`) is import-free;
+  reading a store no longer needs the `imgstore` package (native decode), so
+  `[imgstore]` is only for writing stores, as the test fixtures do.
 
 ### Params are Pydantic
 
@@ -365,12 +372,12 @@ for path expectations before running.
    *adds* the `locate` (point-detection) task. The trade-off is update
    cadence: `[pose]` tracks upstream releases; `[polo]` is pinned to a fork
    that updates less often. Prefer `[pose]` unless you need point detection.
-2. **Raw `.h264` files (Raspberry Pi)** have no container. OpenCV's
-   `CAP_PROP_FRAME_COUNT` and `CAP_PROP_FPS` return garbage; random seeking
-   silently corrupts the decoder. Always go through
-   [`core/media/video_io.py`](src/mosaic/core/media/video_io.py) (`_has_container`,
-   `_ffprobe_fps`, `_count_frames_by_decoding`) — don't open raw streams with
-   `cv2.VideoCapture` directly.
+2. **Raw `.h264` files (Raspberry Pi)** have no container, so header metadata is
+   unreliable and seeking the bare stream corrupts the decoder. Read them through
+   [`core/media/video_io.py`](src/mosaic/core/media/video_io.py): the packet-scan
+   probe (`probe_media`) measures the true frame count and fps, and the in-process
+   `VideoReader` decodes sequentially with those facts injected. Don't open a raw
+   stream directly.
 3. **`ffmpeg` / `ffprobe` must be on `PATH`** — install via
    `conda install -c conda-forge ffmpeg`. Many failures in `index_media()`
    trace back to a missing `ffprobe`.

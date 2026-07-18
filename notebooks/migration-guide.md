@@ -333,7 +333,7 @@ Dataset directories are now split into **raw** (external, immutable) and
 ### Backward compatibility
 
 **Old datasets work unchanged.** If `media_raw` is not set in your `dataset.yaml`,
-`index_media()` and `resolve_media_paths()` fall back to `media/`. You can check
+`index_media()` and `resolve_media()` fall back to `media/`. You can check
 with `ds.has_root("media_raw")`.
 
 If your `dataset.yaml` says `"frames": "frames"`, that still resolves correctly.

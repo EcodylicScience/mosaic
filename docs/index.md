@@ -41,7 +41,7 @@ Data flows through the `Dataset` orchestrator (everything is versioned by `run_i
 ```
 video files
    │
-   ├─ index_media()                       → media/index.csv  (ffprobe metadata)
+   ├─ index_media()                       → media/index.csv  (probed via mosaic_media/ffprobe)
    ├─ tracking.extract_frames(ds, …)      → media/frames/    (uniform or k-means sampled PNGs)
    │
 raw tracks/labels
@@ -112,6 +112,11 @@ conda activate mosaic
 conda install -c conda-forge ffmpeg -y
 pip install -e ".[recommended]"
 ```
+
+Frame decoding runs in-process via the `av` wheel (installed with
+`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
+`ffprobe` is still used for media indexing and probing, and system `ffmpeg`
+>= 5.1 is required for transcoding. Installing `ffmpeg` via conda covers both.
 
 The `recommended` bundle covers the typical research workflow (wavelets +
 YOLO pose + PyTorch localizer). See the [project

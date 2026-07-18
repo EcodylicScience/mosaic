@@ -25,6 +25,7 @@ from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
 from mosaic.cli.tracking import tracking_app
 from mosaic.cli.trex import trex_command
+from mosaic_media.cli import media_app
 
 app = typer.Typer(
     name="mosaic",
@@ -43,6 +44,7 @@ _ = app.command(name="trex")(trex_command)
 # Discover.
 app.add_typer(features_app, name="features")
 app.add_typer(tracking_app, name="tracking")
+app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
 
 # Dataset prep.

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from mosaic_media import VIDEO_EXTENSIONS
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, stdout_to_stderr
@@ -23,8 +24,12 @@ def index_media_command(
         typer.Option("--search-dir", help="Directory to scan for media (repeatable)."),
     ],
     extensions: Annotated[
-        str, typer.Option("--extensions", help="Comma-separated file extensions.")
-    ] = ".mp4,.avi",
+        str,
+        typer.Option(
+            "--extensions",
+            help="Comma-separated file extensions. Defaults to mosaic-media's supported set.",
+        ),
+    ] = "",
     recursive: Annotated[
         bool,
         typer.Option("--recursive/--no-recursive", help="Recurse into subdirectories."),
@@ -38,6 +43,7 @@ def index_media_command(
 ) -> None:
     """Index media files under one or more directories into media/index.csv."""
     ds = load_dataset(manifest)
+    extensions = extensions or ",".join(sorted(VIDEO_EXTENSIONS))
     exts = tuple(
         e if e.startswith(".") else f".{e}"
         for e in (part.strip() for part in extensions.split(","))
