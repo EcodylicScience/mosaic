@@ -11,7 +11,10 @@ conda install -c conda-forge ffmpeg -y
 pip install -e ".[recommended]"
 ```
 
-`ffmpeg` provides `ffprobe`, used by media indexing and raw H.264 support.
+Frame decoding runs in-process via the `av` wheel (installed with
+`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
+`ffprobe` is still used for media indexing and probing, and system `ffmpeg`
+>= 5.1 is required for transcoding. Installing `ffmpeg` via conda covers both.
 The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer; see
 the [project README](https://github.com/EcodylicScience/mosaic#installation)
 for finer-grained options.
@@ -32,7 +35,8 @@ ds.save()
 
 ## Index media
 
-Scan directories for video files and collect metadata via ffprobe:
+Scan directories for video files and collect metadata via `mosaic_media.probe_media`
+(which shells out to system `ffprobe`):
 
 ```python
 ds.index_media(
