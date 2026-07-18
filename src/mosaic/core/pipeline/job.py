@@ -1,26 +1,26 @@
 """The Job Contract -- the one attempt/progress/cancel spine for compute.
 
-Every unit of backend compute (a feature run, and -- via ``tracking.run_trex``
--- an external tracking run) enters :func:`job_context`. It gives each job a
-single, uniform lifecycle:
+Every unit of backend compute (a feature run, a tracking op, and -- via
+``tracking.run_trex`` -- an external tracking run) enters :func:`job_context`. It
+gives each job a single, uniform lifecycle:
 
 * an **``execution_id``** (ULID) identifying this *attempt*, distinct from the
   content-addressed ``run_id`` identifying a *result*. Two attempts of the same
   work share a ``run_id`` but get different ``execution_id``\\s;
-* a durable attempt row in the ``runs`` table of ``.mosaic.db``, transitioning
+* one **append-only JSONL run-log** per attempt (:class:`JsonlRunLog`, under
+  ``<dataset_root>/.mosaic/runs/<execution_id>.jsonl``) recording the lifecycle
   ``running`` -> ``finished`` | ``failed`` | ``cancelled`` with an error capture
-  and a liveness heartbeat;
+  and a liveness heartbeat -- replacing the retired ``runs`` SQLite table;
 * a :class:`ProgressCallback` bound to ``job_id = execution_id`` (so feature
-  entries, training epochs, and trex phases all land in one progress store);
+  entries, training epochs, and trex phases all land in that same one log);
 * a cooperative :class:`CancelToken` (hard-kill of blocked subprocesses stays
   the executor's job at a higher layer).
 
 Glossary (names collide easily, so pin them down):
 
-* ``run_id``       -- content hash of a *result*; the key of ``feature_runs``.
-* ``execution_id`` -- ULID of one *attempt*; the key of ``runs`` and the
-  ``job_id`` of ``training_progress``. The join key across all layers.
-* ``runs``         -- the attempt ledger (this module). Not ``feature_runs``.
+* ``run_id``       -- content hash of a *result*; the key of the ``index.csv`` ledger.
+* ``execution_id`` -- ULID of one *attempt*; the run-log filename and the
+  ``job_id`` of every progress event. The join key across all layers.
 """
 
 from __future__ import annotations
@@ -39,12 +39,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ._utils import new_execution_id
-from .progress import (
-    NullProgressCallback,
-    ProgressCallback,
-    SQLiteProgressCallback,
-)
-from .registry import FeatureRegistry, open_registry
+from .progress import NullProgressCallback, ProgressCallback
+from .run_log import JsonlRunLog, run_log_path
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -122,9 +118,9 @@ class JobContext:
     """Handle yielded by :func:`job_context` for the duration of one attempt."""
 
     execution_id: str
-    kind: str  # "feature" | "trex"
-    target: str  # storage feature name / trex operation
-    registry: FeatureRegistry | None
+    kind: str  # "feature" | "trex" | a tracking-op kind | ...
+    target: str  # storage feature name / op label
+    run_log: JsonlRunLog | None
     progress: ProgressCallback
     cancel_token: CancelToken
     owner: str = ""
@@ -147,20 +143,20 @@ class JobContext:
     def set_run_id(self, run_id: str) -> None:
         """Record the content-addressed ``run_id`` once the job computes it."""
         self.run_id = run_id
-        if self.registry is not None:
-            self.registry.set_attempt_run_id(self.execution_id, run_id)
+        if self.run_log is not None:
+            self.run_log.set_run_id(run_id)
 
     def set_total(self, total: int) -> None:
         """Declare the total number of entries (for progress denominators)."""
         self._total = total
-        if self.registry is not None:
-            self.registry.heartbeat_attempt(self.execution_id, progress_total=total)
+        if self.run_log is not None:
+            self.run_log.set_total(total)
 
     def heartbeat(self, done: int | None = None) -> None:
         """Refresh liveness (throttled) and, optionally, the completed count."""
         if done is not None:
             self._done = done
-        if self.registry is None:
+        if self.run_log is None:
             return
         self._hb_count += 1
         now = time.monotonic()
@@ -168,9 +164,7 @@ class JobContext:
             self._hb_count % _HEARTBEAT_EVERY == 0
             or (now - self._hb_last) >= _HEARTBEAT_SECONDS
         ):
-            self.registry.heartbeat_attempt(
-                self.execution_id, progress_done=self._done, progress_total=self._total
-            )
+            self.run_log.heartbeat(self._done, self._total)
             self._hb_last = now
 
     def check_cancel(self) -> None:
@@ -186,7 +180,6 @@ def job_context(
     target: str,
     execution_id: str | None = None,
     owner: str = "",
-    registry: FeatureRegistry | None = None,
     track: bool = True,
     progress_callback: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
@@ -197,44 +190,42 @@ def job_context(
     Parameters
     ----------
     ds:
-        Dataset whose ``.mosaic.db`` records the attempt.
+        Dataset whose ``.mosaic/runs/`` directory records the attempt's run-log.
     kind, target:
-        Job classification (``"feature"``/``"trex"``) and its subject.
+        Job classification (``"feature"`` / ``"trex"`` / a tracking-op kind /
+        future payload kinds) and its subject. ``kind`` is a field in the log,
+        never part of the path -- a new payload kind needs no change here.
     execution_id:
         Reuse an externally minted ULID (how a Layer-2 subprocess inherits its
         identity); otherwise a fresh one is generated.
-    registry:
-        A caller-owned registry (e.g. from ``Pipeline.run``). It is used but
-        **not** closed here. When ``None`` and ``track`` is set, a registry is
-        opened and owned (closed on exit).
     track:
-        When ``False`` (and no registry is passed) nothing is recorded -- the
-        legacy "bare run leaves no trace" behaviour.
+        When ``False`` (or the dataset base dir is unresolvable) nothing is
+        recorded -- the "bare run leaves no trace" behaviour.
     progress_callback, cancel_token:
-        Optional injected backends; sensible defaults are provided.
+        Optional injected backends; sensible defaults are provided. When a
+        progress callback is injected, per-entry/per-epoch events go to it and
+        only coarse progress (via :meth:`JobContext.heartbeat`) lands in the log.
     """
     execution_id = execution_id or new_execution_id()
 
-    owns_registry = False
-    reg = registry
-    if reg is None and track:
+    run_log: JsonlRunLog | None = None
+    if track:
         try:
-            reg = open_registry(ds.get_root("features"))
-            owns_registry = True
-        except Exception as exc:  # dataset without a features root, etc.
+            run_log = JsonlRunLog(
+                run_log_path(ds.base_dir, execution_id), execution_id
+            )
+        except Exception as exc:  # dataset without a base dir, unwritable FS, etc.
             print(
-                f"[job] tracking disabled (could not open registry): {exc}",
+                f"[job] tracking disabled (could not open run-log): {exc}",
                 file=sys.stderr,
             )
-            reg = None
+            run_log = None
 
-    owns_progress = False
     progress: ProgressCallback
     if progress_callback is not None:
         progress = progress_callback
-    elif reg is not None:
-        progress = SQLiteProgressCallback(reg.db_path, execution_id)
-        owns_progress = True
+    elif run_log is not None:
+        progress = run_log
     else:
         progress = NullProgressCallback()
 
@@ -245,46 +236,34 @@ def job_context(
         execution_id=execution_id,
         kind=kind,
         target=target,
-        registry=reg,
+        run_log=run_log,
         progress=progress,
         cancel_token=token,
         owner=owner,
         _total=total,
     )
 
-    if reg is not None:
-        reg.record_attempt(
-            execution_id,
-            kind,
-            target,
-            owner=owner,
-            host=host,
-            pid=pid,
-            status="running",
-            progress_total=total,
-        )
+    if run_log is not None:
+        run_log.started(kind=kind, target=target, owner=owner, host=host, pid=pid)
+        if total:
+            run_log.set_total(total)
 
     try:
         yield ctx
     except Cancelled:
-        if reg is not None:
-            reg.finish_attempt(execution_id, "cancelled")
+        if run_log is not None:
+            run_log.cancelled()
         raise
     except Exception as exc:
-        if reg is not None:
-            reg.finish_attempt(execution_id, "failed", error_json=_capture_error(exc))
+        if run_log is not None:
+            run_log.failed(_capture_error(exc))
         raise
     else:
-        if reg is not None:
-            reg.finish_attempt(execution_id, "finished")
+        if run_log is not None:
+            run_log.finished()
     finally:
-        if owns_progress:
+        if run_log is not None:
             try:
-                progress.close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        if owns_registry and reg is not None:
-            try:
-                reg.close()
+                run_log.close()
             except Exception:
                 pass

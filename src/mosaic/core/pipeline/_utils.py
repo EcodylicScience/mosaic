@@ -136,8 +136,8 @@ def new_execution_id() -> str:
 
     This is the identity of an *attempt* and is intentionally
     non-deterministic. It is never hashed into a ``run_id`` and never written
-    into a feature/model output -- only into the ``runs`` attempt table and the
-    ``training_progress.job_id`` column. Determinism of ``run_id`` is therefore
+    into a feature/model output -- only into the attempt's JSONL run-log filename
+    and its ``job_id`` progress events. Determinism of ``run_id`` is therefore
     unaffected.
     """
     timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)

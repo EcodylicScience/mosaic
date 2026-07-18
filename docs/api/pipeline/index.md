@@ -22,17 +22,28 @@ detection, and dependency chaining.
     options:
       show_source: true
 
-## Feature Registry
+## Run-logs (attempt status & progress)
 
-SQLite-backed registry replacing per-feature CSV indices. Enables cross-feature
-queries, pending-work detection, dependency tracking, and API-friendly reads.
+Append-only JSONL run-logs, one per attempt under
+`<dataset_root>/.mosaic/runs/<execution_id>.jsonl` — the job-kind-agnostic,
+NFS-safe status/progress store that replaced the per-dataset SQLite `.mosaic.db`.
+The reader helpers reduce a log back to an attempt-status snapshot (what the
+`mosaic status` / `runs` / `cancel` commands consume).
 
-::: mosaic.core.pipeline.registry.FeatureRegistry
+::: mosaic.core.pipeline.run_log.JsonlRunLog
     options:
       show_source: true
       members_order: source
 
-::: mosaic.core.pipeline.registry.open_registry
+::: mosaic.core.pipeline.run_log.read_run
+    options:
+      show_source: true
+
+::: mosaic.core.pipeline.run_log.read_runs
+    options:
+      show_source: true
+
+::: mosaic.core.pipeline.run_log.read_run_progress
     options:
       show_source: true
 
@@ -70,22 +81,19 @@ class MyFeature:
 
 ## Training Progress
 
-Callback protocol and SQLite implementation for monitoring training
-progress in real time.
+Callback protocol and storage-free backends for monitoring training progress in
+real time. The Job Contract's default backend is the JSONL run-log
+(`JsonlRunLog`, above), which implements this protocol.
 
 ::: mosaic.core.pipeline.progress.TrainingProgressCallback
     options:
       show_source: true
 
-::: mosaic.core.pipeline.progress.SQLiteProgressCallback
+::: mosaic.core.pipeline.progress.CSVProgressCallback
     options:
       show_source: true
       members_order: source
 
 ::: mosaic.core.pipeline.progress.CompositeProgressCallback
-    options:
-      show_source: true
-
-::: mosaic.core.pipeline.progress.read_progress
     options:
       show_source: true

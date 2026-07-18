@@ -29,13 +29,6 @@ def reindex_command(
             help="Rewrite indexes (drop stale rows). Default is a dry-run report.",
         ),
     ] = False,
-    reconcile_registry: Annotated[
-        bool,
-        typer.Option(
-            "--reconcile-registry/--no-reconcile-registry",
-            help="Also prune the SQLite mirror (features/.mosaic.db).",
-        ),
-    ] = True,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON.")
     ] = False,
@@ -49,11 +42,7 @@ def reindex_command(
     ds = load_dataset(manifest)
     try:
         with stdout_to_stderr():
-            dropped = ds.reindex_features(
-                feature,
-                dry_run=not apply,
-                reconcile_registry=reconcile_registry,
-            )
+            dropped = ds.reindex_features(feature, dry_run=not apply)
     except Exception as exc:  # noqa: BLE001 - surface reconcile errors cleanly
         fail(f"reindex failed: {exc}")
     total = sum(dropped.values())

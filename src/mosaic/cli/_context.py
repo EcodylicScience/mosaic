@@ -29,9 +29,13 @@ def load_dataset(manifest: Path) -> "Dataset":
         fail(f"Failed to load dataset from {manifest}: {exc}")
 
 
-def features_db_path(ds: "Dataset") -> Path:
-    """Return the ``.mosaic.db`` path for *ds* (the status/progress bridge)."""
-    try:
-        return ds.get_root("features") / ".mosaic.db"
-    except KeyError:
-        fail("Dataset has no 'features' root configured.")
+def run_log_dir_for(ds: "Dataset") -> Path:
+    """Return the run-log directory for *ds* (``<dataset_root>/.mosaic/runs``).
+
+    This is the append-only JSONL status/progress bridge that replaced the
+    per-dataset ``.mosaic.db``. It is dataset-level (not under ``features/``), so
+    it works for tracking-only datasets too.
+    """
+    from mosaic.core.pipeline.run_log import run_log_dir
+
+    return run_log_dir(ds.base_dir)

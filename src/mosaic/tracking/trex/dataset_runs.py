@@ -7,9 +7,9 @@ mirroring :func:`mosaic.tracking.extract_frames`:
 * it resolves input videos from ``media/index.csv``;
 * computes a content-addressed ``run_id = "trex-<hash(settings)>"`` and writes
   run-addressed artifacts under ``<trex_root>/<run_id>/<group>__<seq>/``;
-* records the attempt in ``.mosaic.db`` (``runs`` row, ``kind="trex"``), reports
-  coarse convert/track phase progress, and is cancellable (the subprocess runs
-  in a killable process group);
+* records the attempt in its JSONL run-log (``kind="trex"``, under
+  ``<dataset_root>/.mosaic/runs/``), reports coarse convert/track phase progress,
+  and is cancellable (the subprocess runs in a killable process group);
 * bridges the per-individual NPZ outputs into standardized
   ``tracks/<group>__<seq>.parquet`` via the registered ``trex_npz`` converter.
 

@@ -136,35 +136,45 @@ pipe.add(FeatureStep("tagged", IdTagColumns, {"label_kind": "iso"}, ["smooth"],
 The callback receives `(dataset, results_so_far)` where `results_so_far`
 is the dict of all `Result` objects from previously executed steps.
 
-## Feature Registry
+## What-ran & run status
 
-When `Pipeline.run()` executes, it automatically creates a SQLite registry
-at `features/.mosaic.db` within the dataset. This registry tracks all
-feature runs, entries, and dependencies in a single queryable database.
+There is no database on the dataset filesystem. What-ran is recorded in plain
+files — the permanent source of truth that works on any filesystem (NFS, HPC,
+external drives):
 
-You can also use the registry directly:
+- **Results & what-ran** live in each feature's `features/<name>/index.csv` (one
+  row per computed entry: `run_id`, `version`, `params_hash`, `group`,
+  `sequence`, `abs_path`, `finished_at`) plus the parquet outputs themselves.
+  Cache-hit and completeness are decided by globbing those parquet files on disk,
+  never by a status flag.
 
 ```python
-from mosaic.core.pipeline import feature_registry
+from mosaic.core.pipeline import list_feature_runs
 
-reg = feature_registry(dataset)
-
-# What features have been computed?
-reg.list_features()
-
-# What entries exist for a feature?
-reg.list_entries("speed-angvel__from__tracks")
-
-# What's missing?
-all_tracks = {("group1", "seq1"), ("group1", "seq2"), ("group1", "seq3")}
-reg.pending_entries("speed-angvel__from__tracks", "0.1-abc123", all_tracks)
-
-# Dependency lineage
-reg.lineage("ff-groups-metrics__from__tracks+ff-groups+speed-angvel", "0.1-xyz789")
-
-reg.close()
+# What runs exist for a feature? (reads index.csv)
+list_feature_runs(dataset, "speed-angvel__from__tracks")
 ```
 
-The registry replaces per-feature `index.csv` files with a single SQLite
-database. Existing CSV indices are automatically migrated on first access.
-The database uses WAL mode for safe concurrent reads.
+- **Attempt status & progress** live in one append-only JSONL run-log per
+  attempt, under `<dataset_root>/.mosaic/runs/<execution_id>.jsonl`. Each unit of
+  compute that runs under the Job Contract (features, tracking ops, TREx, and
+  future payloads) records its lifecycle (`started` → `finished` / `failed` /
+  `cancelled`), a liveness heartbeat, and coarse per-entry / per-epoch progress
+  there. It is job-kind-agnostic (the `kind` is a field in the log, not part of
+  the path) and NFS-safe (one writer, append-only). These files are ephemeral —
+  bounded by the work and safe to age out.
+
+Read attempt status from the CLI or the stdlib-only reader helpers:
+
+```bash
+mosaic runs   -m dataset.yaml --kind feature --json
+mosaic status -m dataset.yaml --execution-id <ULID> --progress --json
+```
+
+```python
+from mosaic.core.pipeline.run_log import read_runs, read_run, run_log_dir
+
+run_dir = run_log_dir(dataset.base_dir)
+read_runs(run_dir, kind="feature")          # newest-first attempt snapshots
+read_run(run_dir, "<execution_id>")         # one attempt's status + progress counters
+```

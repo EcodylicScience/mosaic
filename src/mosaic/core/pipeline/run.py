@@ -59,7 +59,6 @@ from .types import (
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .progress import ProgressCallback
-from .registry import FeatureRegistry
 from .writers import (
     FeatureOutput,
     default_check_output,
@@ -329,7 +328,7 @@ def compute_run_id(
 
     Pure and side-effect-free -- it does *not* execute anything -- so callers
     (e.g. an API dedup check) can learn the ``run_id`` a submission *would*
-    produce and consult ``feature_runs`` before spawning any work.
+    produce and consult the feature's ``index.csv`` before spawning any work.
 
     ``identity_dump()`` drops ``HASH_EXCLUDE``-marked params (throughput knobs
     like ``infer_batch_size``) so retuning them doesn't bust the cache.
@@ -360,7 +359,6 @@ def run_feature(
     filter_start_time: float | None = None,
     filter_end_time: float | None = None,
     check_output: bool = False,
-    registry: FeatureRegistry | None = None,
     *,
     execution_id: str | None = None,
     owner: str = "",
@@ -416,21 +414,18 @@ def run_feature(
         recomputed. No effect when overwrite=True or when state is not cached.
         The deep read costs roughly an input-load per entry, so leave it off
         for routine runs.
-    registry : FeatureRegistry | None
-        A caller-owned registry (e.g. from ``Pipeline.run``). Used but not
-        closed here. When None and ``track`` is set, one is opened and owned.
     execution_id : str | None
         Reuse an externally minted ULID attempt id (how a Layer-2 subprocess
         inherits its identity); otherwise a fresh one is generated.
     owner : str
-        Free-form attribution recorded on the attempt row.
+        Free-form attribution recorded on the attempt's run-log.
     track : bool, default True
-        Record this attempt (status/progress/heartbeat) into ``.mosaic.db``.
-        Set False to run without leaving any attempt record (the legacy
-        behaviour). Ignored when an explicit ``registry`` is supplied.
+        Record this attempt (status/progress/heartbeat) into an append-only
+        JSONL run-log under ``<dataset_root>/.mosaic/runs/``. Set False to run
+        without leaving any attempt record.
     progress_callback : ProgressCallback | None
         Receives per-entry (and, for trainers, per-epoch) progress. Defaults to
-        a SQLite backend keyed by ``execution_id`` when tracking is on.
+        the JSONL run-log keyed by ``execution_id`` when tracking is on.
     cancel_token : CancelToken | None
         Cooperative cancellation, polled between entries. The default token is
         inert.
@@ -451,7 +446,6 @@ def run_feature(
         target=storage_feature_name,
         execution_id=execution_id,
         owner=owner,
-        registry=registry,
         track=track,
         progress_callback=progress_callback,
         cancel_token=cancel_token,
@@ -497,8 +491,9 @@ def _run_feature_impl(
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
-    ``ctx`` owns the attempt lifecycle (status/progress/cancel); ``registry``
-    references throughout are ``ctx.registry``.
+    ``ctx`` owns the attempt lifecycle (status/progress/cancel via its append-only
+    JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
+    outputs on disk -- the permanent source of truth.
     """
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
@@ -552,20 +547,10 @@ def _run_feature_impl(
             file=sys.stderr,
         )
 
-    # Index CSV setup
+    # Index CSV setup -- the permanent record of what-ran (run_id, version,
+    # params_hash, started_at per entry); complemented by params.json in run_root.
     idx = feature_index(feature_index_path(ds, storage_feature_name))
     idx.ensure()
-
-    # Registry: record run start (feature_runs content ledger)
-    if ctx.registry is not None:
-        ctx.registry.record_run_start(
-            feature=storage_feature_name,
-            run_id=run_id,
-            version=feature.version,
-            params_hash=params_hash,
-            params_json=params_path.read_text() if params_path.exists() else None,
-            inputs_json=json.dumps(json_ready(feature.inputs.model_dump())),
-        )
 
     # Bind dataset (for features that need media paths, etc.)
     if hasattr(feature, "bind_dataset"):
@@ -617,15 +602,6 @@ def _run_feature_impl(
 
     def _record_row(row: FeatureIndexRow) -> None:
         _pending_idx_rows.append(row)
-        if ctx.registry is not None:
-            ctx.registry.record_entry(
-                feature=row.feature,
-                run_id=row.run_id,
-                group=row.group,
-                sequence=row.sequence,
-                abs_path=row.abs_path,
-                n_rows=row.n_rows,
-            )
         # Single per-entry choke point (fires on cache-hit, inline, and
         # parallel-drain paths): report progress + refresh the liveness heartbeat.
         done = _total_written + len(_pending_idx_rows)
@@ -836,8 +812,9 @@ def _run_feature_impl(
             gc.collect()
 
     # Iterate manifest entries. A cooperative cancel (raised at the top of
-    # _process_entry) stops dispatch; completed entries stay recorded, so a
-    # later identical run resumes from registry.pending_entries.
+    # _process_entry) stops dispatch; completed entries stay recorded in
+    # index.csv + on disk, so a later identical run resumes from the entries whose
+    # output parquet is already present (the cache-hit pre-pass above).
     try:
         if apply_overlap is not None:
             for entry_key, df, core_start, core_end in iter_manifest(
@@ -883,20 +860,22 @@ def _run_feature_impl(
 
     # Finalize — flush any remaining rows
     _flush_idx()
-    # Mark the run finished only when every manifest entry is present in the
-    # shared result ledger. Under concurrency the last finisher marks it once;
-    # a run that skipped entries owned by a still-live (or crashed-within-window)
-    # peer stays unfinished, so it is resumable rather than falsely finished.
+    # Mark the run finished only when every manifest entry's output parquet is on
+    # disk. The filesystem is the source of truth (same disk check the Pipeline
+    # cache gate uses): under concurrency the last finisher sees all files and
+    # marks it once; a run that skipped an entry still owned by a live (or
+    # crashed-within-window) peer sees a missing file and stays unfinished, so it
+    # is resumable rather than falsely finished. Empty manifest / global-marker
+    # runs have no entries → all([]) is True → finished, as before.
     all_entries = {
         resolve_sequence_identity(entry_key, scope.entry_map) for entry_key in manifest
     }
-    complete = ctx.registry is None or not ctx.registry.pending_entries(
-        storage_feature_name, run_id, all_entries
+    complete = all(
+        build_output_path(group, sequence, run_root).exists()
+        for group, sequence in all_entries
     )
     if complete:
         idx.mark_finished(run_id)
-        if ctx.registry is not None:
-            ctx.registry.mark_finished(storage_feature_name, run_id)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(
         feature=storage_feature_name,

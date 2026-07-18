@@ -1,6 +1,7 @@
-"""``mosaic status``: read one run attempt (and optionally its progress) from ``.mosaic.db``.
+"""``mosaic status``: read one run attempt (and optionally its progress) from its run-log.
 
-Read-only and import-light -- it never loads the feature/tracking stacks.
+Read-only and import-light -- it never loads the feature/tracking stacks. The store
+is the append-only JSONL run-log under ``<dataset_root>/.mosaic/runs/``.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from mosaic.cli._context import features_db_path, load_dataset
+from mosaic.cli._context import load_dataset, run_log_dir_for
 from mosaic.cli._io import emit_json, fail
 from mosaic.cli._render import render_kv
 
@@ -33,19 +34,19 @@ def status_command(
     ] = False,
 ) -> None:
     """Show the status of one run attempt by execution_id."""
-    from mosaic.core.pipeline.registry import read_run
+    from mosaic.core.pipeline.run_log import read_run
 
     ds = load_dataset(manifest)
-    db = features_db_path(ds)
-    if not db.exists():
-        fail("No run database found (nothing has run yet).")
-    row = read_run(db, execution_id)
+    run_dir = run_log_dir_for(ds)
+    if not run_dir.exists():
+        fail("No run-logs found (nothing has run yet).")
+    row = read_run(run_dir, execution_id)
     if row is None:
         fail(f"No run found with execution_id={execution_id}.")
     if progress:
-        from mosaic.core.pipeline.progress import read_progress
+        from mosaic.core.pipeline.run_log import read_run_progress
 
-        row = {**row, "progress": read_progress(db, execution_id)}
+        row = {**row, "progress": read_run_progress(run_dir, execution_id)}
     if as_json:
         emit_json(row)
     else:

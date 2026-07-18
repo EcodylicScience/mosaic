@@ -1,9 +1,10 @@
-"""Phase-0 tests for the Job Contract (attempt ledger, progress, cancel).
+"""Phase-0 tests for the Job Contract (attempt run-log, progress, cancel).
 
-Exercises the additive layer on ``run_feature``: the ``runs`` attempt table,
-per-entry progress, cooperative cancellation, cache-hit surfacing, the
-``execution_id``/``run_id`` separation, and the standalone external readers --
-using lightweight mock features (no heavy dependencies).
+Exercises the additive layer on ``run_feature``: the append-only JSONL run-log
+(per attempt, under ``<dataset_root>/.mosaic/runs/``), per-entry progress,
+cooperative cancellation, cache-hit surfacing, the ``execution_id``/``run_id``
+separation, and the standalone external readers -- using lightweight mock
+features (no heavy dependencies).
 """
 
 from __future__ import annotations
@@ -15,15 +16,19 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
+from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import CancelToken, Cancelled, job_context
-from mosaic.core.pipeline.progress import read_progress
-from mosaic.core.pipeline.registry import (
-    open_registry,
+from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.run_log import (
+    JsonlRunLog,
     read_run,
+    read_run_progress,
     read_runs,
     read_runs_by_run_id,
+    reduce_run_log,
+    run_log_dir,
+    run_log_path,
 )
-from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Inputs, InputStream, Params, Result, TrackInput
 
 
@@ -35,6 +40,10 @@ class _MockDataset:
         self._root = root
         for directory in ("tracks", "features"):
             (root / directory).mkdir(parents=True, exist_ok=True)
+
+    @property
+    def base_dir(self) -> Path:
+        return self._root
 
     def get_root(self, key: str) -> Path:
         return self._root / key
@@ -114,8 +123,8 @@ class _Stateless:
         return pd.DataFrame({"frame": df["frame"], "value": df["feat_a"] * 2})
 
 
-def _db_path(ds: _MockDataset) -> Path:
-    return ds.get_root("features") / ".mosaic.db"
+def _run_dir(ds: _MockDataset) -> Path:
+    return run_log_dir(ds.base_dir)
 
 
 # --- execution_id / ULID ---------------------------------------------------
@@ -148,7 +157,7 @@ def test_lifecycle_finished(tmp_path: Path):
     assert result.execution_id is not None and len(result.execution_id) == 26
     assert result.cache_hit is False
 
-    row = read_run(_db_path(ds), result.execution_id)
+    row = read_run(_run_dir(ds), result.execution_id)
     assert row is not None
     assert row["status"] == "finished"
     assert row["kind"] == "feature"
@@ -162,7 +171,7 @@ def test_progress_entries_recorded(tmp_path: Path):
     _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3")])
 
     result = run_feature(ds, _Stateless())
-    rows = read_progress(_db_path(ds), result.execution_id)
+    rows = read_run_progress(_run_dir(ds), result.execution_id)
     entry_rows = [r for r in rows if r["step_type"] == "entry"]
     assert len(entry_rows) == 3
     # counts advance to the total
@@ -185,8 +194,8 @@ def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
     assert r2.run_id == r1.run_id  # same content id
     assert r2.execution_id != r1.execution_id  # new attempt
 
-    # two attempt rows, both finished, sharing one run_id
-    attempts = read_runs_by_run_id(_db_path(ds), r1.run_id)
+    # two attempt logs, both finished, sharing one run_id
+    attempts = read_runs_by_run_id(_run_dir(ds), r1.run_id)
     assert len(attempts) == 2
     assert {a["status"] for a in attempts} == {"finished"}
 
@@ -210,29 +219,26 @@ def test_cancel_midrun_marks_cancelled_with_partial(tmp_path: Path):
     with pytest.raises(Cancelled):
         run_feature(ds, feature, cancel_token=token)
 
-    # exactly one runs row, marked cancelled
-    all_runs = read_runs(_db_path(ds))
+    # exactly one run-log, marked cancelled
+    all_runs = read_runs(_run_dir(ds))
     assert len(all_runs) == 1
     assert all_runs[0]["status"] == "cancelled"
     execution_id = all_runs[0]["execution_id"]
+    run_id = all_runs[0]["run_id"]
 
-    # partial entries are durable -> resumable
-    reg = open_registry(ds.get_root("features"))
-    try:
-        run_id = all_runs[0]["run_id"]
-        entries = reg.list_entries(feature="test-jc__from__tracks", run_id=run_id)
-        assert 1 <= len(entries) < 4  # some, but not all, completed
-        pending = reg.pending_entries(
-            "test-jc__from__tracks",
-            run_id,
-            {("g", "s1"), ("g", "s2"), ("g", "s3"), ("g", "s4")},
-        )
-        assert len(pending) >= 1  # resumable remainder
-    finally:
-        reg.close()
+    # partial outputs are durable on disk -> resumable. The filesystem is the
+    # source of truth: some (but not all) entry parquets were written before the
+    # cancel landed, and the run is NOT marked finished in index.csv.
+    storage = "test-jc__from__tracks"
+    run_root = ds.get_root("features") / storage / run_id
+    parquets = list(run_root.glob("*.parquet"))
+    assert 1 <= len(parquets) < 4  # some, but not all, completed
 
-    # a mid-run cancel is recorded on the progress stream too
-    assert read_run(_db_path(ds), execution_id)["status"] == "cancelled"
+    idx_df = feature_index(feature_index_path(ds, storage)).read()
+    assert (idx_df["finished_at"] == "").all()  # run stays unfinished -> resumable
+
+    # a mid-run cancel is recorded on the run-log too
+    assert read_run(_run_dir(ds), execution_id)["status"] == "cancelled"
 
 
 def test_inert_token_does_not_cancel(tmp_path: Path):
@@ -240,7 +246,7 @@ def test_inert_token_does_not_cancel(tmp_path: Path):
     _setup_tracks(ds, [("g", "s1")])
     # default token never fires
     result = run_feature(ds, _Stateless())
-    assert read_run(_db_path(ds), result.execution_id)["status"] == "finished"
+    assert read_run(_run_dir(ds), result.execution_id)["status"] == "finished"
 
 
 # --- failure ---------------------------------------------------------------
@@ -250,9 +256,6 @@ def test_failure_marks_failed_with_error(tmp_path: Path):
     ds = _MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
-    def boom():
-        raise RuntimeError("kaboom")
-
     with pytest.raises(RuntimeError, match="kaboom"):
         # The apply exception is swallowed per-entry by run_feature, so instead
         # trigger failure via job_context directly to exercise the failed path.
@@ -260,7 +263,7 @@ def test_failure_marks_failed_with_error(tmp_path: Path):
             raise RuntimeError("kaboom")
 
     # locate the failed attempt
-    failed = read_runs(_db_path(ds), status="failed")
+    failed = read_runs(_run_dir(ds), status="failed")
     assert len(failed) == 1
     assert "kaboom" in failed[0]["error_json"]
 
@@ -268,12 +271,13 @@ def test_failure_marks_failed_with_error(tmp_path: Path):
 # --- track=False opt-out ---------------------------------------------------
 
 
-def test_track_false_writes_no_db(tmp_path: Path):
+def test_track_false_writes_no_log(tmp_path: Path):
     ds = _MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
     result = run_feature(ds, _Stateless(), track=False)
     assert result.execution_id is not None  # still minted
-    assert not _db_path(ds).exists()  # but nothing recorded
+    # but nothing recorded: no run-log file for this attempt
+    assert not run_log_path(ds.base_dir, result.execution_id).exists()
 
 
 # --- determinism invariant -------------------------------------------------
@@ -290,7 +294,7 @@ def test_attempt_fields_do_not_perturb_downstream_run_id():
     )
 
 
-# --- standalone readers don't need a FeatureRegistry -----------------------
+# --- standalone readers work off just the run-log directory ----------------
 
 
 def test_standalone_readers(tmp_path: Path):
@@ -298,71 +302,86 @@ def test_standalone_readers(tmp_path: Path):
     _setup_tracks(ds, [("g", "s1")])
     result = run_feature(ds, _Stateless())
 
-    # read_run / read_runs / read_runs_by_run_id work off just the db path
-    row = read_run(_db_path(ds), result.execution_id)
+    run_dir = _run_dir(ds)
+    row = read_run(run_dir, result.execution_id)
     assert row is not None and row["execution_id"] == result.execution_id
-    assert len(read_runs(_db_path(ds), kind="feature")) == 1
-    assert len(read_runs(_db_path(ds), status="finished")) == 1
-    assert len(read_runs_by_run_id(_db_path(ds), result.run_id)) == 1
+    assert len(read_runs(run_dir, kind="feature")) == 1
+    assert len(read_runs(run_dir, status="finished")) == 1
+    assert len(read_runs_by_run_id(run_dir, result.run_id)) == 1
 
 
-# --- registry attempt methods ---------------------------------------------
+# --- run-log writer + reducer (the store's own contract) -------------------
 
 
-def test_registry_attempt_methods(tmp_path: Path):
-    reg = open_registry(tmp_path)
-    try:
-        eid = new_execution_id()
-        reg.record_attempt(eid, "feature", "speed-angvel", owner="me", progress_total=5)
-        got = reg.get_attempt(eid)
-        assert got is not None and got["status"] == "running" and got["owner"] == "me"
+def test_run_log_lifecycle_methods(tmp_path: Path):
+    """A JsonlRunLog folds back to the attempt snapshot the CLI/API consume."""
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="feature", target="speed-angvel", owner="me", host="h", pid=123)
+    log.set_run_id("0.1-deadbeef")
+    log.set_total(5)
+    log.heartbeat(3, 5)
+    log.finished()
+    log.close()
 
-        reg.set_attempt_run_id(eid, "0.1-deadbeef")
-        reg.heartbeat_attempt(eid, progress_done=3)
-        reg.finish_attempt(eid, "finished")
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["kind"] == "feature"
+    assert snap["target"] == "speed-angvel"
+    assert snap["owner"] == "me" and snap["host"] == "h" and int(snap["pid"]) == 123
+    assert snap["run_id"] == "0.1-deadbeef"
+    assert snap["status"] == "finished"
+    assert int(snap["progress_done"]) == 3
+    assert int(snap["progress_total"]) == 5
+    assert snap["finished_at"] != ""
 
-        got = reg.get_attempt(eid)
-        assert got["run_id"] == "0.1-deadbeef"
-        assert got["status"] == "finished"
-        assert int(got["progress_done"]) == 3
-        assert got["finished_at"] != ""
-
-        # stale detection: a fresh 'running' row with an old heartbeat
-        eid2 = new_execution_id()
-        reg.record_attempt(eid2, "feature", "x")
-        stale = reg.stale_running_attempts("2999-01-01T00:00:00+00:00")
-        assert any(s["execution_id"] == eid2 for s in stale)
-    finally:
-        reg.close()
+    # a non-terminal log reduces to 'running' with a heartbeat_at -- what a
+    # supervisor scans to detect live vs stale attempts (there is no DB flag).
+    eid2 = new_execution_id()
+    log2 = JsonlRunLog(run_log_path(tmp_path, eid2), eid2)
+    log2.started(kind="feature", target="x")
+    log2.heartbeat(1, 2)
+    log2.close()
+    running = read_runs(run_log_dir(tmp_path), status="running")
+    match = next(r for r in running if r["execution_id"] == eid2)
+    assert match["heartbeat_at"] != ""
 
 
-# --- completeness gate -----------------------------------------------------
+def test_reduce_tolerates_partial_last_line(tmp_path: Path):
+    """NFS-safe read: a torn last line (in-flight append) is skipped, not fatal."""
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good = '{"t": "2026-01-01T00:00:00+00:00", "ev": "started", "kind": "feature", "target": "t"}\n'
+    torn = '{"t": "2026-01-01T00:00:01+00:00", "ev": "heart'  # partial, no newline
+    path.write_text(good + torn)
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["kind"] == "feature"  # the complete line parsed
+    assert snap["status"] == "running"  # torn line ignored, not crashed on
 
 
-def test_completeness_gate_finishes_only_when_all_entries_present(tmp_path: Path):
-    """``mark_finished`` must fire only once every manifest entry is present in
-    ``feature_entries``.
+# --- completeness gate (now filesystem-driven) -----------------------------
 
-    This is the composition ``run_feature`` enforces at the end of a run:
-    ``complete = not pending_entries(...)`` gates ``mark_finished``. A run with a
-    missing entry stays unfinished (resumable) rather than being falsely marked
-    complete.
+
+def test_completeness_gate_marks_index_finished_only_when_all_outputs_present(
+    tmp_path: Path,
+):
+    """``run_feature`` marks ``index.csv`` finished only when every manifest
+    entry's output parquet is on disk.
+
+    The gate moved from a DB ``pending_entries`` query to a direct
+    ``out_path.exists()`` check (``run.py``). A full run finishes; a partial run
+    (see ``test_cancel_midrun_...``) stays unfinished and is resumable.
     """
-    reg = open_registry(tmp_path)
-    try:
-        feat, run_id = "feat", "0.1-abcdef0123"
-        all_entries = {("g", "s1"), ("g", "s2")}
-        reg.record_run_start(feat, run_id, "0.1", "hash")
+    ds = _MockDataset(tmp_path)
+    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
-        # Only one of two entries recorded -> incomplete -> gate withholds finish.
-        reg.record_entry(feat, run_id, "g", "s1", tmp_path / "s1.parquet", n_rows=8)
-        assert reg.pending_entries(feat, run_id, all_entries) == [("g", "s2")]
-        assert reg.run_is_finished(feat, run_id) is False
-
-        # Second entry lands -> complete -> gate fires mark_finished.
-        reg.record_entry(feat, run_id, "g", "s2", tmp_path / "s2.parquet", n_rows=8)
-        assert reg.pending_entries(feat, run_id, all_entries) == []
-        reg.mark_finished(feat, run_id)
-        assert reg.run_is_finished(feat, run_id) is True
-    finally:
-        reg.close()
+    result = run_feature(ds, _Stateless())
+    storage = "test-jc__from__tracks"
+    idx_df = feature_index(feature_index_path(ds, storage)).read(run_id=result.run_id)
+    # every entry present on disk -> finished_at stamped on all rows
+    assert len(idx_df) == 2
+    assert (idx_df["finished_at"] != "").all()

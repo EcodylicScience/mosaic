@@ -25,7 +25,6 @@ from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
-    from .pipeline.registry import FeatureRegistry
 
 
 def _probe_video_metadata(path: Path) -> dict[str, Any]:
@@ -499,6 +498,16 @@ class Dataset:
             self.manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     # ---- Helpers ----
+    @property
+    def base_dir(self) -> Path:
+        """Directory holding the dataset manifest (``dataset.yaml``'s parent).
+
+        The dataset-level anchor for config and internal state. Used to locate the
+        Job-Contract run-logs (``<base_dir>/.mosaic/runs/``) and to resolve
+        root-relative ``abs_path`` values.
+        """
+        return _dataset_base_dir(self)
+
     def get_root(self, key: str) -> Path:
         """Return the absolute path for a named dataset root.
 
@@ -896,7 +905,6 @@ class Dataset:
         feature: str | None = None,
         *,
         dry_run: bool = True,
-        reconcile_registry: bool = True,
     ) -> dict[str, int]:
         """Reconcile feature index CSVs with the parquet files on disk.
 
@@ -905,22 +913,20 @@ class Dataset:
         intact. Paths are resolved with :meth:`resolve_path`, so rows that are
         merely *relocated* (a moved or synced dataset) are **kept**, not pruned
         -- for those, use :meth:`make_portable` / :meth:`rewrite_index_paths`.
-        Never deletes parquet files; touches the index (and registry) only.
+        Never deletes parquet files; touches the ``index.csv`` files only. The
+        ``index.csv`` is the source of truth for what-ran, so this fully
+        reconciles state (there is no separate store to keep in sync).
 
         Args:
             feature: Restrict to a single feature storage name. If None, every
                 feature under ``features/`` is reconciled.
             dry_run: If True (default), report what would be dropped without
                 writing. Set False to actually rewrite the indexes.
-            reconcile_registry: If True, also delete the pruned entries from the
-                SQLite mirror (``features/.mosaic.db``) when it exists, so
-                completeness checks (``pending_entries``) stay accurate.
 
         Returns:
             ``{index_csv_path: num_rows_dropped}`` for every index with drops.
         """
         from .pipeline.index import feature_index, feature_index_path
-        from .pipeline.registry import open_registry
 
         if not self.roots.get("features"):
             return {}
@@ -934,7 +940,6 @@ class Dataset:
             names = sorted(sub.name for sub in fp.iterdir() if sub.is_dir())
 
         results: dict[str, int] = {}
-        dropped_keys: list[tuple[str, str, str, str]] = []
         for name in names:
             idx_path = feature_index_path(self, name)
             if not idx_path.exists():
@@ -945,24 +950,6 @@ class Dataset:
             if len(dropped) == 0:
                 continue
             results[str(idx_path)] = len(dropped)
-            for _, row in dropped.iterrows():
-                dropped_keys.append(
-                    (
-                        str(row.get("feature", name)),
-                        str(row.get("run_id", "")),
-                        str(row.get("group", "")),
-                        str(row.get("sequence", "")),
-                    )
-                )
-
-        if reconcile_registry and not dry_run and dropped_keys:
-            db_path = fp / ".mosaic.db"
-            if db_path.exists():
-                reg = open_registry(fp, migrate_csv=False)
-                try:
-                    _ = reg.prune_entries(dropped_keys)
-                finally:
-                    reg.close()
 
         return results
 
@@ -2971,7 +2958,6 @@ class Dataset:
         filter_start_time: float | None = None,
         filter_end_time: float | None = None,
         check_output: bool = False,
-        registry: "FeatureRegistry | None" = None,
         *,
         execution_id: str | None = None,
         owner: str = "",
@@ -3012,11 +2998,11 @@ class Dataset:
                 skipping them (default validator fully reads the parquet; a
                 feature may override via ``check_output``). When False
                 (default), a cache hit only requires the output to exist.
-            registry: Optional feature registry (advanced usage).
             execution_id: Reuse an externally minted ULID attempt id.
-            owner: Free-form attribution recorded on the attempt row.
-            track: Record this attempt (status/progress/heartbeat) into
-                ``.mosaic.db`` (default). Set False to run without a trace.
+            owner: Free-form attribution recorded on the attempt's run-log.
+            track: Record this attempt (status/progress/heartbeat) into an
+                append-only JSONL run-log under ``<dataset_root>/.mosaic/runs/``
+                (default). Set False to run without a trace.
             progress_callback: Optional progress backend (per-entry / per-epoch).
             cancel_token: Optional cooperative cancellation signal.
 
@@ -3054,7 +3040,6 @@ class Dataset:
             filter_start_time=filter_start_time,
             filter_end_time=filter_end_time,
             check_output=check_output,
-            registry=registry,
             execution_id=execution_id,
             owner=owner,
             track=track,

@@ -1,12 +1,15 @@
 """Progress callback protocol and implementations.
 
-Provides a lightweight callback that jobs call at regular intervals to
-persist progress into the ``training_progress`` table of ``.mosaic.db``.
-Granularities span per-epoch / per-class training progress, per-entry
-feature-run progress (``on_entry_*``), and coarse per-phase transitions
-(e.g. trex convert/track).  The same table is read by the API layer (via
-SSE) for live monitoring, keyed by ``job_id`` (which the Job Contract sets
-to the attempt's ``execution_id``).
+Defines the callback contract that jobs call at regular intervals to report
+progress. Granularities span per-epoch / per-class training progress, per-entry
+feature-run progress (``on_entry_*``), and coarse per-phase transitions (e.g.
+trex convert/track).
+
+The default backend the Job Contract binds is the append-only JSONL run-log
+(:class:`mosaic.core.pipeline.run_log.JsonlRunLog`), which implements this
+protocol and writes every event -- keyed by ``execution_id`` -- to one file the
+API layer can tail for live monitoring. This module keeps the protocol and the
+storage-free backends (``Null`` / ``CSV`` / ``Composite``).
 
 The protocol is exported both as ``TrainingProgressCallback`` (historical
 name) and ``ProgressCallback`` (its broader current role).
@@ -18,12 +21,8 @@ is readable mid-training (no database required).
 from __future__ import annotations
 
 import csv
-import json
-import sqlite3
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
-
-from ._utils import now_iso
+from typing import Protocol, runtime_checkable
 
 
 # ---------------------------------------------------------------------------
@@ -198,155 +197,6 @@ class CSVProgressCallback:
 
 
 # ---------------------------------------------------------------------------
-# SQLite implementation
-# ---------------------------------------------------------------------------
-
-
-class SQLiteProgressCallback:
-    """Writes progress rows into the ``training_progress`` table.
-
-    Opens its own connection (WAL mode) so that the training thread and
-    any reader (API, notebook) do not block each other.
-
-    Parameters
-    ----------
-    db_path : Path
-        Path to the ``.mosaic.db`` file.
-    job_id : str
-        The training job this progress belongs to.
-    """
-
-    def __init__(self, db_path: Path, job_id: str) -> None:
-        self.db_path = db_path
-        self.job_id = job_id
-        self._conn = sqlite3.connect(str(db_path), timeout=10)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-
-    # -- callback methods ---------------------------------------------------
-
-    def on_epoch_end(
-        self,
-        epoch: int,
-        total_epochs: int,
-        metrics: dict[str, float],
-    ) -> None:
-        """Record an epoch completion with associated metrics.
-
-        Args:
-            epoch: Zero-based epoch index.
-            total_epochs: Total epochs planned.
-            metrics: Metric name-value pairs.
-        """
-        self._write("epoch", epoch, total_epochs, metrics)
-        # Also advance the coarse ``runs`` counter so ``status --json``
-        # ``progress_done`` tracks epochs. Entry-based work advances it via
-        # ``JobContext.heartbeat`` in its loop; a training op's only per-step hook
-        # is here. Guarded: the ``runs`` table is absent when a progress callback
-        # is used standalone (outside the Job Contract).
-        try:
-            self._conn.execute(
-                "UPDATE runs SET progress_done = ?, progress_total = ? "
-                "WHERE execution_id = ?",
-                (epoch + 1, total_epochs, self.job_id),
-            )
-            self._conn.commit()
-        except sqlite3.OperationalError:
-            pass
-
-    def on_class_start(
-        self,
-        class_idx: int,
-        total_classes: int,
-        class_name: str,
-    ) -> None:
-        """Record the start of a one-vs-rest class training iteration.
-
-        Args:
-            class_idx: Zero-based class index.
-            total_classes: Total number of classes.
-            class_name: Human-readable class identifier.
-        """
-        self._write("class", class_idx, total_classes, message=class_name)
-
-    def on_phase(self, phase: str, message: str) -> None:
-        """Record a coarse-grained phase transition.
-
-        Args:
-            phase: Phase identifier.
-            message: Free-text description.
-        """
-        self._write("phase", 0, 0, message=f"{phase}: {message}")
-
-    def on_entry_start(self, index: int, total: int, key: str) -> None:
-        """Record that a per-entry unit of work has begun."""
-        self._write("entry_start", index, total, message=key)
-
-    def on_entry_end(self, index: int, total: int, key: str) -> None:
-        """Record that a per-entry unit of work has completed."""
-        self._write("entry", index, total, message=key)
-
-    # -- query helper -------------------------------------------------------
-
-    def get_progress(self) -> list[dict[str, Any]]:
-        """Return all progress rows for this job, ordered chronologically."""
-        cur = self._conn.execute(
-            """\
-            SELECT step_type, step_index, step_total, metric_json, message, timestamp
-            FROM training_progress
-            WHERE job_id = ?
-            ORDER BY timestamp, step_index
-            """,
-            (self.job_id,),
-        )
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
-        out = []
-        for row in rows:
-            d = dict(zip(cols, row))
-            d["metrics"] = json.loads(d.pop("metric_json", "{}"))
-            out.append(d)
-        return out
-
-    # -- internals ----------------------------------------------------------
-
-    def _write(
-        self,
-        step_type: str,
-        step_index: int,
-        step_total: int = 0,
-        metrics: dict[str, float] | None = None,
-        message: str = "",
-    ) -> None:
-        self._conn.execute(
-            """\
-            INSERT OR REPLACE INTO training_progress
-                (job_id, step_type, step_index, step_total, metric_json,
-                 message, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                self.job_id,
-                step_type,
-                step_index,
-                step_total,
-                json.dumps(metrics or {}),
-                message,
-                now_iso(),
-            ),
-        )
-        self._conn.commit()
-
-    def close(self) -> None:
-        self._conn.close()
-
-    def __enter__(self) -> SQLiteProgressCallback:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
-
-
-# ---------------------------------------------------------------------------
 # Composite (for running multiple backends simultaneously)
 # ---------------------------------------------------------------------------
 
@@ -357,7 +207,7 @@ class CompositeProgressCallback:
     Example::
 
         cb = CompositeProgressCallback(
-            SQLiteProgressCallback(db, job_id),
+            JsonlRunLog(path, execution_id),
             some_mlflow_callback,
         )
     """
@@ -393,47 +243,3 @@ class CompositeProgressCallback:
 # ``ProgressCallback`` is the broader current name for the same protocol; the
 # ``TrainingProgressCallback`` alias is retained for existing imports.
 ProgressCallback = TrainingProgressCallback
-
-
-# ---------------------------------------------------------------------------
-# Standalone reader (for API / notebooks)
-# ---------------------------------------------------------------------------
-
-
-def read_progress(db_path: Path, job_id: str) -> list[dict[str, Any]]:
-    """Read progress for a job without creating a full callback instance.
-
-    Opens a read-only connection, queries, and closes immediately.
-    Suitable for one-shot reads from an API endpoint or notebook.
-
-    Args:
-        db_path: Path to the ``.mosaic.db`` file.
-        job_id: The training job to query.
-
-    Returns:
-        List of progress dicts, each with keys ``step_type``,
-        ``step_index``, ``step_total``, ``metrics``, ``message``,
-        and ``timestamp``.
-    """
-    conn = sqlite3.connect(str(db_path), timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    try:
-        cur = conn.execute(
-            """\
-            SELECT step_type, step_index, step_total, metric_json, message, timestamp
-            FROM training_progress
-            WHERE job_id = ?
-            ORDER BY timestamp, step_index
-            """,
-            (job_id,),
-        )
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
-        out = []
-        for row in rows:
-            d = dict(zip(cols, row))
-            d["metrics"] = json.loads(d.pop("metric_json", "{}"))
-            out.append(d)
-        return out
-    finally:
-        conn.close()

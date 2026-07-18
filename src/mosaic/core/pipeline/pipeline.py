@@ -24,7 +24,6 @@ from mosaic.core.helpers import make_entry_key, resolve_frame_range
 
 from ._utils import derive_storage_name, hash_params
 from .index import feature_index_path, feature_run_root, list_feature_runs
-from .registry import open_registry
 from .types import Inputs, Result
 
 if TYPE_CHECKING:
@@ -188,7 +187,7 @@ def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
     has its output parquet on disk — not merely when the run dir is non-empty.
     This is what makes a partial/interrupted run (e.g. 30 of 90 sequences) read
     as *not* cached, so ``pipe.run`` resumes it. Checking files directly (rather
-    than the ``.mosaic.db`` ``finished_at`` flag) is deliberate: ``finished_at``
+    than the ``index.csv`` ``finished_at`` flag) is deliberate: ``finished_at``
     is *scope-relative* to whatever manifest an invocation saw — a downstream
     step whose partial upstream truncated its manifest can be honestly
     "finished" at 30/90 — and a file check also catches outputs deleted after
@@ -549,13 +548,6 @@ class Pipeline:
             if not isinstance(info["step"], CallbackStep)
         }
 
-        # Open registry for this dataset so run_feature() can write to it
-        try:
-            features_root = dataset.get_root("features")
-            registry = open_registry(features_root, migrate_csv=True)
-        except Exception:
-            registry = None
-
         if force_from:
             known = {s.name for s in self.steps}
             if force_from not in known:
@@ -565,53 +557,45 @@ class Pipeline:
         self.results = {}
         force_set: set[str] = self._downstream_of(force_from) if force_from else set()
 
-        try:
-            for step in self.steps:
-                if isinstance(step, CallbackStep):
-                    print(f"  [{step.name}] running callback...")
-                    step.fn(dataset, self.results)
-                    continue
+        for step in self.steps:
+            if isinstance(step, CallbackStep):
+                print(f"  [{step.name}] running callback...")
+                step.fn(dataset, self.results)
+                continue
 
-                # Check if cached
-                info = cached_map.get(step.name, {})
-                if step.name not in force_set and info.get("cached"):
-                    run_id = info["expected_run_id"]
-                    self.results[step.name] = Result(
-                        feature=info["storage_name"],
-                        run_id=run_id,
-                    )
-                    print(
-                        f"  [{step.name}] {step.feature_cls.__name__}"
-                        f" -> {run_id} (cached)"
-                    )
-                    continue
-
-                # Not cached — execute
-                if step.input_names:
-                    input_items = tuple(self.results[n] for n in step.input_names)
-                else:
-                    input_items = ("tracks",)
-
-                feature = step.feature_cls(
-                    inputs=Inputs(input_items), params=step.params
+            # Check if cached
+            info = cached_map.get(step.name, {})
+            if step.name not in force_set and info.get("cached"):
+                run_id = info["expected_run_id"]
+                self.results[step.name] = Result(
+                    feature=info["storage_name"],
+                    run_id=run_id,
                 )
-                kwargs = {**self.default_run_kwargs, **step.run_kwargs}
-                if step.name in force_set:
-                    kwargs["overwrite"] = True
-                if registry is not None:
-                    kwargs["registry"] = registry
-
                 print(
-                    f"  [{step.name}] {step.feature_cls.__name__} ...",
-                    end=" ",
+                    f"  [{step.name}] {step.feature_cls.__name__}"
+                    f" -> {run_id} (cached)"
                 )
-                result = dataset.run_feature(feature, **kwargs)
-                self.results[step.name] = result
-                print(f"-> {result.run_id}")
+                continue
 
-        finally:
-            if registry is not None:
-                registry.close()
+            # Not cached — execute. Each step's run_feature() opens its own
+            # append-only JSONL run-log (track=True); no shared handle to manage.
+            if step.input_names:
+                input_items = tuple(self.results[n] for n in step.input_names)
+            else:
+                input_items = ("tracks",)
+
+            feature = step.feature_cls(inputs=Inputs(input_items), params=step.params)
+            kwargs = {**self.default_run_kwargs, **step.run_kwargs}
+            if step.name in force_set:
+                kwargs["overwrite"] = True
+
+            print(
+                f"  [{step.name}] {step.feature_cls.__name__} ...",
+                end=" ",
+            )
+            result = dataset.run_feature(feature, **kwargs)
+            self.results[step.name] = result
+            print(f"-> {result.run_id}")
 
         return self.results
 

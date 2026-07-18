@@ -5,7 +5,6 @@ from __future__ import annotations
 from .index import (
     FeatureIndexRow,
     feature_index_path,
-    feature_registry,
     feature_run_root,
     latest_feature_run_root,
     list_feature_runs,
@@ -20,7 +19,6 @@ from .manifest import (
     iter_manifest,
 )
 from .pipeline import CallbackStep, FeatureStep, Pipeline
-from .registry import FeatureRegistry, open_registry
 from .run import load_values
 from .types import (
     Feature,
@@ -36,7 +34,6 @@ __all__ = [
     "CallbackStep",
     "Feature",
     "FeatureIndexRow",
-    "FeatureRegistry",
     "FeatureStep",
     "FileSpecs",
     "FilterFactory",
@@ -50,13 +47,11 @@ __all__ = [
     "Result",
     "build_manifest",
     "feature_index_path",
-    "feature_registry",
     "feature_run_root",
     "iter_manifest",
     "latest_feature_run_root",
     "list_feature_runs",
     "load_values",
-    "open_registry",
     "show_pipeline_diagram",
     "show_pipeline_tree",
     "trim_feature_output",

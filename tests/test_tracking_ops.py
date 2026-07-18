@@ -2,7 +2,7 @@
 
 Uses a real ``Dataset`` + a synthetic ``media/index.csv`` and monkeypatches the
 heavy low-level backends (video decode, ultralytics, torch) so the contract
-machinery -- runs-row lifecycle, content ``run_id``, progress, cancel, lineage,
+machinery -- run-log lifecycle, content ``run_id``, progress, cancel, lineage,
 and the inference->tracks bridge -- is exercised without any real models.
 """
 
@@ -16,8 +16,12 @@ import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.job import CancelToken, Cancelled
-from mosaic.core.pipeline.progress import read_progress
-from mosaic.core.pipeline.registry import read_run, read_runs
+from mosaic.core.pipeline.run_log import (
+    read_run,
+    read_run_progress,
+    read_runs,
+    run_log_dir,
+)
 from mosaic.tracking import (
     TRACKING_OPS,
     describe_tracking_op,
@@ -62,8 +66,8 @@ def _make_dataset(tmp_path: Path, seqs=("vid1", "vid2")) -> Dataset:
     return ds
 
 
-def _db(ds: Dataset) -> Path:
-    return ds.get_root("features") / ".mosaic.db"
+def _run_dir(ds: Dataset) -> Path:
+    return run_log_dir(ds.base_dir)
 
 
 # --- registry & discovery --------------------------------------------------
@@ -148,7 +152,7 @@ def test_extract_frames_lifecycle(tmp_path, monkeypatch):
     run_id = extract_frames(ds, n_frames=3, method="uniform")
     assert run_id.startswith("uniform-")
 
-    runs = read_runs(_db(ds), kind="extract-frames")
+    runs = read_runs(_run_dir(ds), kind="extract-frames")
     assert len(runs) == 1 and runs[0]["status"] == "finished"
     assert runs[0]["run_id"] == run_id
     assert int(runs[0]["progress_total"]) == 2
@@ -164,13 +168,13 @@ def test_extract_frames_lifecycle(tmp_path, monkeypatch):
     assert set(df["sequence"]) == {"vid1", "vid2"}
 
     # per-entry progress recorded
-    prog = read_progress(_db(ds), runs[0]["execution_id"])
+    prog = read_run_progress(_run_dir(ds), runs[0]["execution_id"])
     assert len([p for p in prog if p["step_type"] == "entry"]) == 2
 
     # cache hit: same params -> same run_id, new attempt
     run_id2 = extract_frames(ds, n_frames=3, method="uniform")
     assert run_id2 == run_id
-    assert len(read_runs(_db(ds), kind="extract-frames")) == 2
+    assert len(read_runs(_run_dir(ds), kind="extract-frames")) == 2
 
 
 def test_extract_frames_cancel(tmp_path, monkeypatch):
@@ -196,7 +200,7 @@ def test_extract_frames_cancel(tmp_path, monkeypatch):
             ds, n_frames=2, method="uniform", parallel_workers=1, cancel_token=token
         )
 
-    runs = read_runs(_db(ds), kind="extract-frames")
+    runs = read_runs(_run_dir(ds), kind="extract-frames")
     assert len(runs) == 1 and runs[0]["status"] == "cancelled"
 
 
@@ -233,7 +237,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
         ds, "train-pose", {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
     )
     assert r1.startswith("train-pose-")
-    row = read_run(_db(ds), read_runs(_db(ds), kind="train-pose")[0]["execution_id"])
+    row = read_run(_run_dir(ds), read_runs(_run_dir(ds), kind="train-pose")[0]["execution_id"])
     assert row["status"] == "finished" and row["run_id"] == r1
     # per-epoch on_epoch_end advances the coarse runs-row counter (2 epochs -> 2/2),
     # so `status --json` progress_done tracks training epochs, not just the stream.
@@ -279,7 +283,7 @@ def test_train_pose_cancel(tmp_path, monkeypatch):
         run_tracking_op(
             ds, "train-pose", {"data": str(data_yaml), "epochs": 1}, cancel_token=token
         )
-    assert read_runs(_db(ds), kind="train-pose")[0]["status"] == "cancelled"
+    assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
 
 
 # --- infer-pose op -> tracks bridge (mocked model) -------------------------
@@ -315,7 +319,7 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     )
     assert run_id.startswith("infer-pose-")
 
-    runs = read_runs(_db(ds), kind="infer-pose")
+    runs = read_runs(_run_dir(ds), kind="infer-pose")
     assert len(runs) == 1 and runs[0]["status"] == "finished"
 
     # standardized tracks written for each sequence

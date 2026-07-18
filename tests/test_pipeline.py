@@ -1,15 +1,10 @@
-"""Regression test: a multi-step Pipeline records an attempt row for EVERY step.
+"""Regression test: a multi-step Pipeline records a run-log for EVERY step.
 
-``Pipeline.run`` shares one ``FeatureRegistry`` across its steps. Each step's
-per-job ``SQLiteProgressCallback`` opens (and closes) its own connection to the
-same ``.mosaic.db``. On a WAL-capable filesystem all steps' ``runs`` attempt rows
-persist; this test locks that in so a future change to the shared-registry path
-can't silently drop later steps from the status bridge.
-
-(Note: on a WAL-hostile filesystem such as exFAT, closing that second connection
-makes the long-lived registry connection lose subsequent writes, so only the first
-step's row survives -- an environmental limitation, not exercised here since pytest's
-tmp_path is on a native filesystem.)
+``Pipeline.run`` no longer shares a DB handle across steps -- each step's
+``run_feature`` opens its own append-only JSONL run-log under
+``<dataset_root>/.mosaic/runs/``. This test locks in that every step leaves an
+attempt record (not just the first), and that pipeline caching is decided purely
+by the parquet outputs on disk (``index.csv`` + files), never by a status flag.
 """
 
 from __future__ import annotations
@@ -22,8 +17,13 @@ import pandas as pd
 from mosaic.behavior.feature_library import SpeedAngvel
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline import FeatureStep, Pipeline
-from mosaic.core.pipeline.index import feature_run_root
-from mosaic.core.pipeline.registry import open_registry, read_runs
+from mosaic.core.pipeline.index import (
+    FeatureIndexRow,
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+)
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 
 
 def _dataset_with_tracks(tmp_path: Path) -> Dataset:
@@ -53,17 +53,16 @@ def test_pipeline_records_every_step(tmp_path: Path) -> None:
     ds = _dataset_with_tracks(tmp_path)
 
     # Two independent tracks-sourced steps (same feature, different params -> two
-    # distinct run_ids). The pipeline runs them sequentially on one shared registry.
+    # distinct run_ids). Each step runs under its own JSONL run-log.
     pipe = Pipeline()
     pipe.add(FeatureStep("speed_a", SpeedAngvel, {"step_size": 1}))
     pipe.add(FeatureStep("speed_b", SpeedAngvel, {"step_size": 2}))
     pipe.run(ds)
 
-    db = ds.get_root("features") / ".mosaic.db"
-    runs = read_runs(db, kind="feature")
+    runs = read_runs(run_log_dir(ds.base_dir), kind="feature")
 
-    # BOTH steps must have left an attempt row -- not just the first.
-    assert len(runs) == 2, f"expected 2 attempt rows, got {[r['run_id'] for r in runs]}"
+    # BOTH steps must have left an attempt record -- not just the first.
+    assert len(runs) == 2, f"expected 2 attempt logs, got {[r['run_id'] for r in runs]}"
     assert {str(r["status"]) for r in runs} == {"finished"}
     assert len({str(r["run_id"]) for r in runs}) == 2
 
@@ -108,6 +107,8 @@ def test_scope_relative_finished_is_not_trusted(tmp_path: Path) -> None:
 
     Reproduces the ffgm_main failure: a downstream step whose partial upstream
     truncated its manifest honestly marks itself finished for that smaller scope.
+    The completeness check is disk-based, so an ``index.csv`` that claims the run
+    is finished over 1 of 2 sequences is still overruled by the missing parquet.
     """
     ds = _dataset_with_tracks(tmp_path)
     pipe = Pipeline()
@@ -119,21 +120,36 @@ def test_scope_relative_finished_is_not_trusted(tmp_path: Path) -> None:
     entry = run_root / "g__s1.parquet"
     _write_dummy_parquet(entry)
 
-    reg = open_registry(ds.get_root("features"))
-    reg.record_run_start(storage, rid, "0.1", "hash")
-    reg.record_entry(storage, rid, "g", "s1", entry, 1)
-    reg.mark_finished(storage, rid)
-    assert reg.run_is_finished(storage, rid) is True  # DB says done...
-    reg.close()
+    # Seed index.csv to claim the run is FINISHED, but over only 1 of 2 sequences.
+    idx = feature_index(feature_index_path(ds, storage))
+    idx.append(
+        [
+            FeatureIndexRow(
+                run_id=rid,
+                feature=storage,
+                version="0.1",
+                group="g",
+                sequence="s1",
+                abs_path=Path(ds.relative_to_root(entry)),
+                n_rows=1,
+                params_hash="hash",
+            )
+        ]
+    )
+    idx.mark_finished(rid)
+    finished_df = idx.read(run_id=rid)
+    assert (finished_df["finished_at"] != "").all()  # index says done...
 
-    # ...but only 1 of 2 target sequences exists, so it is NOT cached.
+    # ...but only 1 of 2 target sequences exists on disk, so it is NOT cached.
     assert _resolve(pipe, ds, "speed")["cached"] is False
     pipe.run(ds)
     assert len(list(run_root.glob("*.parquet"))) == 2
 
 
-def test_complete_run_stays_cached_including_legacy_no_db(tmp_path: Path) -> None:
-    """A fully complete run reads cached; removing .mosaic.db doesn't change that."""
+def test_complete_run_stays_cached_without_run_logs(tmp_path: Path) -> None:
+    """A fully complete run reads cached; deleting the run-logs doesn't change it."""
+    import shutil
+
     ds = _dataset_with_tracks(tmp_path)
     pipe = Pipeline()
     pipe.add(FeatureStep("speed", SpeedAngvel, {"step_size": 1}))
@@ -141,9 +157,11 @@ def test_complete_run_stays_cached_including_legacy_no_db(tmp_path: Path) -> Non
 
     assert _resolve(pipe, ds, "speed")["cached"] is True
 
-    # Legacy fallback: the check is disk-based, so a full on-disk run with no DB
-    # still caches (old runs must not be force-recomputed).
-    (ds.get_root("features") / ".mosaic.db").unlink(missing_ok=True)
+    # The cache check is disk-based (parquet + index.csv), never the status store.
+    # Blowing away the JSONL run-logs must not force a recompute.
+    run_dir = run_log_dir(ds.base_dir)
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
     assert _resolve(pipe, ds, "speed")["cached"] is True
 
 

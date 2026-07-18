@@ -1,7 +1,7 @@
 """``mosaic cancel``: best-effort, single-box cooperative cancel of a running attempt.
 
 The library cannot cooperatively signal *another* process, so this sends
-SIGTERM to the pid recorded on the ``runs`` row (which ``install_signal_handler``
+SIGTERM to the pid recorded in the attempt's run-log (which ``install_signal_handler``
 in the target process converts to a cooperative cancel). It lands at the op's
 next checkpoint; real process-group hard-kill is the Layer-2 executor's job.
 Cross-host cancel is refused.
@@ -17,7 +17,7 @@ from typing import Annotated
 
 import typer
 
-from mosaic.cli._context import features_db_path, load_dataset
+from mosaic.cli._context import load_dataset, run_log_dir_for
 from mosaic.cli._io import emit_json, fail, log
 
 
@@ -36,13 +36,13 @@ def cancel_command(
     ] = False,
 ) -> None:
     """Request cancellation of a running attempt (SIGTERM to its recorded pid)."""
-    from mosaic.core.pipeline.registry import read_run
+    from mosaic.core.pipeline.run_log import read_run
 
     ds = load_dataset(manifest)
-    db = features_db_path(ds)
-    if not db.exists():
-        fail("No run database found (nothing has run yet).")
-    row = read_run(db, execution_id)
+    run_dir = run_log_dir_for(ds)
+    if not run_dir.exists():
+        fail("No run-logs found (nothing has run yet).")
+    row = read_run(run_dir, execution_id)
     if row is None:
         fail(f"No run found with execution_id={execution_id}.")
 

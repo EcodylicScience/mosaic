@@ -30,7 +30,6 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
 )
 from mosaic.core.pipeline.manifest import _resolve_feature
-from mosaic.core.pipeline.registry import open_registry
 
 
 # --- Mock dataset (resolves relative paths against its root) ---
@@ -167,30 +166,21 @@ def test_reindex_dry_run_reports_without_writing(tmp_path: Path) -> None:
     assert len(idx.read(run_id=run_id)) == 2
 
 
-def test_reindex_drops_missing_keeps_present_and_reconciles_registry(
-    tmp_path: Path,
-) -> None:
+def test_reindex_drops_missing_keeps_present(tmp_path: Path) -> None:
     ds, feat, run_id = _dataset_with_manual_feature(tmp_path)
-    # Seed the SQLite mirror from the CSV (2 entries).
-    reg = open_registry(ds.get_root("features"))
-    assert len(reg.list_entries(feat, run_id)) == 2
-    reg.close()
+    # index.csv starts with 2 entries.
+    idx = feature_index(feature_index_path(ds, feat))
+    assert len(idx.read(run_id=run_id)) == 2
 
     (ds.get_root("features") / feat / run_id / "g__s1.parquet").unlink()
 
     report = ds.reindex_features(dry_run=False)
     assert sum(report.values()) == 1
 
-    idx = feature_index(feature_index_path(ds, feat))
-    remaining = idx.read(run_id=run_id)
+    # index.csv is the source of truth: the missing entry is pruned, s2 kept.
+    remaining = feature_index(feature_index_path(ds, feat)).read(run_id=run_id)
     assert len(remaining) == 1
     assert (remaining.iloc[0]["group"], remaining.iloc[0]["sequence"]) == ("g", "s2")
-
-    reg = open_registry(ds.get_root("features"), migrate_csv=False)
-    entries = reg.list_entries(feat, run_id)
-    reg.close()
-    assert len(entries) == 1
-    assert entries.iloc[0]["sequence"] == "s2"
 
 
 def test_reindex_keeps_relocated_present_rows(tmp_path: Path) -> None:
