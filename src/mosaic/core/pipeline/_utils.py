@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import hashlib
 import json
 import os
 import tempfile
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +13,14 @@ import numpy as np
 from pydantic import BaseModel
 
 from mosaic.core.helpers import make_entry_key
+
+# ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
+# ``mosaic.runlog`` (so external readers can import them without the heavy pipeline).
+# Re-exported here to keep the historical ``from ._utils import ...`` call sites working.
+from mosaic.runlog import (
+    new_execution_id as new_execution_id,
+    now_iso as now_iso,
+)
 
 # --- Pipeline data types ---
 
@@ -85,10 +91,6 @@ def hash_params(d: object) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
 
 
-def now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
 # Process umask, read once at import (single-threaded startup). Used to restore
 # sensible permissions on temp files, which ``mkstemp`` creates mode 0600.
 _UMASK = os.umask(0)
@@ -119,35 +121,6 @@ def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
-
-
-# Crockford base32 (excludes I, L, O, U to avoid ambiguity) -- the ULID alphabet.
-_CROCKFORD_B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-
-def new_execution_id() -> str:
-    """Return a fresh ULID identifying one execution *attempt*.
-
-    A ULID is a 128-bit id: a 48-bit millisecond timestamp in the high bits
-    followed by 80 bits of randomness, rendered as 26 Crockford-base32
-    characters. The timestamp prefix makes ids lexicographically sortable by
-    creation time (unlike ``uuid4``), which the run-attempt ledger and the
-    downstream Dolt ``Run`` primary key both rely on.
-
-    This is the identity of an *attempt* and is intentionally
-    non-deterministic. It is never hashed into a ``run_id`` and never written
-    into a feature/model output -- only into the attempt's JSONL run-log filename
-    and its ``job_id`` progress events. Determinism of ``run_id`` is therefore
-    unaffected.
-    """
-    timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
-    randomness = int.from_bytes(os.urandom(10), "big")  # 80 bits
-    value = (timestamp_ms << 80) | randomness
-    chars = [""] * 26
-    for i in range(25, -1, -1):
-        chars[i] = _CROCKFORD_B32[value & 0x1F]
-        value >>= 5
-    return "".join(chars)
 
 
 def coerce_np(obj: object) -> object:
