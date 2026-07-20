@@ -26,6 +26,7 @@ import dataclasses
 import json
 import sys
 from collections.abc import Iterable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,7 +37,7 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
-from mosaic.core.pipeline.job import Cancelled, job_context
+from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.schema import ensure_track_schema
 
@@ -44,6 +45,7 @@ from .run import run_trex_convert, run_trex_track
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.progress import ProgressCallback
 
 
 # --- TREx run index -------------------------------------------------------
@@ -217,8 +219,13 @@ def run_trex(
     execution_id: str | None = None,
     owner: str = "",
     track: bool = True,
-    progress_callback=None,
-    cancel_token=None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_token: CancelToken | None = None,
+    # When set, run inside this already-open JobContext instead of opening one -- the
+    # ``mosaic run --kind trex`` path (``TrexOp``) hands its ctx here so TREx rides the
+    # standard tracking-op runner without double-wrapping the Job Contract. The
+    # standalone/CLI path leaves it None; execution_id/owner/track/callbacks then open one.
+    ctx: JobContext | None = None,
 ) -> str:
     """Run TREx (convert + track) over scoped videos as a tracked job.
 
@@ -290,18 +297,24 @@ def run_trex(
     idx.ensure()
 
     index_rows: list[TRexIndexRow] = []
-    with job_context(
-        ds,
-        kind="trex",
-        target="trex-track",
-        execution_id=execution_id,
-        owner=owner,
-        track=track,
-        progress_callback=progress_callback,
-        cancel_token=cancel_token,
-        total=len(work_items),
-    ) as ctx:
+    # Reuse a caller-provided context (TrexOp / run_tracking_op) or open our own.
+    managed: AbstractContextManager[JobContext] = (
+        nullcontext(ctx)
+        if ctx is not None
+        else job_context(
+            ds,
+            kind="trex",
+            target="trex-track",
+            execution_id=execution_id,
+            owner=owner,
+            track=track,
+            progress_callback=progress_callback,
+            cancel_token=cancel_token,
+        )
+    )
+    with managed as ctx:
         ctx.set_run_id(run_id)
+        ctx.set_total(len(work_items))
         cancel_check = ctx.cancel_token.is_cancelled
 
         try:

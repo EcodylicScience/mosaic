@@ -84,8 +84,14 @@ def test_registry_has_builtin_ops():
         "infer-points",
         "infer-localizer",
     }
+    assert "trex" in kinds
     for op in list_tracking_ops():
-        assert op["kind"] in kinds and op["category"] in {"extract", "train", "infer"}
+        assert op["kind"] in kinds and op["category"] in {
+            "extract",
+            "train",
+            "infer",
+            "convert",
+        }
 
 
 def test_describe_returns_params_schema():
@@ -338,3 +344,47 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
 
     iidx = inference_index(prediction_index_path(ds, "infer-pose"))
     assert set(iidx.read(run_id=run_id)["sequence"]) == {"vid1", "vid2"}
+
+
+# --- trex op (registered; run_id parity with the standalone run_trex) -------
+
+
+def test_trex_registered_as_gpu_convert_op():
+    assert "trex" in TRACKING_OPS
+    d = describe_tracking_op("trex")
+    assert d["category"] == "convert"
+    assert {"detect_model", "track_max_individuals", "entries"} <= set(
+        d["params_schema"]["properties"]
+    )
+    from mosaic.tracking.registry import op_resource_class
+
+    # declared "gpu" despite category "convert" (TREx needs the GPU for YOLO detect)
+    assert op_resource_class("trex") == "gpu"
+
+
+def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
+    # TrexOp must produce the same content run_id as calling run_trex directly for the same
+    # settings, so existing TREx tracks stay cache-valid after the op refactor. Scope to a
+    # missing sequence so the run short-circuits (empty media) before any trex binary is used.
+    from mosaic.tracking import run_trex
+
+    ds = _make_dataset(tmp_path)
+    direct = run_trex(ds, sequences=["nonexistent"])
+    via_op = run_tracking_op(ds, "trex", {"sequences": ["nonexistent"]})
+    assert direct == via_op
+    assert direct.startswith("trex-")
+
+
+def test_trex_params_exclude_throughput_from_run_id():
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.tracking.ops.trex import TrexParams
+
+    a = TrexParams(
+        detect_model="m.pt", timeout=600, overwrite=False, convert_to_tracks=True
+    )
+    b = TrexParams(
+        detect_model="m.pt", timeout=30, overwrite=True, convert_to_tracks=False
+    )
+    assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
+    c = TrexParams(detect_model="other.pt")
+    assert hash_params(c.identity_dump()) != hash_params(a.identity_dump())

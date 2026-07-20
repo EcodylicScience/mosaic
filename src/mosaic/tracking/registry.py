@@ -57,6 +57,11 @@ class TrackingOp(Generic[P]):
     kind: ClassVar[str]
     category: ClassVar[str]  # "extract" | "train" | "infer" | "convert"
     version: ClassVar[str] = "0.1"
+    # Compute-placement hint for schedulers / the execution router ("gpu" | "heavy" |
+    # "cpu"). Empty ("") derives it from ``category`` (train/infer -> gpu, else cpu) via
+    # :func:`op_resource_class`; an op overrides it when category is misleading (e.g. TREx
+    # is category "convert" but needs the GPU for YOLO detection, so it declares "gpu").
+    resource_class: ClassVar[str] = ""
     Params: ClassVar[type[Params]]
 
     def target(self, params: P) -> str:
@@ -133,6 +138,31 @@ def list_tracking_ops(category: str | None = None) -> list[dict[str, object]]:
         for c in ops
         if category is None or c.category == category
     ]
+
+
+_CATEGORY_RESOURCE_CLASS: dict[str, str] = {
+    "train": "gpu",
+    "infer": "gpu",
+    "extract": "cpu",
+    "convert": "cpu",
+}
+
+
+def op_resource_class(kind: str) -> str:
+    """Return a tracking op's compute-placement class (``"gpu"`` | ``"heavy"`` | ``"cpu"``).
+
+    Prefers the op's explicit ``resource_class`` classvar; otherwise derives it from
+    ``category`` (train/infer -> gpu, else cpu). Unknown kinds fall back to ``"cpu"``. Used by
+    the execution router to send GPU work (training, inference, TREx) to a GPU lane / k8s
+    without any per-op routing edits.
+    """
+    op_cls = TRACKING_OPS.get(kind)
+    if op_cls is None:
+        return "cpu"
+    declared = getattr(op_cls, "resource_class", "")
+    if declared:
+        return declared
+    return _CATEGORY_RESOURCE_CLASS.get(op_cls.category, "cpu")
 
 
 def describe_tracking_op(kind: str) -> dict[str, object]:
