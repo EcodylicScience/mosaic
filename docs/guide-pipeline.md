@@ -157,12 +157,15 @@ list_feature_runs(dataset, "speed-angvel__from__tracks")
 
 - **Attempt status & progress** live in one append-only JSONL run-log per
   attempt, under `<dataset_root>/.mosaic/runs/<execution_id>.jsonl`. Each unit of
-  compute that runs under the Job Contract (features, tracking ops, TREx, and
-  future payloads) records its lifecycle (`started` → `finished` / `failed` /
-  `cancelled`), a liveness heartbeat, and coarse per-entry / per-epoch progress
-  there. It is job-kind-agnostic (the `kind` is a field in the log, not part of
-  the path) and NFS-safe (one writer, append-only). These files are ephemeral —
-  bounded by the work and safe to age out.
+  compute that runs under the Job Contract (features and ops — tracking ops such
+  as TREx, media ops such as transcode, and future payloads) records its
+  lifecycle (`started` → `finished` / `failed` / `cancelled`), a liveness
+  heartbeat, and coarse per-entry / per-epoch progress there. It is
+  job-kind-agnostic (the `kind` is a field in the log, not part of the path) and
+  NFS-safe (one writer, append-only). These files are ephemeral — bounded by the
+  work and safe to age out. Ops span domains: `mosaic run --kind infer-pose` runs
+  a tracking op, `mosaic run --kind transcode` runs a media op, and both go
+  through the same `run_op` entry point.
 
 Read attempt status from the CLI or the stdlib-only reader helpers:
 

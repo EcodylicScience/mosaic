@@ -1,9 +1,10 @@
 """Multi-video transcode job with bidirectional derivative links.
 
-A registered-free job (invoked directly, mirroring ``run_feature``'s open)
-that transcodes the originals of one ``(group, sequence)`` entry for the
-analysis or playback target, running the minimum operation each source needs.
-When a source is already clean for the target, nothing is written for it.
+``TranscodeOp`` is a registered op (``kind="transcode"``, ``domain="media"``) run
+through :func:`mosaic.core.pipeline.ops.run_op`. It transcodes the originals of
+one ``(group, sequence)`` entry for the analysis or playback target, running the
+minimum operation each source needs. When a source is already clean for the
+target, nothing is written for it.
 
 Each performed transcode writes a per-target derivative under the ``media`` root
 (``<entry>.analysis.mp4`` or ``<entry>.playback.mp4``, so the two coexist) and
@@ -45,7 +46,6 @@ from mosaic_media.transcode import (
     TranscodeResult,
     run_transcode,
 )
-from pydantic import BaseModel
 
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.media.facts_columns import (
@@ -54,11 +54,13 @@ from mosaic.core.media.facts_columns import (
     facts_to_row,
     series_facts_or_none,
 )
-from mosaic.core.pipeline.job import CancelToken, job_context
+from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.types import Params
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline.progress import ProgressCallback
+    from mosaic.core.pipeline.job import JobContext
 
 # Progress denominator per source file: fraction in [0, 1] maps onto this many
 # ticks so the aggregate advances smoothly across all N sources.
@@ -71,7 +73,7 @@ _NUMERIC_INDEX_COLUMNS = frozenset(
 )
 
 
-class TranscodeParams(BaseModel):
+class TranscodeParams(Params):
     """Parameters for one entry's transcode job."""
 
     entry: tuple[str, str]  # (group, sequence)
@@ -87,6 +89,25 @@ def _suffix_for_multi(index: int, n_sources: int) -> str:
 def _relative_to(path: Path, anchor: Path) -> str:
     """POSIX-style path of *path* relative to *anchor* (falls back to relpath)."""
     return Path(os.path.relpath(path.resolve(), anchor.resolve())).as_posix()
+
+
+def _transcode_run_id(
+    params: TranscodeParams, sources: list[tuple[int, str, int]]
+) -> str:
+    """Content run_id: params identity plus an ordered per-source (rel path, size) digest.
+
+    *sources* is ``(video_order, path relative to the media_raw root, size_bytes)``
+    per source, in ``video_order``. Relative paths and sizes (not absolute paths or
+    mtimes) keep the digest copy-stable across machines.
+    """
+    fingerprint = {
+        "params": params.identity_dump(),
+        "sources": [
+            [order, rel_path, size]
+            for order, rel_path, size in sorted(sources, key=lambda item: item[0])
+        ],
+    }
+    return f"transcode-{hash_params(fingerprint)}"
 
 
 def _load_index(index_path: Path) -> pd.DataFrame:
@@ -192,46 +213,41 @@ def _set_back_link(
     combined[MEDIA_INDEX_COLUMNS].to_csv(index_path, index=False)
 
 
-def run_transcode_op(
-    ds: "Dataset",
-    params: TranscodeParams,
-    *,
-    execution_id: str = "",
-    owner: str = "",
-    cancel_token: CancelToken | None = None,
-    progress_callback: "ProgressCallback | None" = None,
-) -> str:
-    """Transcode one entry's originals and link the derivatives both ways.
+@register_op
+class TranscodeOp(Op[TranscodeParams]):
+    """Transcode one entry's originals for a target and link the derivatives both ways."""
 
-    Reads the originals directly from the ``media_raw`` index (never
-    :meth:`Dataset.resolve_media`, which would route to a derivative), then for
-    each source runs the minimum operation for *params.target*. Sources already
-    clean for the target are left untouched (no derivative, no link).
+    kind = "transcode"
+    domain = "media"
+    category = "transcode"
+    version = "0.1"
+    Params = TranscodeParams
 
-    Returns a comma-separated list of the derivative paths written (relative to
-    the ``media`` root), or ``""`` when every source was already clean.
-    """
-    group, sequence = params.entry
-    matched = ds.match_media_rows(group, sequence)
-    sources = [
-        (int(row.get("video_order", 0) or 0), ds.resolve_path(row["abs_path"]), row)
-        for _, row in matched.iterrows()
-    ]
-    n_sources = len(sources)
-    encoding = ANALYSIS_ENCODING if params.target == "analysis" else PLAYBACK_ENCODING
-    media_root = ds.get_root("media")
+    def target(self, params: TranscodeParams) -> str:
+        group, sequence = params.entry
+        return f"{group}/{sequence}"
 
-    written: list[str] = []
-    with job_context(
-        ds,
-        kind="transcode",
-        target=f"{group}/{sequence}",
-        execution_id=execution_id or None,
-        owner=owner,
-        track=True,
-        progress_callback=progress_callback,
-        cancel_token=cancel_token,
-    ) as ctx:
+    def run(self, ds: "Dataset", params: TranscodeParams, ctx: "JobContext") -> str:
+        group, sequence = params.entry
+        matched = ds.match_media_rows(group, sequence)
+        sources = [
+            (int(row.get("video_order", 0) or 0), ds.resolve_path(row["abs_path"]), row)
+            for _, row in matched.iterrows()
+        ]
+        raw_root = ds.get_root(ds.resolve_media_root())
+        fingerprint_sources = [
+            (order, _relative_to(path, raw_root), int(row.get("size_bytes", 0) or 0))
+            for order, path, row in sources
+        ]
+        run_id = _transcode_run_id(params, fingerprint_sources)
+        ctx.set_run_id(run_id)
+
+        n_sources = len(sources)
+        encoding = (
+            ANALYSIS_ENCODING if params.target == "analysis" else PLAYBACK_ENCODING
+        )
+        media_root = ds.get_root("media")
+
         ctx.set_total(n_sources * _TICKS_PER_SOURCE)
         for i, (video_order, source, row) in enumerate(sources):
             ctx.check_cancel()
@@ -293,6 +309,5 @@ def run_transcode_op(
                 result.output_verdict,
                 video_order,
             )
-            written.append(derivative_rel)
 
-    return ",".join(written)
+        return run_id

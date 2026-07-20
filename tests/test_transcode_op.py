@@ -18,7 +18,8 @@ from mosaic_media import (
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import row_to_facts
-from mosaic.core.pipeline.transcode import TranscodeParams, run_transcode_op
+from mosaic.core.pipeline.ops import list_ops, run_op
+from mosaic.core.pipeline.transcode import TranscodeParams
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -94,10 +95,11 @@ def test_transcode_op_writes_derivative_and_links(tmp_path):
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
         ds.resolve_media(group, sequence)
 
-    summary = run_transcode_op(
-        ds, TranscodeParams(entry=(group, sequence), target="analysis")
+    run_id = run_op(
+        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
     )
-    assert summary  # a derivative path was written
+    assert run_id.startswith("transcode-")
+    assert list(ds.get_root("media").glob("*.mp4"))  # a derivative was written
 
     # A derivative exists under media/ and re-probes clean.
     derivative_files = list(ds.get_root("media").glob("*.mp4"))
@@ -145,8 +147,8 @@ def test_analysis_facts_not_crossed_when_playback_transcoded_first(tmp_path):
     # shares source_path with the analysis row) then precedes the analysis row in
     # the media index, so a source_path-first lookup would return playback facts
     # for the analysis route.
-    run_transcode_op(ds, TranscodeParams(entry=(group, sequence), target="playback"))
-    run_transcode_op(ds, TranscodeParams(entry=(group, sequence), target="analysis"))
+    run_op(ds, "transcode", TranscodeParams(entry=(group, sequence), target="playback"))
+    run_op(ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis"))
 
     analysis_files = list(ds.get_root("media").glob("*.analysis.mp4"))
     playback_files = list(ds.get_root("media").glob("*.playback.mp4"))
@@ -195,17 +197,48 @@ def test_transcode_op_is_idempotent(tmp_path):
 
     group, sequence = _indexed_entry(ds, source_dir)
 
-    first = run_transcode_op(
-        ds, TranscodeParams(entry=(group, sequence), target="analysis")
+    first = run_op(
+        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
     )
-    second = run_transcode_op(
-        ds, TranscodeParams(entry=(group, sequence), target="analysis")
+    second = run_op(
+        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
     )
-    assert first == second
-
-    # Re-running replaces, not duplicates, the derivative and its index row.
+    assert first == second  # deterministic run_id
+    # The real invariant: one derivative, one media row, one raw row -- no duplication.
     assert len(list(ds.get_root("media").glob("*.mp4"))) == 1
     media_df = pd.read_csv(ds.get_root("media") / "index.csv")
     assert len(media_df) == 1
     raw_df = pd.read_csv(ds.get_root("media_raw") / "index.csv")
     assert len(raw_df) == 1
+
+
+def test_transcode_registered_as_media_op():
+    from mosaic.core.pipeline.ops import OPS, describe_op
+
+    assert "transcode" in OPS
+    info = describe_op("transcode")
+    assert info["domain"] == "media"
+    assert info["category"] == "transcode"
+    assert "params_schema" in info
+    schema = TranscodeParams.model_json_schema()
+    assert {"entry", "target", "allow_hardware"} <= set(schema["properties"])
+
+
+def test_transcode_excluded_from_tracking_listing():
+    kinds = {entry["kind"] for entry in list_ops(domain="tracking")}
+    assert "transcode" not in kinds
+    assert "transcode" in {entry["kind"] for entry in list_ops()}
+
+
+def test_transcode_resource_class_is_cpu():
+    from mosaic.core.pipeline.ops import op_resource_class
+
+    assert op_resource_class("transcode") == "cpu"
+
+
+def test_transcode_params_reject_unknown_key():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TranscodeParams.model_validate({"entry": ("", "vid1"), "bogus": 1})

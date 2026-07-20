@@ -20,6 +20,7 @@ from .manifest import (
 )
 from .pipeline import CallbackStep, FeatureStep, Pipeline
 from .run import load_values
+from . import transcode as transcode  # explicit re-export; the import registers the media op
 from .types import (
     Feature,
     Inputs,

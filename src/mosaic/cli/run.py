@@ -40,7 +40,9 @@ def run_command(
     ] = None,
     kind: Annotated[
         str | None,
-        typer.Option("--kind", help="Tracking-op kind to run, e.g. 'infer-pose'."),
+        typer.Option(
+            "--kind", help="Op kind to run, e.g. 'infer-pose' or 'transcode'."
+        ),
     ] = None,
     params: Annotated[
         str | None,

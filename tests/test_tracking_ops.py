@@ -82,7 +82,7 @@ def test_registry_has_builtin_ops():
         "infer-localizer",
     }
     assert "trex" in kinds
-    for op in list_ops():
+    for op in list_ops(domain="tracking"):
         assert op["kind"] in kinds and op["category"] in {
             "extract",
             "train",
