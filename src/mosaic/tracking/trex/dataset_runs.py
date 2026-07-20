@@ -266,6 +266,22 @@ def run_trex(
     run_root = trex_run_root(ds, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
 
+    # Resolve a training run_id (e.g. "train-points-<hash>") to its best.pt weights for the
+    # trex invocation -- the train->track handoff. The run_id hash above intentionally keys on
+    # the original reference (portable across machines), not the resolved absolute path.
+    detect_model_exec: Path | str | None = detect_model
+    if detect_model is not None and not Path(str(detect_model)).exists():
+        from mosaic.tracking.registry import resolve_model
+
+        ref = str(detect_model)
+        model_kind = ref.rsplit("-", 1)[0] if ref.count("-") >= 2 else "train-points"
+        try:
+            detect_model_exec, _ = resolve_model(ds, ref, model_kind)
+        except (FileNotFoundError, KeyError):
+            detect_model_exec = (
+                detect_model  # let TREx surface a clear "not found" error
+            )
+
     params_path = run_root / "run_params.json"
     try:
         params_path.write_text(json.dumps(json_ready(settings), indent=2))
@@ -334,7 +350,7 @@ def run_trex(
                     convert_result = run_trex_convert(
                         video_path,
                         seq_dir,
-                        detect_model=detect_model,
+                        detect_model=detect_model_exec,
                         detect_type=detect_type,
                         detect_conf_threshold=detect_conf_threshold,
                         detect_iou_threshold=detect_iou_threshold,

@@ -19,6 +19,7 @@ from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 from mosaic.tracking.registry import TrackingOp, register_tracking_op, resolve_model
 
 if TYPE_CHECKING:
@@ -46,42 +47,6 @@ def trained_model_index(path: Path) -> IndexCSV[TrainedModelIndexRow]:
 
 
 # --- Shared helpers ------------------------------------------------------
-
-
-def _ensure_models_root(ds: Dataset) -> None:
-    if not ds.has_root("models"):
-        ds.set_root("models", "models")
-
-
-def _fingerprint_dataset(path: Path) -> str:
-    """Cheap, copy-stable digest of a training dataset (file text + size listing).
-
-    Uses relative paths + file sizes (not mtimes) so a copied/moved dataset with
-    identical contents fingerprints identically -- keeping training run_ids
-    deterministic across machines.
-    """
-    path = Path(path)
-    parts: dict[str, object] = {}
-    if path.is_file():
-        parts["file"] = path.name
-        try:
-            parts["text"] = path.read_text(errors="ignore")
-        except Exception:
-            parts["text"] = ""
-        base = path.parent
-    else:
-        base = path
-    listing: list[str] = []
-    if base.exists():
-        for f in sorted(base.rglob("*")):
-            if f.is_file():
-                try:
-                    size = f.stat().st_size
-                except OSError:
-                    size = -1
-                listing.append(f"{f.relative_to(base).as_posix()}:{size}")
-    parts["listing"] = listing
-    return hash_params(parts)
 
 
 def _finalize_training(
@@ -135,7 +100,9 @@ class PoseTrainParams(Params):
 
 
 class PointTrainParams(PoseTrainParams):
-    model: str = "polov8n.yaml"
+    # POLO nano localizer config. Resolves to ``cfg/models/26/polo26.yaml`` at scale ``n``
+    # (Locate task) in the mooch443/POLO fork; matches the deployed ``polo26n`` detector.
+    model: str = "polo26n.yaml"
     loc: float = 5.0
     loc_loss: str = "mse"
     dor: float = 0.8
@@ -170,7 +137,7 @@ class TrainPoseOp(TrackingOp[PoseTrainParams]):
     def run(self, ds: Dataset, params: PoseTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.train import train_pose_model
 
-        _ensure_models_root(ds)
+        ensure_models_root(ds)
         data_yaml = Path(ds.resolve_path(params.data))
         model_arg = params.model
         base_run_id = ""
@@ -183,7 +150,7 @@ class TrainPoseOp(TrackingOp[PoseTrainParams]):
             hash_params(
                 {
                     "params": params.identity_dump(),
-                    "data": _fingerprint_dataset(data_yaml),
+                    "data": fingerprint_dataset(data_yaml),
                     "base": base_run_id,
                 }
             ),
@@ -234,7 +201,7 @@ class TrainPointsOp(TrackingOp[PointTrainParams]):
     def run(self, ds: Dataset, params: PointTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.train import train_point_model
 
-        _ensure_models_root(ds)
+        ensure_models_root(ds)
         data_yaml = Path(ds.resolve_path(params.data))
         model_arg = params.model
         base_run_id = ""
@@ -247,7 +214,7 @@ class TrainPointsOp(TrackingOp[PointTrainParams]):
             hash_params(
                 {
                     "params": params.identity_dump(),
-                    "data": _fingerprint_dataset(data_yaml),
+                    "data": fingerprint_dataset(data_yaml),
                     "base": base_run_id,
                 }
             ),
@@ -302,7 +269,7 @@ class TrainLocalizerOp(TrackingOp[LocalizerTrainParams]):
     def run(self, ds: Dataset, params: LocalizerTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.localizer_train import train_localizer
 
-        _ensure_models_root(ds)
+        ensure_models_root(ds)
         dataset_dir = Path(ds.resolve_path(params.dataset_dir))
         weights = None
         base_run_id = ""
@@ -315,7 +282,7 @@ class TrainLocalizerOp(TrackingOp[LocalizerTrainParams]):
             hash_params(
                 {
                     "params": params.identity_dump(),
-                    "data": _fingerprint_dataset(dataset_dir),
+                    "data": fingerprint_dataset(dataset_dir),
                     "base": base_run_id,
                 }
             ),

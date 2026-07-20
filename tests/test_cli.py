@@ -199,8 +199,17 @@ def test_features_list_and_describe() -> None:
 def test_tracking_list_and_describe() -> None:
     ops = json.loads(runner.invoke(app, ["tracking", "list", "--json"]).stdout)
     kinds = {o["kind"] for o in ops}
-    assert {"extract-frames", "train-pose", "infer-pose"} <= kinds
-    assert len(kinds) == 7
+    assert kinds == {
+        "extract-frames",
+        "train-pose",
+        "train-points",
+        "train-localizer",
+        "infer-pose",
+        "infer-points",
+        "infer-localizer",
+        "trex",
+        "convert-points",
+    }
 
     desc = json.loads(
         runner.invoke(app, ["tracking", "describe", "infer-pose", "--json"]).stdout

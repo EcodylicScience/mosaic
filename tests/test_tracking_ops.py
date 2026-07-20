@@ -243,7 +243,9 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
         ds, "train-pose", {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
     )
     assert r1.startswith("train-pose-")
-    row = read_run(_run_dir(ds), read_runs(_run_dir(ds), kind="train-pose")[0]["execution_id"])
+    row = read_run(
+        _run_dir(ds), read_runs(_run_dir(ds), kind="train-pose")[0]["execution_id"]
+    )
     assert row["status"] == "finished" and row["run_id"] == r1
     # per-epoch on_epoch_end advances the coarse runs-row counter (2 epochs -> 2/2),
     # so `status --json` progress_done tracks training epochs, not just the stream.
@@ -388,3 +390,174 @@ def test_trex_params_exclude_throughput_from_run_id():
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
     c = TrexParams(detect_model="other.pt")
     assert hash_params(c.identity_dump()) != hash_params(a.identity_dump())
+
+
+# --- convert-points op (real converter, no heavy backend) ------------------
+
+
+def _write_cvat_points_fixture(root: Path, n_groups: int = 5, per_group: int = 2):
+    """Write a tiny CVAT 'for Images 1.1' XML + matching (empty) image files.
+
+    Returns (xml_path, images_dir). Filenames use the ``<stem>__frame_XXXXXX.png``
+    convention so ``split_by='group'`` groups by video stem.
+    """
+    images_dir = root / "cvat" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    lines = ['<?xml version="1.0" encoding="utf-8"?>', "<annotations>"]
+    for g in range(n_groups):
+        for f in range(per_group):
+            name = f"v{g}__frame_{f:06d}.png"
+            (images_dir / name).write_bytes(b"")  # existence only; dims come from XML
+            lines.append(f'  <image name="{name}" width="640" height="480">')
+            lines.append('    <points points="100.0,120.0">')
+            lines.append('      <attribute name="class">UnmarkedBee</attribute>')
+            lines.append("    </points>")
+            lines.append("  </image>")
+    lines.append("</annotations>")
+    xml_path = root / "cvat" / "annotations.xml"
+    xml_path.write_text("\n".join(lines))
+    return xml_path, images_dir
+
+
+def test_convert_points_registered():
+    assert "convert-points" in TRACKING_OPS
+    d = describe_tracking_op("convert-points")
+    assert d["category"] == "convert"
+    assert {"cvat_xml", "images_dir", "class_names", "radii"} <= set(
+        d["params_schema"]["properties"]
+    )
+
+
+def test_point_train_default_model_is_polo26n():
+    from mosaic.tracking.ops.train import PointTrainParams
+
+    assert PointTrainParams(data="d.yaml").model == "polo26n.yaml"
+
+
+def test_convert_points_lifecycle(tmp_path):
+    ds = _make_dataset(tmp_path)
+    xml, images_dir = _write_cvat_points_fixture(ds.base_dir)
+
+    params = {
+        "cvat_xml": ds.relative_to_root(xml),
+        "images_dir": ds.relative_to_root(images_dir),
+        "class_names": ["UnmarkedBee"],
+        "radii": {"UnmarkedBee": 100.0},
+        "split_by": "group",
+        "symlink_images": False,
+    }
+    run_id = run_tracking_op(ds, "convert-points", dict(params))
+    assert run_id.startswith("convert-points-")
+
+    # runs-row lifecycle
+    runs = read_runs(_run_dir(ds), kind="convert-points")
+    assert len(runs) == 1 and runs[0]["status"] == "finished"
+    assert runs[0]["run_id"] == run_id
+
+    # data.yaml + splits written under models/convert-points/<run_id>/
+    from mosaic.core.pipeline.models import model_run_root
+
+    out = model_run_root(ds, "convert-points", run_id)
+    data_yaml = out / "data.yaml"
+    assert data_yaml.exists()
+    n_labels = sum(
+        len(list((out / split / "labels").glob("*.txt")))
+        for split in ("train", "valid", "test")
+        if (out / split / "labels").exists()
+    )
+    assert n_labels == 10  # 5 groups x 2 frames
+
+    # index row recorded + finished
+    from mosaic.tracking.ops.convert import (
+        converted_dataset_index,
+    )
+    from mosaic.core.pipeline.models import model_index_path
+
+    idx = converted_dataset_index(model_index_path(ds, "convert-points"))
+    df = idx.read(run_id=run_id)
+    assert len(df) == 1
+    assert df.iloc[0]["class_names"] == "UnmarkedBee"
+    assert int(df.iloc[0]["n_train"]) >= 1
+
+    # deterministic + cache hit: identical inputs -> same run_id, no error
+    run_id2 = run_tracking_op(ds, "convert-points", dict(params))
+    assert run_id2 == run_id
+
+
+def test_convert_points_no_matching_images_raises(tmp_path):
+    ds = _make_dataset(tmp_path)
+    xml, images_dir = _write_cvat_points_fixture(ds.base_dir)
+    empty_dir = ds.base_dir / "cvat" / "empty"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(ValueError, match="no training labels"):
+        run_tracking_op(
+            ds,
+            "convert-points",
+            {
+                "cvat_xml": ds.relative_to_root(xml),
+                "images_dir": ds.relative_to_root(empty_dir),
+                "class_names": ["UnmarkedBee"],
+                "radii": {"UnmarkedBee": 100.0},
+            },
+        )
+
+
+def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch):
+    """run_trex must resolve a training run_id (detect_model) to its best.pt for TREx.
+
+    Regression: previously the raw run_id string was passed to the trex ``-m`` flag,
+    so the train->track handoff (``detect_model=<train run_id>``) gave TREx a
+    non-existent model path.
+    """
+    from pathlib import Path
+
+    from mosaic.core.pipeline.models import model_index_path, model_run_root
+    from mosaic.tracking import run_trex
+    from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+
+    ds = _make_dataset(tmp_path)
+
+    # Seed a trained-model index row + a fake best.pt (as train-points would).
+    rid = "train-points-deadbeef01"
+    run_root = model_run_root(ds, "train-points", rid)
+    weights = run_root / "train" / "weights" / "best.pt"
+    weights.parent.mkdir(parents=True, exist_ok=True)
+    weights.write_bytes(b"pt")
+    idx = trained_model_index(model_index_path(ds, "train-points"))
+    idx.ensure()
+    idx.append(
+        [
+            TrainedModelIndexRow(
+                run_id=rid,
+                kind="train-points",
+                base_model="",
+                base_run_id="",
+                best_model_path=ds.relative_to_root(weights),
+                metrics_path="",
+                n_epochs=1,
+                status="finished",
+                abs_path=Path(ds.relative_to_root(run_root)),
+            )
+        ]
+    )
+    idx.mark_finished(rid)
+
+    # Capture what detect_model run_trex_convert receives, then abort before the binary.
+    class _Stop(Exception):
+        pass
+
+    captured: dict[str, object] = {}
+    import mosaic.tracking.trex.dataset_runs as dr
+
+    def fake_convert(video_path, seq_dir, *, detect_model=None, **kw):
+        captured["detect_model"] = detect_model
+        raise _Stop()
+
+    monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
+
+    try:
+        run_trex(ds, sequences=["vid1"], detect_model=rid, detect_type="yolo")
+    except _Stop:
+        pass
+
+    assert captured["detect_model"] == weights  # resolved run_id -> absolute best.pt
