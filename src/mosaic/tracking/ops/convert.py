@@ -4,7 +4,7 @@
 their images into a POLO point-detection training dataset (``{train,valid,test}/{images,
 labels}`` + ``data.yaml``) under ``models/convert-points/<run_id>/``. This is the
 "import/convert" step that replaces in-app annotation when labels already exist, and --
-because it rides the ``TrackingOp`` contract -- it is reachable identically from the CLI
+because it rides the ``Op`` contract -- it is reachable identically from the CLI
 (``mosaic run --kind convert-points``) and the API (``POST /runs`` ``{"kind":
 "convert-points"}``) with zero extra wiring.
 
@@ -23,9 +23,9 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
-from mosaic.tracking.registry import TrackingOp, register_tracking_op
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -83,12 +83,13 @@ def _count_labels(split_dir: Path) -> int:
     return sum(1 for _ in labels.glob("*.txt")) if labels.exists() else 0
 
 
-@register_tracking_op
-class ConvertPointsOp(TrackingOp[ConvertPointsParams]):
+@register_op
+class ConvertPointsOp(Op[ConvertPointsParams]):
     """Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml``."""
 
     kind = "convert-points"
     category = "convert"
+    domain = "tracking"
     version = "0.1"
     Params = ConvertPointsParams
 

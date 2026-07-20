@@ -1,36 +1,32 @@
-"""Registry of tracking operations under the Job Contract.
+"""Registry of ops under the Job Contract.
 
-Every long-running operation in the ``tracking`` domain -- frame extraction,
-pose/point/localizer training, pose/point/localizer inference, and (later)
-annotation conversion -- is a ``TrackingOp``: a class carrying a ``kind`` (its
-``runs.kind``), a Pydantic ``Params`` model, and a ``run(ds, params, ctx)``
-body that computes a content ``run_id``, does the work, writes an index row,
-and returns the ``run_id``. Ops self-register via ``@register_tracking_op`` --
-so a new model type (custom or retrained) plugs in by adding a module, with no
-edit to the runner, the CLI, or the API.
+Every long-running operation that rides the Job Contract -- frame extraction,
+pose/point/localizer training, pose/point/localizer inference, annotation
+conversion, TREx, media transcode, and future domains -- is an ``Op``: a class
+carrying a ``kind`` (its ``runs.kind``), a ``domain`` (which package owns it),
+a Pydantic ``Params`` model, and a ``run(ds, params, ctx)`` body that computes
+a content ``run_id``, does the work, writes an index row, and returns the
+``run_id``. Ops self-register via ``@register_op`` -- so a new op plugs in by
+adding a module, with no edit to the runner, the CLI, or the API.
 
-One generic entry point, :func:`run_tracking_op`, wraps *every* op in the Job
-Contract (`core/pipeline/job.py`), so attempt-recording, progress, heartbeat,
-and cooperative cancellation are written once. Because each op declares a
-Pydantic ``Params``, discovery is schema-driven -- ``op.Params.model_json_schema()``
+One generic entry point, :func:`run_op`, wraps *every* op in the Job Contract
+(`core/pipeline/job.py`), so attempt-recording, progress, heartbeat, and
+cooperative cancellation are written once. Because each op declares a Pydantic
+``Params``, discovery is schema-driven -- ``op.Params.model_json_schema()``
 gives a CLI / mosaic-api / MCP a full param spec exactly the way features are
 discovered today, with zero per-op schema code.
 
 **Registration must stay import-light.** Op modules import only their ``Params``
 and light deps at module top; heavy backends (``ultralytics`` / ``torch`` /
-POLO) are imported *inside* ``run()`` so ``import mosaic.tracking`` never fails
+POLO) are imported *inside* ``run()`` so importing an op package never fails
 when an optional extra is absent.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
-import pandas as pd
-
 from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
-from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.types import Params
 
 if TYPE_CHECKING:
@@ -45,8 +41,8 @@ if TYPE_CHECKING:
 P = TypeVar("P", bound=Params)
 
 
-class TrackingOp(Generic[P]):
-    """Base class for a registered tracking operation.
+class Op(Generic[P]):
+    """Base class for a registered op.
 
     Generic over its ``Params`` type so a subclass can narrow ``run``/``target``
     without an LSP-incompatible override. Subclasses set the class attributes,
@@ -55,7 +51,8 @@ class TrackingOp(Generic[P]):
     """
 
     kind: ClassVar[str]
-    category: ClassVar[str]  # "extract" | "train" | "infer" | "convert"
+    category: ClassVar[str]  # "extract" | "train" | "infer" | "convert" | "transcode"
+    domain: ClassVar[str]  # "tracking" | "media"
     version: ClassVar[str] = "0.1"
     # Compute-placement hint for schedulers / the execution router ("gpu" | "heavy" |
     # "cpu"). Empty ("") derives it from ``category`` (train/infer -> gpu, else cpu) via
@@ -73,23 +70,23 @@ class TrackingOp(Generic[P]):
         raise NotImplementedError
 
 
-TRACKING_OPS: dict[str, type[TrackingOp[Any]]] = {}
+OPS: dict[str, type[Op[Any]]] = {}
 
 
-def register_tracking_op(cls: type[TrackingOp[Any]]) -> type[TrackingOp[Any]]:
+def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
     """Class decorator: register *cls* under its ``kind``."""
     if not getattr(cls, "kind", None):
         raise ValueError(f"{cls.__name__} must define a non-empty 'kind'")
-    TRACKING_OPS[cls.kind] = cls
+    OPS[cls.kind] = cls
     return cls
 
 
 # ---------------------------------------------------------------------------
-# Generic runner (the single Job-Contract wrapper for all tracking ops)
+# Generic runner (the single Job-Contract wrapper for all ops)
 # ---------------------------------------------------------------------------
 
 
-def run_tracking_op(
+def run_op(
     ds: "Dataset",
     kind: str,
     params: Params | dict[str, Any],
@@ -100,16 +97,14 @@ def run_tracking_op(
     progress_callback: "ProgressCallback | None" = None,
     cancel_token: CancelToken | None = None,
 ) -> str:
-    """Run a registered tracking op as a tracked Job-Contract attempt.
+    """Run a registered op as a tracked Job-Contract attempt.
 
     *params* may be a validated ``Params`` instance or a plain dict (validated
     against the op's ``Params`` model). Returns the content ``run_id``.
     """
-    op_cls = TRACKING_OPS.get(kind)
+    op_cls = OPS.get(kind)
     if op_cls is None:
-        raise KeyError(
-            f"Unknown tracking op '{kind}'. Registered: {sorted(TRACKING_OPS)}"
-        )
+        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
     op = op_cls()
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
     with job_context(
@@ -130,13 +125,21 @@ def run_tracking_op(
 # ---------------------------------------------------------------------------
 
 
-def list_tracking_ops(category: str | None = None) -> list[dict[str, object]]:
-    """Enumerate registered ops as ``{kind, category, version}`` dicts."""
-    ops = sorted(TRACKING_OPS.values(), key=lambda c: c.kind)
+def list_ops(
+    category: str | None = None, domain: str | None = None
+) -> list[dict[str, object]]:
+    """Enumerate registered ops as ``{kind, domain, category, version}`` dicts."""
+    ops = sorted(OPS.values(), key=lambda c: c.kind)
     return [
-        {"kind": c.kind, "category": c.category, "version": c.version}
+        {
+            "kind": c.kind,
+            "domain": c.domain,
+            "category": c.category,
+            "version": c.version,
+        }
         for c in ops
-        if category is None or c.category == category
+        if (category is None or c.category == category)
+        and (domain is None or c.domain == domain)
     ]
 
 
@@ -145,18 +148,19 @@ _CATEGORY_RESOURCE_CLASS: dict[str, str] = {
     "infer": "gpu",
     "extract": "cpu",
     "convert": "cpu",
+    "transcode": "cpu",
 }
 
 
 def op_resource_class(kind: str) -> str:
-    """Return a tracking op's compute-placement class (``"gpu"`` | ``"heavy"`` | ``"cpu"``).
+    """Return an op's compute-placement class (``"gpu"`` | ``"heavy"`` | ``"cpu"``).
 
     Prefers the op's explicit ``resource_class`` classvar; otherwise derives it from
     ``category`` (train/infer -> gpu, else cpu). Unknown kinds fall back to ``"cpu"``. Used by
     the execution router to send GPU work (training, inference, TREx) to a GPU lane / k8s
     without any per-op routing edits.
     """
-    op_cls = TRACKING_OPS.get(kind)
+    op_cls = OPS.get(kind)
     if op_cls is None:
         return "cpu"
     declared = getattr(op_cls, "resource_class", "")
@@ -165,48 +169,15 @@ def op_resource_class(kind: str) -> str:
     return _CATEGORY_RESOURCE_CLASS.get(op_cls.category, "cpu")
 
 
-def describe_tracking_op(kind: str) -> dict[str, object]:
-    """Return ``{kind, category, version, params_schema}`` for one op."""
-    op_cls = TRACKING_OPS.get(kind)
+def describe_op(kind: str) -> dict[str, object]:
+    """Return ``{kind, domain, category, version, params_schema}`` for one op."""
+    op_cls = OPS.get(kind)
     if op_cls is None:
-        raise KeyError(
-            f"Unknown tracking op '{kind}'. Registered: {sorted(TRACKING_OPS)}"
-        )
+        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
     return {
         "kind": op_cls.kind,
+        "domain": op_cls.domain,
         "category": op_cls.category,
         "version": op_cls.version,
         "params_schema": op_cls.Params.model_json_schema(),
     }
-
-
-# ---------------------------------------------------------------------------
-# Model reference resolution (retraining lineage + train->track handoff)
-# ---------------------------------------------------------------------------
-
-
-def resolve_model(ds: "Dataset", ref: str, kind: str) -> tuple[Path, str]:
-    """Resolve a model reference to ``(best_weights_path, base_run_id)``.
-
-    *ref* is either a filesystem path to weights (returns ``(path, "")`` -- no
-    lineage) or a prior training ``run_id`` in ``models/<kind>/index.csv``
-    (returns the recorded ``best_model_path`` and the run_id as lineage). This
-    powers retrain-from-existing-model and the trained-model -> TREx
-    ``detect_model`` handoff.
-    """
-    p = Path(ref)
-    if p.exists():
-        return p, ""
-
-    idx_path = model_index_path(ds, kind)
-    if not idx_path.exists():
-        raise FileNotFoundError(
-            f"Model reference '{ref}' is not a path and {idx_path} does not "
-            f"exist; cannot resolve as a run_id."
-        )
-    df = pd.read_csv(idx_path)
-    match = df[df["run_id"].astype(str) == ref]
-    if match.empty:
-        raise KeyError(f"No model run_id '{ref}' found in {idx_path}")
-    best = str(match.iloc[0]["best_model_path"])
-    return ds.resolve_path(best), ref

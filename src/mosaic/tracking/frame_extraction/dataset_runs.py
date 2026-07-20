@@ -17,8 +17,8 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, JobContext
+from mosaic.core.pipeline.ops import Op, register_op, run_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
-from mosaic.tracking.registry import TrackingOp, register_tracking_op, run_tracking_op
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
@@ -350,10 +350,11 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
     return run_id
 
 
-@register_tracking_op
-class ExtractFramesOp(TrackingOp[ExtractFramesParams]):
+@register_op
+class ExtractFramesOp(Op[ExtractFramesParams]):
     kind = "extract-frames"
     category = "extract"
+    domain = "tracking"
     version = "0.1"
     Params = ExtractFramesParams
 
@@ -396,7 +397,7 @@ def extract_frames(
 
     Ergonomic typed front door for the ``extract-frames`` tracking op: builds
     :class:`ExtractFramesParams` and dispatches via
-    :func:`mosaic.tracking.run_tracking_op`, which records the attempt, reports
+    :func:`mosaic.core.pipeline.ops.run_op`, which records the attempt, reports
     per-sequence progress, and supports cooperative cancellation. Returns the
     content ``run_id``.
 
@@ -425,7 +426,7 @@ def extract_frames(
         parallel_workers=parallel_workers,
         parallel_mode=parallel_mode,
     )
-    return run_tracking_op(
+    return run_op(
         ds,
         "extract-frames",
         params,

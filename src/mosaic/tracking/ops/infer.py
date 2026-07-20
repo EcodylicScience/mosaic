@@ -22,8 +22,9 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
-from mosaic.tracking.registry import TrackingOp, register_tracking_op, resolve_model
+from mosaic.tracking.model_refs import resolve_model
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -228,10 +229,11 @@ def _run_inference_op(
 # --- Ops -----------------------------------------------------------------
 
 
-@register_tracking_op
-class InferPoseOp(TrackingOp[PoseInferParams]):
+@register_op
+class InferPoseOp(Op[PoseInferParams]):
     kind = "infer-pose"
     category = "infer"
+    domain = "tracking"
     version = "0.1"
     Params = PoseInferParams
 
@@ -272,10 +274,11 @@ class InferPoseOp(TrackingOp[PoseInferParams]):
         )
 
 
-@register_tracking_op
-class InferPointsOp(TrackingOp[PointInferParams]):
+@register_op
+class InferPointsOp(Op[PointInferParams]):
     kind = "infer-points"
     category = "infer"
+    domain = "tracking"
     version = "0.1"
     Params = PointInferParams
 
@@ -317,10 +320,11 @@ class InferPointsOp(TrackingOp[PointInferParams]):
         )
 
 
-@register_tracking_op
-class InferLocalizerOp(TrackingOp[LocalizerInferParams]):
+@register_op
+class InferLocalizerOp(Op[LocalizerInferParams]):
     kind = "infer-localizer"
     category = "infer"
+    domain = "tracking"
     version = "0.1"
     Params = LocalizerInferParams
 

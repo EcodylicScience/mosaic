@@ -1,6 +1,6 @@
 """TREx as a tracking op -- ``mosaic run --kind trex``.
 
-Wraps :func:`mosaic.tracking.trex.run_trex` as a registered ``TrackingOp`` so TREx rides the
+Wraps :func:`mosaic.tracking.trex.run_trex` as a registered ``Op`` so TREx rides the
 schema-driven runner and every execution backend (local / rq / k8s) with Pydantic param
 validation + discovery -- the same one-contract path SLEAP / DeepLabCut will adopt. The
 implementation is unchanged: ``run_trex`` still shells out to the ``trex`` binary in its conda
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
+from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
-from mosaic.tracking.registry import TrackingOp, register_tracking_op
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -55,12 +55,13 @@ class TrexParams(Params):
     timeout: Annotated[int, HASH_EXCLUDE] = 600
 
 
-@register_tracking_op
-class TrexOp(TrackingOp[TrexParams]):
+@register_op
+class TrexOp(Op[TrexParams]):
     """Run TREx (convert + track) over scoped videos, bridging results into ``tracks/``."""
 
     kind = "trex"
     category = "convert"
+    domain = "tracking"
     resource_class: ClassVar[str] = "gpu"
     version = "0.1"
     Params = TrexParams

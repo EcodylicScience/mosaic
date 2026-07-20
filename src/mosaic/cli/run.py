@@ -1,4 +1,4 @@
-"""``mosaic run``: execute a feature or tracking op as a tracked Job-Contract attempt.
+"""``mosaic run``: execute a feature or op as a tracked Job-Contract attempt.
 
 This command is the executor's *unit of work* -- the Layer-2 executor shells out
 to ``mosaic run --json`` in its own process group. It pre-mints the ULID
@@ -83,7 +83,7 @@ def run_command(
         ),
     ] = False,
 ) -> None:
-    """Run a feature (--feature) or a tracking op (--kind) under the Job Contract."""
+    """Run a feature (--feature) or an op (--kind) under the Job Contract."""
     if (feature is None) == (kind is None):
         fail("Provide exactly one of --feature or --kind.")
 
@@ -138,11 +138,13 @@ def run_command(
                     "--inputs is not supported with --kind (ops declare inputs in Params)."
                 )
             op_kind = cast("str", kind)
-            from mosaic.tracking import run_tracking_op
+            from mosaic.core.pipeline.ops import run_op
+            from mosaic.tracking import register_ops
 
+            register_ops()
             log(f"[mosaic] execution_id={exec_id} running {op_kind}")
             with stdout_to_stderr():
-                run_id = run_tracking_op(
+                run_id = run_op(
                     ds,
                     op_kind,
                     params_dict or {},

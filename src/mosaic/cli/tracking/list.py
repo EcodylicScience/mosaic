@@ -22,9 +22,11 @@ def list_command(
     ] = False,
 ) -> None:
     """List every registered tracking op, sorted by kind."""
-    from mosaic.tracking import list_tracking_ops
+    from mosaic.core.pipeline.ops import list_ops
+    from mosaic.tracking import register_ops
 
-    ops = list_tracking_ops(category)
+    register_ops()
+    ops = list_ops(category, domain="tracking")
     if as_json:
         emit_json(ops)
     else:

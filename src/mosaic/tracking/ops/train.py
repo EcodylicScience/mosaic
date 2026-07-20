@@ -19,8 +19,9 @@ from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.tracking.model_refs import resolve_model
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
-from mosaic.tracking.registry import TrackingOp, register_tracking_op, resolve_model
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -127,10 +128,11 @@ class LocalizerTrainParams(Params):
 # --- Ops -----------------------------------------------------------------
 
 
-@register_tracking_op
-class TrainPoseOp(TrackingOp[PoseTrainParams]):
+@register_op
+class TrainPoseOp(Op[PoseTrainParams]):
     kind = "train-pose"
     category = "train"
+    domain = "tracking"
     version = "0.1"
     Params = PoseTrainParams
 
@@ -191,10 +193,11 @@ class TrainPoseOp(TrackingOp[PoseTrainParams]):
         return run_id
 
 
-@register_tracking_op
-class TrainPointsOp(TrackingOp[PointTrainParams]):
+@register_op
+class TrainPointsOp(Op[PointTrainParams]):
     kind = "train-points"
     category = "train"
+    domain = "tracking"
     version = "0.1"
     Params = PointTrainParams
 
@@ -259,10 +262,11 @@ class TrainPointsOp(TrackingOp[PointTrainParams]):
         return run_id
 
 
-@register_tracking_op
-class TrainLocalizerOp(TrackingOp[LocalizerTrainParams]):
+@register_op
+class TrainLocalizerOp(Op[LocalizerTrainParams]):
     kind = "train-localizer"
     category = "train"
+    domain = "tracking"
     version = "0.1"
     Params = LocalizerTrainParams
 

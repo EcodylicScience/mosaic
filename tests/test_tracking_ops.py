@@ -18,19 +18,14 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaProbeError, derive
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.job import CancelToken, Cancelled
+from mosaic.core.pipeline.ops import OPS, describe_op, list_ops, run_op
 from mosaic.core.pipeline.run_log import (
     read_run,
     read_run_progress,
     read_runs,
     run_log_dir,
 )
-from mosaic.tracking import (
-    TRACKING_OPS,
-    describe_tracking_op,
-    list_tracking_ops,
-    resolve_model,
-    run_tracking_op,
-)
+from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
 
@@ -76,7 +71,7 @@ def _run_dir(ds: Dataset) -> Path:
 
 
 def test_registry_has_builtin_ops():
-    kinds = set(TRACKING_OPS)
+    kinds = set(OPS)
     assert kinds >= {
         "extract-frames",
         "train-pose",
@@ -87,7 +82,7 @@ def test_registry_has_builtin_ops():
         "infer-localizer",
     }
     assert "trex" in kinds
-    for op in list_tracking_ops():
+    for op in list_ops():
         assert op["kind"] in kinds and op["category"] in {
             "extract",
             "train",
@@ -97,7 +92,7 @@ def test_registry_has_builtin_ops():
 
 
 def test_describe_returns_params_schema():
-    d = describe_tracking_op("train-pose")
+    d = describe_op("train-pose")
     schema = d["params_schema"]
     assert "properties" in schema
     assert {"data", "epochs", "model"} <= set(schema["properties"])
@@ -105,7 +100,7 @@ def test_describe_returns_params_schema():
 
 def test_unknown_kind_raises():
     with pytest.raises(KeyError):
-        run_tracking_op(object(), "nope", {})
+        run_op(object(), "nope", {})
 
 
 # --- run_id determinism ----------------------------------------------------
@@ -241,7 +236,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     data_yaml = tmp_path / "data.yaml"
     data_yaml.write_text("kpt_shape: [4, 3]\n")
 
-    r1 = run_tracking_op(
+    r1 = run_op(
         ds, "train-pose", {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
     )
     assert r1.startswith("train-pose-")
@@ -268,7 +263,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     assert best.name == "best.pt" and base == r1
 
     # retrain from r1 -> lineage recorded
-    r2 = run_tracking_op(
+    r2 = run_op(
         ds, "train-pose", {"data": str(data_yaml), "epochs": 2, "base_model": r1}
     )
     mdf2 = trained_model_index(model_index_path(ds, "train-pose")).read(run_id=r2)
@@ -290,7 +285,7 @@ def test_train_pose_cancel(tmp_path, monkeypatch):
     token = CancelToken()
     token.cancel()  # already cancelled -> ctx.check_cancel() after train raises
     with pytest.raises(Cancelled):
-        run_tracking_op(
+        run_op(
             ds, "train-pose", {"data": str(data_yaml), "epochs": 1}, cancel_token=token
         )
     assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
@@ -324,7 +319,7 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     # a raw model path (no training run needed)
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
-    run_id = run_tracking_op(
+    run_id = run_op(
         ds, "infer-pose", {"model": str(model), "convert_to_tracks": True}
     )
     assert run_id.startswith("infer-pose-")
@@ -354,13 +349,13 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
 
 
 def test_trex_registered_as_gpu_convert_op():
-    assert "trex" in TRACKING_OPS
-    d = describe_tracking_op("trex")
+    assert "trex" in OPS
+    d = describe_op("trex")
     assert d["category"] == "convert"
     assert {"detect_model", "track_max_individuals", "entries"} <= set(
         d["params_schema"]["properties"]
     )
-    from mosaic.tracking.registry import op_resource_class
+    from mosaic.core.pipeline.ops import op_resource_class
 
     # declared "gpu" despite category "convert" (TREx needs the GPU for YOLO detect)
     assert op_resource_class("trex") == "gpu"
@@ -374,7 +369,7 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
 
     ds = _make_dataset(tmp_path)
     direct = run_trex(ds, sequences=["nonexistent"])
-    via_op = run_tracking_op(ds, "trex", {"sequences": ["nonexistent"]})
+    via_op = run_op(ds, "trex", {"sequences": ["nonexistent"]})
     assert direct == via_op
     assert direct.startswith("trex-")
 
@@ -422,8 +417,8 @@ def _write_cvat_points_fixture(root: Path, n_groups: int = 5, per_group: int = 2
 
 
 def test_convert_points_registered():
-    assert "convert-points" in TRACKING_OPS
-    d = describe_tracking_op("convert-points")
+    assert "convert-points" in OPS
+    d = describe_op("convert-points")
     assert d["category"] == "convert"
     assert {"cvat_xml", "images_dir", "class_names", "radii"} <= set(
         d["params_schema"]["properties"]
@@ -448,7 +443,7 @@ def test_convert_points_lifecycle(tmp_path):
         "split_by": "group",
         "symlink_images": False,
     }
-    run_id = run_tracking_op(ds, "convert-points", dict(params))
+    run_id = run_op(ds, "convert-points", dict(params))
     assert run_id.startswith("convert-points-")
 
     # runs-row lifecycle
@@ -482,7 +477,7 @@ def test_convert_points_lifecycle(tmp_path):
     assert int(df.iloc[0]["n_train"]) >= 1
 
     # deterministic + cache hit: identical inputs -> same run_id, no error
-    run_id2 = run_tracking_op(ds, "convert-points", dict(params))
+    run_id2 = run_op(ds, "convert-points", dict(params))
     assert run_id2 == run_id
 
 
@@ -492,7 +487,7 @@ def test_convert_points_no_matching_images_raises(tmp_path):
     empty_dir = ds.base_dir / "cvat" / "empty"
     empty_dir.mkdir(parents=True, exist_ok=True)
     with pytest.raises(ValueError, match="no training labels"):
-        run_tracking_op(
+        run_op(
             ds,
             "convert-points",
             {
@@ -690,7 +685,7 @@ def test_infer_required_unlinked_raises(tmp_path):
     model.write_bytes(b"w")
 
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
-        run_tracking_op(ds, "infer-pose", {"model": str(model)})
+        run_op(ds, "infer-pose", {"model": str(model)})
 
 
 def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
@@ -740,3 +735,85 @@ def test_run_trex_required_unlinked_raises(tmp_path, monkeypatch):
     # TREx subprocess opens the defective original.
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
         dr.run_trex(ds, entries=[("", "vid1")])
+
+
+# --- generic registry moved into core/pipeline ------------------------------
+
+
+def test_registry_lives_in_core_pipeline():
+    from mosaic.core.pipeline.ops import (
+        OPS,
+        Op,
+        describe_op,
+        list_ops,
+        op_resource_class,
+        register_op,
+        run_op,
+    )
+
+    assert callable(run_op) and callable(register_op)
+    assert isinstance(OPS, dict)
+    assert callable(describe_op) and callable(list_ops) and callable(op_resource_class)
+    assert isinstance(Op, type)
+
+
+# The op domains this codebase recognizes. Extend it only when a genuinely new op
+# domain is introduced (a deliberate act) -- new ops within an existing domain need
+# no edit. Deliberately NOT imported from the source, so a stray new value fails here.
+KNOWN_OP_DOMAINS = {"tracking", "media"}
+
+
+def test_every_op_declares_a_known_domain():
+    from mosaic.core.pipeline.ops import OPS
+
+    for kind, op_cls in OPS.items():
+        assert op_cls.domain in KNOWN_OP_DOMAINS, (kind, op_cls.domain)
+
+
+def test_tracking_package_ops_declare_tracking_domain():
+    from mosaic.core.pipeline.ops import OPS
+
+    for kind, op_cls in OPS.items():
+        if op_cls.__module__.startswith("mosaic.tracking"):
+            assert op_cls.domain == "tracking", (kind, op_cls.__module__)
+
+
+def test_list_ops_filters_by_domain_and_carries_domain():
+    from mosaic.core.pipeline.ops import list_ops
+
+    tracking = list_ops(domain="tracking")
+    assert tracking, "expected registered tracking ops"
+    assert all(entry["domain"] == "tracking" for entry in tracking)
+    assert list_ops(domain="nonexistent") == []
+
+
+def test_describe_op_includes_domain():
+    from mosaic.core.pipeline.ops import describe_op
+
+    info = describe_op("infer-pose")
+    assert info["domain"] == "tracking"
+    assert "params_schema" in info
+
+
+def test_resolve_model_moved_to_model_refs():
+    from mosaic.tracking.model_refs import resolve_model
+
+    assert callable(resolve_model)
+
+
+def test_register_ops_populates_registry_in_a_fresh_interpreter():
+    import subprocess
+    import sys
+
+    script = (
+        "from mosaic.core.pipeline.ops import list_ops\n"
+        "assert not list_ops(domain='tracking'), 'tracking ops registered too early'\n"
+        "from mosaic.tracking import register_ops\n"
+        "register_ops()\n"
+        "kinds = {e['kind'] for e in list_ops(domain='tracking')}\n"
+        "assert 'infer-pose' in kinds and 'trex' in kinds, sorted(kinds)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

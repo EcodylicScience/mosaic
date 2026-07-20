@@ -238,7 +238,7 @@ def run_trex(
     # the original reference (portable across machines), not the resolved absolute path.
     detect_model_exec: Path | str | None = detect_model
     if detect_model is not None and not Path(str(detect_model)).exists():
-        from mosaic.tracking.registry import resolve_model
+        from mosaic.tracking.model_refs import resolve_model
 
         ref = str(detect_model)
         model_kind = ref.rsplit("-", 1)[0] if ref.count("-") >= 2 else "train-points"
@@ -283,7 +283,7 @@ def run_trex(
     idx.ensure()
 
     index_rows: list[TRexIndexRow] = []
-    # Reuse a caller-provided context (TrexOp / run_tracking_op) or open our own.
+    # Reuse a caller-provided context (TrexOp / run_op) or open our own.
     managed: AbstractContextManager[JobContext] = (
         nullcontext(ctx)
         if ctx is not None

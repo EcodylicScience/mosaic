@@ -17,10 +17,12 @@ def describe_command(
     ] = False,
 ) -> None:
     """Describe one tracking op: kind, category, version, and its params JSON-Schema."""
-    from mosaic.tracking import describe_tracking_op
+    from mosaic.core.pipeline.ops import describe_op
+    from mosaic.tracking import register_ops
 
+    register_ops()
     try:
-        info = describe_tracking_op(kind)
+        info = describe_op(kind)
     except KeyError as exc:
         fail(str(exc))
     if as_json:
