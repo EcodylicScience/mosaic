@@ -17,7 +17,7 @@ from mosaic_media import (
 )
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.media._facts_columns import row_to_facts
+from mosaic.core.media.facts_columns import row_to_facts
 from mosaic.core.pipeline.transcode import TranscodeParams, run_transcode_op
 
 

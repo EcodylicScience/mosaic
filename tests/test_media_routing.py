@@ -14,7 +14,7 @@ from mosaic_media import MediaProbeError, probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
-from mosaic.core.media._facts_columns import FACTS_COLUMNS
+from mosaic.core.media.facts_columns import FACTS_COLUMNS
 
 MEDIA_INDEX_COLUMNS = [
     "name",

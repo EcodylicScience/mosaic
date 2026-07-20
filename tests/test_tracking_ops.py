@@ -16,7 +16,7 @@ import pytest
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaProbeError, derive
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media._facts_columns import facts_to_row, store_facts
+from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run_log import (
     read_run,

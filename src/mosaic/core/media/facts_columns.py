@@ -28,6 +28,24 @@ FLAT_FACTS_COLUMNS: list[str] = [
 FACTS_JSON_COLUMN = "media_facts"
 FACTS_COLUMNS: list[str] = [*FLAT_FACTS_COLUMNS, FACTS_JSON_COLUMN]
 
+MEDIA_INDEX_COLUMNS: list[str] = [
+    "name",
+    "group",
+    "sequence",
+    "group_safe",
+    "sequence_safe",
+    "abs_path",
+    "size_bytes",
+    "mtime_iso",
+    "width",
+    "height",
+    "fps",
+    "codec",
+    "media_type",
+    *FACTS_COLUMNS,
+    "video_order",
+]
+
 # The analysis and playback transcode verdicts are independent: each target gets
 # its own derivative and its own forward-link column, so a playback transcode can
 # never overwrite the analysis routing (or vice versa).

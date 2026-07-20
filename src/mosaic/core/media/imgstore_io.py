@@ -40,7 +40,7 @@ import numpy as np
 import yaml
 from mosaic_media import Verdict
 
-from ._facts_columns import ProbeMetadata, facts_to_row, store_facts
+from .facts_columns import ProbeMetadata, facts_to_row, store_facts
 from .imgstore_native import NativeStore
 from .video_io import FrameReader, SupportsCapture, SupportsSeekRead, VideoMetadata
 
@@ -153,7 +153,7 @@ def imgstore_probe(path: Path | str) -> ProbeMetadata:
 
     Keys: ``width``, ``height``, ``fps``, ``codec``, plus the injectable
     MediaFacts JSON and flat verdict columns (see
-    :mod:`mosaic.core.media._facts_columns`; ``frame_count`` is one of them,
+    :mod:`mosaic.core.media.facts_columns`; ``frame_count`` is one of them,
     so it is not set separately here). Used by ``Dataset.index_media`` to
     populate ``media/index.csv``.
     """

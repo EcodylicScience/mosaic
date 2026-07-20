@@ -215,7 +215,7 @@ src/mosaic/
 │   │   ├── video_io.py         # media I/O facade: libav reader/writer + dispatchers (mosaic-media)
 │   │   ├── imgstore_io.py      # imgstore (Motif / Loopbio) dispatch + capture adapter
 │   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
-│   │   └── _facts_columns.py   # MediaFacts / verdict <-> media-index row mapping
+│   │   └── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering

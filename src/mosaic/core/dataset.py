@@ -28,8 +28,8 @@ from mosaic_media import (
 )
 
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
-from .media._facts_columns import (
-    FACTS_COLUMNS,
+from .media.facts_columns import (
+    MEDIA_INDEX_COLUMNS,
     ProbeMetadata,
     facts_to_row,
     row_mapping,
@@ -351,25 +351,6 @@ def new_dataset_manifest(
 # --------------------------
 # Dataset manifest + manager
 # --------------------------
-
-
-MEDIA_INDEX_COLUMNS: list[str] = [
-    "name",
-    "group",
-    "sequence",
-    "group_safe",
-    "sequence_safe",
-    "abs_path",
-    "size_bytes",
-    "mtime_iso",
-    "width",
-    "height",
-    "fps",
-    "codec",
-    "media_type",
-    *FACTS_COLUMNS,
-    "video_order",
-]
 
 
 def _media_cell(row: "pd.Series", key: str) -> str:

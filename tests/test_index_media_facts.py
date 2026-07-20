@@ -9,7 +9,7 @@ import pytest
 
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, derive, probe_media
 from mosaic.core.dataset import Dataset
-from mosaic.core.media._facts_columns import FACTS_COLUMNS, facts_to_row, row_to_facts
+from mosaic.core.media.facts_columns import FACTS_COLUMNS, facts_to_row, row_to_facts
 
 
 def _cfr_mp4(path: Path, n: int = 10) -> None:
@@ -162,3 +162,11 @@ def test_row_to_facts_rejects_nan_media_facts_from_csv_round_trip(
 
     with pytest.raises(KeyError):
         row_to_facts({str(key): value for key, value in df.iloc[0].items()})
+
+
+def test_media_index_columns_public_and_reexported():
+    from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS as from_media
+    from mosaic.core.dataset import MEDIA_INDEX_COLUMNS as from_dataset
+
+    assert from_media is from_dataset
+    assert "analysis_derivative_path" in from_media

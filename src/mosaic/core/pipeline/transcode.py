@@ -47,9 +47,9 @@ from mosaic_media.transcode import (
 )
 from pydantic import BaseModel
 
-from mosaic.core.dataset import MEDIA_INDEX_COLUMNS
 from mosaic.core.helpers import make_entry_key, to_safe_name
-from mosaic.core.media._facts_columns import (
+from mosaic.core.media.facts_columns import (
+    MEDIA_INDEX_COLUMNS,
     derivative_column_for_target,
     facts_to_row,
     series_facts_or_none,
