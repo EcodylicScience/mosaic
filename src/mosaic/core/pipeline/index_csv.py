@@ -44,14 +44,6 @@ class RunIndexRowBase(IndexRowBase):
     finished_at: str = dataclasses.field(init=False, default="")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class TracksIndexRow(IndexRowBase):
-    """Index row for tracks (no run-tracking)."""
-
-    group: str
-    sequence: str
-
-
 _TYPE_TO_DTYPE: dict[type, str] = {
     str: "string",
     int: "Int64",

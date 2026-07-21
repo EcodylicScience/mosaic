@@ -46,6 +46,12 @@ from .pipeline.media_index import (
     read_media_index as _read_media_index,
     write_media_index_rows,
 )
+from .pipeline.tracks_index import (
+    TracksRawIndexRow,
+    build_tracks_raw_row,
+    frame_from_rows as _tracks_frame_from_rows,
+    write_tracks_index_rows,
+)
 
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
@@ -2007,7 +2013,7 @@ class Dataset:
             If True, compute MD5 hash of each file (slow for large files). Default False.
         """
         out_csv = self.get_root("tracks_raw") / index_filename
-        rows = []
+        rows: list[TracksRawIndexRow] = []
 
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
@@ -2046,20 +2052,19 @@ class Dataset:
                             grp = ""
 
                     rows.append(
-                        {
-                            "group": grp,
-                            "sequence": seq,
-                            "abs_path": str(p.resolve()),
-                            "src_format": src_format,
-                            "size_bytes": st.st_size,
-                            "mtime_iso": _to_iso(st.st_mtime),
-                            "md5": _md5(p) if compute_md5 else "",
-                        }
+                        build_tracks_raw_row(
+                            path=p,
+                            stat=st,
+                            to_store_path=self.relative_to_root,
+                            group=grp,
+                            sequence=seq,
+                            src_format=src_format,
+                            md5=_md5(p) if compute_md5 else "",
+                        )
                     )
 
-        df = pd.DataFrame(rows).drop_duplicates(subset=["abs_path"])
-        out_csv.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_csv, index=False)
+        df = _tracks_frame_from_rows(rows).drop_duplicates(subset=["abs_path"])
+        write_tracks_index_rows(out_csv, df)
         print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
         return out_csv
 
@@ -2160,7 +2165,7 @@ class Dataset:
                     else "",
                     "abs_path": self._relative_to_root(out_path),
                     "std_format": std_fmt,
-                    "source_abs_path": str(src_path.resolve()),
+                    "source_abs_path": self._relative_to_root(src_path),
                     "source_md5": raw_row.get("md5", ""),
                     "n_rows": int(len(df_std)),
                 }
@@ -2214,7 +2219,7 @@ class Dataset:
             else "",
             "abs_path": self._relative_to_root(out_path),
             "std_format": std_fmt,
-            "source_abs_path": str(src_path.resolve()),
+            "source_abs_path": self._relative_to_root(src_path),
             "source_md5": raw_row.get("md5", ""),
             "n_rows": int(len(df_std)),
         }
@@ -2469,7 +2474,9 @@ class Dataset:
                 else "",
                 "abs_path": self._relative_to_root(out_path),
                 "std_format": "trex_v1",
-                "source_abs_path": str(first_row["abs_path"]),
+                "source_abs_path": self._relative_to_root(
+                    self.resolve_path(first_row["abs_path"])
+                ),
                 "source_md5": first_row.get("md5", ""),
                 "n_rows": int(len(merged_df)),
             }
@@ -3495,12 +3502,6 @@ def _is_empty_like(x: Optional[Any]) -> bool:
         s = x.strip().lower()
         return s in ("", "nan", "none")
     return False
-
-
-def _to_iso(ts: float) -> str:
-    from datetime import datetime, timezone
-
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 def _ensure_labels_index(idx_path: Path):
