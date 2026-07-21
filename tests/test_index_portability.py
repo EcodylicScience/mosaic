@@ -227,3 +227,20 @@ def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
         assert not Path(stored).is_absolute(), f"index path is absolute: {stored}"
         # And it still resolves to a real file under the dataset root.
         assert ds.resolve_path(stored).exists()
+
+
+def test_manifest_identity_survives_load_save(tmp_path: Path) -> None:
+    """uuid / created_at / index_format survive a load -> save round-trip.
+
+    new_dataset_manifest seeds these identity fields; save() used to drop them
+    (its payload omitted them), which is why callers that needed them stable had
+    to avoid save() entirely. Reloading after save() proves they persist.
+    """
+    manifest = new_dataset_manifest(name="ds", base_dir=tmp_path)
+    ds = Dataset(manifest_path=manifest).load()
+    seeded = (ds.uuid, ds.created_at, ds.index_format)
+    assert all(seeded), f"manifest identity not loaded: {seeded}"
+
+    ds.save()
+    reloaded = Dataset(manifest_path=manifest).load()
+    assert (reloaded.uuid, reloaded.created_at, reloaded.index_format) == seeded

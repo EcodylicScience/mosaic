@@ -29,7 +29,7 @@ from mosaic_media import (
 
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
 from .media.facts_columns import (
-    MEDIA_INDEX_COLUMNS,
+    MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
     facts_to_row,
     row_mapping,
@@ -37,6 +37,15 @@ from .media.facts_columns import (
     series_facts_or_none,
 )
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
+from .pipeline.media_index import (
+    MediaIndexScope,
+    build_media_index_row,
+    build_prior_order,
+    densify_video_order,
+    frame_from_rows,
+    read_media_index as _read_media_index,
+    write_media_index_rows,
+)
 
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
@@ -414,6 +423,13 @@ class Dataset:
     segment_duration: str | None = None  # e.g., "1H", "30min", "1D"
     time_column: str | None = None  # column name for timestamps
 
+    # Manifest identity: written once by new_dataset_manifest and preserved
+    # across a load -> save round-trip (save() dropping these is why callers
+    # that need them stable had to avoid save() entirely).
+    uuid: str | None = None
+    created_at: str | None = None
+    index_format: str | None = None
+
     def __post_init__(self) -> None:
         # Normalize manifest_path: callers may pass a str (e.g. from
         # os.path.join). Coercing to Path keeps methods like save() — which
@@ -477,6 +493,12 @@ class Dataset:
         self.segment_duration = data.get("segment_duration", None)
         self.time_column = data.get("time_column", None)
 
+        # Manifest identity (preserved across the round-trip; absent in older
+        # manifests, in which case the attribute stays None and save() omits it).
+        self.uuid = data.get("uuid", self.uuid)
+        self.created_at = data.get("created_at", self.created_at)
+        self.index_format = data.get("index_format", self.index_format)
+
         if ensure_roots:
             self._ensure_roots()
         return self
@@ -484,7 +506,7 @@ class Dataset:
     def save(self) -> None:
         """Persist manifest."""
         self._ensure_roots()
-        payload = {
+        payload: dict[str, object] = {
             "name": self.name,
             "version": self.version,
             "format": self.format,
@@ -492,6 +514,14 @@ class Dataset:
             "meta": self.meta,
             "dataset_type": self.dataset_type,
         }
+        # Preserve manifest identity when present (a load->save round-trip must
+        # not drop the uuid / created_at / index_format seeded at creation).
+        if self.uuid:
+            payload["uuid"] = self.uuid
+        if self.created_at:
+            payload["created_at"] = self.created_at
+        if self.index_format:
+            payload["index_format"] = self.index_format
         # Only include continuous-specific fields if set
         if self.segment_duration:
             payload["segment_duration"] = self.segment_duration
@@ -1147,6 +1177,102 @@ class Dataset:
     # ----------------------------
     # Media indexing (no symlinks)
     # ----------------------------
+    def _probe_dir_rows(
+        self,
+        search_dirs: Iterable[str | Path],
+        exts: set[str],
+        recursive: bool,
+    ) -> list[tuple[Path, os.stat_result, ProbeMetadata, str]]:
+        """Probe every media file + imgstore under *search_dirs* (identity-free).
+
+        Returns ``(path, stat, probe, media_type)`` per entry -- plain video
+        files first (deterministically ordered by resolved path), then one entry
+        per imgstore directory (sorted). Identity assignment (group/sequence) is
+        left to the caller. Shared by :meth:`index_media` (scan-and-derive) and
+        :meth:`write_media_index` (assignment-driven scope re-probe).
+        """
+        from .media.imgstore_io import imgstore_probe, is_imgstore
+
+        search = [Path(d) for d in search_dirs]
+
+        # Discover imgstore directories first. A store is a directory (not a file
+        # with an extension) that contains its own chunk video files -- so we
+        # must (a) emit one entry per store and (b) exclude those internal chunks
+        # from the plain file glob below.
+        imgstore_dirs: set[Path] = set()
+        for d in search:
+            if not d.exists():
+                continue
+            candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
+            for cand in candidates:
+                if cand.is_dir() and is_imgstore(cand):
+                    imgstore_dirs.add(cand.resolve())
+
+        # Serial glob: collect (path, stat) probe_candidates only. Probing
+        # (ffprobe / MediaFacts, I/O bound) happens afterward through a bounded
+        # thread pool so many-file search dirs index in parallel.
+        probe_candidates: list[tuple[Path, os.stat_result]] = []
+        for d in search:
+            if not d.exists():
+                print(f"[WARN] search dir missing: {d}", file=sys.stderr)
+                continue
+            it = d.rglob("*") if recursive else d.glob("*")
+            for p in it:
+                if not p.is_file():
+                    continue
+                # Skip macOS resource forks (._* files)
+                if p.name.startswith("._"):
+                    continue
+                # Skip files that live inside an imgstore directory (its chunks).
+                if imgstore_dirs and any(
+                    sd in p.resolve().parents for sd in imgstore_dirs
+                ):
+                    continue
+                if p.suffix.lower() not in exts:
+                    continue
+                try:
+                    st = p.stat()
+                except OSError as e:
+                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+                    continue
+                probe_candidates.append((p, st))
+
+        # Probe deterministically by resolved path so pool completion order
+        # never affects the returned order.
+        probe_candidates.sort(key=lambda item: str(item[0].resolve()))
+        results: list[tuple[Path, os.stat_result, ProbeMetadata, str]] = []
+        max_probe_workers = min(4, (os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=max_probe_workers) as executor:
+            pending = [
+                (p, st, executor.submit(_probe_video_metadata, p))
+                for p, st in probe_candidates
+            ]
+            for p, st, future in pending:
+                try:
+                    probe = future.result()
+                except (OSError, MediaProbeError) as e:
+                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
+                    continue
+                results.append((p, st, probe, "video"))
+
+        # One entry per imgstore directory (each store is a single sequence).
+        for store_dir in sorted(imgstore_dirs):
+            try:
+                st = store_dir.stat()
+                probe = imgstore_probe(store_dir)
+            except OSError as e:
+                print(f"[WARN] skip imgstore {store_dir}: {e}", file=sys.stderr)
+                continue
+            except Exception as e:
+                print(
+                    f"[WARN] failed to probe imgstore {store_dir}: {e}",
+                    file=sys.stderr,
+                )
+                continue
+            results.append((store_dir, st, probe, "imgstore"))
+
+        return results
+
     def index_media(
         self,
         search_dirs: Iterable[str | Path],
@@ -1192,140 +1318,45 @@ class Dataset:
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
             )
 
-        from .media.imgstore_io import imgstore_probe, is_imgstore
-
         media_root = self.get_root(self.resolve_media_root())
         out_csv = media_root / index_filename
         exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
         seq_key_map = self._build_media_sequence_keymap()
 
-        # Discover imgstore directories first. A store is a directory (not a file
-        # with an extension), and it contains its own chunk video files — so we
-        # must (a) emit one entry per store and (b) exclude those internal chunks
-        # from the plain file glob below.
-        imgstore_dirs: set[Path] = set()
-        for d in map(Path, search_dirs):
-            if not d.exists():
-                continue
-            candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
-            for cand in candidates:
-                if cand.is_dir() and is_imgstore(cand):
-                    imgstore_dirs.add(cand.resolve())
-
+        # Probe every file + imgstore under the search dirs (identity-free), then
+        # derive each row's (group, sequence) from the track keymap here.
         rows: list[dict[str, object]] = []
+        for path, st, probe, media_type in self._probe_dir_rows(
+            search_dirs, exts, recursive
+        ):
+            meta = self._match_media_sequence(
+                seq_key_map, path.stem, mode=sequence_match_mode
+            )
+            # When no track match, use the stem as sequence so each entry is its
+            # own sequence (not all lumped together under an empty key).
+            fallback_seq = path.stem
+            fallback_safe = to_safe_name(path.stem)
+            rows.append(
+                build_media_index_row(
+                    path=path,
+                    stat=st,
+                    to_store_path=self.relative_to_root,
+                    group=meta.get("group", "") if meta else "",
+                    sequence=meta.get("sequence", fallback_seq)
+                    if meta
+                    else fallback_seq,
+                    group_safe=meta.get("group_safe", "") if meta else "",
+                    sequence_safe=meta.get("sequence_safe", fallback_safe)
+                    if meta
+                    else fallback_safe,
+                    probe=probe,
+                    media_type=media_type,
+                )
+            )
 
-        # Serial glob: collect (path, stat) probe_candidates only. Probing
-        # (ffprobe / MediaFacts, I/O bound) happens afterward through a bounded
-        # thread pool so many-file search dirs index in parallel.
-        probe_candidates: list[tuple[Path, os.stat_result]] = []
-        for d in map(Path, search_dirs):
-            if not d.exists():
-                print(f"[WARN] search dir missing: {d}", file=sys.stderr)
-                continue
-            it = d.rglob("*") if recursive else d.glob("*")
-            for p in it:
-                if not p.is_file():
-                    continue
-                # Skip macOS resource forks (._* files)
-                if p.name.startswith("._"):
-                    continue
-                # Skip files that live inside an imgstore directory (its chunks).
-                if imgstore_dirs and any(
-                    sd in p.resolve().parents for sd in imgstore_dirs
-                ):
-                    continue
-                if p.suffix.lower() not in exts:
-                    continue
-                try:
-                    st = p.stat()
-                except OSError as e:
-                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
-                    continue
-                probe_candidates.append((p, st))
-
-        # Probe deterministically by resolved path so pool completion order
-        # never affects the written row order.
-        probe_candidates.sort(key=lambda item: str(item[0].resolve()))
-        max_probe_workers = min(4, (os.cpu_count() or 2))
-        with ThreadPoolExecutor(max_workers=max_probe_workers) as executor:
-            pending = [
-                (p, st, executor.submit(_probe_video_metadata, p))
-                for p, st in probe_candidates
-            ]
-            for p, st, future in pending:
-                try:
-                    probe = future.result()
-                except (OSError, MediaProbeError) as e:
-                    print(f"[WARN] skip {p}: {e}", file=sys.stderr)
-                    continue
-                meta = self._match_media_sequence(
-                    seq_key_map,
-                    p.stem,
-                    mode=sequence_match_mode,
-                )
-                # When no track match, use video stem as sequence
-                # so each video is its own sequence (not all lumped
-                # together under an empty key).
-                fallback_seq = p.stem
-                fallback_safe = to_safe_name(p.stem)
-                rows.append(
-                    {
-                        "name": p.name,
-                        "group": meta.get("group", "") if meta else "",
-                        "sequence": meta.get("sequence", fallback_seq)
-                        if meta
-                        else fallback_seq,
-                        "group_safe": meta.get("group_safe", "") if meta else "",
-                        "sequence_safe": meta.get("sequence_safe", fallback_safe)
-                        if meta
-                        else fallback_safe,
-                        "abs_path": str(p.resolve()),
-                        "size_bytes": st.st_size,
-                        "mtime_iso": _to_iso(st.st_mtime),
-                        "media_type": "video",
-                        **probe,
-                    }
-                )
-
-        # One entry per imgstore directory (each store is a single sequence).
-        for store_dir in sorted(imgstore_dirs):
-            try:
-                st = store_dir.stat()
-                meta = self._match_media_sequence(
-                    seq_key_map, store_dir.stem, mode=sequence_match_mode
-                )
-                probe = imgstore_probe(store_dir)
-                fallback_seq = store_dir.stem
-                fallback_safe = to_safe_name(store_dir.stem)
-                rows.append(
-                    {
-                        "name": store_dir.name,
-                        "group": meta.get("group", "") if meta else "",
-                        "sequence": meta.get("sequence", fallback_seq)
-                        if meta
-                        else fallback_seq,
-                        "group_safe": meta.get("group_safe", "") if meta else "",
-                        "sequence_safe": meta.get("sequence_safe", fallback_safe)
-                        if meta
-                        else fallback_safe,
-                        "abs_path": str(store_dir.resolve()),
-                        "size_bytes": st.st_size,
-                        "mtime_iso": _to_iso(st.st_mtime),
-                        "media_type": "imgstore",
-                        **probe,
-                    }
-                )
-            except OSError as e:
-                print(f"[WARN] skip imgstore {store_dir}: {e}", file=sys.stderr)
-            except Exception as e:
-                print(
-                    f"[WARN] failed to probe imgstore {store_dir}: {e}",
-                    file=sys.stderr,
-                )
-
-        # De-duplicate by absolute path
-        seen = set()
-        dedup = []
+        # De-duplicate by stored path.
+        seen: set[object] = set()
+        dedup: list[dict[str, object]] = []
         for r in rows:
             k = r["abs_path"]
             if k in seen:
@@ -1333,25 +1364,20 @@ class Dataset:
             seen.add(k)
             dedup.append(r)
 
-        # Assign video_order within each (group, sequence) by filename sort
-        df_out = (
-            pd.DataFrame(dedup)
-            if dedup
-            else pd.DataFrame(columns=MEDIA_INDEX_COLUMNS)
-        )
-        if "media_type" not in df_out.columns:
-            df_out["media_type"] = "video"
+        # Carry transcode-written derivative links forward across the reindex,
+        # then assign video_order within each (group, sequence) by filename sort.
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        self._carry_forward_derivative_links(dedup, out_csv)
+        df_out = frame_from_rows(dedup)
         df_out["video_order"] = 0
         if not df_out.empty:
-            for (g, s), sub in df_out.groupby(["group", "sequence"]):
+            for (_group, _sequence), sub in df_out.groupby(["group", "sequence"]):
                 if len(sub) > 1:
                     sorted_idx = sub.sort_values("name").index
                     for rank, idx in enumerate(sorted_idx):
                         df_out.loc[idx, "video_order"] = rank
 
-        out_csv.parent.mkdir(parents=True, exist_ok=True)
-        self._carry_forward_derivative_links(df_out, out_csv)
-        df_out[MEDIA_INDEX_COLUMNS].to_csv(out_csv, index=False)
+        write_media_index_rows(out_csv, df_out)
 
         multi_count = 0
         if not df_out.empty:
@@ -1363,50 +1389,154 @@ class Dataset:
         )
         return out_csv
 
+    def write_media_index(
+        self,
+        scopes: Iterable[MediaIndexScope],
+        *,
+        extensions: Tuple[str, ...] = (".mp4", ".avi"),
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+    ) -> Path:
+        """Project explicit sequence assignments into a valid media index.
+
+        The assignment-driven counterpart to :meth:`index_media`: rather than
+        deriving each file's (group, sequence) from the track keymap, the caller
+        passes one :class:`MediaIndexScope` per affected (group, sequence) -- its
+        media_raw subdir, the explicit identity, and this session's arranged
+        order. Every file found under a scope directory is (re)probed and given
+        that scope's identity; ``video_order`` is densified per
+        (group, sequence, camera) as "existing videos first by prior order, then
+        this session's videos by arranged position"; every index row not under
+        any scope directory (other sequences, external ``abs_path`` values) is
+        preserved verbatim; and the file is written atomically with
+        root-relative ``abs_path``. This is the single entry point the API's
+        upload finalize calls -- the API owns none of these semantics itself.
+        """
+        media_root = self.get_root(self.resolve_media_root())
+        index_path = media_root / index_filename
+        exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
+        scope_list = list(scopes)
+        scope_dirs = [scope.directory.resolve() for scope in scope_list]
+
+        # Read the existing index once: its blank-skipping prior video_order (for
+        # already-present files) and the rows to preserve (those under no scope).
+        existing = _read_media_index(index_path)
+        prior_order = build_prior_order(existing)
+        preserved = [
+            row for row in existing if not self._row_under_dirs(row, scope_dirs)
+        ]
+
+        # Probe each scope directory and assign its explicit identity; collect
+        # this session's arranged positions keyed (sequence, basename).
+        fresh: list[dict[str, object]] = []
+        session_positions: dict[tuple[str, str], int] = {}
+        for scope in scope_list:
+            group_safe = to_safe_name(scope.group) if scope.group else ""
+            sequence_safe = to_safe_name(scope.sequence)
+            for path, st, probe, media_type in self._probe_dir_rows(
+                [scope.directory], exts, recursive
+            ):
+                fresh.append(
+                    build_media_index_row(
+                        path=path,
+                        stat=st,
+                        to_store_path=self.relative_to_root,
+                        group=scope.group,
+                        sequence=scope.sequence,
+                        group_safe=group_safe,
+                        sequence_safe=sequence_safe,
+                        camera=scope.camera,
+                        probe=probe,
+                        media_type=media_type,
+                    )
+                )
+            for name, position in scope.order_by_name.items():
+                session_positions[(scope.sequence, name)] = position
+
+        # Carry transcode derivative links onto the fresh rows (a re-finalize of a
+        # transcoded sequence must not drop its routing links), merge with the
+        # preserved rows, densify video_order, and write atomically.
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        self._carry_forward_derivative_links(fresh, index_path)
+        merged: list[dict[str, object]] = [dict(row) for row in preserved]
+        merged.extend(fresh)
+        densify_video_order(
+            merged,
+            session_positions=session_positions,
+            prior_order=prior_order,
+        )
+        write_media_index_rows(index_path, frame_from_rows(merged))
+        return index_path
+
+    def read_media_index(
+        self, index_filename: str = "index.csv"
+    ) -> list[dict[str, str]]:
+        """Read the media index as string-cell records (empty list if absent)."""
+        media_root = self.get_root(self.resolve_media_root())
+        return _read_media_index(media_root / index_filename)
+
+    def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
+        """True if *row*'s resolved ``abs_path`` lives under any of *dirs*.
+
+        Resolve the stored path first (it may be root-relative), then test
+        containment -- the resolver decoupling that keeps the check correct
+        whether ``abs_path`` is stored relative or absolute.
+        """
+        abs_cell = str(row.get("abs_path", "") or "").strip()
+        if not abs_cell:
+            return False
+        resolved = self.resolve_path(abs_cell).resolve()
+        for directory in dirs:
+            try:
+                _ = resolved.relative_to(directory)
+                return True
+            except ValueError:
+                continue
+        return False
+
     def _carry_forward_derivative_links(
-        self, df_new: "pd.DataFrame", index_path: Path
+        self, rows: list[dict[str, object]], index_path: Path
     ) -> None:
         """Preserve per-target derivative links across a media reindex.
 
-        :meth:`index_media` rebuilds the originals index wholesale, freshly
-        measuring every column -- which would reset the transcode-written
-        ``analysis_derivative_path`` / ``playback_derivative_path`` links to
-        empty. Those links record a transcode decision, not a measurement, so
-        carry them forward: for each freshly probed row whose resolved original
-        matches a row in the prior index (*index_path*, read here before it is
-        overwritten), copy the two link cells over. A link whose derivative file
-        no longer exists is dropped rather than carried as a dangling reference.
+        A reindex freshly measures every column -- which would reset the
+        transcode-written ``analysis_derivative_path`` /
+        ``playback_derivative_path`` links to empty. Those links record a
+        transcode decision, not a measurement, so carry them forward: for each
+        freshly probed row whose resolved original matches a row in the prior
+        index (*index_path*, read before it is overwritten), copy the two link
+        cells over. A link whose derivative file no longer exists is dropped
+        rather than carried as a dangling reference.
         """
         if not index_path.exists() or not self.has_root("media"):
             return
-        prior = pd.read_csv(index_path)
-        if "abs_path" not in prior.columns:
+        prior = _read_media_index(index_path)
+        if not prior:
             return
         link_columns = ["analysis_derivative_path", "playback_derivative_path"]
         media_root = self.get_root("media")
         prior_links: dict[str, dict[str, str]] = {}
-        for _, prior_row in prior.iterrows():
-            abs_cell = _media_cell(prior_row, "abs_path")
-            if not abs_cell:
+        for prior_row in prior:
+            abs_cell = (prior_row.get("abs_path") or "").strip()
+            if not abs_cell or abs_cell.lower() == "nan":
                 continue
-            carried = {
-                column: link
-                for column in link_columns
-                if (link := _media_cell(prior_row, column))
-                and (media_root / link).exists()
-            }
+            carried: dict[str, str] = {}
+            for column in link_columns:
+                link = (prior_row.get(column) or "").strip()
+                if link and link.lower() != "nan" and (media_root / link).exists():
+                    carried[column] = link
             if carried:
                 prior_links[str(self.resolve_path(abs_cell).resolve())] = carried
         if not prior_links:
             return
-        for idx in df_new.index:
+        for row in rows:
             carried = prior_links.get(
-                str(self.resolve_path(str(df_new.at[idx, "abs_path"])).resolve())
+                str(self.resolve_path(str(row["abs_path"])).resolve())
             )
             if not carried:
                 continue
             for column, link in carried.items():
-                df_new.at[idx, column] = link
+                row[column] = link
 
     def _match_media_rows(
         self, df: "pd.DataFrame", group: str, sequence: str

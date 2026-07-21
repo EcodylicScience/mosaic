@@ -25,7 +25,6 @@ route analysis reads to the clean derivative.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -55,6 +54,11 @@ from mosaic.core.media.facts_columns import (
     series_facts_or_none,
 )
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.media_index import (
+    build_media_index_row,
+    load_media_index_frame,
+    write_media_index_rows,
+)
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import Params
 
@@ -65,12 +69,6 @@ if TYPE_CHECKING:
 # Progress denominator per source file: fraction in [0, 1] maps onto this many
 # ticks so the aggregate advances smoothly across all N sources.
 _TICKS_PER_SOURCE = 1000
-
-# Numeric media-index columns; every other column is a text cell that must round
-# trip through CSV as an empty string rather than a float NaN.
-_NUMERIC_INDEX_COLUMNS = frozenset(
-    {"size_bytes", "width", "height", "fps", "frame_count", "video_order"}
-)
 
 
 class TranscodeParams(Params):
@@ -110,25 +108,6 @@ def _transcode_run_id(
     return f"transcode-{hash_params(fingerprint)}"
 
 
-def _load_index(index_path: Path) -> pd.DataFrame:
-    """Read a media index CSV into the full schema, text cells as object ``""``.
-
-    Missing columns are added, and text columns (everything non-numeric) are
-    coerced to an object dtype with NaN replaced by ``""`` so later cell writes
-    do not trip pandas' incompatible-dtype warning on all-empty float columns.
-    """
-    if index_path.exists():
-        df = pd.read_csv(index_path)
-    else:
-        df = pd.DataFrame(columns=MEDIA_INDEX_COLUMNS)
-    for column in MEDIA_INDEX_COLUMNS:
-        if column not in df.columns:
-            df[column] = ""
-        if column not in _NUMERIC_INDEX_COLUMNS:
-            df[column] = df[column].astype("object").where(df[column].notna(), "")
-    return df
-
-
 def _set_forward_link(
     ds: "Dataset",
     source: Path,
@@ -143,13 +122,13 @@ def _set_forward_link(
     """
     raw_root = ds.get_root(ds.resolve_media_root())
     index_path = raw_root / "index.csv"
-    df = _load_index(index_path)
+    df = load_media_index_frame(index_path)
     source_resolved = source.resolve()
     matches = df["abs_path"].map(
         lambda value: ds.resolve_path(str(value)).resolve() == source_resolved
     )
     df.loc[matches, derivative_column_for_target(target)] = derivative_rel
-    df[MEDIA_INDEX_COLUMNS].to_csv(index_path, index=False)
+    write_media_index_rows(index_path, df)
 
 
 def _derivative_row(
@@ -163,30 +142,27 @@ def _derivative_row(
     video_order: int,
 ) -> dict[str, object]:
     """Build the ``media`` index row describing one derivative."""
-    stat = output_path.stat()
     raw_root = ds.get_root(ds.resolve_media_root())
-    row: dict[str, object] = {
-        "name": output_path.name,
-        "group": group,
-        "sequence": sequence,
-        "group_safe": to_safe_name(group) if group else "",
-        "sequence_safe": to_safe_name(sequence),
-        "abs_path": ds.relative_to_root(output_path),
-        "size_bytes": stat.st_size,
-        "mtime_iso": datetime.fromtimestamp(
-            stat.st_mtime, tz=timezone.utc
-        ).isoformat(),
+    probe: dict[str, object] = {
         "width": facts.width,
         "height": facts.height,
         "fps": facts.fps,
         "codec": facts.codec_name,
-        "media_type": "video",
         **facts_to_row(facts, verdict),
-        # facts_to_row leaves source_path empty; the back-link records the origin.
-        "source_path": _relative_to(source, raw_root),
-        "video_order": video_order,
     }
-    return row
+    # facts_to_row leaves source_path empty; the back-link records the origin.
+    return build_media_index_row(
+        path=output_path,
+        stat=output_path.stat(),
+        to_store_path=ds.relative_to_root,
+        group=group,
+        sequence=sequence,
+        group_safe=to_safe_name(group) if group else "",
+        sequence_safe=to_safe_name(sequence),
+        probe=probe,
+        source_path=_relative_to(source, raw_root),
+        video_order=video_order,
+    )
 
 
 def _set_back_link(
@@ -201,7 +177,7 @@ def _set_back_link(
 ) -> None:
     """Record (or replace) the derivative's ``media`` index row (idempotent)."""
     index_path = ds.get_root("media") / "index.csv"
-    df = _load_index(index_path)
+    df = load_media_index_frame(index_path)
     row = _derivative_row(
         ds, group, sequence, source, output_path, facts, verdict, video_order
     )
@@ -210,7 +186,7 @@ def _set_back_link(
         df = df[df["abs_path"].astype(str) != abs_value]
     new_row = pd.DataFrame([row], columns=MEDIA_INDEX_COLUMNS)
     combined = new_row if df.empty else pd.concat([df, new_row], ignore_index=True)
-    combined[MEDIA_INDEX_COLUMNS].to_csv(index_path, index=False)
+    write_media_index_rows(index_path, combined)
 
 
 @register_op
