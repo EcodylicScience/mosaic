@@ -18,10 +18,11 @@ resolver callable :meth:`IndexCSV.prune_missing` takes.
 from __future__ import annotations
 
 import csv
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeVar
 
 import pandas as pd
 
@@ -185,6 +186,75 @@ def build_prior_order(
     return prior
 
 
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class VideoOrderKey:
+    """The ordering inputs for one item in :func:`assign_video_order`.
+
+    ``group``/``sequence``/``camera`` place the item in its dense-counter group.
+    ``name`` is the final sort tie-break only (a display basename), never a lookup
+    key. ``prior_order`` is the item's existing ``video_order`` (``None`` when it
+    has none, so it sorts after every recorded prior order). ``session_position``
+    is the item's arranged position among this session's additions (``None`` when
+    the item is not a session addition).
+    """
+
+    group: str
+    sequence: str
+    camera: str
+    name: str
+    prior_order: int | None
+    session_position: int | None
+
+
+def assign_video_order(
+    items: Sequence[T], key_of: Callable[[T], VideoOrderKey]
+) -> list[tuple[T, int]]:
+    """Arrange *items* and assign a dense ``video_order`` per (group, sequence, camera).
+
+    Within each group the order is: items with no ``session_position`` (already
+    present) first, by ``prior_order`` (``None`` -> a sentinel past every real
+    order), then this session's additions by ``session_position``; ``name`` breaks
+    ties. A single stable sort over the total key makes this deterministic, and
+    the dense counter restarts at 0 for each ``(group, sequence, camera)`` so
+    parallel cameras are numbered independently rather than as temporal chunks of
+    one camera. Returns ``(item, video_order)`` pairs in the arranged order.
+
+    This is the one place the ``video_order`` ranking lives:
+    :func:`densify_video_order` (media-index rows) and the mosaic-api sequence
+    importer (``Video.idx``) both project their inputs into a
+    :class:`VideoOrderKey` and call it, so the numbering cannot diverge across the
+    two call sites.
+    """
+
+    def sort_key(
+        pair: tuple[T, VideoOrderKey],
+    ) -> tuple[str, str, str, int, int, str]:
+        key = pair[1]
+        if key.session_position is not None:
+            rank_class, rank_value = 1, key.session_position
+        else:
+            rank_class = 0
+            rank_value = (
+                key.prior_order
+                if key.prior_order is not None
+                else _UNORDERED_PRIOR_RANK
+            )
+        return (key.group, key.sequence, key.camera, rank_class, rank_value, key.name)
+
+    keyed = sorted(((item, key_of(item)) for item in items), key=sort_key)
+    counters: dict[tuple[str, str, str], int] = {}
+    result: list[tuple[T, int]] = []
+    for item, key in keyed:
+        group_key = (key.group, key.sequence, key.camera)
+        position = counters.get(group_key, 0)
+        counters[group_key] = position + 1
+        result.append((item, position))
+    return result
+
+
 def densify_video_order(
     rows: list[dict[str, object]],
     *,
@@ -193,40 +263,32 @@ def densify_video_order(
 ) -> list[dict[str, object]]:
     """Re-number ``video_order`` as a dense counter per ``(group, sequence, camera)``.
 
-    Within each group the order is: pre-existing videos first, keeping their
-    prior ``video_order`` (*prior_order*), then this session's videos ordered by
-    their arranged position (*session_positions*). Filename breaks ties. Both
-    maps are keyed ``(sequence, basename)``; a session video is one present in
-    *session_positions*. Keying the group on ``camera`` (``""`` for every row
-    today) makes this per-``(group, sequence)`` now and per-camera once a
-    ``camera`` column exists -- so parallel cameras are never numbered as
-    temporal chunks. Returns the rows in the assigned order.
+    A thin adapter over :func:`assign_video_order`: it maps each media-index row
+    into a :class:`VideoOrderKey`. Within each group the order is pre-existing
+    videos first, keeping their prior ``video_order`` (*prior_order*), then this
+    session's videos by arranged position (*session_positions*); the ``name``
+    column breaks ties. Both maps are keyed ``(sequence, basename)`` where the
+    basename comes from ``abs_path``; a session video is one present in
+    *session_positions*. Keying the dense counter on ``camera`` (``""`` for every
+    row today) makes this per-``(group, sequence)`` now and per-camera once a
+    ``camera`` column exists. Mutates each row's ``video_order`` in place and
+    returns the rows in the assigned order.
     """
 
-    def within_sequence_key(row: dict[str, object]) -> tuple[int, int, str]:
-        key = (str(row["sequence"]), Path(str(row["abs_path"])).name)
-        name = str(row["name"])
-        if key in session_positions:
-            return (1, session_positions[key], name)
-        return (0, prior_order.get(key, _UNORDERED_PRIOR_RANK), name)
-
-    ordered = sorted(
-        rows,
-        key=lambda row: (
-            str(row["group"]),
-            str(row["sequence"]),
-            str(row.get("camera", "") or ""),
-            within_sequence_key(row),
-        ),
-    )
-    counters: dict[tuple[str, str, str], int] = {}
-    for row in ordered:
-        group_key = (
-            str(row["group"]),
-            str(row["sequence"]),
-            str(row.get("camera", "") or ""),
+    def key_of(row: dict[str, object]) -> VideoOrderKey:
+        lookup = (str(row["sequence"]), Path(str(row["abs_path"])).name)
+        return VideoOrderKey(
+            group=str(row["group"]),
+            sequence=str(row["sequence"]),
+            camera=str(row.get("camera", "") or ""),
+            name=str(row["name"]),
+            prior_order=prior_order.get(lookup),
+            session_position=session_positions.get(lookup),
         )
-        position = counters.get(group_key, 0)
-        row["video_order"] = position
-        counters[group_key] = position + 1
-    return ordered
+
+    ordered = assign_video_order(rows, key_of)
+    result: list[dict[str, object]] = []
+    for row, order in ordered:
+        row["video_order"] = order
+        result.append(row)
+    return result

@@ -14,6 +14,8 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
+    VideoOrderKey,
+    assign_video_order,
     build_prior_order,
     densify_video_order,
     frame_from_rows,
@@ -146,6 +148,108 @@ def test_densify_independent_sequences_number_from_zero() -> None:
     assert by_seq[("s1", "a")] == 0
     assert by_seq[("s2", "a")] == 0
     assert by_seq[("s2", "b")] == 1
+
+
+# --- assign_video_order: the shared ranking core ---------------------------
+
+
+def _vk(
+    *,
+    name: str,
+    group: str = "",
+    sequence: str = "s",
+    camera: str = "",
+    prior_order: int | None = None,
+    session_position: int | None = None,
+) -> VideoOrderKey:
+    return VideoOrderKey(
+        group=group,
+        sequence=sequence,
+        camera=camera,
+        name=name,
+        prior_order=prior_order,
+        session_position=session_position,
+    )
+
+
+def test_assign_video_order_fresh_orders_by_session_position() -> None:
+    keys = [
+        _vk(name="a", session_position=2),
+        _vk(name="b", session_position=0),
+        _vk(name="c", session_position=1),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    assert [(k.name, order) for k, order in result] == [("b", 0), ("c", 1), ("a", 2)]
+
+
+def test_assign_video_order_append_prior_then_session() -> None:
+    keys = [
+        _vk(name="new0", session_position=0),
+        _vk(name="old1", prior_order=1),
+        _vk(name="old0", prior_order=0),
+        _vk(name="new1", session_position=1),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    assert [(k.name, order) for k, order in result] == [
+        ("old0", 0),
+        ("old1", 1),
+        ("new0", 2),
+        ("new1", 3),
+    ]
+
+
+def test_assign_video_order_order_zero_is_not_the_missing_sentinel() -> None:
+    # prior_order 0 must be kept, not replaced by the unindexed sentinel: an
+    # unindexed prior (prior_order None) sorts after every recorded order, then by
+    # name. Guards the `prior_order if is not None else sentinel` branch against a
+    # truthiness bug that would demote order 0.
+    keys = [
+        _vk(name="z", prior_order=None),
+        _vk(name="indexed", prior_order=0),
+        _vk(name="a", prior_order=None),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    assert [(k.name, order) for k, order in result] == [
+        ("indexed", 0),
+        ("a", 1),
+        ("z", 2),
+    ]
+
+
+def test_assign_video_order_session_position_zero_is_a_session_video() -> None:
+    # session_position 0 must classify as a session addition (sorts after an
+    # unindexed prior), not be mistaken for "no session position". Guards the
+    # `session_position is not None` branch against a truthiness bug.
+    keys = [
+        _vk(name="aaa_upload", session_position=0),
+        _vk(name="zzz_ghost", prior_order=None),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    assert [k.name for k, _ in result] == ["zzz_ghost", "aaa_upload"]
+
+
+def test_assign_video_order_tie_break_on_name() -> None:
+    # Same rank class and value -> the name breaks the tie deterministically.
+    keys = [
+        _vk(name="b", session_position=0),
+        _vk(name="a", session_position=0),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    assert [k.name for k, _ in result] == ["a", "b"]
+
+
+def test_assign_video_order_counts_per_camera_and_sequence() -> None:
+    # The dense counter restarts per (group, sequence, camera): two cameras of one
+    # recording are numbered independently, never as chunks of one timeline.
+    keys = [
+        _vk(name="cam0_a", sequence="rec", camera="c0", session_position=0),
+        _vk(name="cam0_b", sequence="rec", camera="c0", session_position=1),
+        _vk(name="cam1_a", sequence="rec", camera="c1", session_position=0),
+        _vk(name="other", sequence="rec2", camera="", session_position=0),
+    ]
+    result = assign_video_order(keys, lambda k: k)
+    order_by_name = {k.name: order for k, order in result}
+    assert order_by_name == {"cam0_a": 0, "cam0_b": 1, "cam1_a": 0, "other": 0}
 
 
 # --- write_media_index: the projection ------------------------------------
