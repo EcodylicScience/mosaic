@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from mosaic.runlog import (
     JsonlRunLog as JsonlRunLog,
+    RunLogSnapshot as RunLogSnapshot,
     read_run as read_run,
     read_run_progress as read_run_progress,
     read_runs as read_runs,
@@ -22,6 +23,7 @@ from mosaic.runlog import (
 
 __all__ = [
     "JsonlRunLog",
+    "RunLogSnapshot",
     "read_run",
     "read_run_progress",
     "read_runs",

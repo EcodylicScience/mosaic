@@ -43,11 +43,12 @@ def status_command(
     row = read_run(run_dir, execution_id)
     if row is None:
         fail(f"No run found with execution_id={execution_id}.")
+    payload: dict[str, object] = dict(row)
     if progress:
         from mosaic.core.pipeline.run_log import read_run_progress
 
-        row = {**row, "progress": read_run_progress(run_dir, execution_id)}
+        payload["progress"] = read_run_progress(run_dir, execution_id)
     if as_json:
-        emit_json(row)
+        emit_json(payload)
     else:
-        render_kv(row)
+        render_kv(payload)

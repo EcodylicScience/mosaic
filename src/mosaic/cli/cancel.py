@@ -46,7 +46,7 @@ def cancel_command(
     if row is None:
         fail(f"No run found with execution_id={execution_id}.")
 
-    status = str(row.get("status", ""))
+    status = row["status"]
     if status not in ("running", "queued"):
         _emit(
             {"execution_id": execution_id, "status": status, "signalled": False},
@@ -55,12 +55,11 @@ def cancel_command(
         )
         return
 
-    host = str(row.get("host", ""))
+    host = row["host"]
     if host and host != socket.gethostname():
         fail(f"Run is on host {host!r}; cross-host cancel is a Layer-2 concern.")
 
-    pid_raw = row.get("pid", 0)
-    pid = pid_raw if isinstance(pid_raw, int) else 0
+    pid = row["pid"]
     if pid <= 0:
         fail("No pid recorded for this run; cannot signal it.")
 

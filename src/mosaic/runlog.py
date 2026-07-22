@@ -44,10 +44,11 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 __all__ = [
     "JsonlRunLog",
+    "RunLogSnapshot",
     "new_execution_id",
     "now_iso",
     "read_run",
@@ -58,6 +59,30 @@ __all__ = [
     "run_log_dir",
     "run_log_path",
 ]
+
+
+class RunLogSnapshot(TypedDict):
+    """One attempt-status snapshot, folded from a run-log JSONL by ``reduce_run_log``.
+
+    ``run_id`` / ``target`` / the timestamps are empty strings until the job emits
+    them; ``progress_done`` / ``progress_total`` / ``pid`` are zero until reported.
+    """
+
+    execution_id: str
+    kind: str
+    target: str
+    run_id: str
+    status: str
+    owner: str
+    host: str
+    pid: int
+    created_at: str
+    started_at: str
+    heartbeat_at: str
+    finished_at: str
+    error_json: str
+    progress_done: int
+    progress_total: int
 
 
 # ---------------------------------------------------------------------------
@@ -280,16 +305,10 @@ def _iter_records(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def reduce_run_log(path: Path) -> dict[str, Any] | None:
-    """Fold a run-log JSONL into an attempt-status snapshot (``None`` if empty/unreadable).
-
-    The returned keys mirror the old SQLite ``runs`` row so the CLI contract is unchanged::
-
-        execution_id, kind, target, run_id, status, owner, host, pid, created_at,
-        started_at, heartbeat_at, finished_at, error_json, progress_done, progress_total
-    """
+def reduce_run_log(path: Path) -> RunLogSnapshot | None:
+    """Fold a run-log JSONL into a :class:`RunLogSnapshot` (``None`` if empty/unreadable)."""
     path = Path(path)
-    snap: dict[str, Any] = {
+    snap: RunLogSnapshot = {
         "execution_id": path.stem,
         "kind": "",
         "target": "",
@@ -343,7 +362,7 @@ def reduce_run_log(path: Path) -> dict[str, Any] | None:
     return snap
 
 
-def read_run(run_dir: Path | str, execution_id: str) -> dict[str, Any] | None:
+def read_run(run_dir: Path | str, execution_id: str) -> RunLogSnapshot | None:
     """Read one attempt snapshot by ``execution_id`` (or ``None`` if absent)."""
     return reduce_run_log(Path(run_dir) / f"{execution_id}.jsonl")
 
@@ -353,7 +372,7 @@ def read_runs(
     *,
     kind: str | None = None,
     status: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[RunLogSnapshot]:
     """Read attempt snapshots (newest first), optionally filtered by kind/status.
 
     ``execution_id`` is a ULID, so a plain lexicographic descending sort is
@@ -362,23 +381,23 @@ def read_runs(
     run_dir = Path(run_dir)
     if not run_dir.exists():
         return []
-    out: list[dict[str, Any]] = []
+    out: list[RunLogSnapshot] = []
     for p in run_dir.glob("*.jsonl"):
         snap = reduce_run_log(p)
         if snap is None:
             continue
-        if kind is not None and snap.get("kind") != kind:
+        if kind is not None and snap["kind"] != kind:
             continue
-        if status is not None and snap.get("status") != status:
+        if status is not None and snap["status"] != status:
             continue
         out.append(snap)
-    out.sort(key=lambda r: str(r.get("execution_id", "")), reverse=True)
+    out.sort(key=lambda r: r["execution_id"], reverse=True)
     return out
 
 
-def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[dict[str, Any]]:
+def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[RunLogSnapshot]:
     """Read all attempts that produced (or targeted) a given content ``run_id``."""
-    return [r for r in read_runs(run_dir) if r.get("run_id") == run_id]
+    return [r for r in read_runs(run_dir) if r["run_id"] == run_id]
 
 
 def read_run_progress(run_dir: Path | str, execution_id: str) -> list[dict[str, Any]]:

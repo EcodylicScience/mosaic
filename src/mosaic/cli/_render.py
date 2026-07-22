@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 
 import typer
 
 
-def render_kv(payload: dict[str, object]) -> None:
+def render_kv(payload: Mapping[str, object]) -> None:
     """Print ``key: value`` lines to stdout."""
     for key, value in payload.items():
         typer.echo(f"{key}: {value}")
 
 
-def render_table(rows: list[dict[str, object]], columns: list[str]) -> None:
+def render_table(rows: Sequence[Mapping[str, object]], columns: list[str]) -> None:
     """Print a tab-separated table (header + one row per dict) to stdout."""
     typer.echo("\t".join(columns))
     for row in rows:
