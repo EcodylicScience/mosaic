@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, TypeGuard
 
 import cv2
 import numpy as np
@@ -106,6 +106,71 @@ def is_imgstore(path: Path | str) -> bool:
     except Exception:
         return False
     return isinstance(data, dict) and _STORE_MD_KEY in data
+
+
+@dataclass(frozen=True)
+class StoreIdentity:
+    """Motif/Loopbio identity fields read from a store's ``metadata.yaml`` root.
+
+    Every field is an empty string for a non-Motif store, or when a key is
+    absent or non-string -- which the media index reads as a single-camera
+    plain store. ``sync_uuid`` is the document-root ``synchronizationuuid``
+    (the recording id shared by every camera of one synchronized recording),
+    **not** ``__store.uuid`` (which differs per store). ``title`` is
+    display-only -- it may contain spaces and differ from the directory name --
+    and is never used for identity.
+    """
+
+    camera_serial: str = ""
+    sync_uuid: str = ""
+    synchronization: str = ""
+    title: str = ""
+
+
+_EMPTY_STORE_IDENTITY = StoreIdentity()
+
+
+def _is_str_dict(value: object) -> TypeGuard[dict[str, object]]:
+    """Narrow a parsed YAML document root to a string-keyed mapping.
+
+    A ``metadata.yaml`` document root is a string-keyed mapping; this asserts
+    that shape so ``.get`` returns ``object`` (not ``Unknown``) for callers.
+    """
+    return isinstance(value, dict)
+
+
+def imgstore_store_identity(path: Path | str) -> StoreIdentity:
+    """Read a store's Motif identity fields import-free from ``metadata.yaml``.
+
+    Reuses the document-root YAML parse of :func:`is_imgstore` (no ``imgstore``
+    import), reading the document-**root** keys ``camera_serial``,
+    ``synchronizationuuid``, ``synchronization`` and ``title``. A missing key,
+    a non-string value, or an unreadable / non-store path yields an empty
+    field; a non-Motif store returns all-empty (a single camera).
+    """
+    p = Path(path)
+    md = p / _STORE_MD_FILENAME if p.is_dir() else p
+    if md.name != _STORE_MD_FILENAME or not md.is_file():
+        return _EMPTY_STORE_IDENTITY
+    try:
+        with md.open("r") as f:
+            loaded = yaml.safe_load(f)
+    except Exception:
+        return _EMPTY_STORE_IDENTITY
+    if not _is_str_dict(loaded):
+        return _EMPTY_STORE_IDENTITY
+    root = loaded
+
+    def _str(key: str) -> str:
+        value = root.get(key)
+        return value if isinstance(value, str) else ""
+
+    return StoreIdentity(
+        camera_serial=_str("camera_serial"),
+        sync_uuid=_str("synchronizationuuid"),
+        synchronization=_str("synchronization"),
+        title=_str("title"),
+    )
 
 
 def _read_store_meta(path: Path | str) -> _StoreMeta:

@@ -50,6 +50,7 @@ class TestFramesIndex:
             method="uniform",
             group="g",
             sequence="s",
+            camera="",
             abs_path=str(p),
             video_abs_path=str(p),
             params_hash="h",
@@ -61,6 +62,7 @@ class TestFramesIndex:
             method="uniform",
             group="g",
             sequence="s",
+            camera="",
             abs_path=str(p),
             video_abs_path=str(p),
             params_hash="h",
@@ -69,6 +71,34 @@ class TestFramesIndex:
         idx.append([row2])
         df = idx.read()
         assert len(df) == 1
+
+    def test_distinct_cameras_are_not_deduped(self, tmp_path: Path) -> None:
+        # Two cameras of one recording share (run_id, group, sequence); camera is
+        # part of the dedup key so a partial re-run of one never drops the other.
+        idx = frames_index(tmp_path / "index.csv")
+        p = tmp_path / "frames_dir"
+        p.mkdir()
+
+        def _row(camera: str) -> FramesIndexRow:
+            cam_dir = p / camera
+            cam_dir.mkdir(exist_ok=True)
+            return FramesIndexRow(
+                run_id="r1",
+                method="uniform",
+                group="g",
+                sequence="s",
+                camera=camera,
+                abs_path=str(cam_dir),
+                video_abs_path=str(cam_dir),
+                params_hash="h",
+                n_frames_extracted=10,
+            )
+
+        idx.append([_row("CAMA")])
+        idx.append([_row("CAMB")])
+        df = idx.read()
+        assert len(df) == 2
+        assert set(df["camera"]) == {"CAMA", "CAMB"}
 
 
 class TestFramesIndexRow:
@@ -82,6 +112,7 @@ class TestFramesIndexRow:
             method="uniform",
             group="G1",
             sequence="S1",
+            camera="",
             abs_path=str(p),
             n_frames_extracted=50,
             n_frames_requested=50,
@@ -101,6 +132,7 @@ class TestFramesIndexRow:
             method="m",
             group="",
             sequence="s",
+            camera="",
             abs_path=str(p),
             n_frames_extracted=0,
             n_frames_requested=0,
@@ -118,6 +150,7 @@ class TestFramesIndexRow:
             method="uniform",
             group="G1",
             sequence="S1",
+            camera="",
             abs_path=str(p),
             n_frames_extracted=10,
             n_frames_requested=50,

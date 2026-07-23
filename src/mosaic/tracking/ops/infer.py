@@ -163,12 +163,15 @@ def _run_inference_op(
         return run_id
 
     work: list[tuple[str, str, Path, MediaFacts | None]] = []
-    for group, sequence, resolved in scope:
+    for entry in scope:
+        # Each scope entry is one camera; per-camera inference output pathing +
+        # index dedup is Phase 2, so single-camera behavior here is unchanged.
         # The op reads the first path; carry the routed entry's stored facts (the
         # analysis derivative's when the verdict routed there, else the
         # original's) so the reader injects them instead of re-probing. A
         # required-but-unlinked entry already raised in resolve_media_scope,
         # before any defective original was opened.
+        group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         facts = resolved.facts[0] if resolved.facts is not None else None
         work.append((group, sequence, resolved.paths[0], facts))
 

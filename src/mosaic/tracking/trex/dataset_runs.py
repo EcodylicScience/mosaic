@@ -266,9 +266,14 @@ def run_trex(
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return run_id
 
-    # One work item per (group, sequence); first video when several exist.
+    # One work item per (group, sequence); first video when several exist. Each
+    # scope entry is one camera; per-camera TREx output (a camera-qualified
+    # seq_dir and a camera in the trex index dedup) is Phase 2, gated on the
+    # store->mp4 transcode a store-directory sequence needs to be TREx-readable
+    # at all -- so single-camera behavior here is unchanged.
     work_items: list[tuple[str, str, Path]] = []
-    for group, sequence, resolved in scope:
+    for entry in scope:
+        group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         paths = resolved.paths
         if len(paths) > 1:
             print(

@@ -35,6 +35,11 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     "sequence",
     "group_safe",
     "sequence_safe",
+    # camera : recording :: id : sequence -- a within-sequence axis, empty ("")
+    # for single-camera media. sync_uuid is the recording id (Motif
+    # synchronizationuuid) that groups a recording's cameras; both are text.
+    "camera",
+    "sync_uuid",
     "abs_path",
     "size_bytes",
     "mtime_iso",

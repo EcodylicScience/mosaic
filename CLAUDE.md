@@ -267,10 +267,13 @@ Models follow the same shape: `models/<name>/<run_id>/`.
 
 ### Track schema
 
-Standardized tracks are validated by `core/schema.py`. The `trex_v1` schema,
-for example, requires columns: `frame, time, id, group, sequence, X, Y, ANGLE,
-SPEED` plus `poseX*` / `poseY*` for keypoints. New track converters must emit
-schema-valid parquet.
+Standardized tracks are validated by `core/schema.py`. The `trex_v1` schema, for
+example, *requires* columns `frame, time, id, group, sequence` plus at least one
+`poseX*` and one `poseY*` keypoint column, and *recommends* (warn-only)
+`X#wcentroid, Y#wcentroid, SPEED, ANGLE`. The validator never rejects unknown
+columns, so additive columns (e.g. an optional `camera` axis for multi-camera
+recordings) are back-compatible. New track converters must emit schema-valid
+parquet.
 
 ### `group` is an optional namespace, not the grouping
 

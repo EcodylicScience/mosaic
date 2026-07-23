@@ -237,9 +237,14 @@ class TranscodeOp(Op[TranscodeParams]):
                 facts = probe_media(source)
             verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
 
+            # A multi-camera recording matches one row per camera; suffix the
+            # derivative with the camera_serial (stable across a reindex that
+            # reorders rows) rather than the enumeration index. Temporal chunks
+            # of a single camera keep the positional suffix.
+            camera = str(row.get("camera", "") or "")
+            suffix = f"_{camera}" if camera else _suffix_for_multi(i, n_sources)
             dest = media_root / (
-                f"{make_entry_key(group, sequence)}"
-                f"{_suffix_for_multi(i, n_sources)}.{params.target}.mp4"
+                f"{make_entry_key(group, sequence)}{suffix}.{params.target}.mp4"
             )
 
             def _on_progress(progress: TranscodeProgress, index: int = i) -> None:

@@ -46,6 +46,7 @@ class FramesIndexRow(RunIndexRowBase):
     method: str
     group: str
     sequence: str
+    camera: str
     video_abs_path: str
     params_hash: str
     n_frames_extracted: int = 0
@@ -56,7 +57,10 @@ def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
     return IndexCSV(
         path,
         FramesIndexRow,
-        dedup_keys=["run_id", "group", "sequence"],
+        # camera is part of the identity: the cameras of one recording share a
+        # (run_id, group, sequence), so without it a partial re-run of one camera
+        # would dedup away the other camera's row.
+        dedup_keys=["run_id", "group", "sequence", "camera"],
     )
 
 
@@ -95,10 +99,11 @@ class ExtractFramesParams(Params):
 
 @dataclass(frozen=True, slots=True)
 class _ExtractSpec:
-    """Picklable unit of work for one (group, sequence) -- process-safe."""
+    """Picklable unit of work for one (group, sequence, camera) -- process-safe."""
 
     group: str
     sequence: str
+    camera: str
     video_paths: tuple[Path, ...]
     facts: tuple[MediaFacts, ...] | None
     seq_dir: Path
@@ -120,17 +125,21 @@ class _ExtractSpec:
     overwrite: bool
 
 
+def _spec_label(spec: _ExtractSpec) -> str:
+    """Display label for a work spec, camera-qualified for a multi-camera entry."""
+    key = make_entry_key(spec.group, spec.sequence)
+    return f"{key}/{spec.camera}" if spec.camera else key
+
+
 def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
-    """Extract one sequence. Module-scope (picklable) so process mode works.
+    """Extract one (group, sequence, camera). Module-scope (picklable) so process
+    mode works.
 
     Manifest path-rewriting (which needs the Dataset) is done by the caller.
     """
     seq_dir = spec.seq_dir
     if seq_dir.exists() and not spec.overwrite:
-        print(
-            f"[extract_frames] skip {make_entry_key(spec.group, spec.sequence)} "
-            f"(exists, overwrite=False)"
-        )
+        print(f"[extract_frames] skip {_spec_label(spec)} (exists, overwrite=False)")
         return None
     if spec.overwrite and seq_dir.exists():
         shutil.rmtree(seq_dir)
@@ -176,8 +185,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
             )
     except Exception as exc:
         print(
-            f"[extract_frames] ERROR processing "
-            f"{make_entry_key(spec.group, spec.sequence)}: {exc}",
+            f"[extract_frames] ERROR processing {_spec_label(spec)}: {exc}",
             file=sys.stderr,
         )
         return None
@@ -187,6 +195,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
         method=spec.method,
         group=spec.group,
         sequence=spec.sequence,
+        camera=spec.camera,
         abs_path=seq_dir,
         n_frames_extracted=result.n_extracted,
         n_frames_requested=result.n_requested,
@@ -256,21 +265,34 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
         )
         return run_id
 
-    # Build picklable per-sequence work specs (multi-video sequences merged).
-    # resolve_media_scope routes each entry by its transcode verdict: a
-    # required-but-unlinked entry raises (fail loud) rather than opening a
-    # defective original, and a routed entry carries the analysis derivative's
-    # facts.
+    # Build picklable per-(group, sequence, camera) work specs (temporal chunks
+    # of one camera merged). resolve_media_scope yields one entry per camera, so
+    # the cameras of a synchronized recording run independently rather than as
+    # one concatenated timeline; it also routes each entry by its transcode
+    # verdict, so a required-but-unlinked entry raises (fail loud) rather than
+    # opening a defective original, and a routed entry carries the analysis
+    # derivative's facts.
     specs: list[_ExtractSpec] = []
-    for group, sequence, resolved in scope:
+    for entry in scope:
+        group, sequence, camera, resolved = (
+            entry.group,
+            entry.sequence,
+            entry.camera,
+            entry.resolved,
+        )
         facts = tuple(resolved.facts) if resolved.facts is not None else None
+        # A multi-camera recording writes each camera into its own subdir so the
+        # cameras never collide; single-camera media keeps the flat layout.
+        key = make_entry_key(group, sequence)
+        seq_dir = run_root / key / camera if camera else run_root / key
         specs.append(
             _ExtractSpec(
                 group=group,
                 sequence=sequence,
+                camera=camera,
                 video_paths=tuple(resolved.paths),
                 facts=facts,
-                seq_dir=run_root / make_entry_key(group, sequence),
+                seq_dir=seq_dir,
                 run_id=run_id,
                 params_hash=params_hash,
                 n_frames=int(p.n_frames),
@@ -325,15 +347,13 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
                     row = future.result()
                     done += 1
                     spec = futures[future]
-                    ctx.progress.on_entry_end(
-                        done, len(specs), make_entry_key(spec.group, spec.sequence)
-                    )
+                    ctx.progress.on_entry_end(done, len(specs), _spec_label(spec))
                     ctx.heartbeat(done)
                     _collect(row)
         else:
             for i, spec in enumerate(specs):
                 ctx.check_cancel()
-                key = make_entry_key(spec.group, spec.sequence)
+                key = _spec_label(spec)
                 ctx.progress.on_entry_start(i, len(specs), key)
                 _collect(_extract_one(spec))
                 ctx.progress.on_entry_end(i + 1, len(specs), key)
@@ -517,18 +537,14 @@ def get_frame_paths(
     if not run_root.exists():
         return []
 
-    # Collect PNG paths
-    paths = []
+    # Collect PNG paths. rglob so a per-camera subdir (a multi-camera recording
+    # writes frames/<seq>/<camera>/*.png) is descended into; single-camera frames
+    # sit directly under the sequence dir and are still found.
     if group is not None or sequence is not None:
         seq_label = make_entry_key(group or "", sequence or "")
         seq_dir = run_root / seq_label
-        if seq_dir.exists():
-            paths = sorted(seq_dir.glob("*.png"))
-    else:
-        for seq_dir in sorted(run_root.iterdir()):
-            if seq_dir.is_dir():
-                paths.extend(sorted(seq_dir.glob("*.png")))
-    return paths
+        return sorted(seq_dir.rglob("*.png")) if seq_dir.exists() else []
+    return sorted(run_root.rglob("*.png"))
 
 
 def get_frame_manifests(
@@ -576,32 +592,35 @@ def get_frame_manifests(
     if not run_root.exists():
         return []
 
-    # Collect sequence directories
+    # Collect run_info.json manifests. rglob descends the optional per-camera
+    # subdir, so a multi-camera recording yields one manifest per camera and a
+    # single-camera sequence yields one manifest directly under its dir.
     if group is not None or sequence is not None:
         seq_label = make_entry_key(group or "", sequence or "")
-        seq_dirs = [run_root / seq_label]
+        seq_root = run_root / seq_label
+        manifest_paths = (
+            sorted(seq_root.rglob("run_info.json")) if seq_root.exists() else []
+        )
     else:
-        seq_dirs = sorted(d for d in run_root.iterdir() if d.is_dir())
+        manifest_paths = sorted(run_root.rglob("run_info.json"))
 
     manifests = []
-    for seq_dir in seq_dirs:
-        manifest_path = seq_dir / "run_info.json"
-        if manifest_path.exists():
-            data = json.loads(manifest_path.read_text())
-            # Resolve relative paths so callers always see absolute paths
-            manifest_dir = manifest_path.parent
-            for f in data.get("files", []):
-                if "path" in f:
-                    fp = Path(f["path"])
-                    if not fp.is_absolute():
-                        f["path"] = str((manifest_dir / fp).resolve())
-            if "output_dir" in data:
-                od = Path(data["output_dir"])
-                if not od.is_absolute():
-                    data["output_dir"] = str(ds.resolve_path(od))
-            if "video_path" in data:
-                vp = Path(data["video_path"])
-                if not vp.is_absolute():
-                    data["video_path"] = str(ds.resolve_path(vp))
-            manifests.append(data)
+    for manifest_path in manifest_paths:
+        data = json.loads(manifest_path.read_text())
+        # Resolve relative paths so callers always see absolute paths
+        manifest_dir = manifest_path.parent
+        for f in data.get("files", []):
+            if "path" in f:
+                fp = Path(f["path"])
+                if not fp.is_absolute():
+                    f["path"] = str((manifest_dir / fp).resolve())
+        if "output_dir" in data:
+            od = Path(data["output_dir"])
+            if not od.is_absolute():
+                data["output_dir"] = str(ds.resolve_path(od))
+        if "video_path" in data:
+            vp = Path(data["video_path"])
+            if not vp.is_absolute():
+                data["video_path"] = str(ds.resolve_path(vp))
+        manifests.append(data)
     return manifests

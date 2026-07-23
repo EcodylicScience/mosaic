@@ -14,25 +14,7 @@ from mosaic_media import MediaProbeError, probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
-from mosaic.core.media.facts_columns import FACTS_COLUMNS
-
-MEDIA_INDEX_COLUMNS = [
-    "name",
-    "group",
-    "sequence",
-    "group_safe",
-    "sequence_safe",
-    "abs_path",
-    "size_bytes",
-    "mtime_iso",
-    "width",
-    "height",
-    "fps",
-    "codec",
-    "media_type",
-    *FACTS_COLUMNS,
-    "video_order",
-]
+from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:

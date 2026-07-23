@@ -203,6 +203,12 @@ class IndexCSV(Generic[RowT]):
         df_new = pd.DataFrame(rows)
 
         if self.dedup_keys:
+            # A dedup key added after some rows were written is absent from the
+            # existing CSV; treat those older rows as carrying its empty default
+            # so the comparison neither KeyErrors nor spuriously matches.
+            for key in self.dedup_keys:
+                if key not in df.columns:
+                    df[key] = ""
             for _, new_row in df_new.iterrows():
                 mask = pd.Series(True, index=df.index)
                 for key in self.dedup_keys:

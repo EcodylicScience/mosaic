@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
@@ -16,9 +17,12 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
     Each frame is tagged uniquely in its first pixel (``frame[0, 0, 0] == i``)
     so read-back order/identity can be asserted. Defaults to the ``npy``
     (DirectoryImgStore) format, which is lossless and needs no codec/ffmpeg.
+    ``extra_metadata`` writes document-root keys into ``metadata.yaml`` (e.g.
+    Motif ``camera_serial`` / ``synchronizationuuid`` / ``synchronization``) so a
+    multi-camera recording can be simulated.
 
     Returns a callable ``(name=, nframes=, fmt=, shape=, dtype=, chunksize=,
-    parent=) -> (store_dir, frames)``.
+    parent=, extra_metadata=) -> (store_dir, frames)``.
     """
     imgstore = pytest.importorskip("imgstore")
 
@@ -31,10 +35,16 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         chunksize: int = 5,
         parent: Path | None = None,
         fps: float = 30.0,
+        extra_metadata: Mapping[str, object] | None = None,
     ) -> tuple[Path, list[np.ndarray]]:
         base = parent if parent is not None else tmp_path
         base.mkdir(parents=True, exist_ok=True)
         dest = base / name
+        # imgstore merges a passed metadata dict at the document root (its own
+        # block lives under __store), so extra_metadata lands where is_imgstore /
+        # imgstore_store_identity read Motif keys. Pass it only when set: a None
+        # metadata would blow up the store's __store merge.
+        extra = {"metadata": dict(extra_metadata)} if extra_metadata else {}
         store = imgstore.new_for_format(
             fmt,
             path=str(dest),
@@ -42,6 +52,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
             imgshape=shape,
             imgdtype=dtype,
             chunksize=chunksize,
+            **extra,
         )
         frames: list[np.ndarray] = []
         for i in range(nframes):

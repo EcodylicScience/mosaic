@@ -54,9 +54,10 @@ class MediaIndexScope:
     every file found is assigned ``group``/``sequence`` (not derived from a
     track keymap). ``order_by_name`` maps a file's basename to its arranged
     linear position within the sequence; a file absent from the map keeps its
-    prior ``video_order`` and sorts before the arranged ones. ``camera`` is
-    reserved for multi-camera recordings; it is ``""`` today and only takes
-    effect once the media index gains a ``camera`` column.
+    prior ``video_order`` and sorts before the arranged ones. ``camera`` is an
+    explicit override for a plain video the caller tags with a camera axis; a
+    probed imgstore supplies its own ``camera``/``sync_uuid`` from store
+    metadata, so this override applies only when the probe carries none.
     """
 
     directory: Path
@@ -110,9 +111,8 @@ def frame_from_rows(rows: list[dict[str, object]]) -> pd.DataFrame:
 def write_media_index_rows(index_path: Path, df: pd.DataFrame) -> None:
     """Atomically write *df* projected onto ``MEDIA_INDEX_COLUMNS``.
 
-    The projection drops any transient column (e.g. a future ``camera`` before
-    it is a schema column) and fixes column order; the atomic write guarantees
-    a concurrent reader never sees a partial file.
+    The projection drops any column outside the schema and fixes column order;
+    the atomic write guarantees a concurrent reader never sees a partial file.
     """
     atomic_write(index_path, lambda p: df[MEDIA_INDEX_COLUMNS].to_csv(p, index=False))
 
@@ -129,6 +129,7 @@ def build_media_index_row(
     probe: Mapping[str, object],
     name: str | None = None,
     camera: str = "",
+    sync_uuid: str = "",
     media_type: str = "video",
     source_path: str | None = None,
     video_order: int = 0,
@@ -140,8 +141,11 @@ def build_media_index_row(
     (a :class:`ProbeMetadata`). ``abs_path`` is produced by *to_store_path*, so
     the in-tree-relative / out-of-tree-absolute rule is enforced in one place.
     *source_path* overrides the empty ``source_path`` the probe carries (used by
-    a derivative's back-link). *camera* is not persisted until the media index
-    gains a ``camera`` column, but is carried for :func:`densify_video_order`.
+    a derivative's back-link). *camera* is the within-sequence camera axis
+    (``""`` for single-camera media) and *sync_uuid* the recording id that
+    groups a recording's cameras; both feed :func:`densify_video_order` (which
+    numbers ``video_order`` per ``(group, sequence, camera)``) and persist as
+    schema columns.
     """
     size_bytes = getattr(stat, "st_size")
     mtime = getattr(stat, "st_mtime")
@@ -151,6 +155,8 @@ def build_media_index_row(
         "sequence": sequence,
         "group_safe": group_safe,
         "sequence_safe": sequence_safe,
+        "camera": camera,
+        "sync_uuid": sync_uuid,
         "abs_path": to_store_path(path),
         "size_bytes": size_bytes,
         "mtime_iso": _mtime_iso(mtime),
@@ -158,8 +164,6 @@ def build_media_index_row(
         "video_order": video_order,
         **probe,
     }
-    if camera:
-        row["camera"] = camera
     if source_path is not None:
         row["source_path"] = source_path
     return row

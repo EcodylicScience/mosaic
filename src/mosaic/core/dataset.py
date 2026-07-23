@@ -385,6 +385,26 @@ def _media_cell(row: "pd.Series", key: str) -> str:
 
 
 @dataclass(frozen=True)
+class ProbedEntry:
+    """One probed media file or imgstore, before identity is assigned.
+
+    Produced by :meth:`Dataset._probe_dir_rows` and consumed by both
+    :meth:`Dataset.index_media` (scan-and-derive) and
+    :meth:`Dataset.write_media_index` (assignment-driven). ``camera`` and
+    ``sync_uuid`` are store *facts* read from imgstore metadata (empty for a
+    plain video); deriving the sequence identity from them is the caller's job,
+    so this stays identity-free.
+    """
+
+    path: Path
+    stat: os.stat_result
+    probe: ProbeMetadata
+    media_type: str
+    camera: str = ""
+    sync_uuid: str = ""
+
+
+@dataclass(frozen=True)
 class ResolvedMedia:
     """Resolved media file paths for one (group, sequence), plus stored facts.
 
@@ -399,6 +419,23 @@ class ResolvedMedia:
 
     paths: list[Path]
     facts: list[MediaFacts] | None
+
+
+@dataclass(frozen=True)
+class ResolvedScopeEntry:
+    """One resolved ``(group, sequence, camera)`` entry from a scoped enumeration.
+
+    ``camera`` is the within-sequence camera axis (``""`` for single-camera
+    media); a multi-camera recording yields one entry per camera, each with its
+    own ``resolved`` media, so a consumer never concatenates two cameras into
+    one timeline. A dataclass (not a tuple) so later phases can add per-entry
+    fields (calibration, session clock) without re-breaking every consumer.
+    """
+
+    group: str
+    sequence: str
+    camera: str
+    resolved: ResolvedMedia
 
 
 @dataclass
@@ -1190,16 +1227,23 @@ class Dataset:
         search_dirs: Iterable[str | Path],
         exts: set[str],
         recursive: bool,
-    ) -> list[tuple[Path, os.stat_result, ProbeMetadata, str]]:
+    ) -> list[ProbedEntry]:
         """Probe every media file + imgstore under *search_dirs* (identity-free).
 
-        Returns ``(path, stat, probe, media_type)`` per entry -- plain video
-        files first (deterministically ordered by resolved path), then one entry
-        per imgstore directory (sorted). Identity assignment (group/sequence) is
-        left to the caller. Shared by :meth:`index_media` (scan-and-derive) and
+        Returns one :class:`ProbedEntry` per entry -- plain video files first
+        (deterministically ordered by resolved path), then one entry per
+        imgstore directory (sorted). An imgstore entry carries its Motif
+        ``camera`` (= ``camera_serial``) and ``sync_uuid``
+        (= ``synchronizationuuid``) read from store metadata; a plain video
+        carries neither. Identity assignment (group/sequence) is left to the
+        caller. Shared by :meth:`index_media` (scan-and-derive) and
         :meth:`write_media_index` (assignment-driven scope re-probe).
         """
-        from .media.imgstore_io import imgstore_probe, is_imgstore
+        from .media.imgstore_io import (
+            imgstore_probe,
+            imgstore_store_identity,
+            is_imgstore,
+        )
 
         search = [Path(d) for d in search_dirs]
 
@@ -1248,7 +1292,7 @@ class Dataset:
         # Probe deterministically by resolved path so pool completion order
         # never affects the returned order.
         probe_candidates.sort(key=lambda item: str(item[0].resolve()))
-        results: list[tuple[Path, os.stat_result, ProbeMetadata, str]] = []
+        results: list[ProbedEntry] = []
         max_probe_workers = min(4, (os.cpu_count() or 2))
         with ThreadPoolExecutor(max_workers=max_probe_workers) as executor:
             pending = [
@@ -1261,9 +1305,11 @@ class Dataset:
                 except (OSError, MediaProbeError) as e:
                     print(f"[WARN] skip {p}: {e}", file=sys.stderr)
                     continue
-                results.append((p, st, probe, "video"))
+                results.append(ProbedEntry(p, st, probe, "video"))
 
-        # One entry per imgstore directory (each store is a single sequence).
+        # One entry per imgstore directory (one camera of a recording). The
+        # Motif camera_serial / synchronizationuuid ride along as store facts;
+        # index_media groups the cameras of one recording into one sequence.
         for store_dir in sorted(imgstore_dirs):
             try:
                 st = store_dir.stat()
@@ -1277,7 +1323,21 @@ class Dataset:
                     file=sys.stderr,
                 )
                 continue
-            results.append((store_dir, st, probe, "imgstore"))
+            identity = imgstore_store_identity(store_dir)
+            results.append(
+                ProbedEntry(
+                    store_dir,
+                    st,
+                    probe,
+                    "imgstore",
+                    camera=identity.camera_serial,
+                    sync_uuid=(
+                        identity.sync_uuid
+                        if identity.synchronization.lower() != "none"
+                        else ""
+                    ),
+                )
+            )
 
         return results
 
@@ -1293,15 +1353,20 @@ class Dataset:
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
         - No symlinks created; absolute paths recorded.
         - imgstore directories (Motif / Loopbio) are discovered natively: each
-          store becomes one entry (``media_type="imgstore"``) and its internal
-          chunk files are excluded from the plain file glob.
-        - Columns: name, group, sequence, group_safe, sequence_safe, abs_path,
-          size_bytes, mtime_iso, width, height, fps, codec, media_type,
-          frame_count, analysis_transcode, stream_transcode,
+          store becomes one entry (``media_type="imgstore"``). The cameras of one
+          synchronized recording (a shared Motif ``synchronizationuuid``) collapse
+          into a single sequence with one ``camera`` row per store; each store's
+          internal chunk files are excluded from the plain file glob.
+        - Columns: name, group, sequence, group_safe, sequence_safe, camera,
+          sync_uuid, abs_path, size_bytes, mtime_iso, width, height, fps, codec,
+          media_type, frame_count, analysis_transcode, stream_transcode,
           analysis_derivative_path, playback_derivative_path, source_path,
-          media_facts, video_order. ``media_facts`` is the full injectable
-          MediaFacts serialized as JSON; the other new columns duplicate a few
-          of its fields (plus the verdict) for untyped pandas readers and routing.
+          media_facts, video_order. ``camera`` is the within-sequence camera
+          axis (``""`` for single-camera media) and ``sync_uuid`` the recording
+          id that groups a recording's cameras. ``media_facts`` is the full
+          injectable MediaFacts serialized as JSON; the other new columns
+          duplicate a few of its fields (plus the verdict) for untyped pandas
+          readers and routing.
 
         Parameters
         ----------
@@ -1332,22 +1397,26 @@ class Dataset:
         seq_key_map = self._build_media_sequence_keymap()
 
         # Probe every file + imgstore under the search dirs (identity-free), then
-        # derive each row's (group, sequence) from the track keymap here.
+        # derive each row's (group, sequence) from the track keymap here. Plain
+        # videos key off their stem; imgstore stores are grouped by sync_uuid so
+        # the cameras of one recording share a sequence (see _imgstore_rows).
         rows: list[dict[str, object]] = []
-        for path, st, probe, media_type in self._probe_dir_rows(
-            search_dirs, exts, recursive
-        ):
+        imgstore_entries: list[ProbedEntry] = []
+        for entry in self._probe_dir_rows(search_dirs, exts, recursive):
+            if entry.media_type == "imgstore":
+                imgstore_entries.append(entry)
+                continue
             meta = self._match_media_sequence(
-                seq_key_map, path.stem, mode=sequence_match_mode
+                seq_key_map, entry.path.stem, mode=sequence_match_mode
             )
             # When no track match, use the stem as sequence so each entry is its
             # own sequence (not all lumped together under an empty key).
-            fallback_seq = path.stem
-            fallback_safe = to_safe_name(path.stem)
+            fallback_seq = entry.path.stem
+            fallback_safe = to_safe_name(entry.path.stem)
             rows.append(
                 build_media_index_row(
-                    path=path,
-                    stat=st,
+                    path=entry.path,
+                    stat=entry.stat,
                     to_store_path=self.relative_to_root,
                     group=meta.get("group", "") if meta else "",
                     sequence=meta.get("sequence", fallback_seq)
@@ -1357,10 +1426,13 @@ class Dataset:
                     sequence_safe=meta.get("sequence_safe", fallback_safe)
                     if meta
                     else fallback_safe,
-                    probe=probe,
-                    media_type=media_type,
+                    probe=entry.probe,
+                    media_type=entry.media_type,
                 )
             )
+        rows.extend(
+            self._imgstore_rows(imgstore_entries, seq_key_map, sequence_match_mode)
+        )
 
         # De-duplicate by stored path.
         seen: set[object] = set()
@@ -1373,29 +1445,119 @@ class Dataset:
             dedup.append(r)
 
         # Carry transcode-written derivative links forward across the reindex,
-        # then assign video_order within each (group, sequence) by filename sort.
+        # then densify video_order per (group, sequence, camera) -- the same
+        # ranking write_media_index uses, so a scan and an assignment-driven
+        # write number identically. Empty maps => every row is a prior with an
+        # unknown order, so it sorts by name and densifies from 0 within its
+        # (group, sequence, camera): unchanged values for single-camera media,
+        # correct per-camera numbering for a multi-camera recording.
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         self._carry_forward_derivative_links(dedup, out_csv)
+        densify_video_order(dedup, session_positions={}, prior_order={})
         df_out = frame_from_rows(dedup)
-        df_out["video_order"] = 0
-        if not df_out.empty:
-            for (_group, _sequence), sub in df_out.groupby(["group", "sequence"]):
-                if len(sub) > 1:
-                    sorted_idx = sub.sort_values("name").index
-                    for rank, idx in enumerate(sorted_idx):
-                        df_out.loc[idx, "video_order"] = rank
 
         write_media_index_rows(out_csv, df_out)
 
         multi_count = 0
         if not df_out.empty:
-            seq_counts = df_out.groupby(["group", "sequence"]).size()
+            # Count temporal-chunk multiplicity per camera; two cameras of one
+            # recording are one sequence with two rows, not a multi-video chunked
+            # sequence, so they must not be conflated here.
+            seq_counts = df_out.groupby(["group", "sequence", "camera"]).size()
             multi_count = int((seq_counts > 1).sum())
         print(
             f"[index_media] Wrote {len(df_out)} entries -> {out_csv}"
             + (f" ({multi_count} multi-video sequences)" if multi_count else "")
         )
         return out_csv
+
+    @staticmethod
+    def _store_base_name(entry: ProbedEntry, *, strip_camera: bool) -> str:
+        """The sequence base name of an imgstore directory.
+
+        For a synchronized recording (*strip_camera* true) the shared sequence
+        name is the dir name minus its ``.<camera_serial>`` suffix
+        (``sound_2_20210930_172126.23739656`` -> ``sound_2_20210930_172126``) --
+        never ``Path.stem``, which would strip a dotted serial like a file
+        extension. An unsynchronized store keeps its **full** dir name so two
+        separate recordings that happen to share a base (``rec.A`` / ``rec.B``,
+        different or absent sync ids) never collapse into one bogus 2-camera
+        sequence.
+        """
+        if strip_camera and entry.camera:
+            return entry.path.name.removesuffix("." + entry.camera)
+        return entry.path.name
+
+    def _imgstore_rows(
+        self,
+        entries: list[ProbedEntry],
+        seq_key_map: dict[str, list[dict[str, str]]],
+        sequence_match_mode: str,
+    ) -> list[dict[str, object]]:
+        """Build media-index rows for imgstore stores, grouping cameras.
+
+        Stores sharing a non-empty ``sync_uuid`` are one recording -> one
+        sequence with a ``camera`` row per store; an unsynced store forms its own
+        singleton sequence. The sequence name is each store's base name
+        (:meth:`_store_base_name`); all cameras of a recording reduce to the same
+        base, and a divergent base warns and falls back to the deterministic
+        minimum. The canonical base is matched once against the track keymap so a
+        keymap hit assigns every camera the same ``(group, sequence)``. Emission
+        is deterministic: groups and their member stores sort by
+        ``(sync_uuid, camera_serial, path)``.
+        """
+        groups: dict[str, list[ProbedEntry]] = {}
+        for entry in entries:
+            # An unsynced store keys on its own path so distinct stores never
+            # merge; the "\x00" prefix keeps such keys disjoint from any uuid.
+            key = entry.sync_uuid or f"\x00{entry.path}"
+            groups.setdefault(key, []).append(entry)
+
+        rows: list[dict[str, object]] = []
+        for _key, members in sorted(groups.items()):
+            members = sorted(
+                members, key=lambda e: (e.sync_uuid, e.camera, str(e.path))
+            )
+            # A non-empty group key is a shared sync_uuid: these stores are one
+            # recording's cameras, so strip the serial to their shared base name.
+            synced = bool(members[0].sync_uuid)
+            bases = {self._store_base_name(e, strip_camera=synced) for e in members}
+            base = min(bases)
+            if synced and len(bases) > 1:
+                print(
+                    f"[index_media] imgstore recording {members[0].sync_uuid!r} "
+                    f"has cameras with divergent base names {sorted(bases)}; "
+                    f"using {base!r}.",
+                    file=sys.stderr,
+                )
+            meta = self._match_media_sequence(
+                seq_key_map, base, mode=sequence_match_mode
+            )
+            group = meta.get("group", "") if meta else ""
+            sequence = meta.get("sequence", base) if meta else base
+            group_safe = meta.get("group_safe", "") if meta else ""
+            sequence_safe = (
+                meta.get("sequence_safe", to_safe_name(base))
+                if meta
+                else to_safe_name(base)
+            )
+            for entry in members:
+                rows.append(
+                    build_media_index_row(
+                        path=entry.path,
+                        stat=entry.stat,
+                        to_store_path=self.relative_to_root,
+                        group=group,
+                        sequence=sequence,
+                        group_safe=group_safe,
+                        sequence_safe=sequence_safe,
+                        camera=entry.camera,
+                        sync_uuid=entry.sync_uuid,
+                        probe=entry.probe,
+                        media_type=entry.media_type,
+                    )
+                )
+        return rows
 
     def write_media_index(
         self,
@@ -1441,21 +1603,23 @@ class Dataset:
         for scope in scope_list:
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
-            for path, st, probe, media_type in self._probe_dir_rows(
-                [scope.directory], exts, recursive
-            ):
+            for entry in self._probe_dir_rows([scope.directory], exts, recursive):
+                # A probed imgstore supplies its own camera/sync_uuid from store
+                # metadata (read once in _probe_dir_rows); scope.camera is only
+                # an override for a plain video the caller tags with a camera.
                 fresh.append(
                     build_media_index_row(
-                        path=path,
-                        stat=st,
+                        path=entry.path,
+                        stat=entry.stat,
                         to_store_path=self.relative_to_root,
                         group=scope.group,
                         sequence=scope.sequence,
                         group_safe=group_safe,
                         sequence_safe=sequence_safe,
-                        camera=scope.camera,
-                        probe=probe,
-                        media_type=media_type,
+                        camera=entry.camera or scope.camera,
+                        sync_uuid=entry.sync_uuid,
+                        probe=entry.probe,
+                        media_type=entry.media_type,
                     )
                 )
             for name, position in scope.order_by_name.items():
@@ -1547,40 +1711,57 @@ class Dataset:
                 row[column] = link
 
     def _match_media_rows(
-        self, df: "pd.DataFrame", group: str, sequence: str
+        self,
+        df: "pd.DataFrame",
+        group: str,
+        sequence: str,
+        camera: str | None = None,
     ) -> "pd.DataFrame | None":
         """Return the media-index rows for (group, sequence), video_order-sorted.
 
         Matches in the same order as the historical resolver: direct
         (group, sequence), then safe-name, then a filename-stem substring
-        fallback. Returns ``None`` when nothing matches.
+        fallback. When *camera* is given, the matched rows are further filtered
+        to that camera (``""`` selects the blank-camera rows), and an empty
+        result after that filter returns ``None``. Returns ``None`` when nothing
+        matches.
         """
+        # Untyped so the pandas ``df[mask]`` (Series | DataFrame in the stubs)
+        # widens by inference rather than tripping a declared-type mismatch, as
+        # the rest of this module's index masking does.
+        matched = None
         if "group" in df.columns and "sequence" in df.columns:
             df_match = df[
                 (df["group"].fillna("") == str(group))
                 & (df["sequence"].fillna("") == str(sequence))
             ]
             if not df_match.empty:
-                return df_match.sort_values("video_order")
+                matched = df_match
 
-        safe_group = to_safe_name(group) if group else ""
-        safe_sequence = to_safe_name(sequence)
-        if {"group_safe", "sequence_safe"}.issubset(df.columns):
+        if matched is None and {"group_safe", "sequence_safe"}.issubset(df.columns):
+            safe_group = to_safe_name(group) if group else ""
+            safe_sequence = to_safe_name(sequence)
             df_match = df[
                 (df["group_safe"].fillna("") == safe_group)
                 & (df["sequence_safe"].fillna("") == safe_sequence)
             ]
             if not df_match.empty:
-                return df_match.sort_values("video_order")
+                matched = df_match
 
-        tail = Path(sequence).name
-        stem = tail.lower()
-        df = df.copy()
-        df["name_lower"] = df["name"].astype(str).str.lower()
-        candidates = df[df["name_lower"].str.contains(stem, na=False)]
-        if candidates.empty:
-            return None
-        return candidates.sort_values("video_order")
+        if matched is None:
+            stem = Path(sequence).name.lower()
+            df = df.copy()
+            df["name_lower"] = df["name"].astype(str).str.lower()
+            candidates = df[df["name_lower"].str.contains(stem, na=False)]
+            if candidates.empty:
+                return None
+            matched = candidates
+
+        if camera is not None:
+            matched = matched[matched["camera"].fillna("") == camera]
+            if matched.empty:
+                return None
+        return matched.sort_values("video_order")
 
     def _load_media_index(self, index_filename: str = "index.csv") -> "pd.DataFrame":
         """Read and normalize the originals media index for scoped resolution.
@@ -1606,6 +1787,14 @@ class Dataset:
         for column in ("group", "sequence", "group_safe", "sequence_safe"):
             if column in df.columns:
                 df[column] = df[column].fillna("").astype(str)
+        # camera / sync_uuid may be absent on an index written before the
+        # multi-camera schema; create them empty so camera-keyed grouping and
+        # filtering below never KeyError on a legacy or hand-seeded CSV.
+        for column in ("camera", "sync_uuid"):
+            if column in df.columns:
+                df[column] = df[column].fillna("").astype(str)
+            else:
+                df[column] = ""
         if "video_order" not in df.columns:
             df["video_order"] = 0
         else:
@@ -1613,15 +1802,20 @@ class Dataset:
         return df
 
     def match_media_rows(
-        self, group: str, sequence: str, index_filename: str = "index.csv"
+        self,
+        group: str,
+        sequence: str,
+        camera: str | None = None,
+        index_filename: str = "index.csv",
     ) -> "pd.DataFrame":
         """Return the originals-index rows for (group, sequence), video_order-sorted.
 
         Reads the originals index (:meth:`resolve_media_root`) and matches by
         direct ``(group, sequence)``, then safe-name, then filename-stem
         substring -- **without** applying transcode-verdict routing (unlike
-        :meth:`resolve_media`). The transcode job needs the originals, not their
-        derivatives.
+        :meth:`resolve_media`). *camera*, when given, further restricts the match
+        to one camera of a multi-camera recording. The transcode job needs the
+        originals, not their derivatives.
 
         Raises:
             FileNotFoundError: If the index is missing/empty or no row matches.
@@ -1629,7 +1823,7 @@ class Dataset:
         df = self._load_media_index(index_filename)
         if df.empty:
             raise FileNotFoundError("Media index is empty.")
-        matched = self._match_media_rows(df, group, sequence)
+        matched = self._match_media_rows(df, group, sequence, camera)
         if matched is None:
             raise FileNotFoundError(
                 f"No media file found matching sequence '{sequence}'."
@@ -1777,7 +1971,11 @@ class Dataset:
         return routed, series_facts_or_none(row)
 
     def resolve_media(
-        self, group: str, sequence: str, index_filename: str = "index.csv"
+        self,
+        group: str,
+        sequence: str,
+        camera: str | None = None,
+        index_filename: str = "index.csv",
     ) -> ResolvedMedia:
         """Resolve media for (group, sequence), routing by transcode verdict.
 
@@ -1789,12 +1987,26 @@ class Dataset:
         readers need not re-probe. Paths are ordered by ``video_order``; a
         single-file sequence yields one element.
 
+        A multi-camera recording has more than one camera under one
+        ``(group, sequence)``; concatenating them would fabricate a timeline, so
+        *camera* must select one and a ``camera=None`` call over such a sequence
+        raises rather than returning both. Single-camera and temporal-chunk
+        sequences (every row ``camera=""``) resolve unchanged.
+
         Raises:
             FileNotFoundError: If the index is missing/empty or no row matches.
             MediaProbeError: If a row requires a transcode but has no derivative,
-                or a derivative's file/facts cannot be found.
+                a derivative's file/facts cannot be found, or *camera* is
+                ``None`` while the sequence spans more than one camera.
         """
-        matched = self.match_media_rows(group, sequence, index_filename)
+        matched = self.match_media_rows(group, sequence, camera, index_filename)
+        if camera is None:
+            cameras = {c for c in matched["camera"].fillna("").astype(str) if c}
+            if len(cameras) > 1:
+                raise MediaProbeError(
+                    f"sequence ({group!r}, {sequence!r}) spans {len(cameras)} "
+                    f"cameras {sorted(cameras)}; pass camera= to select one"
+                )
         route_derivatives, derivative_df = self.media_routing_context(index_filename)
         return self._resolve_matched_rows(
             group, sequence, matched, route_derivatives, derivative_df
@@ -1835,13 +2047,15 @@ class Dataset:
         sequences: Iterable[str] | None,
         entries: Iterable[tuple[str, str]] | None = None,
         index_filename: str = "index.csv",
-    ) -> list[tuple[str, str, ResolvedMedia]]:
-        """Enumerate the scoped ``(group, sequence)`` entries with routed media.
+    ) -> list[ResolvedScopeEntry]:
+        """Enumerate the scoped ``(group, sequence, camera)`` entries with media.
 
         Reads the originals index once, filters it to the given *groups* /
         *sequences* scope (either may be ``None`` to keep all), and returns one
-        entry per distinct ``(group, sequence)`` in deterministic order. When
-        *entries* is given, the scope is further restricted to rows whose
+        :class:`ResolvedScopeEntry` per distinct ``(group, sequence, camera)`` in
+        deterministic order -- so the cameras of one recording become separate
+        entries and are never concatenated into a single timeline. When *entries*
+        is given, the scope is further restricted to rows whose
         ``(group, sequence)`` pair is in that set -- an explicit enumeration that
         pins an arbitrary subset even when sequence names repeat across groups
         (unlike the *groups*/*sequences* cross-product). Each entry's
@@ -1874,16 +2088,20 @@ class Dataset:
         scoped = df[mask]
 
         route_derivatives, derivative_df = self.media_routing_context(index_filename)
-        resolved_entries: list[tuple[str, str, ResolvedMedia]] = []
-        for (group, sequence), sub in scoped.groupby(["group", "sequence"]):
-            group, sequence = str(group), str(sequence)
+        resolved_entries: list[ResolvedScopeEntry] = []
+        for (group, sequence, camera), sub in scoped.groupby(
+            ["group", "sequence", "camera"]
+        ):
+            group, sequence, camera = str(group), str(sequence), str(camera)
             sub = sub.sort_values("video_order")
             resolved = self._resolve_matched_rows(
                 group, sequence, sub, route_derivatives, derivative_df
             )
             if not group and not to_safe_name(sequence):
                 sequence = self.resolve_path(str(sub.iloc[0]["abs_path"])).stem
-            resolved_entries.append((group, sequence, resolved))
+            resolved_entries.append(
+                ResolvedScopeEntry(group, sequence, camera, resolved)
+            )
         return resolved_entries
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict[str, str]]]:
