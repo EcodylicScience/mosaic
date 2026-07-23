@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from mosaic_media import (
@@ -40,6 +40,7 @@ from mosaic_media import (
 from mosaic_media.transcode import (
     ANALYSIS_ENCODING,
     PLAYBACK_ENCODING,
+    Target,
     TranscodeError,
     TranscodeProgress,
     TranscodeResult,
@@ -75,7 +76,7 @@ class TranscodeParams(Params):
     """Parameters for one entry's transcode job."""
 
     entry: tuple[str, str]  # (group, sequence)
-    target: Literal["analysis", "playback"] = "analysis"
+    target: Target = "analysis"
     allow_hardware: bool = False
 
 
@@ -112,7 +113,7 @@ def _set_forward_link(
     ds: "Dataset",
     source: Path,
     derivative_rel: str,
-    target: Literal["analysis", "playback"],
+    target: Target,
 ) -> None:
     """Point the original's ``media_raw`` row at its per-target derivative.
 

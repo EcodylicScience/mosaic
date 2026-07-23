@@ -10,9 +10,10 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from mosaic_media import MediaFacts, Verdict
+from mosaic_media.transcode import Target
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -49,13 +50,13 @@ MEDIA_INDEX_COLUMNS: list[str] = [
 # The analysis and playback transcode verdicts are independent: each target gets
 # its own derivative and its own forward-link column, so a playback transcode can
 # never overwrite the analysis routing (or vice versa).
-_DERIVATIVE_COLUMN_BY_TARGET: dict[Literal["analysis", "playback"], str] = {
+_DERIVATIVE_COLUMN_BY_TARGET: dict[Target, str] = {
     "analysis": "analysis_derivative_path",
     "playback": "playback_derivative_path",
 }
 
 
-def derivative_column_for_target(target: Literal["analysis", "playback"]) -> str:
+def derivative_column_for_target(target: Target) -> str:
     """Return the media-index forward-link column for a transcode *target*."""
     return _DERIVATIVE_COLUMN_BY_TARGET[target]
 
