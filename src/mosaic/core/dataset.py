@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import datetime
-import fnmatch
 import hashlib
 import importlib
 import json
@@ -48,8 +47,11 @@ from .pipeline.media_index import (
 )
 from .pipeline.tracks_index import (
     TracksRawIndexRow,
+    TracksRawIndexScope,
     build_tracks_raw_row,
     frame_from_rows as _tracks_frame_from_rows,
+    iter_track_files,
+    read_tracks_index as _read_tracks_index,
     write_tracks_index_rows,
 )
 
@@ -2019,54 +2021,130 @@ class Dataset:
         exc_list = _normalize_patterns(exclude_patterns)
         group_re = re.compile(group_pattern) if group_pattern else None
 
-        for root in map(Path, search_dirs):
-            for pat in pat_list:
-                it = root.rglob(pat) if recursive else root.glob(pat)
-                for p in it:
-                    if not p.is_file():
-                        continue
-                    name = p.name
-                    if exc_list and any(fnmatch.fnmatch(name, ex) for ex in exc_list):
-                        continue
-                    st = p.stat()
-                    if multi_sequences_per_file:
-                        # put file-level grouping into 'group', leave sequence blank
-                        if group_from == "filename":
-                            grp = p.stem
-                        elif group_from == "parent":
-                            grp = p.parent.name
-                        else:
-                            grp = ""
-                        seq = ""
-                    else:
-                        if src_format == "trex_npz":
-                            seq = _strip_trex_seq(p.stem)
-                        else:
-                            seq = p.stem  # 1 file ~= 1 sequence default
+        for p, st in iter_track_files(
+            map(Path, search_dirs),
+            pat_list,
+            recursive=recursive,
+            exclude_patterns=exc_list,
+        ):
+            if multi_sequences_per_file:
+                # put file-level grouping into 'group', leave sequence blank
+                if group_from == "filename":
+                    grp = p.stem
+                elif group_from == "parent":
+                    grp = p.parent.name
+                else:
+                    grp = ""
+                seq = ""
+            else:
+                if src_format == "trex_npz":
+                    seq = _strip_trex_seq(p.stem)
+                else:
+                    seq = p.stem  # 1 file ~= 1 sequence default
 
-                        # Extract group from sequence using pattern
-                        if group_re:
-                            m = group_re.search(seq)
-                            grp = m.group(1) if m else ""
-                        else:
-                            grp = ""
+                # Extract group from sequence using pattern
+                if group_re:
+                    m = group_re.search(seq)
+                    grp = m.group(1) if m else ""
+                else:
+                    grp = ""
 
-                    rows.append(
-                        build_tracks_raw_row(
-                            path=p,
-                            stat=st,
-                            to_store_path=self.relative_to_root,
-                            group=grp,
-                            sequence=seq,
-                            src_format=src_format,
-                            md5=_md5(p) if compute_md5 else "",
-                        )
-                    )
+            rows.append(
+                build_tracks_raw_row(
+                    path=p,
+                    stat=st,
+                    to_store_path=self.relative_to_root,
+                    group=grp,
+                    sequence=seq,
+                    src_format=src_format,
+                    md5=_md5(p) if compute_md5 else "",
+                )
+            )
 
-        df = _tracks_frame_from_rows(rows).drop_duplicates(subset=["abs_path"])
+        # iter_track_files already deduped by resolved path and sorted.
+        df = _tracks_frame_from_rows(rows)
         write_tracks_index_rows(out_csv, df)
         print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
         return out_csv
+
+    def write_tracks_index(
+        self,
+        scopes: Iterable[TracksRawIndexScope],
+        *,
+        patterns: Iterable[str] | str = ("*.npy", "*.h5", "*.csv"),
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+        exclude_patterns: Optional[Iterable[str]] = None,
+        compute_md5: bool = False,
+    ) -> Path:
+        """Project explicit raw-track assignments into a valid tracks_raw index.
+
+        The assignment-driven counterpart to :meth:`index_tracks_raw` and the
+        tracks sibling of :meth:`write_media_index`: rather than deriving each
+        file's identity from its name, the caller passes one
+        :class:`TracksRawIndexScope` per affected (group, sequence) -- its
+        tracks_raw subdir and the explicit (group, sequence, src_format). Every
+        file under a scope directory matching *patterns* is (re)stat-ed and given
+        that scope's identity (no ``_fishN`` strip -- the caller owns grouping);
+        every existing row not under any scope directory (other sequences,
+        external ``abs_path`` values) is preserved verbatim; and the index is
+        written atomically with root-relative ``abs_path``. Tracks are unordered,
+        so there is no ``video_order`` densifier.
+
+        Overlapping scope directories are caller error: a file scanned by two
+        scopes is written once (first occurrence wins, via the merged dedup).
+        Passing no scopes rewrites the index verbatim (idempotent). This is the
+        single entry point a future API raw-track-import flow calls -- it owns
+        none of these semantics itself.
+        """
+        out_csv = self.get_root("tracks_raw") / index_filename
+        scope_list = list(scopes)
+        scope_dirs = [scope.directory.resolve() for scope in scope_list]
+        pat_list = _normalize_patterns(patterns)
+        exc_list = _normalize_patterns(exclude_patterns)
+
+        # Preserve every existing row no scope directory covers. _row_under_dirs
+        # resolves the stored path first, so containment is correct whether
+        # abs_path is stored root-relative or absolute.
+        existing = _read_tracks_index(out_csv)
+        preserved = [
+            row for row in existing if not self._row_under_dirs(row, scope_dirs)
+        ]
+
+        # (Re)scan each scope directory and stamp its explicit identity.
+        fresh: list[TracksRawIndexRow] = []
+        for scope in scope_list:
+            for path, st in iter_track_files(
+                [scope.directory],
+                pat_list,
+                recursive=recursive,
+                exclude_patterns=exc_list,
+            ):
+                fresh.append(
+                    build_tracks_raw_row(
+                        path=path,
+                        stat=st,
+                        to_store_path=self.relative_to_root,
+                        group=scope.group,
+                        sequence=scope.sequence,
+                        src_format=scope.src_format,
+                        md5=_md5(path) if compute_md5 else "",
+                    )
+                )
+
+        # Merge preserved (string records) + fresh (typed rows). _row_under_dirs
+        # already guarantees the two are disjoint by resolved path, so the dedup
+        # only ever fires fresh-vs-fresh across overlapping scopes (caller error).
+        merged = [*preserved, *fresh]
+        frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
+        write_tracks_index_rows(out_csv, frame)
+        return out_csv
+
+    def read_tracks_index(
+        self, index_filename: str = "index.csv"
+    ) -> list[dict[str, str]]:
+        """Read the raw-tracks index as string-cell records (empty list if absent)."""
+        return _read_tracks_index(self.get_root("tracks_raw") / index_filename)
 
     # ----------------------------
     # Convert one original -> standard (T-Rex-like)

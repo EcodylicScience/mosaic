@@ -8,6 +8,7 @@ unchanged), and the propagation of that relative form into the merged
 ``tracks/index.csv`` ``source_abs_path`` written by ``convert_all_tracks``.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +18,10 @@ import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz conver
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import (
     TRACKS_RAW_INDEX_COLUMNS,
+    TracksRawIndexScope,
     build_tracks_raw_row,
     frame_from_rows,
+    iter_track_files,
     load_tracks_index_frame,
     read_tracks_index,
     write_tracks_index_rows,
@@ -256,3 +259,231 @@ def test_convert_all_tracks_merge_source_abs_path_is_relative(tmp_path: Path) ->
     assert not Path(source_abs_path).is_absolute()
     assert source_abs_path.startswith("raw_src/")
     assert ds.resolve_path(source_abs_path).exists()
+
+
+# --- iter_track_files: the shared deterministic scanner --------------------
+
+
+def test_iter_track_files_dedups_skips_resource_forks_excludes_and_sorts(
+    tmp_path: Path,
+) -> None:
+    d = tmp_path / "scan"
+    d.mkdir()
+    (d / "b.npy").write_bytes(b"b")
+    (d / "a.npy").write_bytes(b"a")
+    (d / "._hidden.npy").write_bytes(b"x")  # macOS resource fork -> skipped
+    (d / "skipme.npy").write_bytes(b"s")  # excluded by pattern
+
+    results = iter_track_files(
+        [d],
+        ["*.npy", "*.np*"],  # overlapping globs -> each file yielded once
+        exclude_patterns=["skipme.*"],
+    )
+
+    names = [p.name for p, _ in results]
+    assert names == ["a.npy", "b.npy"]  # deduped, ._* skipped, excluded, sorted
+    assert all(isinstance(st, os.stat_result) for _, st in results)
+
+
+# --- Dataset.write_tracks_index: the assignment-driven projection ----------
+
+
+def test_write_tracks_index_assigns_scope_identity_and_stores_relative(
+    tmp_path: Path,
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    seq_dir = base / "tracks_raw" / "seqA"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "a.npy").write_bytes(b"aa")
+    (seq_dir / "b.npy").write_bytes(b"bbb")
+
+    ds.write_tracks_index(
+        [
+            TracksRawIndexScope(
+                directory=seq_dir, group="g", sequence="seqA", src_format="calms21_npy"
+            )
+        ],
+        patterns=["*.npy"],
+    )
+
+    rows = ds.read_tracks_index()
+    assert {r["sequence"] for r in rows} == {"seqA"}  # every file gets the scope id
+    assert {r["group"] for r in rows} == {"g"}
+    assert {r["src_format"] for r in rows} == {"calms21_npy"}
+    assert {Path(r["abs_path"]).name for r in rows} == {"a.npy", "b.npy"}
+    for r in rows:
+        assert not Path(r["abs_path"]).is_absolute()  # in-tree -> relative
+        assert r["abs_path"] == f"tracks_raw/seqA/{Path(r['abs_path']).name}"
+        assert ds.resolve_path(r["abs_path"]).exists()
+
+
+def test_write_tracks_index_multi_file_sequence_takes_scope_id_no_strip(
+    tmp_path: Path,
+) -> None:
+    # Assignment analog of the _fishN-strip test: per-id files in one scope dir
+    # all take the scope's sequence VERBATIM -- no _fishN strip, not the stems.
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    seq_dir = base / "tracks_raw" / "myseq"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "myseq_fish0.npz").write_bytes(b"x")
+    (seq_dir / "myseq_fish1.npz").write_bytes(b"x")
+
+    ds.write_tracks_index(
+        [
+            TracksRawIndexScope(
+                directory=seq_dir, group="", sequence="myseq", src_format="trex_npz"
+            )
+        ],
+        patterns=["*.npz"],
+    )
+
+    rows = ds.read_tracks_index()
+    assert len(rows) == 2
+    assert {r["sequence"] for r in rows} == {"myseq"}  # not "myseq_fish0"/"_fish1"
+
+
+def test_write_tracks_index_preserves_other_and_external_rows(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    index_path = ds.get_root("tracks_raw") / "index.csv"
+
+    # Seed: one already-indexed in-tree sequence (seqB) and one external ref.
+    seeded: dict[str, object] = {column: "" for column in TRACKS_RAW_INDEX_COLUMNS}
+    other = {
+        **seeded,
+        "sequence": "seqB",
+        "abs_path": "tracks_raw/seqB/x.npy",
+        "src_format": "calms21_npy",
+        "size_bytes": 3,
+    }
+    external = {
+        **seeded,
+        "sequence": "remote",
+        "abs_path": "/mnt/nas/clip.npy",
+        "src_format": "calms21_npy",
+        "size_bytes": 9,
+    }
+    write_tracks_index_rows(index_path, frame_from_rows([other, external]))
+
+    seq_dir = base / "tracks_raw" / "seqA"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "a.npy").write_bytes(b"aa")
+    ds.write_tracks_index(
+        [
+            TracksRawIndexScope(
+                directory=seq_dir, group="", sequence="seqA", src_format="calms21_npy"
+            )
+        ],
+        patterns=["*.npy"],
+    )
+
+    abs_paths = {r["abs_path"] for r in ds.read_tracks_index()}
+    assert "tracks_raw/seqA/a.npy" in abs_paths  # freshly stamped, relative
+    assert "tracks_raw/seqB/x.npy" in abs_paths  # other sequence preserved
+    assert "/mnt/nas/clip.npy" in abs_paths  # external preserved, still absolute
+
+
+def test_write_tracks_index_reimport_replaces_a_scopes_rows(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    seq_dir = base / "tracks_raw" / "seqA"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "a.npy").write_bytes(b"a")
+    scope = TracksRawIndexScope(
+        directory=seq_dir, group="", sequence="seqA", src_format="calms21_npy"
+    )
+    ds.write_tracks_index([scope], patterns=["*.npy"])
+
+    # Add a second file and re-import the same scope: both present, no stale/dup.
+    (seq_dir / "b.npy").write_bytes(b"bb")
+    ds.write_tracks_index([scope], patterns=["*.npy"])
+
+    rows = ds.read_tracks_index()
+    assert sorted(Path(r["abs_path"]).name for r in rows) == ["a.npy", "b.npy"]
+    assert len(rows) == 2
+
+
+def test_write_tracks_index_external_scope_dir_stays_absolute(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    external = (tmp_path / "outside").resolve()
+    external.mkdir(parents=True)
+    (external / "c.npy").write_bytes(b"cccc")
+
+    ds.write_tracks_index(
+        [
+            TracksRawIndexScope(
+                directory=external, group="", sequence="ext", src_format="calms21_npy"
+            )
+        ],
+        patterns=["*.npy"],
+    )
+
+    rows = ds.read_tracks_index()
+    assert len(rows) == 1
+    assert Path(rows[0]["abs_path"]).is_absolute()  # out-of-tree -> absolute
+    assert rows[0]["abs_path"] == str(external / "c.npy")
+
+
+def test_write_tracks_index_compute_md5_populates_hash(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    seq_dir = base / "tracks_raw" / "seqA"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "a.npy").write_bytes(b"payload")
+    scope = TracksRawIndexScope(
+        directory=seq_dir, group="", sequence="seqA", src_format="calms21_npy"
+    )
+
+    ds.write_tracks_index([scope], patterns=["*.npy"])
+    assert ds.read_tracks_index()[0]["md5"] == ""  # default: no hash
+
+    ds.write_tracks_index([scope], patterns=["*.npy"], compute_md5=True)
+    assert ds.read_tracks_index()[0]["md5"] != ""
+
+
+def test_write_tracks_index_empty_scopes_rewrites_existing_verbatim(
+    tmp_path: Path,
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    index_path = ds.get_root("tracks_raw") / "index.csv"
+    seeded: dict[str, object] = {column: "" for column in TRACKS_RAW_INDEX_COLUMNS}
+    row = {
+        **seeded,
+        "sequence": "seqB",
+        "abs_path": "tracks_raw/seqB/x.npy",
+        "src_format": "calms21_npy",
+        "size_bytes": 3,
+    }
+    write_tracks_index_rows(index_path, frame_from_rows([row]))
+
+    ds.write_tracks_index([], patterns=["*.npy"])  # no scopes -> idempotent
+
+    rows = ds.read_tracks_index()
+    assert len(rows) == 1
+    assert rows[0]["sequence"] == "seqB"
+
+
+# --- index_tracks_raw refactor regression ----------------------------------
+
+
+def test_index_tracks_raw_skips_resource_forks_and_sorts(tmp_path: Path) -> None:
+    # The shared scanner now skips macOS ._* files and yields deterministically
+    # sorted output -- both benign improvements over the prior inline scan.
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    (src / "b.npy").write_bytes(b"bb")
+    (src / "a.npy").write_bytes(b"a")
+    (src / "._a.npy").write_bytes(b"x")  # resource fork -> skipped
+
+    ds.index_tracks_raw([src], patterns=["*.npy"], src_format="calms21_npy")
+
+    rows = ds.read_tracks_index()
+    names = [Path(r["abs_path"]).name for r in rows]
+    assert "._a.npy" not in names  # resource fork skipped
+    assert names == ["a.npy", "b.npy"]  # deterministically sorted
