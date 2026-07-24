@@ -2,6 +2,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import pytest
+from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import (
@@ -16,6 +18,7 @@ from mosaic.core.pipeline.media_index import (
     read_media_index,
     write_media_index_rows,
 )
+from mosaic.core.pipeline.transcode import set_forward_link
 
 MakeDataset = Callable[[Path], Dataset]
 MakeImgstore = Callable[..., tuple[Path, list[np.ndarray]]]
@@ -51,7 +54,7 @@ def _write_prior_index(ds: Dataset, rows: list[dict[str, object]]) -> None:
 
     ``frame_from_rows`` widens each partial mapping to the full schema, so a cell
     left out arrives empty rather than absent -- which is what an unminted
-    ``video_uuid`` has to be for the path fallback to be under test.
+    ``video_uuid`` has to be for the no-carry contract to be under test.
     """
     index_path = ds.get_root(ds.resolve_media_root()) / "index.csv"
     write_media_index_rows(index_path, frame_from_rows(rows))
@@ -113,12 +116,13 @@ def test_carry_forward_matches_a_renamed_original_by_uuid(
     assert _links_by_name(ds) == {"renamed.mp4": "clip.analysis.mp4"}
 
 
-def test_carry_forward_falls_back_to_path_for_an_unminted_pair(
+def test_carry_forward_drops_an_unminted_imgstore_link(
     tmp_path: Path, make_media_dataset: MakeDataset, make_imgstore: MakeImgstore
 ) -> None:
-    # An imgstore is the one media type that can never carry an identity, so
-    # both the prior row and the freshly probed one are unminted and the link
-    # can only be carried by the two-leaf path key.
+    # An imgstore is the one media type that can never carry an identity, so both
+    # the prior row and the freshly probed one are unminted. Matching is by
+    # video_uuid alone with no path fallback, so a link on an unminted row cannot
+    # be carried to any row -- it is simply dropped.
     base = (tmp_path / "dataset").resolve()
     ds = make_media_dataset(base)
     sequence_dir = base / "media_raw" / "seqA"
@@ -149,17 +153,60 @@ def test_carry_forward_falls_back_to_path_for_an_unminted_pair(
             ds.get_root(ds.resolve_media_root()) / "index.csv"
         )
     }
-    # Both sides really are unminted: the fallback is under test, not a uuid hit.
+    # The imgstore really is unminted, so nothing carries its link forward.
     assert records[store_dir.name]["video_uuid"] == ""
-    assert records[store_dir.name]["analysis_derivative_path"] == "clip.analysis.mp4"
+    assert records[store_dir.name]["analysis_derivative_path"] == ""
 
 
-def test_carry_forward_survives_a_relocated_absolute_path(
+def test_carry_forward_does_not_cross_a_link_on_a_colliding_path_key_with_a_different_uuid(
     tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
 ) -> None:
-    # The relocation robustness the two-leaf key exists for: a prior row whose
-    # abs_path was recorded absolute on another machine still matches the fresh
-    # root-relative row for the same file. A collision guard must not cost this.
+    # The mis-attribution the fallback removal exists to kill. The prior index
+    # holds an unminted row for a different recording, rec2/cam0/video.mp4,
+    # carrying a link; its two-leaf path key (cam0, video.mp4) collides with the
+    # freshly probed rec1/cam0/video.mp4, which mints its own distinct uuid. The
+    # old path fallback matched on that shared key and crossed rec2's link onto
+    # rec1's row -- routing rec1's analysis reads at rec2's derivative. Matching
+    # by video_uuid alone, the two identities differing, carries nothing.
+    base = (tmp_path / "dataset").resolve()
+    ds = make_media_dataset(base)
+    sequence_dir = base / "media_raw" / "rec1" / "cam0"
+    write_cfr_mp4(sequence_dir / "video.mp4")
+    # A real derivative file, so the pre-fix fallback would clear its
+    # dangling-link guard and actually cross the link rather than drop it.
+    derivative = base / "media" / "rec2.analysis.mp4"
+    derivative.parent.mkdir(parents=True, exist_ok=True)
+    _ = derivative.write_bytes(b"x")
+
+    _write_prior_index(
+        ds,
+        [
+            {
+                "name": "video.mp4",
+                "abs_path": "media_raw/rec2/cam0/video.mp4",
+                "analysis_derivative_path": "rec2.analysis.mp4",
+            }
+        ],
+    )
+
+    _ = ds.write_media_index(
+        [MediaIndexScope(directory=sequence_dir, group="g", sequence="rec1")]
+    )
+
+    links = _links_by_stored_path(ds)
+    assert links["media_raw/rec1/cam0/video.mp4"] == ""
+
+
+def test_carry_forward_drops_a_link_from_an_unminted_prior_row(
+    tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # An index written before the identity columns existed: the prior row carries
+    # a link but no video_uuid. The re-probe mints an identity on the fresh row,
+    # but a link matches only by video_uuid on both sides, so a link sitting on
+    # an unminted prior row carries nothing forward. The old path key that stood
+    # in here was not unique -- rec1/cam0/video.mp4 and rec2/cam0/video.mp4
+    # answer to the same key -- so carrying by it could route analysis reads at
+    # the wrong recording; losing the link only costs a re-transcode.
     base = (tmp_path / "dataset").resolve()
     ds = make_media_dataset(base)
     sequence_dir = base / "media_raw" / "seqA"
@@ -173,7 +220,7 @@ def test_carry_forward_survives_a_relocated_absolute_path(
         [
             {
                 "name": "clip.mp4",
-                "abs_path": "/nas/archive/seqA/clip.mp4",
+                "abs_path": "media_raw/seqA/clip.mp4",
                 "analysis_derivative_path": "clip.analysis.mp4",
             }
         ],
@@ -184,46 +231,24 @@ def test_carry_forward_survives_a_relocated_absolute_path(
     )
 
     links = _links_by_stored_path(ds)
-    assert links["media_raw/seqA/clip.mp4"] == "clip.analysis.mp4"
+    assert links["media_raw/seqA/clip.mp4"] == ""
 
 
-def test_carry_forward_drops_a_link_two_prior_rows_could_claim(
+def test_a_forward_link_raises_when_no_row_carries_the_identity(
     tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
 ) -> None:
-    # Two recordings whose per-camera layout gives them the same two-leaf key.
-    # The key identifies neither row, so carrying either link would attach one
-    # recording's derivative to the other's row -- silently routing analysis
-    # reads at the wrong video. Losing the link is recoverable; this is not.
+    # After the mandatory re-probe every row carries a video_uuid, so a forward
+    # link for a uuid no row holds means the caller measured a file the index
+    # does not describe. There is no path fallback to attach it silently, so it
+    # raises rather than writing the link onto a mismatched row.
     base = (tmp_path / "dataset").resolve()
     ds = make_media_dataset(base)
-    sequence_dir = base / "media_raw" / "rec1" / "cam0"
-    write_cfr_mp4(sequence_dir / "video.mp4")
-    media_root = base / "media"
-    media_root.mkdir(parents=True, exist_ok=True)
-    for name in ("rec1.analysis.mp4", "rec2.analysis.mp4"):
-        _ = (media_root / name).write_bytes(b"x")
-
-    _write_prior_index(
-        ds,
-        [
-            {
-                "name": "video.mp4",
-                "abs_path": "media_raw/rec1/cam0/video.mp4",
-                "analysis_derivative_path": "rec1.analysis.mp4",
-            },
-            {
-                "name": "video.mp4",
-                "abs_path": "media_raw/rec2/cam0/video.mp4",
-                "analysis_derivative_path": "rec2.analysis.mp4",
-            },
-        ],
-    )
-
+    sequence_dir = base / "media_raw" / "seqA"
+    source = sequence_dir / "clip.mp4"
+    write_cfr_mp4(source)
     _ = ds.write_media_index(
-        [MediaIndexScope(directory=sequence_dir, group="g", sequence="rec1")]
+        [MediaIndexScope(directory=sequence_dir, group="g", sequence="seqA")]
     )
 
-    links = _links_by_stored_path(ds)
-    assert links["media_raw/rec1/cam0/video.mp4"] == ""
-    # The out-of-scope row is preserved verbatim, link included.
-    assert links["media_raw/rec2/cam0/video.mp4"] == "rec2.analysis.mp4"
+    with pytest.raises(TranscodeError, match="no media_raw row carries video_uuid"):
+        set_forward_link(ds, source, "absent-uuid", "transcode/x.mp4", "analysis")

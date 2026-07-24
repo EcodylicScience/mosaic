@@ -27,7 +27,6 @@ from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
     derivative_path_for_target,
-    media_row_path_key,
     media_row_uuid,
     read_link_cell,
     row_mapping,
@@ -357,6 +356,27 @@ def _media_cell(row: "pd.Series", key: str) -> str:
     exactly how a link resolves to the wrong file.
     """
     return read_link_cell(row_mapping(row), key)
+
+
+def _facts_or_stale_probe_error(
+    drow: "pd.Series", group: str, sequence: str
+) -> MediaFacts:
+    """Reconstruct a derivative row's :class:`MediaFacts`, or raise on stale facts.
+
+    A ``media_facts`` cell written before the current identity fields raises
+    ``TypeError`` from :func:`row_to_facts`; convert it to the
+    :class:`~mosaic_media.MediaProbeError` callers catch, naming the entry and
+    the remedy. The ``try`` wraps only the reconstruction call, so an unrelated
+    ``TypeError`` is never masked.
+    """
+    try:
+        return row_to_facts(row_mapping(drow))
+    except TypeError as exc:
+        message = (
+            f"entry {group}/{sequence} has a derivative row whose stored facts "
+            "predate the current identity fields; re-probe the media index"
+        )
+        raise MediaProbeError(message) from exc
 
 
 @dataclass(frozen=True)
@@ -1781,19 +1801,14 @@ class Dataset:
         derivative file no longer exists is dropped rather than carried as a
         dangling reference.
 
-        A row is matched by ``video_uuid`` when both sides carry one, and
-        otherwise by the two-leaf path key -- the parent directory name and the
-        filename -- which survives the prior index storing an absolute path from
-        another machine against a fresh root-relative one.
-
-        That key is not unique, and on the first reindex after identity adoption
-        every prior row is unminted, so every row resolves through it. Two
-        recordings laid out ``rec1/cam0/video.mp4`` and ``rec2/cam0/video.mp4``
-        share one key, and carrying either link would attach one recording's
-        derivative to the other's row -- routing analysis reads at a different
-        video, with no error. So a key held by more than one unminted prior row
-        is ambiguous and carries nothing: losing a link costs a re-transcode,
-        while attaching the wrong one silently corrupts every read that follows.
+        A row is matched by ``video_uuid``, on both sides. There is no path
+        fallback: the two-leaf key that stood in for one while a corpus was
+        unminted is not unique -- ``rec1/cam0/video.mp4`` and
+        ``rec2/cam0/video.mp4`` answer to the same key -- so carrying a link
+        through it could attach one recording's derivative to another's row,
+        routing analysis reads at a different video with no error. Re-probing an
+        index is what makes every row carry an identity; a row carrying none
+        carries no link either.
         """
         if not index_path.exists() or not self.has_root("media"):
             return
@@ -1803,36 +1818,24 @@ class Dataset:
         link_columns = ["analysis_derivative_path", "playback_derivative_path"]
         media_root = self.get_root("media")
         prior_links_by_uuid: dict[str, dict[str, str]] = {}
-        prior_links_by_path: dict[tuple[str, str], dict[str, str]] = {}
-        # Every unminted prior row claims its path key, whether or not it holds a
-        # link: a key two rows answer to identifies neither, so a link sitting on
-        # just one of them is no safer to carry than two competing ones.
-        claimed_path_keys: set[tuple[str, str]] = set()
         for prior_row in prior:
+            uuid = media_row_uuid(prior_row)
+            if not uuid:
+                continue
             carried: dict[str, str] = {}
             for column in link_columns:
                 link = read_link_cell(prior_row, column)
                 if link and (media_root / link).exists():
                     carried[column] = link
-            uuid = media_row_uuid(prior_row)
-            if uuid:
-                if carried:
-                    prior_links_by_uuid[uuid] = carried
-                continue
-            path_key = media_row_path_key(prior_row)
-            if path_key in claimed_path_keys:
-                _ = prior_links_by_path.pop(path_key, None)
-                continue
-            claimed_path_keys.add(path_key)
             if carried:
-                prior_links_by_path[path_key] = carried
-        if not prior_links_by_uuid and not prior_links_by_path:
+                prior_links_by_uuid[uuid] = carried
+        if not prior_links_by_uuid:
             return
         for row in rows:
             uuid = media_row_uuid(row)
-            links = prior_links_by_uuid.get(uuid) if uuid else None
-            if links is None:
-                links = prior_links_by_path.get(media_row_path_key(row))
+            if not uuid:
+                continue
+            links = prior_links_by_uuid.get(uuid)
             if not links:
                 continue
             for column, link in links.items():
@@ -1966,7 +1969,6 @@ class Dataset:
         group: str,
         sequence: str,
         derivative_path: Path,
-        original_abs: str,
         original_video_uuid: str,
         derivative_df: "pd.DataFrame | None",
     ) -> MediaFacts:
@@ -1975,13 +1977,11 @@ class Dataset:
         Two passes, exact file first. Pass 1 returns the row whose ``abs_path``
         resolves to *derivative_path* -- the unambiguous match, since that is the
         file the caller opens. Pass 2 is a fallback for a row that lacks a
-        resolvable ``abs_path``: it matches on the source's ``video_uuid`` when
-        the original carries one (*original_video_uuid* is non-empty), falling
-        back to ``source_path`` resolving to this entry's original otherwise.
-        Either form is restricted to a row whose ``abs_path`` basename equals the
-        requested derivative's, so a per-target sibling (the playback derivative
-        shares both ``source_video_uuid`` and ``source_path`` with the analysis
-        one) can never cross into the wrong target's facts. Raises
+        resolvable ``abs_path``: it matches on the source's ``video_uuid``,
+        restricted to a row whose ``abs_path`` basename equals the requested
+        derivative's, so a per-target sibling -- which shares its
+        ``source_video_uuid`` -- can never cross into the wrong target's facts.
+        An original carrying no uuid resolves through pass 1 or raises. Raises
         :class:`~mosaic_media.MediaProbeError` when the derivative file, its row,
         or its stored facts cannot be found.
         """
@@ -2000,14 +2000,12 @@ class Dataset:
 
         target = derivative_path.resolve()
         target_name = derivative_path.name
-        original_target = self.resolve_path(original_abs).resolve()
-        raw_root = self.get_root(self.resolve_media_root())
 
         # Pass 1: exact resolved-file match on abs_path.
         for _, drow in derivative_df.iterrows():
             abs_cell = _media_cell(drow, "abs_path")
             if abs_cell and self.resolve_path(abs_cell).resolve() == target:
-                return row_to_facts(row_mapping(drow))
+                return _facts_or_stale_probe_error(drow, group, sequence)
 
         # Pass 2, uuid form: match the derivative row by the source's video_uuid,
         # keeping the basename guard so the analysis and playback siblings --
@@ -2018,21 +2016,7 @@ class Dataset:
                 if abs_cell and Path(abs_cell).name != target_name:
                     continue
                 if _media_cell(drow, "source_video_uuid") == original_video_uuid:
-                    return row_to_facts(row_mapping(drow))
-
-        # Pass 2, path form: an unminted original has no uuid, so fall back to the
-        # source_path resolution unchanged.
-        for _, drow in derivative_df.iterrows():
-            abs_cell = _media_cell(drow, "abs_path")
-            if abs_cell and Path(abs_cell).name != target_name:
-                continue
-            source_cell = _media_cell(drow, "source_path")
-            if (
-                source_cell
-                and self.resolve_path(source_cell, anchor=raw_root).resolve()
-                == original_target
-            ):
-                return row_to_facts(row_mapping(drow))
+                    return _facts_or_stale_probe_error(drow, group, sequence)
 
         message = (
             f"entry {group}/{sequence} derivative {derivative_path} has no "
@@ -2103,7 +2087,6 @@ class Dataset:
                         group,
                         sequence,
                         derivative_path,
-                        _media_cell(row, "abs_path"),
                         media_row_uuid(row_mapping(row)),
                         derivative_df,
                     )

@@ -194,7 +194,7 @@ def transcode_run_id(recipe_hash: str, source_uuids: Iterable[str]) -> str:
     return f"transcode-{hash_params(fingerprint)}"
 
 
-def _set_forward_link(
+def set_forward_link(
     ds: "Dataset",
     source: Path,
     source_video_uuid: str,
@@ -203,31 +203,22 @@ def _set_forward_link(
 ) -> None:
     """Point the original's ``media_raw`` row at its per-target derivative.
 
-    Matches the source row by ``video_uuid`` first -- stable across a rename --
-    and falls back to the resolved-path comparison when that matches no row.
-
-    *source_video_uuid* is the identity of the file as just measured, which is
-    not the same thing as the identity the row records. On an index written
-    before the identity columns existed the row carries no stored facts, so the
-    caller probes the file and mints a uuid that appears nowhere in the index;
-    the uuid match then selects nothing. Falling back only when the uuid is
-    empty would leave that run writing no link at all, and the derivative would
-    sit on disk with nothing pointing at it. Writes only the column for
-    *target*, leaving the other target's link untouched. Idempotent.
+    Matches the source row by ``video_uuid`` alone. A row that does not carry
+    the identity just measured is not this file's row, and writing the link by
+    path would attach it to a row whose identity says it describes a different
+    video. Writes only the column for *target*, leaving the other target's link
+    untouched. Idempotent.
     """
     raw_root = ds.get_root(ds.resolve_media_root())
     index_path = raw_root / "index.csv"
     df = load_media_index_frame(index_path)
-    matches = None
-    if source_video_uuid:
-        by_uuid = df["video_uuid"].fillna("").astype(str) == source_video_uuid
-        if bool(by_uuid.any()):
-            matches = by_uuid
-    if matches is None:
-        source_resolved = source.resolve()
-        matches = df["abs_path"].map(
-            lambda value: ds.resolve_path(str(value)).resolve() == source_resolved
+    matches = df["video_uuid"].fillna("").astype(str) == source_video_uuid
+    if not bool(matches.any()):
+        message = (
+            f"no media_raw row carries video_uuid {source_video_uuid} for "
+            f"{source}; re-probe the index before transcoding"
         )
+        raise TranscodeError(message)
     df.loc[matches, derivative_column_for_target(target)] = derivative_rel
     write_media_index_rows(index_path, df)
 
@@ -443,8 +434,6 @@ class TranscodeOp(Op[TranscodeParams]):
                 source_video_uuid=source_uuids[i],
                 recipe_hash=recipe_hash,
             )
-            _set_forward_link(
-                ds, source, source_uuids[i], derivative_rel, params.target
-            )
+            set_forward_link(ds, source, source_uuids[i], derivative_rel, params.target)
 
         return run_id

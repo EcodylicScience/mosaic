@@ -104,20 +104,22 @@ def read_link_cell(row: Mapping[str, object], column: str) -> str:
 def media_row_uuid(row: Mapping[str, object]) -> str:
     """A row's ``video_uuid``, or ``""`` when it carries none.
 
-    The preferred match key: it survives a rename, which the fallback path key
-    does not. An empty result means the row is unminted and the caller falls
-    back to the path key.
+    The match key for a media row, on both sides of a comparison: it survives a
+    rename, where a path does not. There is no path fallback -- a row carrying
+    no uuid matches nothing and carries no derivative link. After a re-probe the
+    only rows without one are imgstores, which never hold a derivative link.
     """
     return read_link_cell(row, "video_uuid")
 
 
 def media_row_path_key(row: Mapping[str, object]) -> tuple[str, str]:
-    """A row's fallback key: the two leaf components of its stored ``abs_path``.
+    """A row's path key: the two leaf components of its stored ``abs_path``.
 
     The parent directory name and the filename, stable whether the stored path
-    is absolute or root-relative. Used only when a uuid is absent on either
-    side; it does not survive a rename, which is the whole reason ``video_uuid``
-    is preferred.
+    is absolute or root-relative. ``mosaic`` matches media rows by ``video_uuid``
+    alone; this key is the control plane's disambiguator, telling apart two
+    byte-identical files that share one uuid under different names so their
+    distinct derivative links stay separate. It does not survive a rename.
     """
     path = Path(read_link_cell(row, "abs_path"))
     return (path.parent.name, path.name)

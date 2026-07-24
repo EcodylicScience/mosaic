@@ -4,6 +4,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
+import pytest
+from mosaic_media import MediaProbeError
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import (
@@ -118,3 +120,57 @@ def test_pass_two_matches_source_uuid_never_the_sibling(
     assert facts is not None
     assert facts.frame_count == 123
     assert facts.frame_count != 999
+
+
+def test_a_derivative_reachable_only_by_source_path_raises(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """An original with no ``video_uuid`` no longer resolves by ``source_path``.
+
+    The routed derivative's ``abs_path`` does not resolve to the file the caller
+    opens, and the original carries no uuid, so the only prior match was the
+    source-path pass -- now deleted. Its absence is a raise, not a silent
+    resolution onto a path-matched row.
+
+    Driven through :meth:`Dataset.route_media_row`, the public entry point: a row
+    marked ``analysis_transcode="required"`` whose derivative facts cannot be
+    found raises :class:`~mosaic_media.MediaProbeError`.
+    """
+    base = (tmp_path / "dataset").resolve()
+    ds = make_media_dataset(base)
+
+    original = base / "media_raw" / "entry.mp4"
+    original.touch()
+    routed = base / "media" / "entry.analysis.mp4"
+    routed.touch()
+
+    synced = base / "synced"
+    synced.mkdir()
+    analysis_abs = synced / "entry.analysis.mp4"
+    analysis_abs.touch()
+
+    # The derivative row is reachable only through source_path: its abs_path
+    # resolves away from the routed file and it carries no source_video_uuid, so
+    # the exact pass and the uuid pass both miss. Under the old code source_path
+    # -- root-relative to media_raw -- resolved to the original and returned the
+    # facts; that pass is gone.
+    rows: list[dict[str, object]] = [
+        {
+            "abs_path": str(analysis_abs),
+            "source_path": "entry.mp4",
+            "source_video_uuid": "",
+            "media_facts": _facts_cell(123),
+        },
+    ]
+    derivative_df = pd.DataFrame(rows)
+    entry = pd.Series(
+        {
+            "abs_path": str(original),
+            "video_uuid": "",
+            "analysis_transcode": "required",
+            "analysis_derivative_path": "entry.analysis.mp4",
+        }
+    )
+
+    with pytest.raises(MediaProbeError, match="has no matching row with stored facts"):
+        _ = ds.route_media_row("g1", "entry", entry, True, derivative_df)
