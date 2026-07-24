@@ -76,7 +76,11 @@ def test_densify_fresh_sequence_follows_position() -> None:
         _order_row(group="", sequence="s", filename="b.mp4"),
         _order_row(group="", sequence="s", filename="c.mp4"),
     ]
-    session_positions = {("s", "a.mp4"): 2, ("s", "b.mp4"): 0, ("s", "c.mp4"): 1}
+    session_positions = {
+        ("", "s", "a.mp4"): 2,
+        ("", "s", "b.mp4"): 0,
+        ("", "s", "c.mp4"): 1,
+    }
     result = densify_video_order(
         rows, session_positions=session_positions, prior_order={}
     )
@@ -93,8 +97,8 @@ def test_densify_append_keeps_prior_then_position() -> None:
         _order_row(group="", sequence="s", filename="new0.mp4"),
         _order_row(group="", sequence="s", filename="new1.mp4"),
     ]
-    session_positions = {("s", "new0.mp4"): 0, ("s", "new1.mp4"): 1}
-    prior_order = {("s", "old0.mp4"): 0, ("s", "old1.mp4"): 1}
+    session_positions = {("", "s", "new0.mp4"): 0, ("", "s", "new1.mp4"): 1}
+    prior_order = {("", "s", "old0.mp4"): 0, ("", "s", "old1.mp4"): 1}
     result = densify_video_order(
         rows, session_positions=session_positions, prior_order=prior_order
     )
@@ -110,7 +114,7 @@ def test_densify_preserved_sequence_keeps_prior_not_name() -> None:
         _order_row(group="", sequence="s", filename="y.mp4", prior_video_order="1"),
         _order_row(group="", sequence="s", filename="x.mp4", prior_video_order="2"),
     ]
-    prior_order = {("s", "z.mp4"): 0, ("s", "y.mp4"): 1, ("s", "x.mp4"): 2}
+    prior_order = {("", "s", "z.mp4"): 0, ("", "s", "y.mp4"): 1, ("", "s", "x.mp4"): 2}
     result = densify_video_order(rows, session_positions={}, prior_order=prior_order)
     order_by_name = {row["name"]: row["video_order"] for row in result}
     assert order_by_name == {"z": 0, "y": 1, "x": 2}
@@ -137,9 +141,9 @@ def test_densify_independent_sequences_number_from_zero() -> None:
         _order_row(group="", sequence="s2", filename="b.mp4"),
     ]
     session_positions = {
-        ("s1", "a.mp4"): 0,
-        ("s2", "a.mp4"): 0,
-        ("s2", "b.mp4"): 1,
+        ("", "s1", "a.mp4"): 0,
+        ("", "s2", "a.mp4"): 0,
+        ("", "s2", "b.mp4"): 1,
     }
     result = densify_video_order(
         rows, session_positions=session_positions, prior_order={}
@@ -148,6 +152,36 @@ def test_densify_independent_sequences_number_from_zero() -> None:
     assert by_seq[("s1", "a")] == 0
     assert by_seq[("s2", "a")] == 0
     assert by_seq[("s2", "b")] == 1
+
+
+def test_same_named_sequences_in_different_groups_keep_separate_orders() -> None:
+    # Two groups hold a "trial1" with the same basenames in opposite orders. The
+    # prior-order key carries the group, so neither group's table overwrites the
+    # other's and each keeps its own numbering.
+    rows = [
+        _order_row(
+            group="control", sequence="trial1", filename="a.mp4", prior_video_order="0"
+        ),
+        _order_row(
+            group="control", sequence="trial1", filename="b.mp4", prior_video_order="1"
+        ),
+        _order_row(
+            group="exp", sequence="trial1", filename="a.mp4", prior_video_order="1"
+        ),
+        _order_row(
+            group="exp", sequence="trial1", filename="b.mp4", prior_video_order="0"
+        ),
+    ]
+    result = densify_video_order(
+        rows, session_positions={}, prior_order=build_prior_order(rows)
+    )
+    order = {(row["group"], row["name"]): row["video_order"] for row in result}
+    assert order == {
+        ("control", "a"): 0,
+        ("control", "b"): 1,
+        ("exp", "a"): 1,
+        ("exp", "b"): 0,
+    }
 
 
 # --- assign_video_order: the shared ranking core ---------------------------

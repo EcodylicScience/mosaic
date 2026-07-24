@@ -1639,9 +1639,9 @@ class Dataset:
         disagreements: list[MediaIndexDisagreement] = []
 
         # Probe each scope directory and assign its explicit identity; collect
-        # this session's arranged positions keyed (sequence, basename).
+        # this session's arranged positions keyed (group, sequence, basename).
         fresh: list[dict[str, object]] = []
-        session_positions: dict[tuple[str, str], int] = {}
+        session_positions: dict[tuple[str, str, str], int] = {}
         for scope in scope_list:
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
@@ -1677,7 +1677,7 @@ class Dataset:
                     )
                 )
             for name, position in scope.order_by_name.items():
-                session_positions[(scope.sequence, name)] = position
+                session_positions[(scope.group, scope.sequence, name)] = position
 
         # Carry transcode derivative links onto the fresh rows (a re-finalize of a
         # transcoded sequence must not drop its routing links), merge with the

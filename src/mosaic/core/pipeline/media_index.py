@@ -186,13 +186,13 @@ def build_media_index_row(
 
 def build_prior_order(
     rows: Iterable[Mapping[str, object]],
-) -> dict[tuple[str, str], int]:
-    """Map ``(sequence, basename)`` to prior ``video_order`` for existing rows.
+) -> dict[tuple[str, str, str], int]:
+    """Map ``(group, sequence, basename)`` to prior ``video_order`` for existing rows.
 
     Rows with a missing or blank ``video_order`` are skipped so they fall back
     to name ordering in :func:`densify_video_order`.
     """
-    prior: dict[tuple[str, str], int] = {}
+    prior: dict[tuple[str, str, str], int] = {}
     for row in rows:
         raw = str(row.get("video_order", "")).strip()
         if not raw or raw.lower() == "nan":
@@ -201,7 +201,13 @@ def build_prior_order(
             order = int(float(raw))
         except ValueError:
             continue
-        prior[(str(row["sequence"]), Path(str(row["abs_path"])).name)] = order
+        prior[
+            (
+                str(row["group"]),
+                str(row["sequence"]),
+                Path(str(row["abs_path"])).name,
+            )
+        ] = order
     return prior
 
 
@@ -277,8 +283,8 @@ def assign_video_order(
 def densify_video_order(
     rows: list[dict[str, object]],
     *,
-    session_positions: Mapping[tuple[str, str], int],
-    prior_order: Mapping[tuple[str, str], int],
+    session_positions: Mapping[tuple[str, str, str], int],
+    prior_order: Mapping[tuple[str, str, str], int],
 ) -> list[dict[str, object]]:
     """Re-number ``video_order`` as a dense counter per ``(group, sequence, camera)``.
 
@@ -286,16 +292,22 @@ def densify_video_order(
     into a :class:`VideoOrderKey`. Within each group the order is pre-existing
     videos first, keeping their prior ``video_order`` (*prior_order*), then this
     session's videos by arranged position (*session_positions*); the ``name``
-    column breaks ties. Both maps are keyed ``(sequence, basename)`` where the
-    basename comes from ``abs_path``; a session video is one present in
-    *session_positions*. Keying the dense counter on ``camera`` (``""`` for every
-    row today) makes this per-``(group, sequence)`` now and per-camera once a
-    ``camera`` column exists. Mutates each row's ``video_order`` in place and
-    returns the rows in the assigned order.
+    column breaks ties. Both maps are keyed ``(group, sequence, basename)`` where
+    the basename comes from ``abs_path``; a session video is one present in
+    *session_positions*. Keying the dense counter on ``camera`` makes this
+    per-``(group, sequence, camera)``: a probed imgstore supplies a real
+    ``camera``, so the parallel cameras of one recording -- which share a
+    sequence -- are numbered independently rather than as temporal chunks of
+    one camera. Mutates each row's ``video_order`` in place and returns the
+    rows in the assigned order.
     """
 
     def key_of(row: dict[str, object]) -> VideoOrderKey:
-        lookup = (str(row["sequence"]), Path(str(row["abs_path"])).name)
+        lookup = (
+            str(row["group"]),
+            str(row["sequence"]),
+            Path(str(row["abs_path"])).name,
+        )
         return VideoOrderKey(
             group=str(row["group"]),
             sequence=str(row["sequence"]),
