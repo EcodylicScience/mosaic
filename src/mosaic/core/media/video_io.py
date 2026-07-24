@@ -145,6 +145,21 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
     return facts_to_video_metadata(path, facts)
 
 
+def video_metadata_or_probe(
+    video_path: Path | str, facts: MediaFacts | None
+) -> VideoMetadata:
+    """Metadata for *video_path*, from *facts* when the caller already holds them.
+
+    A caller holding a measurement must not pay for a second one: the packet scan
+    that mints identity reads every payload byte, so re-probing costs between
+    1.5x and 2x the scan it repeats. Passing ``None`` probes, which is the only
+    remaining reason to reach :func:`get_video_metadata` directly.
+    """
+    if facts is None:
+        return get_video_metadata(video_path)
+    return facts_to_video_metadata(Path(video_path).expanduser().resolve(), facts)
+
+
 def normalize_frame_range(
     frame_count: int,
     start_frame: Optional[int],

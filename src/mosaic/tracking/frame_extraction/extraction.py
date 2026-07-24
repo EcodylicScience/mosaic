@@ -18,12 +18,11 @@ from mosaic.core.media.video_io import (
     MultiVideoReader,
     extract_candidate_features,
     extract_candidate_features_multi,
-    facts_to_video_metadata,
-    get_video_metadata,
     normalize_crop_rect,
     normalize_frame_range,
     save_frames_as_png,
     save_frames_as_png_multi,
+    video_metadata_or_probe,
 )
 
 from .sampling import select_kmeans_frames, select_uniform_frames
@@ -136,14 +135,7 @@ def extract_frames(
     if int(candidate_step) <= 0:
         raise ValueError("candidate_step must be > 0")
 
-    if facts is not None:
-        # A holder of stored facts must not re-probe; build metadata through the
-        # shared display-dimension swap instead of re-probing.
-        meta = facts_to_video_metadata(
-            Path(video_path).expanduser().resolve(), facts
-        )
-    else:
-        meta = get_video_metadata(video_path)
+    meta = video_metadata_or_probe(video_path, facts)
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 

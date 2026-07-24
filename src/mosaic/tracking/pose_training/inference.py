@@ -25,6 +25,7 @@ from mosaic.core.media.video_io import (
     get_video_metadata,
     open_frame_reader,
     prefetch_batches,
+    video_metadata_or_probe,
 )
 
 
@@ -307,7 +308,7 @@ def run_inference(
     )
 
     # Get video metadata for resize computation and progress bar
-    meta = get_video_metadata(video_path)
+    meta = video_metadata_or_probe(video_path, facts)
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
@@ -676,7 +677,7 @@ def run_point_inference(
         predict_kwargs["radii"] = radii
 
     # Get video metadata for resize computation and progress bar
-    meta = get_video_metadata(video_path)
+    meta = video_metadata_or_probe(video_path, facts)
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
