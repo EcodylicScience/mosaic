@@ -29,6 +29,7 @@ from .media.facts_columns import (
     derivative_path_for_target,
     media_row_uuid,
     read_link_cell,
+    row_facts_or_none,
     row_mapping,
     row_to_facts,
     series_facts_or_none,
@@ -48,6 +49,7 @@ from .pipeline.media_index import (
     build_prior_order,
     densify_video_order,
     frame_from_rows,
+    mtime_iso,
     read_media_index as _read_media_index,
     write_media_index_rows,
 )
@@ -1247,6 +1249,7 @@ class Dataset:
         exts: set[str],
         recursive: bool,
         facts_by_name: Mapping[str, MediaFacts] | None = None,
+        cached_facts_by_path: Mapping[Path, MediaFacts] | None = None,
     ) -> list[ProbedEntry]:
         """Probe every media file + imgstore under *search_dirs* (identity-free).
 
@@ -1260,11 +1263,17 @@ class Dataset:
         :meth:`write_media_index` (assignment-driven scope re-probe).
 
         *facts_by_name* maps a plain video's basename to an already-measured
-        :class:`~mosaic_media.MediaFacts`; a file present in it has its row built
-        from those facts and is never probed. Files absent from it are probed as
-        usual; :meth:`index_media` passes no map, so it probes every file.
+        :class:`~mosaic_media.MediaFacts` -- a caller's own measurement, which
+        always wins; a file present in it has its row built from those facts and
+        is never probed. *cached_facts_by_path* maps a resolved source path to a
+        prior row's measurement, reused only for a file with no injected facts;
+        the caller admits an entry only when the file's size and mtime still
+        match what that row recorded. Everything else is probed;
+        :meth:`index_media` passes neither map, so it probes every file. The
+        precedence is injection, then cache, then probe.
         """
         facts_map = facts_by_name or {}
+        cache = cached_facts_by_path or {}
         from .media.imgstore_io import (
             imgstore_probe,
             imgstore_store_identity,
@@ -1327,7 +1336,7 @@ class Dataset:
             futures = {
                 p: executor.submit(probe_video_metadata, p)
                 for p, _st in probe_candidates
-                if p.name not in facts_map
+                if p.name not in facts_map and p.resolve() not in cache
             }
             for p, st in probe_candidates:
                 injected = facts_map.get(p.name)
@@ -1335,6 +1344,10 @@ class Dataset:
                     results.append(
                         ProbedEntry(p, st, row_from_facts(injected), "video")
                     )
+                    continue
+                cached = cache.get(p.resolve())
+                if cached is not None:
+                    results.append(ProbedEntry(p, st, row_from_facts(cached), "video"))
                     continue
                 try:
                     probe = futures[p].result()
@@ -1656,6 +1669,38 @@ class Dataset:
                 _ = prior_uuid_by_name.pop(name, None)
                 continue
             prior_uuid_by_name[name] = media_row_uuid(row)
+
+        # A prior row's measurement, reusable when the file it describes has not
+        # moved. Keyed on the resolved path rather than the basename: two
+        # sequences can each hold a "video.mp4", and where the uuid map above
+        # degrades to reporting nothing, a basename-keyed cache would serve one
+        # sequence's measurement for the other sequence's file.
+        #
+        # This is the WRITE path, which is allowed to be cheap. The audit path
+        # -- reprobe-media -- re-probes unconditionally and is what detects a
+        # file replaced in place on a share. Do not apply this shortcut there:
+        # a cache that skips the probe skips the comparison that IS the check.
+        cached_facts_by_path: dict[Path, MediaFacts] = {}
+        for row in existing:
+            if not self._row_under_dirs(row, scope_dirs):
+                continue
+            stored = read_link_cell(row, "abs_path")
+            if not stored:
+                continue
+            facts = row_facts_or_none(row)
+            if facts is None:
+                continue
+            resolved = self.resolve_path(stored).resolve()
+            try:
+                stat_result = resolved.stat()
+            except OSError:
+                continue
+            if str(row.get("size_bytes", "")) != str(stat_result.st_size):
+                continue
+            if read_link_cell(row, "mtime_iso") != mtime_iso(stat_result.st_mtime):
+                continue
+            cached_facts_by_path[resolved] = facts
+
         disagreements: list[MediaIndexDisagreement] = []
 
         # Probe each scope directory and assign its explicit identity; collect
@@ -1666,7 +1711,11 @@ class Dataset:
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
             for entry in self._probe_dir_rows(
-                [scope.directory], exts, recursive, scope.facts_by_name
+                [scope.directory],
+                exts,
+                recursive,
+                scope.facts_by_name,
+                cached_facts_by_path,
             ):
                 # A probed imgstore supplies its own camera/sync_uuid from store
                 # metadata (read once in _probe_dir_rows); scope.camera is only
