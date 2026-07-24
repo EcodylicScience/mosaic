@@ -56,6 +56,7 @@ from mosaic_media.transcode import (
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import (
     MEDIA_INDEX_COLUMNS,
+    derivative_cell,
     derivative_column_for_target,
     facts_to_row,
     media_row_uuid,
@@ -369,6 +370,28 @@ class TranscodeOp(Op[TranscodeParams]):
             dest = (
                 transcode_root / f"{source_uuids[i]}.{recipe_hash}.{params.target}.mp4"
             )
+
+            already_linked = derivative_cell(
+                row_mapping(row), params.target
+            ) == _relative_to(dest, media_root)
+            if dest.exists() and already_linked:
+                # The name carries the whole recipe, so an existing file at this
+                # path is this recipe's output. The link is checked too, and it
+                # is a completion marker only because registration writes the
+                # back-link row first and the forward link last: an interrupted
+                # registration leaves an unlinked file, which this re-links,
+                # rather than a linked file with no row, which nothing repairs --
+                # re-probing an index adds no row and never writes a link cell.
+                #
+                # `row` is the pre-loop snapshot from match_media_rows, not a
+                # fresh read, and that is correct: each source's own link is
+                # written after its own iteration, so no earlier iteration can
+                # have changed this row's cell.
+                ctx.progress.on_phase(
+                    "transcode", f"{group}/{sequence}[{i}]: {params.target} reused"
+                )
+                ctx.heartbeat(done=(i + 1) * _TICKS_PER_SOURCE)
+                continue
 
             def _on_progress(progress: TranscodeProgress, index: int = i) -> None:
                 if progress.fraction is not None:

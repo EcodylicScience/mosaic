@@ -24,7 +24,11 @@ from mosaic_media.transcode import ANALYSIS_ENCODING, TranscodeError
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import row_to_facts
-from mosaic.core.pipeline.media_index import read_media_index
+from mosaic.core.pipeline.media_index import (
+    frame_from_rows,
+    read_media_index,
+    write_media_index_rows,
+)
 from mosaic.core.pipeline.ops import list_ops, run_op
 from mosaic.core.pipeline.transcode import (
     TranscodeParams,
@@ -128,6 +132,23 @@ def _analysis_required_dataset(
         _strip_identity_columns(ds)
         return ds, ""
     return ds, video_uuid
+
+
+def _clear_forward_links(ds: Dataset) -> None:
+    """Blank both forward-link columns on every ``media_raw`` row.
+
+    The state an interrupted registration leaves behind: the back-link row and
+    the derivative file both exist, but the forward link that would mark the
+    registration complete was never written.
+    """
+    index_path = ds.get_root("media_raw") / "index.csv"
+    rows: list[dict[str, object]] = [
+        dict(record) for record in read_media_index(index_path)
+    ]
+    for row in rows:
+        row["analysis_derivative_path"] = ""
+        row["playback_derivative_path"] = ""
+    write_media_index_rows(index_path, frame_from_rows(rows))
 
 
 def test_transcode_op_writes_derivative_and_links(
@@ -267,6 +288,33 @@ def test_transcode_op_is_idempotent(
     assert len(media_df) == 1
     raw_df = pd.read_csv(ds.get_root("media_raw") / "index.csv")
     assert len(raw_df) == 1
+
+
+def test_an_existing_linked_derivative_is_reused(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    ds, video_uuid = _analysis_required_dataset(tmp_path, make_media_dataset)
+    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    _ = run_op(ds, "transcode", params)
+    recipe = transcode_recipe_hash(
+        params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
+    )
+    dest = ds.get_root("media") / "transcode" / f"{video_uuid}.{recipe}.analysis.mp4"
+    first = dest.stat().st_mtime_ns
+    _ = run_op(ds, "transcode", params)
+    assert dest.stat().st_mtime_ns == first
+
+
+def test_an_existing_but_unlinked_derivative_is_relinked(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
+    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    _ = run_op(ds, "transcode", params)
+    _clear_forward_links(ds)
+    _ = run_op(ds, "transcode", params)
+    row = read_media_index(ds.get_root("media_raw") / "index.csv")[0]
+    assert row["analysis_derivative_path"]
 
 
 def test_the_derivative_is_named_after_its_source_and_recipe(
