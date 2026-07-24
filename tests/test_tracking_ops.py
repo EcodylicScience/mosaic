@@ -319,9 +319,7 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     # a raw model path (no training run needed)
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
-    run_id = run_op(
-        ds, "infer-pose", {"model": str(model), "convert_to_tracks": True}
-    )
+    run_id = run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
     assert run_id.startswith("infer-pose-")
 
     runs = read_runs(_run_dir(ds), kind="infer-pose")
@@ -561,6 +559,15 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
 
 
 # --- verdict routing in the per-frame ops (analysis-required originals) -----
+
+
+def test_store_facts_states_the_empty_identity() -> None:
+    facts = store_facts(320, 240, 25.0, 10, "h264", 10.0)
+    # An imgstore has no file to hash: the identity is empty, and now stated
+    # rather than inherited from a default that no longer exists.
+    assert facts.video_uuid == ""
+    assert facts.content_digest == ""
+    assert facts.timing_measured is True
 
 
 def _derivative_facts_cells() -> dict:

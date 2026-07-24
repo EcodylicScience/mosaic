@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from mosaic_media import MediaFacts, Verdict
@@ -25,6 +27,18 @@ FLAT_FACTS_COLUMNS: list[str] = [
     "analysis_derivative_path",
     "playback_derivative_path",
     "source_path",
+    # video_uuid pins coded content and exact timing and is unique per file --
+    # the value to compare for identity or name a path from. content_digest pins
+    # coded content only and is the duplicate pathway's index key. Distinct from
+    # the sync_uuid column, which is a Motif recording id deliberately SHARED
+    # across a recording's cameras: sync_uuid is safe to collide, video_uuid is
+    # not.
+    "video_uuid",
+    "content_digest",
+    # source_video_uuid links a derivative row to its source. A transcode edge,
+    # not a measured fact, so facts_to_row leaves it empty and
+    # build_media_index_row overrides it from the TranscodeResult.
+    "source_video_uuid",
 ]
 FACTS_JSON_COLUMN = "media_facts"
 FACTS_COLUMNS: list[str] = [*FLAT_FACTS_COLUMNS, FACTS_JSON_COLUMN]
@@ -66,6 +80,61 @@ def derivative_column_for_target(target: Target) -> str:
     return _DERIVATIVE_COLUMN_BY_TARGET[target]
 
 
+def read_link_cell(row: Mapping[str, object], column: str) -> str:
+    """A media-index cell as a trimmed string, absent forms collapsed to ``""``.
+
+    Empty, the string ``"nan"``, and a float NaN all mean absent -- the last is
+    what pandas yields for an empty CSV cell. The single reader every identity
+    and derivative-link function shares, so ``"nan"`` can never be mistaken for a
+    real value in one place while another treats it literally.
+    """
+    value = row.get(column, "")
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def media_row_uuid(row: Mapping[str, object]) -> str:
+    """A row's ``video_uuid``, or ``""`` when it carries none.
+
+    The preferred match key: it survives a rename, which the fallback path key
+    does not. An empty result means the row is unminted and the caller falls
+    back to the path key.
+    """
+    return read_link_cell(row, "video_uuid")
+
+
+def media_row_path_key(row: Mapping[str, object]) -> tuple[str, str]:
+    """A row's fallback key: the two leaf components of its stored ``abs_path``.
+
+    The parent directory name and the filename, stable whether the stored path
+    is absolute or root-relative. Used only when a uuid is absent on either
+    side; it does not survive a rename, which is the whole reason ``video_uuid``
+    is preferred.
+    """
+    path = Path(read_link_cell(row, "abs_path"))
+    return (path.parent.name, path.name)
+
+
+def derivative_cell(row: Mapping[str, object], target: Target) -> str:
+    """The raw link cell for *target*, or ``""`` when unregistered."""
+    return read_link_cell(row, derivative_column_for_target(target))
+
+
+def derivative_path_for_target(
+    row: Mapping[str, object], target: Target, media_root: Path
+) -> Path | None:
+    """The registered derivative path for *target*, or ``None`` when unregistered.
+
+    Anchors the stored cell under *media_root*. Owns the present-check and the
+    anchoring -- the two things three call sites re-derived -- and nothing else:
+    it reads no verdict, decides no error, and never touches the filesystem.
+    """
+    cell = derivative_cell(row, target)
+    return media_root / cell if cell else None
+
+
 class MediaFactsRow(TypedDict):
     """The flat verdict cells plus the injectable MediaFacts JSON cell."""
 
@@ -75,6 +144,9 @@ class MediaFactsRow(TypedDict):
     analysis_derivative_path: str
     playback_derivative_path: str
     source_path: str
+    video_uuid: str
+    content_digest: str
+    source_video_uuid: str
     media_facts: str
 
 
@@ -96,6 +168,9 @@ def facts_to_row(facts: MediaFacts, verdict: Verdict) -> MediaFactsRow:
         "analysis_derivative_path": "",
         "playback_derivative_path": "",
         "source_path": "",
+        "video_uuid": facts.video_uuid,
+        "content_digest": facts.content_digest,
+        "source_video_uuid": "",
         "media_facts": json.dumps(dataclasses.asdict(facts)),
     }
 
@@ -182,4 +257,6 @@ def store_facts(
         max_keyframe_interval_frames=0,
         max_gop_bytes=0,
         timing_measured=True,
+        video_uuid="",
+        content_digest="",
     )

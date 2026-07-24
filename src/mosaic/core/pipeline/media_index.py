@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import pandas as pd
+from mosaic_media import MediaFacts
 
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.pipeline._utils import atomic_write
@@ -46,6 +47,12 @@ def _empty_order() -> dict[str, int]:
     return {}
 
 
+def _empty_facts() -> dict[str, MediaFacts]:
+    """Typed default for :attr:`MediaIndexScope.facts_by_name` (a bare ``dict``
+    infers ``dict[Unknown, Unknown]`` under strict typing)."""
+    return {}
+
+
 @dataclass(frozen=True)
 class MediaIndexScope:
     """One affected ``(group, sequence)`` to re-probe and reorder.
@@ -54,16 +61,19 @@ class MediaIndexScope:
     every file found is assigned ``group``/``sequence`` (not derived from a
     track keymap). ``order_by_name`` maps a file's basename to its arranged
     linear position within the sequence; a file absent from the map keeps its
-    prior ``video_order`` and sorts before the arranged ones. ``camera`` is an
-    explicit override for a plain video the caller tags with a camera axis; a
-    probed imgstore supplies its own ``camera``/``sync_uuid`` from store
-    metadata, so this override applies only when the probe carries none.
+    prior ``video_order`` and sorts before the arranged ones. ``facts_by_name``
+    maps a file's basename to an already-measured ``MediaFacts``; a file present
+    in it is turned into its row from those facts instead of being re-probed.
+    ``camera`` is an explicit override for a plain video the caller tags with a
+    camera axis; a probed imgstore supplies its own ``camera``/``sync_uuid`` from
+    store metadata, so this override applies only when the probe carries none.
     """
 
     directory: Path
     group: str
     sequence: str
     order_by_name: Mapping[str, int] = field(default_factory=_empty_order)
+    facts_by_name: Mapping[str, MediaFacts] = field(default_factory=_empty_facts)
     camera: str = ""
 
 
@@ -132,6 +142,7 @@ def build_media_index_row(
     sync_uuid: str = "",
     media_type: str = "video",
     source_path: str | None = None,
+    source_video_uuid: str | None = None,
     video_order: int = 0,
 ) -> dict[str, object]:
     """Assemble one media-index row.
@@ -141,11 +152,13 @@ def build_media_index_row(
     (a :class:`ProbeMetadata`). ``abs_path`` is produced by *to_store_path*, so
     the in-tree-relative / out-of-tree-absolute rule is enforced in one place.
     *source_path* overrides the empty ``source_path`` the probe carries (used by
-    a derivative's back-link). *camera* is the within-sequence camera axis
-    (``""`` for single-camera media) and *sync_uuid* the recording id that
-    groups a recording's cameras; both feed :func:`densify_video_order` (which
-    numbers ``video_order`` per ``(group, sequence, camera)``) and persist as
-    schema columns.
+    a derivative's back-link); *source_video_uuid* likewise overrides the empty
+    ``source_video_uuid`` the probe carries with the source's ``video_uuid`` --
+    the rename-resilient form of the same back-link, populated on a derivative
+    row. *camera* is the within-sequence camera axis (``""`` for single-camera
+    media) and *sync_uuid* the recording id that groups a recording's cameras;
+    both feed :func:`densify_video_order` (which numbers ``video_order`` per
+    ``(group, sequence, camera)``) and persist as schema columns.
     """
     size_bytes = getattr(stat, "st_size")
     mtime = getattr(stat, "st_mtime")
@@ -166,6 +179,8 @@ def build_media_index_row(
     }
     if source_path is not None:
         row["source_path"] = source_path
+    if source_video_uuid is not None:
+        row["source_video_uuid"] = source_video_uuid
     return row
 
 

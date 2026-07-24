@@ -19,24 +19,30 @@ import pandas as pd
 import yaml  # pip install pyyaml
 from mosaic_media import (
     CHROME_149,
-    DEFAULT_THRESHOLDS,
     MediaFacts,
     MediaProbeError,
     derive,
     probe_media,
 )
 
+from mosaic.media_probe_config import media_thresholds
+
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
+    derivative_path_for_target,
     facts_to_row,
+    media_row_path_key,
+    media_row_uuid,
+    read_link_cell,
     row_mapping,
     row_to_facts,
     series_facts_or_none,
 )
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
 from .pipeline.media_index import (
+    MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
     build_media_index_row,
     build_prior_order,
@@ -60,15 +66,15 @@ if TYPE_CHECKING:
     from .pipeline.progress import ProgressCallback
 
 
-def _probe_video_metadata(path: Path) -> ProbeMetadata:
-    """Probe width/height/fps/codec plus the injectable MediaFacts JSON and verdict.
+def _row_from_facts(facts: MediaFacts) -> ProbeMetadata:
+    """Build the media-index ProbeMetadata from an already-measured MediaFacts.
 
     Stores CODED width/height (un-oriented); get_video_metadata returns display
     dims, and row_to_facts injects coded dims + rotation so the reader orients
-    once. Raises MediaProbeError on an unreadable file.
+    once. Shared by the probe path and the injection path so the row shape is
+    constructed in exactly one place.
     """
-    facts = probe_media(path)
-    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    verdict = derive(facts, CHROME_149, media_thresholds())
     return {
         "width": facts.width,
         "height": facts.height,
@@ -76,6 +82,12 @@ def _probe_video_metadata(path: Path) -> ProbeMetadata:
         "codec": facts.codec_name,
         **facts_to_row(facts, verdict),
     }
+
+
+def _probe_video_metadata(path: Path) -> ProbeMetadata:
+    """Probe *path* and build its media-index row. Raises MediaProbeError on an
+    unreadable file."""
+    return _row_from_facts(probe_media(path))
 
 
 def _normalize_patterns(pats) -> tuple[str, ...]:
@@ -436,6 +448,29 @@ class ResolvedScopeEntry:
     sequence: str
     camera: str
     resolved: ResolvedMedia
+
+
+@dataclass(frozen=True)
+class MediaIndexDisagreement:
+    """A scoped file whose stored video_uuid differs from the injected one.
+
+    The file on disk is no longer the file the injected facts describe. Reported
+    rather than raised: by the time write_media_index runs, the file is already
+    in place and the write must complete. The caller logs it and leaves a
+    re-probe as the operator's repair.
+    """
+
+    basename: str
+    prior_uuid: str
+    injected_uuid: str
+
+
+@dataclass(frozen=True)
+class MediaIndexResult:
+    """The written index path plus any stale-override disagreements."""
+
+    index_path: Path
+    disagreements: list[MediaIndexDisagreement]
 
 
 @dataclass
@@ -1227,6 +1262,7 @@ class Dataset:
         search_dirs: Iterable[str | Path],
         exts: set[str],
         recursive: bool,
+        facts_by_name: Mapping[str, MediaFacts] | None = None,
     ) -> list[ProbedEntry]:
         """Probe every media file + imgstore under *search_dirs* (identity-free).
 
@@ -1238,7 +1274,13 @@ class Dataset:
         carries neither. Identity assignment (group/sequence) is left to the
         caller. Shared by :meth:`index_media` (scan-and-derive) and
         :meth:`write_media_index` (assignment-driven scope re-probe).
+
+        *facts_by_name* maps a plain video's basename to an already-measured
+        :class:`~mosaic_media.MediaFacts`; a file present in it has its row built
+        from those facts and is never probed. Files absent from it are probed as
+        usual; :meth:`index_media` passes no map, so it probes every file.
         """
+        facts_map = facts_by_name or {}
         from .media.imgstore_io import (
             imgstore_probe,
             imgstore_store_identity,
@@ -1295,13 +1337,23 @@ class Dataset:
         results: list[ProbedEntry] = []
         max_probe_workers = min(4, (os.cpu_count() or 2))
         with ThreadPoolExecutor(max_workers=max_probe_workers) as executor:
-            pending = [
-                (p, st, executor.submit(_probe_video_metadata, p))
-                for p, st in probe_candidates
-            ]
-            for p, st, future in pending:
+            # Only files with no injected facts reach the pool; an injected file
+            # builds its row inline. Iterating probe_candidates (already sorted)
+            # keeps the returned order deterministic regardless.
+            futures = {
+                p: executor.submit(_probe_video_metadata, p)
+                for p, _st in probe_candidates
+                if p.name not in facts_map
+            }
+            for p, st in probe_candidates:
+                injected = facts_map.get(p.name)
+                if injected is not None:
+                    results.append(
+                        ProbedEntry(p, st, _row_from_facts(injected), "video")
+                    )
+                    continue
                 try:
-                    probe = future.result()
+                    probe = futures[p].result()
                 except (OSError, MediaProbeError) as e:
                     print(f"[WARN] skip {p}: {e}", file=sys.stderr)
                     continue
@@ -1566,7 +1618,7 @@ class Dataset:
         extensions: Tuple[str, ...] = (".mp4", ".avi"),
         index_filename: str = "index.csv",
         recursive: bool = True,
-    ) -> Path:
+    ) -> MediaIndexResult:
         """Project explicit sequence assignments into a valid media index.
 
         The assignment-driven counterpart to :meth:`index_media`: rather than
@@ -1581,6 +1633,9 @@ class Dataset:
         preserved verbatim; and the file is written atomically with
         root-relative ``abs_path``. This is the single entry point the API's
         upload finalize calls -- the API owns none of these semantics itself.
+        The return carries the written index path and any
+        :class:`MediaIndexDisagreement`s -- files whose stored uuid differed from
+        the injected one, reported not raised.
         """
         media_root = self.get_root(self.resolve_media_root())
         index_path = media_root / index_filename
@@ -1596,6 +1651,17 @@ class Dataset:
             row for row in existing if not self._row_under_dirs(row, scope_dirs)
         ]
 
+        # A scoped file's prior stored uuid, by basename -- the rows this write
+        # overrides. Used to detect a stale override: a file whose stored uuid
+        # differs from the one now injected is no longer the file the injected
+        # facts describe.
+        prior_uuid_by_name: dict[str, str] = {
+            Path(str(row["abs_path"])).name: media_row_uuid(row)
+            for row in existing
+            if self._row_under_dirs(row, scope_dirs)
+        }
+        disagreements: list[MediaIndexDisagreement] = []
+
         # Probe each scope directory and assign its explicit identity; collect
         # this session's arranged positions keyed (sequence, basename).
         fresh: list[dict[str, object]] = []
@@ -1603,10 +1669,22 @@ class Dataset:
         for scope in scope_list:
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
-            for entry in self._probe_dir_rows([scope.directory], exts, recursive):
+            for entry in self._probe_dir_rows(
+                [scope.directory], exts, recursive, scope.facts_by_name
+            ):
                 # A probed imgstore supplies its own camera/sync_uuid from store
                 # metadata (read once in _probe_dir_rows); scope.camera is only
                 # an override for a plain video the caller tags with a camera.
+                injected_uuid = str(entry.probe.get("video_uuid", ""))
+                prior_uuid = prior_uuid_by_name.get(entry.path.name, "")
+                if prior_uuid and injected_uuid and prior_uuid != injected_uuid:
+                    disagreements.append(
+                        MediaIndexDisagreement(
+                            basename=entry.path.name,
+                            prior_uuid=prior_uuid,
+                            injected_uuid=injected_uuid,
+                        )
+                    )
                 fresh.append(
                     build_media_index_row(
                         path=entry.path,
@@ -1638,7 +1716,7 @@ class Dataset:
             prior_order=prior_order,
         )
         write_media_index_rows(index_path, frame_from_rows(merged))
-        return index_path
+        return MediaIndexResult(index_path=index_path, disagreements=disagreements)
 
     def read_media_index(
         self, index_filename: str = "index.csv"
@@ -1687,27 +1765,31 @@ class Dataset:
             return
         link_columns = ["analysis_derivative_path", "playback_derivative_path"]
         media_root = self.get_root("media")
-        prior_links: dict[str, dict[str, str]] = {}
+        prior_links_by_uuid: dict[str, dict[str, str]] = {}
+        prior_links_by_path: dict[tuple[str, str], dict[str, str]] = {}
         for prior_row in prior:
-            abs_cell = (prior_row.get("abs_path") or "").strip()
-            if not abs_cell or abs_cell.lower() == "nan":
-                continue
             carried: dict[str, str] = {}
             for column in link_columns:
-                link = (prior_row.get(column) or "").strip()
-                if link and link.lower() != "nan" and (media_root / link).exists():
+                link = read_link_cell(prior_row, column)
+                if link and (media_root / link).exists():
                     carried[column] = link
-            if carried:
-                prior_links[str(self.resolve_path(abs_cell).resolve())] = carried
-        if not prior_links:
-            return
-        for row in rows:
-            carried = prior_links.get(
-                str(self.resolve_path(str(row["abs_path"])).resolve())
-            )
             if not carried:
                 continue
-            for column, link in carried.items():
+            uuid = media_row_uuid(prior_row)
+            if uuid:
+                prior_links_by_uuid[uuid] = carried
+            else:
+                prior_links_by_path[media_row_path_key(prior_row)] = carried
+        if not prior_links_by_uuid and not prior_links_by_path:
+            return
+        for row in rows:
+            uuid = media_row_uuid(row)
+            links = prior_links_by_uuid.get(uuid) if uuid else None
+            if links is None:
+                links = prior_links_by_path.get(media_row_path_key(row))
+            if not links:
+                continue
+            for column, link in links.items():
                 row[column] = link
 
     def _match_media_rows(
@@ -1766,10 +1848,12 @@ class Dataset:
     def _load_media_index(self, index_filename: str = "index.csv") -> "pd.DataFrame":
         """Read and normalize the originals media index for scoped resolution.
 
-        Reads ``<resolve_media_root()>/<index_filename>`` and normalizes the
-        identity columns so downstream masking and grouping are string-typed and
-        NaN-free: ``group`` / ``sequence`` / ``group_safe`` / ``sequence_safe``
-        (each only when present) are filled to ``""`` and coerced to ``str``, and
+        Reads ``<resolve_media_root()>/<index_filename>`` and normalizes every
+        non-numeric schema column (``MEDIA_INDEX_COLUMNS`` minus
+        ``MEDIA_NUMERIC_COLUMNS``) so downstream masking and grouping are
+        string-typed and NaN-free: each such column, when present, is filled to
+        ``""`` and coerced to ``str``, and is created empty when absent (a
+        legacy or hand-seeded CSV written before a column existed). Separately,
         ``video_order`` is coerced to an int column (created as ``0`` when
         absent). Shared by :meth:`match_media_rows` and
         :meth:`resolve_media_scope` so the read-and-normalize lives in one place.
@@ -1784,13 +1868,14 @@ class Dataset:
                 f"{media_key}/{index_filename} not found; run index_media() first."
             )
         df = pd.read_csv(idx_path)
-        for column in ("group", "sequence", "group_safe", "sequence_safe"):
-            if column in df.columns:
-                df[column] = df[column].fillna("").astype(str)
-        # camera / sync_uuid may be absent on an index written before the
-        # multi-camera schema; create them empty so camera-keyed grouping and
-        # filtering below never KeyError on a legacy or hand-seeded CSV.
-        for column in ("camera", "sync_uuid"):
+        # Back-fill every non-numeric schema column by schema, not by a fixed
+        # list: an index written before a column existed must read it back as an
+        # empty string rather than KeyError or a float NaN, and a future column
+        # addition should not need to touch this method. video_order is numeric
+        # and coerced separately below.
+        for column in MEDIA_INDEX_COLUMNS:
+            if column in MEDIA_NUMERIC_COLUMNS:
+                continue
             if column in df.columns:
                 df[column] = df[column].fillna("").astype(str)
             else:
@@ -1836,6 +1921,7 @@ class Dataset:
         sequence: str,
         derivative_path: Path,
         original_abs: str,
+        original_video_uuid: str,
         derivative_df: "pd.DataFrame | None",
     ) -> MediaFacts:
         """Look up an analysis derivative's stored facts in the ``media`` index.
@@ -1843,11 +1929,13 @@ class Dataset:
         Two passes, exact file first. Pass 1 returns the row whose ``abs_path``
         resolves to *derivative_path* -- the unambiguous match, since that is the
         file the caller opens. Pass 2 is a fallback for a row that lacks a
-        resolvable ``abs_path``: it matches on ``source_path`` resolving to this
-        entry's original, but only for a row whose ``abs_path`` basename equals
-        the requested derivative's, so a per-target sibling (the playback
-        derivative shares ``source_path`` with the analysis one) can never cross
-        into the wrong target's facts. Raises
+        resolvable ``abs_path``: it matches on the source's ``video_uuid`` when
+        the original carries one (*original_video_uuid* is non-empty), falling
+        back to ``source_path`` resolving to this entry's original otherwise.
+        Either form is restricted to a row whose ``abs_path`` basename equals the
+        requested derivative's, so a per-target sibling (the playback derivative
+        shares both ``source_video_uuid`` and ``source_path`` with the analysis
+        one) can never cross into the wrong target's facts. Raises
         :class:`~mosaic_media.MediaProbeError` when the derivative file, its row,
         or its stored facts cannot be found.
         """
@@ -1875,8 +1963,19 @@ class Dataset:
             if abs_cell and self.resolve_path(abs_cell).resolve() == target:
                 return row_to_facts(row_mapping(drow))
 
-        # Pass 2: source_path fallback, restricted to a row whose derivative
-        # basename matches the requested one so per-target siblings never cross.
+        # Pass 2, uuid form: match the derivative row by the source's video_uuid,
+        # keeping the basename guard so the analysis and playback siblings --
+        # which share a source_video_uuid -- never cross into each other's facts.
+        if original_video_uuid:
+            for _, drow in derivative_df.iterrows():
+                abs_cell = _media_cell(drow, "abs_path")
+                if abs_cell and Path(abs_cell).name != target_name:
+                    continue
+                if _media_cell(drow, "source_video_uuid") == original_video_uuid:
+                    return row_to_facts(row_mapping(drow))
+
+        # Pass 2, path form: an unminted original has no uuid, so fall back to the
+        # source_path resolution unchanged.
         for _, drow in derivative_df.iterrows():
             abs_cell = _media_cell(drow, "abs_path")
             if abs_cell and Path(abs_cell).name != target_name:
@@ -1950,14 +2049,16 @@ class Dataset:
         """
         if _media_cell(row, "analysis_transcode") == "required":
             if route_derivatives:
-                derivative = _media_cell(row, "analysis_derivative_path")
-                if derivative:
-                    derivative_path = self.get_root("media") / derivative
+                derivative_path = derivative_path_for_target(
+                    row_mapping(row), "analysis", self.get_root("media")
+                )
+                if derivative_path is not None:
                     facts = self._derivative_facts(
                         group,
                         sequence,
                         derivative_path,
                         _media_cell(row, "abs_path"),
+                        media_row_uuid(row_mapping(row)),
                         derivative_df,
                     )
                     return derivative_path, facts

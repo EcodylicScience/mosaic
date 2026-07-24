@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from mosaic_media import (
     CHROME_149,
-    DEFAULT_THRESHOLDS,
     MediaFacts,
     Verdict,
     derive,
@@ -62,6 +61,7 @@ from mosaic.core.pipeline.media_index import (
 )
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import Params
+from mosaic.media_probe_config import media_thresholds
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -112,22 +112,27 @@ def _transcode_run_id(
 def _set_forward_link(
     ds: "Dataset",
     source: Path,
+    source_video_uuid: str,
     derivative_rel: str,
     target: Target,
 ) -> None:
     """Point the original's ``media_raw`` row at its per-target derivative.
 
-    Writes only the column for *target* (``analysis_derivative_path`` or
-    ``playback_derivative_path``), leaving the other target's link untouched.
-    Idempotent.
+    Matches the source row by ``video_uuid`` when it has one -- stable across a
+    rename -- and falls back to the resolved-path comparison for an unminted
+    source. Writes only the column for *target*, leaving the other target's link
+    untouched. Idempotent.
     """
     raw_root = ds.get_root(ds.resolve_media_root())
     index_path = raw_root / "index.csv"
     df = load_media_index_frame(index_path)
-    source_resolved = source.resolve()
-    matches = df["abs_path"].map(
-        lambda value: ds.resolve_path(str(value)).resolve() == source_resolved
-    )
+    if source_video_uuid:
+        matches = df["video_uuid"].fillna("").astype(str) == source_video_uuid
+    else:
+        source_resolved = source.resolve()
+        matches = df["abs_path"].map(
+            lambda value: ds.resolve_path(str(value)).resolve() == source_resolved
+        )
     df.loc[matches, derivative_column_for_target(target)] = derivative_rel
     write_media_index_rows(index_path, df)
 
@@ -141,6 +146,7 @@ def _derivative_row(
     facts: MediaFacts,
     verdict: Verdict,
     video_order: int,
+    source_video_uuid: str,
 ) -> dict[str, object]:
     """Build the ``media`` index row describing one derivative."""
     raw_root = ds.get_root(ds.resolve_media_root())
@@ -151,7 +157,8 @@ def _derivative_row(
         "codec": facts.codec_name,
         **facts_to_row(facts, verdict),
     }
-    # facts_to_row leaves source_path empty; the back-link records the origin.
+    # facts_to_row leaves source_path/source_video_uuid empty; the back-link
+    # records the origin.
     return build_media_index_row(
         path=output_path,
         stat=output_path.stat(),
@@ -162,6 +169,7 @@ def _derivative_row(
         sequence_safe=to_safe_name(sequence),
         probe=probe,
         source_path=_relative_to(source, raw_root),
+        source_video_uuid=source_video_uuid,
         video_order=video_order,
     )
 
@@ -175,12 +183,21 @@ def _set_back_link(
     facts: MediaFacts,
     verdict: Verdict,
     video_order: int,
+    source_video_uuid: str,
 ) -> None:
     """Record (or replace) the derivative's ``media`` index row (idempotent)."""
     index_path = ds.get_root("media") / "index.csv"
     df = load_media_index_frame(index_path)
     row = _derivative_row(
-        ds, group, sequence, source, output_path, facts, verdict, video_order
+        ds,
+        group,
+        sequence,
+        source,
+        output_path,
+        facts,
+        verdict,
+        video_order,
+        source_video_uuid,
     )
     abs_value = str(row["abs_path"])
     if not df.empty:
@@ -235,7 +252,7 @@ class TranscodeOp(Op[TranscodeParams]):
             facts = series_facts_or_none(row)
             if facts is None:
                 facts = probe_media(source)
-            verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+            verdict = derive(facts, CHROME_149, media_thresholds())
 
             # A multi-camera recording matches one row per camera; suffix the
             # derivative with the camera_serial (stable across a reindex that
@@ -261,7 +278,7 @@ class TranscodeOp(Op[TranscodeParams]):
                 facts,
                 verdict,
                 profile=CHROME_149,
-                thresholds=DEFAULT_THRESHOLDS,
+                thresholds=media_thresholds(),
                 encoding=encoding,
                 allow_hardware=params.allow_hardware,
                 on_progress=_on_progress,
@@ -280,7 +297,9 @@ class TranscodeOp(Op[TranscodeParams]):
 
             output_path = result.output_path
             derivative_rel = _relative_to(output_path, media_root)
-            _set_forward_link(ds, source, derivative_rel, params.target)
+            _set_forward_link(
+                ds, source, facts.video_uuid, derivative_rel, params.target
+            )
             _set_back_link(
                 ds,
                 group,
@@ -290,6 +309,7 @@ class TranscodeOp(Op[TranscodeParams]):
                 result.output_facts,
                 result.output_verdict,
                 video_order,
+                source_video_uuid=result.source_video_uuid,
             )
 
         return run_id
