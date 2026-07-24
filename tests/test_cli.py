@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
+from mosaic.core.media.probe_row import probe_video_metadata
 
 
 def _make_runner() -> CliRunner:
@@ -331,6 +332,65 @@ def _seed_legacy_media_index(
         writer.writeheader()
         writer.writerows([first, *extra])
     return index_path
+
+
+def _seed_stale_facts_media_index(
+    ds: Dataset, write_video: Callable[..., None]
+) -> Path:
+    """One current-schema row whose stored facts cell no longer reconstructs.
+
+    Identity is the file's real measured identity, so the row classifies
+    ``unchanged`` and the unreconstructable cell is the only thing the run has to
+    rewrite it for -- the state whose rewrite no other report line explains.
+    """
+    media_root = ds.get_root("media_raw")
+    video = media_root / "seq" / "a.mp4"
+    write_video(video)
+    probe = probe_video_metadata(video)
+    row = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    row.update(
+        {
+            "name": "a.mp4",
+            "sequence": "seq",
+            "sequence_safe": "seq",
+            "abs_path": str(video),
+            "media_type": "video",
+            "video_order": "0",
+            "video_uuid": probe["video_uuid"],
+            "content_digest": probe["content_digest"],
+            # Parses as JSON, and reconstructing MediaFacts from it still fails.
+            "media_facts": json.dumps({"video_uuid": probe["video_uuid"]}),
+        }
+    )
+    index_path = media_root / "index.csv"
+    with index_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MEDIA_INDEX_COLUMNS)
+        writer.writeheader()
+        _ = writer.writerows([row])
+    return index_path
+
+
+def test_reprobe_media_names_the_facts_cell_it_rebuilds(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    write_cfr_mp4: Callable[..., None],
+) -> None:
+    # Without this line the operator reads "1 row(s) rewritten" against a summary
+    # that reports every row as already current, and nothing says what the
+    # rewrite did.
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    _ = _seed_stale_facts_media_index(ds, write_cfr_mp4)
+
+    result = runner.invoke(
+        app, ["reprobe-media", "-m", str(ds.manifest_path), "--apply"]
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "facts cell rebuilt in the media_raw index: 1 row(s)" in result.stdout
+
+    payload = _run_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
+    # The applied run healed the cell, so the second look reports no rebuild.
+    assert payload["facts_rebuilt"] == 0
 
 
 def test_reprobe_media_dry_run_is_the_default_and_writes_nothing(

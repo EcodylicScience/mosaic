@@ -114,6 +114,20 @@ def reprobe_media_command(
     typer.echo(summary)
     if report.schema_columns_added:
         typer.echo(f"schema columns added: {', '.join(report.schema_columns_added)}")
+    # The one rewrite the summary above cannot account for: identity reports the
+    # row as already current, and only reconstructing the cell reveals it stale.
+    # Named per index, as the dropped columns are, so the operator knows which
+    # file was rewritten.
+    for label, rebuilt in (
+        ("media_raw index", report.facts_rebuilt),
+        ("media index", report.derivative.facts_rebuilt),
+    ):
+        if rebuilt:
+            healed = (
+                f"facts cell rebuilt in the {label}: {rebuilt} row(s) whose "
+                f"stored cell could not be reconstructed"
+            )
+            typer.echo(healed)
     for stored in (
         *report.content_digest_changed,
         *report.derivative.content_digest_changed,

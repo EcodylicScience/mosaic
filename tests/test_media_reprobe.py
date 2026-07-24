@@ -19,12 +19,13 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
-from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
+from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.media.probe_row import probe_video_metadata
 from mosaic.core.media.reprobe import (
     UNMEASURED_LINK_COLUMNS,
     ProbedRow,
     ReprobeAbort,
+    ReprobeReport,
     measured_cells,
 )
 from mosaic.core.pipeline.media_index import (
@@ -217,6 +218,7 @@ def _probed_row(path: Path) -> ProbedRow:
         modified_at="1970-01-01T00:00:00+00:00",
         change="minted",
         needs_patch=True,
+        facts_rebuilt=False,
     )
 
 
@@ -837,6 +839,30 @@ def test_apply_writes_and_leaves_one_backup(
     assert _backups(index_path) == report.backups
 
 
+def _assert_second_run_is_a_no_op(
+    index_path: Path,
+    second: ReprobeReport,
+    after_first: bytes,
+    backups_after_first: list[Path],
+) -> None:
+    """The invariant shared by every "a second applied run changes nothing" test.
+
+    A prior run already settled the index, so the second run must report no
+    change, apply nothing, and patch no row -- and the file and its backup set
+    must come out exactly as the first run left them. The exact listing
+    comparison is the real guard on the backup set: a bare count would still
+    pass if a same-second run overwrote its backup (one-second stamp
+    granularity) instead of adding one, so it is kept alongside rather than in
+    place of it.
+    """
+    assert not second.changed
+    assert not second.applied
+    assert second.rows_patched == 0
+    assert second.backups == []
+    assert index_path.read_bytes() == after_first
+    assert _backups(index_path) == backups_after_first
+
+
 def test_a_second_run_changes_nothing_and_leaves_no_second_backup(
     dataset: Dataset, write_cfr_mp4: WriteVideo
 ) -> None:
@@ -864,13 +890,8 @@ def test_a_second_run_changes_nothing_and_leaves_no_second_backup(
     second = dataset.reprobe_media(apply=True)
 
     assert first.changed
-    assert not second.changed
-    assert not second.applied
-    assert second.rows_patched == 0
     assert second.unchanged == 2
-    assert second.backups == []
-    assert index_path.read_bytes() == after_first
-    assert _backups(index_path) == backups_after_first
+    _assert_second_run_is_a_no_op(index_path, second, after_first, backups_after_first)
 
 
 def test_an_imgstore_row_does_not_force_a_rewrite_every_run(
@@ -898,16 +919,174 @@ def test_an_imgstore_row_does_not_force_a_rewrite_every_run(
 
     first = dataset.reprobe_media(apply=True)
     after_first = index_path.read_bytes()
+    backups_after_first = _backups(index_path)
     second = dataset.reprobe_media(apply=True)
 
     assert first.changed
     assert first.unmintable == 1
     assert _by_name(dataset)[store_dir.name]["media_facts"]
-    assert not second.changed
+    assert len(backups_after_first) == 1
     assert second.unmintable == 1
-    assert second.backups == []
-    assert index_path.read_bytes() == after_first
-    assert len(_backups(index_path)) == 1
+    _assert_second_run_is_a_no_op(index_path, second, after_first, backups_after_first)
+
+
+def _stale_facts_json(video: Path) -> str:
+    """A facts cell as it would have been written before the two provenance
+    fields existed: the current probe's payload, with ``identity_scheme`` and
+    ``prober_version`` stripped back out.
+    """
+    payload = json.loads(probe_video_metadata(video)["media_facts"])
+    del payload["identity_scheme"]
+    del payload["prober_version"]
+    return json.dumps(payload)
+
+
+def test_a_present_but_unparsable_facts_cell_is_rewritten_and_then_reconstructs(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # The stale cell still mints the same uuid and digest from the same bytes,
+    # so identity classifies this row "unchanged" -- the one state identity
+    # comparison cannot see. Only an applied run that reconstructs the cell
+    # itself can tell it is stale.
+    video = dataset.base_dir / "media_raw" / "seq" / "a.mp4"
+    write_cfr_mp4(video)
+    _ = _seed(
+        dataset,
+        [
+            _row(
+                name="a.mp4",
+                group="",
+                sequence="seq",
+                abs_path="media_raw/seq/a.mp4",
+                **_identity(video),
+                media_facts=_stale_facts_json(video),
+            )
+        ],
+    )
+
+    report = dataset.reprobe_media(apply=True)
+
+    assert report.changed
+    assert report.rows_patched == 1
+    # The rewrite's only reason, so it is the count that explains it.
+    assert report.facts_rebuilt == 1
+    row = _by_name(dataset)["a.mp4"]
+    reconstructed = row_to_facts(row)
+    assert reconstructed.video_uuid == row["video_uuid"]
+    assert reconstructed.identity_scheme != ""
+    assert reconstructed.prober_version != ""
+
+
+def test_the_repaired_facts_cell_does_not_force_a_second_rewrite(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    video = dataset.base_dir / "media_raw" / "seq" / "a.mp4"
+    write_cfr_mp4(video)
+    index_path = _seed(
+        dataset,
+        [
+            _row(
+                name="a.mp4",
+                group="",
+                sequence="seq",
+                abs_path="media_raw/seq/a.mp4",
+                **_identity(video),
+                media_facts=_stale_facts_json(video),
+            )
+        ],
+    )
+
+    first = dataset.reprobe_media(apply=True)
+    after_first = index_path.read_bytes()
+    backups_after_first = _backups(index_path)
+    second = dataset.reprobe_media(apply=True)
+
+    assert first.changed
+    _assert_second_run_is_a_no_op(index_path, second, after_first, backups_after_first)
+
+
+def test_a_drifted_row_is_not_also_counted_as_a_facts_rebuild(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # This rewrite already has a reason of its own -- the content_digest line --
+    # and the facts count exists only to explain a rewrite nothing else names.
+    # Counting the row twice would read as two rewritten rows.
+    video = dataset.base_dir / "media_raw" / "seq" / "a.mp4"
+    write_cfr_mp4(video)
+    _ = _seed(
+        dataset,
+        [
+            _row(
+                name="a.mp4",
+                group="",
+                sequence="seq",
+                abs_path="media_raw/seq/a.mp4",
+                video_uuid=_identity(video)["video_uuid"],
+                content_digest="0" * 64,
+                media_facts=_stale_facts_json(video),
+            )
+        ],
+    )
+
+    report = dataset.reprobe_media(apply=False)
+
+    assert report.content_digest_changed == ["media_raw/seq/a.mp4"]
+    assert report.rows_patched == 1
+    assert report.facts_rebuilt == 0
+    assert report.payload()["facts_rebuilt"] == 0
+
+
+def test_a_derivative_facts_rebuild_is_counted_on_the_derivative_plan(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # The derivative pass runs the same heal on rows classified exactly as the
+    # originals are, so the count is reported per index rather than merged into
+    # one number that names neither file.
+    base = dataset.base_dir
+    source = base / "media_raw" / "seq" / "a.mp4"
+    derivative_video = base / "media" / "seq.analysis.mp4"
+    write_cfr_mp4(source)
+    write_cfr_mp4(derivative_video, frames=4)
+    _ = _seed(
+        dataset,
+        [
+            _row(
+                name="a.mp4",
+                group="",
+                sequence="seq",
+                abs_path="media_raw/seq/a.mp4",
+                analysis_derivative_path="seq.analysis.mp4",
+                **_identity(source),
+            )
+        ],
+    )
+    write_media_index_rows(
+        _derivative_index_path(dataset),
+        frame_from_rows(
+            [
+                _row(
+                    name="seq.analysis.mp4",
+                    group="",
+                    sequence="seq",
+                    abs_path="media/seq.analysis.mp4",
+                    source_path="seq/a.mp4",
+                    # Already back-linked, so the stale facts cell is the only
+                    # thing left for the run to rewrite this row for.
+                    source_video_uuid=_identity(source)["video_uuid"],
+                    **_identity(derivative_video),
+                    media_facts=_stale_facts_json(derivative_video),
+                )
+            ]
+        ),
+    )
+
+    report = dataset.reprobe_media(apply=False)
+
+    assert report.rows_patched == 0
+    assert report.facts_rebuilt == 0
+    assert report.derivative.relinked == 0
+    assert report.derivative.facts_rebuilt == 1
+    assert report.payload()["derivative_facts_rebuilt"] == 1
 
 
 def test_a_derivative_only_run_leaves_no_backup_beside_the_originals_index(

@@ -56,6 +56,7 @@ from .facts_columns import (
     MEDIA_INDEX_COLUMNS,
     ProbeMetadata,
     read_link_cell,
+    row_facts_or_none,
 )
 from .imgstore_io import imgstore_probe, is_imgstore
 from .probe_row import probe_video_metadata
@@ -141,6 +142,7 @@ class ProbedRow:
     modified_at: str
     change: IdentityChange
     needs_patch: bool
+    facts_rebuilt: bool
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,7 @@ class DerivativePlan:
     rows: int = 0
     minted: int = 0
     relinked: int = 0
+    facts_rebuilt: int = 0
     missing_columns: list[str] = field(default_factory=list)
     unknown_columns: list[str] = field(default_factory=list)
     content_digest_changed: list[str] = field(default_factory=list)
@@ -209,6 +212,7 @@ class ReprobeReport:
     content_digest_changed: list[str]
     video_uuid_changed: list[str]
     rows_patched: int
+    facts_rebuilt: int
     missing: list[str]
     unprobeable: list[str]
     schema_columns_added: list[str]
@@ -230,6 +234,7 @@ class ReprobeReport:
             "backups": [str(path) for path in self.backups],
             "rows_total": self.rows_total,
             "rows_patched": self.rows_patched,
+            "facts_rebuilt": self.facts_rebuilt,
             "identity_minted": self.minted,
             "identity_unchanged": self.unchanged,
             "identity_unmintable": self.unmintable,
@@ -247,6 +252,7 @@ class ReprobeReport:
             "derivative_index": derivative_index,
             "derivative_rows": self.derivative.rows,
             "derivative_identity_minted": self.derivative.minted,
+            "derivative_facts_rebuilt": self.derivative.facts_rebuilt,
             "derivative_content_digest_changed": self.derivative.content_digest_changed,
             "derivative_video_uuid_changed": self.derivative.video_uuid_changed,
             "derivative_schema_columns_added": self.derivative.missing_columns,
@@ -295,6 +301,18 @@ def _derivable_cells(row: Mapping[str, object]) -> dict[str, object]:
     return cells
 
 
+def _facts_cell_is_stale(row: Mapping[str, object]) -> bool:
+    """True when the row stores a facts cell that no longer reconstructs.
+
+    A cell written under an older required field set still holds well-formed
+    JSON, so the only way to see that it has gone stale is to attempt the
+    reconstruction and watch it fail.
+    """
+    if not read_link_cell(row, FACTS_JSON_COLUMN):
+        return False
+    return row_facts_or_none(row) is None
+
+
 def _classify(row: Mapping[str, object], probe: ProbeMetadata) -> IdentityChange:
     """Compare a row's recorded identity against the freshly probed one.
 
@@ -327,14 +345,35 @@ def _needs_patch(row: Mapping[str, object], change: IdentityChange) -> bool:
     media index holding one store would rewrite it and drop another backup,
     without bound. Its stored MediaFacts cell decides instead, and that cell is
     empty exactly once -- on the run that first measures the store.
+
+    A stale facts cell needs a write even when identity classifies the row
+    ``"unchanged"``: the same bytes still mint the same uuid and digest, so
+    identity comparison cannot see the cell has gone stale and
+    :func:`_facts_cell_is_stale` is the only detector. Checked ahead of the
+    ``"unchanged"`` return, which would otherwise treat the row as settled and
+    skip it.
     """
-    if _derivable_cells(row):
+    if _derivable_cells(row) or _facts_cell_is_stale(row):
         return True
     if change == "unchanged":
         return False
     if change == "unmintable":
         return not read_link_cell(row, FACTS_JSON_COLUMN)
     return True
+
+
+def _rebuilds_facts(row: Mapping[str, object], change: IdentityChange) -> bool:
+    """True when healing a stale facts cell is what forces this row's write.
+
+    The count this feeds exists to explain a rewrite no other report line does,
+    so a row whose identity also drifted stays out of it: that rewrite is already
+    named by its own ``content_digest`` or ``video_uuid`` line, and counting the
+    row twice would read as two rewritten rows. An ``"unmintable"`` row belongs in
+    the count -- a store's identity is never settled, so it can never explain a
+    rewrite -- and reaches it only with a cell present, since a stale cell is a
+    present one.
+    """
+    return _facts_cell_is_stale(row) and change in {"unchanged", "unmintable"}
 
 
 def _header_columns(index_path: Path) -> list[str]:
@@ -446,6 +485,7 @@ def _probe_media_index(
                 modified_at=mtime_iso(stat_result.st_mtime),
                 change=change,
                 needs_patch=_needs_patch(row, change),
+                facts_rebuilt=_rebuilds_facts(row, change),
             )
         )
     return ProbeOutcome(probed=probed, missing=missing, unprobeable=unprobeable)
@@ -518,6 +558,7 @@ def _plan_derivatives(
         rows=len(media_index.rows),
         minted=sum(1 for row in outcome.probed if row.change == "minted"),
         relinked=relinked,
+        facts_rebuilt=sum(1 for row in outcome.probed if row.facts_rebuilt),
         missing_columns=media_index.missing_columns,
         # Nothing is dropped by a run that does not rewrite this file.
         unknown_columns=media_index.unknown_columns if changed else [],
@@ -657,6 +698,7 @@ def reprobe_media(
             if row.change == "video_uuid_changed"
         ],
         rows_patched=len(patches),
+        facts_rebuilt=sum(1 for row in outcome.probed if row.facts_rebuilt),
         missing=outcome.missing,
         unprobeable=outcome.unprobeable,
         schema_columns_added=missing_columns,

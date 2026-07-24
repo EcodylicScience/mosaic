@@ -230,6 +230,11 @@ def store_facts(
     rate, single progressive video stream, no audio. Fields with no imgstore
     equivalent (declared_*, moov/gop layout, color/pixel-format metadata) are
     set to neutral values matching their declared type.
+
+    An imgstore is a directory of chunks with no elementary stream to hash, so
+    it carries no identity, and -- since no ffprobe runs over it -- no identity
+    scheme or prober version. Its frame rate is constant by construction, so
+    timing_measured is True despite no prober having run.
     """
     return MediaFacts(
         container="imgstore",
@@ -260,4 +265,6 @@ def store_facts(
         timing_measured=True,
         video_uuid="",
         content_digest="",
+        identity_scheme="",
+        prober_version="",
     )

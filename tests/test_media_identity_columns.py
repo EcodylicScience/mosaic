@@ -73,10 +73,14 @@ def test_build_media_index_row_overrides_source_video_uuid(
     assert row["source_video_uuid"] == "the-source-uuid"
 
 
-def test_store_facts_states_the_empty_identity() -> None:
+def test_store_facts_states_the_empty_identity_and_provenance() -> None:
     facts = store_facts(320, 240, 25.0, 10, "h264", 10.0)
-    # An imgstore has no file to hash: the identity is empty, and stated rather
-    # than inherited from a default that no longer exists.
+    # An imgstore has no elementary stream to hash and no ffprobe runs over it,
+    # so both the identity (video_uuid, content_digest) and the provenance
+    # (identity_scheme, prober_version) are empty. Every field is required, so
+    # the emptiness is a claim store_facts states, not a default it inherits.
     assert facts.video_uuid == ""
     assert facts.content_digest == ""
     assert facts.timing_measured is True
+    assert facts.identity_scheme == ""
+    assert facts.prober_version == ""
