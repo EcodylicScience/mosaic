@@ -561,6 +561,55 @@ def test_derivative_links_survive_and_rekey_onto_source_video_uuid(
     assert derivative["video_uuid"] != original["video_uuid"]
 
 
+def test_a_derivative_recipe_hash_survives_an_applied_reprobe(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # recipe_hash records the recipe a derivative was produced under -- a
+    # transcode decision, not a measurement. A fresh probe leaves it empty, so an
+    # applied re-probe that wrote the probe verbatim would erase it. The re-key
+    # pass rewrites source_video_uuid on this same row, so the guarantee is that
+    # the neighbouring recipe cell comes through untouched.
+    base = dataset.base_dir
+    write_cfr_mp4(base / "media_raw" / "seq" / "a.mp4")
+    write_cfr_mp4(base / "media" / "seq.analysis.mp4", frames=4)
+    _ = _seed(
+        dataset,
+        [
+            _row(
+                name="a.mp4",
+                group="",
+                sequence="seq",
+                abs_path="media_raw/seq/a.mp4",
+                analysis_derivative_path="seq.analysis.mp4",
+            )
+        ],
+    )
+    derivative_index = _derivative_index_path(dataset)
+    recipe = "d3d37f3add"
+    write_media_index_rows(
+        derivative_index,
+        frame_from_rows(
+            [
+                _row(
+                    name="seq.analysis.mp4",
+                    group="",
+                    sequence="seq",
+                    abs_path="media/seq.analysis.mp4",
+                    source_path="seq/a.mp4",
+                    recipe_hash=recipe,
+                )
+            ]
+        ),
+    )
+
+    report = dataset.reprobe_media(apply=True)
+
+    assert report.derivative.relinked == 1
+    derivative = _rows_by_name(derivative_index)["seq.analysis.mp4"]
+    assert derivative["recipe_hash"] == recipe
+    assert derivative["video_uuid"]
+
+
 def test_a_skipped_derivative_row_keeps_its_back_link(
     dataset: Dataset, write_cfr_mp4: WriteVideo
 ) -> None:

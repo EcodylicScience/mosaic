@@ -143,6 +143,7 @@ def build_media_index_row(
     media_type: str = "video",
     source_path: str | None = None,
     source_video_uuid: str | None = None,
+    recipe_hash: str | None = None,
     video_order: int = 0,
 ) -> dict[str, object]:
     """Assemble one media-index row.
@@ -155,7 +156,9 @@ def build_media_index_row(
     a derivative's back-link); *source_video_uuid* likewise overrides the empty
     ``source_video_uuid`` the probe carries with the source's ``video_uuid`` --
     the rename-resilient form of the same back-link, populated on a derivative
-    row. *camera* is the within-sequence camera axis (``""`` for single-camera
+    row. *recipe_hash* likewise overrides the empty ``recipe_hash`` the probe
+    carries with the recipe the derivative was produced under. *camera* is the
+    within-sequence camera axis (``""`` for single-camera
     media) and *sync_uuid* the recording id that groups a recording's cameras;
     both feed :func:`densify_video_order` (which numbers ``video_order`` per
     ``(group, sequence, camera)``) and persist as schema columns.
@@ -181,6 +184,8 @@ def build_media_index_row(
         row["source_path"] = source_path
     if source_video_uuid is not None:
         row["source_video_uuid"] = source_video_uuid
+    if recipe_hash is not None:
+        row["recipe_hash"] = recipe_hash
     return row
 
 

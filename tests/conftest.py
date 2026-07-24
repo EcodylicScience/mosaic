@@ -54,12 +54,16 @@ def write_cfr_mp4() -> Callable[..., None]:
 
 @pytest.fixture
 def make_media_dataset() -> Callable[[Path], Dataset]:
-    """Factory building a saved Dataset with ``media_raw`` and ``media`` roots.
+    """Factory building a saved Dataset with ``media_raw``, ``media`` and
+    ``tracks`` roots.
 
     The manifest is written to disk, not merely named: ``base_dir`` treats a
     ``manifest_path`` that is not an existing file as the base directory itself
     and creates it, which would make every root-relative ``abs_path`` resolve one
-    level too deep. Returns a callable ``(base_dir) -> Dataset``.
+    level too deep. The ``tracks`` root is present because ``index_media`` reads
+    its index to derive each media file's ``(group, sequence)``, so a transcode
+    test that indexes real media needs it. Returns a callable
+    ``(base_dir) -> Dataset``.
     """
 
     def _make(base: Path) -> Dataset:
@@ -68,6 +72,7 @@ def make_media_dataset() -> Callable[[Path], Dataset]:
             roots={
                 "media_raw": str(base / "media_raw"),
                 "media": str(base / "media"),
+                "tracks": str(base / "tracks"),
             },
         )
         ds.ensure_roots()

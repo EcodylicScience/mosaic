@@ -61,15 +61,17 @@ from .facts_columns import (
 from .imgstore_io import imgstore_probe, is_imgstore
 from .probe_row import probe_video_metadata
 
-# The four cells a fresh probe always leaves empty because they record a
+# The five cells a fresh probe always leaves empty because they record a
 # transcode decision rather than a measurement. The patch must never write them:
-# doing so would erase the media index's link graph.
+# doing so would erase the media index's link graph and the recipe a derivative
+# was produced under.
 UNMEASURED_LINK_COLUMNS = frozenset(
     {
         "analysis_derivative_path",
         "playback_derivative_path",
         "source_path",
         "source_video_uuid",
+        "recipe_hash",
     }
 )
 
@@ -269,7 +271,7 @@ class ReprobeReport:
 def measured_cells(probed: ProbedRow) -> dict[str, object]:
     """The cells a re-probe is entitled to overwrite on an existing row.
 
-    The probe's own cells minus the four link columns it always leaves empty,
+    The probe's own cells minus the five link columns it always leaves empty,
     plus the two filesystem facts the probe does not carry.
     """
     cells: dict[str, object] = {

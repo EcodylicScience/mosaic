@@ -39,6 +39,11 @@ FLAT_FACTS_COLUMNS: list[str] = [
     # not a measured fact, so facts_to_row leaves it empty and
     # build_media_index_row overrides it from the TranscodeResult.
     "source_video_uuid",
+    # recipe_hash records the recipe a derivative was produced under, and is
+    # empty on an original, which has no recipe. A transcode edge like
+    # source_video_uuid, so facts_to_row leaves it empty and
+    # build_media_index_row overrides it from the transcode job.
+    "recipe_hash",
 ]
 FACTS_JSON_COLUMN = "media_facts"
 FACTS_COLUMNS: list[str] = [*FLAT_FACTS_COLUMNS, FACTS_JSON_COLUMN]
@@ -148,6 +153,7 @@ class MediaFactsRow(TypedDict):
     video_uuid: str
     content_digest: str
     source_video_uuid: str
+    recipe_hash: str
     media_facts: str
 
 
@@ -172,6 +178,7 @@ def facts_to_row(facts: MediaFacts, verdict: Verdict) -> MediaFactsRow:
         "video_uuid": facts.video_uuid,
         "content_digest": facts.content_digest,
         "source_video_uuid": "",
+        "recipe_hash": "",
         "media_facts": json.dumps(dataclasses.asdict(facts)),
     }
 
