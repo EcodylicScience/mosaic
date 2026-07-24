@@ -118,17 +118,27 @@ def _set_forward_link(
 ) -> None:
     """Point the original's ``media_raw`` row at its per-target derivative.
 
-    Matches the source row by ``video_uuid`` when it has one -- stable across a
-    rename -- and falls back to the resolved-path comparison for an unminted
-    source. Writes only the column for *target*, leaving the other target's link
-    untouched. Idempotent.
+    Matches the source row by ``video_uuid`` first -- stable across a rename --
+    and falls back to the resolved-path comparison when that matches no row.
+
+    *source_video_uuid* is the identity of the file as just measured, which is
+    not the same thing as the identity the row records. On an index written
+    before the identity columns existed the row carries no stored facts, so the
+    caller probes the file and mints a uuid that appears nowhere in the index;
+    the uuid match then selects nothing. Falling back only when the uuid is
+    empty would leave that run writing no link at all, and the derivative would
+    sit on disk with nothing pointing at it. Writes only the column for
+    *target*, leaving the other target's link untouched. Idempotent.
     """
     raw_root = ds.get_root(ds.resolve_media_root())
     index_path = raw_root / "index.csv"
     df = load_media_index_frame(index_path)
+    matches = None
     if source_video_uuid:
-        matches = df["video_uuid"].fillna("").astype(str) == source_video_uuid
-    else:
+        by_uuid = df["video_uuid"].fillna("").astype(str) == source_video_uuid
+        if bool(by_uuid.any()):
+            matches = by_uuid
+    if matches is None:
         source_resolved = source.resolve()
         matches = df["abs_path"].map(
             lambda value: ds.resolve_path(str(value)).resolve() == source_resolved

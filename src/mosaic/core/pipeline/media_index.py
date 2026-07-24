@@ -77,7 +77,7 @@ class MediaIndexScope:
     camera: str = ""
 
 
-def _mtime_iso(timestamp: float) -> str:
+def mtime_iso(timestamp: float) -> str:
     """UTC ISO-8601 string for a filesystem mtime."""
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
@@ -172,7 +172,7 @@ def build_media_index_row(
         "sync_uuid": sync_uuid,
         "abs_path": to_store_path(path),
         "size_bytes": size_bytes,
-        "mtime_iso": _mtime_iso(mtime),
+        "mtime_iso": mtime_iso(mtime),
         "media_type": media_type,
         "video_order": video_order,
         **probe,

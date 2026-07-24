@@ -71,3 +71,12 @@ def test_build_media_index_row_overrides_source_video_uuid(
         source_video_uuid="the-source-uuid",
     )
     assert row["source_video_uuid"] == "the-source-uuid"
+
+
+def test_store_facts_states_the_empty_identity() -> None:
+    facts = store_facts(320, 240, 25.0, 10, "h264", 10.0)
+    # An imgstore has no file to hash: the identity is empty, and stated rather
+    # than inherited from a default that no longer exists.
+    assert facts.video_uuid == ""
+    assert facts.content_digest == ""
+    assert facts.timing_measured is True

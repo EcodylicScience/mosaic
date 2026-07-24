@@ -214,7 +214,7 @@ def imgstore_metadata(path: Path | str) -> VideoMetadata:
 
 
 def imgstore_probe(path: Path | str) -> ProbeMetadata:
-    """Probe a store, returning a dict shaped like ``_probe_video_metadata``.
+    """Probe a store, returning a dict shaped like ``probe_video_metadata``.
 
     Keys: ``width``, ``height``, ``fps``, ``codec``, plus the injectable
     MediaFacts JSON and flat verdict columns (see

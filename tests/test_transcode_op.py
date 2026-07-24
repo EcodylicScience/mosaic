@@ -105,9 +105,7 @@ def test_transcode_op_writes_derivative_and_links(tmp_path):
     derivative_files = list(ds.get_root("media").glob("*.mp4"))
     assert len(derivative_files) == 1
     derivative = derivative_files[0]
-    derivative_verdict = derive(
-        probe_media(derivative), CHROME_149, DEFAULT_THRESHOLDS
-    )
+    derivative_verdict = derive(probe_media(derivative), CHROME_149, DEFAULT_THRESHOLDS)
     assert derivative_verdict.analysis_transcode is None
 
     # Forward link: the original's media_raw row now names the analysis
@@ -182,9 +180,7 @@ def test_analysis_facts_not_crossed_when_playback_transcoded_first(tmp_path):
     assert resolved.facts is not None
     assert resolved.facts[0] == analysis_stored
     assert resolved.facts[0] != playback_stored
-    assert (
-        resolved.facts[0].frame_count == probe_media(analysis_derivative).frame_count
-    )
+    assert resolved.facts[0].frame_count == probe_media(analysis_derivative).frame_count
 
 
 def test_transcode_op_is_idempotent(tmp_path):
@@ -242,3 +238,48 @@ def test_transcode_params_reject_unknown_key():
 
     with pytest.raises(ValidationError):
         TranscodeParams.model_validate({"entry": ("", "vid1"), "bogus": 1})
+
+
+def _strip_identity_columns(ds: Dataset) -> None:
+    """Rewrite the media_raw index without the identity columns.
+
+    The shape of an index written before per-file identity existed: the columns
+    are absent from the header, so every row reads back unminted.
+    """
+    index_path = ds.get_root("media_raw") / "index.csv"
+    df = pd.read_csv(index_path)
+    df = df.drop(
+        columns=[
+            column
+            for column in ("video_uuid", "content_digest", "media_facts")
+            if column in df.columns
+        ]
+    )
+    df.to_csv(index_path, index=False)
+
+
+def test_transcode_links_a_source_whose_index_row_is_unminted(tmp_path: Path) -> None:
+    # A pre-identity index row carries no stored facts, so the op probes the
+    # file and mints a uuid the row does not have. Matching the row by that
+    # freshly minted uuid finds nothing, and without the path fallback the
+    # forward link is silently dropped: the derivative exists on disk with
+    # nothing pointing at it, and routing still demands a transcode.
+    ds = _make_dataset(tmp_path)
+    source_dir = tmp_path / "raw_src"
+    source_dir.mkdir()
+    original = source_dir / "vfr.mp4"
+    _write_analysis_required_mp4(original)
+    _require_analysis_required(original)
+
+    group, sequence = _indexed_entry(ds, source_dir)
+    _strip_identity_columns(ds)
+
+    _ = run_op(
+        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
+    )
+
+    raw_df = pd.read_csv(ds.get_root("media_raw") / "index.csv")
+    assert str(raw_df.iloc[0]["analysis_derivative_path"]).strip() not in ("", "nan")
+    # The link is what routing needs: a just-transcoded sequence must resolve.
+    resolved = ds.resolve_media(group, sequence)
+    assert resolved.paths[0].parent == ds.get_root("media")

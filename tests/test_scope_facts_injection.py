@@ -1,54 +1,63 @@
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 
+import mosaic.core.media.probe_row as probe_row_module
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.media_index import MediaIndexScope
-from mosaic_media import probe_media
+from mosaic_media import MediaFacts, probe_media
+
+MakeDataset = Callable[[Path], Dataset]
+WriteVideo = Callable[..., None]
 
 
-def _write_mp4(path: Path, frame_count: int = 6) -> None:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(frame_count):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
+def _record_probe_calls(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Count probe_media calls made through the row builder, still probing.
 
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    for sub in ("media_raw", "media"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    return Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-        },
-    )
-
-
-def test_an_injected_scope_writes_facts_without_probing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    dataset = _make_dataset(tmp_path)
-    seq_dir = tmp_path / "media_raw" / "seqA"
-    seq_dir.mkdir()
-    clip = seq_dir / "clip.mp4"
-    _write_mp4(clip)
-    facts = probe_media(clip)
-
-    import mosaic.core.dataset as dataset_module
-
+    The injection contract is negative -- a mapped file is *not* probed -- so the
+    test needs the call list rather than the result. Patched on probe_row, which
+    is where the row builder resolves the name.
+    """
     calls: list[Path] = []
-    real_probe = dataset_module.probe_media
+    real_probe = probe_row_module.probe_media
 
-    def counting_probe(path: Path):
+    def counting_probe(path: Path) -> MediaFacts:
         calls.append(path)
         return real_probe(path)
 
-    monkeypatch.setattr(dataset_module, "probe_media", counting_probe)
+    monkeypatch.setattr(probe_row_module, "probe_media", counting_probe)
+    return calls
+
+
+def _seeded_clip(
+    tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
+) -> tuple[Dataset, Path, Path]:
+    """A saved dataset, one sequence directory under media_raw, and one clip in it.
+
+    The manifest is written (via the shared factory) rather than merely named, so
+    the dataset base directory is the manifest's parent and a stored ``abs_path``
+    comes back root-relative.
+    """
+    base = (tmp_path / "dataset").resolve()
+    dataset = make_media_dataset(base)
+    sequence_dir = base / "media_raw" / "seqA"
+    clip = sequence_dir / "clip.mp4"
+    write_cfr_mp4(clip)
+    return dataset, sequence_dir, clip
+
+
+def test_an_injected_scope_writes_facts_without_probing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_media_dataset: MakeDataset,
+    write_cfr_mp4: WriteVideo,
+) -> None:
+    dataset, seq_dir, clip = _seeded_clip(tmp_path, make_media_dataset, write_cfr_mp4)
+    facts = probe_media(clip)
+
+    calls = _record_probe_calls(monkeypatch)
 
     scope = MediaIndexScope(
         directory=seq_dir,
@@ -66,24 +75,14 @@ def test_an_injected_scope_writes_facts_without_probing(
 
 
 def test_a_file_absent_from_the_map_is_probed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_media_dataset: MakeDataset,
+    write_cfr_mp4: WriteVideo,
 ) -> None:
-    dataset = _make_dataset(tmp_path)
-    seq_dir = tmp_path / "media_raw" / "seqA"
-    seq_dir.mkdir()
-    clip = seq_dir / "clip.mp4"
-    _write_mp4(clip)
+    dataset, seq_dir, clip = _seeded_clip(tmp_path, make_media_dataset, write_cfr_mp4)
 
-    import mosaic.core.dataset as dataset_module
-
-    calls: list[Path] = []
-    real_probe = dataset_module.probe_media
-
-    def counting_probe(path: Path):
-        calls.append(path)
-        return real_probe(path)
-
-    monkeypatch.setattr(dataset_module, "probe_media", counting_probe)
+    calls = _record_probe_calls(monkeypatch)
 
     scope = MediaIndexScope(directory=seq_dir, group="g", sequence="seqA")
     _ = dataset.write_media_index([scope])
@@ -91,13 +90,9 @@ def test_a_file_absent_from_the_map_is_probed(
 
 
 def test_a_changed_uuid_is_reported_and_the_write_still_completes(
-    tmp_path: Path,
+    tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
 ) -> None:
-    dataset = _make_dataset(tmp_path)
-    seq_dir = tmp_path / "media_raw" / "seqA"
-    seq_dir.mkdir()
-    clip = seq_dir / "clip.mp4"
-    _write_mp4(clip)
+    dataset, seq_dir, clip = _seeded_clip(tmp_path, make_media_dataset, write_cfr_mp4)
     facts = probe_media(clip)
 
     # First write: no prior index, so no disagreement, and it establishes the
@@ -133,13 +128,9 @@ def test_a_changed_uuid_is_reported_and_the_write_still_completes(
 
 
 def test_an_agreeing_or_unminted_prior_reports_no_disagreement(
-    tmp_path: Path,
+    tmp_path: Path, make_media_dataset: MakeDataset, write_cfr_mp4: WriteVideo
 ) -> None:
-    dataset = _make_dataset(tmp_path)
-    seq_dir = tmp_path / "media_raw" / "seqA"
-    seq_dir.mkdir()
-    clip = seq_dir / "clip.mp4"
-    _write_mp4(clip)
+    dataset, seq_dir, clip = _seeded_clip(tmp_path, make_media_dataset, write_cfr_mp4)
     facts = probe_media(clip)
     scope = MediaIndexScope(
         directory=seq_dir,

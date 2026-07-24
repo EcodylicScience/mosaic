@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -42,19 +43,6 @@ def test_derivative_path_is_none_when_unregistered() -> None:
     )
 
 
-def _make_dataset(tmp_path: Path) -> Dataset:
-    for sub in ("media_raw", "media", "tracks"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    return Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-        },
-    )
-
-
 def _facts_cell(frame_count: int) -> str:
     facts = store_facts(
         width=64,
@@ -67,24 +55,32 @@ def _facts_cell(frame_count: int) -> str:
     return json.dumps(dataclasses.asdict(facts))
 
 
-def test_pass_two_matches_source_uuid_never_the_sibling(tmp_path: Path) -> None:
-    """Pass 2 resolves the derivative by the source's ``video_uuid``.
+def test_pass_two_matches_source_uuid_never_the_sibling(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """Routing resolves the derivative by the source's ``video_uuid``.
 
     Both siblings share ``source_video_uuid = "U"``; only the basename guard
     keeps the playback row (ordered first) from crossing into the analysis
-    lookup. Their abs_path cells resolve away from the routed file, so pass 1
-    misses and the uuid form of pass 2 is what returns the row; empty
-    ``source_path`` cells make the path form of pass 2 unable to match, so the
-    result can only come from the uuid form.
-    """
-    ds = _make_dataset(tmp_path)
+    lookup. Their abs_path cells resolve away from the routed file, so the exact
+    pass misses and the uuid form is what returns the row; empty ``source_path``
+    cells make the path form unable to match, so the result can only come from
+    the uuid form.
 
-    original = tmp_path / "media_raw" / "entry.mp4"
+    Driven through :meth:`Dataset.route_media_row`, the public entry point that
+    performs the lookup: a row marked ``analysis_transcode="required"`` resolves
+    to its registered analysis derivative and carries that derivative's stored
+    facts.
+    """
+    base = (tmp_path / "dataset").resolve()
+    ds = make_media_dataset(base)
+
+    original = base / "media_raw" / "entry.mp4"
     original.touch()
-    routed = tmp_path / "media" / "entry.analysis.mp4"
+    routed = base / "media" / "entry.analysis.mp4"
     routed.touch()
 
-    synced = tmp_path / "synced"
+    synced = base / "synced"
     synced.mkdir()
     analysis_abs = synced / "entry.analysis.mp4"
     analysis_abs.touch()
@@ -107,10 +103,18 @@ def test_pass_two_matches_source_uuid_never_the_sibling(tmp_path: Path) -> None:
         },
     ]
     derivative_df = pd.DataFrame(rows)
-
-    facts = ds._derivative_facts(
-        "g1", "entry", routed, str(original), "U", derivative_df
+    entry = pd.Series(
+        {
+            "abs_path": str(original),
+            "video_uuid": "U",
+            "analysis_transcode": "required",
+            "analysis_derivative_path": "entry.analysis.mp4",
+        }
     )
 
+    resolved, facts = ds.route_media_row("g1", "entry", entry, True, derivative_df)
+
+    assert resolved == routed
+    assert facts is not None
     assert facts.frame_count == 123
     assert facts.frame_count != 999

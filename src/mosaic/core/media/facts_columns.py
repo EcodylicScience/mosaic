@@ -84,9 +84,10 @@ def read_link_cell(row: Mapping[str, object], column: str) -> str:
     """A media-index cell as a trimmed string, absent forms collapsed to ``""``.
 
     Empty, the string ``"nan"``, and a float NaN all mean absent -- the last is
-    what pandas yields for an empty CSV cell. The single reader every identity
-    and derivative-link function shares, so ``"nan"`` can never be mistaken for a
-    real value in one place while another treats it literally.
+    what pandas yields for an empty CSV cell. Every identity and derivative-link
+    read reaches this function, a ``Series`` row through the ``_media_cell``
+    adapter in ``dataset``, so ``"nan"`` can never be mistaken for a real value
+    in one place while another treats it literally.
     """
     value = row.get(column, "")
     if value is None or (isinstance(value, float) and math.isnan(value)):

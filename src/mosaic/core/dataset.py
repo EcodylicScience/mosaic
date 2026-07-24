@@ -12,33 +12,34 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Optional, Protocol
 
 import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
 from mosaic_media import (
-    CHROME_149,
     MediaFacts,
     MediaProbeError,
-    derive,
-    probe_media,
 )
-
-from mosaic.media_probe_config import media_thresholds
 
 from .helpers import ensure_text_column, make_entry_key, to_safe_name
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
     derivative_path_for_target,
-    facts_to_row,
     media_row_path_key,
     media_row_uuid,
     read_link_cell,
     row_mapping,
     row_to_facts,
     series_facts_or_none,
+)
+from .media.probe_row import probe_video_metadata, row_from_facts
+from .stored_paths import remap_single_path as _remap_single_path, resolve_stored_path
+from .media.reprobe import (
+    ReprobeAbort,
+    ReprobeReport,
+    reprobe_media as _reprobe_media,
 )
 from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
 from .pipeline.media_index import (
@@ -66,30 +67,6 @@ if TYPE_CHECKING:
     from .pipeline.progress import ProgressCallback
 
 
-def _row_from_facts(facts: MediaFacts) -> ProbeMetadata:
-    """Build the media-index ProbeMetadata from an already-measured MediaFacts.
-
-    Stores CODED width/height (un-oriented); get_video_metadata returns display
-    dims, and row_to_facts injects coded dims + rotation so the reader orients
-    once. Shared by the probe path and the injection path so the row shape is
-    constructed in exactly one place.
-    """
-    verdict = derive(facts, CHROME_149, media_thresholds())
-    return {
-        "width": facts.width,
-        "height": facts.height,
-        "fps": facts.fps,
-        "codec": facts.codec_name,
-        **facts_to_row(facts, verdict),
-    }
-
-
-def _probe_video_metadata(path: Path) -> ProbeMetadata:
-    """Probe *path* and build its media-index row. Raises MediaProbeError on an
-    unreadable file."""
-    return _row_from_facts(probe_media(path))
-
-
 def _normalize_patterns(pats) -> tuple[str, ...]:
     if pats is None:
         return tuple()
@@ -110,18 +87,6 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
     normalized = [pair for pair in normalized if pair[0] != pair[1]]
     normalized.sort(key=lambda pair: len(pair[0].as_posix()), reverse=True)
     return normalized
-
-
-def _remap_single_path(
-    path: Path, mapping: Sequence[tuple[Path, Path]]
-) -> Optional[Path]:
-    for src, dst in mapping:
-        try:
-            rel = path.relative_to(src)
-            return dst / rel
-        except ValueError:
-            continue
-    return None
 
 
 from dataclasses import field
@@ -383,17 +348,15 @@ def new_dataset_manifest(
 
 
 def _media_cell(row: "pd.Series", key: str) -> str:
-    """Read a media-index cell as a trimmed string, treating NaN/None as empty.
+    """Read a media-index cell of a ``Series`` row as a trimmed string.
 
-    pandas yields ``float('nan')`` for an empty CSV cell; this collapses that
-    (and a literal ``"nan"``) to ``""`` so routing never mistakes an absent
-    value for a real one.
+    The ``Series``-shaped adapter over :func:`read_link_cell`, which owns the
+    rule that empty, ``"nan"`` and a float NaN all mean absent. Kept as one
+    delegation rather than a second implementation: two copies of that rule are
+    free to drift, and a cell read as absent by one and real by the other is
+    exactly how a link resolves to the wrong file.
     """
-    value = row.get(key, "")
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip()
-    return "" if text.lower() == "nan" else text
+    return read_link_cell(row_mapping(row), key)
 
 
 @dataclass(frozen=True)
@@ -730,15 +693,16 @@ class Dataset:
 
         Relative paths are resolved against *anchor* (default: dataset root).
         Absolute paths that exist are returned as-is; absolute paths that don't
-        exist are tried through :meth:`remap_path`.
+        exist are tried through this dataset's ``path_map``.
         """
         p = Path(str(stored_path).strip())
-        if not p.is_absolute():
-            base = anchor if anchor is not None else _dataset_base_dir(self)
-            return (base / p).resolve()
-        if p.exists():
-            return p
-        return self.remap_path(p)
+        # _dataset_base_dir() creates the directory it returns, so the default
+        # anchor is resolved only when a relative path actually needs one; the
+        # resolver never reads the anchor for an absolute path.
+        base = anchor
+        if base is None:
+            base = p if p.is_absolute() else _dataset_base_dir(self)
+        return resolve_stored_path(p, base, path_map=self._path_map)
 
     def _relative_to_root(self, abs_path: Path) -> str:
         """Convert an absolute path to relative-to-dataset-root for storage.
@@ -1341,7 +1305,7 @@ class Dataset:
             # builds its row inline. Iterating probe_candidates (already sorted)
             # keeps the returned order deterministic regardless.
             futures = {
-                p: executor.submit(_probe_video_metadata, p)
+                p: executor.submit(probe_video_metadata, p)
                 for p, _st in probe_candidates
                 if p.name not in facts_map
             }
@@ -1349,7 +1313,7 @@ class Dataset:
                 injected = facts_map.get(p.name)
                 if injected is not None:
                     results.append(
-                        ProbedEntry(p, st, _row_from_facts(injected), "video")
+                        ProbedEntry(p, st, row_from_facts(injected), "video")
                     )
                     continue
                 try:
@@ -1655,11 +1619,23 @@ class Dataset:
         # overrides. Used to detect a stale override: a file whose stored uuid
         # differs from the one now injected is no longer the file the injected
         # facts describe.
-        prior_uuid_by_name: dict[str, str] = {
-            Path(str(row["abs_path"])).name: media_row_uuid(row)
-            for row in existing
-            if self._row_under_dirs(row, scope_dirs)
-        }
+        #
+        # A bare basename is not unique across scopes: two sequences each holding
+        # a "video.mp4" collide, and the survivor would be compared against the
+        # other sequence's file. This report is advisory, so an ambiguous
+        # basename simply carries no prior uuid and reports nothing, rather than
+        # naming a disagreement between two unrelated files.
+        prior_uuid_by_name: dict[str, str] = {}
+        ambiguous_names: set[str] = set()
+        for row in existing:
+            if not self._row_under_dirs(row, scope_dirs):
+                continue
+            name = Path(str(row["abs_path"])).name
+            if name in prior_uuid_by_name or name in ambiguous_names:
+                ambiguous_names.add(name)
+                _ = prior_uuid_by_name.pop(name, None)
+                continue
+            prior_uuid_by_name[name] = media_row_uuid(row)
         disagreements: list[MediaIndexDisagreement] = []
 
         # Probe each scope directory and assign its explicit identity; collect
@@ -1725,6 +1701,53 @@ class Dataset:
         media_root = self.get_root(self.resolve_media_root())
         return _read_media_index(media_root / index_filename)
 
+    def reprobe_media(
+        self, *, apply: bool, skip_unreadable: bool = False
+    ) -> ReprobeReport:
+        """Re-probe the media this dataset's index already lists, in place.
+
+        The counterpart to :meth:`index_media` for a media index that already
+        exists and is authoritative: every file it lists is measured again and
+        the fresh measurement written back into that row, minting the per-file
+        identity columns and migrating an index written before a column existed
+        to the current schema. The index owns group, sequence, order and paths;
+        none of them is re-derived, and no row is added or removed.
+
+        Dry-run unless *apply*; *skip_unreadable* leaves a row whose media is
+        missing or unprobeable verbatim instead of aborting.
+
+        Resolves the roots and hands plain paths to
+        :func:`~mosaic.core.media.reprobe.reprobe_media`, which knows nothing
+        about datasets, so root resolution has exactly one home.
+        """
+        index_filename = "index.csv"
+        try:
+            media_raw_root = self.get_root(self.resolve_media_root())
+        except KeyError as error:
+            message = f"the dataset manifest has no usable media root: {error}"
+            raise ReprobeAbort(message) from error
+        index_path = media_raw_root / index_filename
+        # Derivatives get their own index only when the `media` root is a
+        # distinct place from the originals root; a legacy media-only dataset
+        # has one index and no derivative pass.
+        # Compared resolved: get_root returns an absolute path but does not
+        # normalize it, so a symlinked or ".."-containing root spelling would
+        # make one file look like two indexes and be backed up and rewritten
+        # twice in a single run.
+        derivative_index_path: Path | None = None
+        if self.has_root("media"):
+            candidate = self.get_root("media") / index_filename
+            if candidate.resolve() != index_path.resolve():
+                derivative_index_path = candidate
+        return _reprobe_media(
+            index_path,
+            derivative_index_path=derivative_index_path,
+            media_raw_root=media_raw_root,
+            base_directory=_dataset_base_dir(self),
+            apply=apply,
+            skip_unreadable=skip_unreadable,
+        )
+
     def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
         """True if *row*'s resolved ``abs_path`` lives under any of *dirs*.
 
@@ -1753,10 +1776,24 @@ class Dataset:
         transcode-written ``analysis_derivative_path`` /
         ``playback_derivative_path`` links to empty. Those links record a
         transcode decision, not a measurement, so carry them forward: for each
-        freshly probed row whose resolved original matches a row in the prior
-        index (*index_path*, read before it is overwritten), copy the two link
-        cells over. A link whose derivative file no longer exists is dropped
-        rather than carried as a dangling reference.
+        freshly probed row matching a row in the prior index (*index_path*, read
+        before it is overwritten), copy the two link cells over. A link whose
+        derivative file no longer exists is dropped rather than carried as a
+        dangling reference.
+
+        A row is matched by ``video_uuid`` when both sides carry one, and
+        otherwise by the two-leaf path key -- the parent directory name and the
+        filename -- which survives the prior index storing an absolute path from
+        another machine against a fresh root-relative one.
+
+        That key is not unique, and on the first reindex after identity adoption
+        every prior row is unminted, so every row resolves through it. Two
+        recordings laid out ``rec1/cam0/video.mp4`` and ``rec2/cam0/video.mp4``
+        share one key, and carrying either link would attach one recording's
+        derivative to the other's row -- routing analysis reads at a different
+        video, with no error. So a key held by more than one unminted prior row
+        is ambiguous and carries nothing: losing a link costs a re-transcode,
+        while attaching the wrong one silently corrupts every read that follows.
         """
         if not index_path.exists() or not self.has_root("media"):
             return
@@ -1767,19 +1804,28 @@ class Dataset:
         media_root = self.get_root("media")
         prior_links_by_uuid: dict[str, dict[str, str]] = {}
         prior_links_by_path: dict[tuple[str, str], dict[str, str]] = {}
+        # Every unminted prior row claims its path key, whether or not it holds a
+        # link: a key two rows answer to identifies neither, so a link sitting on
+        # just one of them is no safer to carry than two competing ones.
+        claimed_path_keys: set[tuple[str, str]] = set()
         for prior_row in prior:
             carried: dict[str, str] = {}
             for column in link_columns:
                 link = read_link_cell(prior_row, column)
                 if link and (media_root / link).exists():
                     carried[column] = link
-            if not carried:
-                continue
             uuid = media_row_uuid(prior_row)
             if uuid:
-                prior_links_by_uuid[uuid] = carried
-            else:
-                prior_links_by_path[media_row_path_key(prior_row)] = carried
+                if carried:
+                    prior_links_by_uuid[uuid] = carried
+                continue
+            path_key = media_row_path_key(prior_row)
+            if path_key in claimed_path_keys:
+                _ = prior_links_by_path.pop(path_key, None)
+                continue
+            claimed_path_keys.add(path_key)
+            if carried:
+                prior_links_by_path[path_key] = carried
         if not prior_links_by_uuid and not prior_links_by_path:
             return
         for row in rows:
