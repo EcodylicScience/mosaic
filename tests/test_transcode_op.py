@@ -198,7 +198,6 @@ def test_transcode_op_writes_derivative_and_links(
     # Routing end-to-end: resolve_media now returns the derivative + its facts.
     resolved = ds.resolve_media(group, sequence)
     assert resolved.paths[0].resolve() == derivative.resolve()
-    assert resolved.facts is not None
     routed_verdict = derive(resolved.facts[0], CHROME_149, DEFAULT_THRESHOLDS)
     assert routed_verdict.analysis_transcode is None
     assert resolved.facts[0].frame_count == probe_media(derivative).frame_count
@@ -257,7 +256,6 @@ def test_analysis_facts_not_crossed_when_playback_transcoded_first(
     # playback derivative's, even though playback was transcoded (and indexed) first.
     resolved = ds.resolve_media(group, sequence)
     assert resolved.paths[0].resolve() == analysis_derivative.resolve()
-    assert resolved.facts is not None
     assert resolved.facts[0] == analysis_stored
     assert resolved.facts[0] != playback_stored
     assert resolved.facts[0].frame_count == probe_media(analysis_derivative).frame_count

@@ -233,6 +233,7 @@ def run_localizer_inference(
         end_frame=end_frame,
         frame_step=frame_step,
         facts=facts,
+        target="analysis",
     )
     total_str = str(reader.frame_count)
 

@@ -105,7 +105,7 @@ class _ExtractSpec:
     sequence: str
     camera: str
     video_paths: tuple[Path, ...]
-    facts: tuple[MediaFacts, ...] | None
+    facts: tuple[MediaFacts, ...]
     seq_dir: Path
     run_id: str
     params_hash: str
@@ -165,7 +165,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 random_state=spec.random_state,
                 run_id=spec.run_id,
                 output_dir=seq_dir,
-                facts=spec.facts[0] if spec.facts else None,
+                facts=spec.facts[0],
                 **kmeans_kw,
             )
         else:
@@ -180,7 +180,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 random_state=spec.random_state,
                 run_id=spec.run_id,
                 output_dir=seq_dir,
-                facts=list(spec.facts) if spec.facts else None,
+                facts=list(spec.facts),
                 **kmeans_kw,
             )
     except Exception as exc:
@@ -280,7 +280,7 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
             entry.camera,
             entry.resolved,
         )
-        facts = tuple(resolved.facts) if resolved.facts is not None else None
+        facts = tuple(resolved.facts)
         # A multi-camera recording writes each camera into its own subdir so the
         # cameras never collide; single-camera media keeps the flat layout.
         key = make_entry_key(group, sequence)

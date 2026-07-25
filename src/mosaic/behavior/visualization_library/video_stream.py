@@ -120,8 +120,9 @@ def render_stream(video_paths: Union[list[Path], Path, str],
         Path(s) to the video file(s). For multi-video sequences, pass an
         ordered list of Paths. A single Path/str is also accepted.
     facts : sequence of MediaFacts, optional
-        Stored media facts parallel to *video_paths*; injected into the reader
-        so it does not re-probe. When ``None`` the reader probes each path.
+        Stored media facts parallel to *video_paths*; gated against the fixed
+        ``"analysis"`` target rather than injected verbatim. When ``None`` each
+        path is probed and gated instead.
     overlay_data : dict
         Output from prepare_overlay()
     start : int
@@ -148,7 +149,11 @@ def render_stream(video_paths: Union[list[Path], Path, str],
     """
     from mosaic.core.media.video_io import MultiVideoReader
 
-    reader = MultiVideoReader(video_paths, facts=facts)
+    # render_stream draws pose overlays registered to the track table by frame
+    # index, so a frame-index mismatch draws the wrong skeleton; that makes
+    # this an analysis read, even though it feeds a human-facing player and an
+    # overlay export rather than a browser-delivery read.
+    reader = MultiVideoReader(video_paths, facts=facts, target="analysis")
     base_size = (reader.width, reader.height)
     fps = reader.fps
     scaled_size = _scaled_size(base_size, downscale)

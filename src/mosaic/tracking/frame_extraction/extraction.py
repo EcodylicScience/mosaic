@@ -12,8 +12,9 @@ import math
 import uuid
 
 import numpy as np
-from mosaic_media import MediaFacts
+from mosaic_media import MediaFacts, probe_media
 
+from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import (
     MultiVideoReader,
     extract_candidate_features,
@@ -135,7 +136,15 @@ def extract_frames(
     if int(candidate_step) <= 0:
         raise ValueError("candidate_step must be > 0")
 
-    meta = video_metadata_or_probe(video_path, facts)
+    # Resolve the measurement once, for the plain-video case only: a store is a
+    # directory with no elementary stream, so probe_media cannot measure it, and
+    # video_metadata_or_probe already routes it to imgstore_metadata instead.
+    # Resolving here means the candidate-feature and PNG-save reads below reuse
+    # this one measurement instead of each probing the file again.
+    resolved_facts = facts
+    if resolved_facts is None and not is_imgstore(video_path):
+        resolved_facts = probe_media(Path(video_path).expanduser().resolve())
+    meta = video_metadata_or_probe(video_path, resolved_facts)
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 
@@ -162,7 +171,7 @@ def extract_frames(
             grayscale=bool(kmeans_grayscale),
             crop_rect=crop_rect,
             max_candidates=None,
-            facts=facts,
+            facts=resolved_facts,
         )
         selected = select_kmeans_frames(
             candidate_indices=candidates,
@@ -206,7 +215,7 @@ def extract_frames(
         frame_indices=selected,
         output_dir=out_dir,
         crop_rect=crop_rect,
-        facts=facts,
+        facts=resolved_facts,
     )
 
     created_utc = (
@@ -286,7 +295,12 @@ def extract_frames_multi(
     if int(candidate_step) <= 0:
         raise ValueError("candidate_step must be > 0")
 
-    reader = MultiVideoReader([Path(p) for p in video_paths], facts=facts)
+    # Extracted PNGs are addressed by global frame index and become
+    # pose-annotation input, so a misindexed frame poisons the annotation set:
+    # an analysis read.
+    reader = MultiVideoReader(
+        [Path(p) for p in video_paths], facts=facts, target="analysis"
+    )
     total_frames = reader.total_frames
     start, end = normalize_frame_range(total_frames, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, reader.width, reader.height)

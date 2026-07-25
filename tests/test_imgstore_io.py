@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import importlib
 import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 import yaml
 
+import mosaic.core.media.imgstore_native as imgstore_native
+import mosaic.core.media.read_target as read_target
 from mosaic.core.media.imgstore_io import (
     ImgStoreCapture,
     ImgStoreFrameReader,
@@ -18,12 +22,13 @@ from mosaic.core.media.imgstore_io import (
     is_imgstore,
 )
 from mosaic.core.media.imgstore_native import NativeStore
+from mosaic.core.media.read_target import ReadTarget
 from mosaic.core.media.video_io import (
     MultiVideoReader,
     get_video_metadata,
     open_frame_reader,
 )
-from mosaic_media import MediaProbeError
+from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
 
 # Only the fixtures that write real stores need the imgstore package; the
@@ -153,7 +158,7 @@ def test_capture_get_props(make_imgstore):
 
 def test_mvr_single_store(make_imgstore):
     store_dir, _ = make_imgstore(nframes=12)
-    reader = MultiVideoReader(store_dir)
+    reader = MultiVideoReader(store_dir, target="analysis")
     assert reader.total_frames == 12
     assert (reader.width, reader.height) == (64, 48)
 
@@ -177,7 +182,7 @@ def test_mvr_single_store(make_imgstore):
 def test_mvr_two_stores_boundary(make_imgstore):
     s1, _ = make_imgstore(name="a", nframes=12)
     s2, _ = make_imgstore(name="b", nframes=12)
-    reader = MultiVideoReader([s1, s2])
+    reader = MultiVideoReader([s1, s2], target="analysis")
     assert reader.total_frames == 24
     # second store starts at global frame 12 (its local frame 0 → tag 0)
     seg_idx, local = reader.segment_for_frame(12)
@@ -194,7 +199,7 @@ def test_mvr_rejects_fps_mismatch(make_imgstore):
     s1, _ = make_imgstore(name="a", nframes=12, fps=30.0)
     s2, _ = make_imgstore(name="b", nframes=12, fps=60.0)
     with pytest.raises(ValueError, match="property mismatch"):
-        MultiVideoReader([s1, s2])
+        MultiVideoReader([s1, s2], target="analysis")
 
 
 def test_mvr_rejects_mixed_sequence(make_imgstore, tmp_path):
@@ -205,7 +210,7 @@ def test_mvr_rejects_mixed_sequence(make_imgstore, tmp_path):
         vw.write(np.zeros((48, 64, 3), np.uint8))
     vw.release()
     with pytest.raises(ValueError, match="mixed"):
-        MultiVideoReader([mp4, store_dir])
+        MultiVideoReader([mp4, store_dir], target="analysis")
 
 
 # ── ImgStoreFrameReader / open_frame_reader ──
@@ -242,7 +247,7 @@ def test_frame_reader_resize(make_imgstore):
 
 def test_open_frame_reader_dispatch(make_imgstore, tmp_path):
     store_dir, _ = make_imgstore(nframes=4)
-    reader = open_frame_reader(store_dir)
+    reader = open_frame_reader(store_dir, target="analysis")
     assert isinstance(reader, ImgStoreFrameReader)
     reader.close()
 
@@ -252,12 +257,46 @@ def test_open_frame_reader_dispatch(make_imgstore, tmp_path):
     for _ in range(4):
         writer.write(np.zeros((48, 64, 3), np.uint8))
     writer.release()
-    reader2 = open_frame_reader(mp4)
+    reader2 = open_frame_reader(mp4, target="analysis")
     assert isinstance(reader2, VideoReader)
     reader2.close()
 
 
 # -- NativeStore equivalence --
+
+
+@pytest.fixture
+def make_video_imgstore(tmp_path: Path) -> Callable[[], Path]:
+    """Factory writing a 12-frame ``mjpeg/avi`` imgstore at ``chunksize=5``.
+
+    Skips the test when the local OpenCV/ffmpeg build cannot write mjpeg/avi.
+    The frame count and chunk size are fixed rather than parameterized: the
+    chunk-memoization tests below depend on the resulting three-chunk layout
+    (frames 0-4, 5-9, 10-11).
+    """
+    imgstore = pytest.importorskip("imgstore")
+
+    def _make() -> Path:
+        dest = tmp_path / "vstore"
+        try:
+            store = imgstore.new_for_format(
+                "mjpeg/avi",
+                path=str(dest),
+                mode="w",
+                imgshape=(48, 64, 3),
+                imgdtype=np.uint8,
+                chunksize=5,
+            )
+            for i in range(12):
+                img = np.zeros((48, 64, 3), np.uint8)
+                img[0, 0, 0] = i
+                store.add_image(img, frame_number=i, frame_time=float(i) / 30.0)
+            store.close()
+        except Exception as exc:  # pragma: no cover - depends on the local codec set
+            pytest.skip(f"mjpeg/avi not writable in this environment: {exc}")
+        return dest
+
+    return _make
 
 
 def test_native_store_npy_random_and_sequential(make_imgstore):
@@ -282,7 +321,7 @@ def test_native_store_npy_random_and_sequential(make_imgstore):
     store.close()
 
 
-def test_native_store_video_matches_imgstore_package(tmp_path):
+def test_native_store_video_matches_imgstore_package(make_video_imgstore):
     """For a video-format store, NativeStore matches the imgstore package.
 
     Both decode the same chunk files through the same OpenCV / ffmpeg build, so
@@ -292,23 +331,7 @@ def test_native_store_video_matches_imgstore_package(tmp_path):
     implemented from the imgstore source.
     """
     imgstore = pytest.importorskip("imgstore")
-    dest = tmp_path / "vstore"
-    try:
-        store = imgstore.new_for_format(
-            "mjpeg/avi",
-            path=str(dest),
-            mode="w",
-            imgshape=(48, 64, 3),
-            imgdtype=np.uint8,
-            chunksize=5,
-        )
-        for i in range(12):
-            img = np.zeros((48, 64, 3), np.uint8)
-            img[0, 0, 0] = i
-            store.add_image(img, frame_number=i, frame_time=float(i) / 30.0)
-        store.close()
-    except Exception as exc:  # pragma: no cover - depends on the local codec set
-        pytest.skip(f"mjpeg/avi not writable in this environment: {exc}")
+    dest = make_video_imgstore()
 
     native = NativeStore(dest)
     package = imgstore.new_for_filename(str(dest), mode="r")
@@ -333,6 +356,64 @@ def test_native_store_video_matches_imgstore_package(tmp_path):
     finally:
         native.close()
         package.close()
+
+
+def test_video_chunk_reads_are_gated_as_raw(
+    make_video_imgstore: Callable[[], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A video chunk read declares the ``"raw"`` target, on the chunk file
+    itself rather than the store directory."""
+    dest = make_video_imgstore()
+    calls: list[tuple[Path | str | Sequence[Path | str], ReadTarget]] = []
+    real_gate = imgstore_native.verified_read_facts
+
+    def _recording(
+        paths: Path | str | Sequence[Path | str],
+        facts: MediaFacts | Sequence[MediaFacts] | None,
+        target: ReadTarget,
+    ) -> list[MediaFacts]:
+        calls.append((paths, target))
+        return real_gate(paths, facts, target)
+
+    monkeypatch.setattr(imgstore_native, "verified_read_facts", _recording)
+
+    store = NativeStore(dest)
+    store.frame(0)
+    store.close()
+
+    assert len(calls) == 1
+    recorded_path, recorded_target = calls[0]
+    assert recorded_target == "raw"
+    assert recorded_path == dest / "000000.avi"
+
+
+def test_a_video_chunk_is_probed_once_per_store_instance(
+    make_video_imgstore: Callable[[], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading frames 0, 5, 0 crosses a chunk boundary three times but visits
+    only two distinct chunks (chunk 0: frames 0-4, chunk 1: frames 5-9, chunk 2:
+    frames 10-11, at the fixture's 12-frame/chunksize=5 layout). Memoization
+    costs two probes; an unmemoized implementation would cost three. Reading
+    two frames from one chunk would enter the chunk-transition branch only
+    once regardless of memoization and would prove nothing, so the sequence is
+    not simplified.
+    """
+    dest = make_video_imgstore()
+    calls: list[Path] = []
+    real_probe = read_target.probe_media
+
+    def _counting(path: Path) -> MediaFacts:
+        calls.append(path)
+        return real_probe(path)
+
+    monkeypatch.setattr(read_target, "probe_media", _counting)
+
+    store = NativeStore(dest)
+    for frame_index in (0, 5, 0):
+        store.frame(frame_index)
+    store.close()
+
+    assert len(calls) == 2
 
 
 def test_native_store_decodes_bayer_encoding(tmp_path):

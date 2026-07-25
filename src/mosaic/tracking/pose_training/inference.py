@@ -214,6 +214,7 @@ def run_inference_opencv(
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
+        target="analysis",
     )
     total_str = str(reader.frame_count)
 
@@ -334,6 +335,7 @@ def run_inference(
             frame_step=frame_step,
             resize=resize_dims,
             facts=facts,
+            target="analysis",
         )
         try:
             all_results, processed = _run_predict_loop(
@@ -562,6 +564,7 @@ def run_point_inference_opencv(
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
+        target="analysis",
     )
     total_str = str(reader.frame_count)
 
@@ -703,6 +706,7 @@ def run_point_inference(
             frame_step=frame_step,
             resize=resize_dims,
             facts=facts,
+            target="analysis",
         )
         try:
             all_results, processed = _run_predict_loop(
@@ -1027,7 +1031,9 @@ def visualize_inference(
     # rather than a per-result seek - `results[i]` always corresponds to
     # frame `start_frame + i * frame_step`, exactly the sequence this reader
     # yields.
-    reader = open_frame_reader(video_path, start_frame=start_frame, frame_step=frame_step)
+    reader = open_frame_reader(
+        video_path, start_frame=start_frame, frame_step=frame_step, target="analysis"
+    )
     frame_iterator = iter(reader)
 
     # Open writer

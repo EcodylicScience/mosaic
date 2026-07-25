@@ -406,16 +406,13 @@ class ResolvedMedia:
     """Resolved media file paths for one (group, sequence), plus stored facts.
 
     ``paths`` are ordered by ``video_order`` (one element for a single-file
-    sequence). ``facts`` -- when not ``None`` -- is a parallel list of
+    sequence). ``facts`` is a parallel list of
     :class:`~mosaic_media.MediaFacts`, one per path, that readers inject instead
-    of re-probing. It is all-or-nothing: if any resolved path lacks stored facts
-    (an index written without the ``media_facts`` column), ``facts`` is ``None``
-    and the reader probes uniformly (``MultiVideoReader`` accepts facts only for
-    every path or none).
+    of re-probing.
     """
 
     paths: list[Path]
-    facts: list[MediaFacts] | None
+    facts: list[MediaFacts]
 
 
 @dataclass(frozen=True)
@@ -2104,7 +2101,7 @@ class Dataset:
         row: "pd.Series",
         route_derivatives: bool,
         derivative_df: "pd.DataFrame | None",
-    ) -> tuple[Path, MediaFacts | None]:
+    ) -> tuple[Path, MediaFacts]:
         """Route one media-index row to the file a per-frame read must open.
 
         mosaic's per-frame reads are analysis reads, so this routes on the
@@ -2113,15 +2110,20 @@ class Dataset:
         * a row marked ``analysis_transcode="required"`` resolves to its
           registered analysis derivative under the ``media`` root, carrying the
           derivative's stored facts;
-        * a clean row resolves to the original file, carrying its stored facts
-          (when present).
+        * a clean row resolves to the original file, carrying its stored facts.
 
         A ``required`` row is defective for analysis reads, so it must resolve to
         a clean derivative or fail. If it has no analysis derivative -- whether
         the link is missing or the dataset is legacy ``media``-only with no
         ``media_raw`` split (*route_derivatives* is ``False``) -- this raises
         :class:`~mosaic_media.MediaProbeError` telling the caller to transcode
-        first. There is no silent-degrade arm that opens the defective original.
+        first. A clean row whose stored measurement cannot be reconstructed
+        raises the same way, telling the caller to re-probe the media index
+        instead: transcoding and re-probing are distinct remedies for distinct
+        problems, so the two failures stay textually distinct rather than
+        collapsing into one message. There is no silent-degrade arm that opens
+        the defective original, and there is no silent-degrade arm that opens a
+        file without a measurement to hand the reader.
 
         *route_derivatives* and *derivative_df* come from
         :meth:`media_routing_context`; load them once and reuse across a batch.
@@ -2147,7 +2149,15 @@ class Dataset:
             raise MediaProbeError(message)
 
         routed = self.resolve_path(row["abs_path"])
-        return routed, series_facts_or_none(row)
+        facts = series_facts_or_none(row)
+        if facts is None:
+            message = (
+                f"entry {group}/{sequence} file {routed} carries no reconstructable "
+                f"measurement in the media index; run "
+                f"'mosaic reprobe-media --apply' to re-probe it"
+            )
+            raise MediaProbeError(message)
+        return routed, facts
 
     def resolve_media(
         self,
@@ -2175,7 +2185,8 @@ class Dataset:
         Raises:
             FileNotFoundError: If the index is missing/empty or no row matches.
             MediaProbeError: If a row requires a transcode but has no derivative,
-                a derivative's file/facts cannot be found, or *camera* is
+                a derivative's file/facts cannot be found, a matched row's
+                stored measurement cannot be reconstructed, or *camera* is
                 ``None`` while the sequence spans more than one camera.
         """
         matched = self.match_media_rows(group, sequence, camera, index_filename)
@@ -2202,23 +2213,19 @@ class Dataset:
         """Route one entry's matched rows into a :class:`ResolvedMedia`.
 
         Shared body for :meth:`resolve_media` and :meth:`resolve_media_scope`:
-        routes each row through :meth:`route_media_row` and applies the
-        all-or-nothing facts rule (``facts`` is ``None`` unless every routed path
-        carries stored facts). *matched* must already be ``video_order``-sorted.
+        routes each row through :meth:`route_media_row`, so every routed row
+        carries its stored measurement. *matched* must already be
+        ``video_order``-sorted.
         """
         paths: list[Path] = []
         facts: list[MediaFacts] = []
-        all_have_facts = True
         for _, row in matched.iterrows():
             routed_path, routed_facts = self.route_media_row(
                 group, sequence, row, route_derivatives, derivative_df
             )
             paths.append(routed_path)
-            if routed_facts is None:
-                all_have_facts = False
-            else:
-                facts.append(routed_facts)
-        return ResolvedMedia(paths=paths, facts=facts if all_have_facts else None)
+            facts.append(routed_facts)
+        return ResolvedMedia(paths=paths, facts=facts)
 
     def resolve_media_scope(
         self,
@@ -2239,7 +2246,7 @@ class Dataset:
         pins an arbitrary subset even when sequence names repeat across groups
         (unlike the *groups*/*sequences* cross-product). Each entry's
         :class:`ResolvedMedia` carries its ``video_order``-sorted paths and
-        all-or-nothing stored facts, routed by transcode verdict exactly as
+        stored facts, routed by transcode verdict exactly as
         :meth:`resolve_media` does. When an entry has an empty group and a
         sequence whose safe name is empty, the returned sequence label falls back
         to the first original file's stem.
@@ -2247,7 +2254,8 @@ class Dataset:
         Raises:
             FileNotFoundError: If the originals index does not exist.
             MediaProbeError: If an entry requires a transcode but has no
-                derivative, or a derivative's file/facts cannot be found.
+                derivative, a derivative's file/facts cannot be found, or a
+                matched row's stored measurement cannot be reconstructed.
         """
         # Media-index resolution is a Dataset concern, so a scoped enumeration lives
         # here as a method (mirroring resolve_media) rather than as a free function in

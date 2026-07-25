@@ -14,6 +14,8 @@ from mosaic_media.io import MultiVideoReader as _PlainMultiReader
 from mosaic_media.io import SeekIndex
 from mosaic_media.io import VideoReader
 
+from .read_target import ReadTarget, verified_read_facts
+
 # Downscale filter for candidate-feature frames. Read at call time so it stays
 # monkeypatchable. INTER_AREA is the area-averaging filter suited to downscaling
 # (no aliasing), and using one filter across every extraction path keeps k-means
@@ -75,7 +77,8 @@ class FrameReader(Protocol):
     """High-throughput sequential reader interface (in-process- or imgstore-backed).
 
     :class:`mosaic_media.io.VideoReader` and
-    :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` both satisfy this.
+    :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` both satisfy this,
+    context manager included.
     """
 
     @property
@@ -91,6 +94,8 @@ class FrameReader(Protocol):
     def __iter__(self) -> Iterator[tuple[int, np.ndarray]]: ...
     def close(self) -> None: ...
     def __len__(self) -> int: ...
+    def __enter__(self) -> "FrameReader": ...
+    def __exit__(self, *args: object) -> None: ...
 
 
 # Static check: VideoReader satisfies the lean seek/read surface structurally,
@@ -237,9 +242,12 @@ def extract_candidate_features(
       - candidate frame indices (N,)
       - flattened feature vectors (N, D)
 
-    When *facts* is supplied (a dataset-scoped caller holding the media index
-    row) the plain-video reader injects them instead of re-probing; a bare-path
-    caller passes ``None`` and the file is probed.
+    *facts*, when supplied (a dataset-scoped caller holding the media index
+    row), is gated against the fixed ``"analysis"`` target rather than injected
+    verbatim; a bare-path caller passes ``None`` and the file is probed and
+    gated. The target is fixed because these are k-means candidate frames
+    addressed by index: a caller must not be able to declare ``"raw"`` for
+    this read.
     """
     from .imgstore_io import is_imgstore
 
@@ -274,6 +282,7 @@ def extract_candidate_features(
             start_frame=int(start_frame),
             end_frame=int(end_frame) + 1,
             frame_step=int(candidate_step),
+            target="analysis",
         )
         try:
             for frame_idx, frame in reader:
@@ -285,9 +294,12 @@ def extract_candidate_features(
         # Candidate features resize through cv2, not the reader's libswscale resize,
         # so single-, multi-, crop-, and imgstore paths share one filter and produce
         # comparable k-means features (RESIZE_INTERPOLATION, monkeypatchable).
+        # Candidate frames become k-means training input addressed by frame
+        # index, so the target is fixed at "analysis": a caller must not be
+        # able to declare "raw" for a candidate scan.
         with VideoReader(
             resolved,
-            facts=facts if facts is not None else probe_media(resolved),
+            facts=verified_read_facts(resolved, facts, "analysis")[0],
             start_frame=int(start_frame),
             end_frame=int(end_frame) + 1,
             frame_step=int(candidate_step),
@@ -311,9 +323,12 @@ def save_frames_as_png(
 ) -> list[dict[str, Any]]:
     """Decode selected frames and save each as PNG.
 
-    When *facts* is supplied (a dataset-scoped caller holding the media index
-    row) the plain-video reader injects them instead of re-probing; a bare-path
-    caller passes ``None`` and ``VideoReader`` probes the file as before.
+    *facts*, when supplied (a dataset-scoped caller holding the media index
+    row), is gated against the fixed ``"analysis"`` target rather than injected
+    verbatim; a bare-path caller passes ``None`` and the file is probed and
+    gated. The target is fixed because these frames are addressed by index and
+    become pose-annotation training data: a caller must not be able to declare
+    ``"raw"`` for this read.
     """
     from .imgstore_io import ImgStoreCapture, is_imgstore
 
@@ -358,7 +373,9 @@ def save_frames_as_png(
     else:
         # read_frames groups targets by GOP and seeks/decodes in one pass,
         # regardless of whether the container is seekable metadata-wise.
-        with VideoReader(resolved, facts=facts) as reader:
+        with VideoReader(
+            resolved, facts=verified_read_facts(resolved, facts, "analysis")[0]
+        ) as reader:
             for frame_idx, frame in reader.read_frames(target_indices):
                 _write(frame_idx, frame)
 
@@ -608,13 +625,19 @@ def open_multi_video_reader(
     *,
     facts: Sequence[MediaFacts] | None = None,
     indices: Sequence[SeekIndex] | None = None,
+    target: ReadTarget,
 ) -> "MultiVideoReaderLike":
     """Dispatch a sequence of video paths to the matching multi-file reader.
 
     An all-imgstore sequence routes to :class:`_ImgStoreMultiReader`; an
-    all-plain-video sequence routes to the ``mosaic_media`` reader. Mixing
-    imgstore directories and plain video files within one sequence is not
-    supported.
+    all-plain-video sequence routes to the ``mosaic_media`` reader, gating
+    *facts* against *target* first. Mixing imgstore directories and plain video
+    files within one sequence is not supported.
+
+    *target* is required on both branches even though the imgstore branch
+    constructs no ``mosaic_media`` reader and calls no gate: the parameter is
+    the caller's declaration of intent, and a store's own chunk reads declare
+    their target separately, where the chunk reader is actually built.
     """
     from .imgstore_io import is_imgstore  # local: breaks the video_io <-> imgstore_io cycle
 
@@ -628,11 +651,13 @@ def open_multi_video_reader(
         raise ValueError("mixed video-plus-imgstore sequences are not supported")
     if all(stores):
         return _ImgStoreMultiReader(paths)
-    return _PlainMultiReader(paths, facts=facts, indices=indices)
+    return _PlainMultiReader(
+        paths, facts=verified_read_facts(paths, facts, target), indices=indices
+    )
 
 
-# The public name callers use for construction stays a callable with the same
-# call shape; existing `MultiVideoReader(paths)` sites are unaffected.
+# The public name callers use for construction: a plain alias, so every call
+# site now names its target explicitly through the same call.
 MultiVideoReader = open_multi_video_reader
 
 
@@ -644,6 +669,8 @@ def open_frame_reader(
     resize: tuple[int, int] | None = None,
     hwaccel: bool = False,
     facts: MediaFacts | None = None,
+    *,
+    target: ReadTarget,
 ) -> FrameReader:
     """Open a high-throughput sequential reader, dispatching on the path type.
 
@@ -651,9 +678,11 @@ def open_frame_reader(
     directories, otherwise a :class:`mosaic_media.io.VideoReader`. Both satisfy
     :class:`FrameReader`, so callers (e.g. tracking inference) are unchanged.
 
-    When *facts* is supplied (a dataset-scoped caller holding the media index
-    row) the plain-video reader injects them instead of re-probing; a bare-path
-    caller passes ``None`` and the file is probed.
+    *facts*, when supplied (a dataset-scoped caller holding the media index
+    row), is gated against *target* rather than injected verbatim; a bare-path
+    caller passes ``None`` and the file is probed and gated. *target* is
+    required on the imgstore branch as well, even though that branch calls no
+    gate: the parameter is the caller's declaration of intent.
     """
     from .imgstore_io import ImgStoreFrameReader, is_imgstore
 
@@ -673,7 +702,7 @@ def open_frame_reader(
         frame_step=frame_step,
         resize=resize,
         hwaccel=hwaccel,
-        facts=facts if facts is not None else probe_media(Path(video_path)),
+        facts=verified_read_facts(video_path, facts, target)[0],
     )
 
 

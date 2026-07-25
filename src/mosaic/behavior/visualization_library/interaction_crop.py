@@ -221,8 +221,12 @@ class InteractionCropPipeline:
         # Sort segments by start frame for sequential video reading
         seg_groups.sort(key=lambda x: int(x[1]["interaction_start"].iloc[0]))
 
-        # Open video reader once for the whole sequence
-        reader = MultiVideoReader(resolved.paths, facts=resolved.facts)
+        # Open video reader once for the whole sequence. Segment bounds are
+        # seeked by frame index from a per-frame interaction filter, so this is
+        # an analysis read, not a browser-delivery one.
+        reader = MultiVideoReader(
+            resolved.paths, facts=resolved.facts, target="analysis"
+        )
         output_fps = p.output_fps or reader.fps
 
         clip_records = []

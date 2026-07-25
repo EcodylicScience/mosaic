@@ -31,8 +31,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 import yaml
-from mosaic_media import MediaProbeError
+from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
+
+from .read_target import verified_read_facts
 
 # imgstore on-disk constants, inlined so reading needs no imgstore package.
 _STORE_MD_FILENAME = "metadata.yaml"
@@ -184,6 +186,9 @@ class NativeStore:
         self._video_reader: VideoReader | None = None
         self._video_chunk_id: int | None = None
         self._video_next_offset = 0
+        # Chunk facts are memoized so a store visited repeatedly pays at most
+        # one probe per chunk rather than one per chunk transition.
+        self._chunk_facts: dict[int, MediaFacts] = {}
 
         self._basedir, metadata_path = _resolve_store_paths(path)
 
@@ -334,7 +339,19 @@ class NativeStore:
             if not chunk_path.is_file():
                 message = f"imgstore video chunk not found: {chunk_path}"
                 raise MediaProbeError(message)
-            self._video_reader = VideoReader(chunk_path)
+            # A store chunk is trusted as known-good (written by the recording
+            # software, not arriving as arbitrary uploaded media), and it has no
+            # probe-derived verdict to gate a transcode target on -- its facts
+            # are hand-built, not probed. "raw" here still derives a verdict and
+            # still warns when the trust is misplaced; it is not a short-circuit
+            # that skips the check. Probing (memoized per chunk below) replaces
+            # the container-header claims VideoReader would otherwise trust with
+            # a real measurement.
+            facts = verified_read_facts(
+                chunk_path, self._chunk_facts.get(chunk_id), "raw"
+            )[0]
+            self._chunk_facts[chunk_id] = facts
+            self._video_reader = VideoReader(chunk_path, facts=facts)
             self._video_chunk_id = chunk_id
             self._video_next_offset = 0
         reader = self._video_reader

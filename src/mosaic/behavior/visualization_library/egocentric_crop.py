@@ -617,7 +617,7 @@ class EgocentricCrop:
     def _process_single_id(
         self,
         video_paths: list[Path],
-        facts: list[MediaFacts] | None,
+        facts: list[MediaFacts],
         df_target: pd.DataFrame,
         group: str,
         sequence: str,
@@ -630,9 +630,9 @@ class EgocentricCrop:
         ----------
         video_paths : list[Path]
             Ordered list of video paths for this sequence.
-        facts : list[MediaFacts] or None
+        facts : list[MediaFacts]
             Stored media facts parallel to *video_paths*, injected into the
-            reader so it does not re-probe. ``None`` when unavailable.
+            reader so it does not re-probe.
 
         Returns metadata DataFrame with crop info per frame.
         """
@@ -643,8 +643,11 @@ class EgocentricCrop:
         # Sort by frame
         df_target = df_target.sort_values(COLUMNS.frame_col).reset_index(drop=True)
 
-        # Open video(s) via MultiVideoReader
-        reader = MultiVideoReader(video_paths, facts=facts)
+        # Open video(s) via MultiVideoReader. Crops are cut at pixel coordinates
+        # from the track table and joined by frame index, so a rotated,
+        # variable-rate, or mistimed source would crop the wrong pixels of the
+        # wrong frame -- an analysis read, not a browser-delivery one.
+        reader = MultiVideoReader(video_paths, facts=facts, target="analysis")
         output_fps = p.output_fps or reader.fps
 
         # Build frame -> row position lookup (for precomputed geometry arrays

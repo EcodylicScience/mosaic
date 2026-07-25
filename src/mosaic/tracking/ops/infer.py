@@ -172,7 +172,7 @@ def _run_inference_op(
         # required-but-unlinked entry already raised in resolve_media_scope,
         # before any defective original was opened.
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-        facts = resolved.facts[0] if resolved.facts is not None else None
+        facts = resolved.facts[0]
         work.append((group, sequence, resolved.paths[0], facts))
 
     ctx.set_total(len(work))
