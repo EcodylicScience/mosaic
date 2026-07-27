@@ -16,22 +16,37 @@ mirroring :func:`mosaic.tracking.extract_frames`:
   ``tracks/<group>__<seq>.parquet`` via the registered ``trex_npz`` converter.
 
 The ``run_id`` addresses the *tracking settings* (detect model + thresholds,
-track params, calibration); the input video identity is captured per entry in
-the index (``video_abs_path``). This matches the ``extract_frames`` precedent;
-folding a full video content-hash into the ``run_id`` is a later refinement that
-needs no schema change.
+track params, calibration). What each entry was actually computed *from* -- the
+source video, and the parameters of each phase -- is recorded in that entry's
+completion markers (:mod:`mosaic.core.pipeline.markers`), and re-entry compares
+against them. So changing which video a sequence resolves to forces a
+recompute even though the settings, and therefore the ``run_id``, are unchanged.
+Folding a video content-hash into the ``run_id`` itself is a later refinement
+that needs no schema change.
+
+**What the per-phase gate buys today, and what it does not.** The run root is
+named by a hash over *every* setting, so a track-only parameter change already
+moves the whole working directory. Within this layout the split therefore buys
+resume-after-interruption -- a convert that finished and a track that was
+killed re-runs only the track -- and not cross-run reuse of a conversion. That
+is item 8.5, which keys the conversion cache on ``(video uid, convert-params
+hash)``; the convert marker records both so 8.5 inherits a correct gate rather
+than bolting one on.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import shutil
+import socket
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 import pandas as pd
@@ -40,8 +55,21 @@ from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.markers import (
+    PhaseMarker,
+    PhaseName,
+    clear_inflight,
+    clear_phase_markers,
+    inflight_state,
+    new_inflight,
+    read_inflight,
+    read_phase_marker,
+    write_inflight,
+    write_phase_marker,
+)
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.schema import ensure_track_schema
+from mosaic.runlog import now_iso
 
 from .run import run_trex_convert, run_trex_track
 
@@ -84,6 +112,210 @@ class TRexIndexRow(RunIndexRowBase):
 
 def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
     return IndexCSV(path, TRexIndexRow, dedup_keys=["run_id", "group", "sequence"])
+
+
+# --- Settings, whole and per phase ----------------------------------------
+
+PHASES: Final[tuple[PhaseName, ...]] = ("convert", "track")
+
+# Which settings each TREx task actually consumes, from the two parameter dicts
+# built in ``trex/run.py``. ``track_max_individuals`` appears in **both**: it is
+# a conversion input despite its name, so changing it must invalidate a
+# conversion as well as a tracking. A key in neither set would silently stop
+# invalidating anything, which ``trex_settings`` and its test guard against.
+CONVERT_KEYS: Final[tuple[str, ...]] = (
+    "detect_model",
+    "detect_type",
+    "detect_conf_threshold",
+    "detect_iou_threshold",
+    "cm_per_pixel",
+    "meta_encoding",
+    "convert_extra_settings",
+    "track_max_individuals",
+)
+TRACK_KEYS: Final[tuple[str, ...]] = (
+    "track_max_individuals",
+    "track_max_speed",
+    "track_max_reassign_time",
+    "track_trusted_probability",
+    "analysis_range",
+    "visual_identification_model_path",
+    "auto_train",
+    "track_extra_settings",
+)
+
+
+def trex_settings(
+    *,
+    detect_model: Path | str | None,
+    detect_type: str,
+    detect_conf_threshold: float,
+    detect_iou_threshold: float,
+    cm_per_pixel: float,
+    meta_encoding: str,
+    convert_extra_settings: dict[str, Any] | None,
+    track_max_individuals: int,
+    track_max_speed: float,
+    track_max_reassign_time: float,
+    track_trusted_probability: float,
+    analysis_range: tuple[int, int] | None,
+    visual_identification_model_path: Path | str | None,
+    auto_train: bool,
+    track_extra_settings: dict[str, Any] | None,
+) -> dict[str, object]:
+    """Build the settings that define a tracking result -- the ``run_id`` payload.
+
+    A model reference is kept as written rather than resolved: the reference is
+    portable across machines, the path it resolves to is not.
+    """
+    return {
+        "detect_model": str(detect_model) if detect_model is not None else None,
+        "detect_type": detect_type,
+        "detect_conf_threshold": detect_conf_threshold,
+        "detect_iou_threshold": detect_iou_threshold,
+        "cm_per_pixel": cm_per_pixel,
+        "meta_encoding": meta_encoding,
+        "convert_extra_settings": convert_extra_settings,
+        "track_max_individuals": track_max_individuals,
+        "track_max_speed": track_max_speed,
+        "track_max_reassign_time": track_max_reassign_time,
+        "track_trusted_probability": track_trusted_probability,
+        "analysis_range": list(analysis_range) if analysis_range else None,
+        "visual_identification_model_path": (
+            str(visual_identification_model_path)
+            if visual_identification_model_path is not None
+            else None
+        ),
+        "auto_train": auto_train,
+        "track_extra_settings": track_extra_settings,
+    }
+
+
+def phase_settings(
+    settings: Mapping[str, object], phase: PhaseName
+) -> dict[str, object]:
+    """Project *settings* onto the subset one phase consumes."""
+    keys = CONVERT_KEYS if phase == "convert" else TRACK_KEYS
+    return {key: settings[key] for key in keys}
+
+
+# --- Per-entry reuse ------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkItem:
+    """One sequence to track, and what it resolved to.
+
+    ``key`` is the ``<group>__<sequence>`` working-directory name; there is
+    exactly one item per key.
+    """
+
+    group: str
+    sequence: str
+    key: str
+    video_path: Path
+    video_uid: str
+
+
+# Outputs each phase leaves in the working directory. Used to clear a phase
+# before re-running it -- the .pv and the per-individual files are written as
+# processing proceeds, so a killed phase leaves partial ones behind that must
+# not be mistaken for, or merged with, the new run's.
+_CONVERT_OUTPUT_GLOBS: Final[tuple[str, ...]] = ("*.pv", "*.settings", "average_*.png")
+_TRACK_OUTPUT_GLOBS: Final[tuple[str, ...]] = ("*.results", "data/*.npz")
+
+
+def _clear_phase_outputs(work_dir: Path, phase: PhaseName) -> None:
+    globs = _CONVERT_OUTPUT_GLOBS if phase == "convert" else _TRACK_OUTPUT_GLOBS
+    for pattern in globs:
+        for path in sorted(work_dir.glob(pattern)):
+            path.unlink(missing_ok=True)
+
+
+def _same_video(ds: Dataset, stored: str, video_path: Path) -> bool:
+    """Is *stored* the path *video_path* now resolves to?
+
+    Both sides go through resolution: a stored value may be root-relative (the
+    portable form) or a legacy absolute, and the dataset may have moved. A raw
+    string comparison would call every relocated dataset a source change.
+    """
+    return ds.resolve_path(stored).resolve() == video_path.resolve()
+
+
+def _reusable_marker(
+    ds: Dataset,
+    work_dir: Path,
+    phase: PhaseName,
+    *,
+    phase_hash: str,
+    video_path: Path,
+) -> PhaseMarker | None:
+    """The marker proving *phase* need not run again, or None.
+
+    An empty ``source`` or ``params_hash`` means *unknown* rather than
+    *mismatched*, and is not grounds for a recompute -- a marker adopted from a
+    directory that predates markers cannot know either.
+    """
+    marker = read_phase_marker(work_dir, phase)
+    if marker is None:
+        return None
+    if marker.params_hash and marker.params_hash != phase_hash:
+        return None
+    if marker.source and not _same_video(ds, marker.source, video_path):
+        return None
+    return marker
+
+
+def _adopt_completed_directory(ds: Dataset, work_dir: Path, run_id: str) -> None:
+    """Mark a pre-marker directory complete, when it demonstrably holds a finished run.
+
+    Without this, every sequence already tracked before markers existed re-runs
+    once -- hours of TREx apiece on a real dataset.
+
+    The evidence required is a ``.results`` file, because it is the only output
+    TREx writes at the *end* of tracking: the ``.pv`` and the per-individual
+    files appear as processing proceeds, so neither distinguishes a finished run
+    from one killed partway. A finished tracking also implies a finished
+    conversion, which is what lets one signal adopt both phases.
+
+    The adopted markers record no source and no parameter hash. Nothing on disk
+    says what the directory was computed from, and an honest unknown is better
+    than a confident guess that would then serve as a cache key. The
+    consequence, which is inherent rather than a gap to close: an adopted
+    directory is not protected by the source-video guard, because there is
+    nothing to compare against. It is no worse off than before markers existed,
+    and any directory produced *after* this lands carries a real source.
+    """
+    if any(read_phase_marker(work_dir, phase) is not None for phase in PHASES):
+        return
+    data_dir = work_dir / "data"
+    npz_paths = sorted(data_dir.glob("*.npz")) if data_dir.is_dir() else []
+    results = sorted(work_dir.glob("*.results"))
+    pv_matches = sorted(work_dir.glob("*.pv"))
+    if not (npz_paths and results and pv_matches):
+        return
+
+    stamp = now_iso()
+    write_phase_marker(
+        work_dir,
+        PhaseMarker(
+            phase="convert",
+            run_id=run_id,
+            completed_at=stamp,
+            recorded_output=ds.relative_to_root(pv_matches[0]),
+            backfilled=True,
+        ),
+    )
+    write_phase_marker(
+        work_dir,
+        PhaseMarker(
+            phase="track",
+            run_id=run_id,
+            completed_at=stamp,
+            recorded_output=ds.relative_to_root(results[0]),
+            backfilled=True,
+        ),
+    )
 
 
 # --- NPZ -> standardized tracks bridge ------------------------------------
@@ -216,28 +448,27 @@ def run_trex(
         ds.set_root("trex", "tracks_raw/trex")
 
     # Settings that define the tracking result -> the content hash.
-    settings = {
-        "detect_model": str(detect_model) if detect_model is not None else None,
-        "detect_type": detect_type,
-        "detect_conf_threshold": detect_conf_threshold,
-        "detect_iou_threshold": detect_iou_threshold,
-        "cm_per_pixel": cm_per_pixel,
-        "meta_encoding": meta_encoding,
-        "convert_extra_settings": convert_extra_settings,
-        "track_max_individuals": track_max_individuals,
-        "track_max_speed": track_max_speed,
-        "track_max_reassign_time": track_max_reassign_time,
-        "track_trusted_probability": track_trusted_probability,
-        "analysis_range": list(analysis_range) if analysis_range else None,
-        "visual_identification_model_path": (
-            str(visual_identification_model_path)
-            if visual_identification_model_path is not None
-            else None
-        ),
-        "auto_train": auto_train,
-        "track_extra_settings": track_extra_settings,
-    }
+    settings = trex_settings(
+        detect_model=detect_model,
+        detect_type=detect_type,
+        detect_conf_threshold=detect_conf_threshold,
+        detect_iou_threshold=detect_iou_threshold,
+        cm_per_pixel=cm_per_pixel,
+        meta_encoding=meta_encoding,
+        convert_extra_settings=convert_extra_settings,
+        track_max_individuals=track_max_individuals,
+        track_max_speed=track_max_speed,
+        track_max_reassign_time=track_max_reassign_time,
+        track_trusted_probability=track_trusted_probability,
+        analysis_range=analysis_range,
+        visual_identification_model_path=visual_identification_model_path,
+        auto_train=auto_train,
+        track_extra_settings=track_extra_settings,
+    )
     params_hash = hash_params(settings)
+    phase_hashes: dict[PhaseName, str] = {
+        phase: hash_params(phase_settings(settings, phase)) for phase in PHASES
+    }
     run_id = f"trex-{params_hash}"
     run_root = trex_run_root(ds, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
@@ -280,7 +511,14 @@ def run_trex(
     # seq_dir and a camera in the trex index dedup) is Phase 2, gated on the
     # store->mp4 transcode a store-directory sequence needs to be TREx-readable
     # at all -- so single-camera behavior here is unchanged.
-    work_items: list[tuple[str, str, Path]] = []
+    #
+    # The working directory is keyed on (group, sequence) with no camera, so a
+    # multi-camera sequence's entries all resolve to *one* directory. Collapsing
+    # them here keeps that one-to-one: left as several, the second entry would
+    # see the first's source, call it a change, recompute over the first's
+    # outputs and replace its index row -- on every run, forever.
+    work_items: list[_WorkItem] = []
+    claimed_keys: set[str] = set()
     for entry in scope:
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         paths = resolved.paths
@@ -291,12 +529,37 @@ def run_trex(
                 f"merged.",
                 file=sys.stderr,
             )
-        work_items.append((group, sequence, paths[0]))
+        key = make_entry_key(group, sequence)
+        if key in claimed_keys:
+            print(
+                f"[run_trex] ({group}, {sequence}) camera "
+                f"{entry.camera or '<unnamed>'} shares one output directory with "
+                f"an earlier camera; skipping it. Per-camera tracker output is "
+                f"Phase 2.",
+                file=sys.stderr,
+            )
+            continue
+        claimed_keys.add(key)
+        facts = resolved.facts
+        work_items.append(
+            _WorkItem(
+                group=group,
+                sequence=sequence,
+                key=key,
+                video_path=paths[0],
+                # Advisory in this milestone: recorded so items 4.2 and 8.5 have
+                # it, not yet compared. A media index written before the identity
+                # columns existed carries none, and comparing on an absent value
+                # would change behavior for every such dataset.
+                video_uid=facts[0].video_uuid if facts else "",
+            )
+        )
 
     idx = trex_index(trex_index_path(ds))
     idx.ensure()
 
     index_rows: list[TRexIndexRow] = []
+    skipped: list[str] = []
     # Reuse a caller-provided context (TrexOp / run_op) or open our own.
     managed: AbstractContextManager[JobContext] = (
         nullcontext(ctx)
@@ -318,76 +581,211 @@ def run_trex(
         cancel_check = ctx.cancel_token.is_cancelled
 
         try:
-            for i, (group, sequence, video_path) in enumerate(work_items):
+            for i, item in enumerate(work_items):
                 ctx.check_cancel()
-                key = make_entry_key(group, sequence)
+                group, sequence = item.group, item.sequence
+                key, video_path, video_uid = item.key, item.video_path, item.video_uid
                 ctx.progress.on_entry_start(i, len(work_items), key)
                 seq_dir = run_root / key
 
-                if not (seq_dir.exists() and not overwrite):
-                    if overwrite and seq_dir.exists():
-                        import shutil
+                # The directory is no longer a completion signal, so creating it
+                # up front costs nothing -- and the in-flight claim lives in it.
+                seq_dir.mkdir(parents=True, exist_ok=True)
 
-                        shutil.rmtree(seq_dir)
+                # Before any destructive step, including overwrite's rmtree: a
+                # live claim means another execution is writing here right now,
+                # and clearing the directory first would delete both its work
+                # and the claim that says so.
+                claim = inflight_state(
+                    read_inflight(seq_dir),
+                    run_log_base=ds.base_dir,
+                    execution_id=ctx.execution_id,
+                )
+                if claim == "live":
+                    # Skip rather than raise: one contended sequence must not
+                    # end a batch, and its directory is not ours to write.
+                    print(
+                        f"[run_trex] ({group}, {sequence}) is held by another "
+                        f"execution; skipping it.",
+                        file=sys.stderr,
+                    )
+                    skipped.append(key)
+                    ctx.progress.on_entry_end(i + 1, len(work_items), key)
+                    continue
+
+                if overwrite:
+                    shutil.rmtree(seq_dir)
                     seq_dir.mkdir(parents=True, exist_ok=True)
-                    ctx.progress.on_phase("convert", key)
-                    convert_result = run_trex_convert(
-                        video_path,
+
+                _adopt_completed_directory(ds, seq_dir, run_id)
+                try:
+                    write_inflight(
                         seq_dir,
-                        detect_model=detect_model_exec,
-                        detect_type=detect_type,
-                        detect_conf_threshold=detect_conf_threshold,
-                        detect_iou_threshold=detect_iou_threshold,
-                        track_max_individuals=track_max_individuals,
-                        cm_per_pixel=cm_per_pixel,
-                        meta_encoding=meta_encoding,
-                        extra_settings=convert_extra_settings,
-                        timeout=timeout,
-                        trex_conda_env=trex_conda_env,
-                        trex_bin=trex_bin,
-                        display=display,
-                        cancel_check=cancel_check,
+                        new_inflight(
+                            execution_id=ctx.execution_id,
+                            host=socket.gethostname(),
+                            pid=os.getpid(),
+                            phase=None,
+                            timeout_seconds=timeout,
+                        ),
                     )
-                    ctx.progress.on_phase("track", key)
-                    run_trex_track(
-                        convert_result.pv_path,
+
+                    convert_marker = _reusable_marker(
+                        ds,
                         seq_dir,
-                        track_max_individuals=track_max_individuals,
-                        track_max_speed=track_max_speed,
-                        track_max_reassign_time=track_max_reassign_time,
-                        track_trusted_probability=track_trusted_probability,
-                        analysis_range=analysis_range,
-                        visual_identification_model_path=visual_identification_model_path,
-                        auto_train=auto_train,
-                        extra_settings=track_extra_settings,
-                        timeout=timeout,
-                        trex_conda_env=trex_conda_env,
-                        trex_bin=trex_bin,
-                        display=display,
-                        cancel_check=cancel_check,
+                        "convert",
+                        phase_hash=phase_hashes["convert"],
+                        video_path=video_path,
                     )
+                    # A conversion is only reusable if its output is still
+                    # there to reuse -- and where it is is recorded, not
+                    # globbed, since TREx may leave it beside the source video.
+                    reusable_pv: Path | None = None
+                    if convert_marker is not None and convert_marker.recorded_output:
+                        candidate = ds.resolve_path(convert_marker.recorded_output)
+                        if candidate.exists():
+                            reusable_pv = candidate
+                    if reusable_pv is None:
+                        # The tracking phase consumes this phase's output, so a
+                        # re-conversion invalidates it too.
+                        clear_phase_markers(seq_dir)
+                        _clear_phase_outputs(seq_dir, "convert")
+                        _clear_phase_outputs(seq_dir, "track")
+                        write_inflight(
+                            seq_dir,
+                            new_inflight(
+                                execution_id=ctx.execution_id,
+                                host=socket.gethostname(),
+                                pid=os.getpid(),
+                                phase="convert",
+                                timeout_seconds=timeout,
+                            ),
+                        )
+                        ctx.progress.on_phase("convert", key)
+                        convert_result = run_trex_convert(
+                            video_path,
+                            seq_dir,
+                            detect_model=detect_model_exec,
+                            detect_type=detect_type,
+                            detect_conf_threshold=detect_conf_threshold,
+                            detect_iou_threshold=detect_iou_threshold,
+                            track_max_individuals=track_max_individuals,
+                            cm_per_pixel=cm_per_pixel,
+                            meta_encoding=meta_encoding,
+                            extra_settings=convert_extra_settings,
+                            timeout=timeout,
+                            trex_conda_env=trex_conda_env,
+                            trex_bin=trex_bin,
+                            display=display,
+                            cancel_check=cancel_check,
+                        )
+                        pv_path = convert_result.pv_path
+                        write_phase_marker(
+                            seq_dir,
+                            PhaseMarker(
+                                phase="convert",
+                                run_id=run_id,
+                                params_hash=phase_hashes["convert"],
+                                execution_id=ctx.execution_id,
+                                completed_at=now_iso(),
+                                source=ds.relative_to_root(video_path),
+                                source_uid=video_uid,
+                                recorded_output=ds.relative_to_root(pv_path),
+                            ),
+                        )
+
+                    else:
+                        pv_path = reusable_pv
+
+                    track_marker = _reusable_marker(
+                        ds,
+                        seq_dir,
+                        "track",
+                        phase_hash=phase_hashes["track"],
+                        video_path=video_path,
+                    )
+                    if track_marker is None:
+                        _clear_phase_outputs(seq_dir, "track")
+                        write_inflight(
+                            seq_dir,
+                            new_inflight(
+                                execution_id=ctx.execution_id,
+                                host=socket.gethostname(),
+                                pid=os.getpid(),
+                                phase="track",
+                                timeout_seconds=timeout,
+                            ),
+                        )
+                        ctx.progress.on_phase("track", key)
+                        run_trex_track(
+                            pv_path,
+                            seq_dir,
+                            track_max_individuals=track_max_individuals,
+                            track_max_speed=track_max_speed,
+                            track_max_reassign_time=track_max_reassign_time,
+                            track_trusted_probability=track_trusted_probability,
+                            analysis_range=analysis_range,
+                            visual_identification_model_path=visual_identification_model_path,
+                            auto_train=auto_train,
+                            extra_settings=track_extra_settings,
+                            timeout=timeout,
+                            trex_conda_env=trex_conda_env,
+                            trex_bin=trex_bin,
+                            display=display,
+                            cancel_check=cancel_check,
+                        )
+                        results = sorted(seq_dir.glob("*.results"))
+                        track_marker = PhaseMarker(
+                            phase="track",
+                            run_id=run_id,
+                            params_hash=phase_hashes["track"],
+                            execution_id=ctx.execution_id,
+                            completed_at=now_iso(),
+                            source=ds.relative_to_root(video_path),
+                            source_uid=video_uid,
+                            recorded_output=(
+                                ds.relative_to_root(results[0]) if results else ""
+                            ),
+                        )
+                        write_phase_marker(seq_dir, track_marker)
+                        recomputed = True
+                    else:
+                        recomputed = False
+                finally:
+                    clear_inflight(seq_dir)
 
                 data_dir = seq_dir / "data"
                 npz_paths = sorted(data_dir.glob("*.npz")) if data_dir.is_dir() else []
-                pv_matches = sorted(seq_dir.glob("*.pv"))
                 index_rows.append(
                     TRexIndexRow(
                         run_id=run_id,
                         group=group,
                         sequence=sequence,
                         abs_path=Path(ds.relative_to_root(seq_dir)),
-                        video_abs_path=ds.relative_to_root(video_path),
+                        # From the marker, so the row names what produced the
+                        # data rather than what the scope resolves to now. The
+                        # two can only differ when the marker does not know
+                        # (an adopted directory), since a known mismatch forced
+                        # the recompute above.
+                        video_abs_path=(
+                            track_marker.source or ds.relative_to_root(video_path)
+                        ),
                         params_hash=params_hash,
                         n_individuals=len(npz_paths),
-                        pv_path=(
-                            ds.relative_to_root(pv_matches[0]) if pv_matches else ""
-                        ),
+                        pv_path=ds.relative_to_root(pv_path),
                     )
                 )
 
                 if convert_to_tracks:
+                    # A recomputed entry must replace its parquet: the bridge
+                    # otherwise declines to overwrite, and the tracks table
+                    # would keep the results of the run just invalidated.
                     _bridge_npz_to_tracks(
-                        ds, group, sequence, npz_paths, overwrite=overwrite
+                        ds,
+                        group,
+                        sequence,
+                        npz_paths,
+                        overwrite=overwrite or recomputed,
                     )
 
                 ctx.progress.on_entry_end(i + 1, len(work_items), key)
@@ -400,9 +798,10 @@ def run_trex(
                 idx.append(index_rows)
                 idx.mark_finished(run_id)
 
+    held = f", {len(skipped)} held by another execution" if skipped else ""
     print(
         f"[run_trex] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(work_items)} sequences) -> {run_root}"
+        f"({len(index_rows)}/{len(work_items)} sequences{held}) -> {run_root}"
     )
     return run_id
 
