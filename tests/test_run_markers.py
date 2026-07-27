@@ -34,6 +34,7 @@ from mosaic.core.pipeline.markers import (
     phase_marker_path,
     read_inflight,
     read_phase_marker,
+    refresh_inflight,
     write_inflight,
     write_phase_marker,
 )
@@ -174,7 +175,7 @@ def test_clearing_markers(tmp_path: Path) -> None:
 
 def test_inflight_round_trips_and_clears(tmp_path: Path) -> None:
     marker = new_inflight(
-        execution_id="EXEC1", host="box", pid=42, phase="track", timeout_seconds=600
+        execution_id="EXEC1", host="box", pid=42, phase="track", idle_seconds=900
     )
     write_inflight(tmp_path, marker)
 
@@ -204,21 +205,39 @@ def test_newer_schema_inflight_is_still_honoured(tmp_path: Path) -> None:
     assert marker.execution_id == "OTHER"
 
 
-def test_expiry_adds_the_grace_to_the_phase_timeout() -> None:
-    """The phase cannot outlive its own enforced timeout, so timeout+grace covers it."""
-    long_phase = 6 * 3600
-    stamp = inflight_expiry(long_phase, instant(0))
+def test_expiry_adds_the_grace_to_the_idle_bound() -> None:
+    """A refreshed claim need only outlast one idle window, so idle+grace covers it."""
+    long_idle = 6 * 3600
+    stamp = inflight_expiry(long_idle, instant(0))
 
     assert datetime.datetime.fromisoformat(stamp) == instant(
-        long_phase + INFLIGHT_GRACE_SECONDS
+        long_idle + INFLIGHT_GRACE_SECONDS
     )
 
 
 def test_expiry_has_a_floor() -> None:
-    """A short timeout must not produce a claim that expires during setup."""
+    """A short idle bound must not produce a claim that expires during setup."""
     stamp = inflight_expiry(1, instant(0))
 
     assert datetime.datetime.fromisoformat(stamp) == instant(INFLIGHT_MIN_TTL_SECONDS)
+
+
+def test_refresh_extends_the_expiry_and_keeps_identity(tmp_path: Path) -> None:
+    """The activity signal re-stamps a live claim's expiry, moving nothing else."""
+    marker = new_inflight(
+        execution_id="EXEC1", host="box", pid=7, phase="track", idle_seconds=900
+    )
+    write_inflight(tmp_path, marker)
+
+    refreshed = refresh_inflight(tmp_path, marker, 900, now=instant(1000))
+
+    assert refreshed.expires_at == inflight_expiry(900, instant(1000))
+    assert refreshed.expires_at != marker.expires_at, "the expiry must move forward"
+    # Only the expiry changes; every identity field is preserved.
+    assert refreshed.model_dump(exclude={"expires_at"}) == marker.model_dump(
+        exclude={"expires_at"}
+    )
+    assert read_inflight(tmp_path) == refreshed, "the refresh is persisted to disk"
 
 
 # --- Liveness -------------------------------------------------------------

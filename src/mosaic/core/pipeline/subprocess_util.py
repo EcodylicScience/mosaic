@@ -37,6 +37,21 @@ class ProcessCancelled(RuntimeError):
         super().__init__(f"subprocess cancelled: {' '.join(map(str, argv[:4]))} ...")
 
 
+class IdleTimeoutExpired(subprocess.TimeoutExpired):
+    """Raised by :func:`run_supervised` when the child produced no output for
+    ``idle_timeout`` seconds -- an inactivity (hang) kill.
+
+    Subclasses :class:`subprocess.TimeoutExpired` so an existing ``except
+    subprocess.TimeoutExpired`` still catches it, while a caller that wants to
+    tell a hang apart from the absolute wall-clock ceiling (a plain
+    ``TimeoutExpired``) or a cancel (:class:`ProcessCancelled`) can match this
+    type. ``self.timeout`` carries the idle window, not the elapsed runtime.
+    """
+
+    def __str__(self) -> str:
+        return f"Command '{self.cmd}' produced no output for {self.timeout} seconds"
+
+
 def set_pdeathsig() -> None:
     """Ask the kernel to signal this process when its parent dies (Linux only).
 
@@ -86,6 +101,7 @@ def run_supervised(
     env: dict[str, str] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     timeout: float | None = None,
+    idle_timeout: float | None = None,
     poll_interval: float = 0.5,
     on_output: Callable[[str], None] | None = None,
 ) -> tuple[str, str, int]:
@@ -101,10 +117,20 @@ def run_supervised(
         Polled every ``poll_interval`` seconds; when it returns True the group is
         terminated and :class:`ProcessCancelled` is raised.
     timeout:
-        Wall-clock limit; on expiry the group is terminated and
+        Absolute wall-clock ceiling. ``None`` (the default) imposes no total
+        limit; on expiry the group is terminated and
         ``subprocess.TimeoutExpired`` is raised (matching ``subprocess.run``).
+    idle_timeout:
+        Inactivity limit. When set, the group is terminated once the child has
+        produced *no* output -- on stdout **or** stderr -- for this many
+        seconds, and :class:`IdleTimeoutExpired` is raised. This is the right
+        bound for a tool whose runtime is unpredictable but which prints
+        progress while healthy (e.g. TREx): a live long run keeps resetting it,
+        a wedged one trips it. ``None`` disables it.
     on_output:
-        Optional per-stdout-line callback (e.g. to parse progress).
+        Optional per-stdout-line callback (e.g. to parse progress). Output on
+        either stream counts as activity for ``idle_timeout`` regardless of
+        this callback.
     """
     popen_kwargs: dict[str, object] = {}
     if sys.platform != "win32":
@@ -123,12 +149,24 @@ def run_supervised(
     out_chunks: list[str] = []
     err_chunks: list[str] = []
 
+    # Last instant either stream produced a line, for the inactivity watchdog.
+    # A one-element list is the mutation cell shared with the poll loop; the
+    # lock guards the read/write across threads (the GIL makes the assignment
+    # itself atomic, but pairing it with the loop's read keeps it explicit).
+    activity_lock = threading.Lock()
+    last_activity = [time.monotonic()]
+
+    def _note_activity() -> None:
+        with activity_lock:
+            last_activity[0] = time.monotonic()
+
     def _reader(
         stream: IO[str], sink: list[str], echo: Callable[[str], None] | None
     ) -> None:
         try:
             for line in iter(stream.readline, ""):
                 sink.append(line)
+                _note_activity()
                 if echo is not None:
                     try:
                         echo(line)
@@ -149,6 +187,7 @@ def run_supervised(
     start = time.monotonic()
     cancelled = False
     timed_out = False
+    idled_out = False
     while True:
         try:
             proc.wait(timeout=poll_interval)
@@ -158,11 +197,18 @@ def run_supervised(
         if cancel_check is not None and cancel_check():
             cancelled = True
             break
-        if timeout is not None and (time.monotonic() - start) > timeout:
+        now = time.monotonic()
+        if timeout is not None and (now - start) > timeout:
             timed_out = True
             break
+        if idle_timeout is not None:
+            with activity_lock:
+                idle = now - last_activity[0]
+            if idle > idle_timeout:
+                idled_out = True
+                break
 
-    if cancelled or timed_out:
+    if cancelled or timed_out or idled_out:
         terminate_group(proc)
 
     t_out.join(timeout=5)
@@ -172,6 +218,10 @@ def run_supervised(
 
     if cancelled:
         raise ProcessCancelled(argv)
+    if idled_out:
+        raise IdleTimeoutExpired(
+            list(argv), idle_timeout or 0.0, output=stdout, stderr=stderr
+        )
     if timed_out:
         raise subprocess.TimeoutExpired(
             list(argv), timeout or 0.0, output=stdout, stderr=stderr

@@ -72,9 +72,20 @@ def trex_command(
         str | None, typer.Option("--visual-identification-model-path")
     ] = None,
     auto_train: Annotated[bool, typer.Option("--auto-train/--no-auto-train")] = False,
-    timeout: Annotated[
-        int, typer.Option("--timeout", help="Per-video subprocess timeout (seconds).")
-    ] = 600,
+    idle_timeout: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout",
+            help="Kill a phase after this many seconds with no TREx output.",
+        ),
+    ] = 900,
+    max_runtime: Annotated[
+        float | None,
+        typer.Option(
+            "--max-runtime",
+            help="Optional hard per-phase wall-clock cap (seconds); unlimited if omitted.",
+        ),
+    ] = None,
     trex_conda_env: Annotated[str | None, typer.Option("--trex-conda-env")] = None,
     trex_bin: Annotated[str | None, typer.Option("--trex-bin")] = None,
     display: Annotated[str | None, typer.Option("--display")] = None,
@@ -148,7 +159,8 @@ def trex_command(
                 visual_identification_model_path=visual_identification_model_path,
                 auto_train=auto_train,
                 track_extra_settings=track_extra,
-                timeout=timeout,
+                idle_timeout=idle_timeout,
+                max_runtime=max_runtime,
                 trex_conda_env=trex_conda_env,
                 trex_bin=trex_bin,
                 display=display,

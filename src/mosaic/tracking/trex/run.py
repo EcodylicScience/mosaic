@@ -207,10 +207,12 @@ def _build_args(params: dict[str, Any]) -> list[str]:
 def _run_trex(
     args: list[str],
     *,
-    timeout: int,
+    idle_timeout: float,
+    max_runtime: float | None = None,
     invocation: list[str] | None = None,
     env: dict[str, str] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute ``trex`` with *args* and return (stdout, stderr).
 
@@ -243,7 +245,9 @@ def _run_trex(
         cmd,
         env=run_env,
         cancel_check=cancel_check,
-        timeout=timeout,
+        timeout=max_runtime,
+        idle_timeout=idle_timeout,
+        on_output=on_output,
     )
 
     if returncode != 0:
@@ -269,11 +273,13 @@ def run_trex_convert(
     cm_per_pixel: float = 1.0,
     meta_encoding: str = "gray",
     extra_settings: dict[str, Any] | None = None,
-    timeout: int = 600,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
     display: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
 ) -> TRexConvertResult:
     """Convert a raw video to T-Rex ``.pv`` format.
 
@@ -302,8 +308,13 @@ def run_trex_convert(
         Pixel encoding: ``"gray"`` or ``"rgb8"`` (default ``"gray"``).
     extra_settings : dict, optional
         Additional T-Rex parameters passed as ``-key value`` pairs.
-    timeout : int
-        Subprocess timeout in seconds (default 600).
+    idle_timeout : float
+        Kill the subprocess after this many seconds with no output on either
+        stream (an inactivity/hang watchdog; default 900). TRex prints progress
+        while healthy, so a live long run keeps resetting it.
+    max_runtime : float, optional
+        Optional absolute wall-clock ceiling; ``None`` (default) imposes no
+        total limit and leaves the ceiling to the caller / queue.
     trex_conda_env : str, optional
         Run ``trex`` inside this conda env via ``conda run -n <env>`` (e.g.
         ``"track"``). Use when TRex lives in a different env than the caller.
@@ -353,10 +364,12 @@ def run_trex_convert(
 
     stdout, stderr = _run_trex(
         _build_args(params),
-        timeout=timeout,
+        idle_timeout=idle_timeout,
+        max_runtime=max_runtime,
         invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
         env=_resolve_display(display),
         cancel_check=cancel_check,
+        on_output=on_output,
     )
 
     # Locate output files
@@ -401,11 +414,13 @@ def run_trex_track(
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
     extra_settings: dict[str, Any] | None = None,
-    timeout: int = 600,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
     display: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
 ) -> TRexTrackResult:
     """Track individuals in a converted ``.pv`` video.
 
@@ -434,8 +449,13 @@ def run_trex_track(
         Automatically train visual identification after tracking (default False).
     extra_settings : dict, optional
         Additional T-Rex parameters passed as ``-key value`` pairs.
-    timeout : int
-        Subprocess timeout in seconds (default 600).
+    idle_timeout : float
+        Kill the subprocess after this many seconds with no output on either
+        stream (an inactivity/hang watchdog; default 900). TRex prints progress
+        while healthy, so a live long run keeps resetting it.
+    max_runtime : float, optional
+        Optional absolute wall-clock ceiling; ``None`` (default) imposes no
+        total limit and leaves the ceiling to the caller / queue.
     trex_conda_env : str, optional
         Run ``trex`` inside this conda env via ``conda run -n <env>``
         (overrides ``MOSAIC_TREX_CONDA_ENV``). See :func:`_trex_invocation`.
@@ -485,10 +505,12 @@ def run_trex_track(
 
     stdout, stderr = _run_trex(
         _build_args(params),
-        timeout=timeout,
+        idle_timeout=idle_timeout,
+        max_runtime=max_runtime,
         invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
         env=_resolve_display(display),
         cancel_check=cancel_check,
+        on_output=on_output,
     )
 
     # Locate output files

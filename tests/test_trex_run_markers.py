@@ -311,6 +311,46 @@ def test_the_claim_is_held_during_the_phase_and_released_after(
     assert read_inflight(seq_dir_of(ds, run_id)) is None, "the claim must be released"
 
 
+def test_the_activity_callback_re_stamps_the_running_claim(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live phase refreshes its own claim as TREx prints progress.
+
+    The claim's expiry is an inactivity bound, so a long healthy run would let
+    it lapse -- and a concurrent execution would read the directory as
+    abandoned -- unless output activity re-stamps it. The callback the phase
+    receives must write the claim back to *this* working directory.
+    """
+    fake = FakeTrex()
+
+    def convert_and_refresh(
+        video_path: Path,
+        seq_dir: Path,
+        *,
+        on_output: Callable[[str], None] | None = None,
+        **kwargs: object,
+    ) -> TRexConvertResult:
+        assert on_output is not None, "the phase must receive the activity callback"
+        # Drop the claim, then fire one progress line; the callback must restore
+        # it -- proof the closure captured this seq_dir and its claim.
+        inflight_marker_path(Path(seq_dir)).unlink(missing_ok=True)
+        on_output("[Statistics] Progress: 10%")
+        assert read_inflight(Path(seq_dir)) is not None, (
+            "output activity re-stamped the claim for this directory"
+        )
+        return fake.convert(video_path, seq_dir, **kwargs)
+
+    monkeypatch.setattr(dr, "run_trex_convert", convert_and_refresh)
+    monkeypatch.setattr(dr, "run_trex_track", fake.track)
+
+    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+
+    assert len(fake.converted) == 1
+    assert read_inflight(seq_dir_of(ds, run_id)) is None, (
+        "the mid-phase refresh must not defeat the final release"
+    )
+
+
 def test_the_claim_is_released_when_a_phase_raises(
     ds: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -425,10 +425,18 @@ def test_trex_params_exclude_throughput_from_run_id():
     from mosaic.tracking.ops.trex import TrexParams
 
     a = TrexParams(
-        detect_model="m.pt", timeout=600, overwrite=False, convert_to_tracks=True
+        detect_model="m.pt",
+        idle_timeout=900,
+        max_runtime=None,
+        overwrite=False,
+        convert_to_tracks=True,
     )
     b = TrexParams(
-        detect_model="m.pt", timeout=30, overwrite=True, convert_to_tracks=False
+        detect_model="m.pt",
+        idle_timeout=30,
+        max_runtime=60,
+        overwrite=True,
+        convert_to_tracks=False,
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
     c = TrexParams(detect_model="other.pt")

@@ -140,7 +140,7 @@ def test_run_trex_passes_invocation_and_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
     out, err = trex_run._run_trex(
         ["-task", "convert"],
-        timeout=5,
+        idle_timeout=5,
         invocation=["/p/conda", "run", "-n", "track", "trex"],
         env={"DISPLAY": ":99"},
     )

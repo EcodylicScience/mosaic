@@ -42,7 +42,8 @@ import os
 import shutil
 import socket
 import sys
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,7 @@ from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
+    InflightMarker,
     PhaseMarker,
     PhaseName,
     clear_inflight,
@@ -64,6 +66,7 @@ from mosaic.core.pipeline.markers import (
     new_inflight,
     read_inflight,
     read_phase_marker,
+    refresh_inflight,
     write_inflight,
     write_phase_marker,
 )
@@ -117,6 +120,46 @@ def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
 # --- Settings, whole and per phase ----------------------------------------
 
 PHASES: Final[tuple[PhaseName, ...]] = ("convert", "track")
+
+# How often the per-line activity callback re-stamps the claim / heartbeat. A
+# TREx progress bar can redraw many times a second, so the throttle keeps that
+# from becoming a per-line disk write while staying well inside the run-log
+# heartbeat cadence and any plausible idle window.
+_INFLIGHT_REFRESH_SECONDS: Final = 15.0
+
+
+def _phase_activity(
+    ctx: JobContext,
+    work_dir: Path,
+    claim: InflightMarker,
+    idle_seconds: float,
+) -> Callable[[str], None]:
+    """Build the per-output-line liveness callback for a running TREx phase.
+
+    Every line TREx prints is proof the phase is alive. On a throttle it (a)
+    advances the run-log heartbeat, so the queue reaper does not read a live
+    multi-hour subprocess as lost, and (b) re-stamps the in-flight claim, so a
+    concurrent execution does not read the working directory as abandoned. Both
+    are the same activity-based liveness the inactivity watchdog uses, and both
+    are best-effort: a missed refresh only shortens the claim, never aborts the
+    run. Runs on the subprocess reader thread; ``ctx``/``run_log`` are untouched
+    by the main thread for the duration of the phase.
+    """
+    last_refresh = [0.0]
+
+    def _on_line(_line: str) -> None:
+        now = time.monotonic()
+        if now - last_refresh[0] < _INFLIGHT_REFRESH_SECONDS:
+            return
+        last_refresh[0] = now
+        ctx.heartbeat()
+        try:
+            _ = refresh_inflight(work_dir, claim, idle_seconds)
+        except OSError:
+            pass
+
+    return _on_line
+
 
 # Which settings each TREx task actually consumes, from the two parameter dicts
 # built in ``trex/run.py``. ``track_max_individuals`` appears in **both**: it is
@@ -417,7 +460,8 @@ def run_trex(
     auto_train: bool = False,
     track_extra_settings: dict[str, Any] | None = None,
     # execution
-    timeout: int = 600,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
     display: str | None = None,
@@ -626,7 +670,7 @@ def run_trex(
                             host=socket.gethostname(),
                             pid=os.getpid(),
                             phase=None,
-                            timeout_seconds=timeout,
+                            idle_seconds=idle_timeout,
                         ),
                     )
 
@@ -651,16 +695,14 @@ def run_trex(
                         clear_phase_markers(seq_dir)
                         _clear_phase_outputs(seq_dir, "convert")
                         _clear_phase_outputs(seq_dir, "track")
-                        write_inflight(
-                            seq_dir,
-                            new_inflight(
-                                execution_id=ctx.execution_id,
-                                host=socket.gethostname(),
-                                pid=os.getpid(),
-                                phase="convert",
-                                timeout_seconds=timeout,
-                            ),
+                        convert_claim = new_inflight(
+                            execution_id=ctx.execution_id,
+                            host=socket.gethostname(),
+                            pid=os.getpid(),
+                            phase="convert",
+                            idle_seconds=idle_timeout,
                         )
+                        write_inflight(seq_dir, convert_claim)
                         ctx.progress.on_phase("convert", key)
                         convert_result = run_trex_convert(
                             video_path,
@@ -673,11 +715,15 @@ def run_trex(
                             cm_per_pixel=cm_per_pixel,
                             meta_encoding=meta_encoding,
                             extra_settings=convert_extra_settings,
-                            timeout=timeout,
+                            idle_timeout=idle_timeout,
+                            max_runtime=max_runtime,
                             trex_conda_env=trex_conda_env,
                             trex_bin=trex_bin,
                             display=display,
                             cancel_check=cancel_check,
+                            on_output=_phase_activity(
+                                ctx, seq_dir, convert_claim, idle_timeout
+                            ),
                         )
                         pv_path = convert_result.pv_path
                         write_phase_marker(
@@ -706,16 +752,14 @@ def run_trex(
                     )
                     if track_marker is None:
                         _clear_phase_outputs(seq_dir, "track")
-                        write_inflight(
-                            seq_dir,
-                            new_inflight(
-                                execution_id=ctx.execution_id,
-                                host=socket.gethostname(),
-                                pid=os.getpid(),
-                                phase="track",
-                                timeout_seconds=timeout,
-                            ),
+                        track_claim = new_inflight(
+                            execution_id=ctx.execution_id,
+                            host=socket.gethostname(),
+                            pid=os.getpid(),
+                            phase="track",
+                            idle_seconds=idle_timeout,
                         )
+                        write_inflight(seq_dir, track_claim)
                         ctx.progress.on_phase("track", key)
                         run_trex_track(
                             pv_path,
@@ -728,11 +772,15 @@ def run_trex(
                             visual_identification_model_path=visual_identification_model_path,
                             auto_train=auto_train,
                             extra_settings=track_extra_settings,
-                            timeout=timeout,
+                            idle_timeout=idle_timeout,
+                            max_runtime=max_runtime,
                             trex_conda_env=trex_conda_env,
                             trex_bin=trex_bin,
                             display=display,
                             cancel_check=cancel_check,
+                            on_output=_phase_activity(
+                                ctx, seq_dir, track_claim, idle_timeout
+                            ),
                         )
                         results = sorted(seq_dir.glob("*.results"))
                         track_marker = PhaseMarker(

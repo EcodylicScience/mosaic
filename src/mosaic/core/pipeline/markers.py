@@ -37,14 +37,16 @@ with it, with no reconciliation rule, would be worse than the problem. So the
 marker stores only the link -- the ``execution_id`` -- and
 :func:`inflight_state` resolves it.
 
-The expiry is still needed, for two reasons the run-log cannot cover. A TREx
-phase is one multi-hour subprocess that writes no run-log record while it
-runs, so run-log silence is not evidence of death for this kind of work; and
-an untracked run (``track=False``, the notebook path) has no run-log at all.
-The expiry is written by whoever created the marker and derived from that
-caller's own enforced subprocess timeout, so the sweeper never has to consult
-a queue lease interval -- mosaic does not import mosaic-queue, and a run
-started from a notebook holds no lease.
+The expiry is still needed, for two reasons the run-log cannot cover. An
+untracked run (``track=False``, the notebook path) has no run-log at all, and a
+tracked one's run-log heartbeat is coarse. So the claim carries its own expiry,
+**refreshed while the phase keeps producing output** (:func:`refresh_inflight`)
+and derived from the caller's *inactivity* bound rather than a total-runtime one
+-- the same liveness-from-activity rule mosaic-queue's reaper already applies. A
+live multi-hour phase re-stamps its claim as it prints; a holder that dies stops
+refreshing and the claim self-voids one idle window (plus grace) after its last
+line. The sweeper never has to consult a queue lease interval -- mosaic does not
+import mosaic-queue, and a run started from a notebook holds no lease.
 
 **Storage constraint.** ``atomic_write`` is an ``os.replace`` and is atomic on
 one filesystem. Two hosts writing one sync-service folder can therefore both
@@ -82,6 +84,7 @@ __all__ = [
     "phase_marker_path",
     "read_inflight",
     "read_phase_marker",
+    "refresh_inflight",
     "write_inflight",
     "write_phase_marker",
 ]
@@ -99,12 +102,14 @@ MARKER_SCHEMA_VERSION: Final = 1
 MARKER_PREFIX: Final = ".mosaic-"
 INFLIGHT_MARKER_NAME: Final = f"{MARKER_PREFIX}inflight.json"
 
-# Added to the caller's own phase timeout to get the claim's expiry. The
-# timeout is an enforced wall-clock kill, so the phase cannot outlive it; the
-# grace covers process teardown and clock skew between hosts on a shared mount.
+# Added to the caller's inactivity window to get the claim's expiry: silence up
+# to the idle bound is normal (the phase refreshes its claim on output), so the
+# claim must outlast one idle window. The grace covers process teardown and
+# clock skew between hosts on a shared mount.
 INFLIGHT_GRACE_SECONDS: Final = 900
-# Floor, so a caller who passes a very short timeout does not produce a claim
-# that expires while its own successor phase is still setting up.
+# Floor, so a caller who passes a very short idle bound does not produce a claim
+# that expires while its own successor phase is still setting up, before its
+# first output line refreshes it.
 INFLIGHT_MIN_TTL_SECONDS: Final = 1800
 
 
@@ -267,17 +272,17 @@ def clear_inflight(work_dir: Path) -> None:
     inflight_marker_path(work_dir).unlink(missing_ok=True)
 
 
-def inflight_expiry(
-    timeout_seconds: float, now: datetime.datetime | None = None
-) -> str:
-    """Return the ``expires_at`` for a claim covering a *timeout_seconds* phase.
+def inflight_expiry(idle_seconds: float, now: datetime.datetime | None = None) -> str:
+    """Return the ``expires_at`` for a claim refreshed every *idle_seconds*.
 
-    *timeout_seconds* is the caller's own enforced subprocess wall-clock limit,
-    so the phase provably cannot outlive it. The grace and the floor cover
-    teardown, setup between phases, and modest clock skew.
+    *idle_seconds* is the caller's *inactivity* bound -- the longest the phase
+    goes silent before it is declared hung and killed -- so a claim refreshed on
+    output activity (:func:`refresh_inflight`) provably outlives any real gap
+    between refreshes. The grace and the floor cover teardown, setup before the
+    first output line, and modest clock skew.
     """
     moment = now or datetime.datetime.now(datetime.timezone.utc)
-    ttl = max(timeout_seconds + INFLIGHT_GRACE_SECONDS, INFLIGHT_MIN_TTL_SECONDS)
+    ttl = max(idle_seconds + INFLIGHT_GRACE_SECONDS, INFLIGHT_MIN_TTL_SECONDS)
     return (moment + datetime.timedelta(seconds=ttl)).isoformat()
 
 
@@ -287,17 +292,38 @@ def new_inflight(
     host: str,
     pid: int,
     phase: PhaseName | None,
-    timeout_seconds: float,
+    idle_seconds: float,
 ) -> InflightMarker:
-    """Build a claim expiring after a *timeout_seconds* phase."""
+    """Build a claim tolerating *idle_seconds* of silence between refreshes."""
     return InflightMarker(
         execution_id=execution_id,
         host=host,
         pid=pid,
         phase=phase,
         started_at=now_iso(),
-        expires_at=inflight_expiry(timeout_seconds),
+        expires_at=inflight_expiry(idle_seconds),
     )
+
+
+def refresh_inflight(
+    work_dir: Path,
+    marker: InflightMarker,
+    idle_seconds: float,
+    *,
+    now: datetime.datetime | None = None,
+) -> InflightMarker:
+    """Re-stamp *marker*'s expiry while its phase is still producing output.
+
+    Called on the activity signal (each line the tool prints), so a live
+    multi-hour phase keeps its claim fresh; a holder that dies stops refreshing
+    and the claim self-voids ``idle_seconds`` (plus grace) after its last line.
+    Every identity field is preserved -- only ``expires_at`` moves.
+    """
+    refreshed = marker.model_copy(
+        update={"expires_at": inflight_expiry(idle_seconds, now)}
+    )
+    write_inflight(work_dir, refreshed)
+    return refreshed
 
 
 def _parse_instant(stamp: str) -> datetime.datetime | None:

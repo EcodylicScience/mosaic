@@ -60,7 +60,10 @@ class TrexParams(Params):
     # settings-dict hash already omits them, so this keeps params.json <-> run_id consistent).
     convert_to_tracks: Annotated[bool, HASH_EXCLUDE] = True
     overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    timeout: Annotated[int, HASH_EXCLUDE] = 600
+    # Inactivity (hang) watchdog: kill a phase after this many seconds with no TREx
+    # output. max_runtime is an optional absolute ceiling (None -> the queue owns it).
+    idle_timeout: Annotated[float, HASH_EXCLUDE] = 900
+    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
 
 
 @register_op
@@ -105,7 +108,8 @@ class TrexOp(Op[TrexParams]):
             track_extra_settings=params.track_extra_settings,
             overwrite=params.overwrite,
             convert_to_tracks=params.convert_to_tracks,
-            timeout=params.timeout,
+            idle_timeout=params.idle_timeout,
+            max_runtime=params.max_runtime,
             # conda-env / bin / display are environment (image) concerns, so left unset here;
             # the trex runner resolves them from MOSAIC_TREX_CONDA_ENV / _BIN / _DISPLAY. This
             # keeps the run_id independent of *where* it ran.
