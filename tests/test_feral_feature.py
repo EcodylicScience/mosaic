@@ -141,9 +141,13 @@ class TestPathResolution:
         assert _resolve_dataset_path(None, "/abs/model") == Path("/abs/model")
         assert _resolve_dataset_path(None, "relative/model") == Path("relative/model")
 
-    def test_none_stays_none(self, tmp_path: Path) -> None:
-        assert _resolve_dataset_path(self._dataset(tmp_path), None) is None
-        assert _resolve_dataset_path(None, None) is None
+    def test_a_path_is_accepted_as_well_as_a_string(self, tmp_path: Path) -> None:
+        """``params.model_dir`` is a pydantic ``Path``; the config copies are ``str``."""
+        ds = self._dataset(tmp_path)
+
+        assert _resolve_dataset_path(ds, Path("models/feral/0.1-abc")) == (
+            _resolve_dataset_path(ds, "models/feral/0.1-abc")
+        )
 
 
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
