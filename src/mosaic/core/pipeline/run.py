@@ -29,9 +29,14 @@ from mosaic.core.helpers import (
 from ._utils import (
     FeatureMeta,
     Scope,
+    atomic_write,
     derive_storage_name,
     hash_params,
     json_ready,
+)
+from .identity_scheme import (
+    FEATURE_IDENTITY_SCHEME,
+    write_identity_scheme,
 )
 from .index import (
     FeatureIndexRow,
@@ -581,17 +586,48 @@ def _run_feature_impl(
 
     params_path = run_root / "params.json"
     try:
+        # Deliberately json_ready(feature.params), not identity_dump(): this is
+        # the provenance record of what ran, so it keeps HASH_EXCLUDE fields
+        # that identity drops. It is therefore NOT the hash payload and must
+        # never be mistaken for one.
         save_payload: dict[str, object] = {
             "_params": json_ready(feature.params),
             "_inputs": feature.inputs.model_dump(),
             "_frame_range": [frame_start, frame_end],
+            # The resolved fit scope, which was previously hashed and discarded,
+            # leaving a scope_dependent run's training set unrecoverable from
+            # disk. Sorted for a stable diff, and a precondition for the
+            # reverse-dependency index in stage 6.1.
+            #
+            # Meaningful only for scope_dependent = True runs. A scope-free
+            # feature gets one run_id for every scope, so two differently scoped
+            # invocations share this file and the value is "whichever ran last"
+            # rather than the union -- which is not what an edge walk needs.
+            "_scope": {
+                "scope_dependent": feature.scope_dependent,
+                "entries": [list(entry) for entry in sorted(scope.entries)],
+            },
         }
-        params_path.write_text(json.dumps(save_payload, indent=2))
+        atomic_write(
+            params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
+        )
     except Exception as exc:
         print(
             f"[feature:{feature.name}] failed to save params.json: {exc}",
             file=sys.stderr,
         )
+
+    # The identity-scheme marker. Written atomically and NOT best-effort: it is
+    # what makes a half-migrated dataset detectable, so a silently skipped write
+    # is a wrong answer rather than a cosmetic loss. run_id carries the
+    # *feature's* version, never the version of the hashing contract, and
+    # retrofitting this onto identifiers already on disk needs provenance that
+    # does not exist -- so it has to be written from the start.
+    #
+    # It enters no hash and no path. Folding it into compute_run_id would make
+    # the marker itself move every identifier, so the detector would cause the
+    # event it exists to detect.
+    write_identity_scheme(run_root)
 
     # Index CSV setup -- the permanent record of what-ran (run_id, version,
     # params_hash, started_at per entry); complemented by params.json in run_root.
@@ -717,6 +753,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             skip_keys.add(entry_key)
@@ -786,6 +823,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             del result_df
@@ -852,6 +890,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             del result_df
@@ -901,6 +940,7 @@ def _run_feature_impl(
                 abs_path=Path(ds.relative_to_root(run_root)),
                 n_rows=0,
                 params_hash=params_hash,
+                identity_scheme=FEATURE_IDENTITY_SCHEME,
             )
         )
 

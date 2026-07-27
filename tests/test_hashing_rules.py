@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import json
 import inspect
 import subprocess
 import sys
@@ -35,6 +36,16 @@ from mosaic.core.pipeline._utils import (
     hash_params,
     identity_ready,
     json_ready,
+)
+from mosaic.core.pipeline.identity_scheme import (
+    FEATURE_IDENTITY_SCHEME,
+    MARKER_NAME,
+    read_identity_scheme,
+)
+from mosaic.core.pipeline.index import (
+    FeatureIndexRow,
+    feature_index,
+    feature_run_root,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
 from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
@@ -480,3 +491,77 @@ def test_the_index_lock_is_reentrant_within_a_thread() -> None:
         with index_lock(path, timeout=5):
             with index_lock(path, timeout=5):
                 pass
+
+
+# --- 0.3 / 0.4: persisted scope and the identity-scheme marker ----------------
+
+
+def test_a_run_records_its_scope_and_scheme(scenario_dataset: Dataset) -> None:
+    """Both are written, and the marker never reaches the identifier."""
+    feature = build_feature("speed-angvel", None, None)
+    result = scenario_dataset.run_feature(feature)
+    run_root = feature_run_root(
+        scenario_dataset, "speed-angvel__from__tracks", str(result.run_id)
+    )
+
+    saved = json.loads((run_root / "params.json").read_text())
+    # The flag mirrors the feature's declaration, so a reader can tell a fit
+    # scope from an apply scope without knowing the feature. Exercised here for
+    # a scope-free feature; a scope-dependent one needs pose columns the
+    # synthetic fixture does not carry.
+    assert saved["_scope"]["scope_dependent"] is feature.scope_dependent
+    assert saved["_scope"]["scope_dependent"] is False
+    assert sorted(tuple(e) for e in saved["_scope"]["entries"]) == [
+        ("", "seq_a"),
+        ("", "seq_b"),
+    ]
+
+    assert read_identity_scheme(run_root) == FEATURE_IDENTITY_SCHEME
+    # The marker is provenance, so it reaches no path segment. That it reaches
+    # no *hash* either is proved by the golden corpus staying byte-identical
+    # across the commit that introduced it, which is a stronger check than
+    # anything assertable here.
+    assert MARKER_NAME not in str(run_root)
+
+
+def test_an_unmarked_run_root_reads_as_predating_the_scheme(tmp_path: Path) -> None:
+    """An honest empty beats a confident wrong answer (migration M3)."""
+    assert read_identity_scheme(tmp_path) == ""
+
+
+def test_the_scheme_column_is_back_compatible(tmp_path: Path) -> None:
+    """Adding the column must not break an index written before it existed.
+
+    Old rows keep an empty cell, meaning "predates the scheme"; new rows carry
+    the current one. Both must survive in one file.
+    """
+    path = tmp_path / "index.csv"
+    legacy = (
+        "abs_path,run_id,started_at,finished_at,feature,version,group,"
+        "sequence,params_hash,n_rows\n"
+        "a.parquet,0.1-aaaaaaaaaa,t,,speed,0.1,,seq_a,aaaaaaaaaa,3\n"
+    )
+    _ = path.write_text(legacy)
+
+    index = feature_index(path)
+    index.append(
+        [
+            FeatureIndexRow(
+                abs_path=Path("b.parquet"),
+                run_id="0.1-bbbbbbbbbb",
+                feature="speed",
+                version="0.1",
+                group="",
+                sequence="seq_b",
+                params_hash="bbbbbbbbbb",
+                n_rows=3,
+                identity_scheme=FEATURE_IDENTITY_SCHEME,
+            )
+        ]
+    )
+
+    with path.open(newline="") as handle:
+        rows = {
+            r["sequence"]: r.get("identity_scheme", "") for r in csv.DictReader(handle)
+        }
+    assert rows == {"seq_a": "", "seq_b": FEATURE_IDENTITY_SCHEME}
