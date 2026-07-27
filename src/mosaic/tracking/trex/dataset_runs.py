@@ -54,6 +54,8 @@ import pandas as pd
 
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params, json_ready
+from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
@@ -120,6 +122,10 @@ def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
 # --- Settings, whole and per phase ----------------------------------------
 
 PHASES: Final[tuple[PhaseName, ...]] = ("convert", "track")
+
+def trex_run_id(settings: Mapping[str, object]) -> str:
+    """Mint a tracker run identifier from the resolved TREx settings."""
+    return op_run_id(TREX_KIND, TREX_VERSION, dict(settings))
 
 # How often the per-line activity callback re-stamps the claim / heartbeat. A
 # TREx progress bar can redraw many times a second, so the throttle keeps that
@@ -513,7 +519,7 @@ def run_trex(
     phase_hashes: dict[PhaseName, str] = {
         phase: hash_params(phase_settings(settings, phase)) for phase in PHASES
     }
-    run_id = f"trex-{params_hash}"
+    run_id = trex_run_id(settings)
     run_root = trex_run_root(ds, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -525,7 +531,13 @@ def run_trex(
         from mosaic.tracking.model_refs import resolve_model
 
         ref = str(detect_model)
-        model_kind = ref.rsplit("-", 1)[0] if ref.count("-") >= 2 else "train-points"
+        # Ask the identity module, not the string. The old `ref.rsplit("-", 1)[0]`
+        # read "train-points.0.1-<digest>" as the kind "train-points.0.1", which
+        # is not registered, so resolve_model looked for a path that never
+        # existed. A ref that is not a run identifier at all (a bare weights
+        # path) falls back rather than guessing, for the same reason.
+        parsed = parse_op_run_id(ref)
+        model_kind = parsed.kind if parsed is not None else "train-points"
         try:
             detect_model_exec, _ = resolve_model(ds, ref, model_kind)
         except (FileNotFoundError, KeyError):

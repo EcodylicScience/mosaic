@@ -236,6 +236,29 @@ def _resolve_max_workers(parallel_workers: int | str | None) -> int:
     return n if n > 1 else 1
 
 
+def frames_run_id(method: str, params: ExtractFramesParams) -> str:
+    """Mint an extraction run identifier. **Frozen -- do not change this.**
+
+    Deliberately does *not* call ``op_run_id``, and deliberately carries no
+    version segment. This is the only mosaic identifier pinned outside mosaic:
+    ``mosaic-api`` writes it to ``AnnotationFrame.run_id``, a Dolt-tracked
+    column, *and embeds it mid-string* in ``image_path`` on rows carrying
+    keypoint annotation labor, where ``image_path`` is additionally a restorable
+    value column -- and it discovers runs by reading this directory name off
+    disk. Moving it orphans every annotated frame path, recoverable only by
+    re-annotating.
+
+    Frozen in algorithm, digest width **and payload**: adding a field to
+    ``ExtractFramesParams`` that reaches ``identity_dump()`` moves it just as
+    surely as changing the format would. A deliberate new selection is expressed
+    as an explicit revision parameter (item 6.4), never by re-minting this.
+
+    ``ExtractFramesOp.version`` stays declared -- ``list_ops`` and ``describe_op``
+    read it -- but it is provenance here, not identity.
+    """
+    return f"{method}-{hash_params(params.identity_dump())}"
+
+
 def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) -> str:
     """Extraction body executed inside a job_context (the op's payload)."""
     method_norm = str(p.method).strip().lower()
@@ -243,7 +266,7 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
         raise ValueError("method must be one of: 'uniform', 'kmeans'")
 
     params_hash = hash_params(p.identity_dump())
-    run_id = f"{method_norm}-{params_hash}"
+    run_id = frames_run_id(method_norm, p)
     ctx.set_run_id(run_id)
 
     run_root = frames_run_root(ds, method_norm, run_id)

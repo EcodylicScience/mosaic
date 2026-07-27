@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
+from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -70,11 +71,13 @@ class TrexParams(Params):
 class TrexOp(Op[TrexParams]):
     """Run TREx (convert + track) over scoped videos, bridging results into ``tracks/``."""
 
-    kind = "trex"
+    kind = TREX_KIND
     category = "convert"
     domain = "tracking"
     resource_class: ClassVar[str] = "gpu"
-    version = "0.1"
+    # Read from the integration rather than restated, so the op and the
+    # standalone run_trex cannot drift into naming the same run two ways.
+    version = TREX_VERSION
     Params = TrexParams
 
     def target(self, params: TrexParams) -> str:

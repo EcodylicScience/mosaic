@@ -287,7 +287,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     r1 = run_op(
         ds, "train-pose", {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
     )
-    assert r1.startswith("train-pose-")
+    assert r1.startswith("train-pose.")
     row = read_run(
         _run_dir(ds), read_runs(_run_dir(ds), kind="train-pose")[0]["execution_id"]
     )
@@ -368,7 +368,7 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
     run_id = run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
-    assert run_id.startswith("infer-pose-")
+    assert run_id.startswith("infer-pose.")
 
     runs = read_runs(_run_dir(ds), kind="infer-pose")
     assert len(runs) == 1 and runs[0]["status"] == "finished"
@@ -417,7 +417,7 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
     direct = run_trex(ds, sequences=["nonexistent"])
     via_op = run_op(ds, "trex", {"sequences": ["nonexistent"]})
     assert direct == via_op
-    assert direct.startswith("trex-")
+    assert direct.startswith("trex.")
 
 
 def test_trex_params_exclude_throughput_from_run_id():
@@ -498,7 +498,7 @@ def test_convert_points_lifecycle(tmp_path):
         "symlink_images": False,
     }
     run_id = run_op(ds, "convert-points", dict(params))
-    assert run_id.startswith("convert-points-")
+    assert run_id.startswith("convert-points.")
 
     # runs-row lifecycle
     runs = read_runs(_run_dir(ds), kind="convert-points")

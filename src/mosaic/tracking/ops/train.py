@@ -14,10 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.tracking.model_refs import resolve_model
@@ -28,6 +28,38 @@ if TYPE_CHECKING:
 
 
 # --- Trained-model index -------------------------------------------------
+
+
+def train_run_id(
+    kind: str, version: str, params: Params, data_fingerprint: str, base_run_id: str
+) -> str:
+    """Mint a training run identifier.
+
+    A named function rather than a dict literal inside three near-identical
+    ``run()`` bodies, so the payload shape is one thing to read, one thing to
+    change, and something the golden corpus can call with fixed arguments and no
+    filesystem.
+
+    Args:
+        kind: The op kind, which is also the directory the run lands in.
+        version: The op's declared version -- a visible segment, not hashed.
+        params: The op params; only ``identity_dump()`` enters the digest, so
+            throughput knobs marked ``HASH_EXCLUDE`` do not bust the cache.
+        data_fingerprint: Digest of the training data, from
+            ``fingerprint_dataset``. Content, so retraining on changed
+            annotations is a different model.
+        base_run_id: The run this one fine-tunes from, or ``""``. Retraining
+            lineage is part of what produced the weights.
+    """
+    return op_run_id(
+        kind,
+        version,
+        {
+            "params": params.identity_dump(),
+            "data": data_fingerprint,
+            "base": base_run_id,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +179,8 @@ class TrainPoseOp(Op[PoseTrainParams]):
             base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
             model_arg = str(base_pt)
 
-        run_id = "{}-{}".format(
-            self.kind,
-            hash_params(
-                {
-                    "params": params.identity_dump(),
-                    "data": fingerprint_dataset(data_yaml),
-                    "base": base_run_id,
-                }
-            ),
+        run_id = train_run_id(
+            self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.epochs)
@@ -212,15 +237,8 @@ class TrainPointsOp(Op[PointTrainParams]):
             base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
             model_arg = str(base_pt)
 
-        run_id = "{}-{}".format(
-            self.kind,
-            hash_params(
-                {
-                    "params": params.identity_dump(),
-                    "data": fingerprint_dataset(data_yaml),
-                    "base": base_run_id,
-                }
-            ),
+        run_id = train_run_id(
+            self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.epochs)
@@ -281,15 +299,12 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
             weights = str(base_pt)
 
-        run_id = "{}-{}".format(
+        run_id = train_run_id(
             self.kind,
-            hash_params(
-                {
-                    "params": params.identity_dump(),
-                    "data": fingerprint_dataset(dataset_dir),
-                    "base": base_run_id,
-                }
-            ),
+            self.version,
+            params,
+            fingerprint_dataset(dataset_dir),
+            base_run_id,
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.epochs)

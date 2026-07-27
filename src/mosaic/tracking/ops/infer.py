@@ -21,6 +21,7 @@ from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
@@ -95,6 +96,23 @@ class LocalizerInferParams(_InferParamsBase):
 # --- Shared machinery ----------------------------------------------------
 
 
+def infer_run_id(kind: str, version: str, params: Params, model_id: str) -> str:
+    """Mint an inference run identifier.
+
+    Args:
+        kind: The op kind, e.g. ``"infer-points"``.
+        version: The op's declared version -- a visible segment, not hashed.
+        params: Op params; only ``identity_dump()`` enters the digest.
+        model_id: The training run that produced the weights, or a digest of
+            the weights path when they were given as a bare path. The model is
+            what determined the predictions, so leaving it out would let two
+            detectors share one identifier.
+    """
+    return op_run_id(
+        kind, version, {"params": params.identity_dump(), "model": model_id}
+    )
+
+
 def _bridge_df_to_tracks(
     ds: Dataset,
     df: pd.DataFrame | None,
@@ -143,6 +161,7 @@ def _run_inference_op(
     ctx: JobContext,
     *,
     kind: str,
+    version: str,
     train_kind: str,
     per_video: Callable[[str, Path, Path, MediaFacts | None], pd.DataFrame | None],
 ) -> str:
@@ -152,9 +171,7 @@ def _run_inference_op(
 
     model_pt, base_run_id = resolve_model(ds, params.model, train_kind)
     model_id = base_run_id or hash_params({"path": str(model_pt)})
-    run_id = "{}-{}".format(
-        kind, hash_params({"params": params.identity_dump(), "model": model_id})
-    )
+    run_id = infer_run_id(kind, version, params, model_id)
     ctx.set_run_id(run_id)
 
     scope = ds.resolve_media_scope(params.groups, params.sequences)
@@ -272,6 +289,7 @@ class InferPoseOp(Op[PoseInferParams]):
             params,
             ctx,
             kind=self.kind,
+            version=self.version,
             train_kind="train-pose",
             per_video=per_video,
         )
@@ -318,6 +336,7 @@ class InferPointsOp(Op[PointInferParams]):
             params,
             ctx,
             kind=self.kind,
+            version=self.version,
             train_kind="train-points",
             per_video=per_video,
         )
@@ -362,6 +381,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             params,
             ctx,
             kind=self.kind,
+            version=self.version,
             train_kind="train-localizer",
             per_video=per_video,
         )

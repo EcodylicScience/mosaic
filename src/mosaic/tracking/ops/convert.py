@@ -19,16 +19,40 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+
+
+def convert_points_run_id(
+    kind: str,
+    version: str,
+    params: Params,
+    xml_fingerprint: str,
+    images_fingerprint: str,
+) -> str:
+    """Mint an annotation-conversion run identifier.
+
+    Both sources are fingerprinted by content: re-exporting the same CVAT task
+    after correcting labels must produce a different dataset, and a changed
+    image set must too.
+    """
+    return op_run_id(
+        kind,
+        version,
+        {
+            "params": params.identity_dump(),
+            "xml": xml_fingerprint,
+            "images": images_fingerprint,
+        },
+    )
 
 
 # --- Converted-dataset index ---------------------------------------------
@@ -106,15 +130,12 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         xml = Path(ds.resolve_path(params.cvat_xml))
         imgs = Path(ds.resolve_path(params.images_dir))
 
-        run_id = "{}-{}".format(
+        run_id = convert_points_run_id(
             self.kind,
-            hash_params(
-                {
-                    "params": params.identity_dump(),
-                    "xml": fingerprint_dataset(xml),
-                    "images": fingerprint_dataset(imgs),
-                }
-            ),
+            self.version,
+            params,
+            fingerprint_dataset(xml),
+            fingerprint_dataset(imgs),
         )
         ctx.set_run_id(run_id)
         out = model_run_root(ds, self.kind, run_id)
