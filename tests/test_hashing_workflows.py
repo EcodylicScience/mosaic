@@ -262,8 +262,11 @@ def test_h3_case2_a_new_source_invalidates_nothing(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "M3/M4: distinguishing the two producers needs the consumed-root record on "
-        "the tracks index row (implementation item 2.4)."
+        "M3/M4: the tracks row now records `producer` and `consumed_source_roots` "
+        "(item 2.4, Stage 2), so which producer made a table and which roots it "
+        "read are both answerable. What is still missing is the composition hash "
+        "that says a root *changed*, and the reverse-dependency walk that turns "
+        "that into a blast radius -- Stage 5 and item 6.2."
     ),
 )
 def test_h3_case3_only_the_branch_whose_source_changed_is_invalidated(

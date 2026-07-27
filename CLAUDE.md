@@ -133,7 +133,7 @@ named roots:
 
 - `media/`        — video files + `index.csv` (ffprobe metadata)
 - `tracks_raw/`   — raw input tracks/labels + `index.csv`
-- `tracks/`       — standardized `<group>__<seq>.parquet`
+- `tracks/`       — standardized `<group>__<seq>.parquet` + typed `index.csv`
 - `labels/<kind>/` — converted manual labels (`.npz`)
 - `features/<name>/<run_id>/` — per-feature outputs
 - `models/<name>/<run_id>/`   — trained model artifacts
@@ -150,7 +150,7 @@ mosaic uses decorator-based registries; new functionality almost always means
 | Decorator                  | Registry            | Lives in                          |
 | -------------------------- | ------------------- | --------------------------------- |
 | `@register_feature`        | `FEATURES`          | `behavior/feature_library/`       |
-| `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_library/`             |
+| `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_converter.py` (impls in `core/track_library/`) |
 | `@register_label_converter`| `LABEL_CONVERTERS`  | `behavior/label_library/`         |
 
 ### Feature protocol
@@ -267,6 +267,53 @@ run_feature(...)             → features/<name>/<run_id>/*.parquet
 Models follow the same shape: `models/<name>/<run_id>/`.
 
 ## Important Conventions
+
+### The tracks index
+
+`tracks/index.csv` is a typed [`IndexCSV`](src/mosaic/core/pipeline/tracks_index.py)
+(`TracksIndexRow`), written atomically under a per-file lock. Do not write it by
+hand — `write_tracks_row()` is the only writer, and `read_tracks_index()` the only
+reader.
+
+Beyond `abs_path`/`group`/`sequence` each row carries `run_id` (the *tracks
+variant* — which recipe produced the table, from
+[`tracks_identity.py`](src/mosaic/core/pipeline/tracks_identity.py)), `producer`
+(`convert-<fmt>` | `trex` | `infer-<kind>`, exactly `parse_op_run_id(run_id).kind`),
+`producer_run_id` (the op run behind it, empty for a conversion, which has none),
+and `consumed_source_roots` (dataset root *keys*, comma-joined and sorted).
+
+Three invariants worth knowing:
+
+- **One row per `(group, sequence)`** — `dedup_keys` is the pair, not the
+  `run_id` triple its sibling indexes use, because all five writers still target
+  one flat parquet path. Stage 3.4 adds `run_id` and makes a second row legal.
+- **Absent is empty.** A missing index reads as an empty frame carrying the full
+  schema; nothing raises. Code that must tell a human to convert first checks for
+  zero rows (see `mosaic sequences`).
+- **Adopt on write, tolerate on read.** An older on-disk schema is widened in
+  memory inside the write lock; readers project without touching disk, so a
+  read-only mount works and looking at a legacy dataset does not rewrite it.
+
+`build_manifest(..., tracks_run_id=...)` selects one variant; `None` means every
+row (not "latest" — a mixed dataset carries different variants on different
+entries).
+
+### Entry names are one path component
+
+A `group` or `sequence` may not contain `/`, `\\` or NUL. mosaic itself survives a
+slash — `to_safe_name` percent-encodes it — but an entry name doubles as a
+directory name in mosaic-api, where it does not. Validated at the three write
+boundaries (`EntryHints`, `write_tracks_row`, `build_tracks_raw_row`) and at no
+read path, so an index that already holds one keeps resolving. Join levels with
+`__`, which `parse_hierarchy` reads by default.
+
+### Op and variant run identifiers
+
+Tracking ops and tracks variants are named `<kind>.<version>-<10-hex-digest>`
+(e.g. `convert-calms21_npy.0.2-6bb5efbf05`). The version is a *visible segment*,
+not a hash term, so bumping it does not re-derive anything.
+`extract-frames` is carved out and frozen — mosaic-api embeds its identifier in
+annotation paths.
 
 ### Track schema
 
