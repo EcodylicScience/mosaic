@@ -25,13 +25,18 @@ each file under a scope directory, stamps the caller's identity, preserves rows
 outside the scopes, and atomic-writes -- without the media densifier, since
 today's tracks are unordered. No API caller exists yet.
 
-Reserved axes (additive, not built): multi-camera / time-chunked raw tracks add
-a scope-level ``camera`` and a per-file time-order (concatenation) axis -- the
-tracks mirror of ``MediaIndexScope``'s ``camera`` + ``order_by_name`` ->
-``video_order``. Both would reuse the shared ``assign_video_order`` ranker and
-land as new keyword scope fields plus reserved columns
-(``write_tracks_index_rows`` already drops transient columns), so nothing here
-needs a redesign when they arrive.
+Reserved axes (additive, not built): multi-camera / time-chunked raw tracks
+would add ``camera`` and ``sync_uuid`` as within-sequence *columns* -- as the
+media index did in its multi-camera phase, where ``camera`` is a column (like
+``id``) and identity stays the ``(group, sequence)`` 2-tuple, not a
+``camera``-widened key. A per-file time-order would number chunks via the shared
+``assign_video_order`` ranker per ``(group, sequence, camera)`` (as
+``densify_video_order`` does). One asymmetry to carry forward: imgstore media
+*probes* ``camera``/``sync_uuid`` from store metadata, but raw track files carry
+none, so tracks-``camera`` must be *assigned* through the scope, never probed.
+These land as new ``TRACKS_RAW_INDEX_COLUMNS`` entries plus new keyword scope
+fields; ``write_tracks_index_rows`` already drops any column outside the schema,
+so nothing here needs a redesign when they arrive.
 """
 
 from __future__ import annotations
@@ -80,9 +85,10 @@ class TracksRawIndexScope:
     the ``_fishN`` strip ``index_tracks_raw`` applies -- here the caller owns the
     grouping. This is the tracks sibling of :class:`MediaIndexScope`; it has no
     ``camera`` or ordering axis today (tracks are unordered). Multi-camera /
-    time-chunked raw tracks would add those as new keyword fields, mirroring
-    ``MediaIndexScope``'s ``camera`` + ``order_by_name`` (see the module
-    docstring).
+    time-chunked raw tracks would add an *assigned* ``camera`` (plus
+    ``sync_uuid``) field here -- populating a within-sequence ``camera`` column,
+    with identity still ``(group, sequence)`` -- and a per-file order, mirroring
+    the media index's multi-camera model (see the module docstring).
     """
 
     directory: Path
@@ -190,8 +196,8 @@ def iter_track_files(
 def write_tracks_index_rows(index_path: Path, df: pd.DataFrame) -> None:
     """Atomically write *df* projected onto ``TRACKS_RAW_INDEX_COLUMNS``.
 
-    The projection fixes column order and drops any transient column; the atomic
-    write guarantees a concurrent reader never sees a partial file.
+    The projection fixes column order and drops any column outside the schema;
+    the atomic write guarantees a concurrent reader never sees a partial file.
     """
     atomic_write(
         index_path, lambda p: df[TRACKS_RAW_INDEX_COLUMNS].to_csv(p, index=False)
