@@ -22,8 +22,10 @@ import pandas as pd
 
 from mosaic.core.helpers import make_entry_key, resolve_frame_range
 
-from ._utils import derive_storage_name, hash_params
+from ._utils import Scope, derive_storage_name
 from .index import feature_index_path, feature_run_root, list_feature_runs
+from .manifest import build_manifest
+from .run import compute_run_id
 from .types import Inputs, Result
 
 if TYPE_CHECKING:
@@ -304,8 +306,16 @@ class Pipeline:
                 )
                 continue
 
+            # Only *construction* is guarded. A mis-specified step, or one whose
+            # upstream could not be constructed, is reported and skipped so the
+            # rest of the preview stays useful. Everything after this point --
+            # scope resolution and identity -- is deliberately unguarded: a
+            # failure there must raise rather than silently yield a value that
+            # is a valid identifier under some other set of assumptions.
             try:
-                # Build inputs from upstream results
+                # Build inputs from upstream results. A KeyError here means an
+                # upstream step failed to construct, so this one cannot be
+                # resolved either -- the correct cascade.
                 if step.input_names:
                     input_items = tuple(mock_results[n] for n in step.input_names)
                 else:
@@ -315,99 +325,13 @@ class Pipeline:
                     inputs=Inputs(input_items), params=step.params
                 )
                 feat_storage_name = storage_name(feature)
-
-                # Resolve frame range from merged kwargs
-                kwargs = {**self.default_run_kwargs, **step.run_kwargs}
-                frame_start, frame_end = resolve_frame_range(
-                    dataset.meta.get("fps_default"),
-                    kwargs.get("filter_start_frame"),
-                    kwargs.get("filter_end_frame"),
-                    kwargs.get("filter_start_time"),
-                    kwargs.get("filter_end_time"),
-                )
-
-                # Target scope for this step: the intended sequence universe
-                # narrowed by any groups/sequences/entries restriction. Used
-                # both for the completeness check and (for scope_dependent
-                # features) the run_id hash.
-                target = _narrow_target(
-                    track_universe,
-                    kwargs.get("groups"),
-                    kwargs.get("sequences"),
-                    kwargs.get("entries"),
-                )
-
-                # Compute expected run_id (same logic as run_feature).
-                # identity_dump() drops HASH_EXCLUDE-marked throughput params so
-                # this stays in sync with run_feature's cache key.
-                hashable: dict[str, object] = {
-                    "_params": feature.params.identity_dump(),
-                    "_inputs": feature.inputs.model_dump(),
-                    "_frame_range": [frame_start, frame_end],
-                }
-                # Scope-dependent features fold the resolved entry set into the
-                # hash (matching compute_run_id in run.py); without this term the
-                # predicted run_id would never match disk for arhmm/kpms/etc.
-                if getattr(feature, "scope_dependent", False):
-                    try:
-                        from .manifest import build_manifest
-
-                        _, scope = build_manifest(
-                            dataset,
-                            feature.inputs,
-                            _as_set(kwargs.get("groups")),
-                            _as_set(kwargs.get("sequences")),
-                            _as_entry_set(kwargs.get("entries")),
-                        )
-                        hashable["_scope_entries"] = sorted(scope.entries)
-                    except Exception:
-                        # Resolution hiccup: fall back to the scope-free hash
-                        # rather than crashing the preview.
-                        pass
-                expected_run_id = f"{feature.version}-{hash_params(hashable)}"
-
-                # Check cache on disk: cached only when the run is *complete*
-                # for this step's target scope, not merely non-empty.
-                run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
-                cached = _run_is_complete(run_root, target)
-                present: set[str] = (
-                    {p.stem for p in run_root.glob("*.parquet")}
-                    if run_root.exists()
-                    else set()
-                )
-                target_keys = {make_entry_key(g, s) for g, s in target}
-                n_present = len(present & target_keys) if target else len(present)
-                n_target = len(target)
-
-                # Staleness: if this step was marked stale by an upstream,
-                # its cache cannot be trusted
-                if step_is_stale:
-                    cached = False
-
-                result = Result(
-                    feature=feat_storage_name,
-                    run_id=expected_run_id if cached else None,
-                )
-                mock_results[step.name] = result
-
-                resolved.append(
-                    {
-                        "step": step,
-                        "storage_name": feat_storage_name,
-                        "expected_run_id": expected_run_id,
-                        "cached": cached,
-                        "stale": step_is_stale,
-                        "mock_result": result,
-                        "feature_short": feature.name,
-                        "n_present": n_present,
-                        "n_target": n_target,
-                    }
-                )
-
             except Exception as e:
-                mock_results[step.name] = Result(
-                    feature=step.feature_cls.name, run_id=None
-                )
+                # Deliberately no mock_results entry. The previous code inserted
+                # Result(feature=step.feature_cls.name) here -- the *short* name
+                # rather than the storage name -- which fed the next step's
+                # Inputs and silently moved every downstream predicted
+                # identifier. Leaving it absent makes dependents fail to
+                # construct too, which is honest.
                 resolved.append(
                     {
                         "step": step,
@@ -420,6 +344,95 @@ class Pipeline:
                         "error": str(e)[:60],
                     }
                 )
+                for child_name in children_of.get(step.name, []):
+                    stale_steps.add(child_name)
+                continue
+
+            # Resolve frame range from merged kwargs
+            kwargs = {**self.default_run_kwargs, **step.run_kwargs}
+            frame_start, frame_end = resolve_frame_range(
+                dataset.meta.get("fps_default"),
+                kwargs.get("filter_start_frame"),
+                kwargs.get("filter_end_frame"),
+                kwargs.get("filter_start_time"),
+                kwargs.get("filter_end_time"),
+            )
+
+            # Target scope for this step: the intended sequence universe
+            # narrowed by any groups/sequences/entries restriction. Used
+            # both for the completeness check and (for scope_dependent
+            # features) the run_id hash.
+            target = _narrow_target(
+                track_universe,
+                kwargs.get("groups"),
+                kwargs.get("sequences"),
+                kwargs.get("entries"),
+            )
+
+            # Identity comes from compute_run_id -- the same function
+            # run_feature calls, over a Scope resolved the same way (P2e).
+            # This prediction is load-bearing for *execution*, not display:
+            # when the predicted directory reads complete, run() skips
+            # run_feature entirely and pins the predicted identifier into
+            # the next step's inputs. A second implementation that drifted
+            # would report "cached" over stale results.
+            #
+            # The build_manifest call is not optional and is not narrowed to
+            # scope_dependent features. compute_run_id takes a *resolved*
+            # Scope and cannot resolve one itself, and deciding here which
+            # features need a scope would put the rule back in two places.
+            # It is cheap to be faithful: compute_run_id ignores the scope
+            # for a scope-free feature, and build_manifest returns an empty
+            # scope for a not-yet-computed upstream rather than raising.
+            if feature.inputs.is_empty:
+                scope = Scope()
+            else:
+                _, scope = build_manifest(
+                    dataset,
+                    feature.inputs,
+                    _as_set(kwargs.get("groups")),
+                    _as_set(kwargs.get("sequences")),
+                    _as_entry_set(kwargs.get("entries")),
+                )
+            expected_run_id, _ = compute_run_id(feature, frame_start, frame_end, scope)
+
+            # Check cache on disk: cached only when the run is *complete*
+            # for this step's target scope, not merely non-empty.
+            run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
+            cached = _run_is_complete(run_root, target)
+            present: set[str] = (
+                {p.stem for p in run_root.glob("*.parquet")}
+                if run_root.exists()
+                else set()
+            )
+            target_keys = {make_entry_key(g, s) for g, s in target}
+            n_present = len(present & target_keys) if target else len(present)
+            n_target = len(target)
+
+            # Staleness: if this step was marked stale by an upstream,
+            # its cache cannot be trusted
+            if step_is_stale:
+                cached = False
+
+            result = Result(
+                feature=feat_storage_name,
+                run_id=expected_run_id if cached else None,
+            )
+            mock_results[step.name] = result
+
+            resolved.append(
+                {
+                    "step": step,
+                    "storage_name": feat_storage_name,
+                    "expected_run_id": expected_run_id,
+                    "cached": cached,
+                    "stale": step_is_stale,
+                    "mock_result": result,
+                    "feature_short": feature.name,
+                    "n_present": n_present,
+                    "n_target": n_target,
+                }
+            )
 
             # If this step is not cached, mark its direct children stale
             # (transitive propagation happens naturally via topological order)
@@ -572,8 +585,7 @@ class Pipeline:
                     run_id=run_id,
                 )
                 print(
-                    f"  [{step.name}] {step.feature_cls.__name__}"
-                    f" -> {run_id} (cached)"
+                    f"  [{step.name}] {step.feature_cls.__name__} -> {run_id} (cached)"
                 )
                 continue
 

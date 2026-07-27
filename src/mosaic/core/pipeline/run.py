@@ -541,6 +541,25 @@ def _run_feature_impl(
         {(str(g), str(s)) for g, s in entries} if entries is not None else None
     )
 
+    # An explicitly empty selector is ambiguous, and currently answers two ways
+    # within one call: on a tracks input the manifest tests truthiness and
+    # yields the *full* scope, while on a feature input IndexCSV.read tests
+    # `is not None` and yields the *empty* one. Neither is what a caller passing
+    # [] meant. Reject it rather than pick a side. Checked after materializing,
+    # so a generator argument is not consumed by the check. Nothing in src/ or
+    # tests/ passes an empty collection, so this raises for no existing caller.
+    for name, selector in (
+        ("groups", groups_set),
+        ("sequences", sequences_set),
+        ("entries", entries_set),
+    ):
+        if selector is not None and not selector:
+            raise ValueError(
+                f"{name}=[] selects nothing, but is read as 'everything' on a "
+                f"tracks input and as 'nothing' on a feature input. Pass None "
+                f"(or omit it) to mean every sequence."
+            )
+
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}

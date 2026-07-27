@@ -27,6 +27,7 @@ import pytest
 
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import (
     Scope,
     hash_params,
@@ -34,6 +35,8 @@ from mosaic.core.pipeline._utils import (
     json_ready,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+from mosaic.core.pipeline.manifest import build_manifest
+from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.run import MissingScopeDeclaration, compute_run_id
 
 PIPELINE_DIR = Path(inspect.getfile(compute_run_id)).parent
@@ -255,13 +258,6 @@ def _files_building_an_identity_payload() -> set[str]:
     return found
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Pipeline._resolve_step_cache rebuilds the hashable payload inline instead of "
-        "calling compute_run_id. Closed by implementation item 0.1."
-    ),
-)
 def test_identity_payload_is_built_in_one_module() -> None:
     """P2e: one function builds the payload; no caller reconstructs it.
 
@@ -270,6 +266,68 @@ def test_identity_payload_is_built_in_one_module() -> None:
     count of literals.
     """
     assert _files_building_an_identity_payload() == {"run.py"}
+
+
+def test_chain_runner_predicts_what_run_feature_computes(
+    scenario_dataset: Dataset,
+) -> None:
+    """P2e, behaviourally: the prediction equals the identifier, not just the code.
+
+    ``test_identity_payload_is_built_in_one_module`` is a structural check --
+    it passes the moment the duplicated dict literal is deleted, whether or not
+    the surviving call site resolves its scope the same way. This asserts the
+    value, over a scope-dependent feature, where getting the scope term wrong
+    is what would show.
+
+    The prediction is load-bearing for execution: when the predicted directory
+    reads complete, ``Pipeline.run`` skips ``run_feature`` and pins the
+    predicted identifier into the next step's inputs.
+    """
+    pipeline = Pipeline()
+    _ = pipeline.add(FeatureStep("pca", FEATURES["PairPoseDistancePCA"], None))
+    predicted = pipeline._resolve_step_cache(scenario_dataset)[0]["expected_run_id"]
+
+    feature = build_feature("pair-posedistance-pca", None, None)
+    _, scope = build_manifest(scenario_dataset, feature.inputs, None, None, None)
+    computed, _ = compute_run_id(feature, None, None, scope)
+
+    assert feature.scope_dependent, "fixture must exercise the scope term"
+    assert scope.entries, "fixture must resolve a non-empty scope"
+    assert predicted == computed
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "A cold multi-step chain still predicts a different identifier than it "
+        "executes: the preview hashes Result(run_id=None) for an uncached upstream "
+        "while execution hashes the concrete run_id. Collapsing the payload (0.1) "
+        "does not close this -- the divergence is in the inputs object, not the "
+        "payload construction. Closed by implementation item 1.1, which resolves "
+        "inputs before hashing and writes the resolution back."
+    ),
+)
+def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None:
+    """The remaining half of P2e, owned by 1.1 rather than 0.1."""
+    pipeline = Pipeline()
+    _ = pipeline.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
+    _ = pipeline.add(
+        FeatureStep("stack", FEATURES["TemporalStack"], None, input_names=["speed"])
+    )
+
+    predicted = pipeline._resolve_step_cache(scenario_dataset)[1]["expected_run_id"]
+
+    # What the same step computes once its upstream is a concrete reference.
+    upstream_feature = build_feature("speed-angvel", None, None)
+    upstream_id, _ = compute_run_id(upstream_feature, None, None, Scope())
+    executed_feature = build_feature(
+        "temporal-stack",
+        [{"feature": "speed-angvel__from__tracks", "run_id": upstream_id}],
+        None,
+    )
+    executed, _ = compute_run_id(executed_feature, None, None, Scope())
+
+    assert predicted == executed
 
 
 # --- P7: index writes are serialized ------------------------------------------

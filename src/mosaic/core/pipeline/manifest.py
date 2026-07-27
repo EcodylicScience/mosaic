@@ -234,7 +234,12 @@ def _resolve_tracks(
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
     for _, row in df.iterrows():
-        g, s = row["group"], row["sequence"]
+        # Coerced to str, matching _read_track_universe in pipeline.py. pandas
+        # infers an all-numeric sequence column as int64, and an un-coerced
+        # np.int64 reaches make_entry_key and raises
+        # AttributeError: 'numpy.int64' object has no attribute 'strip'.
+        # The two readers of this file disagreed until now; only one coerced.
+        g, s = str(row["group"]), str(row["sequence"])
         p = ds.resolve_path(row["abs_path"])
         if not p.exists():
             continue
