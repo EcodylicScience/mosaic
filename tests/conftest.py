@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Mapping
+import importlib.util
+import os
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Callable
 
 import cv2
 import numpy as np
@@ -13,6 +14,35 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+
+# Modules the CI workflow installs through extras (`.[wavelets,imgstore]`).
+# `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
+# presents as a skip rather than a failure -- a green CI that ran less than the
+# workflow installed for. That is not hypothetical: the test step used to invoke
+# `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
+# both extras before the first test ran.
+CI_REQUIRED_MODULES = ("imgstore", "pywt")
+
+
+def pytest_configure() -> None:
+    """Under CI, a missing optional dependency is an error rather than a skip.
+
+    Local runs are unaffected: a developer without ``imgstore`` installed still
+    gets skips, which is the point of ``importorskip``. Only CI, which installs
+    them explicitly, treats their absence as a broken environment.
+    """
+    if not os.environ.get("CI"):
+        return
+    missing = [
+        name for name in CI_REQUIRED_MODULES if importlib.util.find_spec(name) is None
+    ]
+    if missing:
+        raise pytest.UsageError(
+            f"CI installs {', '.join(missing)} through extras, but they are not "
+            "importable. The suite would skip silently instead of failing. Check "
+            "that the test step does not re-sync the environment away "
+            "(uv run --no-sync)."
+        )
 
 
 @pytest.fixture

@@ -56,7 +56,14 @@ jobs:
           # Surfaces any identity term that is order-dependent rather than
           # ordered, which a single fixed seed would hide.
           PYTHONHASHSEED: random
-        run: uv run pytest -q
+        # `--no-sync` is load-bearing. `uv run` syncs the project environment
+        # from the tracked `uv.lock` by default, which installs the project
+        # *without* extras and prunes what it considers extraneous -- undoing
+        # the `[wavelets,imgstore]` install above. `pytest` survives only
+        # because it is in `[dependency-groups] dev`, so the loss is invisible:
+        # the 35 imgstore tests reach `pytest.importorskip` and skip, and CI
+        # reports green while running less than this workflow installs for.
+        run: uv run --no-sync pytest -q
 
   lint-changed:
     runs-on: ubuntu-latest
