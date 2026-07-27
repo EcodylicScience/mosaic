@@ -22,6 +22,7 @@ from .index import (
     missing_outputs_error,
 )
 from .loading import load_entry_data
+from .tracks_index import read_tracks_index, tracks_index_path
 from .types import (
     COLUMNS,
     InputsLike,
@@ -99,6 +100,8 @@ def build_manifest(
     groups: set[str] | None = None,
     sequences: set[str] | None = None,
     entries: set[tuple[str, str]] | None = None,
+    *,
+    tracks_run_id: str | None = None,
     on_missing_run: MissingRunPolicy = "raise",
 ) -> tuple[Manifest, Scope]:
     """Build unified manifest for all input types.
@@ -115,9 +118,14 @@ def build_manifest(
       especially when sequence names are not unique across groups, where a bare
       ``sequences`` filter would be ambiguous.
 
-    ``on_missing_run`` is forwarded to :func:`_resolve_feature`; leave it at
-    ``"raise"`` unless you are predicting an identifier rather than resolving
-    inputs to read.
+    ``tracks_run_id`` selects which tracks *variant* the ``"tracks"`` input
+    resolves to. ``None``, the default, means **every row** -- see
+    :func:`_resolve_tracks` for why that is not "the latest run".
+
+    ``on_missing_run`` is forwarded to both resolvers; leave it at ``"raise"``
+    unless you are predicting an identifier rather than resolving inputs to read.
+
+    Both are keyword-only, so a positional argument cannot land in the wrong one.
     """
     per_input_entries: list[set[tuple[str, str]]] = []
     per_input_paths: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
@@ -127,7 +135,7 @@ def build_manifest(
     for i, item in enumerate(inputs.root):
         if item == "tracks":
             resolved, path_map, full_order, path_map_all = _resolve_tracks(
-                ds, groups, sequences, entries
+                ds, tracks_run_id, groups, sequences, entries, on_missing_run
             )
         else:
             resolved, path_map, full_order, path_map_all = _resolve_feature(
@@ -221,9 +229,11 @@ def build_manifest(
 
 def _resolve_tracks(
     ds: Dataset,
+    run_id: str | None,
     groups: set[str] | None,
     sequences: set[str] | None,
     entries: set[tuple[str, str]] | None = None,
+    on_missing_run: MissingRunPolicy = "raise",
 ) -> tuple[
     set[tuple[str, str]],
     dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -233,30 +243,63 @@ def _resolve_tracks(
     """Resolve track entries and paths from tracks/index.csv.
 
     Returns (scoped_entries, scoped_path_map, full_order, path_map_all).
-    """
-    tracks_root = ds.get_root("tracks")
-    idx_path = tracks_root / "index.csv"
-    if not idx_path.exists():
-        return set(), {}, [], {}
 
-    df = pd.read_csv(idx_path, keep_default_na=False)
+    ``run_id`` names one tracks *variant*. It takes ``_resolve_feature``'s
+    second-positional slot, and mirrors it -- with one deliberate difference:
+
+    **``None`` means every row, not "the latest run".** For a feature, "latest"
+    is well defined because one feature run covers the scope it was given. A
+    tracks index is not like that: a mixed dataset carries different variants on
+    different entries -- some converted, some tracked, some inferred -- so
+    "latest" would silently collapse the universe to whichever recipe was written
+    last, and would erase every adopted legacy row (whose ``run_id`` is honestly
+    empty) the moment one new row appeared.
+
+    ``None`` is well defined *because* M1 holds one row per ``(group, sequence)``.
+    **That expires at Stage 3.4**, which makes a second row legal; ``None``
+    becomes ambiguous there and should raise until item 9.4 widens the selector.
+
+    Unlike ``_resolve_feature`` this does not raise when *every* output resolves
+    missing. An empty tracks manifest is a legitimate cold-start state that
+    ``_read_track_universe``'s glob fallback and ``Dataset.load_tracks``'s
+    auto-convert both depend on; it warns instead.
+    """
+    df = read_tracks_index(ds)
+    if run_id is not None:
+        selected = df[df["run_id"] == run_id]
+        if selected.empty:
+            if on_missing_run == "raise":
+                msg = f"No tracks rows for run_id {run_id!r} in {tracks_index_path(ds)}"
+                raise FileNotFoundError(msg)
+            return set(), {}, [], {}
+        df = selected
 
     # Build full (unscoped) path map and order
+    # One row per (group, sequence) is guaranteed upstream: read_tracks_index
+    # collapses duplicates keep-last, so this loop cannot see two rows for one
+    # entry and does not have to choose between them. That is what makes a
+    # ``run_id`` of None well defined. At Stage 3.4 the collapse goes and this
+    # loop becomes the place that must choose -- or refuse to.
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
+    missing: list[Path] = []
     for _, row in df.iterrows():
-        # Coerced to str, matching _read_track_universe in pipeline.py. pandas
-        # infers an all-numeric sequence column as int64, and an un-coerced
-        # np.int64 reaches make_entry_key and raises
-        # AttributeError: 'numpy.int64' object has no attribute 'strip'.
-        # The two readers of this file disagreed until now; only one coerced.
         g, s = str(row["group"]), str(row["sequence"])
+        entry = (g, s)
         p = ds.resolve_path(row["abs_path"])
         if not p.exists():
+            missing.append(p)
             continue
-        entry = (g, s)
         path_map_all[entry] = (p, ParquetLoadSpec())
         all_entries.append(entry)
+
+    if missing and not all_entries:
+        print(
+            f"[manifest] all {len(missing)} tracks row(s) resolve to missing "
+            f"files; first: {missing[0]}. A moved or synced dataset needs "
+            "ds.make_portable() / ds.rewrite_index_paths().",
+            file=sys.stderr,
+        )
 
     # Sort by (group, sequence) for stable ordering
     full_order = sorted(set(all_entries))

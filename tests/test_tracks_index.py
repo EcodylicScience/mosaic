@@ -550,3 +550,170 @@ def test_an_index_that_already_holds_a_slash_name_still_reads(tmp_path: Path) ->
     )
     df = read_tracks_index(ds)
     assert [str(s) for s in df["sequence"]] == ["task1/test/m075"]
+
+
+# --- the manifest run selector ---------------------------------------------
+
+
+def _feature_inputs():
+    from mosaic.core.pipeline.types import Inputs
+
+    return Inputs(("tracks",))
+
+
+def test_build_manifest_defaults_to_every_variant(tmp_path: Path) -> None:
+    """``None`` is every row, not "the latest run".
+
+    A mixed dataset carries different variants on different entries, so "latest"
+    would collapse the universe to whichever recipe was written last.
+    """
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    for sequence, variant in [("a", "convert-x.0.1-aaaaaaaaaa"), ("b", "trex.0.1-bb")]:
+        write_tracks_row(
+            ds,
+            run_id=variant,
+            group="",
+            sequence=sequence,
+            out_path=_track_parquet(ds, sequence),
+            producer="convert-x",
+            std_format="trex_v1",
+            n_rows=40,
+        )
+
+    _, scope = build_manifest(ds, _feature_inputs())
+    assert scope.entries == {("", "a"), ("", "b")}
+
+
+def test_build_manifest_can_select_one_variant(tmp_path: Path) -> None:
+    """The surface Stage 3.3 drives. Nothing passes a value in M1."""
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    for sequence, variant in [("a", "convert-x.0.1-aaaaaaaaaa"), ("b", "trex.0.1-bb")]:
+        write_tracks_row(
+            ds,
+            run_id=variant,
+            group="",
+            sequence=sequence,
+            out_path=_track_parquet(ds, sequence),
+            producer="convert-x",
+            std_format="trex_v1",
+            n_rows=40,
+        )
+
+    _, scope = build_manifest(ds, _feature_inputs(), tracks_run_id="trex.0.1-bb")
+    assert scope.entries == {("", "b")}
+
+
+def test_an_unknown_variant_raises_but_predicts_empty(tmp_path: Path) -> None:
+    """Mirrors ``_resolve_feature``: loud when executing, quiet when predicting."""
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="a",
+        out_path=_track_parquet(ds, "a"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+    )
+
+    with pytest.raises(FileNotFoundError, match="no-such-variant"):
+        _ = build_manifest(ds, _feature_inputs(), tracks_run_id="no-such-variant")
+
+    _, scope = build_manifest(
+        ds,
+        _feature_inputs(),
+        tracks_run_id="no-such-variant",
+        on_missing_run="empty",
+    )
+    assert scope.entries == set()
+
+
+def test_an_empty_tracks_index_resolves_empty_rather_than_raising(
+    tmp_path: Path,
+) -> None:
+    """The cold-start state two other code paths depend on.
+
+    ``_read_track_universe``'s glob fallback and ``load_tracks``'s auto-convert
+    both rely on this, which is why ``_resolve_tracks`` does not adopt
+    ``_resolve_feature``'s all-missing raise.
+    """
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    _, scope = build_manifest(ds, _feature_inputs())
+    assert scope.entries == set()
+
+
+def test_a_duplicate_entry_resolves_to_one_manifest_entry(tmp_path: Path) -> None:
+    """The M1 invariant holds at read as well as at write.
+
+    An index written before string columns were read as strings can already hold
+    two rows for one entry. The shared reader collapses them keep-last, so
+    ``_resolve_tracks`` never has to choose -- which is what makes a ``run_id``
+    of None well defined. Stage 3.4 removes the collapse and moves the choice
+    there.
+    """
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    _ = _track_parquet(ds, "a")
+    # Written past the typed writer, since its dedup is what normally prevents this.
+    path = tracks_index_path(ds)
+    header = ",".join(TRACKS_INDEX_COLUMNS)
+    rows = "\n".join(
+        f"tracks/a.parquet,{variant},,,,a,convert-x,trex_v1,,,,,40"
+        for variant in ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb")
+    )
+    path.write_text(f"{header}\n{rows}\n")
+
+    _, scope = build_manifest(ds, _feature_inputs())
+    assert scope.entries == {("", "a")}
+    # Last wins -- byte-identical to what the resolver did silently before.
+    assert list(read_tracks_index(ds)["run_id"]) == ["trex.0.1-bbbbbbbbbb"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "A per-frame feature whose tracks scope is empty is recorded as a "
+        "finished run: run.py's global marker fires on `not manifest` alone, "
+        "which cannot tell an input-free global feature from a per-frame one "
+        "that resolved to nothing. Pre-existing and outside Stage 2 -- but "
+        "reachable from Pipeline.run and .clean, not only .status, so a "
+        "mispredicted identifier there is a deletion hazard. The fix is to gate "
+        "the marker on the feature declaring no inputs at all."
+    ),
+)
+def test_an_empty_tracks_scope_is_not_recorded_as_a_completed_run(
+    tmp_path: Path,
+) -> None:
+    """A run over nothing must not claim it finished something.
+
+    ``_resolve_step_cache`` -- the only caller that predicts rather than
+    executes -- is reached from ``Pipeline.run`` and ``.clean`` as well as
+    ``.status``, so this is not merely a display problem.
+    """
+    from mosaic.core.pipeline.index import feature_index, feature_index_path
+    from mosaic.core.pipeline.run import run_feature
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+
+    ds = _dataset(tmp_path)
+    ds.set_root("features", str(tmp_path / "features"))
+    ds.ensure_roots()
+
+    _ = run_feature(ds, SpeedAngvel())
+
+    index_path = feature_index_path(ds, "speed-angvel__from__tracks")
+    if not index_path.exists():
+        return  # nothing recorded at all is the strongest form of the guarantee
+    rows = feature_index(index_path).read()
+    assert "__global__" not in {str(s) for s in rows["sequence"]}, (
+        "an empty tracks scope was recorded as a finished per-frame run"
+    )
