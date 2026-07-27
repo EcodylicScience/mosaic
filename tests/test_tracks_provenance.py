@@ -313,3 +313,98 @@ def test_a_second_producer_replaces_the_first_rather_than_adding_a_row(
 
     row = _one_row(ds)
     assert str(row["producer"]) == "infer-points"
+
+
+# --- superseded entries ----------------------------------------------------
+#
+# A converter that changes how it spells an entry writes rows under the new
+# names while the old ones stay. Both then resolve, and every feature runs over
+# each sequence twice. Reported, never repaired automatically.
+
+
+def test_a_conversion_that_rewrites_the_same_names_says_nothing(
+    tmp_path: Path, capsys
+) -> None:
+    """A normal re-conversion must stay quiet, or the warning is noise."""
+    ds = _dataset(tmp_path)
+    _trex_npz(ds.get_root("tracks_raw") / "seq_a.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+    _ = capsys.readouterr()
+
+    ds.convert_all_tracks(overwrite=True)
+
+    assert "were not rewritten" not in capsys.readouterr().err
+
+
+def test_an_entry_left_behind_by_a_conversion_is_reported(
+    tmp_path: Path, capsys
+) -> None:
+    """The CalMS21 0.2 rename is what this exists for."""
+    ds = _dataset(tmp_path)
+    _trex_npz(ds.get_root("tracks_raw") / "old_name.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+
+    # Stand in for a converter that started spelling its entries differently.
+    (ds.get_root("tracks_raw") / "old_name.npz").rename(
+        ds.get_root("tracks_raw") / "new_name.npz"
+    )
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    _ = capsys.readouterr()
+    ds.convert_all_tracks()
+
+    err = capsys.readouterr().err
+    assert "were not rewritten" in err
+    assert "old_name" in err
+    assert "drop_entries" in err
+    # Both resolve until the user acts -- which is the problem being reported.
+    assert len(read_tracks_index(ds)) == 2
+
+
+def test_drop_entries_removes_the_row_and_optionally_the_table(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    for name in ("keep", "drop"):
+        _trex_npz(ds.get_root("tracks_raw") / f"{name}.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+    parquet = ds.get_root("tracks") / "drop.parquet"
+    assert parquet.exists()
+
+    dropped = ds.drop_entries([("", "drop")], delete_files=True)
+
+    assert dropped == 1
+    assert not parquet.exists()
+    assert [str(s) for s in read_tracks_index(ds)["sequence"]] == ["keep"]
+    # The kept row's table is untouched.
+    assert (ds.get_root("tracks") / "keep.parquet").exists()
+
+
+def test_drop_entries_keeps_the_table_by_default(tmp_path: Path) -> None:
+    """An orphaned table is recoverable; a deleted one is not."""
+    ds = _dataset(tmp_path)
+    _trex_npz(ds.get_root("tracks_raw") / "seq_a.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+
+    assert ds.drop_entries([("", "seq_a")]) == 1
+    assert (ds.get_root("tracks") / "seq_a.parquet").exists()
+    assert len(read_tracks_index(ds)) == 0
+
+
+def test_dropping_an_absent_entry_is_a_no_op(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    assert ds.drop_entries([("", "never-existed")]) == 0
+    assert ds.drop_entries([]) == 0

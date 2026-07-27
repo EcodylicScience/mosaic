@@ -31,7 +31,7 @@ from mosaic.core.track_converter import (
     get_track_converter,
     register_track_converter,
 )
-from mosaic.core.track_library.calms21 import Calms21Converter
+from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
 from mosaic.core.track_library.mabe22 import Mabe22Converter, Mabe22Params
 from mosaic.core.track_library.trex import TrexNpzConverter
 
@@ -317,3 +317,66 @@ def test_params_by_format_keeps_a_mixed_dataset_convertible(tmp_path: Path) -> N
     assert isinstance(mabe, Mabe22Params)
     assert mabe.fps == 45.0
     assert trex.identity_dump() == TrackConvertParams().identity_dump()
+
+
+# --- CalMS21 entry names ----------------------------------------------------
+#
+# CalMS21 spells its in-file ids as slash paths, read verbatim out of the source
+# file. mosaic percent-encodes a "/" for filenames and always has, so this
+# worked -- but an entry name doubles as a filesystem path component in the
+# control plane, where it does not.
+
+
+def test_calms21_flattens_a_task_path_into_a_compound_name() -> None:
+    from mosaic.core.track_library.calms21 import calms21_entry_name
+
+    assert (
+        calms21_entry_name("task1/test/mouse075_task1_annotator1")
+        == "task1__test__mouse075_task1_annotator1"
+    )
+    # A name with no slash is left exactly as it is.
+    assert calms21_entry_name("seqA") == "seqA"
+
+
+def test_calms21_compound_names_parse_with_the_default_separator() -> None:
+    """The upgrade the "__" choice buys.
+
+    ``get_sequence_metadata(level_names=[...])`` reads CalMS21's hierarchy with
+    its *default* separator now, instead of needing ``separator="/"``.
+    """
+    from mosaic.core.helpers import parse_hierarchy
+    from mosaic.core.track_library.calms21 import calms21_entry_name
+
+    parsed = parse_hierarchy(
+        "", calms21_entry_name("task1/test/m075"), ["task", "split", "mouse"]
+    )
+    assert parsed == {"task": "task1", "split": "test", "mouse": "m075"}
+
+
+def test_calms21_enumerate_and_convert_agree_on_the_name(tmp_path: Path) -> None:
+    """A hint round-tripped through enumerate_sequences must still match.
+
+    They are compared in different places, so if only one flattened the
+    conversion would raise KeyError for every sequence.
+    """
+    from mosaic.core.track_library.calms21 import Calms21Converter
+
+    npy = tmp_path / "calms.npy"
+    _write_calms21(npy, {"train": {"task1/test/m075": 4}})
+    converter = Calms21Converter()
+
+    pairs = converter.enumerate_sequences(npy)
+    assert pairs == [("train", "task1__test__m075")]
+
+    group, sequence = pairs[0]
+    df = converter.convert(
+        npy, Calms21Params(), EntryHints(group=group, sequence=sequence)
+    )
+    assert set(df["sequence"]) == {"task1__test__m075"}
+
+
+def test_calms21_version_says_its_output_identity_moved() -> None:
+    """A variant identity covers what the recipe emits, and that changed."""
+    from mosaic.core.track_library.calms21 import Calms21Converter
+
+    assert Calms21Converter.version == "0.2"

@@ -73,7 +73,11 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
-from .pipeline._utils import coerce_np as _coerce_np, now_iso as _now_iso
+from .pipeline._utils import (
+    atomic_write,
+    coerce_np as _coerce_np,
+    now_iso as _now_iso,
+)
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
@@ -91,7 +95,13 @@ from .pipeline.tracks_identity import (
     tracks_run_id,
     write_tracks_variant,
 )
-from .pipeline.tracks_index import write_tracks_row
+from .pipeline.index_lock import index_lock
+from .pipeline.tracks_index import (
+    adopt_legacy_columns,
+    read_tracks_index,
+    tracks_index_path,
+    write_tracks_row,
+)
 from .pipeline.tracks_raw_index import (
     TracksRawIndexRow,
     TracksRawIndexScope,
@@ -1052,6 +1062,103 @@ class Dataset:
                         results[str(ri_path)] = changed
 
         return results
+
+    def _entry_stamps(self) -> dict[tuple[str, str], str]:
+        """``(group, sequence) -> started_at`` for every standardized-tracks row.
+
+        ``started_at`` is stamped fresh by ``RunIndexRowBase`` on every append, so
+        comparing it across a conversion says which entries that conversion
+        actually rewrote -- which set membership alone cannot, since a superseded
+        row stays in the index rather than disappearing from it.
+        """
+        return {
+            (str(r["group"]), str(r["sequence"])): str(r["started_at"])
+            for _, r in read_tracks_index(self).iterrows()
+        }
+
+    def _warn_superseded_entries(self, before: dict[tuple[str, str], str]) -> None:
+        """Say when a conversion left older rows for the same tables behind.
+
+        A converter that changes how it spells an entry writes rows under the new
+        names without touching the old ones, so both resolve and every feature
+        runs over each sequence twice. That is the visible consequence of
+        ``calms21_npy`` 0.2, which stopped spelling its ids as slash paths.
+
+        Detected as "an entry that was here before this call and that this call
+        did not rewrite" -- so a normal re-conversion, which rewrites the same
+        names, says nothing. Reported rather than repaired: deleting tables this
+        call did not write is exactly the rename M1's migration rule forbids.
+        """
+        after = self._entry_stamps()
+        gone = sorted(
+            entry
+            for entry, stamp in before.items()
+            if after.get(entry) == stamp  # unchanged => this call did not touch it
+        )
+        if not gone:
+            return
+        listing = ", ".join(f"({g!r}, {s!r})" for g, s in gone[:5])
+        more = f" and {len(gone) - 5} more" if len(gone) > 5 else ""
+        print(
+            f"[convert_all_tracks] {len(gone)} entr"
+            f"{'y' if len(gone) == 1 else 'ies'} in tracks/index.csv were not "
+            f"rewritten by this conversion: {listing}{more}.\n"
+            "  If a converter changed how it spells its entries, these are the "
+            "old spellings and both will resolve until you remove them:\n"
+            "    ds.drop_entries([...], delete_files=True)",
+            file=sys.stderr,
+        )
+
+    def drop_entries(
+        self,
+        entries: Iterable[tuple[str, str]],
+        *,
+        delete_files: bool = False,
+    ) -> int:
+        """Remove ``(group, sequence)`` rows from the standardized-tracks index.
+
+        The cleanup half of a rename. When a converter changes how it spells an
+        entry -- as ``calms21_npy`` did at version 0.2 -- a re-conversion writes
+        rows under the new names while the old ones stay, pointing at parquets
+        that also stay. Both then resolve, and every feature runs over each
+        sequence twice.
+
+        Nothing removes them automatically: conversion deleting tables it did not
+        write is exactly the rename this milestone's migration rule forbids. So
+        the conversion warns, naming what it superseded, and this is the one call
+        that acts on it.
+
+        Args:
+            entries: The ``(group, sequence)`` pairs to drop.
+            delete_files: Also unlink each row's parquet. Off by default -- an
+                orphaned table is recoverable, a deleted one is not.
+
+        Returns:
+            How many index rows were dropped.
+        """
+        wanted = {(str(g), str(s)) for g, s in entries}
+        if not wanted:
+            return 0
+        path = tracks_index_path(self)
+        if not path.exists():
+            return 0
+        with index_lock(path):
+            frame = adopt_legacy_columns(pd.read_csv(path, keep_default_na=False))
+            keep_mask = [
+                (str(row["group"]), str(row["sequence"])) not in wanted
+                for _, row in frame.iterrows()
+            ]
+            if all(keep_mask):
+                return 0
+            if delete_files:
+                for keep, (_, row) in zip(keep_mask, frame.iterrows()):
+                    if keep:
+                        continue
+                    target = self.resolve_path(str(row["abs_path"]))
+                    target.unlink(missing_ok=True)
+            kept = frame[keep_mask]
+            atomic_write(path, lambda p: kept.to_csv(p, index=False))
+            return len(frame) - len(kept)
 
     def reindex_features(
         self,
@@ -2908,6 +3015,8 @@ class Dataset:
                 f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}"
             )
 
+        before = self._entry_stamps()
+
         if not merge_per_sequence:
             # Convert each row individually
             for _, row in df.iterrows():
@@ -2917,6 +3026,7 @@ class Dataset:
                     self.convert_one_track(row, params=call_params, overwrite=overwrite)
                 except Exception as e:
                     print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+            self._warn_superseded_entries(before)
             return
 
         # Merge per (group, sequence, src_format)
@@ -3026,6 +3136,8 @@ class Dataset:
                 source_md5=str(first_row.get("md5", "")),
                 consumed_source_roots=("tracks_raw",),
             )
+
+        self._warn_superseded_entries(before)
 
     # ----------------------------
     # Labels: conversion + indexing

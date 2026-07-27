@@ -14,6 +14,7 @@ import pandas as pd
 
 from typing import Annotated
 
+from mosaic.core.helpers import build_compound_name
 from mosaic.core.pipeline.types import HASH_EXCLUDE
 from mosaic.core.track_converter import (
     EntryHints,
@@ -45,7 +46,13 @@ def _calms21_seq_to_trex_df(
         # not used in output columns; could be stored elsewhere if needed
         _ = np.asarray(one_seq_dict["features"])  # (T, K)
     keypoints = np.asarray(one_seq_dict["keypoints"])  # (T, 2, 2, L)
-    scores = np.asarray(one_seq_dict.get("scores", None))  # (T, 2, L) or None
+    # Guarded on the key, not on the result. ``np.asarray(None)`` is a 0-d object
+    # array rather than None, so the old ``scores is not None`` check downstream
+    # was always true and a file without scores -- which the schema permits --
+    # raised IndexError on the first ``scores[:, a, :]``.
+    scores = (
+        np.asarray(one_seq_dict["scores"]) if "scores" in one_seq_dict else None
+    )  # (T, 2, L) or None
     ann = (
         np.asarray(one_seq_dict["annotations"])
         if "annotations" in one_seq_dict
@@ -181,8 +188,11 @@ def calms21_to_trex_df(
     rows = []
     for groupname, group in nested.items():
         for seq_id, seq in group.items():
-            # strict sequence filter (exact match) if requested
-            if prefer_sequence and seq_id != prefer_sequence:
+            # The hint arrives in the flattened spelling enumerate_sequences
+            # emits, so compare in that spelling. seq_id itself stays raw --
+            # the group-hint filter below reads the slashes.
+            entry_name = calms21_entry_name(str(seq_id))
+            if prefer_sequence and entry_name != prefer_sequence:
                 continue
             # group filter: either exact top-level match, or sequence-path filter if hint provided
             if direct_group_match_only:
@@ -198,7 +208,7 @@ def calms21_to_trex_df(
             }
             rows.append(
                 _calms21_seq_to_trex_df(
-                    seq, groupname, seq_id, neck_idx=neck_idx, tail_idx=tail_idx
+                    seq, groupname, entry_name, neck_idx=neck_idx, tail_idx=tail_idx
                 )
             )
     if not rows:
@@ -226,10 +236,37 @@ class Calms21Params(TrackConvertParams):
     debug: Annotated[bool, HASH_EXCLUDE] = False
 
 
+def calms21_entry_name(seq_id: str) -> str:
+    """The mosaic entry name for a CalMS21 in-file sequence id.
+
+    CalMS21 spells its ids as slash paths -- ``task1/test/mouse075_task1_annotator1``
+    -- read verbatim out of the source file. mosaic percent-encodes a ``/`` for
+    filenames and always has, so this worked; but an entry name doubles as a
+    filesystem path component in the control plane, where ``sequence_of()`` splits
+    on the first ``/`` and the media directory interpolates the name into a path.
+    A name that cannot round-trip there is not a name mosaic should mint.
+
+    So the levels are joined with the repo's own compound-name separator instead.
+    ``task1/test/mouse075`` becomes ``task1__test__mouse075``, which
+    ``parse_hierarchy`` reads with its *default* separator -- CalMS21 gains
+    ``get_sequence_metadata(level_names=["task", "split", "mouse"])`` rather than
+    needing ``separator="/"`` for it.
+
+    Applied where the name is *emitted*, never before the group-hint filter:
+    ``_calms21_make_seq_filter_from_hint`` matches on ``f"/{split}/"`` inside the
+    raw id, so flattening first would silently match nothing.
+    """
+    return build_compound_name(*seq_id.split("/"))
+
+
 class Calms21Converter(TrackConverter[Calms21Params]):
     """CalMS21 -> a ``trex_v1`` table, one ``(group, sequence)`` at a time."""
 
     src_format = "calms21_npy"
+    # 0.2: entry names are compound (``task1__test__m``) rather than slash paths.
+    # The tables are otherwise identical, but the identity of a *variant* covers
+    # what it emits, and this changed the entry keys and therefore the filenames.
+    version = "0.2"
     enumerable = True
     Params = Calms21Params
 
@@ -278,8 +315,14 @@ class Calms21Converter(TrackConverter[Calms21Params]):
         )
 
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
+        # Flattened here as well as at emission, so a hint round-tripped through
+        # this list matches the name ``convert`` actually writes.
         nested = load_calms21(path)
-        return [(str(g), str(s)) for g, grp in nested.items() for s in grp.keys()]
+        return [
+            (str(g), calms21_entry_name(str(s)))
+            for g, grp in nested.items()
+            for s in grp.keys()
+        ]
 
 
 def _calms21_make_seq_filter_from_hint(hint: Optional[str]):
