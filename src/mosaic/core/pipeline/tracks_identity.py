@@ -41,8 +41,11 @@ from .op_identity import op_run_id
 
 __all__ = [
     "TRACKS_IDENTITY_SCHEME",
+    "convert_variant_payload",
     "converter_op",
+    "infer_variant_payload",
     "tracks_run_id",
+    "trex_variant_payload",
     "tracks_variant_root",
     "write_tracks_variant",
 ]
@@ -83,6 +86,46 @@ def tracks_run_id(
     if upstream is not None:
         terms["upstream"] = upstream
     return op_run_id(op, version, terms)
+
+
+def convert_variant_payload(params_identity: Mapping[str, object]) -> dict[str, object]:
+    """What determines a table produced by converting an upload.
+
+    The three payload builders exist as named functions rather than dict literals
+    at their mint sites so the golden corpus can pin the **wrapper**, not just
+    ``tracks_run_id``. Renaming this ``"params"`` key would move every tracks
+    variant on disk, and a corpus that only called ``tracks_run_id`` with a
+    hand-built payload would stay green through it.
+    """
+    return {"params": dict(params_identity)}
+
+
+def trex_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
+    """What determines a table bridged from a TREx run: the tracker settings.
+
+    Passed through unwrapped, so the value this mints is byte-identical to the
+    tracker's own ``trex_run_id(settings)``. That is deliberate rather than
+    incidental: at Stage 3.2 ``tracks/trex.<v>-<digest>/`` and
+    ``trex/trex.<v>-<digest>/`` then read as obviously the same run, and no
+    existing golden line moves. Wrapping it would mint a second digest for one
+    recipe and produce two near-identical directory names.
+
+    The settings are scope-free -- knobs only, no video paths -- so one value
+    still names one variant across every sequence the run covered.
+    """
+    return dict(settings)
+
+
+def infer_variant_payload(
+    params_identity: Mapping[str, object], model_id: str
+) -> dict[str, object]:
+    """What determines a table bridged from an inference run.
+
+    The op params plus the model that produced the predictions, matching
+    ``infer_run_id`` term for term and for the same reason: leaving the model out
+    would let two detectors share one identifier.
+    """
+    return {"params": dict(params_identity), "model": model_id}
 
 
 def converter_op(src_format: str) -> str:

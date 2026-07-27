@@ -55,6 +55,11 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.core.pipeline.tracks_identity import (
+    tracks_run_id,
+    trex_variant_payload,
+    write_tracks_variant,
+)
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
@@ -529,6 +534,22 @@ def run_trex(
     run_id = trex_run_id(settings)
     run_root = trex_run_root(ds, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
+
+    # What names the *tracks variant* this run's tables belong to, as distinct
+    # from the tracker run that produced them. Minted once here rather than per
+    # entry: the settings are scope-free, so one value covers every sequence the
+    # run touches -- which is the whole point of a variant identity. Recorded
+    # beside the tables, in the directory Stage 3.2 moves them into.
+    tracks_variant = tracks_run_id(
+        TREX_KIND, TREX_VERSION, trex_variant_payload(settings)
+    )
+    _ = write_tracks_variant(
+        ds.get_root("tracks"),
+        tracks_variant,
+        TREX_KIND,
+        TREX_VERSION,
+        settings,
+    )
 
     # Resolve a training run_id (e.g. "train-points-<hash>") to its best.pt weights for the
     # trex invocation -- the train->track handoff. The run_id hash above intentionally keys on

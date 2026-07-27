@@ -22,6 +22,11 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.tracks_identity import (
+    infer_variant_payload,
+    tracks_run_id,
+    write_tracks_variant,
+)
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
@@ -173,6 +178,22 @@ def _run_inference_op(
     model_id = base_run_id or hash_params({"path": str(model_pt)})
     run_id = infer_run_id(kind, version, params, model_id)
     ctx.set_run_id(run_id)
+
+    # The tracks variant these predictions will be bridged into, minted once for
+    # the whole run and recorded beside the tables. Same payload as the op run
+    # above, so the two identifiers coincide -- which is what makes
+    # ``predictions/<kind>/<run_id>/`` and the tracks variant obviously the same
+    # run at a glance, while the index still keeps them in separate columns.
+    tracks_variant = tracks_run_id(
+        kind, version, infer_variant_payload(params.identity_dump(), model_id)
+    )
+    _ = write_tracks_variant(
+        ds.get_root("tracks"),
+        tracks_variant,
+        kind,
+        version,
+        infer_variant_payload(params.identity_dump(), model_id),
+    )
 
     scope = ds.resolve_media_scope(params.groups, params.sequences)
     if not scope:

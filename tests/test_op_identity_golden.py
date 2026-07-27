@@ -60,9 +60,17 @@ from mosaic.core.pipeline.transcode import (
     transcode_recipe_hash,
     transcode_run_id,
 )
+from mosaic.core.pipeline.tracks_identity import (
+    convert_variant_payload,
+    converter_op,
+    infer_variant_payload,
+    tracks_run_id,
+    trex_variant_payload,
+)
 from mosaic.core.pipeline.types import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
+from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "op_identity_golden.json"
 UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
@@ -184,9 +192,46 @@ def _run_id() -> str:
     return transcode_run_id(_recipe_hash(), ["uuid-b", "uuid-a", "uuid-c"])
 
 
+# The three tracks-variant identifiers. Function cases rather than OpCases,
+# because a track converter lives in TRACK_CONVERTERS rather than OPS and because
+# what has to be pinned is the *payload wrapper* each producer builds, not just
+# the digest: renaming a key inside one of these would move every variant
+# directory on disk, and a corpus that called ``tracks_run_id`` with a hand-built
+# payload would stay green through it.
+
+
+def _convert_variant() -> str:
+    return tracks_run_id(
+        converter_op("calms21_npy"),
+        "0.1",
+        convert_variant_payload({"neck_idx": 3, "tail_idx": 6}),
+    )
+
+
+def _trex_variant() -> str:
+    # The tracker's own settings, passed through unwrapped -- so this value is
+    # byte-identical to trex_run_id(settings) for the same settings.
+    return tracks_run_id(
+        TREX_KIND,
+        TREX_VERSION,
+        trex_variant_payload({"track_max_individuals": 4, "cm_per_pixel": 0.5}),
+    )
+
+
+def _infer_variant() -> str:
+    return tracks_run_id(
+        "infer-points",
+        "0.1",
+        infer_variant_payload({"conf": 0.5}, "train-points.0.1-aaaaaaaaaa"),
+    )
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
+    "tracks/convert-variant": _convert_variant,
+    "tracks/trex-variant": _trex_variant,
+    "tracks/infer-variant": _infer_variant,
 }
 
 
@@ -233,6 +278,7 @@ def test_every_family_is_covered() -> None:
         "infer-pose",
         "infer-points",
         "infer-localizer",
+        "tracks",
     }
     assert families == expected, f"family coverage changed: {families ^ expected}"
 

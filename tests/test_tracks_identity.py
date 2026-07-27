@@ -21,9 +21,12 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
+    convert_variant_payload,
     converter_op,
+    infer_variant_payload,
     tracks_run_id,
     tracks_variant_root,
+    trex_variant_payload,
     write_tracks_variant,
 )
 from mosaic.core.track_converter import TrackConvertParams
@@ -204,3 +207,54 @@ def test_converting_records_the_variant_beside_the_tracks(tmp_path: Path) -> Non
 
     assert record["op"] == "convert-mabe22_npy"
     assert record["params"]["fps"] == 30.0
+
+
+# --- the payload builders --------------------------------------------------
+#
+# Each producer's payload is a named function rather than a dict literal at its
+# mint site, so the golden corpus can pin the wrapper and not just the digest.
+
+
+def test_a_trex_variant_is_the_tracker_run_it_came_from() -> None:
+    """Byte-identical to ``trex_run_id`` for the same settings, on purpose.
+
+    At Stage 3.2 ``tracks/trex.<v>-<d>/`` and ``trex/trex.<v>-<d>/`` then read as
+    obviously one run. Wrapping the settings would mint a second digest for one
+    recipe and produce two near-identical directory names.
+    """
+    from mosaic.tracking.trex.dataset_runs import trex_run_id
+    from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+
+    settings = {"track_max_individuals": 4, "cm_per_pixel": 0.5}
+    variant = tracks_run_id(TREX_KIND, TREX_VERSION, trex_variant_payload(settings))
+
+    assert variant == trex_run_id(settings)
+
+
+def test_an_infer_variant_is_the_inference_run_it_came_from() -> None:
+    """Same payload as ``infer_run_id``, so the two coincide term for term."""
+    from mosaic.tracking.ops.infer import PointInferParams, infer_run_id
+
+    params = PointInferParams(model="models/points/best.pt")
+    model_id = "train-points.0.1-aaaaaaaaaa"
+    variant = tracks_run_id(
+        "infer-points",
+        "0.1",
+        infer_variant_payload(params.identity_dump(), model_id),
+    )
+
+    assert variant == infer_run_id("infer-points", "0.1", params, model_id)
+
+
+def test_the_convert_payload_wraps_params_under_one_named_key() -> None:
+    """The key name is load-bearing: renaming it moves every converted variant."""
+    assert convert_variant_payload({"neck_idx": 3}) == {"params": {"neck_idx": 3}}
+
+
+def test_a_variant_is_scope_free_across_the_sequences_it_covers() -> None:
+    """One recipe, one value -- however many sequences the run touched."""
+    settings = {"track_max_individuals": 4}
+    assert trex_variant_payload(settings) == trex_variant_payload(dict(settings))
+    assert tracks_run_id(
+        "trex", "0.1", trex_variant_payload(settings)
+    ) == tracks_run_id("trex", "0.1", trex_variant_payload(settings))

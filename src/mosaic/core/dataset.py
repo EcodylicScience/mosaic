@@ -86,6 +86,7 @@ from .pipeline.media_index import (
     write_media_index_rows,
 )
 from .pipeline.tracks_identity import (
+    convert_variant_payload,
     converter_op,
     tracks_run_id,
     write_tracks_variant,
@@ -2864,7 +2865,8 @@ class Dataset:
         """
         cls = type(converter)
         op = converter_op(cls.src_format)
-        run_id = tracks_run_id(op, cls.version, {"params": params.identity_dump()})
+        payload = convert_variant_payload(params.identity_dump())
+        run_id = tracks_run_id(op, cls.version, payload)
         _ = write_tracks_variant(
             self.get_root("tracks"),
             run_id,
