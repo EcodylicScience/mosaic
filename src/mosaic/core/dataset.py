@@ -129,6 +129,11 @@ _MODELS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
     "config_path",
 )
 
+# Path-bearing columns on an inference index beyond ``abs_path``: the video the
+# predictions were made over. Same contract as the two tuples above -- a new path
+# column on InferenceIndexRow belongs here, or it silently stops being portable.
+_PREDICTIONS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path",)
+
 # A tiny registry so you can plug converters: src_format -> callable
 TrackConverter = Callable[[Path, dict], pd.DataFrame]
 TRACK_CONVERTERS: dict[str, TrackConverter] = {}
@@ -873,6 +878,13 @@ class Dataset:
         for idx_path in subdir_indexes("models"):
             record(idx_path, _MODELS_INDEX_PATH_COLUMNS)
 
+        # Predictions: per-kind run indexes, same shape as models. Neither pass
+        # mentioned this root at all, so ``predictions/<kind>/index.csv`` was
+        # never visited under any spelling.
+        record(root_index("predictions"), _PREDICTIONS_INDEX_PATH_COLUMNS)
+        for idx_path in subdir_indexes("predictions"):
+            record(idx_path, _PREDICTIONS_INDEX_PATH_COLUMNS)
+
         # Labels: per-kind subdirectories (e.g. id_tags)
         for idx_path in subdir_indexes("labels"):
             record(idx_path)
@@ -1020,6 +1032,23 @@ class Dataset:
                     if subdir.is_dir():
                         sub_idx = subdir / "index.csv"
                         count = _convert_index(sub_idx, _MODELS_INDEX_PATH_COLUMNS)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # Predictions: per-kind run indexes, same shape as models. Neither pass
+        # mentioned this root at all before.
+        predictions_root = self.roots.get("predictions")
+        if predictions_root:
+            pp = self.get_root("predictions")
+            root_idx = pp / "index.csv"
+            count = _convert_index(root_idx, _PREDICTIONS_INDEX_PATH_COLUMNS)
+            if count > 0:
+                results[str(root_idx)] = count
+            if pp.exists():
+                for subdir in pp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx, _PREDICTIONS_INDEX_PATH_COLUMNS)
                         if count > 0:
                             results[str(sub_idx)] = count
 
