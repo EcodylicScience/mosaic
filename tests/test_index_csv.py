@@ -483,3 +483,123 @@ class TestLatestRunId:
         idx.ensure()
         with pytest.raises(ValueError, match="No runs found"):
             idx.latest_run_id()
+
+
+# --- string columns stay strings -------------------------------------------
+#
+# Every write path here reads the whole CSV and writes it back, so a column the
+# row class declares a ``str`` but pandas infers numerically is not merely read
+# wrong -- it is *rewritten* wrong, and the corrected value is what the next
+# reader sees.
+
+
+def _feature_row(
+    tmp_path: Path,
+    *,
+    run_id: str = "0.1-aaaaaaaaaa",
+    version: str = "0.1",
+    group: str = "",
+    sequence: str = "s",
+    params_hash: str = "aaaaaaaaaa",
+) -> FeatureIndexRow:
+    """A FeatureIndexRow whose abs_path exists, with the string fields overridable."""
+    path = tmp_path / f"{sequence}.parquet"
+    path.touch(exist_ok=True)
+    return FeatureIndexRow(
+        abs_path=path,
+        run_id=run_id,
+        feature="feat",
+        version=version,
+        group=group,
+        sequence=sequence,
+        params_hash=params_hash,
+        n_rows=5,
+    )
+
+
+class TestStringColumnsStayStrings:
+    def test_zero_padded_names_survive_append_mark_finished_read(
+        self, tmp_path: Path
+    ) -> None:
+        """A padded name must not be renumbered by a round trip through pandas.
+
+        ``mark_finished`` is included deliberately: it rewrites the file too, so
+        fixing only ``read``/``_append_locked`` would leave the corruption to a
+        later call rather than removing it.
+        """
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, group="01", sequence="001")])
+        idx.mark_finished("0.1-aaaaaaaaaa")
+
+        # Asserted against the file, not the frame: the defect is that the
+        # rewrite persists the re-inferred value, so what is on disk is the claim.
+        assert ",01,001," in (tmp_path / "index.csv").read_text()
+
+    def test_a_dotted_version_is_not_rounded_on_rewrite(self, tmp_path: Path) -> None:
+        """``0.10`` must not become ``0.1`` -- and collide with a real ``0.1``.
+
+        The row's own ``run_id`` embeds the version, so an inferred rewrite makes
+        the index contradict its own identifier.
+        """
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append(
+            [
+                _feature_row(
+                    tmp_path, version="0.10", run_id="0.10-aaaaaaaaaa", sequence="a"
+                )
+            ]
+        )
+        idx.append([_feature_row(tmp_path, version="0.2", sequence="b")])
+
+        text = (tmp_path / "index.csv").read_text()
+        assert ",0.10-aaaaaaaaaa," in text and ",0.10," in text
+
+    def test_a_leading_zero_hash_is_not_truncated_on_rewrite(
+        self, tmp_path: Path
+    ) -> None:
+        """``params_hash`` is a SHA1 prefix; ~15% of them start with a zero."""
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append(
+            [
+                _feature_row(
+                    tmp_path,
+                    params_hash="0123456789",
+                    run_id="0.1-0123456789",
+                    sequence="a",
+                )
+            ]
+        )
+        idx.append([_feature_row(tmp_path, sequence="b")])
+
+        text = (tmp_path / "index.csv").read_text()
+        assert ",0.1-0123456789," in text and ",0123456789," in text
+
+    def test_an_identical_rerun_replaces_a_numeric_named_row(
+        self, tmp_path: Path
+    ) -> None:
+        """Dedup must fire for numeric names -- the CalMS21/MABe convention.
+
+        Inferred, the existing cell is ``int64 1`` and the incoming one is
+        ``"1"``, so every dedup key comparison is False and the index grows by a
+        row per re-run instead of staying put.
+        """
+        idx = feature_index(tmp_path / "index.csv")
+        for _ in range(3):
+            idx.append(
+                [
+                    _feature_row(tmp_path, sequence="1"),
+                    _feature_row(tmp_path, sequence="2"),
+                ]
+            )
+
+        assert len(idx.read()) == 2
+
+    def test_numeric_names_still_match_the_scope_filters(self, tmp_path: Path) -> None:
+        """``isin`` and the entry-tuple filter compare against Python strings."""
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, group="01", sequence="001")])
+
+        assert len(idx.read(sequences=["001"])) == 1
+        assert len(idx.read(groups=["01"])) == 1
+        assert len(idx.read(entries=[("01", "001")])) == 1
+        assert idx.ordered_entries() == [("01", "001")]

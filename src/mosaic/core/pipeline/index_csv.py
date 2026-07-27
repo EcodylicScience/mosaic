@@ -96,11 +96,48 @@ class IndexCSV(Generic[RowT]):
         self.row_cls: type[RowT] = row_cls
         self.schema: dict[str, str] = _infer_schema(row_cls)
         self.dedup_keys: list[str] | None = dedup_keys
+        # Read every column the row class declares a string as a string. Left to
+        # inference, pandas reads an all-digit cell as int64 and a dotted one as
+        # float64 -- and because every write path here round-trips the whole file
+        # (read, concat, rewrite), the re-inferred value is what lands back on
+        # disk. See _read_frame for what that corrupts.
+        self._str_dtypes: dict[str, type[str]] = {
+            column: str for column, dtype in self.schema.items() if dtype == "string"
+        }
 
     def _assert_run_index(self) -> None:
         if not issubclass(self.row_cls, RunIndexRowBase):
             msg = f"{self.row_cls.__name__} is not a run index row type"
             raise TypeError(msg)
+
+    def _read_frame(self) -> pd.DataFrame:
+        """Read the CSV with this index's declared string columns kept as strings.
+
+        The single read path, because every one of the four callers either
+        rewrites the file afterwards or hands the frame to a caller that compares
+        cells against Python strings, and both break under inference:
+
+        - **On disk.** ``_append_locked``, ``prune_missing`` and ``mark_finished``
+          each read the whole file and write it back. Inferred, a feature row's
+          ``version`` ``"0.10"`` is rewritten as ``0.1`` and its ``params_hash``
+          ``"0123456789"`` as ``123456789`` -- while the ``run_id`` that contains
+          both keeps the original spelling. An index that contradicts its own
+          identifiers is exactly what this milestone exists to prevent.
+        - **In dedup.** ``_append_locked`` compares ``df[key] == new_row[key]``.
+          With a numeric ``group``/``sequence``/``camera`` that is ``int64 1 ==
+          "1"`` -- always False -- so an identical re-run appends instead of
+          replacing and the index grows without bound. Numeric sequence names are
+          the CalMS21 and MABe convention, so this is reachable, not theoretical.
+
+        Only ``string`` columns are pinned. The Int64/float ones are already read
+        correctly by inference, and a nullable cast would fail on the blank cell a
+        defaulted numeric column legitimately holds. ``keep_default_na=False``
+        stays: without it an empty ``group`` or ``finished_at`` becomes NaN and
+        the ``!= ""`` masks in :meth:`list_runs` stop working. Columns absent from
+        the file are ignored by pandas rather than raising, so an index written
+        before a defaulted column existed still reads.
+        """
+        return pd.read_csv(self.path, keep_default_na=False, dtype=self._str_dtypes)
 
     def ensure(self) -> None:
         """Create the CSV with column headers if it doesn't exist."""
@@ -153,7 +190,7 @@ class IndexCSV(Generic[RowT]):
         """
         if not self.path.exists():
             raise FileNotFoundError(f"Index not found: {self.path}")
-        df = pd.read_csv(self.path, keep_default_na=False)
+        df = self._read_frame()
         if run_id is not None:
             self._assert_run_index()
             df = df[df["run_id"] == run_id].reset_index(drop=True)
@@ -211,7 +248,7 @@ class IndexCSV(Generic[RowT]):
 
     def _append_locked(self, rows: list[RowT]) -> None:
         """Body of :meth:`append`, with the index lock already held."""
-        df = pd.read_csv(self.path, keep_default_na=False)
+        df = self._read_frame()
         df_new = pd.DataFrame(rows)
 
         if self.dedup_keys:
@@ -265,7 +302,7 @@ class IndexCSV(Generic[RowT]):
         # existed. A dry run holds it too -- it reports what a real run would
         # drop, and that answer is only meaningful against a stable file.
         with index_lock(self.path):
-            df = pd.read_csv(self.path, keep_default_na=False)
+            df = self._read_frame()
             if df.empty or "abs_path" not in df.columns:
                 return df.iloc[0:0]
             keep_mask = [resolver(str(p)).exists() for p in df["abs_path"]]
@@ -312,7 +349,7 @@ class IndexCSV(Generic[RowT]):
         if not self.path.exists():
             return
         with index_lock(self.path):
-            df = pd.read_csv(self.path, keep_default_na=False)
+            df = self._read_frame()
             sel = (df["run_id"] == run_id) & (df["finished_at"] == "")
             if sel.any():
                 df.loc[sel, "finished_at"] = now_iso()
