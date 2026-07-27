@@ -244,3 +244,78 @@ def test_manifest_identity_survives_load_save(tmp_path: Path) -> None:
     ds.save()
     reloaded = Dataset(manifest_path=manifest).load()
     assert (reloaded.uuid, reloaded.created_at, reloaded.index_format) == seeded
+
+
+# --- the tracks index's source pointer --------------------------------------
+#
+# `source_abs_path` is the tracks index's second path column and was in neither
+# rewrite list, so it silently stopped being portable the moment a dataset moved.
+
+
+def _dataset_with_tracks_source(base: Path) -> "Dataset":
+    from mosaic.core.dataset import Dataset as _RealDataset
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    base.mkdir(parents=True, exist_ok=True)
+    ds = _RealDataset(
+        manifest_path=base / "dataset.yaml",
+        roots={"tracks": str(base / "tracks"), "tracks_raw": str(base / "tracks_raw")},
+    )
+    ds.ensure_roots()
+    ds.save()
+
+    source = ds.get_root("tracks_raw") / "raw.npz"
+    source.write_bytes(b"x")
+    out = ds.get_root("tracks") / "s.parquet"
+    pd.DataFrame({"frame": [0], "id": [0]}).to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=out,
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=1,
+        source=source,
+    )
+    return ds
+
+
+def test_make_portable_relativizes_a_tracks_source_path(tmp_path: Path) -> None:
+    """An absolute source pointer is what the tracker bridge used to write."""
+    from mosaic.core.pipeline.tracks_index import tracks_index_path
+
+    ds = _dataset_with_tracks_source(tmp_path / "ds")
+    index_path = tracks_index_path(ds)
+
+    # Put an absolute value back, as a pre-Stage-2 index holds.
+    frame = pd.read_csv(index_path, keep_default_na=False)
+    absolute = str(ds.get_root("tracks_raw") / "raw.npz")
+    frame.loc[0, "source_abs_path"] = absolute
+    frame.to_csv(index_path, index=False)
+
+    _ = ds.make_portable()
+
+    rewritten = pd.read_csv(index_path, keep_default_na=False)
+    stored = str(rewritten.loc[0, "source_abs_path"])
+    assert not Path(stored).is_absolute(), stored
+    assert stored == "tracks_raw/raw.npz"
+
+
+def test_rewrite_index_paths_remaps_a_tracks_source_path(tmp_path: Path) -> None:
+    """The other pass, for a dataset whose absolutes point at an old machine."""
+    from mosaic.core.pipeline.tracks_index import tracks_index_path
+
+    ds = _dataset_with_tracks_source(tmp_path / "ds")
+    index_path = tracks_index_path(ds)
+
+    frame = pd.read_csv(index_path, keep_default_na=False)
+    frame.loc[0, "source_abs_path"] = "/old/machine/tracks_raw/raw.npz"
+    frame.to_csv(index_path, index=False)
+
+    _ = ds.rewrite_index_paths({"/old/machine": str(tmp_path / "ds")})
+
+    rewritten = pd.read_csv(index_path, keep_default_na=False)
+    stored = str(rewritten.loc[0, "source_abs_path"])
+    assert "/old/machine" not in stored

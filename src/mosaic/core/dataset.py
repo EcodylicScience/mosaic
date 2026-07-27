@@ -97,6 +97,7 @@ from .pipeline.tracks_identity import (
 )
 from .pipeline.index_lock import index_lock
 from .pipeline.tracks_index import (
+    TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
     legacy_view,
     read_tracks_index,
@@ -145,6 +146,15 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # path passes read raw CSVs and have no row class to ask. Any new path column
 # on TRexIndexRow belongs in this tuple, or it silently stops being portable.
 _TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
+
+# Per-root, the path-bearing columns beyond ``abs_path``. One table rather than a
+# special case per root, because both path passes read raw CSVs and have no row
+# class to ask -- so a column missing from here silently stops being portable,
+# which is what happened to the tracks index's ``source_abs_path`` until now.
+_INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
+    "tracks": TRACKS_INDEX_PATH_COLUMNS,
+    "trex": _TREX_INDEX_PATH_COLUMNS,
+}
 
 # The track-converter registry moved to ``core.track_converter``. That is what
 # closes the cycle noted at the foot of this file: a converter no longer imports
@@ -869,7 +879,7 @@ class Dataset:
 
         # All roots that may have index files
         for key in ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]:
-            record(root_index(key))
+            record(root_index(key), _INDEX_PATH_COLUMNS.get(key, ()))
 
         # Features: a root-level index plus one per feature
         record(root_index("features"))
@@ -888,7 +898,7 @@ class Dataset:
         # ``tracks_raw/trex`` -- that is a *subdirectory* of the tracks_raw root
         # above, whose own index.csv the loop never visits, and item 8.1 moves
         # it to ``_tracking/trex`` anyway.
-        record(root_index("trex"), _TREX_INDEX_PATH_COLUMNS)
+        record(root_index("trex"), _INDEX_PATH_COLUMNS["trex"])
 
         return results
 
@@ -972,7 +982,7 @@ class Dataset:
                 continue
             rp = self.get_root(key)
             idx_path = rp / "index.csv"
-            count = _convert_index(idx_path)
+            count = _convert_index(idx_path, _INDEX_PATH_COLUMNS.get(key, ()))
             if count > 0:
                 results[str(idx_path)] = count
 
@@ -1024,7 +1034,7 @@ class Dataset:
         # a subdirectory of tracks_raw by default, so the loop above misses it.
         if self.has_root("trex"):
             trex_idx = self.get_root("trex") / "index.csv"
-            count = _convert_index(trex_idx, _TREX_INDEX_PATH_COLUMNS)
+            count = _convert_index(trex_idx, _INDEX_PATH_COLUMNS["trex"])
             if count > 0:
                 results[str(trex_idx)] = count
 
