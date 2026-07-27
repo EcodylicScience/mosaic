@@ -96,8 +96,8 @@ from .pipeline.tracks_raw_index import (
     build_tracks_raw_row,
     frame_from_rows as _tracks_frame_from_rows,
     iter_track_files,
-    read_tracks_index as _read_tracks_index,
-    write_tracks_index_rows,
+    read_tracks_raw_index as _read_tracks_raw_index,
+    write_tracks_raw_index_rows,
 )
 
 if TYPE_CHECKING:
@@ -2516,11 +2516,11 @@ class Dataset:
 
         # iter_track_files already deduped by resolved path and sorted.
         df = _tracks_frame_from_rows(rows)
-        write_tracks_index_rows(out_csv, df)
+        write_tracks_raw_index_rows(out_csv, df)
         print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
         return out_csv
 
-    def write_tracks_index(
+    def write_tracks_raw_index(
         self,
         scopes: Iterable[TracksRawIndexScope],
         *,
@@ -2531,6 +2531,11 @@ class Dataset:
         compute_md5: bool = False,
     ) -> Path:
         """Project explicit raw-track assignments into a valid tracks_raw index.
+
+        Named for the ``tracks_raw`` root it writes, not the ``tracks`` one: the
+        converted tables have an index of their own, and a bare
+        ``write_tracks_index`` would name the wrong file to anyone who did not
+        already know which of the two this was.
 
         The assignment-driven counterpart to :meth:`index_tracks_raw` and the
         tracks sibling of :meth:`write_media_index`: rather than deriving each
@@ -2559,7 +2564,7 @@ class Dataset:
         # Preserve every existing row no scope directory covers. _row_under_dirs
         # resolves the stored path first, so containment is correct whether
         # abs_path is stored root-relative or absolute.
-        existing = _read_tracks_index(out_csv)
+        existing = _read_tracks_raw_index(out_csv)
         preserved = [
             row for row in existing if not self._row_under_dirs(row, scope_dirs)
         ]
@@ -2590,14 +2595,18 @@ class Dataset:
         # only ever fires fresh-vs-fresh across overlapping scopes (caller error).
         merged = [*preserved, *fresh]
         frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
-        write_tracks_index_rows(out_csv, frame)
+        write_tracks_raw_index_rows(out_csv, frame)
         return out_csv
 
-    def read_tracks_index(
+    def read_tracks_raw_index(
         self, index_filename: str = "index.csv"
     ) -> list[dict[str, str]]:
-        """Read the raw-tracks index as string-cell records (empty list if absent)."""
-        return _read_tracks_index(self.get_root("tracks_raw") / index_filename)
+        """Read the raw-tracks index as string-cell records (empty list if absent).
+
+        The ``tracks_raw`` root, not ``tracks`` -- see
+        :meth:`write_tracks_raw_index` for why the name says so.
+        """
+        return _read_tracks_raw_index(self.get_root("tracks_raw") / index_filename)
 
     # ----------------------------
     # Convert one original -> standard (T-Rex-like)

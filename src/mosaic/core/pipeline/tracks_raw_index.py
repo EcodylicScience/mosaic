@@ -4,7 +4,10 @@ Named ``tracks_raw_index`` rather than ``tracks_index``, because this is the
 index of the *raw* uploads under ``tracks_raw/``, not of the converted tables
 under ``tracks/``. The two were one filename apart until Stage 2 gave
 ``tracks/index.csv`` a typed row of its own, at which point one of them had to
-say which root it meant.
+say which root it meant. Every public name here carries ``tracks_raw`` for the
+same reason: a bare ``read_tracks_raw_index`` beside a real converted-tracks index
+reads as the one the caller probably wanted, and picking the wrong one is a
+silent wrong answer rather than an import error.
 
 The raw-tracks index (``tracks_raw/index.csv``) is a mosaic-defined artifact
 with invariants mosaic owns: the ``TRACKS_RAW_INDEX_COLUMNS`` schema, an
@@ -23,7 +26,7 @@ dataset context -- turning an absolute path into its stored form -- is supplied
 by the caller as a ``to_store_path`` callable (``Dataset.relative_to_root``),
 mirroring the resolver callable :meth:`IndexCSV.prune_missing` takes.
 
-The assignment-driven projection ``Dataset.write_tracks_index(scopes)`` (with
+The assignment-driven projection ``Dataset.write_tracks_raw_index(scopes)`` (with
 ``TracksRawIndexScope``) is the tracks mirror of ``Dataset.write_media_index``
 for a future API track-import flow that uploads raw tracker files, assigns each
 an explicit ``(group, sequence, src_format)``, and imports them: it (re)stats
@@ -41,7 +44,7 @@ media index did in its multi-camera phase, where ``camera`` is a column (like
 *probes* ``camera``/``sync_uuid`` from store metadata, but raw track files carry
 none, so tracks-``camera`` must be *assigned* through the scope, never probed.
 These land as new ``TRACKS_RAW_INDEX_COLUMNS`` entries plus new keyword scope
-fields; ``write_tracks_index_rows`` already drops any column outside the schema,
+fields; ``write_tracks_raw_index_rows`` already drops any column outside the schema,
 so nothing here needs a redesign when they arrive.
 """
 
@@ -121,7 +124,7 @@ class TracksRawIndexRow(TypedDict):
     md5: str
 
 
-def read_tracks_index(index_path: Path) -> list[dict[str, str]]:
+def read_tracks_raw_index(index_path: Path) -> list[dict[str, str]]:
     """Read a raw-tracks index CSV as string-cell records (empty list if absent).
 
     The record form (string cells, not pandas) is what identity-reading callers
@@ -134,7 +137,7 @@ def read_tracks_index(index_path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def load_tracks_index_frame(index_path: Path) -> pd.DataFrame:
+def load_tracks_raw_index_frame(index_path: Path) -> pd.DataFrame:
     """Read a raw-tracks index CSV into the full schema, text cells as object ``""``.
 
     Missing columns are added, and text columns (everything non-numeric) are
@@ -158,7 +161,7 @@ def frame_from_rows(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
 
     Accepts both freshly built :class:`TracksRawIndexRow` rows (a ``TypedDict``,
     hence a ``Mapping[str, object]``) and preserved string-cell records from
-    :func:`read_tracks_index`, so the projection can merge the two without
+    :func:`read_tracks_raw_index`, so the projection can merge the two without
     per-row normalization.
     """
     return pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
@@ -179,7 +182,7 @@ def iter_track_files(
     (deduped by resolved path), and the result is sorted by resolved path so the
     written index is order-stable regardless of filesystem iteration order. The
     identity-free scan shared by :meth:`Dataset.index_tracks_raw` (scan-and-
-    derive) and :meth:`Dataset.write_tracks_index` (assignment-driven).
+    derive) and :meth:`Dataset.write_tracks_raw_index` (assignment-driven).
     """
     by_resolved: dict[Path, tuple[Path, os.stat_result]] = {}
     for directory in search_dirs:
@@ -199,7 +202,7 @@ def iter_track_files(
     return [by_resolved[key] for key in sorted(by_resolved)]
 
 
-def write_tracks_index_rows(index_path: Path, df: pd.DataFrame) -> None:
+def write_tracks_raw_index_rows(index_path: Path, df: pd.DataFrame) -> None:
     """Atomically write *df* projected onto ``TRACKS_RAW_INDEX_COLUMNS``.
 
     The projection fixes column order and drops any column outside the schema;
