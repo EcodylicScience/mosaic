@@ -18,8 +18,10 @@ import csv
 import inspect
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +37,7 @@ from mosaic.core.pipeline._utils import (
     json_ready,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
 from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.run import MissingScopeDeclaration, compute_run_id
@@ -338,14 +341,6 @@ class _Row(IndexRowBase):
     key: str
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "IndexCSV.append is a full-file read-modify-write with no lock: atomic "
-        "replacement prevents a torn read, not a lost update. Closed by "
-        "implementation item 0.2."
-    ),
-)
 def test_concurrent_index_appends_do_not_lose_rows(tmp_path: Path) -> None:
     """Two writers whose reads interleave must not silently drop one's write."""
     index: IndexCSV[_Row] = IndexCSV(tmp_path / "index.csv", _Row)
@@ -368,3 +363,120 @@ def test_concurrent_index_appends_do_not_lose_rows(tmp_path: Path) -> None:
     with (tmp_path / "index.csv").open(newline="") as handle:
         written = {row["key"] for row in csv.DictReader(handle)}
     assert written == {"first", "second"}, f"a concurrent append was lost: {written}"
+
+
+_APPEND_PROBE = """
+import sys
+from pathlib import Path
+from dataclasses import dataclass
+from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+
+@dataclass(frozen=True)
+class Row(IndexRowBase):
+    key: str
+
+path, name, barrier = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+index = IndexCSV(path, Row)
+# Read the whole file first and only then append, which is the interleaving a
+# lock has to prevent -- without one, both writers compute a merged frame from
+# the same starting state and the second erases the first.
+_ = index.read()
+barrier.write_text("ready")
+while len(list(barrier.parent.glob("*.ready"))) < 2:
+    pass
+index.append([Row(abs_path=Path(name + ".parquet"), key=name)])
+"""
+
+
+def test_concurrent_index_appends_across_processes_do_not_lose_rows(
+    tmp_path: Path,
+) -> None:
+    """The real contention is between processes, not threads.
+
+    The thread test above is satisfied by a plain ``threading.Lock``, which
+    leaves the case that actually happens -- two queue workers, or two
+    ``mosaic run`` invocations, in separate interpreters -- completely
+    unprotected. Only a file lock covers this one.
+    """
+    index_path = tmp_path / "index.csv"
+    index: IndexCSV[_Row] = IndexCSV(index_path, _Row)
+    index.ensure()
+
+    gate = tmp_path / "gate"
+    gate.mkdir()
+
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _APPEND_PROBE,
+                str(index_path),
+                name,
+                str(gate / f"{name}.ready"),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for name in ("first", "second")
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err.decode()[-800:]
+
+    with index_path.open(newline="") as handle:
+        written = {row["key"] for row in csv.DictReader(handle)}
+    assert written == {"first", "second"}, f"a concurrent append was lost: {written}"
+
+
+def test_a_failed_lock_acquisition_raises_rather_than_writing_unlocked(
+    tmp_path: Path,
+) -> None:
+    """Contention must fail loudly, never degrade to an unlocked write.
+
+    Degrading is what the lock exists to prevent, and it would degrade exactly
+    when the system is busiest.
+    """
+    index_path = tmp_path / "index.csv"
+    index: IndexCSV[_Row] = IndexCSV(index_path, _Row)
+    index.ensure()
+
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            "from mosaic.core.pipeline.index_lock import index_lock\n"
+            "with index_lock(Path(sys.argv[1])):\n"
+            "    Path(sys.argv[2]).write_text('held')\n"
+            "    time.sleep(30)\n",
+            str(index_path),
+            str(tmp_path / "held"),
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (tmp_path / "held").exists():
+            assert time.monotonic() < deadline, "holder never acquired the lock"
+            time.sleep(0.02)
+
+        with pytest.raises(IndexLockTimeout):
+            with index_lock(index_path, timeout=0.5):
+                pass  # pragma: no cover - the raise is the assertion
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+
+def test_the_index_lock_is_reentrant_within_a_thread() -> None:
+    """``IndexCSV.append`` calls ``ensure``; both take the lock.
+
+    A non-re-entrant file lock would deadlock against itself here, with no
+    error and no timeout distinguishable from real contention.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "index.csv"
+        with index_lock(path, timeout=5):
+            with index_lock(path, timeout=5):
+                pass
