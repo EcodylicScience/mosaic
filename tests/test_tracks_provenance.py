@@ -408,3 +408,75 @@ def test_dropping_an_absent_entry_is_a_no_op(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     assert ds.drop_entries([("", "never-existed")]) == 0
     assert ds.drop_entries([]) == 0
+
+
+# --- media matching --------------------------------------------------------
+
+
+def test_compound_names_do_not_collide_on_a_tail_key(tmp_path: Path) -> None:
+    """The keymap registers ``Path(sequence).name`` as a shorthand.
+
+    With slash-path names that shorthand is the last level, so two CalMS21
+    entries under different splits both claimed ``m010``. Compound names have no
+    slash, so the shorthand is the whole name and the collision does not arise --
+    the second reason the previous commit's flattening was worth doing.
+    """
+    from mosaic.core.dataset import Dataset as _Dataset
+
+    ds = _dataset(tmp_path)
+    for split in ("train", "test"):
+        _trex_npz(ds.get_root("tracks_raw") / f"task1__{split}__m010.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+
+    keymap = ds._build_media_sequence_keymap()
+    assert "m010" not in keymap
+    for split in ("train", "test"):
+        hit = _Dataset._match_media_sequence(keymap, f"task1__{split}__m010")
+        assert hit is not None and hit["sequence"] == f"task1__{split}__m010"
+
+
+def test_a_shared_tail_key_is_refused_rather_than_guessed(capsys) -> None:
+    from mosaic.core.dataset import Dataset as _Dataset
+
+    # The collision built directly: two entries whose Path(...).name is "m010".
+    # A dataset written before the compound-name change looks exactly like this.
+    keymap = {
+        "m010": [
+            {
+                "group": "",
+                "sequence": "task1/train/m010",
+                "group_safe": "",
+                "sequence_safe": "task1%2Ftrain%2Fm010",
+            },
+            {
+                "group": "",
+                "sequence": "task1/test/m010",
+                "group_safe": "",
+                "sequence_safe": "task1%2Ftest%2Fm010",
+            },
+        ]
+    }
+    _ = capsys.readouterr()
+
+    assert _Dataset._match_media_sequence(keymap, "m010") is None
+    err = capsys.readouterr().err
+    assert "matches 2 track entries" in err
+
+
+def test_one_entry_registering_a_key_twice_still_matches(tmp_path: Path) -> None:
+    """Only *distinct* entries are ambiguous; one entry hitting a key is fine."""
+    from mosaic.core.dataset import Dataset as _Dataset
+
+    meta = {
+        "group": "g",
+        "sequence": "s",
+        "group_safe": "g",
+        "sequence_safe": "s",
+    }
+    keymap = {"s": [meta, dict(meta)]}
+
+    hit = _Dataset._match_media_sequence(keymap, "s")
+    assert hit is not None and hit["sequence"] == "s"

@@ -98,6 +98,7 @@ from .pipeline.tracks_identity import (
 from .pipeline.index_lock import index_lock
 from .pipeline.tracks_index import (
     adopt_legacy_columns,
+    legacy_view,
     read_tracks_index,
     tracks_index_path,
     write_tracks_row,
@@ -2452,18 +2453,19 @@ class Dataset:
         """
         Build a lookup of various sequence keys -> metadata for mapping media files to sequences.
         """
-        idx_path = self.get_root("tracks") / "index.csv"
-        if not idx_path.exists():
-            return {}
-        df = pd.read_csv(idx_path)
+        df = legacy_view(read_tracks_index(self))
         keymap: dict[str, list[dict[str, str]]] = {}
         for _, row in df.iterrows():
-            group = str(row.get("group", "") or "")
-            sequence = str(row.get("sequence", "") or "")
+            group = str(row["group"])
+            sequence = str(row["sequence"])
             if not sequence:
                 continue
-            group_safe = row.get("group_safe") or (to_safe_name(group) if group else "")
-            sequence_safe = row.get("sequence_safe") or to_safe_name(sequence)
+            # Derived, not read-with-fallback. The old `row.get("group_safe") or
+            # ...` did not fire on a present-but-empty cell -- a NaN is truthy,
+            # so it returned the NaN and the next `.lower()` raised
+            # AttributeError. legacy_view derives both unconditionally.
+            group_safe = str(row["group_safe"])
+            sequence_safe = str(row["sequence_safe"])
             tail = Path(sequence).name
             tail_safe = to_safe_name(tail) if tail else ""
             keys = {
@@ -2508,8 +2510,22 @@ class Dataset:
             hits = seq_key_map.get(key)
             if not hits:
                 continue
-            # Return the first metadata dict (all hits for the same
-            # key originate from the same track entry)
+            # An ambiguous key matches nothing. Several entries can register the
+            # same key -- the keymap adds ``Path(sequence).name`` as a shorthand,
+            # so `task1/train/m010` and `task1/test/m010` both register `m010`,
+            # and a file named `m010.mp4` belongs to neither more than the other.
+            # Taking hits[0] bound it to whichever sorted first, silently and
+            # differently on a re-index. Refusing to guess leaves the file
+            # unmatched, which is visible; guessing wrong is not.
+            distinct = {(hit["group"], hit["sequence"]) for hit in hits}
+            if len(distinct) > 1:
+                print(
+                    f"[media] {stem!r} matches {len(distinct)} track entries via "
+                    f"{key!r}: {sorted(distinct)}. Leaving it unmatched -- rename "
+                    "the media file to the full sequence name to disambiguate.",
+                    file=sys.stderr,
+                )
+                return None
             return hits[0]
 
         if mode == "prefix":
