@@ -14,6 +14,7 @@ Keypoint layouts per species:
 Paper: https://arxiv.org/abs/2207.10553
 Data:  https://doi.org/10.22002/rdsa8-rde65
 """
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,7 @@ from mosaic.core.track_library.helpers import angle_from_pca, norm_hint
 # Loader
 # ---------------------------------------------------------------------------
 
+
 def load_mabe22(path: Path | str) -> dict:
     """Load a MABe22 .npy file and return the unwrapped dict."""
     p = Path(path)
@@ -48,11 +50,14 @@ def load_mabe22(path: Path | str) -> dict:
 # Per-sequence converter
 # ---------------------------------------------------------------------------
 
-def _mabe22_seq_to_df(keypoints: np.ndarray,
-                      annotations: Optional[np.ndarray],
-                      seq_id: str,
-                      groupname: str,
-                      fps: float = 30.0) -> pd.DataFrame:
+
+def _mabe22_seq_to_df(
+    keypoints: np.ndarray,
+    annotations: Optional[np.ndarray],
+    seq_id: str,
+    groupname: str,
+    fps: float = 30.0,
+) -> pd.DataFrame:
     """
     Convert one MABe22 sequence to a long-format DataFrame.
 
@@ -73,11 +78,13 @@ def _mabe22_seq_to_df(keypoints: np.ndarray,
         )
 
 
-def _convert_4d(keypoints: np.ndarray,
-                annotations: Optional[np.ndarray],
-                seq_id: str,
-                groupname: str,
-                fps: float) -> pd.DataFrame:
+def _convert_4d(
+    keypoints: np.ndarray,
+    annotations: Optional[np.ndarray],
+    seq_id: str,
+    groupname: str,
+    fps: float,
+) -> pd.DataFrame:
     """Mouse / fly: keypoints shape (T, n_animals, n_kp, 2)."""
     T, n_anim, n_kp, _ = keypoints.shape
 
@@ -99,12 +106,17 @@ def _convert_4d(keypoints: np.ndarray,
 
         data = {
             "frame": np.arange(T, dtype=int),
-            "time":  np.arange(T, dtype=float) / fps,
-            "id":    np.full(T, a, dtype=int),
-            "X": cx, "Y": cy,
-            "X#wcentroid": cx, "Y#wcentroid": cy,
-            "VX": VX, "VY": VY,
-            "SPEED": SPEED, "AX": AX, "AY": AY,
+            "time": np.arange(T, dtype=float) / fps,
+            "id": np.full(T, a, dtype=int),
+            "X": cx,
+            "Y": cy,
+            "X#wcentroid": cx,
+            "Y#wcentroid": cy,
+            "VX": VX,
+            "VY": VY,
+            "SPEED": SPEED,
+            "AX": AX,
+            "AY": AY,
             "ANGLE": ANGLE,
             "group": groupname,
             "sequence": seq_id,
@@ -122,11 +134,13 @@ def _convert_4d(keypoints: np.ndarray,
     return out
 
 
-def _convert_2d(keypoints: np.ndarray,
-                annotations: Optional[np.ndarray],
-                seq_id: str,
-                groupname: str,
-                fps: float) -> pd.DataFrame:
+def _convert_2d(
+    keypoints: np.ndarray,
+    annotations: Optional[np.ndarray],
+    seq_id: str,
+    groupname: str,
+    fps: float,
+) -> pd.DataFrame:
     """Beetle: keypoints shape (T, 4) — [beetle_x, beetle_y, ant_x, ant_y]."""
     T, n_cols = keypoints.shape
     # Split into pairs: each consecutive (x, y) is one animal
@@ -147,12 +161,17 @@ def _convert_2d(keypoints: np.ndarray,
 
         data = {
             "frame": np.arange(T, dtype=int),
-            "time":  np.arange(T, dtype=float) / fps,
-            "id":    np.full(T, a, dtype=int),
-            "X": cx, "Y": cy,
-            "X#wcentroid": cx, "Y#wcentroid": cy,
-            "VX": VX, "VY": VY,
-            "SPEED": SPEED, "AX": AX, "AY": AY,
+            "time": np.arange(T, dtype=float) / fps,
+            "id": np.full(T, a, dtype=int),
+            "X": cx,
+            "Y": cy,
+            "X#wcentroid": cx,
+            "Y#wcentroid": cy,
+            "VX": VX,
+            "VY": VY,
+            "SPEED": SPEED,
+            "AX": AX,
+            "AY": AY,
             "ANGLE": ANGLE,
             "group": groupname,
             "sequence": seq_id,
@@ -174,10 +193,10 @@ def _convert_2d(keypoints: np.ndarray,
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _add_annotations(df: pd.DataFrame,
-                     annotations: Optional[np.ndarray],
-                     T: int,
-                     n_anim: int) -> None:
+
+def _add_annotations(
+    df: pd.DataFrame, annotations: Optional[np.ndarray], T: int, n_anim: int
+) -> None:
     """Add annotation columns to the DataFrame (in-place).
 
     MABe22 annotations are (n_labels, T) — same across all animals in a sequence.
@@ -203,10 +222,21 @@ def _add_trex_placeholders(df: pd.DataFrame) -> None:
     df["missing"] = False
     df["visual_identification_p"] = 1.0
     df["timestamp"] = df["time"]
-    for col in ["SPEED#pcentroid", "SPEED#wcentroid", "midline_x", "midline_y",
-                "midline_length", "midline_segment_length", "normalized_midline",
-                "ANGULAR_V#centroid", "ANGULAR_A#centroid", "BORDER_DISTANCE#pcentroid",
-                "MIDLINE_OFFSET", "num_pixels", "detection_p"]:
+    for col in [
+        "SPEED#pcentroid",
+        "SPEED#wcentroid",
+        "midline_x",
+        "midline_y",
+        "midline_length",
+        "midline_segment_length",
+        "normalized_midline",
+        "ANGULAR_V#centroid",
+        "ANGULAR_A#centroid",
+        "BORDER_DISTANCE#pcentroid",
+        "MIDLINE_OFFSET",
+        "num_pixels",
+        "detection_p",
+    ]:
         if col not in df.columns:
             df[col] = np.nan
 
@@ -214,6 +244,7 @@ def _add_trex_placeholders(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 # Top-level converter (registered)
 # ---------------------------------------------------------------------------
+
 
 def _mabe22_sequences(path: Path) -> dict:
     """The sequence mapping inside a MABe22 file.

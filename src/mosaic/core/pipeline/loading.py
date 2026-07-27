@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 # should use the new Columns.meta_set() | {"id1", "id2"} - id1 and id2 should actually also move to Columns for consistency.
 _ALIGN_COLS = frozenset({"frame", "time", "id", "id1", "id2"})
 
+
 # TODO: this shares logic with feature_library.params.PoseConfig
 # so pose config, columns etc should also move to pipeline/core
 def pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:

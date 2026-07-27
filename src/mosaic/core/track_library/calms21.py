@@ -5,6 +5,7 @@ trex_v1 parquet schema. Handles task1/task2/task3 splits.
 
 CalMS21 keypoint layout: (T, n_animals, xy=2, n_landmarks)
 """
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -21,32 +22,41 @@ from mosaic.core.track_converter import (
     register_track_converter,
 )
 from mosaic.core.track_library.helpers import (
-    load_calms21, angle_from_two_points, angle_from_pca, norm_hint,
+    load_calms21,
+    angle_from_two_points,
+    angle_from_pca,
+    norm_hint,
 )
 
 
-def _calms21_seq_to_trex_df(one_seq_dict: dict,
-                            groupname: str,
-                            seq_id: str,
-                            neck_idx: Optional[int] = None,
-                            tail_idx: Optional[int] = None) -> pd.DataFrame:
+def _calms21_seq_to_trex_df(
+    one_seq_dict: dict,
+    groupname: str,
+    seq_id: str,
+    neck_idx: Optional[int] = None,
+    tail_idx: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Convert a single sequence dict to T-Rex-like long DataFrame (rows = frames x animals).
     """
     # Pick features: either 'features' present or 'keypoints'
-    use_features = ("features" in one_seq_dict)
+    use_features = "features" in one_seq_dict
     if use_features:
         # not used in output columns; could be stored elsewhere if needed
         _ = np.asarray(one_seq_dict["features"])  # (T, K)
-    keypoints = np.asarray(one_seq_dict["keypoints"])    # (T, 2, 2, L)
-    scores    = np.asarray(one_seq_dict.get("scores", None))       # (T, 2, L) or None
-    ann       = np.asarray(one_seq_dict["annotations"]) if "annotations" in one_seq_dict else None
-    meta      = one_seq_dict.get("metadata", {})
-    fps       = float(meta.get("fps", meta.get("frame_rate", 30.0)))
+    keypoints = np.asarray(one_seq_dict["keypoints"])  # (T, 2, 2, L)
+    scores = np.asarray(one_seq_dict.get("scores", None))  # (T, 2, L) or None
+    ann = (
+        np.asarray(one_seq_dict["annotations"])
+        if "annotations" in one_seq_dict
+        else None
+    )
+    meta = one_seq_dict.get("metadata", {})
+    fps = float(meta.get("fps", meta.get("frame_rate", 30.0)))
 
     T = keypoints.shape[0]
     n_anim = keypoints.shape[1]
-    n_lm   = keypoints.shape[3]
+    n_lm = keypoints.shape[3]
 
     rows = []
     for a in range(n_anim):
@@ -67,7 +77,12 @@ def _calms21_seq_to_trex_df(one_seq_dict: dict,
         AY = np.gradient(VY) * fps
 
         # Heading angle
-        if (neck_idx is not None) and (tail_idx is not None) and 0 <= neck_idx < n_lm and 0 <= tail_idx < n_lm:
+        if (
+            (neck_idx is not None)
+            and (tail_idx is not None)
+            and 0 <= neck_idx < n_lm
+            and 0 <= tail_idx < n_lm
+        ):
             neck = XY[:, neck_idx, :]  # (T,2)
             tail = XY[:, tail_idx, :]
             ANGLE = angle_from_two_points(neck, tail)
@@ -77,14 +92,17 @@ def _calms21_seq_to_trex_df(one_seq_dict: dict,
         # Build a per-frame DataFrame
         data = {
             "frame": np.arange(T, dtype=int),
-            "time":  np.arange(T, dtype=float) / fps,
-            "id":    np.full(T, a, dtype=int),
+            "time": np.arange(T, dtype=float) / fps,
+            "id": np.full(T, a, dtype=int),
             "X": cx,
             "Y": cy,
             "X#wcentroid": cx,
             "Y#wcentroid": cy,
-            "VX": VX, "VY": VY,
-            "SPEED": SPEED, "AX": AX, "AY": AY,
+            "VX": VX,
+            "VY": VY,
+            "SPEED": SPEED,
+            "AX": AX,
+            "AY": AY,
             "ANGLE": ANGLE,
             "group": np.full(T, groupname),
             "sequence": np.full(T, seq_id),
@@ -105,7 +123,7 @@ def _calms21_seq_to_trex_df(one_seq_dict: dict,
         # Optional: keypoint scores columns, if provided
         if scores is not None:
             S = np.asarray(scores)  # (T, 2, L)
-            S_a = S[:, a, :]        # (T, L)
+            S_a = S[:, a, :]  # (T, L)
             for k in range(n_lm):
                 data[f"poseP{k}"] = S_a[:, k]
 
@@ -116,20 +134,35 @@ def _calms21_seq_to_trex_df(one_seq_dict: dict,
     out["missing"] = False
     out["visual_identification_p"] = 1.0
     out["timestamp"] = out["time"]
-    for col in ["X","Y","SPEED#pcentroid","SPEED#wcentroid","midline_x","midline_y",
-                "midline_length","midline_segment_length","normalized_midline",
-                "ANGULAR_V#centroid","ANGULAR_A#centroid","BORDER_DISTANCE#pcentroid",
-                "MIDLINE_OFFSET","num_pixels","detection_p"]:
+    for col in [
+        "X",
+        "Y",
+        "SPEED#pcentroid",
+        "SPEED#wcentroid",
+        "midline_x",
+        "midline_y",
+        "midline_length",
+        "midline_segment_length",
+        "normalized_midline",
+        "ANGULAR_V#centroid",
+        "ANGULAR_A#centroid",
+        "BORDER_DISTANCE#pcentroid",
+        "MIDLINE_OFFSET",
+        "num_pixels",
+        "detection_p",
+    ]:
         if col not in out.columns:
             out[col] = np.nan
     return out
 
 
-def calms21_to_trex_df(path: Path | str,
-                       prefer_group: Optional[str] = None,
-                       prefer_sequence: Optional[str] = None,
-                       neck_idx: Optional[int] = None,
-                       tail_idx: Optional[int] = None) -> pd.DataFrame:
+def calms21_to_trex_df(
+    path: Path | str,
+    prefer_group: Optional[str] = None,
+    prefer_sequence: Optional[str] = None,
+    neck_idx: Optional[int] = None,
+    tail_idx: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Load a CalMS21 .npy/.json and return a concatenated T-Rex-like DataFrame.
     Optionally filter to a specific (group, sequence).
@@ -160,12 +193,19 @@ def calms21_to_trex_df(path: Path | str,
                     continue
 
             # ensure arrays where needed
-            seq = {k: (np.array(v) if isinstance(v, list) else v) for k, v in seq.items()}
-            rows.append(_calms21_seq_to_trex_df(seq, groupname, seq_id,
-                                                neck_idx=neck_idx, tail_idx=tail_idx))
+            seq = {
+                k: (np.array(v) if isinstance(v, list) else v) for k, v in seq.items()
+            }
+            rows.append(
+                _calms21_seq_to_trex_df(
+                    seq, groupname, seq_id, neck_idx=neck_idx, tail_idx=tail_idx
+                )
+            )
     if not rows:
         if prefer_group or prefer_sequence:
-            raise KeyError(f"Requested CalMS21 ({prefer_group}, {prefer_sequence}) not found in {path}")
+            raise KeyError(
+                f"Requested CalMS21 ({prefer_group}, {prefer_sequence}) not found in {path}"
+            )
         raise RuntimeError(f"No sequences found in CalMS21 file: {path}")
     return pd.concat(rows, ignore_index=True)
 
@@ -256,25 +296,34 @@ def _calms21_make_seq_filter_from_hint(hint: Optional[str]):
         def _pred(_g, _s):
             # matches path patterns like taskX/.../<split>/...
             return _s.startswith(task_prefix) and (f"/{split}/" in _s)
+
         return _pred
 
     # task1
     if h.startswith("calms21_task1_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        split = (
+            "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        )
         if split:
             return pred_task_split("task1/", split)
 
     # task2 (note: has an annotator level 'task2/annotator1/<split>/...')
     if h.startswith("calms21_task2_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        split = (
+            "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        )
         if split:
+
             def _pred(_g, _s):
                 return _s.startswith("task2/") and (f"/{split}/" in _s)
+
             return _pred
 
     # task3 (behavior level: 'task3/<behavior>/<split>/...')
     if h.startswith("calms21_task3_"):
-        split = "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        split = (
+            "train" if h.endswith("train") else ("test" if h.endswith("test") else None)
+        )
         if split:
             return pred_task_split("task3/", split)
 

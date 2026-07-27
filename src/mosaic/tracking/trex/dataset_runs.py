@@ -123,9 +123,11 @@ def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
 
 PHASES: Final[tuple[PhaseName, ...]] = ("convert", "track")
 
+
 def trex_run_id(settings: Mapping[str, object]) -> str:
     """Mint a tracker run identifier from the resolved TREx settings."""
     return op_run_id(TREX_KIND, TREX_VERSION, dict(settings))
+
 
 # How often the per-line activity callback re-stamps the claim / heartbeat. A
 # TREx progress bar can redraw many times a second, so the throttle keeps that

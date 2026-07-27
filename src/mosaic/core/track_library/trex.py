@@ -3,6 +3,7 @@
 Converts TRex-exported per-individual NPZ files to the standardized
 trex_v1 parquet schema.
 """
+
 from __future__ import annotations
 from pathlib import Path
 import re
@@ -47,7 +48,7 @@ def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
     data = np.load(filepath, allow_pickle=True)
     keys = list(data.files)
 
-    skip_keys = {} # including all for now.  Could make this a parameter to pass
+    skip_keys = {}  # including all for now.  Could make this a parameter to pass
 
     # Determine candidate lengths per key
     lens = []
@@ -86,8 +87,11 @@ def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
             # but to keep a consistent table width we'll just truncate n down for this column.
             vi = v  # keep as-is; we will align by slicing [:vi.shape[0]] and then pad
             # simple pad with NaN to length n
-            pad = np.full((n - vi.shape[0],), np.nan, dtype=float) if v.ndim == 1 else \
-                  np.full((n - vi.shape[0],) + v.shape[1:], np.nan, dtype=float)
+            pad = (
+                np.full((n - vi.shape[0],), np.nan, dtype=float)
+                if v.ndim == 1
+                else np.full((n - vi.shape[0],) + v.shape[1:], np.nan, dtype=float)
+            )
             vi = np.concatenate([vi, pad], axis=0)
         else:
             vi = v[:n]
