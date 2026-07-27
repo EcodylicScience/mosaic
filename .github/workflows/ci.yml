@@ -29,11 +29,15 @@ jobs:
         with:
           path: mosaic
 
+      # No `token:`. mosaic-media is public, so the default `github.token` can
+      # read it. Naming a secret that does not exist is worse than naming none:
+      # an undefined secret expands to the empty string, and checkout rejects
+      # that outright ("Input required and not supplied: token"), so the job
+      # died before installing anything.
       - uses: actions/checkout@v4
         with:
           repository: EcodylicScience/mosaic-media
           path: mosaic_media
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
 
       - uses: astral-sh/setup-uv@v5
         with:
