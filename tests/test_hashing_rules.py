@@ -87,15 +87,6 @@ def _fit_reads_its_stream(cls: type) -> bool | None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "global-identity-megadescriptor and global-identity-dinov2-temporal fit from "
-        "the stream while declaring scope_dependent = False. Closed by implementation "
-        "item 1.4, which adds the pre-fitted model artifact branch and then flips the "
-        "flag."
-    ),
-)
 def test_stream_fitting_features_declare_scope_dependent() -> None:
     """P2f: if ``fit()`` consumes its stream, the scope is the training set.
 
