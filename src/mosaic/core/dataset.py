@@ -9,10 +9,11 @@ import os
 import re
 import sys
 import uuid
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional, Protocol
+from typing import TYPE_CHECKING, Final, Iterable, Optional, Protocol
 
 import numpy as np
 import pandas as pd
@@ -92,6 +93,12 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 
 from dataclasses import field
 from typing import Any, Callable, Dict, Mapping, Tuple
+
+# Path-bearing columns on the tracker index beyond ``abs_path``: the source
+# video the run consumed and the ``.pv`` it produced. Named here because both
+# path passes read raw CSVs and have no row class to ask. Any new path column
+# on TRexIndexRow belongs in this tuple, or it silently stops being portable.
+_TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
 
 # A tiny registry so you can plug converters: src_format -> callable
 TrackConverter = Callable[[Path, dict], pd.DataFrame]
@@ -762,81 +769,90 @@ class Dataset:
         if not normalized:
             return {}
 
-        def rewrite_index(idx_path: Path) -> int:
+        def rewrite_index(idx_path: Path, extra_columns: Sequence[str] = ()) -> int:
+            """Remap ``abs_path``, plus any *extra_columns* holding a path.
+
+            Most index rows carry exactly one path. The rows that carry a
+            second one (the tracker's source video, its ``.pv``) name it here
+            rather than in the row class, because this is a raw CSV pass with
+            no row type to consult.
+            """
             if not idx_path.exists():
                 return 0
             df = pd.read_csv(idx_path)
-            if "abs_path" not in df.columns:
+            columns = [c for c in ("abs_path", *extra_columns) if c in df.columns]
+            if not columns:
                 return 0
             changed = 0
-            new_paths = []
-            for p in df["abs_path"]:
-                if pd.isna(p):
-                    new_paths.append(p)
-                    continue
-                remapped = _remap_single_path(Path(p), normalized)
-                if remapped is not None and str(remapped) != p:
-                    new_paths.append(str(remapped))
-                    changed += 1
-                else:
-                    new_paths.append(p)
+            for col in columns:
+                col_changed = 0
+                new_paths = []
+                for p in df[col]:
+                    if pd.isna(p) or not str(p):
+                        new_paths.append(p)
+                        continue
+                    remapped = _remap_single_path(Path(str(p)), normalized)
+                    if remapped is not None and str(remapped) != p:
+                        new_paths.append(str(remapped))
+                        col_changed += 1
+                    else:
+                        new_paths.append(p)
+                if col_changed > 0:
+                    changed += col_changed
+                    if not dry_run:
+                        df[col] = new_paths
             if changed > 0 and not dry_run:
-                df["abs_path"] = new_paths
                 df.to_csv(idx_path, index=False)
             return changed
 
         results: dict[str, int] = {}
 
-        # All roots that may have index files
-        root_keys = ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]
-        for key in root_keys:
-            root = self.roots.get(key)
-            if not root:
-                continue
-            idx_path = Path(root) / "index.csv"
-            count = rewrite_index(idx_path)
+        # Roots are resolved through get_root, never read raw out of
+        # self.roots: a root is stored relative to the dataset, so ``Path(root)``
+        # resolves against the process CWD instead -- which reads as "no index
+        # here" for a file pass and raises FileNotFoundError for a directory
+        # walk. Every root below is also guarded for existence, since a root may
+        # be declared in the manifest and not yet created on disk.
+        def subdir_indexes(key: str) -> list[Path]:
+            if not self.has_root(key):
+                return []
+            root = self.get_root(key)
+            if not root.exists():
+                return []
+            return [d / "index.csv" for d in sorted(root.iterdir()) if d.is_dir()]
+
+        def root_index(key: str) -> Path | None:
+            return self.get_root(key) / "index.csv" if self.has_root(key) else None
+
+        def record(idx_path: Path | None, extra: Sequence[str] = ()) -> None:
+            if idx_path is None:
+                return
+            count = rewrite_index(idx_path, extra)
             if count > 0:
                 results[str(idx_path)] = count
 
-        # Features: has per-feature subdirectories with their own index.csv
-        features_root = self.roots.get("features")
-        if features_root:
-            features_path = Path(features_root)
-            # Root-level index
-            root_idx = features_path / "index.csv"
-            count = rewrite_index(root_idx)
-            if count > 0:
-                results[str(root_idx)] = count
-            # Per-feature indexes
-            for subdir in features_path.iterdir():
-                if subdir.is_dir():
-                    sub_idx = subdir / "index.csv"
-                    count = rewrite_index(sub_idx)
-                    if count > 0:
-                        results[str(sub_idx)] = count
+        # All roots that may have index files
+        for key in ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]:
+            record(root_index(key))
 
-        # Labels: has per-kind subdirectories (e.g., id_tags) with their own index.csv
-        labels_root = self.roots.get("labels")
-        if labels_root:
-            labels_path = Path(labels_root)
-            for subdir in labels_path.iterdir():
-                if subdir.is_dir():
-                    sub_idx = subdir / "index.csv"
-                    count = rewrite_index(sub_idx)
-                    if count > 0:
-                        results[str(sub_idx)] = count
+        # Features: a root-level index plus one per feature
+        record(root_index("features"))
+        for idx_path in subdir_indexes("features"):
+            record(idx_path)
 
-        # Frames: has per-method subdirectories (uniform, kmeans) with their own index.csv
-        frames_root = self.roots.get("frames")
-        if frames_root:
-            frames_path = Path(frames_root)
-            if frames_path.exists():
-                for subdir in frames_path.iterdir():
-                    if subdir.is_dir():
-                        sub_idx = subdir / "index.csv"
-                        count = rewrite_index(sub_idx)
-                        if count > 0:
-                            results[str(sub_idx)] = count
+        # Labels: per-kind subdirectories (e.g. id_tags)
+        for idx_path in subdir_indexes("labels"):
+            record(idx_path)
+
+        # Frames: per-method subdirectories (uniform, kmeans)
+        for idx_path in subdir_indexes("frames"):
+            record(idx_path)
+
+        # Tracker runs. Reached by root key, not by the default location
+        # ``tracks_raw/trex`` -- that is a *subdirectory* of the tracks_raw root
+        # above, whose own index.csv the loop never visits, and item 8.1 moves
+        # it to ``_tracking/trex`` anyway.
+        record(root_index("trex"), _TREX_INDEX_PATH_COLUMNS)
 
         return results
 
@@ -886,28 +902,29 @@ class Dataset:
             results["dataset.yaml (roots)"] = roots_changed
 
         # --- 8b. Index CSVs: convert abs_path column ---
-        def _convert_index(
-            idx_path: Path, external_columns: set[str] | None = None
-        ) -> int:
-            """Convert abs_path (and optionally other path columns) to relative."""
+        def _convert_index(idx_path: Path, extra_columns: Sequence[str] = ()) -> int:
+            """Convert abs_path, plus any *extra_columns* holding a path, to relative."""
             if not idx_path.exists():
                 return 0
             df = pd.read_csv(idx_path)
             total_changed = 0
-            for col in ["abs_path"]:
+            for col in ("abs_path", *extra_columns):
                 if col not in df.columns:
                     continue
+                col_changed = 0
                 new_vals = []
                 for val in df[col]:
-                    if pd.isna(val):
+                    if pd.isna(val) or not str(val):
                         new_vals.append(val)
                         continue
                     new_val, changed = _make_rel(str(val))
                     new_vals.append(new_val)
                     if changed:
-                        total_changed += 1
-                if total_changed > 0 and not dry_run:
-                    df[col] = new_vals
+                        col_changed += 1
+                if col_changed > 0:
+                    total_changed += col_changed
+                    if not dry_run:
+                        df[col] = new_vals
             if total_changed > 0 and not dry_run:
                 df.to_csv(idx_path, index=False)
             return total_changed
@@ -966,6 +983,14 @@ class Dataset:
                         count = _convert_index(sub_idx)
                         if count > 0:
                             results[str(sub_idx)] = count
+
+        # Tracker runs: see the note in rewrite_index_paths -- the trex root is
+        # a subdirectory of tracks_raw by default, so the loop above misses it.
+        if self.has_root("trex"):
+            trex_idx = self.get_root("trex") / "index.csv"
+            count = _convert_index(trex_idx, _TREX_INDEX_PATH_COLUMNS)
+            if count > 0:
+                results[str(trex_idx)] = count
 
         # --- 8c. run_info.json files (frame extraction manifests) ---
         if frames_root:

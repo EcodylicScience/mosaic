@@ -63,7 +63,16 @@ def trex_index_path(ds: Dataset) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class TRexIndexRow(RunIndexRowBase):
-    """Typed row for the TREx run index CSV."""
+    """Typed row for the TREx run index CSV.
+
+    ``video_abs_path`` and ``pv_path`` are stored the same way ``abs_path`` is:
+    dataset-root-relative when the file is inside the dataset, absolute when it
+    is not. Readers resolve them with :meth:`Dataset.resolve_path`. A stored
+    absolute would never match a freshly resolved one after a move or a sync
+    between machines -- which is the comparison the tracker's reuse guard makes,
+    so it would invert into a permanent recompute. A new path column here must
+    also be added to ``_TREX_INDEX_PATH_COLUMNS`` in ``core/dataset.py``.
+    """
 
     group: str
     sequence: str
@@ -367,7 +376,7 @@ def run_trex(
                         group=group,
                         sequence=sequence,
                         abs_path=Path(ds.relative_to_root(seq_dir)),
-                        video_abs_path=str(video_path),
+                        video_abs_path=ds.relative_to_root(video_path),
                         params_hash=params_hash,
                         n_individuals=len(npz_paths),
                         pv_path=(
