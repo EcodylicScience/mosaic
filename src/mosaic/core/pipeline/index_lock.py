@@ -22,7 +22,7 @@ promise: **many writers on one mount, or many machines one at a time, never
 both.**
 
 **Why the index file itself and not a sidecar.** A sidecar ``.lock`` is another
-file in a root that users browse and that tests enumerate -- ``test_tracks_index``
+file in a root that users browse and that tests enumerate -- ``test_tracks_raw_index``
 asserts an index directory holds exactly ``index.csv``. Locking the index inode
 directly keeps the guarantee without adding anything to disk.
 

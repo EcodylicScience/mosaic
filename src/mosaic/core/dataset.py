@@ -76,7 +76,7 @@ from .pipeline.media_index import (
     read_media_index as _read_media_index,
     write_media_index_rows,
 )
-from .pipeline.tracks_index import (
+from .pipeline.tracks_raw_index import (
     TracksRawIndexRow,
     TracksRawIndexScope,
     build_tracks_raw_row,

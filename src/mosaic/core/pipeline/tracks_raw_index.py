@@ -1,5 +1,11 @@
 """The single writer of the raw-tracks index CSV.
 
+Named ``tracks_raw_index`` rather than ``tracks_index``, because this is the
+index of the *raw* uploads under ``tracks_raw/``, not of the converted tables
+under ``tracks/``. The two were one filename apart until Stage 2 gave
+``tracks/index.csv`` a typed row of its own, at which point one of them had to
+say which root it meant.
+
 The raw-tracks index (``tracks_raw/index.csv``) is a mosaic-defined artifact
 with invariants mosaic owns: the ``TRACKS_RAW_INDEX_COLUMNS`` schema, an
 ``abs_path`` stored root-relative when the file lives inside the dataset tree

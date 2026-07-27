@@ -1,6 +1,6 @@
 """Tests for the raw-tracks index writer.
 
-Covers the pure serialization helpers in ``mosaic.core.pipeline.tracks_index``,
+Covers the pure serialization helpers in ``mosaic.core.pipeline.tracks_raw_index``,
 the root-relative-in-tree / absolute-out-of-tree ``abs_path`` contract and
 atomic write that ``Dataset.index_tracks_raw`` now enforces (the scan/identity
 logic -- TREx suffix strip, ``multi_sequences_per_file`` grouping -- is asserted
@@ -16,7 +16,7 @@ import pandas as pd
 
 import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz converter
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.tracks_index import (
+from mosaic.core.pipeline.tracks_raw_index import (
     TRACKS_RAW_INDEX_COLUMNS,
     TracksRawIndexScope,
     build_tracks_raw_row,
