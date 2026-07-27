@@ -91,6 +91,7 @@ from .pipeline.tracks_identity import (
     tracks_run_id,
     write_tracks_variant,
 )
+from .pipeline.tracks_index import write_tracks_row
 from .pipeline.tracks_raw_index import (
     TracksRawIndexRow,
     TracksRawIndexScope,
@@ -2626,11 +2627,11 @@ class Dataset:
 
         converter = get_track_converter(src_format)
         conv_params = self._converter_params(converter, params)
-        # Minted and recorded once per recipe, not per entry. The index row
-        # that points at it is Stage 2's typed tracks index; until then the
-        # variant is described in tracks/<run_id>/params.json, which is what
-        # Stage 3.2 turns into the directory holding the parquets themselves.
-        _ = self._tracks_variant(converter, conv_params)
+        # Minted and recorded once per recipe, not per entry, and carried onto
+        # every row this call writes. Also described in tracks/<run_id>/params.json,
+        # which Stage 3.2 turns into the directory holding the parquets themselves.
+        variant = self._tracks_variant(converter, conv_params)
+        producer = converter_op(src_format)
 
         # Where to place standardized file:
         # group/sequence.parquet if group present, else just sequence.parquet
@@ -2665,11 +2666,7 @@ class Dataset:
                 if policy in {"filename", "both"} and raw_collection:
                     out_group_canon = raw_collection
 
-                # safe names for path
-                safe_seq = to_safe_name(canon_seq)
-                safe_group = to_safe_name(out_group_canon) if out_group_canon else ""
-
-                # output path
+                # output path -- make_entry_key does the safe-name encoding
                 tracks_root = self.get_root("tracks")
                 stem = make_entry_key(out_group_canon, canon_seq)
                 out_path = tracks_root / f"{stem}.parquet"
@@ -2701,34 +2698,29 @@ class Dataset:
                 )
                 df_std.to_parquet(out_path, index=False)
 
-                # Index row: group follows policy; keep file-level hint as 'collection'
-                row = {
-                    "group": out_group_canon,
-                    "sequence": canon_seq,
-                    "group_safe": safe_group,
-                    "sequence_safe": safe_seq,
-                    "collection": raw_collection,
-                    "collection_safe": to_safe_name(raw_collection)
-                    if raw_collection
-                    else "",
-                    "abs_path": self._relative_to_root(out_path),
-                    "std_format": std_fmt,
-                    "source_abs_path": self._relative_to_root(src_path),
-                    "source_md5": raw_row.get("md5", ""),
-                    "n_rows": int(len(df_std)),
-                }
-                self._write_tracks_index_row(row)
+                # The file-level grouping hint the old row kept as 'collection'
+                # is not recorded: it had no reader anywhere, and it stays
+                # recoverable from tracks_raw/index.csv through source_abs_path.
+                write_tracks_row(
+                    self,
+                    run_id=variant,
+                    group=out_group_canon,
+                    sequence=canon_seq,
+                    out_path=out_path,
+                    producer=producer,
+                    std_format=std_fmt,
+                    n_rows=int(len(df_std)),
+                    source=src_path,
+                    source_md5=str(raw_row.get("md5", "")),
+                    consumed_source_roots=("tracks_raw",),
+                )
                 produced.append(out_path)
 
             return self.get_root("tracks") / "index.csv"
 
-        # Normal single-sequence path (default)
-        safe_group = (
-            to_safe_name(str(raw_row.get("group", "")) or "")
-            if raw_row.get("group")
-            else ""
-        )
-        safe_seq = to_safe_name(seq_value)
+        # Normal single-sequence path (default). The safe names are not
+        # computed here any more: make_entry_key derives them for the filename,
+        # and the index stores the raw identity plus nothing derivable from it.
         group_value = str(raw_row.get("group", "")) or ""
         rel_name = f"{make_entry_key(group_value, seq_value)}.parquet"
         out_path = tracks_root / rel_name
@@ -2758,93 +2750,23 @@ class Dataset:
 
         df_std.to_parquet(out_path, index=False)
 
-        # Update tracks/index.csv using the helper
-        row = {
-            "group": raw_row.get("group", ""),
-            "sequence": raw_row["sequence"],
-            "group_safe": to_safe_name(str(raw_row.get("group", "")))
-            if raw_row.get("group")
-            else "",
-            "sequence_safe": to_safe_name(seq_value),
-            "collection": str(raw_row.get("group", ""))
-            if raw_row.get("group") is not None
-            else "",
-            "collection_safe": to_safe_name(str(raw_row.get("group", "")))
-            if raw_row.get("group")
-            else "",
-            "abs_path": self._relative_to_root(out_path),
-            "std_format": std_fmt,
-            "source_abs_path": self._relative_to_root(src_path),
-            "source_md5": raw_row.get("md5", ""),
-            "n_rows": int(len(df_std)),
-        }
-        self._write_tracks_index_row(row)
-        return out_path
-
-    def _write_tracks_index_row(self, row: dict):
-        """
-        Helper to write/update a row in tracks/index.csv, removing any existing entry for the same (group, sequence).
-        Ensures safe-name columns are present and filled.
-        """
-        # Ensure safe-name columns are present in row
-        row = dict(row)
-        row["group_safe"] = to_safe_name(row["group"]) if row.get("group") else ""
-        row["sequence_safe"] = (
-            to_safe_name(row["sequence"]) if row.get("sequence") else ""
+        # group/sequence come straight off a pandas Series here, so they can be
+        # numpy scalars; write_tracks_row stringifies them, which is what keeps
+        # the dedup that holds this index to one row per entry working.
+        write_tracks_row(
+            self,
+            run_id=variant,
+            group=raw_row.get("group", ""),
+            sequence=raw_row["sequence"],
+            out_path=out_path,
+            producer=producer,
+            std_format=std_fmt,
+            n_rows=int(len(df_std)),
+            source=src_path,
+            source_md5=str(raw_row.get("md5", "")),
+            consumed_source_roots=("tracks_raw",),
         )
-        if "collection_safe" not in row:
-            row["collection_safe"] = (
-                to_safe_name(row.get("collection", "")) if row.get("collection") else ""
-            )
-        tracks_root = self.get_root("tracks")
-        idx_std = tracks_root / "index.csv"
-        columns = [
-            "group",
-            "sequence",
-            "group_safe",
-            "sequence_safe",
-            "collection",
-            "collection_safe",
-            "abs_path",
-            "std_format",
-            "source_abs_path",
-            "source_md5",
-            "n_rows",
-        ]
-        if idx_std.exists():
-            df_idx = pd.read_csv(idx_std)
-            # If missing safe columns, add and fill them
-            for col, canon_col in [
-                ("group_safe", "group"),
-                ("sequence_safe", "sequence"),
-            ]:
-                if col not in df_idx.columns:
-                    df_idx[col] = df_idx[canon_col].apply(
-                        lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else ""
-                    )
-            # Ensure collection/collection_safe columns exist and are filled appropriately
-            if "collection" not in df_idx.columns:
-                df_idx["collection"] = ""
-            if "collection_safe" not in df_idx.columns:
-                # derive from collection (which may be empty strings)
-                df_idx["collection_safe"] = df_idx["collection"].apply(
-                    lambda v: to_safe_name(v) if pd.notnull(v) and str(v) else ""
-                )
-            # Remove any existing entry with the same (group, sequence)
-            df_idx = df_idx[
-                ~(
-                    (df_idx["group"].fillna("") == row["group"])
-                    & (df_idx["sequence"] == row["sequence"])
-                )
-            ]
-            df_idx = pd.concat(
-                [df_idx, pd.DataFrame([{k: row.get(k, "") for k in columns}])],
-                ignore_index=True,
-            )
-        else:
-            # Ensure all columns present in correct order
-            df_idx = pd.DataFrame([[row.get(k, "") for k in columns]], columns=columns)
-        df_idx.to_csv(idx_std, index=False)
+        return out_path
 
     def list_converters(self) -> Dict[str, type[TrackConverter[TrackConvertParams]]]:
         """Return registered raw->standard track converters."""
@@ -3037,8 +2959,6 @@ class Dataset:
             if group_from in {"filename", "both"} and raw_group_hint:
                 out_group = raw_group_hint
             tracks_root = self.get_root("tracks")
-            safe_group = to_safe_name(out_group) if out_group else ""
-            safe_seq = to_safe_name(sequence)
             rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
             out_path = tracks_root / rel_name
             if out_path.exists() and not overwrite:
@@ -3046,11 +2966,9 @@ class Dataset:
 
             converter = get_track_converter(src_format)
             conv_params = self._converter_params(converter, params, src_format)
-            # Minted and recorded once per recipe, not per entry. The index row
-            # that points at it is Stage 2's typed tracks index; until then the
-            # variant is described in tracks/<run_id>/params.json, which is
-            # what Stage 3.2 turns into the directory holding the parquets.
-            _ = self._tracks_variant(converter, conv_params)
+            # Minted and recorded once per recipe, not per entry, and carried
+            # onto the row below.
+            variant = self._tracks_variant(converter, conv_params)
             hints = EntryHints(group=group or "", sequence=sequence or "")
 
             dfs = []
@@ -3091,25 +3009,23 @@ class Dataset:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             merged_df.to_parquet(out_path, index=False)
 
-            # Index row (also keep raw hint as 'collection')
-            row_out = {
-                "group": out_group,
-                "sequence": sequence,
-                "group_safe": safe_group,
-                "sequence_safe": safe_seq,
-                "collection": raw_group_hint,
-                "collection_safe": to_safe_name(raw_group_hint)
-                if raw_group_hint
-                else "",
-                "abs_path": self._relative_to_root(out_path),
-                "std_format": "trex_v1",
-                "source_abs_path": self._relative_to_root(
-                    self.resolve_path(first_row["abs_path"])
-                ),
-                "source_md5": first_row.get("md5", ""),
-                "n_rows": int(len(merged_df)),
-            }
-            self._write_tracks_index_row(row_out)
+            # source_abs_path names only the first of the N per-id files merged
+            # here. Unchanged from before; the full set stays recoverable from
+            # tracks_raw/index.csv by (group, sequence, src_format), and naming
+            # every source is item 5.1's job rather than this column's.
+            write_tracks_row(
+                self,
+                run_id=variant,
+                group=out_group,
+                sequence=sequence,
+                out_path=out_path,
+                producer=converter_op(src_format),
+                std_format="trex_v1",
+                n_rows=int(len(merged_df)),
+                source=self.resolve_path(first_row["abs_path"]),
+                source_md5=str(first_row.get("md5", "")),
+                consumed_source_roots=("tracks_raw",),
+            )
 
     # ----------------------------
     # Labels: conversion + indexing

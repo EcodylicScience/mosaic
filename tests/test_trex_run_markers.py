@@ -498,10 +498,17 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         sequence: str,
         npz_paths: list[Path],
         *,
+        tracks_variant: str,
+        producer_run_id: str,
+        video_path: Path,
         overwrite: bool,
     ) -> int | None:
         written.append(Path(f"{group}__{sequence}"))
         assert overwrite is True, "a recomputed entry must overwrite its parquet"
+        # The bridge is handed the variant it belongs to and the tracker run
+        # that produced it, minted once for the whole run rather than per entry.
+        assert tracks_variant.startswith("trex.")
+        assert producer_run_id.startswith("trex.")
         return 1
 
     dr.run_trex(ds, entries=[("", "vid1")])

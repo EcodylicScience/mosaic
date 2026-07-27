@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, Final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.helpers import make_entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
@@ -60,6 +60,7 @@ from mosaic.core.pipeline.tracks_identity import (
     trex_variant_payload,
     write_tracks_variant,
 )
+from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
@@ -383,6 +384,9 @@ def _bridge_npz_to_tracks(
     sequence: str,
     npz_paths: list[Path],
     *,
+    tracks_variant: str,
+    producer_run_id: str,
+    video_path: Path,
     overwrite: bool,
 ) -> int | None:
     """Merge per-individual TREx NPZ into ``tracks/<group>__<seq>.parquet``.
@@ -433,20 +437,21 @@ def _bridge_npz_to_tracks(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(out_path, index=False)
 
-    ds._write_tracks_index_row(
-        {
-            "group": group,
-            "sequence": sequence,
-            "group_safe": to_safe_name(group) if group else "",
-            "sequence_safe": to_safe_name(sequence),
-            "collection": "",
-            "collection_safe": "",
-            "abs_path": ds._relative_to_root(out_path),
-            "std_format": "trex_v1",
-            "source_abs_path": str(npz_paths[0].parent),
-            "source_md5": "",
-            "n_rows": int(len(merged)),
-        }
+    # source_abs_path is now stored root-relative like every other stored path.
+    # It used to be a bare absolute directory -- the one non-portable value in
+    # any index -- so it did not survive a move or a sync between machines.
+    write_tracks_row(
+        ds,
+        run_id=tracks_variant,
+        group=group,
+        sequence=sequence,
+        out_path=out_path,
+        producer=TREX_KIND,
+        std_format="trex_v1",
+        n_rows=int(len(merged)),
+        producer_run_id=producer_run_id,
+        source=npz_paths[0].parent,
+        consumed_source_roots=consumed_roots_for(ds, [npz_paths[0], video_path]),
     )
     return int(len(merged))
 
@@ -873,6 +878,9 @@ def run_trex(
                         group,
                         sequence,
                         npz_paths,
+                        tracks_variant=tracks_variant,
+                        producer_run_id=run_id,
+                        video_path=video_path,
                         overwrite=overwrite or recomputed,
                     )
 

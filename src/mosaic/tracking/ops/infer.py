@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Annotated, Callable
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.helpers import make_entry_key, to_safe_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
@@ -27,6 +27,7 @@ from mosaic.core.pipeline.tracks_identity import (
     tracks_run_id,
     write_tracks_variant,
 )
+from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
@@ -124,6 +125,12 @@ def _bridge_df_to_tracks(
     group: str,
     sequence: str,
     *,
+    tracks_variant: str,
+    producer_run_id: str,
+    kind: str,
+    seq_dir: Path,
+    video_path: Path,
+    model_pt: Path,
     overwrite: bool,
 ) -> int:
     """Write an inference DataFrame as a standardized ``tracks/`` parquet."""
@@ -142,20 +149,22 @@ def _bridge_df_to_tracks(
     ensure_track_schema(df, "trex_v1", strict=False, source=f"{group}/{sequence}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_path, index=False)
-    ds._write_tracks_index_row(
-        {
-            "group": group,
-            "sequence": sequence,
-            "group_safe": to_safe_name(group) if group else "",
-            "sequence_safe": to_safe_name(sequence),
-            "collection": "",
-            "collection_safe": "",
-            "abs_path": ds._relative_to_root(out_path),
-            "std_format": "trex_v1",
-            "source_abs_path": "",
-            "source_md5": "",
-            "n_rows": int(len(df)),
-        }
+    # source_abs_path was empty here, because the frame is built in memory and
+    # there is no raw file. It now points at the prediction directory this run
+    # wrote -- the row-level pointer from a tracks table back to the predictions
+    # that produced it, which is what item 8.7 needs to retire that root.
+    write_tracks_row(
+        ds,
+        run_id=tracks_variant,
+        group=group,
+        sequence=sequence,
+        out_path=out_path,
+        producer=kind,
+        std_format="trex_v1",
+        n_rows=int(len(df)),
+        producer_run_id=producer_run_id,
+        source=seq_dir,
+        consumed_source_roots=consumed_roots_for(ds, [video_path, model_pt]),
     )
     return int(len(df))
 
@@ -238,7 +247,17 @@ def _run_inference_op(
             if params.convert_to_tracks and df is not None and not df.empty:
                 ctx.progress.on_phase("bridge", key)
                 n_rows = _bridge_df_to_tracks(
-                    ds, df, group, sequence, overwrite=params.overwrite
+                    ds,
+                    df,
+                    group,
+                    sequence,
+                    tracks_variant=tracks_variant,
+                    producer_run_id=run_id,
+                    kind=kind,
+                    seq_dir=seq_dir,
+                    video_path=video_path,
+                    model_pt=Path(model_pt),
+                    overwrite=params.overwrite,
                 )
 
             rows.append(
