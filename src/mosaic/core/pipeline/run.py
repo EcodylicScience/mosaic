@@ -47,6 +47,7 @@ from .index import (
 )
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
+from .resolve import resolution_payload, resolve_references
 from .types import (
     COLUMNS,
     ArtifactSpec,
@@ -101,6 +102,14 @@ def _build_result_lookup(
     Reads the upstream feature's index and resolves each entry's parquet path.
     Shared by the params-field and ``feature.inputs`` dependency-resolution
     paths in :func:`_resolve_dependencies`.
+
+    The ``run_id is None`` fallback below is unreachable from ``run_feature``:
+    :func:`~mosaic.core.pipeline.resolve.resolve_references` pins every
+    reference before the identifier is computed, so by the time this runs the
+    caller's reference carries a concrete run. It is kept because this function
+    is also reached from paths that mint no identity, and because resolving here
+    instead of raising would be the defect item 1.1 fixed -- silently reading a
+    run the identifier does not name.
     """
     dep_index = feature_index(feature_index_path(ds, feature_name))
     if run_id is None:
@@ -167,6 +176,9 @@ def _resolve_dependencies(
                 if not feature_name:
                     continue
                 if _run_id is None:
+                    # Pinned by resolve_references before the identifier was
+                    # computed, so this fires only for a caller that skipped
+                    # that pass. See _build_result_lookup for why it survives.
                     _run_id, dep_root = _latest_feature_run_root(ds, feature_name)
                 else:
                     dep_root = feature_run_root(ds, feature_name, _run_id)
@@ -565,6 +577,13 @@ def _run_feature_impl(
                 f"(or omit it) to mean every sequence."
             )
 
+    # Pin every unpinned upstream *before* anything hashes or reads it. An
+    # unpinned reference used to be resolved after the digest, into a local that
+    # was discarded, so a run that consumed the latest `extract-templates` and a
+    # run that consumed a later one shared one identifier and one directory.
+    # Resolution reads the filesystem; compute_run_id below stays pure.
+    resolutions = resolve_references(ds, feature)
+
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}
@@ -607,6 +626,12 @@ def _run_feature_impl(
                 "scope_dependent": feature.scope_dependent,
                 "entries": [list(entry) for entry in sorted(scope.entries)],
             },
+            # Which concrete upstream run each reference was pinned to. The
+            # identifier already covers these (they were pinned before it was
+            # computed), so this is provenance, not identity -- it makes the
+            # edge readable without re-deriving it, and feeds the
+            # reverse-dependency index in item 6.1.
+            "_resolved": resolution_payload(resolutions),
         }
         atomic_write(
             params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))

@@ -40,8 +40,15 @@ from ._utils import atomic_write
 
 MARKER_NAME: Final = ".identity_scheme"
 
-FEATURE_IDENTITY_SCHEME: Final = "1"
+FEATURE_IDENTITY_SCHEME: Final = "2"
 """The contract ``compute_run_id`` implements today.
+
+Scheme 2 (item 1.1): every ``Result``-shaped reference is pinned to a concrete
+``run_id`` before the payload is built, so ``_inputs`` carries the upstream run
+rather than a ``None`` standing for "latest, whichever that turns out to be".
+The payload's *shape* is unchanged -- one field's value stopped being null --
+but a scheme is about what the digest covers, and it now covers something it
+did not. Scheme 1 runs stay on disk and keep resolving (migration M1).
 
 A bare monotone counter, matching ``mosaic-media``'s ``IDENTITY_SCHEME``, so a
 reader who knows one knows the other. Typed ``str`` rather than ``int`` on

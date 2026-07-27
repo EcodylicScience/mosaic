@@ -289,6 +289,11 @@ def _resolve_feature(
         return set(), {}, [], {}
 
     if run_id is None:
+        # Unreachable from run_feature and from the chain runner: both call
+        # resolve.resolve_references first, so `item.run_id` arrives concrete
+        # (item 1.1). Kept for direct callers of build_manifest -- it is public
+        # API -- and because the resolution rule here and there is the same
+        # function, so the two cannot disagree about which run "latest" means.
         run_id, _ = latest_feature_run_root(ds, feature_name)
 
     idx = feature_index(idx_path)

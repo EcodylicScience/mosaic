@@ -183,6 +183,13 @@ def build_nn_lookup(
     Returns ``{(frame, individual_id): nn_id}`` from the nearest-neighbor
     feature parquet.  Returns an empty dict when the NN feature has not been
     computed for this sequence (fail-open).
+
+    ``NNResult`` is a ``Result``, so on the ``run_feature`` path
+    :func:`~mosaic.core.pipeline.resolve.resolve_references` has already pinned
+    ``pair_filter_spec.run_id`` and the fallback below does not fire. It used to:
+    a pair filter resolved to "latest" here, at load time, while the identifier
+    that named the run knew only ``None`` -- the same defect as an unpinned
+    ``templates``, in a fourth place.
     """
 
     feature_name = pair_filter_spec.feature
