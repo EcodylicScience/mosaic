@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import datetime
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -11,9 +10,20 @@ import sys
 import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Iterable, Optional, Protocol
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Final,
+    Iterable,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+)
 
 import numpy as np
 import pandas as pd
@@ -36,6 +46,11 @@ from .media.facts_columns import (
     series_facts_or_none,
 )
 from .media.probe_row import probe_video_metadata, row_from_facts
+from .schema import (
+    TRACK_SCHEMAS,
+    TrackSchema,
+    ensure_track_schema,
+)
 from .stored_paths import remap_single_path as _remap_single_path, resolve_stored_path
 from .media.reprobe import (
     ReprobeAbort,
@@ -90,9 +105,6 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
     normalized.sort(key=lambda pair: len(pair[0].as_posix()), reverse=True)
     return normalized
 
-
-from dataclasses import field
-from typing import Any, Callable, Dict, Mapping, Tuple
 
 # Path-bearing columns on the tracker index beyond ``abs_path``: the source
 # video the run consumed and the ``.pv`` it produced. Named here because both
@@ -159,13 +171,6 @@ def register_label_converter(cls: type):
     LABEL_CONVERTERS[key] = cls
     return cls
 
-
-# ----------- Track schema system (extracted to tracking/schema.py) -----------
-from .schema import (
-    TRACK_SCHEMAS,
-    TrackSchema,
-    ensure_track_schema,
-)
 
 # --- Standardized label metadata ---
 BEHAVIOR_LABEL_MAP = {
@@ -3331,16 +3336,16 @@ class Dataset:
         id_keys = sorted(per_id_labels.keys(), key=lambda v: str(v))
         ids_array = np.asarray(id_keys, dtype=object)
         field_names = sorted(
-            {field for tags in per_id_labels.values() for field in (tags or {}).keys()}
+            {name for tags in per_id_labels.values() for name in (tags or {}).keys()}
         )
 
         payload: dict[str, np.ndarray] = {"ids": ids_array}
-        for field in field_names:
+        for field_name in field_names:
             values = []
             for key in id_keys:
                 tags = per_id_labels.get(key) or {}
-                values.append(tags.get(field))
-            payload[field] = np.asarray(values, dtype=object)
+                values.append(tags.get(field_name))
+            payload[field_name] = np.asarray(values, dtype=object)
 
         if metadata:
             for meta_key, meta_val in metadata.items():
@@ -3994,7 +3999,12 @@ class Dataset:
 
 # --- Backward compat: track converter helpers moved to core/track_library ---
 
-from mosaic.core.track_library.trex import _strip_trex_seq
+# Deliberately at the bottom, and the one E402 in this file that cannot be
+# hoisted: track_library.trex imports `register_track_converter` from this
+# module, so the two form a cycle. Importing it at the top would run
+# track_library.trex before that decorator exists. Closing this needs the
+# registry moved out of dataset.py, not a reordering.
+from mosaic.core.track_library.trex import _strip_trex_seq  # noqa: E402
 
 
 def _is_empty_like(x: Optional[Any]) -> bool:
