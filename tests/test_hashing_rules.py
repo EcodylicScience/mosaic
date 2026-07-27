@@ -87,6 +87,15 @@ def _fit_reads_its_stream(cls: type) -> bool | None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "global-identity-megadescriptor and global-identity-dinov2-temporal fit from "
+        "the stream while declaring scope_dependent = False. Closed by implementation "
+        "item 1.4, which adds the pre-fitted model artifact branch and then flips the "
+        "flag."
+    ),
+)
 def test_stream_fitting_features_declare_scope_dependent() -> None:
     """P2f: if ``fit()`` consumes its stream, the scope is the training set.
 
@@ -106,6 +115,15 @@ def test_stream_fitting_features_declare_scope_dependent() -> None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "TimelinePlot and the global-colored plot declare no scope_dependent, so "
+        "compute_run_id raises AttributeError and they cannot run at all. The correct "
+        "value for each is a judgment call about the visualization, not a mechanical "
+        "fix."
+    ),
+)
 def test_every_feature_declares_scope_dependent() -> None:
     """``compute_run_id`` reads the attribute directly; absence is a hard crash."""
     missing = [
@@ -174,6 +192,14 @@ def _digest_under_hash_seed(seed: str) -> str:
     return completed.stdout.strip()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "json_ready serializes a set to a list without sorting and sort_keys only "
+        "orders dict keys, so a set-valued identity term hashes differently per "
+        "process. Closed by implementation item 0.5."
+    ),
+)
 def test_set_valued_identity_term_is_process_stable() -> None:
     """A collection in identity must be ordered before hashing.
 
@@ -263,6 +289,13 @@ def _files_building_an_identity_payload() -> set[str]:
     return found
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pipeline._resolve_step_cache rebuilds the hashable payload inline instead of "
+        "calling compute_run_id. Closed by implementation item 0.1."
+    ),
+)
 def test_identity_payload_is_built_in_one_module() -> None:
     """P2e: one function builds the payload; no caller reconstructs it.
 

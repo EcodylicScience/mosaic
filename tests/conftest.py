@@ -44,6 +44,57 @@ def pytest_configure() -> None:
             "(uv run --no-sync)."
         )
 
+def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
+    """Write a track parquet per sequence and rewrite ``tracks/index.csv``.
+
+    Sequences accumulate: calling this again with a further name leaves the
+    existing parquets in place, which is what lets a scenario widen a scope and
+    then assert what was and was not recomputed.
+
+    The group is empty, so the composite key renders as the bare sequence name
+    and the parquet is ``<sequence>.parquet``.
+    """
+    tracks = dataset.get_root("tracks")
+    tracks.mkdir(parents=True, exist_ok=True)
+    for sequence in sequences:
+        frame = np.arange(n_rows, dtype=np.int64)
+        pd.DataFrame(
+            {
+                "frame": frame,
+                "time": frame / 30.0,
+                "id": np.zeros(n_rows, dtype=np.int64),
+                "feat_a": np.linspace(0.0, 1.0, n_rows),
+            }
+        ).to_parquet(tracks / f"{sequence}.parquet")
+    present = sorted(tracks.glob("*.parquet"))
+    index = pd.DataFrame(
+        {
+            "group": ["" for _ in present],
+            "sequence": [path.stem for path in present],
+            "abs_path": [str(path) for path in present],
+        }
+    )
+    index.to_csv(tracks / "index.csv", index=False)
+
+
+def track_sequences(dataset: Dataset) -> list[str]:
+    """The sequence names currently present in ``tracks/``."""
+    return sorted(p.stem for p in dataset.get_root("tracks").glob("*.parquet"))
+
+
+@pytest.fixture
+def scenario_dataset(tmp_path: Path) -> Dataset:
+    """A real dataset with two synthetic track sequences.
+
+    The backdrop the hashing workflows reference. A real ``Dataset`` rather than
+    a stand-in, so scenario assertions exercise the same root resolution and
+    index handling the control plane and notebooks do.
+    """
+    manifest = new_dataset_manifest(name="scenario", base_dir=tmp_path / "dataset")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    add_track_sequences(dataset, "seq_a", "seq_b")
+    return dataset
+
 
 @pytest.fixture
 def read_index_header() -> Callable[[Path], list[str]]:
