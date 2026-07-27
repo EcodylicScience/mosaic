@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Literal, cast, overload
 
 import pandas as pd
 import pyarrow as pa
@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 
 
 FileSpecs = list[tuple[Path, LoadSpec]]
+
+# What to do about a pinned upstream run the index does not hold. "raise" is
+# for resolving inputs a run will read; "empty" is for predicting an identifier,
+# where naming a run that does not exist yet is the ordinary case.
+MissingRunPolicy = Literal["raise", "empty"]
 
 FilterFactory = Callable[[str], Iterable[Callable[[pd.DataFrame], pd.DataFrame]]]
 
@@ -94,6 +99,7 @@ def build_manifest(
     groups: set[str] | None = None,
     sequences: set[str] | None = None,
     entries: set[tuple[str, str]] | None = None,
+    on_missing_run: MissingRunPolicy = "raise",
 ) -> tuple[Manifest, Scope]:
     """Build unified manifest for all input types.
 
@@ -108,6 +114,10 @@ def build_manifest(
       this when an arbitrary subset is required (e.g. a tag-resolved selection),
       especially when sequence names are not unique across groups, where a bare
       ``sequences`` filter would be ambiguous.
+
+    ``on_missing_run`` is forwarded to :func:`_resolve_feature`; leave it at
+    ``"raise"`` unless you are predicting an identifier rather than resolving
+    inputs to read.
     """
     per_input_entries: list[set[tuple[str, str]]] = []
     per_input_paths: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
@@ -127,6 +137,7 @@ def build_manifest(
                 groups,
                 sequences,
                 entries,
+                on_missing_run,
             )
             if getattr(type(inputs), "_track_input", False):
                 _ensure_track_shaped(item.feature, path_map_all)
@@ -274,6 +285,7 @@ def _resolve_feature(
     groups: set[str] | None,
     sequences: set[str] | None,
     entries: set[tuple[str, str]] | None = None,
+    on_missing_run: MissingRunPolicy = "raise",
 ) -> tuple[
     set[tuple[str, str]],
     dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -283,6 +295,14 @@ def _resolve_feature(
     """Resolve feature result entries and paths from the feature index CSV.
 
     Returns (scoped_entries, scoped_path_map, full_order, path_map_all).
+
+    ``on_missing_run`` governs a pinned run that the index does not hold. It is
+    ``"raise"`` for execution -- consuming a run that is not there is a wrong
+    answer, and an empty manifest would turn it into a silent no-op. It is
+    ``"empty"`` for the chain runner's prediction, which asks what a step's
+    identifier *would* be and therefore names runs that do not exist yet: after
+    any params change the upstream index holds only the previous run, which is
+    an ordinary state rather than a failure.
     """
     idx_path = feature_index_path(ds, feature_name)
     if not idx_path.exists():
@@ -303,7 +323,14 @@ def _resolve_feature(
     # check existence there -- mirroring _resolve_tracks -- rather than trusting
     # the raw string via IndexCSV's naive validate_paths (which false-fails on a
     # moved/synced dataset whose index carries another machine's paths).
-    df_all = idx.read(run_id=run_id, filter_ext=".parquet", validate_paths=False)
+    try:
+        df_all = idx.read(run_id=run_id, filter_ext=".parquet", validate_paths=False)
+    except FileNotFoundError:
+        if on_missing_run == "raise":
+            raise
+        # The scoped read below filters on the same run_id, so it would fail
+        # identically; there is nothing left to resolve.
+        return set(), {}, [], {}
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
     missing_all: list[Path] = []

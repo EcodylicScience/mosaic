@@ -15,6 +15,7 @@ Example
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -25,8 +26,9 @@ from mosaic.core.helpers import make_entry_key, resolve_frame_range
 from ._utils import Scope, derive_storage_name
 from .index import feature_index_path, feature_run_root, list_feature_runs
 from .manifest import build_manifest
+from .resolve import resolve_references
 from .run import compute_run_id
-from .types import Inputs, Result
+from .types import Feature, Inputs, Result, TrackLike
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -90,6 +92,23 @@ class CallbackStep:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def build_step_feature(
+    step: FeatureStep, input_items: tuple[TrackLike, ...]
+) -> Feature:
+    """Instantiate *step*'s feature over *input_items*, on private params.
+
+    The overrides are deep-copied because pydantic accepts an already-built
+    model instance by reference, so a ``FeatureStep`` whose params dict holds a
+    ``ParquetArtifact`` hands the *same object* to every feature built from it.
+    Since resolution pins references in place (item 1.1), sharing would let a
+    ``status()`` call freeze an upstream choice into a ``run()`` that happens
+    much later -- and let a second ``run()`` reuse the first one's pin instead
+    of re-resolving. A step describes what to build; it must not accumulate
+    state from having been previewed.
+    """
+    return step.feature_cls(inputs=Inputs(input_items), params=deepcopy(step.params))
 
 
 def _newest_mtime(run_root: "Path") -> str | None:
@@ -259,7 +278,25 @@ class Pipeline:
     # -- cache resolution ---------------------------------------------------
 
     def _resolve_step_cache(self, dataset: Dataset) -> list[dict]:
-        """Compute expected run_ids and check cache state for all steps."""
+        """Compute expected run_ids and check cache state for all steps.
+
+        **Known residual: a cold ``scope_dependent`` step still predicts an
+        identifier it will not execute.** Its scope comes from
+        ``build_manifest`` over the upstream's index, and on a cold dataset that
+        index does not exist, so ``_scope_entries`` predicts empty while
+        execution hashes the real entries. Item 1.1 does not reach this: the
+        divergence is in the *scope* term, not ``_inputs``. Closing it means
+        predicting the entry set of a run that has not happened -- propagating
+        each step's ``target`` down the DAG as a predicted scope -- which is a
+        new prediction mechanism with its own drift surface and belongs with the
+        chain-runner work (item 9.6).
+
+        It cannot cause a wrong execution. An uncached upstream marks this step
+        stale, ``cached`` is forced False, and ``run()`` takes the execute
+        branch, where inputs come from real ``Result``s. The predicted
+        identifier gates a skip only when the upstream *is* cached, and then the
+        index it was resolved from exists.
+        """
         mock_results: dict[str, Result] = {}
         stale_steps: set[str] = set()
         resolved: list[dict] = []
@@ -321,9 +358,7 @@ class Pipeline:
                 else:
                     input_items = ("tracks",)
 
-                feature = step.feature_cls(
-                    inputs=Inputs(input_items), params=step.params
-                )
+                feature = build_step_feature(step, input_items)
                 feat_storage_name = storage_name(feature)
             except Exception as e:
                 # Deliberately no mock_results entry. The previous code inserted
@@ -384,6 +419,17 @@ class Pipeline:
             # It is cheap to be faithful: compute_run_id ignores the scope
             # for a scope-free feature, and build_manifest returns an empty
             # scope for a not-yet-computed upstream rather than raising.
+            #
+            # Inputs are pinned here for the same reason run_feature pins them:
+            # a params-level reference (a global fitter's `templates`) that
+            # identity saw as None would predict one identifier and execute
+            # another. Chain inputs arrive already pinned from mock_results
+            # below, so this pass covers the params half. `on_missing_run` is
+            # "empty" because a prediction legitimately names runs that do not
+            # exist yet -- after a params change the upstream index holds only
+            # the previous run, and reading that as a failure would take
+            # `status()` down on an ordinary dataset.
+            _ = resolve_references(dataset, feature)
             if feature.inputs.is_empty:
                 scope = Scope()
             else:
@@ -393,6 +439,7 @@ class Pipeline:
                     _as_set(kwargs.get("groups")),
                     _as_set(kwargs.get("sequences")),
                     _as_entry_set(kwargs.get("entries")),
+                    on_missing_run="empty",
                 )
             expected_run_id, _ = compute_run_id(feature, frame_start, frame_end, scope)
 
@@ -414,10 +461,14 @@ class Pipeline:
             if step_is_stale:
                 cached = False
 
-            result = Result(
-                feature=feat_storage_name,
-                run_id=expected_run_id if cached else None,
-            )
+            # Pinned unconditionally, cached or not. Passing None for an
+            # uncached step made the *downstream* step hash a different inputs
+            # payload than the one execution would build -- `Pipeline.run`
+            # always feeds a concrete `Result` from `run_feature` -- so a cold
+            # chain predicted identifiers it then did not produce. The
+            # prediction is deterministic, so pinning it is exactly what
+            # execution will do.
+            result = Result(feature=feat_storage_name, run_id=expected_run_id)
             mock_results[step.name] = result
 
             resolved.append(
@@ -596,7 +647,7 @@ class Pipeline:
             else:
                 input_items = ("tracks",)
 
-            feature = step.feature_cls(inputs=Inputs(input_items), params=step.params)
+            feature = build_step_feature(step, input_items)
             kwargs = {**self.default_run_kwargs, **step.run_kwargs}
             if step.name in force_set:
                 kwargs["overwrite"] = True

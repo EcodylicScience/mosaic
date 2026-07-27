@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.pipeline import FeatureStep, build_step_feature
 from mosaic.core.pipeline.resolve import Resolution, resolve_references
 from mosaic.core.pipeline.run import compute_run_id, feature_run_root, run_feature
 from mosaic.core.pipeline.types import (
@@ -402,6 +403,43 @@ def test_no_unpinned_reference_survives_resolution(
     for record in resolutions:
         index = scenario_dataset.get_root("features") / record.feature / "index.csv"
         assert (record.run_id is not None) == index.exists()
+
+
+class _StepFeature(_FeatureBase):
+    """Built the way ``Pipeline`` builds one: ``(inputs=..., params=...)``."""
+
+    name = "resolution-step"
+
+    class Inputs(Inputs[TrackInput]):
+        _require: ClassVar[InputRequire] = "any"
+
+    class Params(Params):
+        templates: ParquetArtifact | None = None
+
+    def __init__(self, inputs: object, params: dict[str, object] | None) -> None:
+        self.inputs = self.Inputs(("tracks",))
+        self.params = self.Params.from_overrides(params)
+
+
+def test_a_step_does_not_accumulate_pins_from_being_previewed(
+    scenario_dataset: Dataset,
+) -> None:
+    """``build_step_feature`` gives each build its own params.
+
+    Pydantic accepts an already-built model instance by reference, so a
+    ``FeatureStep`` whose params dict holds a ``ParquetArtifact`` would hand the
+    same object to every feature built from it. Since resolution pins in place,
+    that would let a ``status()`` call freeze an upstream choice into a ``run()``
+    that happens much later, and let a second ``run()`` reuse the first's pin.
+    """
+    _ = _upstream_run_id(scenario_dataset)
+    shared = _templates_ref()
+    step = FeatureStep("d", _StepFeature, {"templates": shared})
+
+    feature = build_step_feature(step, ("tracks",))
+    _ = resolve_references(scenario_dataset, feature)
+
+    assert shared.run_id is None, "the step's own reference must stay unpinned"
 
 
 def test_compute_run_id_needs_no_dataset(scenario_dataset: Dataset) -> None:

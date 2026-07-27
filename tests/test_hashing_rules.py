@@ -45,6 +45,7 @@ from mosaic.core.pipeline.identity_scheme import (
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
     feature_index,
+    feature_index_path,
     feature_run_root,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
@@ -301,23 +302,26 @@ def test_chain_runner_predicts_what_run_feature_computes(
     assert predicted == computed
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A cold multi-step chain still predicts a different identifier than it "
-        "executes: the preview hashes Result(run_id=None) for an uncached upstream "
-        "while execution hashes the concrete run_id. Collapsing the payload (0.1) "
-        "does not close this -- the divergence is in the inputs object, not the "
-        "payload construction. Closed by implementation item 1.1, which resolves "
-        "inputs before hashing and writes the resolution back."
-    ),
-)
 def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None:
-    """The remaining half of P2e, owned by 1.1 rather than 0.1."""
+    """The remaining half of P2e, owned by 1.1 rather than 0.1.
+
+    The preview used to hash ``Result(run_id=None)`` for an uncached upstream
+    while execution hashed the concrete identifier, so a cold chain predicted
+    directories it then did not produce. Item 1.1 pins the prediction into the
+    downstream step's inputs, which is what execution does.
+
+    ``TemporalStackingFeature`` is the registry key; the earlier spelling of
+    this test asked for ``"TemporalStack"`` and died on a ``KeyError`` before
+    reaching an assertion -- which its ``xfail`` then reported as expected
+    failure. A strict xfail proves a test fails, not that it fails for the
+    stated reason.
+    """
     pipeline = Pipeline()
     _ = pipeline.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
     _ = pipeline.add(
-        FeatureStep("stack", FEATURES["TemporalStack"], None, input_names=["speed"])
+        FeatureStep(
+            "stack", FEATURES["TemporalStackingFeature"], None, input_names=["speed"]
+        )
     )
 
     predicted = pipeline._resolve_step_cache(scenario_dataset)[1]["expected_run_id"]
@@ -333,6 +337,102 @@ def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None
     executed, _ = compute_run_id(executed_feature, None, None, Scope())
 
     assert predicted == executed
+
+
+def test_a_prediction_survives_an_upstream_that_holds_only_older_runs(
+    scenario_dataset: Dataset,
+) -> None:
+    """``status()`` must not raise on the ordinary post-params-change state.
+
+    Pinning the prediction unconditionally means a downstream step resolves an
+    upstream ``run_id`` the index does not hold, which is what an upstream whose
+    params changed since it last ran always looks like. ``IndexCSV.read`` raises
+    for an absent run and ``_resolve_step_cache`` is deliberately unguarded past
+    construction, so without the ``on_missing_run="empty"`` policy this would
+    propagate out of a preview.
+
+    The upstream index is written directly rather than produced by a run: the
+    state under test is "the index exists and holds some *other* run", and
+    building it by hand says so without depending on a feature that computes on
+    the synthetic fixture.
+    """
+    upstream = "speed-angvel__from__tracks"
+    index = feature_index(feature_index_path(scenario_dataset, upstream))
+    index.append(
+        [
+            FeatureIndexRow(
+                abs_path=Path("seq_a.parquet"),
+                run_id="0.1-0000000000",
+                feature=upstream,
+                version="0.1",
+                group="",
+                sequence="seq_a",
+                params_hash="0000000000",
+                n_rows=3,
+            )
+        ]
+    )
+
+    pipeline = Pipeline()
+    _ = pipeline.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
+    _ = pipeline.add(
+        FeatureStep(
+            "stack", FEATURES["TemporalStackingFeature"], None, input_names=["speed"]
+        )
+    )
+
+    resolved = pipeline._resolve_step_cache(scenario_dataset)
+
+    assert resolved[0]["expected_run_id"] != "0.1-0000000000"
+    assert resolved[1]["expected_run_id"] is not None
+    assert resolved[1]["cached"] is False
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "A cold scope_dependent step predicts an empty scope term: its scope "
+        "comes from build_manifest over an upstream index that does not exist "
+        "yet, while execution hashes the real entries. Item 1.1 does not reach "
+        "this -- the divergence is in the scope term, not _inputs. Closing it "
+        "means predicting the entry set of a run that has not happened, which "
+        "belongs with the chain-runner work (implementation item 9.6). It "
+        "cannot cause a wrong execution: an uncached upstream forces "
+        "cached=False, so the predicted identifier gates no skip."
+    ),
+)
+def test_a_cold_scope_dependent_step_predicts_its_scope(
+    scenario_dataset: Dataset,
+) -> None:
+    """The residual M1 leaves behind, recorded rather than remembered.
+
+    Asserted against what execution *would* hash rather than by running the
+    chain, because the synthetic fixture carries no pose columns -- and a test
+    that dies before its assertion is an xfail that proves nothing.
+    """
+    pipeline = Pipeline()
+    _ = pipeline.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
+    _ = pipeline.add(
+        FeatureStep("pca", FEATURES["PairPoseDistancePCA"], None, input_names=["speed"])
+    )
+    resolved = pipeline._resolve_step_cache(scenario_dataset)
+
+    downstream = build_feature(
+        "pair-posedistance-pca",
+        [
+            {
+                "feature": "speed-angvel__from__tracks",
+                "run_id": resolved[0]["expected_run_id"],
+            }
+        ],
+        None,
+    )
+    assert downstream.scope_dependent, "fixture must exercise the scope term"
+    executed, _ = compute_run_id(
+        downstream, None, None, Scope(entries={("", "seq_a"), ("", "seq_b")})
+    )
+
+    assert resolved[1]["expected_run_id"] == executed
 
 
 # --- P7: index writes are serialized ------------------------------------------
