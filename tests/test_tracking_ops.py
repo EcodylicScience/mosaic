@@ -8,12 +8,19 @@ and the inference->tracks bridge -- is exercised without any real models.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaProbeError, derive
+from mosaic_media import (
+    CHROME_149,
+    DEFAULT_THRESHOLDS,
+    MediaFacts,
+    MediaProbeError,
+    derive,
+)
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
@@ -30,6 +37,44 @@ from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
 
 # --- fixtures --------------------------------------------------------------
+
+
+def _clean_media_facts(
+    *, width: int, height: int, fps: float, frame_count: int, codec: str
+) -> MediaFacts:
+    """An analysis-clean :class:`MediaFacts` for a synthetic media-index row.
+
+    No probe runs over the fixture's placeholder video bytes, so this reuses
+    :func:`store_facts`'s hand-built shape (declared values matching the
+    measured ones, empty identity fields) and overrides only the three fields
+    where a plain mp4 differs from an imgstore: a real container and pixel
+    format, and a moov atom at the start rather than store_facts's "no such
+    concept" ``None``.
+    """
+    facts = store_facts(
+        width=width,
+        height=height,
+        fps=fps,
+        frame_count=frame_count,
+        codec=codec,
+        duration=frame_count / fps,
+    )
+    return dataclasses.replace(
+        facts,
+        container="mov,mp4,m4a,3gp,3g2,mj2",
+        pixel_format="yuv420p",
+        moov_at_start=True,
+    )
+
+
+def _clean_facts_cells(
+    *, width: int, height: int, fps: float, frame_count: int, codec: str
+) -> dict[str, object]:
+    """Flat + JSON facts cells describing one clean, analysis-fit media row."""
+    facts = _clean_media_facts(
+        width=width, height=height, fps=fps, frame_count=frame_count, codec=codec
+    )
+    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 
 
 def _make_dataset(tmp_path: Path, seqs=("vid1", "vid2")) -> Dataset:
@@ -57,6 +102,9 @@ def _make_dataset(tmp_path: Path, seqs=("vid1", "vid2")) -> Dataset:
                 "codec": "h264",
                 "media_type": "video",
                 "video_order": 0,
+                **_clean_facts_cells(
+                    width=640, height=480, fps=30.0, frame_count=100, codec="h264"
+                ),
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
@@ -319,9 +367,7 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     # a raw model path (no training run needed)
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
-    run_id = run_op(
-        ds, "infer-pose", {"model": str(model), "convert_to_tracks": True}
-    )
+    run_id = run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
     assert run_id.startswith("infer-pose-")
 
     runs = read_runs(_run_dir(ds), kind="infer-pose")

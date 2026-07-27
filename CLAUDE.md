@@ -239,8 +239,11 @@ src/mosaic/
 and low-level **media I/O** (`core/media/` — read/decode/encode frames). `behavior`
 and `tracking` are domain packages: they import `core` (including `core.media`)
 but **never each other**, and they exchange data only through on-disk artifacts
-(parquet tracks, feature/model files, index CSVs). `core.media` imports nothing
-from `mosaic`, so it stays a dependency-free leaf. Frame *sampling/extraction*
+(parquet tracks, feature/model files, index CSVs). `core.media` takes no import
+from `behavior` or `tracking`. It is not a dependency-free leaf: it reads verdict
+thresholds from the root-level `media_probe_config`, and `reprobe.py`
+additionally reaches `core.helpers`, `core.stored_paths` and
+`core.pipeline.media_index`. Frame *sampling/extraction*
 (`tracking/frame_extraction/`, exposed as `mosaic.tracking.extract_frames(ds, …)`)
 is a tracking-domain concern — it reads `media/frames` via `ds.get_root("frames")`
 (downward) and is **not** a `Dataset` method; `core` has no frame-extraction code.

@@ -25,6 +25,7 @@ from mosaic.core.media.video_io import (
     get_video_metadata,
     open_frame_reader,
     prefetch_batches,
+    video_metadata_or_probe,
 )
 
 
@@ -213,6 +214,7 @@ def run_inference_opencv(
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
+        target="analysis",
     )
     total_str = str(reader.frame_count)
 
@@ -307,7 +309,7 @@ def run_inference(
     )
 
     # Get video metadata for resize computation and progress bar
-    meta = get_video_metadata(video_path)
+    meta = video_metadata_or_probe(video_path, facts)
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
@@ -333,6 +335,7 @@ def run_inference(
             frame_step=frame_step,
             resize=resize_dims,
             facts=facts,
+            target="analysis",
         )
         try:
             all_results, processed = _run_predict_loop(
@@ -561,6 +564,7 @@ def run_point_inference_opencv(
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
+        target="analysis",
     )
     total_str = str(reader.frame_count)
 
@@ -676,7 +680,7 @@ def run_point_inference(
         predict_kwargs["radii"] = radii
 
     # Get video metadata for resize computation and progress bar
-    meta = get_video_metadata(video_path)
+    meta = video_metadata_or_probe(video_path, facts)
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
@@ -702,6 +706,7 @@ def run_point_inference(
             frame_step=frame_step,
             resize=resize_dims,
             facts=facts,
+            target="analysis",
         )
         try:
             all_results, processed = _run_predict_loop(
@@ -1026,7 +1031,9 @@ def visualize_inference(
     # rather than a per-result seek - `results[i]` always corresponds to
     # frame `start_frame + i * frame_step`, exactly the sequence this reader
     # yields.
-    reader = open_frame_reader(video_path, start_frame=start_frame, frame_step=frame_step)
+    reader = open_frame_reader(
+        video_path, start_frame=start_frame, frame_step=frame_step, target="analysis"
+    )
     frame_iterator = iter(reader)
 
     # Open writer

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -63,6 +65,74 @@ def scenario_dataset(tmp_path: Path) -> Dataset:
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     add_track_sequences(dataset, "seq_a", "seq_b")
     return dataset
+
+
+@pytest.fixture
+def read_index_header() -> Callable[[Path], list[str]]:
+    """Factory reading an index CSV's header line, before any schema widening.
+
+    The only place a file's real column set survives: every reader in the
+    toolkit widens to ``MEDIA_INDEX_COLUMNS``, so an absent column and an empty
+    one are indistinguishable afterwards. Returns a callable
+    ``(index_path) -> [column]``.
+    """
+
+    def _read(index_path: Path) -> list[str]:
+        no_header: list[str] = []
+        with index_path.open(newline="") as handle:
+            return next(csv.reader(handle), no_header)
+
+    return _read
+
+
+@pytest.fixture
+def write_cfr_mp4() -> Callable[..., None]:
+    """Factory writing a small constant-frame-rate mp4 (parent dirs created).
+
+    The shape every media test needs: a real file ffprobe can measure, cheap
+    enough to write per test. Returns a callable ``(path, frames=, size=)``.
+    """
+
+    def _write(path: Path, frames: int = 6, size: tuple[int, int] = (64, 48)) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # VideoWriter.fourcc rather than the module-level VideoWriter_fourcc
+        # alias: the two return the same code, but only the classmethod is typed.
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, size)
+        for _ in range(frames):
+            writer.write(np.zeros((size[1], size[0], 3), np.uint8))
+        writer.release()
+
+    return _write
+
+
+@pytest.fixture
+def make_media_dataset() -> Callable[[Path], Dataset]:
+    """Factory building a saved Dataset with ``media_raw``, ``media`` and
+    ``tracks`` roots.
+
+    The manifest is written to disk, not merely named: ``base_dir`` treats a
+    ``manifest_path`` that is not an existing file as the base directory itself
+    and creates it, which would make every root-relative ``abs_path`` resolve one
+    level too deep. The ``tracks`` root is present because ``index_media`` reads
+    its index to derive each media file's ``(group, sequence)``, so a transcode
+    test that indexes real media needs it. Returns a callable
+    ``(base_dir) -> Dataset``.
+    """
+
+    def _make(base: Path) -> Dataset:
+        ds = Dataset(
+            manifest_path=base / "dataset.yaml",
+            roots={
+                "media_raw": str(base / "media_raw"),
+                "media": str(base / "media"),
+                "tracks": str(base / "tracks"),
+            },
+        )
+        ds.ensure_roots()
+        ds.save()
+        return ds
+
+    return _make
 
 
 @pytest.fixture

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import pandas as pd
+from mosaic_media import MediaFacts
 
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.pipeline._utils import atomic_write
@@ -46,6 +47,12 @@ def _empty_order() -> dict[str, int]:
     return {}
 
 
+def _empty_facts() -> dict[str, MediaFacts]:
+    """Typed default for :attr:`MediaIndexScope.facts_by_name` (a bare ``dict``
+    infers ``dict[Unknown, Unknown]`` under strict typing)."""
+    return {}
+
+
 @dataclass(frozen=True)
 class MediaIndexScope:
     """One affected ``(group, sequence)`` to re-probe and reorder.
@@ -54,20 +61,23 @@ class MediaIndexScope:
     every file found is assigned ``group``/``sequence`` (not derived from a
     track keymap). ``order_by_name`` maps a file's basename to its arranged
     linear position within the sequence; a file absent from the map keeps its
-    prior ``video_order`` and sorts before the arranged ones. ``camera`` is an
-    explicit override for a plain video the caller tags with a camera axis; a
-    probed imgstore supplies its own ``camera``/``sync_uuid`` from store
-    metadata, so this override applies only when the probe carries none.
+    prior ``video_order`` and sorts before the arranged ones. ``facts_by_name``
+    maps a file's basename to an already-measured ``MediaFacts``; a file present
+    in it is turned into its row from those facts instead of being re-probed.
+    ``camera`` is an explicit override for a plain video the caller tags with a
+    camera axis; a probed imgstore supplies its own ``camera``/``sync_uuid`` from
+    store metadata, so this override applies only when the probe carries none.
     """
 
     directory: Path
     group: str
     sequence: str
     order_by_name: Mapping[str, int] = field(default_factory=_empty_order)
+    facts_by_name: Mapping[str, MediaFacts] = field(default_factory=_empty_facts)
     camera: str = ""
 
 
-def _mtime_iso(timestamp: float) -> str:
+def mtime_iso(timestamp: float) -> str:
     """UTC ISO-8601 string for a filesystem mtime."""
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
@@ -132,6 +142,8 @@ def build_media_index_row(
     sync_uuid: str = "",
     media_type: str = "video",
     source_path: str | None = None,
+    source_video_uuid: str | None = None,
+    recipe_hash: str | None = None,
     video_order: int = 0,
 ) -> dict[str, object]:
     """Assemble one media-index row.
@@ -141,11 +153,15 @@ def build_media_index_row(
     (a :class:`ProbeMetadata`). ``abs_path`` is produced by *to_store_path*, so
     the in-tree-relative / out-of-tree-absolute rule is enforced in one place.
     *source_path* overrides the empty ``source_path`` the probe carries (used by
-    a derivative's back-link). *camera* is the within-sequence camera axis
-    (``""`` for single-camera media) and *sync_uuid* the recording id that
-    groups a recording's cameras; both feed :func:`densify_video_order` (which
-    numbers ``video_order`` per ``(group, sequence, camera)``) and persist as
-    schema columns.
+    a derivative's back-link); *source_video_uuid* likewise overrides the empty
+    ``source_video_uuid`` the probe carries with the source's ``video_uuid`` --
+    the rename-resilient form of the same back-link, populated on a derivative
+    row. *recipe_hash* likewise overrides the empty ``recipe_hash`` the probe
+    carries with the recipe the derivative was produced under. *camera* is the
+    within-sequence camera axis (``""`` for single-camera
+    media) and *sync_uuid* the recording id that groups a recording's cameras;
+    both feed :func:`densify_video_order` (which numbers ``video_order`` per
+    ``(group, sequence, camera)``) and persist as schema columns.
     """
     size_bytes = getattr(stat, "st_size")
     mtime = getattr(stat, "st_mtime")
@@ -159,25 +175,29 @@ def build_media_index_row(
         "sync_uuid": sync_uuid,
         "abs_path": to_store_path(path),
         "size_bytes": size_bytes,
-        "mtime_iso": _mtime_iso(mtime),
+        "mtime_iso": mtime_iso(mtime),
         "media_type": media_type,
         "video_order": video_order,
         **probe,
     }
     if source_path is not None:
         row["source_path"] = source_path
+    if source_video_uuid is not None:
+        row["source_video_uuid"] = source_video_uuid
+    if recipe_hash is not None:
+        row["recipe_hash"] = recipe_hash
     return row
 
 
 def build_prior_order(
     rows: Iterable[Mapping[str, object]],
-) -> dict[tuple[str, str], int]:
-    """Map ``(sequence, basename)`` to prior ``video_order`` for existing rows.
+) -> dict[tuple[str, str, str], int]:
+    """Map ``(group, sequence, basename)`` to prior ``video_order`` for existing rows.
 
     Rows with a missing or blank ``video_order`` are skipped so they fall back
     to name ordering in :func:`densify_video_order`.
     """
-    prior: dict[tuple[str, str], int] = {}
+    prior: dict[tuple[str, str, str], int] = {}
     for row in rows:
         raw = str(row.get("video_order", "")).strip()
         if not raw or raw.lower() == "nan":
@@ -186,7 +206,13 @@ def build_prior_order(
             order = int(float(raw))
         except ValueError:
             continue
-        prior[(str(row["sequence"]), Path(str(row["abs_path"])).name)] = order
+        prior[
+            (
+                str(row["group"]),
+                str(row["sequence"]),
+                Path(str(row["abs_path"])).name,
+            )
+        ] = order
     return prior
 
 
@@ -262,8 +288,8 @@ def assign_video_order(
 def densify_video_order(
     rows: list[dict[str, object]],
     *,
-    session_positions: Mapping[tuple[str, str], int],
-    prior_order: Mapping[tuple[str, str], int],
+    session_positions: Mapping[tuple[str, str, str], int],
+    prior_order: Mapping[tuple[str, str, str], int],
 ) -> list[dict[str, object]]:
     """Re-number ``video_order`` as a dense counter per ``(group, sequence, camera)``.
 
@@ -271,16 +297,22 @@ def densify_video_order(
     into a :class:`VideoOrderKey`. Within each group the order is pre-existing
     videos first, keeping their prior ``video_order`` (*prior_order*), then this
     session's videos by arranged position (*session_positions*); the ``name``
-    column breaks ties. Both maps are keyed ``(sequence, basename)`` where the
-    basename comes from ``abs_path``; a session video is one present in
-    *session_positions*. Keying the dense counter on ``camera`` (``""`` for every
-    row today) makes this per-``(group, sequence)`` now and per-camera once a
-    ``camera`` column exists. Mutates each row's ``video_order`` in place and
-    returns the rows in the assigned order.
+    column breaks ties. Both maps are keyed ``(group, sequence, basename)`` where
+    the basename comes from ``abs_path``; a session video is one present in
+    *session_positions*. Keying the dense counter on ``camera`` makes this
+    per-``(group, sequence, camera)``: a probed imgstore supplies a real
+    ``camera``, so the parallel cameras of one recording -- which share a
+    sequence -- are numbered independently rather than as temporal chunks of
+    one camera. Mutates each row's ``video_order`` in place and returns the
+    rows in the assigned order.
     """
 
     def key_of(row: dict[str, object]) -> VideoOrderKey:
-        lookup = (str(row["sequence"]), Path(str(row["abs_path"])).name)
+        lookup = (
+            str(row["group"]),
+            str(row["sequence"]),
+            Path(str(row["abs_path"])).name,
+        )
         return VideoOrderKey(
             group=str(row["group"]),
             sequence=str(row["sequence"]),

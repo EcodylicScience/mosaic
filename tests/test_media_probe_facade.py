@@ -37,9 +37,15 @@ def test_get_video_metadata_constant_rate(tmp_path: Path) -> None:
 
 
 def test_open_frame_reader_reads_raw_h264(tmp_path: Path) -> None:
+    """A bare ``.h264`` elementary stream has no container to declare frame
+    timing, so its measured facts carry ``timing_measured=False`` and an
+    analysis-required verdict. This is exactly the deliberate look at a
+    containerless stream the raw target exists for: it warns and proceeds
+    rather than raising."""
     raw = tmp_path / "raw.h264"
     _write_raw_h264(raw)
-    reader = open_frame_reader(raw)
+    with pytest.warns(UserWarning, match="raw read of"):
+        reader = open_frame_reader(raw, target="raw")
     count = 0
     while True:
         ok, frame = reader.read()

@@ -46,13 +46,13 @@ import fnmatch
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
 import pandas as pd
 
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.media_index import mtime_iso
 
 # Column schema and order for ``tracks_raw/index.csv``. Owned here (not in the
 # ``core/media`` leaf like ``MEDIA_INDEX_COLUMNS``) because raw-tracks columns
@@ -113,11 +113,6 @@ class TracksRawIndexRow(TypedDict):
     size_bytes: int
     mtime_iso: str
     md5: str
-
-
-def _mtime_iso(timestamp: float) -> str:
-    """UTC ISO-8601 string for a filesystem mtime."""
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
 def read_tracks_index(index_path: Path) -> list[dict[str, str]]:
@@ -233,6 +228,6 @@ def build_tracks_raw_row(
         "abs_path": to_store_path(path),
         "src_format": src_format,
         "size_bytes": stat.st_size,
-        "mtime_iso": _mtime_iso(stat.st_mtime),
+        "mtime_iso": mtime_iso(stat.st_mtime),
         "md5": md5,
     }

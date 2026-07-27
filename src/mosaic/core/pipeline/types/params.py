@@ -15,10 +15,14 @@ from mosaic.core.pipeline.types.artifacts import (
 
 class _HashExclude:
     """Marker for ``Annotated[T, HASH_EXCLUDE]`` Params fields omitted from the
-    run_id hash. Use for throughput-only knobs (batch sizes, worker counts)
-    that change runtime but not output, so retuning them never invalidates
-    cached results. The field still appears in model_dump(), params.json, and
-    propagates to workers -- only the run identity hash ignores it.
+    run_id hash. Use for any field that does not determine the output: a
+    throughput knob (batch sizes, worker counts) that changes runtime only, a
+    selector whose selection is hashed by identity instead, or a permission
+    whose effect depends on the machine rather than on the value. Folding one in
+    moves the identity without the output moving, which is a cache miss costing
+    a recompute for nothing. The field still appears in model_dump(),
+    params.json, and propagates to workers -- only the run identity hash ignores
+    it.
     """
 
     __slots__ = ()

@@ -10,6 +10,7 @@ from .imgstore_io import (
     imgstore_probe,
     is_imgstore,
 )
+from .read_target import ReadTarget
 from .video_io import (
     FrameReader,
     MultiVideoReader,
@@ -34,6 +35,7 @@ __all__ = [
     "MultiVideoReaderLike",
     "open_frame_reader",
     "probe_media",
+    "ReadTarget",
     "SupportsCapture",
     "VideoMetadata",
     "VideoSegment",

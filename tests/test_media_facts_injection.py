@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from mosaic_media import probe_media
 
+import mosaic.core.media.read_target as read_target
 import mosaic.core.media.video_io as video_io
 from mosaic.tracking.frame_extraction import extract_frames_single
 
@@ -27,37 +28,53 @@ class _ProbeCalled(RuntimeError):
 
 
 def _forbid_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boom on a probe from either module: the reader path's probe lives in
+    ``read_target`` now, while ``video_io`` keeps its own ``probe_media`` use in
+    ``get_video_metadata``. Patching only one would silently pass."""
+
     def _boom(*_args: object, **_kwargs: object):
         raise _ProbeCalled("probe_media was called despite injected facts")
 
     monkeypatch.setattr(video_io, "probe_media", _boom)
+    monkeypatch.setattr(read_target, "probe_media", _boom)
 
 
-def test_open_frame_reader_injected_facts_skips_probe(tmp_path, monkeypatch):
+def test_open_frame_reader_injected_facts_skips_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     video = tmp_path / "clip.mp4"
     _write_mp4(video)
     facts = probe_media(video)
 
     _forbid_probe(monkeypatch)
 
-    with video_io.open_frame_reader(video, facts=facts) as reader:
+    with video_io.open_frame_reader(video, facts=facts, target="analysis") as reader:
         frame_idx, frame = next(iter(reader))
     assert frame is not None
     assert frame_idx == 0
 
 
-def test_open_frame_reader_without_facts_probes(tmp_path, monkeypatch):
+def test_open_frame_reader_without_facts_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     video = tmp_path / "clip.mp4"
     _write_mp4(video)
 
-    _forbid_probe(monkeypatch)
+    def _boom(*_args: object, **_kwargs: object):
+        raise _ProbeCalled("probe_media was called despite injected facts")
 
-    # No injected facts: the reader falls back to probing, which now raises.
+    # Patching only read_target.probe_media -- not video_io.probe_media -- is
+    # what proves the probe now happens in the gate rather than in video_io.
+    monkeypatch.setattr(read_target, "probe_media", _boom)
+
+    # No injected facts: the gate falls back to probing, which now raises.
     with pytest.raises(_ProbeCalled):
-        video_io.open_frame_reader(video)
+        video_io.open_frame_reader(video, target="analysis")
 
 
-def test_extract_candidate_features_injected_facts_skips_probe(tmp_path, monkeypatch):
+def test_extract_candidate_features_injected_facts_skips_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     video = tmp_path / "clip.mp4"
     _write_mp4(video, nframes=8)
     facts = probe_media(video)
