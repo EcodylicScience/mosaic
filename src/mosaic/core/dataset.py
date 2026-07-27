@@ -59,6 +59,15 @@ from .track_converter import (
     TrackConvertParams,
     get_track_converter,
 )
+
+# This import used to sit at the foot of the file behind the one `noqa: E402`
+# that could not be hoisted: `track_library.trex` imported
+# `register_track_converter` from here, so the two formed a cycle and importing
+# at the top ran the converter module before the decorator existed. The comment
+# there said closing it needed the registry moved out of dataset.py rather than
+# a reordering. Item 1.3 moved it to `core.track_converter`, so the cycle is
+# gone and this is an ordinary import.
+from .track_library.trex import strip_trex_seq
 from .media.reprobe import (
     ReprobeAbort,
     ReprobeReport,
@@ -75,6 +84,11 @@ from .pipeline.media_index import (
     mtime_iso,
     read_media_index as _read_media_index,
     write_media_index_rows,
+)
+from .pipeline.tracks_identity import (
+    converter_op,
+    tracks_run_id,
+    write_tracks_variant,
 )
 from .pipeline.tracks_raw_index import (
     TracksRawIndexRow,
@@ -2602,6 +2616,11 @@ class Dataset:
 
         converter = get_track_converter(src_format)
         conv_params = self._converter_params(converter, params)
+        # Minted and recorded once per recipe, not per entry. The index row
+        # that points at it is Stage 2's typed tracks index; until then the
+        # variant is described in tracks/<run_id>/params.json, which is what
+        # Stage 3.2 turns into the directory holding the parquets themselves.
+        _ = self._tracks_variant(converter, conv_params)
 
         # Where to place standardized file:
         # group/sequence.parquet if group present, else just sequence.parquet
@@ -2821,6 +2840,32 @@ class Dataset:
         """Return registered raw->standard track converters."""
         return dict(TRACK_CONVERTERS)
 
+    def _tracks_variant(
+        self,
+        converter: TrackConverter[TrackConvertParams],
+        params: TrackConvertParams,
+        observed: Optional[dict] = None,
+    ) -> str:
+        """Mint this conversion's tracks-variant identity and record it.
+
+        Params-only and scope-free, so one value names one recipe however many
+        sequences it covers. Recorded beside the tables in
+        ``tracks/<run_id>/params.json``, which Stage 3.2 turns into the
+        directory the parquets themselves live in.
+        """
+        cls = type(converter)
+        op = converter_op(cls.src_format)
+        run_id = tracks_run_id(op, cls.version, {"params": params.identity_dump()})
+        _ = write_tracks_variant(
+            self.get_root("tracks"),
+            run_id,
+            op,
+            cls.version,
+            params.identity_dump(),
+            observed,
+        )
+        return run_id
+
     def _converter_params(
         self,
         converter: TrackConverter[TrackConvertParams],
@@ -2990,6 +3035,11 @@ class Dataset:
 
             converter = get_track_converter(src_format)
             conv_params = self._converter_params(converter, params, src_format)
+            # Minted and recorded once per recipe, not per entry. The index row
+            # that points at it is Stage 2's typed tracks index; until then the
+            # variant is described in tracks/<run_id>/params.json, which is
+            # what Stage 3.2 turns into the directory holding the parquets.
+            _ = self._tracks_variant(converter, conv_params)
             hints = EntryHints(group=group or "", sequence=sequence or "")
 
             dfs = []
@@ -4050,17 +4100,6 @@ class Dataset:
             progress_callback=progress_callback,
             cancel_token=cancel_token,
         )
-
-
-# --- Backward compat: track converter helpers moved to core/track_library ---
-#
-# This used to be the one E402 in the file that could not be hoisted:
-# ``track_library.trex`` imported ``register_track_converter`` from here, so the
-# two formed a cycle and importing at the top ran the converter module before
-# the decorator existed. The note said closing it needed the registry moved out
-# of dataset.py rather than a reordering -- item 1.3 moved it to
-# ``core.track_converter``, so the cycle is gone and this is an ordinary import.
-from mosaic.core.track_library.trex import strip_trex_seq  # noqa: E402
 
 
 def _is_empty_like(x: Optional[Any]) -> bool:

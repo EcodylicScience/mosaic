@@ -67,8 +67,11 @@ for an op change would falsely mark every feature run as re-minted. Scheme 1 is
 nothing has to be retrofitted.
 """
 
+# The kind admits ``_`` as well as ``-``: tracks variants share this format and
+# name their producer after a raw format (``convert-mabe22_npy``). What it must
+# never admit is ``.``, which is what delimits the version.
 _RUN_ID = re.compile(
-    r"^(?P<kind>[a-z0-9-]+)\.(?P<version>[0-9]+(?:\.[0-9]+)*)-(?P<digest>[0-9a-f]{10})$"
+    r"^(?P<kind>[a-z0-9_-]+)\.(?P<version>[0-9]+(?:\.[0-9]+)*)-(?P<digest>[0-9a-f]{10})$"
 )
 
 
