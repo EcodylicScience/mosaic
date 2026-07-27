@@ -568,7 +568,9 @@ class KpmsFeature:
             (run_root / "kpms_server.log").write_text(self._server_log)
 
     def __del__(self) -> None:
-        proc = self._proc
+        # __init__ may have raised before setting _proc (e.g. params validation),
+        # and __del__ still runs on the half-built object.
+        proc = getattr(self, "_proc", None)
         if proc is not None:
             try:
                 self._shutdown_server()

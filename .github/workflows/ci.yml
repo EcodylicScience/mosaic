@@ -1,0 +1,85 @@
+name: CI
+
+# Gates on the test suite, and on lint for the files a pull request touches.
+#
+# Deliberately NOT gating on project-wide `ruff check`, `ruff format --check`, or
+# `basedpyright`: all three carry a large pre-existing backlog (99 lint findings,
+# 89 files pending a format pass, ~9k strict-mode type errors). Making any of
+# them a gate would put CI permanently red, which trains everyone to ignore it.
+# Scoping lint to changed files encodes the rule the repository actually follows
+# -- new and touched code is clean -- and ratchets on its own. Adding a
+# project-wide type gate needs the backlog paid down first.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # mosaic depends on its sibling via a path source, so both are checked
+      # out. The directory name must match `[tool.uv.sources]` in pyproject.toml.
+      - uses: actions/checkout@v4
+        with:
+          path: mosaic
+
+      - uses: actions/checkout@v4
+        with:
+          repository: EcodylicScience/mosaic-media
+          path: mosaic_media
+          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install
+        working-directory: mosaic
+        run: |
+          uv venv
+          # `uv pip install`, not `uv sync`: the lock cannot resolve on every
+          # platform (see the environment notes in CONTRIBUTING).
+          uv pip install -e '../mosaic_media[io,cli]'
+          uv pip install -e '.[wavelets,imgstore]'
+          uv pip install pytest ruff
+
+      - name: Test
+        working-directory: mosaic
+        env:
+          # Surfaces any identity term that is order-dependent rather than
+          # ordered, which a single fixed seed would hide.
+          PYTHONHASHSEED: random
+        run: uv run pytest -q
+
+  lint-changed:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint the files this pull request touches
+        run: |
+          base="origin/${{ github.base_ref }}"
+          mapfile -t changed < <(
+            git diff --name-only --diff-filter=ACMR "$base"...HEAD -- '*.py'
+          )
+          if [ ${#changed[@]} -eq 0 ]; then
+            echo "No Python files changed."
+            exit 0
+          fi
+          printf 'Checking:\n%s\n' "${changed[*]}"
+          uvx ruff check "${changed[@]}"
+          uvx ruff format --check "${changed[@]}"
