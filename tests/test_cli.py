@@ -185,6 +185,82 @@ def test_sequences(dataset: tuple[Path, Dataset]) -> None:
     assert payload["sequences"] == ["s1", "s2"]
 
 
+def test_sequences_on_an_unconverted_dataset_says_what_to_run(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """The one place the library's "absent is empty" must not stay silent.
+
+    The library answers absent and empty alike; the CLI is the human boundary
+    that turns "no rows" back into an instruction.
+    """
+    manifest, ds = dataset
+    (ds.get_root("tracks") / "index.csv").unlink()
+
+    result = runner.invoke(app, ["sequences", "-m", str(manifest)])
+    assert result.exit_code != 0
+    assert "convert tracks first" in result.stderr
+
+
+def test_sequences_on_a_header_only_index_says_the_same_thing(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """A header-only index is the same dataset state as an absent one.
+
+    IndexCSV.ensure() makes it a common one, so the two must not diverge here.
+    """
+    from mosaic.core.pipeline.tracks_index import tracks_index, tracks_index_path
+
+    manifest, ds = dataset
+    path = tracks_index_path(ds)
+    path.unlink()
+    tracks_index(path).ensure()
+
+    result = runner.invoke(app, ["sequences", "-m", str(manifest)])
+    assert result.exit_code != 0
+    assert "convert tracks first" in result.stderr
+
+
+def test_sequences_narrowed_to_an_empty_group_still_succeeds(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """--group matching nothing is not the same as having no tracks."""
+    manifest, _ = dataset
+    payload = _run_json(
+        ["sequences", "-m", str(manifest), "--group", "no-such-group", "--json"]
+    )
+    assert payload["sequences"] == []
+
+
+# --- the tracks-index query methods ----------------------------------------
+#
+# None of these had any test at all, so a regression in three of them was
+# invisible.
+
+
+def test_query_methods_on_an_unconverted_dataset_are_empty(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    (ds.get_root("tracks") / "index.csv").unlink()
+
+    assert ds.list_groups() == []
+    assert ds.list_sequences() == []
+    assert ds.query_sequences(sequence_contains="s") == []
+    assert len(ds.get_sequence_metadata()) == 0
+
+
+def test_query_methods_on_a_populated_dataset(dataset: tuple[Path, Dataset]) -> None:
+    _, ds = dataset
+
+    assert ds.list_groups() == ["g"]
+    assert ds.list_sequences() == ["s1", "s2"]
+    assert ds.query_sequences(sequence_contains="s1") == [("g", "s1")]
+    meta = ds.get_sequence_metadata()
+    assert len(meta) == 2
+    # The safe-name columns this method documents are re-derived, not stored.
+    assert list(meta["sequence_safe"]) == ["s1", "s2"]
+
+
 # --- discovery -------------------------------------------------------------
 
 

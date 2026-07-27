@@ -9,6 +9,7 @@ parquet tracks to YOLO pose labels.
 
 Tiling and Colab-specific UI code has been removed.
 """
+
 from __future__ import annotations
 
 import math
@@ -28,6 +29,7 @@ import yaml
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.frame_extraction import get_frame_manifests
 from mosaic.tracking.pose_training.converters.cvat_points import (
     _default_group_key,
@@ -38,6 +40,7 @@ from mosaic.tracking.pose_training.converters.cvat_points import (
 # --------------------------------------------------------------------------- #
 # Label helpers
 # --------------------------------------------------------------------------- #
+
 
 def build_collapse_map(allowed_ids: set[int]) -> dict[int, int]:
     """Map original class IDs to contiguous indices (smallest → 0, etc.)."""
@@ -119,6 +122,7 @@ def simplify_labels(
 # Dataset preparation pipeline
 # --------------------------------------------------------------------------- #
 
+
 def prepare_yolo_dataset(
     dataset_path: str,
     out_dir: str,
@@ -166,14 +170,18 @@ def prepare_yolo_dataset(
     """
     # Canonicalise label-mapping parameters
     collapse_keys = set(collapse_map.keys()) if collapse_map else set()
-    effective_allowed_ids: set[int] | None = set(allowed_ids) if allowed_ids is not None else None
+    effective_allowed_ids: set[int] | None = (
+        set(allowed_ids) if allowed_ids is not None else None
+    )
     if collapse_keys:
         if effective_allowed_ids is None:
             effective_allowed_ids = set(collapse_keys)
         else:
             missing = collapse_keys - effective_allowed_ids
             if missing:
-                print(f"[warn] collapse_map references IDs not in allowed_ids; adding: {sorted(missing)}")
+                print(
+                    f"[warn] collapse_map references IDs not in allowed_ids; adding: {sorted(missing)}"
+                )
                 effective_allowed_ids |= missing
     if effective_allowed_ids is not None:
         effective_allowed_ids = set(sorted(int(x) for x in effective_allowed_ids))
@@ -181,7 +189,11 @@ def prepare_yolo_dataset(
     def _yolo_label_files(labels_dir: str):
         if not os.path.isdir(labels_dir):
             return []
-        return [os.path.join(labels_dir, f) for f in os.listdir(labels_dir) if f.endswith(".txt")]
+        return [
+            os.path.join(labels_dir, f)
+            for f in os.listdir(labels_dir)
+            if f.endswith(".txt")
+        ]
 
     def _find_image_for_label(label_path: str, images_dir: str):
         stem = os.path.splitext(os.path.basename(label_path))[0]
@@ -213,12 +225,16 @@ def prepare_yolo_dataset(
                 fh.write("\n".join(new_lines) + ("\n" if new_lines else ""))
             if not new_lines:
                 emptied += 1
-        print(f"  filter_labels: kept={kept}, dropped={dropped}, emptied_files={emptied}")
+        print(
+            f"  filter_labels: kept={kept}, dropped={dropped}, emptied_files={emptied}"
+        )
 
-    def _simplify_labels(pool_dir: str,
-                         collapse_mapping: dict[int, str],
-                         new_ids: dict[str, int],
-                         drop: bool) -> None:
+    def _simplify_labels(
+        pool_dir: str,
+        collapse_mapping: dict[int, str],
+        new_ids: dict[str, int],
+        drop: bool,
+    ) -> None:
         labels_dir = os.path.join(pool_dir, "labels")
         remapped, kept_as_is, dropped = 0, 0, 0
         missing_names: set[str] = set()
@@ -256,9 +272,13 @@ def prepare_yolo_dataset(
                 fh.write("\n".join(out_lines) + ("\n" if out_lines else ""))
         if missing_names:
             print(f"[warn] Missing names in new_class_ids: {sorted(missing_names)}")
-        print(f"  simplify_labels: remapped={remapped} kept_as_is={kept_as_is} dropped={dropped}")
+        print(
+            f"  simplify_labels: remapped={remapped} kept_as_is={kept_as_is} dropped={dropped}"
+        )
 
-    def prune_empty_labels(pool_dir: str, fraction: float = 1.0, seed_: int = 0) -> None:
+    def prune_empty_labels(
+        pool_dir: str, fraction: float = 1.0, seed_: int = 0
+    ) -> None:
         rng = random.Random(seed_)
         labels_dir = os.path.join(pool_dir, "labels")
         images_dir = os.path.join(pool_dir, "images")
@@ -312,12 +332,18 @@ def prepare_yolo_dataset(
 
         total = len(all_images)
         if total == 0:
-            raise RuntimeError(f"No paired image/label files found under {dataset_root}")
+            raise RuntimeError(
+                f"No paired image/label files found under {dataset_root}"
+            )
 
         # Use split_filenames for consistent splitting logic
         filenames = [os.path.basename(img) for img, _ in all_images]
         assignment, n_train, n_valid = split_filenames(
-            filenames, split_, seed_, split_by=split_by_, group_key=group_key_,
+            filenames,
+            split_,
+            seed_,
+            split_by=split_by_,
+            group_key=group_key_,
         )
         fname_to_pair = {os.path.basename(img): (img, lbl) for img, lbl in all_images}
 
@@ -347,7 +373,11 @@ def prepare_yolo_dataset(
             print(
                 f"  split counts (by group): train={len(train_pairs)} ({groups_t} groups) "
                 f"valid={len(valid_pairs)} ({groups_v} groups)"
-                + (f" test={len(test_pairs)} ({groups_te} groups)" if split_[2] > 0 else "")
+                + (
+                    f" test={len(test_pairs)} ({groups_te} groups)"
+                    if split_[2] > 0
+                    else ""
+                )
             )
         else:
             print(
@@ -394,7 +424,9 @@ def prepare_yolo_dataset(
             print("Collapsing class taxonomy...")
             _simplify_labels(pool_dir, collapse_map, new_class_ids, drop_others)
     elif any([allowed_ids, collapse_map, new_class_ids]):
-        print("[info] do_change_labels=False; ignoring allowed_ids/collapse_map/new_class_ids")
+        print(
+            "[info] do_change_labels=False; ignoring allowed_ids/collapse_map/new_class_ids"
+        )
 
     prune_empty_labels(pool_dir, fraction=prune_empty_fraction, seed_=seed)
 
@@ -416,8 +448,12 @@ def prepare_yolo_dataset(
         )
     else:
         print("Exporting single unsplit pool...")
-        shutil.copytree(os.path.join(pool_dir, "images"), os.path.join(out_dir, "images"))
-        shutil.copytree(os.path.join(pool_dir, "labels"), os.path.join(out_dir, "labels"))
+        shutil.copytree(
+            os.path.join(pool_dir, "images"), os.path.join(out_dir, "images")
+        )
+        shutil.copytree(
+            os.path.join(pool_dir, "labels"), os.path.join(out_dir, "labels")
+        )
 
     print(f"Final dataset: {out_dir}")
 
@@ -425,6 +461,7 @@ def prepare_yolo_dataset(
 # --------------------------------------------------------------------------- #
 # Dataset inspection
 # --------------------------------------------------------------------------- #
+
 
 def _iter_label_files(root: str, splits: Sequence[str] = ("train", "valid", "test")):
     """Yield all label file paths from split or single-pool layouts."""
@@ -500,7 +537,8 @@ def auto_select_allowed_ids(
     allowed = {
         cid
         for cid in inst
-        if inst[cid] >= min_inst_threshold and (min_files is None or files.get(cid, 0) >= min_files)
+        if inst[cid] >= min_inst_threshold
+        and (min_files is None or files.get(cid, 0) >= min_files)
     }
 
     if ensure_ids:
@@ -537,7 +575,9 @@ def count_labels(label_dir: str) -> tuple[dict[int, int], int, int]:
     return dict(sorted(class_counts.items())), empty_count, total_files
 
 
-def check_dataset(out_dir: str, splits: Sequence[str] = ("train", "valid", "test")) -> None:
+def check_dataset(
+    out_dir: str, splits: Sequence[str] = ("train", "valid", "test")
+) -> None:
     """Print a summary of class counts for a prepared dataset."""
     out_path = Path(out_dir).resolve()
     print(f"Dataset: {out_path}")
@@ -568,6 +608,7 @@ def check_dataset(out_dir: str, splits: Sequence[str] = ("train", "valid", "test
 # --------------------------------------------------------------------------- #
 # YAML helpers
 # --------------------------------------------------------------------------- #
+
 
 def _load_yaml_names(src_yaml: str) -> list[str] | None:
     """Extract names array from a YOLO data.yaml file."""
@@ -640,7 +681,9 @@ def make_data_yaml(
     for name, idx in new_class_ids.items():
         names[idx] = name
     if any(n is None for n in names):
-        raise ValueError("new_class_ids must cover a contiguous 0..N range without gaps.")
+        raise ValueError(
+            "new_class_ids must cover a contiguous 0..N range without gaps."
+        )
 
     if has_test is None:
         has_test = (Path(dataset_root) / "test" / "images").exists()
@@ -730,6 +773,7 @@ def make_polo_data_yaml(
 # --------------------------------------------------------------------------- #
 # Track-to-YOLO-pose conversion
 # --------------------------------------------------------------------------- #
+
 
 def _keypoint_to_yolo_label(
     pose_x: np.ndarray,
@@ -839,22 +883,26 @@ def tracks_to_yolo_pose(
     pose_y_cols = [f"poseY{k}" for k in range(n_keypoints)]
 
     # ── Load tracks index and build mapping ──
-    tracks_root = ds.get_root("tracks")
-    tracks_idx = pd.read_csv(tracks_root / "index.csv")
+    # Checked here rather than left to the "no video-track matches" error at the
+    # bottom: an absent index and a genuine naming mismatch need different
+    # answers, and routing this through the shared reader would otherwise make
+    # them look identical.
+    tracks_idx = read_tracks_index(ds)
+    if tracks_idx.empty:
+        raise FileNotFoundError(
+            "tracks/index.csv is empty or absent; convert tracks before building "
+            "a pose dataset (ds.convert_all_tracks())."
+        )
 
     if video_stem_to_sequence is None:
         # Auto-build: video stem == last component of sequence path
-        tracks_idx["_video_stem"] = tracks_idx["sequence"].apply(
-            lambda s: Path(s).name
-        )
+        tracks_idx["_video_stem"] = tracks_idx["sequence"].apply(lambda s: Path(s).name)
         stem_to_idx: dict[str, int] = {}
         for i, stem in enumerate(tracks_idx["_video_stem"]):
             stem_to_idx.setdefault(stem, i)
     else:
         # Use explicit mapping — build sequence-name -> row index
-        seq_to_idx = {
-            row["sequence"]: i for i, row in tracks_idx.iterrows()
-        }
+        seq_to_idx = {row["sequence"]: i for i, row in tracks_idx.iterrows()}
         stem_to_idx = {}
         for stem, seq_name in video_stem_to_sequence.items():
             if seq_name in seq_to_idx:
@@ -996,7 +1044,10 @@ def tracks_to_yolo_pose(
                 if lbl_file.exists():
                     shutil.copy2(
                         lbl_file,
-                        merged_dir / subset / "labels" / (prefix + img_file.stem + ".txt"),
+                        merged_dir
+                        / subset
+                        / "labels"
+                        / (prefix + img_file.stem + ".txt"),
                     )
                 merged_count += 1
 

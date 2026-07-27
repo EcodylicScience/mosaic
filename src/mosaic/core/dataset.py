@@ -1215,23 +1215,26 @@ class Dataset:
         return results
 
     def list_groups(self) -> list[str]:
-        """Return a sorted list of unique group names in tracks/index.csv."""
-        idx_path = self.get_root("tracks") / "index.csv"
-        if not idx_path.exists():
-            raise FileNotFoundError("tracks/index.csv not found.")
-        df = pd.read_csv(idx_path)
-        return sorted(df["group"].fillna("").unique())
+        """The group names in ``tracks/index.csv``, sorted. Empty when there are none.
+
+        Absent and empty answer alike: both mean "this dataset has no
+        standardized tracks", and answering them differently is what left six
+        readers of this file with four different policies. A caller that wants to
+        tell a human to convert first checks for an empty result -- that check is
+        the same for both spellings.
+        """
+        return sorted({str(g) for g in read_tracks_index(self)["group"]})
 
     def list_sequences(self, group: str | None = None) -> list[str]:
-        """Return all sequences (optionally filtered by group) in tracks/index.csv."""
-        idx_path = self.get_root("tracks") / "index.csv"
-        if not idx_path.exists():
-            raise FileNotFoundError("tracks/index.csv not found.")
-        df = pd.read_csv(idx_path)
-        df["group"] = df["group"].fillna("")
+        """The sequences in ``tracks/index.csv``, optionally within one group.
+
+        Empty when there are none; see :meth:`list_groups` on why absent is not
+        an error.
+        """
+        df = read_tracks_index(self)
         if group is not None:
             df = df[df["group"] == group]
-        return sorted(df["sequence"].fillna("").unique())
+        return sorted({str(s) for s in df["sequence"]})
 
     def get_sequence_metadata(
         self,
@@ -1289,13 +1292,10 @@ class Dataset:
         """
         from .helpers import parse_hierarchy
 
-        idx_path = self.get_root("tracks") / "index.csv"
-        if not idx_path.exists():
-            raise FileNotFoundError("tracks/index.csv not found.")
-
-        df = pd.read_csv(idx_path)
-        df["group"] = df["group"].fillna("")
-        df["sequence"] = df["sequence"].fillna("")
+        # legacy_view re-derives the safe-name columns this method's docstring
+        # promises. They are no longer stored -- they were a cache of a pure
+        # function of group/sequence, recomputed on every write anyway.
+        df = legacy_view(read_tracks_index(self))
 
         if level_names:
             # Parse each row into hierarchy levels
@@ -1369,13 +1369,7 @@ class Dataset:
         ...     sequence_endswith="loop_1"
         ... )
         """
-        idx_path = self.get_root("tracks") / "index.csv"
-        if not idx_path.exists():
-            raise FileNotFoundError("tracks/index.csv not found.")
-
-        df = pd.read_csv(idx_path)
-        df["group"] = df["group"].fillna("")
-        df["sequence"] = df["sequence"].fillna("")
+        df = read_tracks_index(self)
 
         mask = pd.Series([True] * len(df))
 

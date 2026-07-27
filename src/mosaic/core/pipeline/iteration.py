@@ -5,19 +5,13 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
 # --- Helpers ---
-
-
-def _read_tracks_index(ds: Dataset) -> pd.DataFrame:
-    """Read tracks/index.csv with keep_default_na=False."""
-    idx_path = ds.get_root("tracks") / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError("tracks/index.csv not found; run conversion first.")
-    return pd.read_csv(idx_path, keep_default_na=False)
 
 
 def _filter_index(
@@ -26,10 +20,7 @@ def _filter_index(
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
 ) -> pd.DataFrame:
-    """Filter index rows by group, sequence, and/or allowed (group, sequence) pairs.
-
-    TODO: Move to IndexCSV once tracks/index.csv is migrated to IndexCSV.
-    """
+    """Filter index rows by group, sequence, and/or allowed (group, sequence) pairs."""
     mask = pd.Series(True, index=df_idx.index)
     if groups is not None:
         mask &= df_idx["group"].isin(set(groups))
@@ -60,7 +51,7 @@ def yield_sequences(
     Yield (group, sequence, df) for standardized tracks present in tracks/index.csv,
     filtered by groups and/or sequences if provided.
     """
-    df_idx = _filter_index(_read_tracks_index(ds), groups, sequences, allowed_pairs)
+    df_idx = _filter_index(read_tracks_index(ds), groups, sequences, allowed_pairs)
 
     for _, row in df_idx.iterrows():
         g, s = str(row["group"]), str(row["sequence"])
@@ -124,7 +115,7 @@ def yield_sequences_with_overlap(
         return
 
     # Single index read for path lookup, adjacency, and filtering
-    df_idx = _read_tracks_index(ds)
+    df_idx = read_tracks_index(ds)
 
     # Build path lookup and sorted sequence list per group (for adjacency).
     #

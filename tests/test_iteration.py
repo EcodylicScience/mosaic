@@ -7,8 +7,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.core.pipeline.tracks_index import TRACKS_INDEX_COLUMNS
 from mosaic.core.pipeline.iteration import (
-    _read_tracks_index,
+    read_tracks_index,
     yield_sequences,
     yield_sequences_with_overlap,
 )
@@ -80,25 +81,37 @@ def populated_ds(ds, tmp_path):
     return ds
 
 
-# --- _read_tracks_index ---
+# --- read_tracks_index ---
 
 
 class TestReadTracksIndex:
     def test_reads_index(self, populated_ds):
-        df = _read_tracks_index(populated_ds)
-        assert len(df) == 3
-        assert set(df.columns) == {"group", "sequence", "abs_path"}
+        """The reader projects a legacy three-column file onto the full schema.
 
-    def test_missing_index_raises(self, ds):
-        with pytest.raises(FileNotFoundError, match="tracks/index.csv not found"):
-            _read_tracks_index(ds)
+        Kept as an exact equality rather than a subset: it is the only guard on
+        the projection, so a column silently going missing must fail here.
+        """
+        df = read_tracks_index(populated_ds)
+        assert len(df) == 3
+        assert list(df.columns) == TRACKS_INDEX_COLUMNS
+
+    def test_missing_index_reads_as_an_empty_one(self, ds):
+        """Absent and empty are one dataset state, and now answer alike.
+
+        The full column set matters: callers filter on group/sequence straight
+        away, and a column-less empty frame turns "no tracks yet" into KeyError.
+        """
+        df = read_tracks_index(ds)
+        assert len(df) == 0
+        assert list(df.columns) == TRACKS_INDEX_COLUMNS
+        assert df[df["group"] == "g"].empty
 
     def test_empty_strings_preserved(self, ds, tmp_path):
-        """keep_default_na=False: empty strings stay as empty strings, not NaN."""
+        """An empty cell stays an empty string rather than becoming NaN."""
         p = tmp_path / "tracks" / "dummy.parquet"
         _make_parquet(p)
         _write_tracks_index(ds, [("", "s1", p)])
-        df = _read_tracks_index(ds)
+        df = read_tracks_index(ds)
         assert df.iloc[0]["group"] == ""
         assert not pd.isna(df.iloc[0]["group"])
 
@@ -139,9 +152,13 @@ class TestYieldSequences:
         with pytest.raises(FileNotFoundError, match="Stale tracks index"):
             list(yield_sequences(ds))
 
-    def test_missing_index_raises(self, ds):
-        with pytest.raises(FileNotFoundError):
-            list(yield_sequences(ds))
+    def test_missing_index_yields_nothing(self, ds):
+        """A dataset with no tracks has no sequences to iterate, not an error.
+
+        The stale-parquet raise above is unaffected: a row pointing at a file
+        that is gone is a broken index, not an absent one.
+        """
+        assert list(yield_sequences(ds)) == []
 
     def test_combined_filters(self, populated_ds):
         results = list(
