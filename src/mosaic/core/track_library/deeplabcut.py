@@ -32,8 +32,13 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_track_converter
 from mosaic.core.schema import ensure_track_schema
+from mosaic.core.track_converter import (
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    register_track_converter,
+)
 from mosaic.core.track_library.helpers import (
     angle_from_pca,
     angle_from_two_points,
@@ -225,34 +230,45 @@ def _individual_to_trex_df(
     return pd.DataFrame(data)
 
 
-def _dlc_converter(path: Path, params: dict) -> pd.DataFrame:
-    """Convert a DeepLabCut ``.csv`` / ``.h5`` file to a ``trex_v1`` DataFrame.
+class DlcParams(TrackConvertParams):
+    """Parameters for the DeepLabCut converter.
 
-    Recognized ``params`` keys:
-        group / sequence: file-level hints from the raw tracks index.
-        fps: frame rate used to derive ``time`` and velocities. Default 30.0.
-        neck_idx / tail_idx: keypoint indices for a two-point heading; when
-            absent, heading falls back to per-frame PCA of all keypoints.
+    Attributes:
+        fps: Frame rate used to derive ``time`` and velocities. Filled from the
+            dataset's ``fps_default`` when the caller does not set it, so the
+            value that reaches identity is the one that was used.
+        neck_idx: Keypoint index of the neck for a two-point heading.
+        tail_idx: Keypoint index of the tail for a two-point heading. With
+            neither index, heading falls back to per-frame PCA of all keypoints.
     """
-    individuals = load_dlc(path)
-    group = norm_hint(params.get("group")) or ""
-    sequence = norm_hint(params.get("sequence")) or path.stem
-    fps = float(params.get("fps", 30.0))
-    neck_idx = params.get("neck_idx")
-    tail_idx = params.get("tail_idx")
 
-    frames = [
-        _individual_to_trex_df(indiv, a, group, sequence, fps, neck_idx, tail_idx)
-        for a, indiv in enumerate(individuals)
-    ]
-    out = (
-        pd.concat(frames, ignore_index=True)
-        if frames
-        else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
-    )
-    ensure_track_schema(out, "trex_v1", strict=False, source=str(path))
-    return out
+    fps: float = 30.0
+    neck_idx: int | None = None
+    tail_idx: int | None = None
 
 
-# Register for both DeepLabCut source extensions (same structure).
-register_track_converter("deeplabcut", _dlc_converter)
+@register_track_converter
+class DlcConverter(TrackConverter[DlcParams]):
+    """DeepLabCut ``.csv`` / ``.h5`` -> a ``trex_v1`` table."""
+
+    src_format = "deeplabcut"
+    Params = DlcParams
+
+    def convert(self, path: Path, params: DlcParams, hints: EntryHints) -> pd.DataFrame:
+        individuals = load_dlc(path)
+        group = norm_hint(hints.group) or ""
+        sequence = norm_hint(hints.sequence) or path.stem
+
+        frames = [
+            _individual_to_trex_df(
+                indiv, a, group, sequence, params.fps, params.neck_idx, params.tail_idx
+            )
+            for a, indiv in enumerate(individuals)
+        ]
+        out = (
+            pd.concat(frames, ignore_index=True)
+            if frames
+            else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
+        )
+        ensure_track_schema(out, "trex_v1", strict=False, source=str(path))
+        return out

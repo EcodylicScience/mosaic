@@ -385,7 +385,7 @@ def _bridge_npz_to_tracks(
     (group, sequence) known from the media index (no filename guessing).
     Returns the row count written, or ``None`` if skipped/failed.
     """
-    from mosaic.core.dataset import TRACK_CONVERTERS  # lazy: avoids import cycle
+    from mosaic.core.track_converter import EntryHints, get_track_converter
 
     if not npz_paths:
         return None
@@ -394,11 +394,16 @@ def _bridge_npz_to_tracks(
     if out_path.exists() and not overwrite:
         return None
 
-    converter = TRACK_CONVERTERS["trex_npz"]
+    converter = get_track_converter("trex_npz")
+    # The tracker knows the authoritative entry from the media index, so the
+    # hints are exact rather than guessed from a filename. No params: the TRex
+    # NPZ conversion has none.
+    conv_params = type(converter).Params()
+    hints = EntryHints(group=group, sequence=sequence)
     dfs: list[pd.DataFrame] = []
     for npz in npz_paths:
         try:
-            dfs.append(converter(npz, {"group": group, "sequence": sequence}))
+            dfs.append(converter.convert(npz, conv_params, hints))
         except Exception as exc:
             print(
                 f"[run_trex] convert failed for {npz}: {exc}; "

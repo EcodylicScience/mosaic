@@ -9,7 +9,8 @@ import pandas as pd
 import pytest
 
 from mosaic.core.schema import ensure_track_schema
-from mosaic.core.track_library.deeplabcut import _dlc_converter, load_dlc
+from mosaic.core.track_converter import EntryHints
+from mosaic.core.track_library.deeplabcut import DlcConverter, DlcParams, load_dlc
 
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 
@@ -92,7 +93,9 @@ def test_dlc_converter_single_animal_schema(tmp_path: Path) -> None:
     csv = tmp_path / "single.csv"
     _write_single_animal_csv(csv, n_frames=20)
 
-    df = _dlc_converter(csv, {"group": "g1", "sequence": "s1", "fps": 50.0})
+    df = DlcConverter().convert(
+        csv, DlcParams(fps=50.0), EntryHints(group="g1", sequence="s1")
+    )
 
     # Required trex_v1 columns + pose prefixes present.
     _, report = ensure_track_schema(df, "trex_v1", strict=True, source=str(csv))
@@ -124,7 +127,9 @@ def test_dlc_converter_multi_animal(tmp_path: Path) -> None:
     individuals = load_dlc(csv)
     assert len(individuals) == n
 
-    df = _dlc_converter(csv, {"group": "g", "sequence": "rec", "fps": 30.0})
+    df = DlcConverter().convert(
+        csv, DlcParams(fps=30.0), EntryHints(group="g", sequence="rec")
+    )
     assert set(df["id"]) == set(range(n))
     # Each individual contributes n_frames rows.
     assert len(df) == 15 * n
@@ -151,8 +156,9 @@ def test_dlc_converter_csv_h5_roundtrip(tmp_path: Path) -> None:
     h5 = tmp_path / "single.h5"
     pd.DataFrame(flat, columns=cols).to_hdf(h5, key="df", mode="w")
 
-    df_csv = _dlc_converter(csv, {"fps": 30.0})
-    df_h5 = _dlc_converter(h5, {"fps": 30.0})
+    converter = DlcConverter()
+    df_csv = converter.convert(csv, DlcParams(fps=30.0), EntryHints())
+    df_h5 = converter.convert(h5, DlcParams(fps=30.0), EntryHints())
     np.testing.assert_allclose(
         df_csv[["poseX0", "poseY1", "poseP2"]].to_numpy(),
         df_h5[["poseX0", "poseY1", "poseP2"]].to_numpy(),

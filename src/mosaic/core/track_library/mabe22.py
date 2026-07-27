@@ -20,7 +20,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_track_converter, register_track_seq_enumerator
+from mosaic.core.track_converter import (
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    register_track_converter,
+)
 from mosaic.core.track_library.helpers import angle_from_pca, norm_hint
 
 
@@ -210,72 +215,87 @@ def _add_trex_placeholders(df: pd.DataFrame) -> None:
 # Top-level converter (registered)
 # ---------------------------------------------------------------------------
 
-def _mabe22_converter(path: Path, params: dict) -> pd.DataFrame:
-    """Convert a MABe22 .npy file to a trex_v1-compatible DataFrame."""
+def _mabe22_sequences(path: Path) -> dict:
+    """The sequence mapping inside a MABe22 file.
+
+    Files carry ``{vocabulary, sequences: {...}}``; submission files carry
+    ``{sequences: {...}}`` directly; anything else is read as sequences minus
+    the known metadata keys.
+    """
     raw = load_mabe22(path)
-
-    # MABe22 files have {vocabulary, sequences: {seq_id: ...}} or
-    # submission files have {sequences: {seq_id: ...}} directly
     if "sequences" in raw:
-        sequences = raw["sequences"]
-    else:
-        # Fallback: treat all non-metadata keys as sequences
-        sequences = {k: v for k, v in raw.items()
-                     if isinstance(v, dict) and k not in ("vocabulary", "keypoint_vocabulary",
-                                                           "frame_number_map", "task_type")}
+        return raw["sequences"]
+    return {
+        k: v
+        for k, v in raw.items()
+        if isinstance(v, dict)
+        and k
+        not in ("vocabulary", "keypoint_vocabulary", "frame_number_map", "task_type")
+    }
 
-    if not sequences:
-        raise ValueError(f"No sequences found in MABe22 file: {path}")
 
-    prefer_group = norm_hint(params.get("group"))
-    prefer_seq = norm_hint(params.get("sequence"))
-    fps = float(params.get("fps", params.get("fps_default", 30.0)))
+class Mabe22Params(TrackConvertParams):
+    """Parameters for the MABe22 converter.
 
-    # Default group from filename stem (e.g., "mouse_triplet_train")
-    group = prefer_group or path.stem
+    Attributes:
+        fps: Frame rate used to derive ``time``. Filled from the dataset's
+            ``fps_default`` when the caller does not set it.
 
-    if prefer_seq:
-        if prefer_seq not in sequences:
-            raise KeyError(f"Sequence {prefer_seq!r} not found in {path}. "
-                           f"Available: {list(sequences.keys())[:10]}")
-        seq_dict = sequences[prefer_seq]
-        kp = np.asarray(seq_dict["keypoints"])
-        ann = np.asarray(seq_dict["annotations"]) if "annotations" in seq_dict else None
-        return _mabe22_seq_to_df(kp, ann, prefer_seq, group, fps)
+    The old converter read ``params["fps"]`` falling back to
+    ``params["fps_default"]``, so one behaviour had two payload shapes and would
+    have minted two tracks variants for identical output. There is one spelling
+    now, and the fallback is resolved by the caller *before* the value is
+    hashed -- the same rule as item 1.1.
+    """
 
-    # Convert all sequences if no specific one requested — but for multi-sequence
-    # files called from convert_one_track, we should only get one at a time
-    if len(sequences) == 1:
-        seq_id = next(iter(sequences))
-        seq_dict = sequences[seq_id]
+    fps: float = 30.0
+
+
+@register_track_converter
+class Mabe22Converter(TrackConverter[Mabe22Params]):
+    """MABe22 ``.npy`` -> a ``trex_v1`` table, one sequence at a time."""
+
+    src_format = "mabe22_npy"
+    enumerable = True
+    Params = Mabe22Params
+
+    def convert(
+        self, path: Path, params: Mabe22Params, hints: EntryHints
+    ) -> pd.DataFrame:
+        sequences = _mabe22_sequences(path)
+        if not sequences:
+            raise ValueError(f"No sequences found in MABe22 file: {path}")
+
+        prefer_seq = norm_hint(hints.sequence)
+        # Default group from filename stem (e.g., "mouse_triplet_train")
+        group = norm_hint(hints.group) or path.stem
+
+        if prefer_seq:
+            if prefer_seq not in sequences:
+                raise KeyError(
+                    f"Sequence {prefer_seq!r} not found in {path}. "
+                    f"Available: {list(sequences.keys())[:10]}"
+                )
+            return self._to_df(sequences[prefer_seq], prefer_seq, group, params.fps)
+
+        # No hint: unambiguous only when the file holds exactly one sequence.
+        # A multi-sequence file reaches convert() one sequence at a time, with
+        # a hint, via enumerate_sequences.
+        if len(sequences) == 1:
+            seq_id = next(iter(sequences))
+            return self._to_df(sequences[seq_id], seq_id, group, params.fps)
+
+        raise ValueError(
+            f"MABe22 file {path} contains {len(sequences)} sequences. "
+            f"Pass a sequence hint to select one, or use index_tracks_raw "
+            f"+ convert_all_tracks."
+        )
+
+    @staticmethod
+    def _to_df(seq_dict: dict, seq_id: str, group: str, fps: float) -> pd.DataFrame:
         kp = np.asarray(seq_dict["keypoints"])
         ann = np.asarray(seq_dict["annotations"]) if "annotations" in seq_dict else None
         return _mabe22_seq_to_df(kp, ann, seq_id, group, fps)
 
-    raise ValueError(
-        f"MABe22 file {path} contains {len(sequences)} sequences. "
-        f"Pass params with 'sequence' to select one, or use index_tracks_raw + convert_all_tracks."
-    )
-
-
-def _enumerate_mabe22_sequences(path: Path) -> list[tuple[str, str]]:
-    """Return (group, sequence) pairs from a MABe22 file."""
-    raw = load_mabe22(path)
-    group = path.stem
-
-    if "sequences" in raw:
-        sequences = raw["sequences"]
-    else:
-        sequences = {k: v for k, v in raw.items()
-                     if isinstance(v, dict) and k not in ("vocabulary", "keypoint_vocabulary",
-                                                           "frame_number_map", "task_type")}
-
-    return [(group, str(s)) for s in sequences.keys()]
-
-
-# ---------------------------------------------------------------------------
-# Register
-# ---------------------------------------------------------------------------
-
-register_track_converter("mabe22_npy", _mabe22_converter)
-register_track_seq_enumerator("mabe22_npy", _enumerate_mabe22_sequences)
+    def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
+        return [(path.stem, str(s)) for s in _mabe22_sequences(path)]

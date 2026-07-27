@@ -11,7 +11,15 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_track_converter, register_track_seq_enumerator
+from typing import Annotated
+
+from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.track_converter import (
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    register_track_converter,
+)
 from mosaic.core.track_library.helpers import (
     load_calms21, angle_from_two_points, angle_from_pca, norm_hint,
 )
@@ -162,45 +170,76 @@ def calms21_to_trex_df(path: Path | str,
     return pd.concat(rows, ignore_index=True)
 
 
-def _calms21_converter(path: Path, params: dict) -> pd.DataFrame:
-    prefer_group   = norm_hint(params.get("group"))
-    prefer_sequence= norm_hint(params.get("sequence"))
-    neck_idx = params.get("neck_idx", None)
-    tail_idx = params.get("tail_idx", None)
-    debug = bool(params.get("debug", False))
+class Calms21Params(TrackConvertParams):
+    """Parameters for the CalMS21 converters.
 
-    # quick inspect
-    nested = load_calms21(path)
-    if debug:
+    Attributes:
+        neck_idx: Keypoint index of the neck for a two-point heading.
+        tail_idx: Keypoint index of the tail for a two-point heading.
+        debug: Print the in-file ``(group, sequence)`` pairs. Diagnostics only,
+            so excluded from identity -- it changes what is printed, never what
+            is written.
+    """
+
+    neck_idx: int | None = None
+    tail_idx: int | None = None
+    debug: Annotated[bool, HASH_EXCLUDE] = False
+
+
+class Calms21Converter(TrackConverter[Calms21Params]):
+    """CalMS21 -> a ``trex_v1`` table, one ``(group, sequence)`` at a time."""
+
+    src_format = "calms21_npy"
+    enumerable = True
+    Params = Calms21Params
+
+    def convert(
+        self, path: Path, params: Calms21Params, hints: EntryHints
+    ) -> pd.DataFrame:
+        prefer_group = norm_hint(hints.group)
+        prefer_sequence = norm_hint(hints.sequence)
+
+        nested = load_calms21(path)
+        if params.debug:
+            pairs = [(g, s) for g, grp in nested.items() for s in grp.keys()]
+            print(
+                f"[calms21] in-file pairs ({len(pairs)}): {pairs[:10]}"
+                f"{' ...' if len(pairs) > 10 else ''}"
+            )
+            print(
+                f"[calms21] prefer_group={prefer_group} "
+                f"prefer_sequence={prefer_sequence}"
+            )
+
+        # if explicit selection given, return only that
+        if prefer_group or prefer_sequence:
+            return calms21_to_trex_df(
+                path,
+                prefer_group=prefer_group,
+                prefer_sequence=prefer_sequence,
+                neck_idx=params.neck_idx,
+                tail_idx=params.tail_idx,
+            )
+
+        # else single-pair inference
         pairs = [(g, s) for g, grp in nested.items() for s in grp.keys()]
-        print(f"[calms21] in-file pairs ({len(pairs)}): {pairs[:10]}{' ...' if len(pairs)>10 else ''}")
-        print(f"[calms21] prefer_group={prefer_group} prefer_sequence={prefer_sequence}")
-
-    # if explicit selection given, return only that
-    if prefer_group or prefer_sequence:
-        return calms21_to_trex_df(
-            path,
-            prefer_group=prefer_group,
-            prefer_sequence=prefer_sequence,
-            neck_idx=neck_idx,
-            tail_idx=tail_idx,
+        if len(pairs) == 1:
+            g, s = pairs[0]
+            return calms21_to_trex_df(
+                path,
+                prefer_group=g,
+                prefer_sequence=s,
+                neck_idx=params.neck_idx,
+                tail_idx=params.tail_idx,
+            )
+        raise ValueError(
+            f"Ambiguous CalMS21 file {path}; contains multiple sequences {pairs}. "
+            f"Pass hints with group/sequence to disambiguate."
         )
 
-    # else single-pair inference
-    pairs = [(g, s) for g, grp in nested.items() for s in grp.keys()]
-    if len(pairs) == 1:
-        g, s = pairs[0]
-        return calms21_to_trex_df(
-            path,
-            prefer_group=g,
-            prefer_sequence=s,
-            neck_idx=neck_idx,
-            tail_idx=tail_idx,
-        )
-    raise ValueError(
-        f"Ambiguous CalMS21 file {path}; contains multiple sequences {pairs}. "
-        f"Pass params with group/sequence to disambiguate."
-    )
+    def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
+        nested = load_calms21(path)
+        return [(str(g), str(s)) for g, grp in nested.items() for s in grp.keys()]
 
 
 def _calms21_make_seq_filter_from_hint(hint: Optional[str]):
@@ -242,19 +281,15 @@ def _calms21_make_seq_filter_from_hint(hint: Optional[str]):
     return None
 
 
-def _enumerate_calms21_sequences(path: Path) -> list[tuple[str, str]]:
-    nested = load_calms21(path)
-    pairs: list[tuple[str, str]] = []
-    for g, grp in nested.items():
-        for s in grp.keys():
-            pairs.append((str(g), str(s)))
-    return pairs
+# One class per source format, rather than one class registered twice. The two
+# file formats hold the same structure and convert identically, but a tracks
+# variant identity names exactly one producer, so the format it read has to be
+# part of that name rather than an ambiguity inside it.
+_ = register_track_converter(Calms21Converter)
 
 
-# Register converters for both .npy and .json sources (same structure)
-register_track_converter("calms21_npy", _calms21_converter)
-register_track_converter("calms21_json", _calms21_converter)
+@register_track_converter
+class Calms21JsonConverter(Calms21Converter):
+    """The same conversion, reading the ``.json`` spelling of a CalMS21 file."""
 
-# Register sequence enumerators
-register_track_seq_enumerator("calms21_npy", _enumerate_calms21_sequences)
-register_track_seq_enumerator("calms21_json", _enumerate_calms21_sequences)
+    src_format = "calms21_json"

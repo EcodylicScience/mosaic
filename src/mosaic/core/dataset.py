@@ -52,6 +52,13 @@ from .schema import (
     ensure_track_schema,
 )
 from .stored_paths import remap_single_path as _remap_single_path, resolve_stored_path
+from .track_converter import (
+    TRACK_CONVERTERS,
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    get_track_converter,
+)
 from .media.reprobe import (
     ReprobeAbort,
     ReprobeReport,
@@ -112,22 +119,19 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # on TRexIndexRow belongs in this tuple, or it silently stops being portable.
 _TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
 
-# A tiny registry so you can plug converters: src_format -> callable
-TrackConverter = Callable[[Path, dict], pd.DataFrame]
-TRACK_CONVERTERS: dict[str, TrackConverter] = {}
-
-
-def register_track_converter(src_format: str, fn: TrackConverter):
-    TRACK_CONVERTERS[src_format] = fn
-
-
-# Optional: per-format sequence enumerators (for multi-sequence files)
-TrackSeqEnumerator = Callable[[Path], list[tuple[str, str]]]
-TRACK_SEQ_ENUM: dict[str, TrackSeqEnumerator] = {}
-
-
-def register_track_seq_enumerator(src_format: str, fn: TrackSeqEnumerator):
-    TRACK_SEQ_ENUM[src_format] = fn
+# The track-converter registry moved to ``core.track_converter``. That is what
+# closes the cycle noted at the foot of this file: a converter no longer imports
+# ``dataset`` in order to register itself.
+#
+# ``register_track_converter`` is deliberately NOT re-exported here. It is now a
+# class decorator rather than ``(src_format, fn)``, so a name that still
+# resolved but meant something else would be worse than an ImportError --
+# import it from ``mosaic.core.track_converter``.
+#
+# ``TRACK_SEQ_ENUM`` is gone too. It was a second dict keyed by the same
+# src_format string and populated by the same modules, so it could register an
+# enumerator for a format with no converter; enumeration is now a method on the
+# converter class, behind its ``enumerable`` flag.
 
 
 # ----------- Label converter registry -----------
@@ -2473,7 +2477,7 @@ class Dataset:
                 seq = ""
             else:
                 if src_format == "trex_npz":
-                    seq = _strip_trex_seq(p.stem)
+                    seq = strip_trex_seq(p.stem)
                 else:
                     seq = p.stem  # 1 file ~= 1 sequence default
 
@@ -2596,17 +2600,18 @@ class Dataset:
         src_format = str(raw_row["src_format"])
         src_path = self.resolve_path(raw_row["abs_path"])
 
-        if src_format not in TRACK_CONVERTERS:
-            raise KeyError(f"No converter registered for src_format='{src_format}'")
+        converter = get_track_converter(src_format)
+        conv_params = self._converter_params(converter, params)
 
         # Where to place standardized file:
         # group/sequence.parquet if group present, else just sequence.parquet
         tracks_root = self.get_root("tracks")
 
-        # If sequence missing/blank and we have an enumerator, expand this file into multiple per-sequence outputs
+        # If sequence missing/blank and the format can hold several, expand this
+        # file into multiple per-sequence outputs
         raw_seq_val = raw_row.get("sequence", "")
         seq_value = "" if _is_empty_like(raw_seq_val) else str(raw_seq_val).strip()
-        if (not seq_value) and (src_format in TRACK_SEQ_ENUM):
+        if (not seq_value) and converter.enumerable:
             # policy: 'infile' (default), 'filename', 'both'
             policy = str(params.get("group_from", "infile")).lower()
             if policy not in {"infile", "filename", "both"}:
@@ -2615,7 +2620,7 @@ class Dataset:
             raw_collection = (
                 str(raw_row.get("group", "")) if raw_row is not None else ""
             )
-            pairs = TRACK_SEQ_ENUM[src_format](src_path)
+            pairs = converter.enumerate_sequences(src_path)
             if not pairs:
                 raise ValueError(
                     f"No (group, sequence) pairs enumerated for {src_path}"
@@ -2646,12 +2651,13 @@ class Dataset:
                     produced.append(out_path)
                     continue
 
-                # hints to converter (keep canonical in-file keys; converter may preserve them in columns)
-                params_with_hints = dict(params)
-                params_with_hints["group"] = canon_group_infile
-                params_with_hints["sequence"] = canon_seq
-
-                df_std = TRACK_CONVERTERS[src_format](src_path, params_with_hints)
+                # Which entry to produce -- passed beside the params, never
+                # merged into them, so the sequence name cannot reach a digest.
+                df_std = converter.convert(
+                    src_path,
+                    conv_params,
+                    EntryHints(group=canon_group_infile, sequence=canon_seq),
+                )
 
                 # Overwrite group column in DataFrame to match policy
                 if "group" in df_std.columns and out_group_canon != canon_group_infile:
@@ -2661,7 +2667,7 @@ class Dataset:
                 _, _schema_report = ensure_track_schema(
                     df_std,
                     std_fmt,
-                    strict=bool(params.get("strict_schema", False)),
+                    strict=conv_params.strict_schema,
                     source=f"{src_path}::{canon_seq}",
                 )
                 df_std.to_parquet(out_path, index=False)
@@ -2702,16 +2708,23 @@ class Dataset:
         if out_path.exists() and not overwrite:
             return out_path
 
-        # pass group/sequence hints to the converter
-        params_with_hints = dict(params)
-        params_with_hints.setdefault("group", str(raw_row.get("group", "")))
-        params_with_hints.setdefault("sequence", str(raw_row.get("sequence", "")))
-        df_std = TRACK_CONVERTERS[src_format](src_path, params_with_hints)
+        # Which entry to produce. The hints always win: the caller knows the
+        # authoritative entry. (The old dict merged them with ``setdefault``
+        # here and with direct assignment in the branch above, so a
+        # user-supplied ``params["group"]`` won in one path and lost in the
+        # other -- one of the reasons entry identity does not belong in params.)
+        df_std = converter.convert(
+            src_path,
+            conv_params,
+            EntryHints(
+                group=str(raw_row.get("group", "")),
+                sequence=str(raw_row.get("sequence", "")),
+            ),
+        )
 
         # Validate/coerce against the declared standard format schema (if any)
-        strict_schema = bool(params.get("strict_schema", False))
         _, _schema_report = ensure_track_schema(
-            df_std, std_fmt, strict=strict_schema, source=str(src_path)
+            df_std, std_fmt, strict=conv_params.strict_schema, source=str(src_path)
         )
 
         df_std.to_parquet(out_path, index=False)
@@ -2804,9 +2817,54 @@ class Dataset:
             df_idx = pd.DataFrame([[row.get(k, "") for k in columns]], columns=columns)
         df_idx.to_csv(idx_std, index=False)
 
-    def list_converters(self) -> Dict[str, TrackConverter]:
+    def list_converters(self) -> Dict[str, type[TrackConverter[TrackConvertParams]]]:
         """Return registered raw->standard track converters."""
         return dict(TRACK_CONVERTERS)
+
+    def _converter_params(
+        self,
+        converter: TrackConverter[TrackConvertParams],
+        overrides: Optional[dict],
+        src_format: str = "",
+    ) -> TrackConvertParams:
+        """Build a converter's typed params from user overrides.
+
+        Two resolutions happen here, both *before* the values can be hashed,
+        which is the same rule item 1.1 established for upstream references:
+
+        - ``fps`` falls back to the dataset's ``fps_default``, so the value
+          recorded in identity is the one that was actually used rather than a
+          field default standing in for it.
+        - Entry identity (``group`` / ``sequence``) and the caller-side
+          ``group_from`` policy are dropped: they travel as ``EntryHints`` or
+          are resolved by the caller, and neither belongs in a recipe.
+
+        Unknown keys raise rather than being ignored, because ``Params`` forbids
+        extras. On a single-format dataset that is what you want -- silently
+        dropping ``neck_idx`` produced a wrong heading. On a mixed-format one,
+        pass ``params_by_format`` so each converter sees only its own keys.
+        """
+        merged = dict(overrides or {})
+        if src_format and isinstance(merged.get("params_by_format"), dict):
+            by_format: dict = merged.pop("params_by_format")
+            merged = {**merged, **dict(by_format.get(src_format, {}))}
+        else:
+            merged.pop("params_by_format", None)
+        for dropped in ("group", "sequence", "group_from"):
+            merged.pop(dropped, None)
+
+        params_cls = type(converter).Params
+        if "fps" in params_cls.model_fields and "fps" not in merged:
+            fps_default = self.meta.get("fps_default")
+            if fps_default is not None:
+                merged["fps"] = float(fps_default)
+        # The old dict spelled the same thing two ways; accept the legacy key
+        # rather than silently ignoring it, then let the model reject anything
+        # genuinely unrecognized.
+        if "fps_default" in merged:
+            merged.setdefault("fps", float(merged["fps_default"]))
+            merged.pop("fps_default")
+        return params_cls.from_overrides(merged)
 
     def list_schemas(self) -> Dict[str, TrackSchema]:
         """Return registered track schemas."""
@@ -2930,19 +2988,16 @@ class Dataset:
             if out_path.exists() and not overwrite:
                 continue
 
+            converter = get_track_converter(src_format)
+            conv_params = self._converter_params(converter, params, src_format)
+            hints = EntryHints(group=group or "", sequence=sequence or "")
+
             dfs = []
             _merge_failed = False
             for _, row in group_df.iterrows():
                 src_path = self.resolve_path(row["abs_path"])
-                hints = {
-                    "group": group if group else "",
-                    "sequence": sequence if sequence else "",
-                }
-                call_params = dict(params) if params else {}
-                call_params.update(hints)
-                call_params["group_from"] = group_from
                 try:
-                    df_std = TRACK_CONVERTERS[src_format](src_path, call_params)
+                    df_std = converter.convert(src_path, conv_params, hints)
                 except Exception as e:
                     print(
                         f"[WARN] convert failed for {src_path}: {e}; "
@@ -3998,13 +4053,14 @@ class Dataset:
 
 
 # --- Backward compat: track converter helpers moved to core/track_library ---
-
-# Deliberately at the bottom, and the one E402 in this file that cannot be
-# hoisted: track_library.trex imports `register_track_converter` from this
-# module, so the two form a cycle. Importing it at the top would run
-# track_library.trex before that decorator exists. Closing this needs the
-# registry moved out of dataset.py, not a reordering.
-from mosaic.core.track_library.trex import _strip_trex_seq  # noqa: E402
+#
+# This used to be the one E402 in the file that could not be hoisted:
+# ``track_library.trex`` imported ``register_track_converter`` from here, so the
+# two formed a cycle and importing at the top ran the converter module before
+# the decorator existed. The note said closing it needed the registry moved out
+# of dataset.py rather than a reordering -- item 1.3 moved it to
+# ``core.track_converter``, so the cycle is gone and this is an ordinary import.
+from mosaic.core.track_library.trex import strip_trex_seq  # noqa: E402
 
 
 def _is_empty_like(x: Optional[Any]) -> bool:

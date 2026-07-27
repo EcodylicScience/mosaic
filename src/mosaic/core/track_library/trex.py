@@ -9,8 +9,13 @@ import re
 import numpy as np
 import pandas as pd
 
-from mosaic.core.dataset import register_track_converter
 from mosaic.core.schema import ensure_track_schema
+from mosaic.core.track_converter import (
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    register_track_converter,
+)
 
 
 # --- TRex per-id NPZ support ---
@@ -18,7 +23,7 @@ from mosaic.core.schema import ensure_track_schema
 _TREX_ID_SUFFIX = re.compile(r"_(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
 
 
-def _strip_trex_seq(stem: str) -> str:
+def strip_trex_seq(stem: str) -> str:
     """Return filename stem with trailing individual ID suffix removed, if present.
 
     Handles patterns like: _id0, _fish2, _bee1, _animal3, _ind0
@@ -128,24 +133,23 @@ def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
     return df
 
 
-def _trex_npz_converter(path: Path, params: dict) -> pd.DataFrame:
+@register_track_converter
+class TrexNpzConverter(TrackConverter[TrackConvertParams]):
+    """Per-id TRex NPZ -> the standard T-Rex-like table.
+
+    Carries no parameters of its own: the conversion is fully determined by the
+    file. The sequence falls back to the stem with a trailing ``_id<N>``
+    stripped, which is a property of TRex's own naming, not a knob.
     """
-    Convert a per-id TRex NPZ into our standard T-Rex-like DataFrame.
-    Ensures 'group' and 'sequence' columns; derives sequence from stem by
-    stripping '_id\\d+' unless explicitly provided in params.
-    """
-    df = _load_npz_to_df(path)
 
-    group = params.get("group") or ""
-    sequence = params.get("sequence") or _strip_trex_seq(path.stem)
+    src_format = "trex_npz"
+    Params = TrackConvertParams
 
-    df["group"] = group
-    df["sequence"] = sequence
-
-    # Validate (non-strict) against trex_v1 schema
-    ensure_track_schema(df, "trex_v1", strict=False, source=str(path))
-    return df
-
-
-# Register converter
-register_track_converter("trex_npz", _trex_npz_converter)
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        df = _load_npz_to_df(path)
+        df["group"] = hints.group
+        df["sequence"] = hints.sequence or strip_trex_seq(path.stem)
+        ensure_track_schema(df, "trex_v1", strict=False, source=str(path))
+        return df
