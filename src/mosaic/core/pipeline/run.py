@@ -29,9 +29,14 @@ from mosaic.core.helpers import (
 from ._utils import (
     FeatureMeta,
     Scope,
+    atomic_write,
     derive_storage_name,
     hash_params,
     json_ready,
+)
+from .identity_scheme import (
+    FEATURE_IDENTITY_SCHEME,
+    write_identity_scheme,
 )
 from .index import (
     FeatureIndexRow,
@@ -318,6 +323,22 @@ def _make_filter_factory(
 # --- Main entry point ---
 
 
+class MissingScopeDeclaration(AttributeError):
+    """A feature reached identity computation without declaring ``scope_dependent``.
+
+    Subclasses ``AttributeError`` because that is what the bare attribute read
+    below used to raise, so any caller already handling it keeps working -- but
+    it names the feature, which a bare ``AttributeError: 'TimelinePlot' object
+    has no attribute 'scope_dependent'`` does only by accident of the repr.
+
+    Deliberately *not* solved by a ``ClassVar`` default on the protocol. A
+    default would let the next feature ship with no declaration at all and
+    silently inherit ``False``, which is the wrong answer for any feature that
+    fits from its stream -- exactly the defect item 1.4 exists to fix. The
+    declaration is a decision each feature owes, so its absence is an error.
+    """
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -332,7 +353,18 @@ def compute_run_id(
 
     ``identity_dump()`` drops ``HASH_EXCLUDE``-marked params (throughput knobs
     like ``infer_batch_size``) so retuning them doesn't bust the cache.
+
+    Raises:
+        MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
     """
+    if not hasattr(feature, "scope_dependent"):
+        name = getattr(feature, "name", type(feature).__name__)
+        raise MissingScopeDeclaration(
+            f"feature {name!r} ({type(feature).__name__}) declares no "
+            f"'scope_dependent', so its identity cannot be computed. Declare it: "
+            f"True if fit() derives anything from the set of sequences in scope, "
+            f"False if each entry is computed from itself alone."
+        )
     hashable: dict[str, object] = {
         "_params": feature.params.identity_dump(),
         "_inputs": feature.inputs.model_dump(),
@@ -514,6 +546,25 @@ def _run_feature_impl(
         {(str(g), str(s)) for g, s in entries} if entries is not None else None
     )
 
+    # An explicitly empty selector is ambiguous, and currently answers two ways
+    # within one call: on a tracks input the manifest tests truthiness and
+    # yields the *full* scope, while on a feature input IndexCSV.read tests
+    # `is not None` and yields the *empty* one. Neither is what a caller passing
+    # [] meant. Reject it rather than pick a side. Checked after materializing,
+    # so a generator argument is not consumed by the check. Nothing in src/ or
+    # tests/ passes an empty collection, so this raises for no existing caller.
+    for name, selector in (
+        ("groups", groups_set),
+        ("sequences", sequences_set),
+        ("entries", entries_set),
+    ):
+        if selector is not None and not selector:
+            raise ValueError(
+                f"{name}=[] selects nothing, but is read as 'everything' on a "
+                f"tracks input and as 'nothing' on a feature input. Pass None "
+                f"(or omit it) to mean every sequence."
+            )
+
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}
@@ -535,17 +586,48 @@ def _run_feature_impl(
 
     params_path = run_root / "params.json"
     try:
+        # Deliberately json_ready(feature.params), not identity_dump(): this is
+        # the provenance record of what ran, so it keeps HASH_EXCLUDE fields
+        # that identity drops. It is therefore NOT the hash payload and must
+        # never be mistaken for one.
         save_payload: dict[str, object] = {
             "_params": json_ready(feature.params),
             "_inputs": feature.inputs.model_dump(),
             "_frame_range": [frame_start, frame_end],
+            # The resolved fit scope, which was previously hashed and discarded,
+            # leaving a scope_dependent run's training set unrecoverable from
+            # disk. Sorted for a stable diff, and a precondition for the
+            # reverse-dependency index in stage 6.1.
+            #
+            # Meaningful only for scope_dependent = True runs. A scope-free
+            # feature gets one run_id for every scope, so two differently scoped
+            # invocations share this file and the value is "whichever ran last"
+            # rather than the union -- which is not what an edge walk needs.
+            "_scope": {
+                "scope_dependent": feature.scope_dependent,
+                "entries": [list(entry) for entry in sorted(scope.entries)],
+            },
         }
-        params_path.write_text(json.dumps(save_payload, indent=2))
+        atomic_write(
+            params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
+        )
     except Exception as exc:
         print(
             f"[feature:{feature.name}] failed to save params.json: {exc}",
             file=sys.stderr,
         )
+
+    # The identity-scheme marker. Written atomically and NOT best-effort: it is
+    # what makes a half-migrated dataset detectable, so a silently skipped write
+    # is a wrong answer rather than a cosmetic loss. run_id carries the
+    # *feature's* version, never the version of the hashing contract, and
+    # retrofitting this onto identifiers already on disk needs provenance that
+    # does not exist -- so it has to be written from the start.
+    #
+    # It enters no hash and no path. Folding it into compute_run_id would make
+    # the marker itself move every identifier, so the detector would cause the
+    # event it exists to detect.
+    write_identity_scheme(run_root)
 
     # Index CSV setup -- the permanent record of what-ran (run_id, version,
     # params_hash, started_at per entry); complemented by params.json in run_root.
@@ -671,6 +753,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             skip_keys.add(entry_key)
@@ -740,6 +823,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             del result_df
@@ -806,6 +890,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     n_rows=n_rows,
                     params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
                 )
             )
             del result_df
@@ -855,6 +940,7 @@ def _run_feature_impl(
                 abs_path=Path(ds.relative_to_root(run_root)),
                 n_rows=0,
                 params_hash=params_hash,
+                identity_scheme=FEATURE_IDENTITY_SCHEME,
             )
         )
 

@@ -185,6 +185,42 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "pair-wavelet"}],
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
+    # --- identity models: stream fitters, so the scope IS the training set ---
+    # These three take egocentric crops, not tracks, so they are unreachable by
+    # test_every_constructible_feature_is_covered (which probes with the default
+    # ``["tracks"]`` payload and skips anything that will not construct from it).
+    # Each is paired scope-a/scope-ab: the two entries of a pair must differ, and
+    # a pair that agrees is the P2f defect visible in the data file.
+    Case(
+        case_id="global-identity-model/from-egocentric-crop/scope-a",
+        feature="global-identity-model",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"),),
+    ),
+    Case(
+        case_id="global-identity-megadescriptor/from-egocentric-crop/scope-a",
+        feature="global-identity-megadescriptor",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"),),
+    ),
+    Case(
+        case_id="global-identity-megadescriptor/from-egocentric-crop/scope-ab",
+        feature="global-identity-megadescriptor",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    Case(
+        case_id="global-identity-dinov2-temporal/from-egocentric-crop/scope-a",
+        feature="global-identity-dinov2-temporal",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"),),
+    ),
+    Case(
+        case_id="global-identity-dinov2-temporal/from-egocentric-crop/scope-ab",
+        feature="global-identity-dinov2-temporal",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"), ("", "seq_b")),
+    ),
     # --- params-level global fitters: the templates ref is the training set ---
     Case(
         case_id="global-scaler/templates",

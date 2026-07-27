@@ -44,11 +44,12 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Final, TypedDict, cast
 
 __all__ = [
     "JsonlRunLog",
     "RunLogSnapshot",
+    "TERMINAL_STATUSES",
     "new_execution_id",
     "now_iso",
     "read_run",
@@ -276,7 +277,12 @@ class JsonlRunLog:
 # Readers (stdlib-only; reduce a log back to the old ``runs`` row shape)
 # ---------------------------------------------------------------------------
 
-_TERMINAL = {"finished", "failed", "cancelled"}
+# The statuses that prove an attempt is over. Public because it is the only
+# way another module can ask "is this execution still alive?" without
+# re-deriving the answer from a second record that could disagree.
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
+    {"finished", "failed", "cancelled"}
+)
 _PROGRESS_EVENTS = {"entry_start", "entry_end", "epoch", "class_start", "phase"}
 
 
@@ -354,7 +360,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         elif ev == "epoch":
             snap["progress_done"] = rec.get("epoch", -1) + 1
             snap["progress_total"] = rec.get("total_epochs", snap["progress_total"])
-        elif ev in _TERMINAL:
+        elif ev in TERMINAL_STATUSES:
             snap["status"] = ev
             snap["finished_at"] = ts
             if ev == "failed":

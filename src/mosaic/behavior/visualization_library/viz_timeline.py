@@ -123,6 +123,15 @@ class TimelinePlot:
     """
 
     category = "viz"
+    # False because the scope demonstrably never reaches this feature:
+    # ``_allowed_set`` reads ``self._scope.entry_keys`` and ``_is_filtered_out``
+    # treats an empty set as "no filtering", but ``set_scope`` is defined here
+    # and in three sibling visualizations and called from nowhere in ``src/``,
+    # so ``self._scope`` is always the default empty ``Scope()``. **Wiring
+    # ``set_scope`` up makes this declaration wrong** -- the timeline would then
+    # vary with scope under one identifier. Change it to True in the same commit
+    # that connects the hook.
+    scope_dependent = False
     name = "viz-timeline"
     version = "0.1"
     parallelizable = False

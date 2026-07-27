@@ -63,6 +63,14 @@ class FeatureIndexRow(RunIndexRowBase):
     sequence: str
     params_hash: str
     n_rows: int = 0
+    # Which hashing contract minted this row's run_id. Defaulted rather than
+    # required so the five sibling row types are unaffected and every existing
+    # construction site keeps working. Rows written before the marker existed
+    # read back as "" -- an honest "predates the scheme", which is a more useful
+    # answer than stamping the current one onto history that cannot be verified.
+    # Reconstructed rows (Dataset.reindex_features) cannot know the historical
+    # value and must leave it empty for the same reason.
+    identity_scheme: str = ""
 
 
 def feature_index(path: Path) -> IndexCSV[FeatureIndexRow]:

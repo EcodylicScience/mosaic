@@ -36,6 +36,7 @@ from mosaic.core.pipeline.types.labels import (
 from mosaic.core.pipeline.types.params import (
     HASH_EXCLUDE,
     GlobalModelParams,
+    JsonValue,
     Params,
 )
 from mosaic.core.pipeline.types.results import (
@@ -61,6 +62,7 @@ __all__ = [
     "InputItem",
     "InputRequire",
     "Inputs",
+    "JsonValue",
     "InputsLike",
     "JoblibArtifact",
     "JoblibLoadSpec",

@@ -29,11 +29,23 @@ jobs:
         with:
           path: mosaic
 
+      # No `token:`. mosaic-media is public, so the default `github.token` can
+      # read it. Naming a secret that does not exist is worse than naming none:
+      # an undefined secret expands to the empty string, and checkout rejects
+      # that outright ("Input required and not supplied: token"), so the job
+      # died before installing anything.
       - uses: actions/checkout@v4
         with:
           repository: EcodylicScience/mosaic-media
           path: mosaic_media
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
+
+      # ffprobe is a hard runtime dependency of media indexing and raw-H.264
+      # frame counting, and it is not on the runner image. Without it, indexing
+      # does not fail loudly -- it writes rows that lack the probed facts, so
+      # the damage surfaces far downstream as KeyError, `assert 0 == 1` and
+      # StopIteration in tests that never mention ffprobe.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -56,7 +68,14 @@ jobs:
           # Surfaces any identity term that is order-dependent rather than
           # ordered, which a single fixed seed would hide.
           PYTHONHASHSEED: random
-        run: uv run pytest -q
+        # `--no-sync` is load-bearing. `uv run` syncs the project environment
+        # from the tracked `uv.lock` by default, which installs the project
+        # *without* extras and prunes what it considers extraneous -- undoing
+        # the `[wavelets,imgstore]` install above. `pytest` survives only
+        # because it is in `[dependency-groups] dev`, so the loss is invisible:
+        # the 35 imgstore tests reach `pytest.importorskip` and skip, and CI
+        # reports green while running less than this workflow installs for.
+        run: uv run --no-sync pytest -q
 
   lint-changed:
     runs-on: ubuntu-latest

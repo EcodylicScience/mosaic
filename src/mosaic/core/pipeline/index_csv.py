@@ -9,6 +9,7 @@ from typing import Generic, TypeVar
 import pandas as pd
 
 from ._utils import atomic_write, now_iso
+from .index_lock import index_lock
 
 RowT = TypeVar("RowT", bound="IndexRowBase")
 
@@ -198,7 +199,18 @@ class IndexCSV(Generic[RowT]):
         Rows are dataclass instances. pandas handles them
         natively in pd.DataFrame().
         """
+        # ensure() runs *before* the lock, not inside it. Acquiring the lock
+        # opens the index with O_CREAT, so on a first write it materializes a
+        # zero-byte file -- after which ensure()'s "already exists" early return
+        # would leave it headerless and the read below would raise
+        # EmptyDataError. ensure() is itself atomic and idempotent, so two
+        # writers racing here both write the same header harmlessly.
         self.ensure()
+        with index_lock(self.path):
+            self._append_locked(rows)
+
+    def _append_locked(self, rows: list[RowT]) -> None:
+        """Body of :meth:`append`, with the index lock already held."""
         df = pd.read_csv(self.path, keep_default_na=False)
         df_new = pd.DataFrame(rows)
 
@@ -247,15 +259,21 @@ class IndexCSV(Generic[RowT]):
         """
         if not self.path.exists():
             return pd.DataFrame()
-        df = pd.read_csv(self.path, keep_default_na=False)
-        if df.empty or "abs_path" not in df.columns:
-            return df.iloc[0:0]
-        keep_mask = [resolver(str(p)).exists() for p in df["abs_path"]]
-        keep = df[keep_mask].reset_index(drop=True)
-        dropped = df[[not m for m in keep_mask]].reset_index(drop=True)
-        if len(dropped) > 0 and not dry_run:
-            atomic_write(self.path, lambda p: keep.to_csv(p, index=False))
-        return dropped
+        # Locked for the whole read-decide-write, not just the write: this is a
+        # DELETE racing concurrent appends, so an append landing between the
+        # read and the rewrite would be erased by a keep-set computed before it
+        # existed. A dry run holds it too -- it reports what a real run would
+        # drop, and that answer is only meaningful against a stable file.
+        with index_lock(self.path):
+            df = pd.read_csv(self.path, keep_default_na=False)
+            if df.empty or "abs_path" not in df.columns:
+                return df.iloc[0:0]
+            keep_mask = [resolver(str(p)).exists() for p in df["abs_path"]]
+            keep = df[keep_mask].reset_index(drop=True)
+            dropped = df[[not m for m in keep_mask]].reset_index(drop=True)
+            if len(dropped) > 0 and not dry_run:
+                atomic_write(self.path, lambda p: keep.to_csv(p, index=False))
+            return dropped
 
     def ordered_entries(
         self,
@@ -289,8 +307,13 @@ class IndexCSV(Generic[RowT]):
     def mark_finished(self, run_id: str) -> None:
         """Set finished_at to now on all rows matching run_id where it is empty."""
         self._assert_run_index()
-        df = pd.read_csv(self.path, keep_default_na=False)
-        sel = (df["run_id"] == run_id) & (df["finished_at"] == "")
-        if sel.any():
-            df.loc[sel, "finished_at"] = now_iso()
-            atomic_write(self.path, lambda p: df.to_csv(p, index=False))
+        # Checked before the lock, which would otherwise create the file (see
+        # the note in append) and turn a missing index into an EmptyDataError.
+        if not self.path.exists():
+            return
+        with index_lock(self.path):
+            df = pd.read_csv(self.path, keep_default_na=False)
+            sel = (df["run_id"] == run_id) & (df["finished_at"] == "")
+            if sel.any():
+                df.loc[sel, "finished_at"] = now_iso()
+                atomic_write(self.path, lambda p: df.to_csv(p, index=False))

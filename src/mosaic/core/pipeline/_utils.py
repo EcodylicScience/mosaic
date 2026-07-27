@@ -66,28 +66,114 @@ class FeatureMeta:
 # --- Utility functions ---
 
 
-def json_ready(obj: object) -> object:
-    """Recursively make an object JSON-serializable."""
+def _ordering_key(value: object) -> str:
+    """Total, deterministic order for already-serialized values.
+
+    ``sorted()`` on a set of mixed or unorderable elements (dicts, or ints
+    beside strings) raises. Everything reaching here has been through the
+    conversion below, so it is plain JSON data and re-serializing is total.
+    """
+    return json.dumps(value, sort_keys=True)
+
+
+def _ready(obj: object, *, strict: bool) -> object:
+    """Recursively make *obj* JSON-serializable.
+
+    ``strict`` selects the identity contract over the provenance one; see
+    ``identity_ready`` and ``json_ready``.
+    """
     if isinstance(obj, BaseModel):
         obj = obj.model_dump()
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         obj = dataclasses.asdict(obj)
     if isinstance(obj, dict):
-        return {str(k): json_ready(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [json_ready(v) for v in obj]
+        return {str(k): _ready(v, strict=strict) for k, v in obj.items()}
+    if isinstance(obj, (set, frozenset)):
+        # Ordered, because a set has none of its own: iteration order varies
+        # with PYTHONHASHSEED, and ``json.dumps(sort_keys=True)`` orders dict
+        # keys only, so an unordered set in identity hashes differently in every
+        # process. Sorted on the serialized form so heterogeneous sets work.
+        return sorted((_ready(v, strict=strict) for v in obj), key=_ordering_key)
+    if isinstance(obj, (list, tuple)):
+        # NOT ordered. Sequence order is semantic wherever it is hashed today:
+        # ``Inputs`` is a tuple whose order feeds both the digest and
+        # ``storage_suffix()``, ``_frame_range`` is ``[start, end]``, and the
+        # per-camera composition planned for item 4.4 is mixed -- its outer list
+        # sorted, its inner uid list never. Sorting here would move identifiers
+        # and corrupt that composition.
+        return [_ready(v, strict=strict) for v in obj]
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, (np.generic,)):
         return obj.item()
     if not isinstance(obj, (str, int, float, bool, type(None))):
+        if strict:
+            raise TypeError(
+                f"{type(obj).__name__} cannot be represented in an identity "
+                f"payload. Every value of an unrepresentable type would hash "
+                f"alike, so the collision would present as a cache hit serving "
+                f"another run's outputs. Convert it to a JSON-representable "
+                f"value (see JsonValue), or exclude it from identity with "
+                f"HASH_EXCLUDE if it is a throughput knob."
+            )
         return f"<{type(obj).__name__}>"
     return obj
 
 
+def json_ready(obj: object) -> object:
+    """Recursively make an object JSON-serializable, degrading if it cannot.
+
+    The **provenance** contract. Used by the writers that record what ran --
+    ``params.json`` and the two ``run_params.json`` files -- each of which
+    writes best-effort inside a ``try/except`` that prints and continues. An
+    unrepresentable value becomes a ``"<TypeName>"`` placeholder, because a
+    lossy record of what ran beats no record at all.
+
+    Never use this for identity: the placeholder is a constant, so every value
+    of that type collapses to one digest. Use ``identity_ready``.
+    """
+    return _ready(obj, strict=False)
+
+
+def identity_ready(obj: object) -> object:
+    """Recursively make an object JSON-serializable, raising if it cannot.
+
+    The **identity** contract, and the input to ``hash_params``. Differs from
+    ``json_ready`` in exactly two ways, both of which are correctness rather
+    than taste:
+
+    - a set is ordered before hashing, so the digest does not vary by process
+    - an unrepresentable value raises instead of collapsing to a constant
+
+    Raises:
+        TypeError: if any value cannot be represented in JSON.
+    """
+    return _ready(obj, strict=True)
+
+
 def hash_params(d: object) -> str:
-    d = json_ready(d)
-    s = json.dumps(d, sort_keys=True, default=str)
+    """The 40-bit identity digest over *d*.
+
+    **The width is fixed at 10 hex characters and does not change.** This
+    function mints more than feature identity: the frame-extraction identifier,
+    the TREx run id, the transcode run id, and every tracking-op id all come
+    from here. The frame-extraction one is pinned outside mosaic -- the control
+    plane writes it to ``AnnotationFrame.run_id`` and embeds it mid-string in
+    ``image_path``, on version-controlled rows carrying keypoint annotation
+    labor -- so moving it orphans annotation work rather than costing a
+    recompute.
+
+    Collision headroom is not the constraint: the namespace is one
+    ``features/<name>/`` directory, where the birthday bound is 4.5e-7 at a
+    thousand distinct parameter sets and reaching a tenth of a percent takes
+    roughly 47,000. If a family ever does need more, widen it inside that
+    family's own minter behind an identity-scheme bump, not here.
+
+    ``json.dumps`` is called without a ``default=`` fallback on purpose: a
+    fallback would silently stringify whatever ``identity_ready`` was meant to
+    reject, making the raise unreachable.
+    """
+    s = json.dumps(identity_ready(d), sort_keys=True)
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
 
 

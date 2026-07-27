@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, Literal, final
+from typing import ClassVar, Literal, TypedDict, final
 
 import cv2
 import joblib
@@ -31,6 +31,8 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
+    JoblibArtifact,
+    JoblibLoadSpec,
     Result,
 )
 from mosaic.core.pipeline.types.params import Params
@@ -38,6 +40,42 @@ from mosaic.core.pipeline.types.params import Params
 from .registry import register_feature
 
 TemporalHead = Literal["gru", "perceiver", "pool"]
+
+
+# --- Model artifact ---
+
+# The exported weights are a torch ``.pth``, and an ArtifactSpec can only load
+# npz / parquet / joblib -- so the referencable artifact is this joblib sidecar,
+# written beside the checkpoint and naming it. Same shape as
+# ``lightning_action_feature``. The name is fixed rather than derived from
+# ``weights_name`` because dependency resolution globs it, and the run root also
+# holds ``identity_names.joblib`` and ``training_history.joblib``.
+_BUNDLE_NAME = "dinov2_temporal_identity_model.joblib"
+
+
+class DinoV2TemporalIdentityBundle(TypedDict):
+    """Sidecar naming the exported DINOv2 + temporal checkpoint.
+
+    Attributes:
+        weights: Checkpoint filename, relative to the bundle's directory.
+        identity_names: Class order the checkpoint was exported with.
+        version: Feature version that wrote the bundle.
+    """
+
+    weights: str
+    identity_names: list[str]
+    version: str
+
+
+class DinoV2TemporalIdentityArtifact(JoblibArtifact[DinoV2TemporalIdentityBundle]):
+    """Fitted DINOv2 + temporal identity bundle (dinov2_temporal_identity_model.joblib)."""
+
+    feature: str = "global-identity-dinov2-temporal"
+    pattern: str = _BUNDLE_NAME
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
+
+
+# --- Feature class ---
 
 
 @final
@@ -79,6 +117,10 @@ class GlobalIdentityDinoV2Temporal:
     Mosaic's caching.
 
     Params:
+        model: Pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the
+            fit. Default None (fit from scratch). Pinning one makes an
+            inference run's identity carry its training run by reference, so
+            the run needs no scope of its own.
         identities: Explicit identity -> sequences mapping.
         group_as_identity: Treat each group as one identity. Default False.
         backbone: DINOv2 hub model. Default ``"dinov2_vits14"``.
@@ -105,13 +147,24 @@ class GlobalIdentityDinoV2Temporal:
     name: str = "global-identity-dinov2-temporal"
     version: str = "0.1"
     parallelizable = False
-    scope_dependent = False
+    # fit() reads the ambient stream -- both to discover the label set under
+    # group_as_identity and to collect the training clips -- so the scope IS the
+    # training set and belongs in the identifier (P2f). An inference run pins
+    # ``model`` instead and carries its training set by reference, so fit and
+    # apply are two runs with two identifiers rather than one that silently
+    # reuses a network fitted on a narrower scope.
+    scope_dependent = True
+
+    ModelArtifact = DinoV2TemporalIdentityArtifact
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
         """DINOv2 + temporal identity model parameters."""
+
+        # Pre-fitted model reference: when set (and resolvable), fit is skipped.
+        model: DinoV2TemporalIdentityArtifact | None = None
 
         # Primary: explicit identity -> sequences mapping
         identities: dict[str, list[str]] | None = None
@@ -171,6 +224,7 @@ class GlobalIdentityDinoV2Temporal:
         self._history = None
         self._identity_names = None
 
+        # Branch 1: this run's own cached checkpoint.
         cached_path = run_root / f"{self.params.weights_name}.pth"
         if cached_path.exists():
             self._network = DinoV2TemporalNetwork.from_checkpoint(cached_path)
@@ -180,6 +234,18 @@ class GlobalIdentityDinoV2Temporal:
             names_path = run_root / "identity_names.joblib"
             if names_path.exists():
                 self._identity_names = joblib.load(names_path)
+            return True
+
+        # Branch 2: a pre-fitted model pinned in params. The checkpoint name
+        # comes from the bundle, never from self.params -- an inference run's
+        # weights_name need not match the training run's.
+        if self.params.model is not None and "model" in artifact_paths:
+            bundle_path = artifact_paths["model"]
+            bundle = self.params.model.from_path(bundle_path)
+            self._network = DinoV2TemporalNetwork.from_checkpoint(
+                bundle_path.parent / bundle["weights"]
+            )
+            self._identity_names = list(bundle["identity_names"])
             return True
 
         return False
@@ -313,9 +379,16 @@ class GlobalIdentityDinoV2Temporal:
         run_root.mkdir(parents=True, exist_ok=True)
 
         if isinstance(self._network, DinoV2TemporalNetwork):
-            self._network.export_checkpoint(
-                run_root / f"{self.params.weights_name}.pth"
-            )
+            weights_name = f"{self.params.weights_name}.pth"
+            self._network.export_checkpoint(run_root / weights_name)
+            # The sidecar a later run references as ``model``. Written here so
+            # this run's output is loadable as the next run's pre-fitted model.
+            bundle: DinoV2TemporalIdentityBundle = {
+                "weights": weights_name,
+                "identity_names": list(self._identity_names or ()),
+                "version": self.version,
+            }
+            joblib.dump(bundle, run_root / _BUNDLE_NAME)
 
         if self._history is not None:
             joblib.dump(self._history, run_root / "training_history.joblib")

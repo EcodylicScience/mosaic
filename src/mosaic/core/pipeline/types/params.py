@@ -13,6 +13,24 @@ from mosaic.core.pipeline.types.artifacts import (
 )
 
 
+type JsonValue = (
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+)
+"""Anything JSON can represent exactly.
+
+The annotation for a params field that is deliberately open-ended -- a
+pass-through settings dictionary handed to an external tool, a list of
+user-supplied specs. Prefer a concrete model wherever the shape is actually
+known; this is for the cases where it genuinely is not.
+
+It accepts every value that survives ``identity_ready`` intact and rejects
+exactly those that would not, so an unrepresentable value fails at params
+construction with pydantic naming the field, rather than deep inside
+``hash_params`` with only a type name to go on. Recursive, so nested lists and
+dictionaries validate.
+"""
+
+
 class _HashExclude:
     """Marker for ``Annotated[T, HASH_EXCLUDE]`` Params fields omitted from the
     run_id hash. Use for any field that does not determine the output: a

@@ -93,6 +93,20 @@ executionEnvironments = [
     { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external/.venv/lib/python3.13/site-packages"] },
 ]
 
+[tool.ruff.lint]
+# Pinned explicitly rather than inherited. Ruff's default selection is not
+# stable across releases -- 0.16 widened it, which took this project from 97
+# findings to 865 with no commit -- and CI's lint-changed job runs `uvx ruff
+# check`, which always resolves the newest release. An unpinned selection means
+# the gate tightens on someone else's release schedule, failing a pull request
+# for findings that predate it in a file it merely touched.
+#
+# This is ruff's pre-0.16 default and reproduces the ~99-finding backlog the
+# repository's own notes describe. Widening it is a deliberate change that
+# should come with a plan for the backlog it exposes, not a side effect of a
+# version bump.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 addopts = "-m 'not slow'"
 markers = [

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Mapping
+import importlib.util
+import os
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Callable
 
 import cv2
 import numpy as np
@@ -14,57 +15,34 @@ import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 
+# Modules the CI workflow installs through extras (`.[wavelets,imgstore]`).
+# `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
+# presents as a skip rather than a failure -- a green CI that ran less than the
+# workflow installed for. That is not hypothetical: the test step used to invoke
+# `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
+# both extras before the first test ran.
+CI_REQUIRED_MODULES = ("imgstore", "pywt")
 
-def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
-    """Write a track parquet per sequence and rewrite ``tracks/index.csv``.
 
-    Sequences accumulate: calling this again with a further name leaves the
-    existing parquets in place, which is what lets a scenario widen a scope and
-    then assert what was and was not recomputed.
+def pytest_configure() -> None:
+    """Under CI, a missing optional dependency is an error rather than a skip.
 
-    The group is empty, so the composite key renders as the bare sequence name
-    and the parquet is ``<sequence>.parquet``.
+    Local runs are unaffected: a developer without ``imgstore`` installed still
+    gets skips, which is the point of ``importorskip``. Only CI, which installs
+    them explicitly, treats their absence as a broken environment.
     """
-    tracks = dataset.get_root("tracks")
-    tracks.mkdir(parents=True, exist_ok=True)
-    for sequence in sequences:
-        frame = np.arange(n_rows, dtype=np.int64)
-        pd.DataFrame(
-            {
-                "frame": frame,
-                "time": frame / 30.0,
-                "id": np.zeros(n_rows, dtype=np.int64),
-                "feat_a": np.linspace(0.0, 1.0, n_rows),
-            }
-        ).to_parquet(tracks / f"{sequence}.parquet")
-    present = sorted(tracks.glob("*.parquet"))
-    index = pd.DataFrame(
-        {
-            "group": ["" for _ in present],
-            "sequence": [path.stem for path in present],
-            "abs_path": [str(path) for path in present],
-        }
-    )
-    index.to_csv(tracks / "index.csv", index=False)
-
-
-def track_sequences(dataset: Dataset) -> list[str]:
-    """The sequence names currently present in ``tracks/``."""
-    return sorted(p.stem for p in dataset.get_root("tracks").glob("*.parquet"))
-
-
-@pytest.fixture
-def scenario_dataset(tmp_path: Path) -> Dataset:
-    """A real dataset with two synthetic track sequences.
-
-    The backdrop the hashing workflows reference. A real ``Dataset`` rather than
-    a stand-in, so scenario assertions exercise the same root resolution and
-    index handling the control plane and notebooks do.
-    """
-    manifest = new_dataset_manifest(name="scenario", base_dir=tmp_path / "dataset")
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    add_track_sequences(dataset, "seq_a", "seq_b")
-    return dataset
+    if not os.environ.get("CI"):
+        return
+    missing = [
+        name for name in CI_REQUIRED_MODULES if importlib.util.find_spec(name) is None
+    ]
+    if missing:
+        raise pytest.UsageError(
+            f"CI installs {', '.join(missing)} through extras, but they are not "
+            "importable. The suite would skip silently instead of failing. Check "
+            "that the test step does not re-sync the environment away "
+            "(uv run --no-sync)."
+        )
 
 
 @pytest.fixture
@@ -133,6 +111,58 @@ def make_media_dataset() -> Callable[[Path], Dataset]:
         return ds
 
     return _make
+
+
+def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
+    """Write a track parquet per sequence and rewrite ``tracks/index.csv``.
+
+    Sequences accumulate: calling this again with a further name leaves the
+    existing parquets in place, which is what lets a scenario widen a scope and
+    then assert what was and was not recomputed.
+
+    The group is empty, so the composite key renders as the bare sequence name
+    and the parquet is ``<sequence>.parquet``.
+    """
+    tracks = dataset.get_root("tracks")
+    tracks.mkdir(parents=True, exist_ok=True)
+    for sequence in sequences:
+        frame = np.arange(n_rows, dtype=np.int64)
+        pd.DataFrame(
+            {
+                "frame": frame,
+                "time": frame / 30.0,
+                "id": np.zeros(n_rows, dtype=np.int64),
+                "feat_a": np.linspace(0.0, 1.0, n_rows),
+            }
+        ).to_parquet(tracks / f"{sequence}.parquet")
+    present = sorted(tracks.glob("*.parquet"))
+    index = pd.DataFrame(
+        {
+            "group": ["" for _ in present],
+            "sequence": [path.stem for path in present],
+            "abs_path": [str(path) for path in present],
+        }
+    )
+    index.to_csv(tracks / "index.csv", index=False)
+
+
+def track_sequences(dataset: Dataset) -> list[str]:
+    """The sequence names currently present in ``tracks/``."""
+    return sorted(p.stem for p in dataset.get_root("tracks").glob("*.parquet"))
+
+
+@pytest.fixture
+def scenario_dataset(tmp_path: Path) -> Dataset:
+    """A real dataset with two synthetic track sequences.
+
+    The backdrop the hashing workflows reference. A real ``Dataset`` rather than
+    a stand-in, so scenario assertions exercise the same root resolution and
+    index handling the control plane and notebooks do.
+    """
+    manifest = new_dataset_manifest(name="scenario", base_dir=tmp_path / "dataset")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    add_track_sequences(dataset, "seq_a", "seq_b")
+    return dataset
 
 
 @pytest.fixture
