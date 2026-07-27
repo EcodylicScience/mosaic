@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -603,3 +604,130 @@ class TestStringColumnsStayStrings:
         assert len(idx.read(groups=["01"])) == 1
         assert len(idx.read(entries=[("01", "001")])) == 1
         assert idx.ordered_entries() == [("01", "001")]
+
+
+# --- the adopt hook ---------------------------------------------------------
+#
+# An index whose on-disk schema predates its row class has to be brought forward
+# somewhere. The only safe place is inside the write lock, in memory -- see
+# ``index_lock``'s one-atomic_write-per-block invariant.
+
+
+@dataclass(frozen=True, slots=True)
+class WideRow(RunIndexRowBase):
+    """A row class with a column an older on-disk file would not have."""
+
+    group: str = ""
+    sequence: str = ""
+    producer: str = ""
+
+
+def _wide_row(tmp_path: Path, sequence: str, producer: str = "p") -> WideRow:
+    path = tmp_path / f"{sequence}.parquet"
+    path.touch(exist_ok=True)
+    return WideRow(
+        abs_path=path, run_id="r1", group="", sequence=sequence, producer=producer
+    )
+
+
+def _adopt_to(
+    schema: list[str], probe: str = ""
+) -> tuple[Callable[[pd.DataFrame], pd.DataFrame], list[bool]]:
+    """An adopt callable that projects onto *schema*, plus a presence probe.
+
+    The projection is the minimal shape of a real adoption. *probe* records, per
+    call, whether that column was already on the frame handed to the hook -- which
+    is how a test pins *when* the hook runs relative to the dedup backfill,
+    without asserting on a pandas column index.
+    """
+    saw_probe: list[bool] = []
+
+    def adopt(df: pd.DataFrame) -> pd.DataFrame:
+        saw_probe.append(probe in df.columns)
+        for column in schema:
+            if column not in df.columns:
+                df[column] = ""
+        return df[schema]
+
+    return adopt, saw_probe
+
+
+class TestAdoptHook:
+    def test_absent_by_default_so_the_other_families_are_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        idx = IndexCSV(tmp_path / "index.csv", WideRow, dedup_keys=["sequence"])
+        assert idx.adopt is None
+        idx.append([_wide_row(tmp_path, "a")])
+        assert list(idx.read()["sequence"]) == ["a"]
+
+    def test_brings_a_narrower_on_disk_schema_up_to_the_row_class(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole point: a legacy file gains the columns it never had."""
+        csv_path = tmp_path / "index.csv"
+        csv_path.write_text("group,sequence,abs_path\n,legacy,legacy.parquet\n")
+        schema = [f.name for f in dataclasses.fields(WideRow)]
+        adopt, _ = _adopt_to(schema)
+
+        idx = IndexCSV(csv_path, WideRow, dedup_keys=["sequence"], adopt=adopt)
+        idx.append([_wide_row(tmp_path, "fresh")])
+
+        header, legacy, fresh = csv_path.read_text().splitlines()
+        assert header.split(",") == schema
+        # The legacy row keeps its identity and gains an honest empty producer.
+        assert legacy.endswith("legacy.parquet,,,,,legacy,")
+        assert fresh.endswith(",fresh,p")
+
+    def test_runs_before_the_dedup_backfill(self, tmp_path: Path) -> None:
+        """Adoption must see the raw frame, not one already stamped by dedup.
+
+        ``sequence`` is the dedup key and is absent from this file, so if the
+        backfill ran first it would stamp `""` into a column adoption would then
+        have nothing honest to fill.
+        """
+        csv_path = tmp_path / "index.csv"
+        csv_path.write_text("group,abs_path\n,legacy.parquet\n")
+        adopt, saw_dedup_key = _adopt_to(
+            [f.name for f in dataclasses.fields(WideRow)], probe="sequence"
+        )
+
+        idx = IndexCSV(csv_path, WideRow, dedup_keys=["sequence"], adopt=adopt)
+        idx.append([_wide_row(tmp_path, "fresh")])
+
+        assert saw_dedup_key == [False]
+
+    def test_leaves_no_temp_file_and_writes_once(self, tmp_path: Path) -> None:
+        """One atomic_write per locked block -- the index_lock invariant.
+
+        A stray temp file is the visible symptom of a block that wrote more than
+        once or died between writes.
+        """
+        csv_path = tmp_path / "index.csv"
+        csv_path.write_text("group,sequence,abs_path\n,legacy,legacy.parquet\n")
+        adopt, _ = _adopt_to([f.name for f in dataclasses.fields(WideRow)])
+
+        idx = IndexCSV(csv_path, WideRow, dedup_keys=["sequence"], adopt=adopt)
+        idx.append([_wide_row(tmp_path, "fresh")])
+
+        assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+    def test_a_schema_complete_adoption_unblocks_the_run_helpers(
+        self, tmp_path: Path
+    ) -> None:
+        """list_runs/latest_run_id/mark_finished need run_id AND finished_at.
+
+        This is why the contract is "every column", not "the ones you care
+        about": a partial adoption still leaves these three raising KeyError.
+        """
+        csv_path = tmp_path / "index.csv"
+        csv_path.write_text("group,sequence,abs_path\n,legacy,legacy.parquet\n")
+        adopt, _ = _adopt_to([f.name for f in dataclasses.fields(WideRow)])
+
+        idx = IndexCSV(csv_path, WideRow, dedup_keys=["sequence"], adopt=adopt)
+        idx.append([_wide_row(tmp_path, "fresh")])
+
+        assert len(idx.list_runs()) == 2
+        assert idx.latest_run_id() == "r1"
+        idx.mark_finished("r1")
+        assert list(idx.read(run_id="r1")["sequence"]) == ["fresh"]

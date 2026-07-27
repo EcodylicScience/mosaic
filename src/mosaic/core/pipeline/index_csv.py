@@ -84,6 +84,10 @@ class IndexCSV(Generic[RowT]):
     dedup_keys : list[str] | None
         If set, existing rows matching ALL these columns are removed
         before appending new rows.
+    adopt : Callable[[pd.DataFrame], pd.DataFrame] | None
+        If set, called on the existing frame inside the write lock before rows
+        are appended, to bring an older on-disk schema up to the current one.
+        See :meth:`_append_locked` for the contract it must satisfy.
     """
 
     def __init__(
@@ -91,11 +95,13 @@ class IndexCSV(Generic[RowT]):
         path: Path,
         row_cls: type[RowT],
         dedup_keys: list[str] | None = None,
+        adopt: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ):
         self.path: Path = path
         self.row_cls: type[RowT] = row_cls
         self.schema: dict[str, str] = _infer_schema(row_cls)
         self.dedup_keys: list[str] | None = dedup_keys
+        self.adopt: Callable[[pd.DataFrame], pd.DataFrame] | None = adopt
         # Read every column the row class declares a string as a string. Left to
         # inference, pandas reads an all-digit cell as int64 and a dotted one as
         # float64 -- and because every write path here round-trips the whole file
@@ -247,8 +253,32 @@ class IndexCSV(Generic[RowT]):
             self._append_locked(rows)
 
     def _append_locked(self, rows: list[RowT]) -> None:
-        """Body of :meth:`append`, with the index lock already held."""
+        """Body of :meth:`append`, with the index lock already held.
+
+        An ``adopt`` callable, when configured, runs here: on the frame just
+        read, before the dedup backfill, and inside the same lock. That placement
+        is forced rather than tidy.
+
+        - **In memory, not a second write.** ``atomic_write`` renames a new inode
+          over the path while the lock is held on the old one, so a locked block
+          that writes twice loses its grip after the first write and a concurrent
+          writer interleaves (see ``index_lock``). An ``adopt`` that rewrote the
+          file would be exactly that block.
+        - **Inside the lock**, because it decides what the merged frame contains;
+          run before acquiring it, another writer's rows could land in between and
+          be adopted away.
+        - **Before the dedup backfill**, so the backfill below sees a frame that
+          already carries every schema column and never has to stamp ``""`` over
+          a column adoption was about to fill honestly.
+
+        The callable must return a frame carrying **every** column in
+        ``self.schema``. A partial adoption is worse than none: filling only the
+        column a caller cared about still leaves ``list_runs`` and
+        ``latest_run_id`` raising ``KeyError`` on ``finished_at``.
+        """
         df = self._read_frame()
+        if self.adopt is not None:
+            df = self.adopt(df)
         df_new = pd.DataFrame(rows)
 
         if self.dedup_keys:

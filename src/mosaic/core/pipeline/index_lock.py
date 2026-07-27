@@ -26,6 +26,19 @@ file in a root that users browse and that tests enumerate -- ``test_tracks_raw_i
 asserts an index directory holds exactly ``index.csv``. Locking the index inode
 directly keeps the guarantee without adding anything to disk.
 
+**The invariant that choice imposes: a locked block performs at most one**
+``atomic_write``, **and it is the last thing the block does.** The lock is held
+on the *inode*, but ``atomic_write`` renames a **new** inode over the path. So
+the first write inside a locked block silently drops that block's grip: a second
+process then opens the new inode, flocks it uncontended, and interleaves with the
+first -- both holding "the lock", one erasing the other. This reproduces as a
+real lost update with two processes. Every locked block here obeys it today
+(``IndexCSV._append_locked``, ``prune_missing``, ``mark_finished`` each write
+exactly once, last), and anything that needs to transform the file before
+appending must do it **in memory** on the frame rather than as a separate write
+-- which is why ``IndexCSV`` takes an ``adopt`` callable over a ``DataFrame``
+rather than a function that rewrites the path.
+
 Per file rather than per root, which is finer than P7's wording and never less
 safe. Feature indexes are per feature (``features/<name>/index.csv``), so a
 root-wide lock would serialize every feature worker in a dataset against every
