@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from mosaic.core.pipeline.ops import Op, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -30,7 +30,8 @@ class TrexParams(Params):
     # scope (empty -> all indexed media)
     groups: list[str] | None = None
     sequences: list[str] | None = None
-    entries: list[str] | None = None  # "group:sequence" pairs (":seq" or "seq" == empty group)
+    # "group:sequence" pairs (":seq" or "seq" == empty group)
+    entries: list[str] | None = None
     # detection / conversion (part of the run_id identity)
     detect_model: str | None = None
     detect_type: str = "yolo"
@@ -38,7 +39,7 @@ class TrexParams(Params):
     detect_iou_threshold: float = 0.1
     cm_per_pixel: float = 1.0
     meta_encoding: str = "gray"
-    convert_extra_settings: dict[str, object] | None = None
+    convert_extra_settings: dict[str, JsonValue] | None = None
     # tracking (part of the run_id identity)
     track_max_individuals: int = 1
     track_max_speed: float = 80.0
@@ -47,7 +48,14 @@ class TrexParams(Params):
     analysis_range: tuple[int, int] | None = None
     visual_identification_model_path: str | None = None
     auto_train: bool = False
-    track_extra_settings: dict[str, object] | None = None
+    # JsonValue rather than object on both pass-through dictionaries: these are
+    # the only params carrying arbitrary user values into the run_id, so an
+    # unrepresentable value here is what identity_ready now rejects. Typing them
+    # moves that failure to params construction, where pydantic names the field,
+    # instead of deep inside hash_params with only a type name. Every value that
+    # worked before still validates -- JsonValue is recursive, so nested dicts
+    # and lists are fine -- and none of them changes the digest.
+    track_extra_settings: dict[str, JsonValue] | None = None
     # execution knobs -- throughput/behavior only, excluded from the run_id (and TREx's own
     # settings-dict hash already omits them, so this keeps params.json <-> run_id consistent).
     convert_to_tracks: Annotated[bool, HASH_EXCLUDE] = True

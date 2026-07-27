@@ -27,7 +27,12 @@ import pytest
 
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
-from mosaic.core.pipeline._utils import Scope, hash_params, json_ready
+from mosaic.core.pipeline._utils import (
+    Scope,
+    hash_params,
+    identity_ready,
+    json_ready,
+)
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
 from mosaic.core.pipeline.run import MissingScopeDeclaration, compute_run_id
 
@@ -161,14 +166,6 @@ def _digest_under_hash_seed(seed: str) -> str:
     return completed.stdout.strip()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "json_ready serializes a set to a list without sorting and sort_keys only "
-        "orders dict keys, so a set-valued identity term hashes differently per "
-        "process. Closed by implementation item 0.5."
-    ),
-)
 def test_set_valued_identity_term_is_process_stable() -> None:
     """A collection in identity must be ordered before hashing.
 
@@ -180,23 +177,60 @@ def test_set_valued_identity_term_is_process_stable() -> None:
     assert len(digests) == 1, f"digest varies with PYTHONHASHSEED: {sorted(digests)}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "json_ready collapses an unrecognized type to f'<{type(obj).__name__}>', a "
-        "constant, so every value of that type hashes alike. Closed by implementation "
-        "item 0.5."
-    ),
-)
-def test_unrecognized_type_in_identity_raises() -> None:
-    """A uid or composition hash carried as an object must not hash to a constant."""
+def test_sequence_order_is_preserved_not_sorted() -> None:
+    """Ordering sets must not become ordering everything.
 
-    @dataclass
+    Sequence order is semantic wherever identity hashes it -- ``Inputs`` is a
+    tuple, ``_frame_range`` is ``[start, end]`` -- so two differently ordered
+    lists are two different recipes and must not collapse to one digest.
+    """
+    assert hash_params({"k": [1, 2, 3]}) != hash_params({"k": [3, 2, 1]})
+    assert hash_params({"k": (1, 2)}) != hash_params({"k": (2, 1)})
+    # ...while two spellings of one set are one recipe.
+    assert hash_params({"k": {1, 2, 3}}) == hash_params({"k": {3, 2, 1}})
+
+
+def test_unrecognized_type_in_identity_raises() -> None:
+    """A uid or composition hash carried as an object must not hash to a constant.
+
+    The object must be a plain class. A dataclass is *recognized* -- converted
+    through ``dataclasses.asdict`` before the fallback is reached -- and that
+    conversion is lossless and deterministic, so it is correct behaviour rather
+    than the defect. ``Scope`` and ``FeatureMeta`` are themselves dataclasses.
+    """
+
     class Opaque:
-        value: int
+        def __init__(self, value: int) -> None:
+            self.value = value
 
     with pytest.raises(TypeError):
-        _ = json_ready(Opaque(1))
+        _ = identity_ready(Opaque(1))
+
+
+def test_a_dataclass_is_converted_rather_than_rejected() -> None:
+    """The strict serializer rejects the unrepresentable, not the unfamiliar."""
+
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    assert identity_ready(Point(1, 2)) == {"x": 1, "y": 2}
+
+
+def test_provenance_serialization_still_degrades() -> None:
+    """``json_ready`` keeps the lossy behaviour its callers depend on.
+
+    ``params.json`` and the two ``run_params.json`` writers record what ran on a
+    best-effort basis inside ``try/except``. Raising there would turn a lossy
+    record into a missing one, which is worse: nothing reads these to make a
+    decision, and 0.4's scheme marker is about to live beside one.
+    """
+
+    class Opaque:
+        pass
+
+    assert json_ready(Opaque()) == "<Opaque>"
 
 
 def test_distinct_payloads_have_distinct_digests() -> None:
