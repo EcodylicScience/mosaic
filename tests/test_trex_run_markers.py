@@ -352,6 +352,42 @@ def test_a_live_foreign_claim_skips_the_entry(ds: Dataset, trex: FakeTrex) -> No
     assert len(index_rows(ds)) == 0, "no row for work this execution did not do"
 
 
+def test_a_held_entry_does_not_stop_the_rest_of_the_batch(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The reason the skip is a `continue` and not a `break`.
+
+    A batch of fifty sequences must not end because one of them is being
+    worked by a concurrent job. Every other test here runs a single-entry
+    batch, which cannot tell the two apart.
+    """
+    write_media_index(
+        ds,
+        [
+            MediaEntry(sequence="vid1", filename="vid1.mp4"),
+            MediaEntry(sequence="vid2", filename="vid2.mp4"),
+        ],
+    )
+    run_id = dr.run_trex(ds, entries=[("", "no-such-sequence")])
+    held = seq_dir_of(ds, run_id, key="vid1")
+    held.mkdir(parents=True)
+    write_inflight(
+        held,
+        InflightMarker(
+            execution_id="SOMEONE-ELSE",
+            expires_at="2099-01-01T00:00:00+00:00",
+        ),
+    )
+
+    dr.run_trex(ds, entries=[("", "vid1"), ("", "vid2")])
+
+    assert [p.name for p in trex.converted] == ["vid2.mp4"], (
+        "the free entry must still run"
+    )
+    rows = index_rows(ds)
+    assert list(rows["sequence"]) == ["vid2"], "one row, for the entry actually done"
+
+
 def test_overwrite_does_not_destroy_a_live_claim(ds: Dataset, trex: FakeTrex) -> None:
     """The claim check must precede every destructive step, rmtree included."""
     run_id = dr.run_trex(ds, entries=[("", "no-such-sequence")])

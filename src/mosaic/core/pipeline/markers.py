@@ -176,10 +176,16 @@ MarkerT = TypeVar("MarkerT", bound=BaseModel)
 
 
 def _load(path: Path, model_cls: type[MarkerT]) -> MarkerT | None:
-    """Read and validate a marker, or return None if it cannot be trusted."""
+    """Read and validate a marker, or return None if it cannot be trusted.
+
+    Every way a marker can be unreadable resolves to None, including a file
+    that is not UTF-8 at all: ``read_text`` raises ``UnicodeDecodeError`` (a
+    ``ValueError``, not an ``OSError``) for one, and a marker that crashes the
+    run it was meant to make resumable is worse than one that is ignored.
+    """
     try:
         text = path.read_text()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     try:
         return model_cls.model_validate_json(text)

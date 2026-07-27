@@ -93,6 +93,19 @@ def test_torn_marker_reads_as_none(tmp_path: Path) -> None:
     assert read_phase_marker(tmp_path, "convert") is None
 
 
+def test_a_marker_that_is_not_text_reads_as_none(tmp_path: Path) -> None:
+    """``read_text`` raises UnicodeDecodeError, which is a ValueError, not an OSError.
+
+    A marker exists to make a run resumable; one that crashes the run instead
+    is worse than one that is ignored.
+    """
+    _ = phase_marker_path(tmp_path, "convert").write_bytes(b"\xff\xfe\x00binary")
+    _ = inflight_marker_path(tmp_path).write_bytes(b"\xff\xfe\x00binary")
+
+    assert read_phase_marker(tmp_path, "convert") is None
+    assert read_inflight(tmp_path) is None
+
+
 def test_newer_schema_marker_reads_as_none(tmp_path: Path) -> None:
     """Reuse needs a completion contract this version understands."""
     path = phase_marker_path(tmp_path, "track")
