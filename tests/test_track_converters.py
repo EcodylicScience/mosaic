@@ -380,3 +380,32 @@ def test_calms21_version_says_its_output_identity_moved() -> None:
     from mosaic.core.track_library.calms21 import Calms21Converter
 
     assert Calms21Converter.version == "0.2"
+
+
+# --- entry names are one path component -------------------------------------
+#
+# Enforced where a name is chosen, at none of the read paths: an index that
+# already holds a slash-bearing name keeps resolving exactly as it did.
+
+
+def test_entry_hints_refuse_a_path_separator() -> None:
+    """The earliest of the three write boundaries names the converter."""
+    from mosaic.core.helpers import validate_entry_name
+
+    with pytest.raises(ValueError, match="forward slash"):
+        _ = EntryHints(sequence="task1/test/m075")
+    with pytest.raises(ValueError, match="forward slash"):
+        _ = EntryHints(group="a/b")
+    with pytest.raises(ValueError, match="backslash"):
+        _ = EntryHints(sequence="a\\b")
+
+    # And the compound spelling that replaces it is fine.
+    assert EntryHints(sequence="task1__test__m075").sequence == "task1__test__m075"
+    assert validate_entry_name("task1__test__m075", "sequence") == "task1__test__m075"
+
+
+def test_the_error_says_what_to_do_instead() -> None:
+    from mosaic.core.helpers import validate_entry_name
+
+    with pytest.raises(ValueError, match="__"):
+        _ = validate_entry_name("a/b", "sequence")

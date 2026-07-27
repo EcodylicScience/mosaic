@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import to_safe_name, validate_entry_name
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
@@ -349,8 +349,10 @@ def write_tracks_row(
     row = TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=run_id,
-        group=str(group) if group is not None else "",
-        sequence=str(sequence) if sequence is not None else "",
+        group=validate_entry_name(str(group) if group is not None else "", "group"),
+        sequence=validate_entry_name(
+            str(sequence) if sequence is not None else "", "sequence"
+        ),
         producer=producer,
         std_format=std_format,
         producer_run_id=producer_run_id,

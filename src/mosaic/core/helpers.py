@@ -5,6 +5,46 @@ import numpy as np
 import pandas as pd
 
 
+# Characters that turn an entry name into more than one path component. NUL is
+# rejected by every filesystem; the two separators are the ones that silently
+# nest a directory where a single component was meant.
+_ENTRY_NAME_FORBIDDEN: Tuple[Tuple[str, str], ...] = (
+    ("/", "forward slash"),
+    ("\\", "backslash"),
+    ("\x00", "NUL"),
+)
+
+
+def validate_entry_name(value: str, field: str) -> str:
+    """Reject a ``group``/``sequence`` that cannot be one path component.
+
+    mosaic itself survives a ``/`` -- :func:`to_safe_name` percent-encodes it, so
+    ``tracks/`` stays flat and every lookup round-trips. The constraint is one
+    layer out: in the control plane an entry name *is* a directory name, where
+    ``sequence_of()`` splits on the first ``/`` and the media directory
+    interpolates the name straight into a path. A name that cannot round-trip
+    there is not a name mosaic should mint.
+
+    Enforced at the **write** boundaries only -- where a name is chosen -- and at
+    none of the read paths. A dataset whose index already holds a slash-bearing
+    name keeps resolving exactly as it did, which is what makes this additive
+    rather than a migration.
+
+    Returns *value* unchanged, so it can wrap an assignment.
+
+    Raises:
+        ValueError: naming the offending character and the field it was in.
+    """
+    for char, name in _ENTRY_NAME_FORBIDDEN:
+        if char in value:
+            raise ValueError(
+                f"{field} may not contain a {name}: {value!r}. An entry name has "
+                "to be usable as a single path component. Join the levels with "
+                "'__' instead -- parse_hierarchy reads that by default."
+            )
+    return value
+
+
 def to_safe_name(s: str) -> str:
     return quote(s.strip(), safe="")
 

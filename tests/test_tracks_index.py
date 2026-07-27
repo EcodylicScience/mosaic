@@ -508,3 +508,45 @@ def test_legacy_view_derives_over_a_blank_stored_cell(tmp_path: Path) -> None:
     view = legacy_view(read_tracks_index(ds))
     assert str(view.iloc[0]["group_safe"]) == "g"
     assert str(view.iloc[0]["sequence_safe"]) == "s"
+
+
+# --- entry names -----------------------------------------------------------
+
+
+def test_the_index_writer_refuses_a_path_separator(tmp_path: Path) -> None:
+    """The choke point every producer goes through."""
+    ds = _dataset(tmp_path)
+    with pytest.raises(ValueError, match="forward slash"):
+        write_tracks_row(
+            ds,
+            run_id="convert-x.0.1-aaaaaaaaaa",
+            group="",
+            sequence="task1/test/m075",
+            out_path=_track_parquet(ds, "s"),
+            producer="convert-x",
+            std_format="trex_v1",
+            n_rows=40,
+        )
+
+
+def test_an_index_that_already_holds_a_slash_name_still_reads(tmp_path: Path) -> None:
+    """Validation is on write only -- this is what keeps the change additive.
+
+    A dataset converted before the rule existed keeps resolving; nothing
+    rewrites it, and nothing refuses to read it.
+    """
+    ds = _dataset(tmp_path)
+    _write_legacy_index(
+        ds,
+        [
+            {
+                "group": "",
+                "sequence": "task1/test/m075",
+                "abs_path": "tracks/task1%2Ftest%2Fm075.parquet",
+                "std_format": "trex_v1",
+                "n_rows": 40,
+            }
+        ],
+    )
+    df = read_tracks_index(ds)
+    assert [str(s) for s in df["sequence"]] == ["task1/test/m075"]

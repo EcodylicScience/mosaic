@@ -38,6 +38,7 @@ from typing import Annotated, ClassVar, Generic
 import pandas as pd
 from typing_extensions import TypeVar
 
+from mosaic.core.helpers import validate_entry_name
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 
 __all__ = [
@@ -61,10 +62,19 @@ class EntryHints:
 
     Both default to empty, which means "the converter decides" -- typically from
     the filename stem.
+
+    Validated on construction, so a converter structurally cannot emit a name
+    that is not usable as one path component. This is the earliest of the three
+    write boundaries: catching it here names the converter in the traceback,
+    rather than the index writer three frames later.
     """
 
     group: str = ""
     sequence: str = ""
+
+    def __post_init__(self) -> None:
+        _ = validate_entry_name(self.group, "group")
+        _ = validate_entry_name(self.sequence, "sequence")
 
 
 class TrackConvertParams(Params):

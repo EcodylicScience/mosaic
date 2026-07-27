@@ -60,6 +60,7 @@ from typing import TypedDict
 
 import pandas as pd
 
+from mosaic.core.helpers import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.media_index import mtime_iso
 
@@ -232,8 +233,8 @@ def build_tracks_raw_row(
     this stays a stat-only, read-light assembler.
     """
     return {
-        "group": group,
-        "sequence": sequence,
+        "group": validate_entry_name(group, "group"),
+        "sequence": validate_entry_name(sequence, "sequence"),
         "abs_path": to_store_path(path),
         "src_format": src_format,
         "size_bytes": stat.st_size,
