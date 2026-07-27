@@ -318,6 +318,22 @@ def _make_filter_factory(
 # --- Main entry point ---
 
 
+class MissingScopeDeclaration(AttributeError):
+    """A feature reached identity computation without declaring ``scope_dependent``.
+
+    Subclasses ``AttributeError`` because that is what the bare attribute read
+    below used to raise, so any caller already handling it keeps working -- but
+    it names the feature, which a bare ``AttributeError: 'TimelinePlot' object
+    has no attribute 'scope_dependent'`` does only by accident of the repr.
+
+    Deliberately *not* solved by a ``ClassVar`` default on the protocol. A
+    default would let the next feature ship with no declaration at all and
+    silently inherit ``False``, which is the wrong answer for any feature that
+    fits from its stream -- exactly the defect item 1.4 exists to fix. The
+    declaration is a decision each feature owes, so its absence is an error.
+    """
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -332,7 +348,18 @@ def compute_run_id(
 
     ``identity_dump()`` drops ``HASH_EXCLUDE``-marked params (throughput knobs
     like ``infer_batch_size``) so retuning them doesn't bust the cache.
+
+    Raises:
+        MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
     """
+    if not hasattr(feature, "scope_dependent"):
+        name = getattr(feature, "name", type(feature).__name__)
+        raise MissingScopeDeclaration(
+            f"feature {name!r} ({type(feature).__name__}) declares no "
+            f"'scope_dependent', so its identity cannot be computed. Declare it: "
+            f"True if fit() derives anything from the set of sequences in scope, "
+            f"False if each entry is computed from itself alone."
+        )
     hashable: dict[str, object] = {
         "_params": feature.params.identity_dump(),
         "_inputs": feature.inputs.model_dump(),

@@ -54,6 +54,14 @@ class VizGlobalColored:
     name = "viz-global-colored"
     version = "0.1"
     parallelizable = False
+    # False because the scope demonstrably never reaches this feature: ``fit``
+    # reads ``self._scope.entry_keys`` (below), but ``set_scope`` is defined
+    # here and in three sibling visualizations and called from nowhere in
+    # ``src/``, so ``self._scope`` is always the default empty ``Scope()`` and
+    # ``allowed_keys`` always collapses to None. **Wiring ``set_scope`` up makes
+    # this declaration wrong** -- the plot would then vary with scope under one
+    # identifier. Change it to True in the same commit that connects the hook.
+    scope_dependent = False
 
     class Inputs(Inputs[ResultColumn]):
         _require: ClassVar[InputRequire] = "empty"

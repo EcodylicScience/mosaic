@@ -29,7 +29,7 @@ from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import Scope, hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
-from mosaic.core.pipeline.run import compute_run_id
+from mosaic.core.pipeline.run import MissingScopeDeclaration, compute_run_id
 
 PIPELINE_DIR = Path(inspect.getfile(compute_run_id)).parent
 
@@ -93,15 +93,6 @@ def test_stream_fitting_features_declare_scope_dependent() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "TimelinePlot and the global-colored plot declare no scope_dependent, so "
-        "compute_run_id raises AttributeError and they cannot run at all. The correct "
-        "value for each is a judgment call about the visualization, not a mechanical "
-        "fix."
-    ),
-)
 def test_every_feature_declares_scope_dependent() -> None:
     """``compute_run_id`` reads the attribute directly; absence is a hard crash."""
     missing = [
@@ -112,6 +103,23 @@ def test_every_feature_declares_scope_dependent() -> None:
     assert not missing, (
         f"features with no scope_dependent declaration: {sorted(missing)}"
     )
+
+
+def test_missing_scope_declaration_names_the_feature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The absence is reported as a named error, not a bare AttributeError.
+
+    Exercised against a real registered feature with the declaration removed,
+    rather than a stand-in, so the message is the one a genuinely undeclared
+    feature would produce. The message has to identify the feature from a
+    traceback alone.
+    """
+    feature = build_feature("speed-angvel", None, None)
+    monkeypatch.delattr(type(feature), "scope_dependent")
+
+    with pytest.raises(MissingScopeDeclaration, match="speed-angvel"):
+        _ = compute_run_id(feature, None, None, Scope())
 
 
 # --- P2d: scope enters identity only for global features ----------------------
