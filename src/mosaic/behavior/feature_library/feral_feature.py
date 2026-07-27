@@ -333,7 +333,9 @@ class FeralFeature:
     resize_to : int
         Input resolution for ViT (default 256).
     device : str
-        PyTorch device (default "cuda").
+        PyTorch device (default "cuda"). Provenance only -- recorded in
+        params.json and feral_config.json, omitted from the run_id hash, so the
+        same results reload on a machine with a different card or none.
     infer_batch_size : int
         Chunks per forward pass during apply() (default 4). Pure
         throughput knob -- batching is numerically equivalent to the
@@ -379,7 +381,18 @@ class FeralFeature:
         chunk_shift: int = 32
         chunk_step: int = 1
         resize_to: int = 256
-        device: str = "cuda"
+        # Which hardware runs the model, not what the model computes. apply()
+        # takes its device off the loaded model rather than off this field, and
+        # nothing reads it back from disk -- fit() writes cfg["device"] and reads
+        # it once from the same in-memory dict. Precision is governed by
+        # `inference_autocast`, which IS hashed.
+        # HASH_EXCLUDE, on the standard this repo already applied twice
+        # (infer_batch_size below, arhmm's `backend`): equivalent up to
+        # floating-point associativity, not bit-identity -- cpu and cuda float32
+        # kernels reassociate differently. Pinning a run's identity to the card it
+        # happened to land on costs a full recompute for nothing, and blocks
+        # reloading finished results on a machine without a GPU.
+        device: Annotated[str, HASH_EXCLUDE] = "cuda"
         # Chunks per forward pass during apply(). Pure throughput knob:
         # batching is numerically equivalent to the per-chunk path
         # (eval() freezes BatchNorm1d + disables dropout; all attention is
