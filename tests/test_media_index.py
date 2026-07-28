@@ -5,6 +5,8 @@ forward). The densifier cases mirror the upload finalize contract the API drives
 through ``write_media_index``.
 """
 
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -543,6 +545,67 @@ def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> N
     ds.write_media_index([scope], extensions=(".mp4",))
     after = ds.read_media_index()
     assert after[0]["analysis_derivative_path"] == "seqA.analysis.mp4"
+
+
+_FINALIZE_PROBE = """
+import sys
+from pathlib import Path
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.media_index import MediaIndexScope
+
+manifest, sequence, barrier = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+ds = Dataset(manifest_path=manifest).load()
+seq_dir = ds.get_root("media_raw") / sequence
+
+barrier.write_text("ready")
+while len(list(barrier.parent.glob("*.ready"))) < 2:
+    pass
+# Both processes enter the probe phase together. Unlocked, both read the index
+# before either writes, so each computes its preserved set from the same empty
+# starting state and the second erases the first.
+ds.write_media_index(
+    [MediaIndexScope(directory=seq_dir, group="", sequence=sequence)],
+    extensions=(".mp4",),
+)
+"""
+
+
+def test_two_finalizes_of_different_sequences_do_not_lose_rows(tmp_path: Path) -> None:
+    """`write_media_index` is a whole-file rewrite, so it needs the lock.
+
+    Two uploads finalizing different sequences is the ordinary case, not a
+    contrived one: each preserves "every row not under my scope", and without
+    serialization the second preserves a snapshot taken before the first wrote.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
+    for sequence in ("seqA", "seqB"):
+        for name in ("a.mp4", "b.mp4", "c.mp4"):
+            _cfr_mp4(tmp_path / "media_raw" / sequence / name)
+
+    gate = tmp_path / "gate"
+    gate.mkdir()
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _FINALIZE_PROBE,
+                str(ds.manifest_path),
+                sequence,
+                str(gate / f"{sequence}.ready"),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for sequence in ("seqA", "seqB")
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err.decode()[-800:]
+
+    written = {row["sequence"] for row in ds.read_media_index()}
+    assert written == {"seqA", "seqB"}, f"a concurrent finalize was lost: {written}"
 
 
 def test_read_media_index_round_trips_fact_columns(tmp_path: Path) -> None:

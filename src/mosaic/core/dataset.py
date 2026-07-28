@@ -1690,13 +1690,17 @@ class Dataset:
         # legitimately when the tracks keymap changed between scans and a file's
         # sequence name moved with it: the prior order genuinely no longer
         # describes that sequence, and falling back to name is correct there.
+        #
+        # Scanning and probing above is the expensive, read-only phase and is
+        # deliberately unlocked; from here it is in-memory work plus one terminal
+        # ``atomic_write``, which is the shape ``index_lock`` requires.
         out_csv.parent.mkdir(parents=True, exist_ok=True)
-        prior_order = build_prior_order(_read_media_index(out_csv))
-        self._carry_forward_derivative_links(dedup, out_csv)
-        densify_video_order(dedup, session_positions={}, prior_order=prior_order)
-        df_out = frame_from_rows(dedup)
-
-        write_media_index_rows(out_csv, df_out)
+        with index_lock(out_csv):
+            prior_order = build_prior_order(_read_media_index(out_csv))
+            self._carry_forward_derivative_links(dedup, out_csv)
+            densify_video_order(dedup, session_positions={}, prior_order=prior_order)
+            df_out = frame_from_rows(dedup)
+            write_media_index_rows(out_csv, df_out)
 
         multi_count = 0
         if not df_out.empty:
@@ -1836,13 +1840,15 @@ class Dataset:
         scope_list = list(scopes)
         scope_dirs = [scope.directory.resolve() for scope in scope_list]
 
-        # Read the existing index once: its blank-skipping prior video_order (for
-        # already-present files) and the rows to preserve (those under no scope).
+        # --- Probe phase: expensive, read-only, and deliberately unlocked. ---
+        #
+        # Everything here either probes the filesystem or builds an advisory map,
+        # and probing a large upload takes minutes. Holding the index lock across
+        # it would blow index_lock's DEFAULT_TIMEOUT_S, which is tuned for a CSV
+        # rewrite measured in milliseconds, so a concurrent writer would fail on
+        # a healthy system. The authoritative read -- the rows to preserve and
+        # the prior order they carry -- happens again inside the lock below.
         existing = _read_media_index(index_path)
-        prior_order = build_prior_order(existing)
-        preserved = [
-            row for row in existing if not self._row_under_dirs(row, scope_dirs)
-        ]
 
         # A scoped file's prior stored uuid, by basename -- the rows this write
         # overrides. Used to detect a stale override: a file whose stored uuid
@@ -1958,45 +1964,65 @@ class Dataset:
         # one sequence, which legitimately share one video_uuid and are two rows.
         fresh = self._dedupe_scope_rows(fresh)
 
-        # Carry transcode derivative links onto the fresh rows (a re-finalize of a
-        # transcoded sequence must not drop its routing links), merge with the
-        # preserved rows, densify video_order, and write atomically.
+        # --- Commit phase: cheap, and locked. ---
         #
-        # Densified over the sequences THIS write was given, not over the whole
-        # file. ``densify_video_order`` renumbers every row it is handed, and
-        # ``build_prior_order`` skips a blank ``video_order`` cell -- so an
-        # untouched sequence carrying blank cells was being renumbered by name
-        # during someone else's upload, which contradicts this method's own
-        # "preserved verbatim" contract and moves a media composition hash for a
-        # sequence nobody named.
+        # Re-read authoritatively inside the lock rather than reusing the probe
+        # phase's snapshot: another writer may have landed rows while this one
+        # was probing, and they are exactly the rows this write must preserve.
+        # Everything from here is in-memory work plus one terminal
+        # ``atomic_write`` -- the shape ``index_lock`` requires, since a rename
+        # over the path drops the block's grip on the inode it flocked.
         #
-        # The partition key is membership in *touched*, not preserved-vs-fresh: a
-        # preserved row can belong to a touched sequence when its ``abs_path``
-        # lives outside the scope directory, and leaving it out would collide its
-        # order with the fresh rows. ``densify_video_order`` mutates in place and
-        # its return is discarded, so *merged* keeps its construction order and
-        # the file's row order is unchanged.
-        #
-        # One behaviour change to know: a legacy index with gappy orders is no
-        # longer globally re-densified as a side effect of an unrelated write.
-        # That cleanup was doing damage; offering it deliberately is a repair
-        # command, not a byproduct of an upload.
+        # ``_read_media_index`` uses ``csv.DictReader`` and yields ``[]`` for the
+        # zero-byte file the lock's ``O_CREAT`` leaves on a first write. A pandas
+        # reader moved inside this block would raise ``EmptyDataError`` there.
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        self._carry_forward_derivative_links(fresh, index_path)
-        merged: list[dict[str, object]] = [dict(row) for row in preserved]
-        merged.extend(fresh)
         touched = {(scope.group, scope.sequence) for scope in scope_list}
-        in_scope = [
-            row
-            for row in merged
-            if (str(row.get("group", "")), str(row.get("sequence", ""))) in touched
-        ]
-        densify_video_order(
-            in_scope,
-            session_positions=session_positions,
-            prior_order=prior_order,
-        )
-        write_media_index_rows(index_path, frame_from_rows(merged))
+        with index_lock(index_path):
+            committed = _read_media_index(index_path)
+            prior_order = build_prior_order(committed)
+            preserved = [
+                row for row in committed if not self._row_under_dirs(row, scope_dirs)
+            ]
+
+            # Carry transcode derivative links onto the fresh rows (a re-finalize
+            # of a transcoded sequence must not drop its routing links), merge
+            # with the preserved rows, densify video_order, and write atomically.
+            #
+            # Densified over the sequences THIS write was given, not over the
+            # whole file. ``densify_video_order`` renumbers every row it is
+            # handed, and ``build_prior_order`` skips a blank ``video_order``
+            # cell -- so an untouched sequence carrying blank cells was being
+            # renumbered by name during someone else's upload, which contradicts
+            # this method's own "preserved verbatim" contract and moves a media
+            # composition hash for a sequence nobody named.
+            #
+            # The partition key is membership in *touched*, not
+            # preserved-vs-fresh: a preserved row can belong to a touched
+            # sequence when its ``abs_path`` lives outside the scope directory,
+            # and leaving it out would collide its order with the fresh rows.
+            # ``densify_video_order`` mutates in place and its return is
+            # discarded, so *merged* keeps its construction order and the file's
+            # row order is unchanged.
+            #
+            # One behaviour change to know: a legacy index with gappy orders is
+            # no longer globally re-densified as a side effect of an unrelated
+            # write. That cleanup was doing damage; offering it deliberately is a
+            # repair command, not a byproduct of an upload.
+            self._carry_forward_derivative_links(fresh, index_path)
+            merged: list[dict[str, object]] = [dict(row) for row in preserved]
+            merged.extend(fresh)
+            in_scope = [
+                row
+                for row in merged
+                if (str(row.get("group", "")), str(row.get("sequence", ""))) in touched
+            ]
+            densify_video_order(
+                in_scope,
+                session_positions=session_positions,
+                prior_order=prior_order,
+            )
+            write_media_index_rows(index_path, frame_from_rows(merged))
         return MediaIndexResult(index_path=index_path, disagreements=disagreements)
 
     @staticmethod
@@ -2748,9 +2774,14 @@ class Dataset:
                 )
             )
 
-        # iter_track_files already deduped by resolved path and sorted.
+        # iter_track_files already deduped by resolved path and sorted. The scan
+        # above is the expensive, read-only phase; the lock covers the write
+        # alone, which is what makes this whole-file rewrite safe against a
+        # concurrent one.
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
         df = _tracks_frame_from_rows(rows)
-        write_tracks_raw_index_rows(out_csv, df)
+        with index_lock(out_csv):
+            write_tracks_raw_index_rows(out_csv, df)
         print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
         return out_csv
 
@@ -2795,15 +2826,10 @@ class Dataset:
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
 
-        # Preserve every existing row no scope directory covers. _row_under_dirs
-        # resolves the stored path first, so containment is correct whether
-        # abs_path is stored root-relative or absolute.
-        existing = _read_tracks_raw_index(out_csv)
-        preserved = [
-            row for row in existing if not self._row_under_dirs(row, scope_dirs)
-        ]
-
-        # (Re)scan each scope directory and stamp its explicit identity.
+        # --- Scan phase: expensive, read-only, unlocked. ---
+        # Stat-ing (and, with compute_md5, hashing) every file under every scope
+        # is the slow part, so the lock is taken below for the merge and write
+        # only. The rows to preserve are re-read authoritatively there.
         fresh: list[TracksRawIndexRow] = []
         for scope in scope_list:
             for path, st in iter_track_files(
@@ -2824,12 +2850,25 @@ class Dataset:
                     )
                 )
 
-        # Merge preserved (string records) + fresh (typed rows). _row_under_dirs
-        # already guarantees the two are disjoint by resolved path, so the dedup
-        # only ever fires fresh-vs-fresh across overlapping scopes (caller error).
-        merged = [*preserved, *fresh]
-        frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
-        write_tracks_raw_index_rows(out_csv, frame)
+        # --- Commit phase: cheap, and locked. ---
+        # Preserve every existing row no scope directory covers. _row_under_dirs
+        # resolves the stored path first, so containment is correct whether
+        # abs_path is stored root-relative or absolute. Read inside the lock: a
+        # writer that landed rows while this one scanned wrote exactly the rows
+        # this one must preserve.
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        with index_lock(out_csv):
+            existing = _read_tracks_raw_index(out_csv)
+            preserved = [
+                row for row in existing if not self._row_under_dirs(row, scope_dirs)
+            ]
+            # Merge preserved (string records) + fresh (typed rows).
+            # _row_under_dirs already guarantees the two are disjoint by resolved
+            # path, so the dedup only ever fires fresh-vs-fresh across
+            # overlapping scopes (caller error).
+            merged = [*preserved, *fresh]
+            frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
+            write_tracks_raw_index_rows(out_csv, frame)
         return out_csv
 
     def read_tracks_raw_index(
