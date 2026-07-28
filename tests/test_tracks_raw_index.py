@@ -347,7 +347,9 @@ def test_write_tracks_raw_index_multi_file_sequence_takes_scope_id_no_strip(
     assert {r["sequence"] for r in rows} == {"myseq"}  # not "myseq_fish0"/"_fish1"
 
 
-def test_write_tracks_raw_index_preserves_other_and_external_rows(tmp_path: Path) -> None:
+def test_write_tracks_raw_index_preserves_other_and_external_rows(
+    tmp_path: Path,
+) -> None:
     base = (tmp_path / "ds").resolve()
     ds = _make_dataset(base)
     index_path = ds.get_root("tracks_raw") / "index.csv"
@@ -408,7 +410,9 @@ def test_write_tracks_raw_index_reimport_replaces_a_scopes_rows(tmp_path: Path) 
     assert len(rows) == 2
 
 
-def test_write_tracks_raw_index_external_scope_dir_stays_absolute(tmp_path: Path) -> None:
+def test_write_tracks_raw_index_external_scope_dir_stays_absolute(
+    tmp_path: Path,
+) -> None:
     base = (tmp_path / "ds").resolve()
     ds = _make_dataset(base)
     external = (tmp_path / "outside").resolve()
