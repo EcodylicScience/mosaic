@@ -403,6 +403,48 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     assert order == {"a.mp4": 0, "b.mp4": 1}
 
 
+def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> None:
+    """A rescan reads the order it is about to overwrite instead of re-sorting.
+
+    The filenames deliberately sort the *opposite* way from the arranged order,
+    so a rescan that discarded the prior order would swap them -- and the media
+    composition hash, which is computed over ``video_order``, would move with no
+    content change.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
+    ds.set_root("tracks", str(tmp_path / "tracks"))
+    ds.ensure_roots()
+    # index_media derives (group, sequence) from the tracks keymap, so the two
+    # files must resolve to the sequence the arranged write named. Prefix mode
+    # maps both stems onto "seqA".
+    (tmp_path / "tracks" / "index.csv").write_text(
+        "run_id,group,sequence,abs_path\n,,seqA,tracks/seqA.parquet\n"
+    )
+
+    seq_dir = tmp_path / "media_raw" / "seqA"
+    _cfr_mp4(seq_dir / "seqA_0.mp4")
+    _cfr_mp4(seq_dir / "seqA_1.mp4")
+    ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=seq_dir,
+                group="",
+                sequence="seqA",
+                order_by_name={"seqA_1.mp4": 0, "seqA_0.mp4": 1},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+    arranged = {row["name"]: row["video_order"] for row in ds.read_media_index()}
+    assert arranged == {"seqA_1.mp4": "0", "seqA_0.mp4": "1"}
+
+    ds.index_media([seq_dir], extensions=(".mp4",), sequence_match_mode="prefix")
+
+    rescanned = {row["name"]: row["video_order"] for row in ds.read_media_index()}
+    assert rescanned == arranged, "a rescan renumbered an arranged sequence by name"
+
+
 def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)

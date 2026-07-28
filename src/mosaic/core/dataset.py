@@ -1677,13 +1677,23 @@ class Dataset:
         # Carry transcode-written derivative links forward across the reindex,
         # then densify video_order per (group, sequence, camera) -- the same
         # ranking write_media_index uses, so a scan and an assignment-driven
-        # write number identically. Empty maps => every row is a prior with an
-        # unknown order, so it sorts by name and densifies from 0 within its
-        # (group, sequence, camera): unchanged values for single-camera media,
-        # correct per-camera numbering for a multi-camera recording.
+        # write number identically.
+        #
+        # A rescan is not a session, so there are no session positions; but the
+        # prior order is read, not discarded. Passing an empty prior map made
+        # every row an unknown-order prior, which sorts by *name* -- so scanning
+        # a corpus whose order came from an arranged write silently permuted it,
+        # and the media composition hash (item 4.4) computed from that order
+        # moved with no content change. The lookup key is
+        # (group, sequence, basename) and a rescan re-derives the same
+        # (group, sequence) for the same file, so the keys match. They miss
+        # legitimately when the tracks keymap changed between scans and a file's
+        # sequence name moved with it: the prior order genuinely no longer
+        # describes that sequence, and falling back to name is correct there.
         out_csv.parent.mkdir(parents=True, exist_ok=True)
+        prior_order = build_prior_order(_read_media_index(out_csv))
         self._carry_forward_derivative_links(dedup, out_csv)
-        densify_video_order(dedup, session_positions={}, prior_order={})
+        densify_video_order(dedup, session_positions={}, prior_order=prior_order)
         df_out = frame_from_rows(dedup)
 
         write_media_index_rows(out_csv, df_out)
