@@ -12,13 +12,16 @@ different callers. It is also the only index with three producers in two
 packages (a registered converter, the TREx tracker, an inference op), which is
 why the row lives here rather than beside any one of them.
 
-**One row per ``(group, sequence)``, for now.** ``dedup_keys`` is the pair, not
-the ``(run_id, group, sequence)`` triple its six sibling indexes use, because
-that is the invariant the flat layout actually has: all five writers target one
-``tracks/<group>__<seq>.parquet``, so a second row for an entry would name a file
-the first one had already overwritten. Stage 3.2 gives each variant its own
-directory; Stage 3.4 then adds ``run_id`` to the tuple here, and that one-line
-change is what makes a second row legal.
+**One row per ``(run_id, group, sequence)``.** The triple its six sibling indexes
+use. It was the ``(group, sequence)`` pair while every writer targeted one flat
+``tracks/<group>__<seq>.parquet``, where a second row for an entry would have
+named a file the first had already overwritten; now each variant has its own
+directory and two rows describe two real tables.
+
+Writing a second row and *resolving* one are different questions, and only the
+first belongs to the writer. :func:`select_variant_rows` answers the second: an
+unlabelled row loses to a labelled one, and two genuinely different recipes for
+one entry refuse to be guessed between.
 
 **Adoption is on write, tolerance is on read.** An older index is brought up to
 this schema by :func:`adopt_legacy_columns`, wired in as ``IndexCSV``'s ``adopt``
@@ -156,16 +159,20 @@ def tracks_index_path(ds: Dataset) -> Path:
 def tracks_index(path: Path) -> IndexCSV[TracksIndexRow]:
     """Factory: an ``IndexCSV`` configured for the tracks schema.
 
-    ``dedup_keys`` is ``(group, sequence)`` rather than the ``run_id``-led triple
-    the sibling indexes use. That is the M1 invariant, and it is enforced here
-    rather than merely hoped for. **Stage 3.4 adds ``"run_id"`` to this list** --
-    that is the change that makes two variants of one sequence coexist, and it
-    must not land before Stage 3.2 gives them separate directories to live in.
+    ``dedup_keys`` is the ``run_id``-led triple its six sibling indexes use. Until
+    Stage 3.2 it was the ``(group, sequence)`` pair, because that was the
+    invariant the flat layout actually had: every writer targeted one
+    ``tracks/<group>__<seq>.parquet``, so a second row for an entry would have
+    named a file the first had already overwritten. Now each variant has its own
+    directory, so two rows describe two real tables.
+
+    Which row an entry *resolves* to is a separate question, and not one the
+    writer can answer -- see :func:`select_variant_rows`.
     """
     return IndexCSV(
         path,
         TracksIndexRow,
-        dedup_keys=["group", "sequence"],
+        dedup_keys=["run_id", "group", "sequence"],
         adopt=adopt_legacy_columns,
     )
 
@@ -229,10 +236,15 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
     3. **Off-schema columns are dropped**, including the four the old writer
        emitted (see ``_DROPPED_LEGACY_COLUMNS``). Destructive, deliberately, and
        recoverable: :func:`legacy_view` re-derives the two that had a reader.
-    4. **Duplicate ``(group, sequence)`` rows collapse, last wins.** An index
-       written before string columns were read as strings can already hold
-       duplicates for a numerically-named sequence; last-wins matches what every
-       reader effectively did with them.
+
+    It deliberately does **not** collapse duplicates. It did while an entry could
+    only have one row -- keep-last, which is what every reader effectively did
+    with a duplicate written before string columns were read as strings. Now that
+    two variants of one sequence are two real tables in two directories, dropping
+    one here would discard a row silently on the way *in*, since this is
+    ``IndexCSV``'s ``adopt`` hook and runs on write as well as on read. Choosing
+    between rows moved to :func:`select_variant_rows`, which is a read concern and
+    can refuse.
 
     Returns a frame carrying every schema column -- the contract ``IndexCSV``
     requires, because a partial adoption still leaves ``list_runs`` and
@@ -253,8 +265,7 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
         else:
             cells = [""] * len(df)
         out[column] = pd.Series(cells, index=df.index, dtype="object")
-    deduped = out.drop_duplicates(subset=["group", "sequence"], keep="last")
-    return deduped.reset_index(drop=True)
+    return out.reset_index(drop=True)
 
 
 def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataFrame:

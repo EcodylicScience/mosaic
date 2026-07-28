@@ -84,6 +84,30 @@ def _write_legacy_index(ds: Dataset, rows: list[dict[str, object]]) -> Path:
     return path
 
 
+def _write_two_variant_rows(ds: Dataset, sequence: str, *variants: str) -> Path:
+    """One entry under several variants: real tables, and rows naming them.
+
+    The rows are written past the typed writer and positionally, so adding a
+    column to ``TRACKS_INDEX_COLUMNS`` breaks this loudly rather than shifting
+    every cell one place along.
+    """
+    for variant in variants:
+        table = ds.get_root("tracks") / variant / f"{sequence}.parquet"
+        table.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"frame": range(40), "id": [0] * 40}).to_parquet(table)
+
+    path = tracks_index_path(ds)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = ",".join(TRACKS_INDEX_COLUMNS)
+    rows = "\n".join(
+        f"tracks/{variant}/{sequence}.parquet,{variant},,,,"
+        f"{sequence},convert-x,trex_v1,,,,,40"
+        for variant in variants
+    )
+    path.write_text(f"{header}\n{rows}\n")
+    return path
+
+
 # --- the schema ------------------------------------------------------------
 
 
@@ -209,28 +233,49 @@ def test_a_numpy_scalar_identity_is_stringified(tmp_path: Path) -> None:
     assert str(df.iloc[0]["sequence"]) == "1"
 
 
-def test_one_row_per_entry_across_all_three_producers(tmp_path: Path) -> None:
-    """The M1 invariant. Stage 3.4 is what makes a second row legal."""
+def test_all_three_producers_keep_their_row_for_one_entry(tmp_path: Path) -> None:
+    """The inversion of the M1 invariant, and the point of the stage.
+
+    Three recipes for one sequence used to leave one row, the last writer's --
+    which was right while they all overwrote one flat parquet, and is a lost
+    record now that each writes into its own directory.
+    """
     ds = _dataset(tmp_path)
-    path = _track_parquet(ds, "s")
-    for run_id, producer in [
+    producers = [
         ("convert-trex_npz.0.1-aaaaaaaaaa", "convert-trex_npz"),
         ("trex.0.1-bbbbbbbbbb", "trex"),
         ("infer-points.0.1-cccccccccc", "infer-points"),
-    ]:
+    ]
+    for run_id, producer in producers:
         write_tracks_row(
             ds,
             run_id=run_id,
             group="",
             sequence="s",
-            out_path=path,
+            out_path=_track_parquet(ds, "s"),
             producer=producer,
             std_format="trex_v1",
             n_rows=40,
         )
     df = read_tracks_index(ds)
-    assert len(df) == 1
-    assert str(df.iloc[0]["producer"]) == "infer-points"
+    assert len(df) == 3
+    assert list(df["run_id"]) == [run_id for run_id, _ in producers]
+
+    # Re-writing one of them still replaces its own row rather than adding a
+    # fourth: the dedup key is the triple, not the run_id alone.
+    write_tracks_row(
+        ds,
+        run_id="trex.0.1-bbbbbbbbbb",
+        group="",
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="trex",
+        std_format="trex_v1",
+        n_rows=99,
+    )
+    df = read_tracks_index(ds)
+    assert len(df) == 3
+    assert set(df["run_id"]) == {run_id for run_id, _ in producers}
 
 
 def test_the_write_is_atomic_and_leaves_no_orphan(tmp_path: Path) -> None:
@@ -386,10 +431,15 @@ def test_adoption_is_idempotent(tmp_path: Path) -> None:
     assert first.splitlines()[0].split(",") == TRACKS_INDEX_COLUMNS
 
 
-def test_adoption_collapses_preexisting_duplicate_entries_keeping_last(
-    tmp_path: Path,
-) -> None:
-    """An index written before string columns were read as strings can hold these."""
+def test_adoption_keeps_preexisting_duplicate_entries(tmp_path: Path) -> None:
+    """Adoption no longer collapses; choosing is the reader's job now.
+
+    An index written before string columns were read as strings can already hold
+    two rows for one entry. Adoption used to drop one keep-last -- but it is
+    ``IndexCSV``'s ``adopt`` hook, so it runs on the way *in* as well, and would
+    now discard a legitimate second variant at append time. Both rows survive
+    here, and :func:`select_variant_rows` decides which one an entry means.
+    """
     ds = _dataset(tmp_path)
     _write_legacy_index(
         ds,
@@ -399,8 +449,13 @@ def test_adoption_collapses_preexisting_duplicate_entries_keeping_last(
         ],
     )
     df = read_tracks_index(ds)
-    assert len(df) == 1
-    assert str(df.iloc[0]["abs_path"]) == "tracks/b.parquet"
+    assert len(df) == 2
+
+    # Both are unlabelled, so neither supersedes the other and there is no
+    # ambiguity to refuse: last wins, exactly as adoption used to do.
+    selected = select_variant_rows(df)
+    assert len(selected) == 1
+    assert str(selected.iloc[0]["abs_path"]) == "tracks/b.parquet"
 
 
 def test_adoption_coerces_nan_already_on_disk(tmp_path: Path) -> None:
@@ -755,32 +810,33 @@ def test_an_empty_tracks_index_resolves_empty_rather_than_raising(
     assert scope.entries == set()
 
 
-def test_a_duplicate_entry_resolves_to_one_manifest_entry(tmp_path: Path) -> None:
-    """The M1 invariant holds at read as well as at write.
+def test_two_real_variants_of_an_entry_refuse_to_resolve_unasked(
+    tmp_path: Path,
+) -> None:
+    """The inversion, at the resolver.
 
-    An index written before string columns were read as strings can already hold
-    two rows for one entry. The shared reader collapses them keep-last, so
-    ``_resolve_tracks`` never has to choose -- which is what makes a ``run_id``
-    of None well defined. Stage 3.4 removes the collapse and moves the choice
-    there.
+    Both rows now survive the read, so ``_resolve_tracks`` is the thing that has
+    to choose -- and between two genuinely different recipes it declines, rather
+    than taking the last one silently as the collapse used to.
     """
     from mosaic.core.pipeline.manifest import build_manifest
 
     ds = _dataset(tmp_path)
-    _ = _track_parquet(ds, "a")
-    # Written past the typed writer, since its dedup is what normally prevents this.
-    path = tracks_index_path(ds)
-    header = ",".join(TRACKS_INDEX_COLUMNS)
-    rows = "\n".join(
-        f"tracks/a.parquet,{variant},,,,a,convert-x,trex_v1,,,,,40"
-        for variant in ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb")
-    )
-    path.write_text(f"{header}\n{rows}\n")
+    _write_two_variant_rows(ds, "a", "convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb")
 
-    _, scope = build_manifest(ds, _feature_inputs())
-    assert scope.entries == {("", "a")}
-    # Last wins -- byte-identical to what the resolver did silently before.
-    assert list(read_tracks_index(ds)["run_id"]) == ["trex.0.1-bbbbbbbbbb"]
+    assert len(read_tracks_index(ds)) == 2
+    with pytest.raises(ValueError, match="tracks_run_id"):
+        _ = build_manifest(ds, _feature_inputs())
+
+    # Naming one resolves it, and the two identify differently.
+    _, first = build_manifest(
+        ds, _feature_inputs(), tracks_run_id="convert-x.0.1-aaaaaaaaaa"
+    )
+    _, second = build_manifest(
+        ds, _feature_inputs(), tracks_run_id="trex.0.1-bbbbbbbbbb"
+    )
+    assert first.entries == second.entries == {("", "a")}
+    assert first.tracks_variants != second.tracks_variants
 
 
 def test_an_empty_tracks_scope_is_not_recorded_as_a_completed_run(

@@ -182,6 +182,16 @@ def _as_entry_set(x: object) -> set[tuple[str, str]] | None:
     return {(str(g), str(s)) for g, s in cast(Iterable[tuple[object, object]], x)}
 
 
+def _as_run_id(x: object) -> str | None:
+    """Coerce a ``tracks_run_id`` run_kwarg to ``str | None``.
+
+    Unlike ``_as_set``/``_as_entry_set`` an empty value is *not* "no
+    restriction": ``""`` is a legal selector naming the unlabelled tables written
+    before tracks carried an identity. Only an absent key means "unrestricted".
+    """
+    return None if x is None else str(x)
+
+
 def _narrow_target(
     universe: frozenset[tuple[str, str]],
     groups: object = None,
@@ -311,10 +321,21 @@ class Pipeline:
         stale_steps: set[str] = set()
         resolved: list[dict] = []
 
-        # The intended sequence universe (all tracks), read once. Each step's
+        # The intended sequence universe, per tracks selector. Each step's
         # target scope is this universe narrowed by that step's restriction; a
         # step is "cached" only when every target sequence is present on disk.
-        track_universe = _read_track_universe(dataset)
+        #
+        # Cached per distinct selector rather than read once per pipeline: a step
+        # pinned to a variant covering part of the index has to be measured
+        # against that variant, or it reads as permanently incomplete and marks
+        # every step below it stale on every invocation. Steps almost always
+        # share one selector, so this is still one read in practice.
+        universes: dict[str | None, frozenset[tuple[str, str]]] = {}
+
+        def track_universe_for(pin: str | None) -> frozenset[tuple[str, str]]:
+            if pin not in universes:
+                universes[pin] = _read_track_universe(dataset, pin)
+            return universes[pin]
 
         # Inverted DAG: {parent -> [children]} for staleness propagation
         adj = self.dag()
@@ -408,7 +429,7 @@ class Pipeline:
             # both for the completeness check and (for scope_dependent
             # features) the run_id hash.
             target = _narrow_target(
-                track_universe,
+                track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))),
                 kwargs.get("groups"),
                 kwargs.get("sequences"),
                 kwargs.get("entries"),
@@ -449,6 +470,7 @@ class Pipeline:
                     _as_set(kwargs.get("groups")),
                     _as_set(kwargs.get("sequences")),
                     _as_entry_set(kwargs.get("entries")),
+                    tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
                     on_missing_run="empty",
                 )
             expected_run_id, _ = compute_run_id(feature, frame_start, frame_end, scope)

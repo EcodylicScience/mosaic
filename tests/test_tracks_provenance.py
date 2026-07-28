@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
@@ -287,15 +288,17 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
 # --- the invariant across producers ----------------------------------------
 
 
-def test_a_second_producer_replaces_the_first_rather_than_adding_a_row(
+def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
     tmp_path: Path,
 ) -> None:
-    """The M1 one-row-per-entry invariant, across two real producers.
+    """Two real producers for one sequence, both surviving -- the point of M2.
 
-    Both target the same flat parquet path, so a second row would name a file the
-    first had already overwritten. Stage 3.2 gives them separate directories and
-    3.4 makes the second row legal.
+    Until Stage 3.2 both targeted the same flat parquet, so the inference bridge
+    silently overwrote the conversion's table and the index recorded only the
+    last writer. Each now writes into its own variant directory, both tables
+    exist, and both rows are kept.
     """
+    from mosaic.core.pipeline.tracks_index import select_variant_rows
     from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 
     ds = _dataset(tmp_path)
@@ -324,8 +327,17 @@ def test_a_second_producer_replaces_the_first_rather_than_adding_a_row(
         overwrite=True,
     )
 
-    row = _one_row(ds)
-    assert str(row["producer"]) == "infer-points"
+    rows = read_tracks_index(ds)
+    assert len(rows) == 2
+    assert set(rows["producer"]) == {"convert-trex_npz", "infer-points"}
+    # Two rows, two tables, two directories -- neither overwrote the other.
+    tables = {ds.resolve_path(str(path)) for path in rows["abs_path"]}
+    assert len({table.parent for table in tables}) == 2
+    assert all(table.exists() for table in tables)
+
+    # And an unasked resolution now declines rather than taking the last writer.
+    with pytest.raises(ValueError, match="tracks_run_id"):
+        _ = select_variant_rows(rows)
 
 
 # --- superseded entries ----------------------------------------------------

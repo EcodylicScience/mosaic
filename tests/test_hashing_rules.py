@@ -302,6 +302,48 @@ def test_chain_runner_predicts_what_run_feature_computes(
     assert predicted == computed
 
 
+def test_chain_runner_prediction_honours_the_tracks_selector(tmp_path: Path) -> None:
+    """The selector must reach *both* halves of the chain runner or neither.
+
+    Execution splats ``run_kwargs`` into ``run_feature``, so a ``tracks_run_id``
+    there takes effect whether or not prediction knows about it. Prediction reads
+    keys by name. Left unread, the two would hash different ``_tracks`` terms:
+    ``status()`` would report a step permanently not-cached, and
+    ``clean(dry_run=False)`` -- whose keep set is the identifiers it predicted --
+    would delete the directory ``run()`` had just written.
+    """
+    from mosaic.core.dataset import new_dataset_manifest
+
+    from .conftest import add_tracks_variant
+
+    manifest = new_dataset_manifest(name="pinned", base_dir=tmp_path / "dataset")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    variant = "convert-trex_npz.0.1-aaaaaaaaaa"
+    add_tracks_variant(dataset, variant, "seq_a", "seq_b")
+    add_tracks_variant(dataset, "trex.0.1-bbbbbbbbbb", "seq_a", "seq_b")
+
+    pipeline = Pipeline()
+    _ = pipeline.add(
+        FeatureStep(
+            "pca",
+            FEATURES["PairPoseDistancePCA"],
+            None,
+            run_kwargs={"tracks_run_id": variant},
+        )
+    )
+    predicted = pipeline._resolve_step_cache(dataset)[0]["expected_run_id"]
+
+    executed = dataset.run_feature(
+        build_feature("pair-posedistance-pca", None, None), tracks_run_id=variant
+    )
+    assert predicted == executed.run_id
+
+    # And the second run reads cached, which is what proves the *universe* was
+    # narrowed to the pinned variant too: measured against the whole index the
+    # step would look permanently incomplete.
+    assert pipeline._resolve_step_cache(dataset)[0]["cached"]
+
+
 def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None:
     """The remaining half of P2e, owned by 1.1 rather than 0.1.
 

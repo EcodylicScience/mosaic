@@ -1127,6 +1127,7 @@ class Dataset:
         entries: Iterable[tuple[str, str]],
         *,
         delete_files: bool = False,
+        run_id: Optional[str] = None,
     ) -> int:
         """Remove ``(group, sequence)`` rows from the standardized-tracks index.
 
@@ -1145,6 +1146,11 @@ class Dataset:
             entries: The ``(group, sequence)`` pairs to drop.
             delete_files: Also unlink each row's parquet. Off by default -- an
                 orphaned table is recoverable, a deleted one is not.
+            run_id: Drop only this variant's rows for those entries. ``None``,
+                the default, drops every variant -- which is what a rename
+                cleanup wants, and what this did when an entry could only have
+                one row. Name one to retire a single recipe and keep the rest,
+                which is also how an entry stops being ambiguous.
 
         Returns:
             How many index rows were dropped.
@@ -1159,6 +1165,7 @@ class Dataset:
             frame = adopt_legacy_columns(pd.read_csv(path, keep_default_na=False))
             keep_mask = [
                 (str(row["group"]), str(row["sequence"])) not in wanted
+                or (run_id is not None and str(row["run_id"]) != run_id)
                 for _, row in frame.iterrows()
             ]
             if all(keep_mask):
@@ -4087,6 +4094,7 @@ class Dataset:
         filter_end_time: float | None = None,
         check_output: bool = False,
         *,
+        tracks_run_id: str | None = None,
         execution_id: str | None = None,
         owner: str = "",
         track: bool = True,
@@ -4108,6 +4116,10 @@ class Dataset:
                 (unambiguous when sequence names repeat across groups), e.g. a
                 tag-resolved set of sequences. Intersects with
                 ``groups``/``sequences`` when those are also given.
+            tracks_run_id: Which tracks variant the ``"tracks"`` input
+                resolves to. ``None`` lets each entry resolve to whichever
+                variant it has; name one when a sequence carries two recipes and
+                resolution declines to choose.
             overwrite: Re-run even if outputs exist for this run_id.
             parallel_workers: When >1 and the feature declares itself
                 parallelizable, run the apply phase in parallel.
@@ -4168,6 +4180,7 @@ class Dataset:
             filter_start_time=filter_start_time,
             filter_end_time=filter_end_time,
             check_output=check_output,
+            tracks_run_id=tracks_run_id,
             execution_id=execution_id,
             owner=owner,
             track=track,

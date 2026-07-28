@@ -64,6 +64,16 @@ def run_command(
             help="Restrict to group:sequence (repeatable). Feature runs only.",
         ),
     ] = None,
+    tracks_run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--tracks-run-id",
+            help=(
+                "Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. "
+                "Feature runs only; needed when one sequence has two recipes."
+            ),
+        ),
+    ] = None,
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Recompute even if a cached run exists.")
     ] = False,
@@ -121,6 +131,7 @@ def run_command(
                     feat,
                     entries=entry_pairs or None,
                     overwrite=overwrite,
+                    tracks_run_id=tracks_run_id,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,
@@ -138,6 +149,11 @@ def run_command(
             if inputs is not None:
                 fail(
                     "--inputs is not supported with --kind (ops declare inputs in Params)."
+                )
+            if tracks_run_id is not None:
+                fail(
+                    "--tracks-run-id is not supported with --kind; an op produces "
+                    "tracks rather than reading them."
                 )
             op_kind = cast("str", kind)
             from mosaic.core.pipeline.ops import run_op

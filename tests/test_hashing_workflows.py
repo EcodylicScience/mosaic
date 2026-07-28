@@ -20,8 +20,10 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import compute_run_id, run_feature
-from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
@@ -31,7 +33,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 
-from .conftest import add_track_sequences, track_sequences
+from .conftest import add_track_sequences, add_tracks_variant, track_sequences
 
 # --- Mock features -----------------------------------------------------------
 #
@@ -153,10 +155,17 @@ def test_h1_cold_run_lands_where_expected(scenario_dataset: Dataset) -> None:
 def test_h1_tracking_intermediates_are_separated_from_results(
     scenario_dataset: Dataset,
 ) -> None:
-    """``tracks/`` means standardized results; every intermediate goes elsewhere."""
+    """``tracks/`` means standardized results; every intermediate goes elsewhere.
+
+    Asserted through ``has_root`` rather than ``get_root``, which raises
+    ``KeyError`` on an unset root -- so this used to die before reaching an
+    assertion at all, and a strict xfail only proves a test fails, not that it
+    fails for the reason its marker claims.
+    """
     roots = {p.name for p in Path(scenario_dataset.get_root("tracks")).iterdir()}
     assert "trex" not in roots, "a tracker intermediate is living inside tracks/"
-    assert (scenario_dataset.get_root("_tracking")).exists()
+    assert scenario_dataset.has_root("_tracking"), "the _tracking root does not exist"
+    assert scenario_dataset.get_root("_tracking").exists()
 
 
 @pytest.mark.xfail(
@@ -243,21 +252,56 @@ def test_h2_an_unlabelled_tracks_index_leaves_the_identifier_alone() -> None:
     assert before == after
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M2: tracks are not variant-addressed, so two tracker settings cannot "
-        "coexist -- all five writers target one flat path behind an exists() skip "
-        "and the second is discarded. Closes with Stage 3."
-    ),
-)
-def test_h2_two_tracks_variants_coexist(scenario_dataset: Dataset) -> None:
-    """Two settings, two variants, two feature runs, one storage directory."""
-    tracks = scenario_dataset.get_root("tracks")
-    variants = [p for p in tracks.iterdir() if p.is_dir()]
-    assert len(variants) >= 2, (
-        "tracks/ holds one flat namespace, not variant directories"
+def test_h2_two_tracks_variants_coexist(tmp_path: Path) -> None:
+    """Two settings, two variants, two feature runs, one storage directory.
+
+    The M2 gate. Before Stage 3 the second producer's table was discarded behind
+    an ``exists() and not overwrite`` skip and its row overwrote the first's, so
+    none of this was observable: one directory, one row, one identifier, and the
+    numbers in the parquet belonging to whichever ran first.
+    """
+    manifest = new_dataset_manifest(name="two-variants", base_dir=tmp_path / "dataset")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    first_variant = "convert-trex_npz.0.1-aaaaaaaaaa"
+    second_variant = "trex.0.1-bbbbbbbbbb"
+    add_tracks_variant(dataset, first_variant, "seq_a")
+    add_tracks_variant(dataset, second_variant, "seq_a")
+
+    tracks = dataset.get_root("tracks")
+    assert sorted(p.name for p in tracks.iterdir() if p.is_dir()) == [
+        first_variant,
+        second_variant,
+    ]
+    assert len(read_tracks_index(dataset)) == 2, "both rows must survive"
+
+    first = run_feature(dataset, _PerFrame(), tracks_run_id=first_variant)
+    second = run_feature(dataset, _PerFrame(), tracks_run_id=second_variant)
+
+    assert first.run_id != second.run_id, "two variants must be two identifiers"
+
+    # ...inside ONE storage directory and ONE index. If the tracks identity had
+    # reached the storage suffix instead, every tool that enumerates a feature's
+    # history would see one partitioned universe per tracks recipe.
+    storage = dataset.get_root("features") / "scenario-per-frame__from__tracks"
+    assert storage.is_dir()
+    assert sorted(p.name for p in storage.iterdir() if p.is_dir()) == sorted(
+        [str(first.run_id), str(second.run_id)]
     )
+    index = feature_index(feature_index_path(dataset, storage.name))
+    assert set(index.read()["run_id"]) == {first.run_id, second.run_id}
+
+
+def test_h2_an_unpinned_run_over_two_variants_refuses_rather_than_guessing(
+    tmp_path: Path,
+) -> None:
+    """The other half of the gate: no silent default between two recipes."""
+    manifest = new_dataset_manifest(name="ambiguous", base_dir=tmp_path / "dataset")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    add_tracks_variant(dataset, "convert-trex_npz.0.1-aaaaaaaaaa", "seq_a")
+    add_tracks_variant(dataset, "trex.0.1-bbbbbbbbbb", "seq_a")
+
+    with pytest.raises(ValueError, match="tracks_run_id"):
+        _ = run_feature(dataset, _PerFrame())
 
 
 # --- H3: source change -- the input moved -------------------------------------

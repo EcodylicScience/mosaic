@@ -424,6 +424,7 @@ def run_feature(
     filter_end_time: float | None = None,
     check_output: bool = False,
     *,
+    tracks_run_id: str | None = None,
     execution_id: str | None = None,
     owner: str = "",
     track: bool = True,
@@ -449,6 +450,13 @@ def run_feature(
         unambiguous when sequence names repeat across groups -- e.g. running a
         feature over a tag-resolved set of sequences. Intersects with
         ``groups``/``sequences`` when those are also given.
+    tracks_run_id : str | None
+        Which tracks *variant* the ``"tracks"`` input resolves to. ``None``, the
+        default, lets each entry resolve to whichever variant it has -- which is
+        every dataset except one holding two genuinely different recipes for the
+        same sequence, where resolution refuses rather than guesses and this is
+        the way to answer it. ``""`` names the unlabelled tables written before
+        tracks carried an identity.
     overwrite : bool
         Overwrite existing outputs for this run_id.
     parallel_workers : int | None
@@ -522,6 +530,7 @@ def run_feature(
             groups=groups,
             sequences=sequences,
             entries=entries,
+            tracks_run_id=tracks_run_id,
             overwrite=overwrite,
             parallel_workers=parallel_workers,
             parallel_mode=parallel_mode,
@@ -543,6 +552,7 @@ def _run_feature_impl(
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
     entries: Iterable[tuple[str, str]] | None = None,
+    tracks_run_id: str | None = None,
     overwrite: bool = False,
     parallel_workers: int | None = None,
     parallel_mode: str | None = "thread",
@@ -610,7 +620,12 @@ def _run_feature_impl(
         scope = Scope()
     else:
         manifest, scope = build_manifest(
-            ds, feature.inputs, groups_set, sequences_set, entries_set
+            ds,
+            feature.inputs,
+            groups_set,
+            sequences_set,
+            entries_set,
+            tracks_run_id=tracks_run_id,
         )
 
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
@@ -1111,12 +1126,19 @@ def load_values(
     filter_start_time: float | None = None,
     filter_end_time: float | None = None,
     pair_filter: NNResult | None = None,
+    tracks_run_id: str | None = None,
 ) -> pd.DataFrame:
     """Load and align value columns from tracks, features, and labels.
 
     Sources can reference tracks columns, feature output columns, or
     ground-truth labels. All are aligned by frame/id via a single
     manifest pass.
+
+    ``tracks_run_id`` names one tracks variant, and is only consulted when a
+    ``TracksColumn`` is among the sources -- that is what puts the ``"tracks"``
+    literal into the synthetic inputs below. Without it a notebook reading a
+    column from a dataset holding two recipes for one sequence would meet the
+    resolver's refusal with no keyword able to answer it.
     """
     source_list = list(sources)
     if not source_list:
@@ -1168,7 +1190,12 @@ def load_values(
     )
 
     manifest, scope = build_manifest(
-        ds, synthetic_inputs, groups_set, sequences_set, entries_set
+        ds,
+        synthetic_inputs,
+        groups_set,
+        sequences_set,
+        entries_set,
+        tracks_run_id=tracks_run_id,
     )
 
     # Frame range

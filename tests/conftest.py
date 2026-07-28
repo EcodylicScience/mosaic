@@ -146,9 +146,73 @@ def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> 
     index.to_csv(tracks / "index.csv", index=False)
 
 
+def add_tracks_variant(
+    dataset: Dataset, run_id: str, *sequences: str, n_rows: int = 40
+) -> None:
+    """Write a variant-addressed track table per sequence, through the real writer.
+
+    The counterpart to :func:`add_track_sequences`, which stays deliberately
+    unlabelled -- it is the pre-Stage-3 dataset every existing analysis has, and
+    keeping one fixture in that shape is what keeps proving that such a dataset
+    still resolves and still hashes the same. This one is the shape a conversion
+    writes today: tables under ``tracks/<run_id>/`` and rows naming the recipe.
+
+    Uses ``write_tracks_row`` rather than a hand-built CSV, so the index it
+    produces is the index production produces -- including the dedup that decides
+    whether a second call adds a row or replaces one.
+    """
+    from mosaic.core.helpers import make_entry_key
+    from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    root = tracks_variant_root(dataset.get_root("tracks"), run_id)
+    root.mkdir(parents=True, exist_ok=True)
+    for sequence in sequences:
+        # Schema-valid ``trex_v1`` with two individuals, rather than the four
+        # columns ``add_track_sequences`` writes. That is what lets a
+        # *registered* feature actually run on this fixture -- including the
+        # social ones, which need a sequence to hold at least two ids -- which
+        # the chain-runner parity assertions depend on. ``feat_a`` stays for the
+        # scenario mock features that read it.
+        frame = np.tile(np.arange(n_rows, dtype=np.int64), 2)
+        identity = np.repeat(np.arange(2, dtype=np.int64), n_rows)
+        total = len(frame)
+        columns: dict[str, object] = {
+            "frame": frame,
+            "time": frame / 30.0,
+            "id": identity,
+            "group": [""] * total,
+            "sequence": [sequence] * total,
+            "X#wcentroid": np.linspace(0.0, 10.0, total) + identity,
+            "Y#wcentroid": np.linspace(0.0, 5.0, total) + identity,
+            "feat_a": np.linspace(0.0, 1.0, total),
+        }
+        for keypoint in range(7):
+            columns[f"poseX{keypoint}"] = np.linspace(0.0, 10.0, total) + keypoint
+            columns[f"poseY{keypoint}"] = np.linspace(0.0, 5.0, total) + keypoint
+        out_path = root / f"{make_entry_key('', sequence)}.parquet"
+        pd.DataFrame(columns).to_parquet(out_path)
+        write_tracks_row(
+            dataset,
+            run_id=run_id,
+            group="",
+            sequence=sequence,
+            out_path=out_path,
+            producer=run_id.split(".")[0],
+            std_format="trex_v1",
+            n_rows=n_rows,
+        )
+
+
 def track_sequences(dataset: Dataset) -> list[str]:
-    """The sequence names currently present in ``tracks/``."""
-    return sorted(p.stem for p in dataset.get_root("tracks").glob("*.parquet"))
+    """The sequence names the tracks index currently names.
+
+    Read from the index rather than globbed off the root, so it answers the same
+    for a flat legacy layout and for variant directories.
+    """
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    return sorted({str(name) for name in read_tracks_index(dataset)["sequence"]})
 
 
 @pytest.fixture
