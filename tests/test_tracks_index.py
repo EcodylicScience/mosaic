@@ -679,18 +679,6 @@ def test_a_duplicate_entry_resolves_to_one_manifest_entry(tmp_path: Path) -> Non
     assert list(read_tracks_index(ds)["run_id"]) == ["trex.0.1-bbbbbbbbbb"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A per-frame feature whose tracks scope is empty is recorded as a "
-        "finished run: run.py's global marker fires on `not manifest` alone, "
-        "which cannot tell an input-free global feature from a per-frame one "
-        "that resolved to nothing. Pre-existing and outside Stage 2 -- but "
-        "reachable from Pipeline.run and .clean, not only .status, so a "
-        "mispredicted identifier there is a deletion hazard. The fix is to gate "
-        "the marker on the feature declaring no inputs at all."
-    ),
-)
 def test_an_empty_tracks_scope_is_not_recorded_as_a_completed_run(
     tmp_path: Path,
 ) -> None:

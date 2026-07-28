@@ -953,8 +953,25 @@ def _run_feature_impl(
             executor.shutdown(wait=False, cancel_futures=True)
         raise
 
-    # Global marker (for empty-input features)
-    if _total_written == 0 and not _pending_idx_rows and not manifest:
+    # Global marker (for empty-input features).
+    #
+    # ``feature.inputs.is_empty`` is load-bearing, not belt-and-braces. An empty
+    # manifest has two very different causes: a global feature that declares no
+    # pipeline inputs and legitimately writes one artifact for the whole run, and
+    # a *per-frame* feature whose inputs resolved to nothing -- an empty tracks
+    # index, a scope narrowing that intersected to nothing, a selector matching no
+    # variant. On ``not manifest`` alone the second case gets a ``__global__`` row
+    # and, since ``all([])`` is True below, a finished marker: a run that computed
+    # nothing, recorded as having completed something. That is reached from
+    # ``Pipeline.run`` and ``.clean``, not only ``.status``, so it is a deletion
+    # hazard rather than a display defect. ``is_empty`` is the same discriminator
+    # ``run_feature`` already uses to decide whether to build a manifest at all.
+    if (
+        _total_written == 0
+        and not _pending_idx_rows
+        and not manifest
+        and feature.inputs.is_empty
+    ):
         _pending_idx_rows.append(
             FeatureIndexRow(
                 run_id=run_id,
@@ -977,7 +994,9 @@ def _run_feature_impl(
     # marks it once; a run that skipped an entry still owned by a live (or
     # crashed-within-window) peer sees a missing file and stays unfinished, so it
     # is resumable rather than falsely finished. Empty manifest / global-marker
-    # runs have no entries → all([]) is True → finished, as before.
+    # runs have no entries → all([]) is True → finished, as before. A per-frame
+    # feature that resolved to nothing now writes no row above, so this marks
+    # nothing: ``mark_finished`` is a no-op when no row carries the run_id.
     all_entries = {
         resolve_sequence_identity(entry_key, scope.entry_map) for entry_key in manifest
     }
