@@ -47,7 +47,7 @@ video files
 raw tracks/labels
    │
    ├─ index_tracks_raw()     → tracks_raw/index.csv
-   ├─ convert_all_tracks()   → tracks/<group>__<seq>.parquet  (standardized)
+   ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet  (standardized)
    ├─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
    │
    └─ run_feature()          → features/<name>/<run_id>/*.parquet

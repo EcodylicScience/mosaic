@@ -133,7 +133,8 @@ named roots:
 
 - `media/`        — video files + `index.csv` (ffprobe metadata)
 - `tracks_raw/`   — raw input tracks/labels + `index.csv`
-- `tracks/`       — standardized `<group>__<seq>.parquet` + typed `index.csv`
+- `tracks/<variant>/` — standardized `<group>__<seq>.parquet`, one directory
+                  per tracks recipe, + a single typed `index.csv`
 - `labels/<kind>/` — converted manual labels (`.npz`)
 - `features/<name>/<run_id>/` — per-feature outputs
 - `models/<name>/<run_id>/`   — trained model artifacts
@@ -257,7 +258,7 @@ video files
 
 raw tracks/labels
    ├─ index_tracks_raw()     → tracks_raw/index.csv
-   ├─ convert_all_tracks()   → tracks/<group>__<seq>.parquet
+   ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 
 run_feature(...)             → features/<name>/<run_id>/*.parquet
@@ -284,9 +285,9 @@ and `consumed_source_roots` (dataset root *keys*, comma-joined and sorted).
 
 Three invariants worth knowing:
 
-- **One row per `(group, sequence)`** — `dedup_keys` is the pair, not the
-  `run_id` triple its sibling indexes use, because all five writers still target
-  one flat parquet path. Stage 3.4 adds `run_id` and makes a second row legal.
+- **One row per `(run_id, group, sequence)`** — the triple its sibling indexes
+  use. An entry may carry several variants, because each writes into its own
+  `tracks/<variant>/` directory.
 - **Absent is empty.** A missing index reads as an empty frame carrying the full
   schema; nothing raises. Code that must tell a human to convert first checks for
   zero rows (see `mosaic sequences`).
@@ -294,9 +295,24 @@ Three invariants worth knowing:
   memory inside the write lock; readers project without touching disk, so a
   read-only mount works and looking at a legacy dataset does not rewrite it.
 
-`build_manifest(..., tracks_run_id=...)` selects one variant; `None` means every
-row (not "latest" — a mixed dataset carries different variants on different
-entries).
+Writing a second row and *resolving* one are different questions.
+`select_variant_rows()` answers the second, and is the only place that does: an
+unlabelled row (`run_id` empty — every row written before variants existed) loses
+to a labelled one for the same entry, and two genuinely different recipes for one
+entry **raise** rather than guess. Different entries carrying different
+variants — some converted, some tracked — stays legal, which is why `None` never
+meant "the latest run".
+
+Pass `tracks_run_id=` to answer a refusal: on `run_feature`,
+`Dataset.run_feature`, `build_manifest`, `load_values`, and `--tracks-run-id` on
+`mosaic run`; `run_id=` on `load_tracks` and `drop_entries`. `""` names the
+unlabelled tables explicitly.
+
+The resolved variants enter the feature `run_id` (the `_tracks` term) and
+**never** the storage directory name, so `features/<name>__from__tracks/` stays
+one directory and one index however many tracks recipes a dataset holds. The term
+is omitted when the index names none, which is why a dataset converted before
+this scheme keeps the identifiers it already has.
 
 ### Entry names are one path component
 
