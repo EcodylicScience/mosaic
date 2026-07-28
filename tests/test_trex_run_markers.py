@@ -57,6 +57,8 @@ def clean_facts_cells(width: int = 640, height: int = 480) -> dict[str, object]:
         frame_count=100,
         codec="h264",
         duration=100 / 30.0,
+        video_uuid="",
+        identity_scheme="",
     )
     facts = dataclasses.replace(
         facts,

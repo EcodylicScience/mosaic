@@ -58,6 +58,8 @@ def _clean_media_facts(
         frame_count=frame_count,
         codec=codec,
         duration=frame_count / fps,
+        video_uuid="",
+        identity_scheme="",
     )
     return dataclasses.replace(
         facts,
@@ -628,6 +630,8 @@ def _derivative_facts_cells() -> dict:
         frame_count=100,
         codec="h264",
         duration=100 / 30.0,
+        video_uuid="",
+        identity_scheme="",
     )
     return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,7 @@ pytest.importorskip("imgstore")
 from mosaic_media import MediaProbeError  # noqa: E402
 
 from mosaic.core.dataset import Dataset  # noqa: E402
+from mosaic.core.media.imgstore_io import imgstore_store_identity  # noqa: E402
 
 _SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
 
@@ -135,6 +137,49 @@ def test_index_media_synced_cameras_collapse_to_one_sequence(tmp_path, make_imgs
     assert set(store_rows["sync_uuid"]) == {_SYNC_UUID}
     # Each camera is numbered from 0 -- never a cross-camera concatenation.
     assert set(store_rows["video_order"].astype(int)) == {0}
+
+
+def test_index_media_gives_each_store_its_own_mint(tmp_path, make_imgstore):
+    """Each camera's row carries its own ``__store.uuid``, not the shared sync id.
+
+    The two are deliberately different things and the whole reason open item O5
+    could be answered yes: ``sync_uuid`` is shared across a recording's cameras
+    and safe to collide, so it can never name a single store, while
+    ``__store.uuid`` differs per store and can. Asserted against the metadata
+    rather than a literal, because the uuid is minted at store creation and is
+    different on every run -- which is itself the limitation
+    ``STORE_IDENTITY_SCHEME`` exists to advertise.
+    """
+    ds = _make_dataset(tmp_path)
+    search = tmp_path / "raw"
+    dirs = {
+        serial: make_imgstore(
+            name=f"rec.{serial}",
+            parent=search,
+            extra_metadata=_camera_meta(serial, _SYNC_UUID),
+        )[0]
+        for serial in ("CAMA", "CAMB")
+    }
+
+    out_csv = ds.index_media([search])
+    df = pd.read_csv(out_csv, keep_default_na=False)
+    store_rows = df[df["media_type"] == "imgstore"]
+
+    minted = {
+        serial: imgstore_store_identity(path).store_uuid
+        for serial, path in dirs.items()
+    }
+    assert all(minted.values()), "every imgstore carries a __store.uuid"
+    assert minted["CAMA"] != minted["CAMB"], "a mint names one store, not a recording"
+    assert dict(zip(store_rows["camera"], store_rows["video_uuid"])) == minted
+    # A store has no elementary stream, so nothing to hash for duplicates.
+    assert set(store_rows["content_digest"]) == {""}
+    # And the value says which regime produced it, so a reader can tell a
+    # declared identity from a measured one without knowing what a store is.
+    schemes = {
+        json.loads(cell)["identity_scheme"] for cell in store_rows["media_facts"]
+    }
+    assert schemes == {"imgstore/1"}
 
 
 def test_index_media_unsynced_stores_stay_separate_sequences(tmp_path, make_imgstore):

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
@@ -11,6 +12,7 @@ from mosaic.core.media.facts_columns import (
     media_row_uuid,
     read_link_cell,
 )
+from mosaic.core.media.imgstore_io import imgstore_store_identity
 from mosaic.core.media.probe_row import probe_video_metadata
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
@@ -23,6 +25,18 @@ from mosaic.core.pipeline.transcode import set_forward_link
 MakeDataset = Callable[[Path], Dataset]
 MakeImgstore = Callable[..., tuple[Path, list[np.ndarray]]]
 WriteVideo = Callable[..., None]
+
+
+def _strip_store_uuid(store_dir: Path) -> None:
+    """Remove ``__store.uuid`` from a store's metadata, leaving it unminted.
+
+    The shape of a store written before Motif recorded a uuid, and the only way
+    to build an unminted store now that :func:`imgstore_probe` reads one.
+    """
+    metadata = store_dir / "metadata.yaml"
+    loaded = yaml.safe_load(metadata.read_text())
+    _ = loaded["__store"].pop("uuid", None)
+    _ = metadata.write_text(yaml.safe_dump(loaded))
 
 
 def test_read_link_cell_treats_every_absent_form_as_empty() -> None:
@@ -116,17 +130,22 @@ def test_carry_forward_matches_a_renamed_original_by_uuid(
     assert _links_by_name(ds) == {"renamed.mp4": "clip.analysis.mp4"}
 
 
-def test_carry_forward_drops_an_unminted_imgstore_link(
+def test_carry_forward_drops_a_link_on_a_store_with_no_uuid(
     tmp_path: Path, make_media_dataset: MakeDataset, make_imgstore: MakeImgstore
 ) -> None:
-    # An imgstore is the one media type that can never carry an identity, so both
-    # the prior row and the freshly probed one are unminted. Matching is by
-    # video_uuid alone with no path fallback, so a link on an unminted row cannot
-    # be carried to any row -- it is simply dropped.
+    # Since open item O5 a store mints its __store.uuid, so "an imgstore can
+    # never carry an identity" -- the premise this test was written on -- is no
+    # longer true, and the store this fixture builds is minted. What is still
+    # true, and is what the test is actually for, is that matching is by
+    # video_uuid alone with no path fallback: a *prior* row carrying no uuid
+    # matches nothing, so its link is dropped rather than mis-attached. Stripping
+    # the store's uuid from its metadata reproduces exactly that row, and is also
+    # the real shape of a store written before Motif recorded one.
     base = (tmp_path / "dataset").resolve()
     ds = make_media_dataset(base)
     sequence_dir = base / "media_raw" / "seqA"
     store_dir, _frames = make_imgstore(name="store", parent=sequence_dir)
+    _strip_store_uuid(store_dir)
     derivative = base / "media" / "clip.analysis.mp4"
     derivative.parent.mkdir(parents=True, exist_ok=True)
     _ = derivative.write_bytes(b"x")
@@ -153,9 +172,49 @@ def test_carry_forward_drops_an_unminted_imgstore_link(
             ds.get_root(ds.resolve_media_root()) / "index.csv"
         )
     }
-    # The imgstore really is unminted, so nothing carries its link forward.
+    # The store carries no uuid, so nothing matches it and the link is dropped
+    # rather than attached to some other row by path.
     assert records[store_dir.name]["video_uuid"] == ""
     assert records[store_dir.name]["analysis_derivative_path"] == ""
+
+
+def test_carry_forward_matches_a_minted_store_by_its_uuid(
+    tmp_path: Path, make_media_dataset: MakeDataset, make_imgstore: MakeImgstore
+) -> None:
+    """A store now names itself, so the uuid map reaches it like anything else.
+
+    Dormant in practice -- no store holds a derivative link, and transcoding one
+    is refused -- but it is the visible half of open item O5, and the assertion
+    that a mint really did land in the same column a derived value uses.
+    """
+    base = (tmp_path / "dataset").resolve()
+    ds = make_media_dataset(base)
+    sequence_dir = base / "media_raw" / "seqA"
+    store_dir, _frames = make_imgstore(name="store", parent=sequence_dir)
+    minted = imgstore_store_identity(store_dir).store_uuid
+    assert minted, "the fixture's store must carry a __store.uuid"
+    derivative = base / "media" / "clip.analysis.mp4"
+    derivative.parent.mkdir(parents=True, exist_ok=True)
+    _ = derivative.write_bytes(b"x")
+
+    _write_prior_index(
+        ds,
+        [
+            {
+                "name": "renamed_store",
+                "abs_path": "media_raw/seqA/renamed_store",
+                "media_type": "imgstore",
+                "video_uuid": minted,
+                "analysis_derivative_path": "clip.analysis.mp4",
+            }
+        ],
+    )
+
+    _ = ds.write_media_index(
+        [MediaIndexScope(directory=sequence_dir, group="g", sequence="seqA")]
+    )
+
+    assert _links_by_name(ds) == {store_dir.name: "clip.analysis.mp4"}
 
 
 def test_carry_forward_does_not_cross_a_link_on_a_colliding_path_key_with_a_different_uuid(

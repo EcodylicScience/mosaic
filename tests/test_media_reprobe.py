@@ -946,10 +946,17 @@ def test_a_second_run_changes_nothing_and_leaves_no_second_backup(
 def test_an_imgstore_row_does_not_force_a_rewrite_every_run(
     dataset: Dataset, make_imgstore: MakeImgstore
 ) -> None:
-    # store_facts gives a store an empty identity permanently, so it is always
-    # "unmintable". Its stored facts, not its identity, decide whether it needs a
-    # write -- otherwise every applied run would rewrite it and drop another
-    # backup, without bound.
+    # The invariant is unchanged and the mechanism is not. A store used to be
+    # permanently "unmintable" -- it carried no identity, so identity could never
+    # call it settled and its stored facts had to decide. Since open item O5 it
+    # mints its __store.uuid, so it settles the ordinary way: "minted" on the run
+    # that first records the uuid, "unchanged" on every run after.
+    #
+    # That settling is exactly what _classify's split by regime buys. A store has
+    # a uuid and never a content_digest, so under the old either-is-empty test it
+    # would stay "unmintable" forever and --apply could never backfill the uuid;
+    # under a naive fix it would report "minted" forever, and every applied run
+    # would rewrite the index and drop another backup, without bound.
     store_dir, _frames = make_imgstore(
         name="store", parent=dataset.base_dir / "media_raw"
     )
@@ -972,10 +979,14 @@ def test_an_imgstore_row_does_not_force_a_rewrite_every_run(
     second = dataset.reprobe_media(apply=True)
 
     assert first.changed
-    assert first.unmintable == 1
-    assert _by_name(dataset)[store_dir.name]["media_facts"]
+    assert first.minted == 1
+    assert first.unmintable == 0
+    stored = _by_name(dataset)[store_dir.name]
+    assert stored["media_facts"]
+    assert stored["video_uuid"], "a store now names itself with its __store.uuid"
+    assert stored["content_digest"] == "", "a store has no stream to hash"
     assert len(backups_after_first) == 1
-    assert second.unmintable == 1
+    assert second.unchanged == 1
     _assert_second_run_is_a_no_op(index_path, second, after_first, backups_after_first)
 
 
@@ -1585,5 +1596,5 @@ def test_an_imgstore_row_is_detected_without_a_media_type_cell(
     report = dataset.reprobe_media(apply=True)
 
     assert report.unprobeable == []
-    assert report.unmintable == 1
+    assert report.minted == 1
     assert _by_name(dataset)[store_dir.name]["media_facts"]

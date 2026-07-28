@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, TypeGuard
+from typing import Final, Iterator, TypeGuard
 
 import cv2
 import numpy as np
@@ -108,23 +108,55 @@ def is_imgstore(path: Path | str) -> bool:
     return isinstance(data, dict) and _STORE_MD_KEY in data
 
 
+STORE_IDENTITY_SCHEME: Final = "imgstore/1"
+"""The regime a store's ``video_uuid`` is produced under (open item O5).
+
+Namespaced rather than a bare counter, and that is the whole point: a plain
+video's ``identity_scheme`` is ``mosaic-media``'s ``"1"``, meaning a value
+*derived* from a packet scan, and this one means a value *declared* by whoever
+wrote the store. One column can hold both because the value says which it is; a
+reader that cannot tell a mint from a measurement would draw a conclusion neither
+supports.
+
+**What the namespace advertises is a weakness, so state it.** A store's uuid is
+minted once at creation and written into ``metadata.yaml``. It cannot be
+re-derived, so a re-probe cannot audit it: chunks edited in place keep the uuid
+and the change goes undetected, where a derived ``video_uuid`` would move. What
+it *does* buy is a stable per-store identity at the right granularity -- per
+store, matching the per-camera media composition (rule P3) -- where before there
+was none at all. A store re-recorded into the same directory does get a new uuid,
+so that much is detected.
+
+A store still has no ``content_digest``: there is no elementary stream to hash,
+duplicate detection over stores is a different question, and inventing a value
+here would be the confident-wrong-answer the honest empty exists to avoid.
+"""
+
+
 @dataclass(frozen=True)
 class StoreIdentity:
-    """Motif/Loopbio identity fields read from a store's ``metadata.yaml`` root.
+    """Motif/Loopbio identity fields read from a store's ``metadata.yaml``.
 
     Every field is an empty string for a non-Motif store, or when a key is
     absent or non-string -- which the media index reads as a single-camera
     plain store. ``sync_uuid`` is the document-root ``synchronizationuuid``
-    (the recording id shared by every camera of one synchronized recording),
-    **not** ``__store.uuid`` (which differs per store). ``title`` is
-    display-only -- it may contain spaces and differ from the directory name --
-    and is never used for identity.
+    (the recording id shared by every camera of one synchronized recording);
+    ``store_uuid`` is ``__store.uuid``, which **differs per store** and is
+    therefore the one that can name a single store. That difference used to be
+    the reason to avoid ``__store.uuid``; under open item O5 it is the reason to
+    read it, into the ``video_uuid`` a store had no value for. The two are not
+    interchangeable and neither may stand in for the other: ``sync_uuid`` is
+    deliberately shared and safe to collide, ``store_uuid`` is not.
+
+    ``title`` is display-only -- it may contain spaces and differ from the
+    directory name -- and is never used for identity.
     """
 
     camera_serial: str = ""
     sync_uuid: str = ""
     synchronization: str = ""
     title: str = ""
+    store_uuid: str = ""
 
 
 _EMPTY_STORE_IDENTITY = StoreIdentity()
@@ -144,9 +176,12 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
 
     Reuses the document-root YAML parse of :func:`is_imgstore` (no ``imgstore``
     import), reading the document-**root** keys ``camera_serial``,
-    ``synchronizationuuid``, ``synchronization`` and ``title``. A missing key,
-    a non-string value, or an unreadable / non-store path yields an empty
-    field; a non-Motif store returns all-empty (a single camera).
+    ``synchronizationuuid``, ``synchronization`` and ``title``, plus ``uuid``
+    from the nested ``__store`` descriptor -- the one field here that is not a
+    root key, because that is where imgstore writes it. A missing key, a
+    non-string value, or an unreadable / non-store path yields an empty field; a
+    non-Motif store returns all-empty except ``store_uuid``, which every
+    imgstore has.
     """
     p = Path(path)
     md = p / _STORE_MD_FILENAME if p.is_dir() else p
@@ -165,11 +200,18 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
         value = root.get(key)
         return value if isinstance(value, str) else ""
 
+    store_descriptor = root.get(_STORE_MD_KEY)
+    store_uuid = ""
+    if _is_str_dict(store_descriptor):
+        uuid_value = store_descriptor.get("uuid")
+        store_uuid = uuid_value if isinstance(uuid_value, str) else ""
+
     return StoreIdentity(
         camera_serial=_str("camera_serial"),
         sync_uuid=_str("synchronizationuuid"),
         synchronization=_str("synchronization"),
         title=_str("title"),
+        store_uuid=store_uuid,
     )
 
 
@@ -223,6 +265,11 @@ def imgstore_probe(path: Path | str) -> ProbeMetadata:
     populate ``media/index.csv``.
     """
     m = _read_store_meta(path)
+    # A second, cheap YAML read rather than plumbing the descriptor out of
+    # NativeStore: that class parses ``__store`` for format/encoding/class/shape
+    # and keeps none of it, and widening it to carry an identity would put a
+    # decode-path type in the identity path for one string.
+    store_uuid = imgstore_store_identity(path).store_uuid
     facts = store_facts(
         width=m.width,
         height=m.height,
@@ -230,6 +277,8 @@ def imgstore_probe(path: Path | str) -> ProbeMetadata:
         frame_count=m.frame_count,
         codec=m.codec,
         duration=m.duration,
+        video_uuid=store_uuid,
+        identity_scheme=STORE_IDENTITY_SCHEME if store_uuid else "",
     )
     return {
         "width": m.width,

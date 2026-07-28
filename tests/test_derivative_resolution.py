@@ -53,6 +53,8 @@ def _facts_cell(frame_count: int) -> str:
         frame_count=frame_count,
         codec="h264",
         duration=frame_count / 30.0,
+        video_uuid="",
+        identity_scheme="",
     )
     return json.dumps(dataclasses.asdict(facts))
 

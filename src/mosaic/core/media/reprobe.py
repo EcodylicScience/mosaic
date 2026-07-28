@@ -323,12 +323,33 @@ def _classify(row: Mapping[str, object], probe: ProbeMetadata) -> IdentityChange
     drifted. Treating an absent value as a differing one would report every row
     of a pre-identity media index as drift on the one run where a clean report
     matters.
+
+    **The absence test is split by what the row's regime actually mints**, and
+    that split is not optional. A store carries a uuid (its ``__store.uuid``,
+    open item O5) and never a ``content_digest`` -- there is no elementary stream
+    to hash. Under a single "either is empty" test a store would stay permanently
+    ``unmintable``, so ``reprobe --apply`` could never backfill the uuid onto an
+    already-indexed row. Under a naive fix it would classify ``"minted"`` on
+    every run, because ``recorded_digest`` is empty forever, and
+    :func:`_needs_patch` would then rewrite the index and drop a backup on every
+    run without bound -- the failure that function's docstring already warns
+    about. Branching on whether the *probe* produced a digest gives each regime
+    its own settled state.
     """
-    if not probe["video_uuid"] or not probe["content_digest"]:
-        # An imgstore: store_facts carries no identity, so there is nothing to
-        # mint and nothing to compare.
+    if not probe["video_uuid"]:
+        # No identity at all: a store whose metadata carries no uuid, or a probe
+        # that produced nothing. Neither has anything to mint or compare.
         return "unmintable"
     recorded_uuid = read_link_cell(row, "video_uuid")
+    if not probe["content_digest"]:
+        # A store: uuid-only. It settles on the uuid alone, and a re-recorded
+        # store (a fresh mint in the same directory) is detected. Chunks edited
+        # in place are not -- see STORE_IDENTITY_SCHEME, which exists to say so.
+        if not recorded_uuid:
+            return "minted"
+        if recorded_uuid != probe["video_uuid"]:
+            return "video_uuid_changed"
+        return "unchanged"
     recorded_digest = read_link_cell(row, "content_digest")
     if not recorded_uuid or not recorded_digest:
         return "minted"
@@ -342,11 +363,14 @@ def _classify(row: Mapping[str, object], probe: ProbeMetadata) -> IdentityChange
 def _needs_patch(row: Mapping[str, object], change: IdentityChange) -> bool:
     """True when this row's line would not be written back identically.
 
-    An imgstore is permanently ``unmintable``, so identity can never call it
-    settled; were that treated as needing a write, every applied run over a
-    media index holding one store would rewrite it and drop another backup,
-    without bound. Its stored MediaFacts cell decides instead, and that cell is
-    empty exactly once -- on the run that first measures the store.
+    ``"unmintable"`` means identity can never call this row settled; were that
+    treated as needing a write, every applied run over a media index holding one
+    would rewrite it and drop another backup, without bound. Its stored
+    MediaFacts cell decides instead, and that cell is empty exactly once -- on
+    the run that first measures the file. A store used to live here permanently;
+    since open item O5 it mints its ``__store.uuid`` and settles on
+    ``"unchanged"`` like anything else, and only a store whose metadata carries
+    no uuid at all still lands in this branch.
 
     A stale facts cell needs a write even when identity classifies the row
     ``"unchanged"``: the same bytes still mint the same uuid and digest, so

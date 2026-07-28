@@ -261,6 +261,8 @@ def store_facts(
     frame_count: int,
     codec: str,
     duration: float,
+    video_uuid: str,
+    identity_scheme: str,
 ) -> MediaFacts:
     """Build a full :class:`MediaFacts` for an imgstore, whose reader needs no
     transcode negotiation: coded dimensions with no rotation, constant frame
@@ -269,9 +271,17 @@ def store_facts(
     set to neutral values matching their declared type.
 
     An imgstore is a directory of chunks with no elementary stream to hash, so
-    it carries no identity, and -- since no ffprobe runs over it -- no identity
-    scheme or prober version. Its frame rate is constant by construction, so
+    it has no ``content_digest`` and -- since no ffprobe runs over it -- no
+    prober version. Its frame rate is constant by construction, so
     timing_measured is True despite no prober having run.
+
+    *video_uuid* and *identity_scheme* are **required** rather than defaulted,
+    following this module's rule that every field is a claim the caller states
+    rather than one it inherits. A store's uuid is a mint read from its
+    metadata, not a measurement (open item O5), so the scheme is what tells a
+    reader which kind of value it is holding -- and a defaulted pair would let a
+    caller ship an unmarked mint by omission. ``""`` for both is the honest
+    answer for a store whose metadata carries no uuid.
     """
     return MediaFacts(
         container="imgstore",
@@ -300,8 +310,8 @@ def store_facts(
         max_keyframe_interval_frames=0,
         max_gop_bytes=0,
         timing_measured=True,
-        video_uuid="",
+        video_uuid=video_uuid,
         content_digest="",
-        identity_scheme="",
+        identity_scheme=identity_scheme,
         prober_version="",
     )

@@ -354,6 +354,29 @@ def test_a_source_with_no_uuid_refuses_to_transcode(
         )
 
 
+def test_an_imgstore_refuses_to_transcode(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """The refusal is explicit now that a store has a uuid to pass the other one.
+
+    Until open item O5 a store carried no ``video_uuid``, so the empty-uuid check
+    was the only thing keeping it out of this path -- an accident, and one that
+    stopped being true the moment a store started naming itself. Left implicit,
+    ffmpeg would be handed a directory.
+    """
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset, minted=True)
+    index_path = ds.get_root(ds.resolve_media_root()) / "index.csv"
+    rows = list(read_media_index(index_path))
+    for row in rows:
+        row["media_type"] = "imgstore"
+    write_media_index_rows(index_path, frame_from_rows(list(rows)))
+
+    with pytest.raises(TranscodeError, match="imgstore"):
+        _ = run_op(
+            ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
+        )
+
+
 def test_the_run_identity_ignores_the_source_order() -> None:
     assert transcode_run_id("abc123", ["b", "a"]) == transcode_run_id(
         "abc123", ["a", "b"]

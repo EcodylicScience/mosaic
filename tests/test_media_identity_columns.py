@@ -10,6 +10,7 @@ from mosaic.core.media.facts_columns import (
     facts_to_row,
     store_facts,
 )
+from mosaic.core.media.imgstore_io import STORE_IDENTITY_SCHEME
 from mosaic.core.pipeline.media_index import build_media_index_row
 from mosaic.media_probe_config import media_thresholds
 
@@ -19,7 +20,9 @@ def sample_facts() -> MediaFacts:
     # store_facts builds a valid MediaFacts cheaply (no probe needed); replace
     # the empty identity with explicit non-empty values so the test can assert
     # facts_to_row actually carries them through.
-    base = store_facts(320, 240, 25.0, 250, "h264", 10.0)
+    base = store_facts(
+        320, 240, 25.0, 250, "h264", 10.0, video_uuid="", identity_scheme=""
+    )
     return dataclasses.replace(
         base, video_uuid="video-uuid-abc123", content_digest="content-digest-def456"
     )
@@ -73,14 +76,34 @@ def test_build_media_index_row_overrides_source_video_uuid(
     assert row["source_video_uuid"] == "the-source-uuid"
 
 
-def test_store_facts_states_the_empty_identity_and_provenance() -> None:
-    facts = store_facts(320, 240, 25.0, 10, "h264", 10.0)
-    # An imgstore has no elementary stream to hash and no ffprobe runs over it,
-    # so both the identity (video_uuid, content_digest) and the provenance
-    # (identity_scheme, prober_version) are empty. Every field is required, so
-    # the emptiness is a claim store_facts states, not a default it inherits.
-    assert facts.video_uuid == ""
+def test_store_facts_carries_a_mint_and_never_a_content_digest() -> None:
+    facts = store_facts(
+        320,
+        240,
+        25.0,
+        10,
+        "h264",
+        10.0,
+        video_uuid="store-uuid-abc123",
+        identity_scheme=STORE_IDENTITY_SCHEME,
+    )
+    # Since open item O5 a store carries an identity, but a *declared* one: its
+    # __store.uuid, minted at creation, which the namespaced scheme marks as a
+    # mint rather than a measurement. There is still no elementary stream to
+    # hash, so content_digest stays empty, and no ffprobe runs, so
+    # prober_version does too. Both remain claims store_facts states rather than
+    # defaults it inherits.
+    assert facts.video_uuid == "store-uuid-abc123"
+    assert facts.identity_scheme == "imgstore/1"
     assert facts.content_digest == ""
     assert facts.timing_measured is True
-    assert facts.identity_scheme == ""
     assert facts.prober_version == ""
+
+
+def test_store_facts_states_an_empty_identity_when_there_is_no_uuid() -> None:
+    """A store whose metadata carries no uuid is honest about it, not guessed."""
+    facts = store_facts(
+        320, 240, 25.0, 10, "h264", 10.0, video_uuid="", identity_scheme=""
+    )
+    assert facts.video_uuid == ""
+    assert facts.identity_scheme == ""

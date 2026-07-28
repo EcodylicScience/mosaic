@@ -329,7 +329,20 @@ class TranscodeOp(Op[TranscodeParams]):
         # been re-probed fails immediately rather than half way through.
         source_uuids: list[str] = []
         for _, source_path, row in sources:
-            source_uuid = media_row_uuid(row_mapping(row))
+            cells = row_mapping(row)
+            # An explicit refusal, not an implicit one. Until open item O5 a
+            # store carried no video_uuid, so the empty-uuid check below was the
+            # only thing keeping one out of this path -- and ffmpeg would have
+            # been handed a directory. Now that a store mints its uuid that check
+            # passes, so the kind has to be named. Whether a store can be
+            # transcoded at all is a separate question O5 does not decide.
+            if str(cells.get("media_type", "")) == "imgstore":
+                message = (
+                    f"{group}/{sequence}: {source_path} is an imgstore, which "
+                    f"has no elementary stream to transcode"
+                )
+                raise TranscodeError(message)
+            source_uuid = media_row_uuid(cells)
             if not source_uuid:
                 message = (
                     f"{group}/{sequence}: {source_path} has no video_uuid in the "
