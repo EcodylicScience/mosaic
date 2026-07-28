@@ -1658,6 +1658,7 @@ class Dataset:
                     else fallback_safe,
                     probe=entry.probe,
                     media_type=entry.media_type,
+                    assignment_source="scan-keymap" if meta else "scan-stem",
                 )
             )
         rows.extend(
@@ -1799,6 +1800,12 @@ class Dataset:
                         sync_uuid=entry.sync_uuid,
                         probe=entry.probe,
                         media_type=entry.media_type,
+                        # A store's identity is its directory name (minus the
+                        # camera serial) whether or not the keymap matched, so
+                        # both outcomes are the same kind of derivation and get
+                        # one value -- unlike a plain video, where a keymap hit
+                        # and a stem fallback are genuinely different claims.
+                        assignment_source="scan-imgstore-sync",
                     )
                 )
         return rows
@@ -1945,6 +1952,7 @@ class Dataset:
                         sync_uuid=entry.sync_uuid,
                         probe=entry.probe,
                         media_type=entry.media_type,
+                        assignment_source="assigned",
                     )
                 )
             for name, position in scope.order_by_name.items():

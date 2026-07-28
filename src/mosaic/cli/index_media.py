@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -10,6 +11,7 @@ from mosaic_media import VIDEO_EXTENSIONS
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, stdout_to_stderr
+from mosaic.core.media.facts_columns import read_link_cell
 
 
 def index_media_command(
@@ -59,7 +61,15 @@ def index_media_command(
             )
     except Exception as exc:  # noqa: BLE001 - surface indexing errors cleanly
         fail(f"index-media failed: {exc}")
+    # How many rows had their (group, sequence) guessed rather than given. A scan
+    # cannot report this any other way, and it is what tells a user whether the
+    # partition their compositions will be computed over is one they chose.
+    assigned = Counter(
+        read_link_cell(row, "assignment_source") for row in ds.read_media_index()
+    )
     if as_json:
-        emit_json({"index": str(path)})
+        emit_json(
+            {"index": str(path), "assignment_source": dict(sorted(assigned.items()))}
+        )
     else:
         typer.echo(str(path))

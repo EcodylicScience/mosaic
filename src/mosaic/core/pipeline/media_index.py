@@ -27,7 +27,7 @@ from typing import TypeVar
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
+from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, AssignmentSource
 from mosaic.core.pipeline._utils import atomic_write
 
 # Numeric media-index columns; every other column is a text cell that must round
@@ -141,6 +141,7 @@ def build_media_index_row(
     camera: str = "",
     sync_uuid: str = "",
     media_type: str = "video",
+    assignment_source: AssignmentSource = "",
     source_path: str | None = None,
     source_video_uuid: str | None = None,
     recipe_hash: str | None = None,
@@ -162,6 +163,9 @@ def build_media_index_row(
     media) and *sync_uuid* the recording id that groups a recording's cameras;
     both feed :func:`densify_video_order` (which numbers ``video_order`` per
     ``(group, sequence, camera)``) and persist as schema columns.
+    *assignment_source* records how this row's ``(group, sequence)`` was arrived
+    at; it defaults to ``""`` so a caller that has not been taught the column
+    writes an honest unknown rather than a wrong claim.
     """
     size_bytes = getattr(stat, "st_size")
     mtime = getattr(stat, "st_mtime")
@@ -178,6 +182,7 @@ def build_media_index_row(
         "mtime_iso": mtime_iso(mtime),
         "media_type": media_type,
         "video_order": video_order,
+        "assignment_source": assignment_source,
         **probe,
     }
     if source_path is not None:

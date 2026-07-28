@@ -246,6 +246,11 @@ def _derivative_row(
     }
     # facts_to_row leaves source_path/source_video_uuid/recipe_hash empty; the
     # back-link records the origin and the recipe it was produced under.
+    #
+    # No assignment_source: a derivative takes its (group, sequence) from the
+    # source row it was made from and has no derivation of its own to record.
+    # Nothing reads it here either -- the per-sequence composition is over
+    # media_raw, and media/ holds no sequence semantics (rule P6).
     return build_media_index_row(
         path=output_path,
         stat=output_path.stat(),

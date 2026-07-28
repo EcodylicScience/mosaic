@@ -547,6 +547,46 @@ def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> N
     assert after[0]["analysis_derivative_path"] == "seqA.analysis.mp4"
 
 
+def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
+    """Assigned, keymap-matched and stem-derived identities are distinguishable.
+
+    Item 4.7's question -- whether the scan path may be authoritative -- is
+    answered per row rather than by a break: a sequence whose rows say
+    ``scan-keymap`` derived a *source* root's identity from a *derived* one, so
+    the per-sequence composition can decline to compute a value for it instead of
+    recording a confident wrong one.
+
+    This is also the suite's first coverage of a keymap *hit*: every other media
+    test has an empty or absent tracks index and takes the fallback path.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
+    ds.set_root("tracks", str(tmp_path / "tracks"))
+    ds.ensure_roots()
+    (tmp_path / "tracks" / "index.csv").write_text(
+        "run_id,group,sequence,abs_path\n,,known,tracks/known.parquet\n"
+    )
+
+    scanned = tmp_path / "media_raw" / "scanned"
+    _cfr_mp4(scanned / "known.mp4")
+    _cfr_mp4(scanned / "stranger.mp4")
+    ds.index_media([scanned], extensions=(".mp4",))
+
+    by_name = {row["name"]: row["assignment_source"] for row in ds.read_media_index()}
+    assert by_name == {"known.mp4": "scan-keymap", "stranger.mp4": "scan-stem"}
+
+    assigned_dir = tmp_path / "media_raw" / "seqA"
+    _cfr_mp4(assigned_dir / "a.mp4")
+    ds.write_media_index(
+        [MediaIndexScope(directory=assigned_dir, group="", sequence="seqA")],
+        extensions=(".mp4",),
+    )
+    after = {row["name"]: row["assignment_source"] for row in ds.read_media_index()}
+    assert after["a.mp4"] == "assigned"
+    # The scan's rows are outside this write's scope, so they keep their cells.
+    assert after["known.mp4"] == "scan-keymap"
+
+
 _FINALIZE_PROBE = """
 import sys
 from pathlib import Path

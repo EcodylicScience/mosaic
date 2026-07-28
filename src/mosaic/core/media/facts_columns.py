@@ -12,7 +12,7 @@ import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from mosaic_media import MediaFacts, Verdict
 from mosaic_media.transcode import Target
@@ -69,7 +69,35 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     "media_type",
     *FACTS_COLUMNS,
     "video_order",
+    # How this row learned its (group, sequence) -- see AssignmentSource. Not a
+    # measured fact and never hashed: it says how much to trust the identity the
+    # other columns are keyed on, which is what lets the per-sequence composition
+    # (item 4.4) refuse to compute a value for a guessed partition rather than
+    # record a confident wrong one.
+    "assignment_source",
 ]
+
+AssignmentSource = Literal[
+    "", "assigned", "scan-stem", "scan-keymap", "scan-imgstore-sync"
+]
+"""Where a media row's ``(group, sequence)`` came from.
+
+- ``"assigned"`` -- the caller said so, through a ``MediaIndexScope``. The only
+  cycle-free source: identity comes from outside and nothing derives it.
+- ``"scan-stem"`` -- no track matched, so the file's own stem became its
+  sequence. Stable only as long as the filename is.
+- ``"scan-keymap"`` -- matched against a keymap built from ``tracks/index.csv``,
+  which makes a *source* row's identity a function of a *derived* root. Item 4.7
+  calls that backwards and it is why a composition over such a sequence is not
+  well defined: converting more tracks would silently repartition media.
+- ``"scan-imgstore-sync"`` -- a store's directory name, minus its camera-serial
+  suffix, grouped with the other cameras sharing its ``sync_uuid``.
+- ``""`` -- no claim. Either the row predates the column (the house idiom for an
+  honest unknown) or it is a derivative under ``media/``, which takes its
+  identity from the source row it was made from and has none of its own. Both
+  are "do not draw a conclusion from this row's partition", which is the only
+  thing a reader may do with an empty cell.
+"""
 
 # The analysis and playback transcode verdicts are independent: each target gets
 # its own derivative and its own forward-link column, so a playback transcode can
