@@ -54,6 +54,7 @@ __all__ = [
     "encode_source_roots",
     "legacy_view",
     "read_tracks_index",
+    "select_variant_rows",
     "tracks_index",
     "tracks_index_path",
     "write_tracks_row",
@@ -254,6 +255,75 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
         out[column] = pd.Series(cells, index=df.index, dtype="object")
     deduped = out.drop_duplicates(subset=["group", "sequence"], keep="last")
     return deduped.reset_index(drop=True)
+
+
+def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataFrame:
+    """Reduce a tracks frame to one row per ``(group, sequence)``.
+
+    The single place that decides *which variant an entry resolves to*, so the
+    resolver, ``Dataset.load_tracks`` and the chain runner's target universe
+    cannot answer it three different ways. Order-preserving.
+
+    ``run_id`` given selects that variant exactly. ``""`` is a legal argument and
+    names the *unlabelled* tables -- rows written before variants existed -- which
+    is how a pre-Stage-3 flat layout stays addressable by name.
+
+    ``run_id`` of ``None`` means "whichever variant this entry has", and the rule
+    it applies is that **an empty ``run_id`` is unknown, never a peer variant**.
+    Every dataset converted before Stage 3 has a full index of empty ones, and
+    the first ordinary re-conversion writes a labelled row beside each. Treating
+    those as two competing recipes would make the ambiguity below fire on every
+    existing dataset, with ``''`` as one of the candidates the user is asked to
+    choose between -- so a labelled row supersedes an unlabelled one for the same
+    entry. Nothing is deleted: the row stays in the index as a record, and
+    reverting Stage 3 finds it again.
+
+    Two genuinely different recipes for one entry is the case with no defensible
+    default, and it raises. Different entries carrying different variants -- some
+    converted, some tracked -- stays legal and is the mixed dataset the resolver
+    has always been expected to handle.
+    """
+    if df.empty:
+        return df.reset_index(drop=True)
+
+    # The three identity columns as plain lists, once. Row-wise ``df.iloc[i]``
+    # inside the loops below would be quadratic on an index with a row per
+    # sequence, and this is on the path of every feature run.
+    run_ids = [str(value) for value in df["run_id"]]
+    groups = [str(value) for value in df["group"]]
+    sequences = [str(value) for value in df["sequence"]]
+
+    if run_id is not None:
+        named = [i for i, value in enumerate(run_ids) if value == run_id]
+        return df.iloc[named].reset_index(drop=True)
+
+    positions_by_entry: dict[tuple[str, str], list[int]] = {}
+    for position, entry in enumerate(zip(groups, sequences, strict=True)):
+        positions_by_entry.setdefault(entry, []).append(position)
+
+    keep: list[int] = []
+    for entry, positions in positions_by_entry.items():
+        labelled = [p for p in positions if run_ids[p]]
+        variants = sorted({run_ids[p] for p in labelled})
+        if len(variants) > 1:
+            raise ValueError(_ambiguous_variant_message(entry, variants))
+        # Last wins within one variant, matching what every reader effectively
+        # did with a duplicate before the index enforced uniqueness.
+        keep.append((labelled or positions)[-1])
+    return df.iloc[sorted(keep)].reset_index(drop=True)
+
+
+def _ambiguous_variant_message(entry: tuple[str, str], variants: list[str]) -> str:
+    """Name the entry, both candidates, and the keyword that resolves it."""
+    group, sequence = entry
+    listing = ", ".join(repr(variant) for variant in variants)
+    return (
+        f"tracks/index.csv holds {len(variants)} variants of "
+        f"(group={group!r}, sequence={sequence!r}): {listing}. "
+        f"There is no defensible default between two recipes, so say which one "
+        f"to read: pass tracks_run_id=<variant> to run_feature, build_manifest, "
+        f"load_tracks or drop_entries, or --tracks-run-id on the command line."
+    )
 
 
 def legacy_view(df: pd.DataFrame) -> pd.DataFrame:

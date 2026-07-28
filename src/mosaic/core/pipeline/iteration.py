@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import read_tracks_index, select_variant_rows
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -46,12 +46,22 @@ def yield_sequences(
     groups: Iterable[str] | None = None,
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
+    run_id: str | None = None,
 ) -> Iterator[tuple[str, str, pd.DataFrame]]:
     """
     Yield (group, sequence, df) for standardized tracks present in tracks/index.csv,
     filtered by groups and/or sequences if provided.
+
+    ``run_id`` names one tracks variant. Both iterators here walk *rows*, so
+    without the shared variant selector an entry carrying two of them would be
+    yielded twice -- silently doubling a sequence rather than failing.
     """
-    df_idx = _filter_index(read_tracks_index(ds), groups, sequences, allowed_pairs)
+    df_idx = _filter_index(
+        select_variant_rows(read_tracks_index(ds), run_id),
+        groups,
+        sequences,
+        allowed_pairs,
+    )
 
     for _, row in df_idx.iterrows():
         g, s = str(row["group"]), str(row["sequence"])
@@ -67,6 +77,7 @@ def yield_sequences_with_overlap(
     sequences: Iterable[str] | None = None,
     allowed_pairs: set[tuple[str, str]] | None = None,
     overlap_frames: int = 0,
+    run_id: str | None = None,
 ) -> Iterator[tuple[str, str, pd.DataFrame, int, int]]:
     """
     Yield (group, sequence, df, df_core_start, df_core_end) with optional overlap from adjacent sequences.
@@ -110,12 +121,15 @@ def yield_sequences_with_overlap(
     ...     features_trimmed = features.iloc[start:end]
     """
     if overlap_frames <= 0:
-        for g, s, df in yield_sequences(ds, groups, sequences, allowed_pairs):
+        for g, s, df in yield_sequences(ds, groups, sequences, allowed_pairs, run_id):
             yield g, s, df, 0, len(df)
         return
 
-    # Single index read for path lookup, adjacency, and filtering
-    df_idx = read_tracks_index(ds)
+    # Single index read for path lookup, adjacency, and filtering. Through the
+    # variant selector: `seqs_by_group` below is a list built per row, so a
+    # second row for one entry would put that pair in the adjacency list twice
+    # and make a sequence its own neighbour.
+    df_idx = select_variant_rows(read_tracks_index(ds), run_id)
 
     # Build path lookup and sorted sequence list per group (for adjacency).
     #

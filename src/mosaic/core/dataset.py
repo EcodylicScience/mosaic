@@ -102,6 +102,7 @@ from .pipeline.tracks_index import (
     adopt_legacy_columns,
     legacy_view,
     read_tracks_index,
+    select_variant_rows,
     tracks_index_path,
     write_tracks_row,
 )
@@ -4019,16 +4020,24 @@ class Dataset:
         prefer: str = "standard",
         auto_convert: bool = True,
         convert_params: Optional[dict] = None,
+        run_id: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Load T-Rex-like standardized tracks if present; otherwise optionally auto-convert from raw.
+
+        ``run_id`` names one tracks variant. Left ``None`` the entry resolves the
+        same way it does for a feature run -- an unlabelled table loses to a
+        labelled one, and two genuinely different recipes raise rather than pick.
         """
-        # Try standardized index first
-        idx_std = self.get_root("tracks") / "index.csv"
-        if idx_std.exists():
-            df_idx = pd.read_csv(idx_std)
-            hit = df_idx[
-                (df_idx["group"].fillna("") == group) & (df_idx["sequence"] == sequence)
+        # Try standardized index first. Through the typed reader and the shared
+        # variant selector, not a bare read_csv: the old spelling matched on
+        # ``len(hit) == 1`` and so, the moment an entry carried two variants,
+        # fell through to *re-converting* rather than reading the table it had.
+        rows = select_variant_rows(read_tracks_index(self), run_id)
+        if not rows.empty:
+            hit = rows[
+                (rows["group"].astype(str) == group)
+                & (rows["sequence"].astype(str) == sequence)
             ]
             if len(hit) == 1:
                 return pd.read_parquet(self.resolve_path(hit.iloc[0]["abs_path"]))

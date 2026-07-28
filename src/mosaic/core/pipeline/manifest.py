@@ -22,7 +22,7 @@ from .index import (
     missing_outputs_error,
 )
 from .loading import load_entry_data
-from .tracks_index import read_tracks_index, tracks_index_path
+from .tracks_index import read_tracks_index, select_variant_rows, tracks_index_path
 from .types import (
     COLUMNS,
     InputsLike,
@@ -247,39 +247,37 @@ def _resolve_tracks(
     ``run_id`` names one tracks *variant*. It takes ``_resolve_feature``'s
     second-positional slot, and mirrors it -- with one deliberate difference:
 
-    **``None`` means every row, not "the latest run".** For a feature, "latest"
-    is well defined because one feature run covers the scope it was given. A
-    tracks index is not like that: a mixed dataset carries different variants on
-    different entries -- some converted, some tracked, some inferred -- so
-    "latest" would silently collapse the universe to whichever recipe was written
-    last, and would erase every adopted legacy row (whose ``run_id`` is honestly
-    empty) the moment one new row appeared.
+    **``None`` means "whichever variant each entry has", not "the latest run".**
+    For a feature, "latest" is well defined because one feature run covers the
+    scope it was given. A tracks index is not like that: a mixed dataset carries
+    different variants on different entries -- some converted, some tracked, some
+    inferred -- so "latest" would silently collapse the universe to whichever
+    recipe was written last, and would erase every adopted legacy row (whose
+    ``run_id`` is honestly empty) the moment one new row appeared.
 
-    ``None`` is well defined *because* M1 holds one row per ``(group, sequence)``.
-    **That expires at Stage 3.4**, which makes a second row legal; ``None``
-    becomes ambiguous there and should raise until item 9.4 widens the selector.
+    That stays well defined once an entry can carry two rows because
+    :func:`~mosaic.core.pipeline.tracks_index.select_variant_rows` decides per
+    entry rather than per index: an unlabelled row loses to a labelled one, and
+    two genuinely different recipes for one entry raise rather than guess. So
+    ``None`` is legal on every dataset except the one where it has no answer.
 
     Unlike ``_resolve_feature`` this does not raise when *every* output resolves
     missing. An empty tracks manifest is a legitimate cold-start state that
     ``_read_track_universe``'s glob fallback and ``Dataset.load_tracks``'s
     auto-convert both depend on; it warns instead.
     """
-    df = read_tracks_index(ds)
-    if run_id is not None:
-        selected = df[df["run_id"] == run_id]
-        if selected.empty:
-            if on_missing_run == "raise":
-                msg = f"No tracks rows for run_id {run_id!r} in {tracks_index_path(ds)}"
-                raise FileNotFoundError(msg)
-            return set(), {}, [], {}
-        df = selected
+    df = select_variant_rows(read_tracks_index(ds), run_id)
+    if run_id is not None and df.empty:
+        if on_missing_run == "raise":
+            msg = f"No tracks rows for run_id {run_id!r} in {tracks_index_path(ds)}"
+            raise FileNotFoundError(msg)
+        return set(), {}, [], {}
 
-    # Build full (unscoped) path map and order
-    # One row per (group, sequence) is guaranteed upstream: read_tracks_index
-    # collapses duplicates keep-last, so this loop cannot see two rows for one
-    # entry and does not have to choose between them. That is what makes a
-    # ``run_id`` of None well defined. At Stage 3.4 the collapse goes and this
-    # loop becomes the place that must choose -- or refuse to.
+    # Build full (unscoped) path map and order.
+    # One row per (group, sequence) is guaranteed by select_variant_rows, which
+    # is where the choice between two variants of one entry is made -- or
+    # refused. This loop therefore still cannot see two rows for one entry, and
+    # the resolver keeps its single-answer shape whatever the index holds.
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
     missing: list[Path] = []

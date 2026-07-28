@@ -29,6 +29,7 @@ from mosaic.core.pipeline.tracks_index import (
     encode_source_roots,
     legacy_view,
     read_tracks_index,
+    select_variant_rows,
     tracks_index,
     tracks_index_path,
     write_tracks_row,
@@ -117,7 +118,14 @@ def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) ->
 
 
 def test_a_row_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
-    """``40`` not ``40.0`` -- the int column widened by a concat is the classic."""
+    """``40`` not ``40.0`` -- the int column widened by a concat is the classic.
+
+    Asserted on the ``n_rows`` cell rather than on the file text. Searching the
+    whole file for ``"40.0"`` also searches ``started_at``, which is an ISO
+    timestamp: a row written at forty-point-zero-something seconds past the
+    minute matched it, so the test failed roughly one run in six hundred for a
+    reason that had nothing to do with dtypes.
+    """
     ds = _dataset(tmp_path)
     write_tracks_row(
         ds,
@@ -129,9 +137,9 @@ def test_a_row_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
         std_format="trex_v1",
         n_rows=40,
     )
-    text = tracks_index_path(ds).read_text()
-    assert text.rstrip().endswith(",40")
-    assert "40.0" not in text
+    header, row = tracks_index_path(ds).read_text().splitlines()[:2]
+    cells = dict(zip(header.split(","), row.split(","), strict=True))
+    assert cells["n_rows"] == "40"
 
 
 # --- writing ---------------------------------------------------------------
@@ -463,6 +471,102 @@ def test_the_run_id_selector_filters_and_reports_an_unknown_run(
     assert len(idx.read(run_id="convert-x.0.1-aaaaaaaaaa")) == 1
     with pytest.raises(FileNotFoundError):
         _ = idx.read(run_id="convert-x.0.1-zzzzzzzzzz")
+
+
+# --- select_variant_rows ---------------------------------------------------
+
+
+def _rows(*specs: tuple[str, str, str]) -> pd.DataFrame:
+    """A minimal tracks frame from ``(run_id, group, sequence)`` triples."""
+    frame = pd.DataFrame(
+        {column: pd.Series(dtype="object") for column in TRACKS_INDEX_COLUMNS}
+    )
+    built = [
+        {
+            **{column: "" for column in TRACKS_INDEX_COLUMNS},
+            "run_id": run_id,
+            "group": group,
+            "sequence": sequence,
+            "abs_path": f"tracks/{run_id or 'flat'}/{sequence}.parquet",
+        }
+        for run_id, group, sequence in specs
+    ]
+    return pd.concat([frame, pd.DataFrame(built)], ignore_index=True)
+
+
+def test_an_unlabelled_row_is_left_alone_when_it_is_all_there_is() -> None:
+    """Every pre-Stage-3 dataset is entirely unlabelled; nothing may change."""
+    rows = select_variant_rows(_rows(("", "", "a"), ("", "", "b")))
+    assert list(rows["sequence"]) == ["a", "b"]
+    assert list(rows["run_id"]) == ["", ""]
+
+
+def test_a_labelled_row_supersedes_an_unlabelled_one_for_the_same_entry() -> None:
+    """The state one ordinary re-conversion of an existing dataset produces.
+
+    An empty ``run_id`` means "predates the scheme", not "a recipe called
+    nothing", so it is an ancestor rather than a competitor. Were it treated as a
+    peer, the ambiguity below would fire on every dataset in existence the first
+    time someone re-ran their conversion cell.
+    """
+    rows = select_variant_rows(_rows(("", "", "a"), ("convert-x.0.1-aa", "", "a")))
+    assert list(rows["run_id"]) == ["convert-x.0.1-aa"]
+
+
+def test_two_real_variants_of_one_entry_refuse_to_choose() -> None:
+    """Two recipes for one table has no defensible default."""
+    rows = _rows(("convert-x.0.1-aa", "", "a"), ("trex.0.1-bb", "", "a"))
+    with pytest.raises(ValueError) as excinfo:
+        _ = select_variant_rows(rows)
+    message = str(excinfo.value)
+    assert "convert-x.0.1-aa" in message
+    assert "trex.0.1-bb" in message
+    assert "sequence='a'" in message
+    assert "tracks_run_id" in message, "the error must name the way out"
+
+
+def test_the_ambiguity_message_never_offers_an_unlabelled_candidate() -> None:
+    """An empty run_id is not something a caller could pass to disambiguate.
+
+    A non-empty group here so that the only ``''`` the message could contain is
+    a candidate rather than an empty group name.
+    """
+    rows = _rows(
+        ("", "g", "a"), ("convert-x.0.1-aa", "g", "a"), ("trex.0.1-bb", "g", "a")
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _ = select_variant_rows(rows)
+    message = str(excinfo.value)
+    assert "2 variants" in message
+    assert "''" not in message
+
+
+def test_different_entries_may_carry_different_variants() -> None:
+    """A mixed dataset -- some converted, some tracked -- stays resolvable."""
+    rows = select_variant_rows(
+        _rows(("convert-x.0.1-aa", "", "a"), ("trex.0.1-bb", "", "b"))
+    )
+    assert list(rows["sequence"]) == ["a", "b"]
+
+
+def test_selecting_a_variant_by_name_takes_exactly_it() -> None:
+    rows = select_variant_rows(
+        _rows(("convert-x.0.1-aa", "", "a"), ("trex.0.1-bb", "", "a")),
+        "trex.0.1-bb",
+    )
+    assert list(rows["run_id"]) == ["trex.0.1-bb"]
+
+
+def test_the_unlabelled_tables_stay_addressable_by_name() -> None:
+    """``run_id=""`` names the pre-Stage-3 flat layout, which is the way back."""
+    rows = select_variant_rows(_rows(("", "", "a"), ("convert-x.0.1-aa", "", "a")), "")
+    assert len(rows) == 1
+    assert str(rows.iloc[0]["abs_path"]) == "tracks/flat/a.parquet"
+
+
+def test_an_empty_frame_selects_to_an_empty_frame() -> None:
+    """A cold dataset must not raise on the way to reporting it has no tracks."""
+    assert select_variant_rows(_rows()).empty
 
 
 # --- legacy_view -----------------------------------------------------------

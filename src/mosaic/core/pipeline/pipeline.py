@@ -28,6 +28,7 @@ from .index import feature_index_path, feature_run_root, list_feature_runs
 from .manifest import build_manifest
 from .resolve import resolve_references
 from .run import compute_run_id
+from .tracks_index import read_tracks_index, select_variant_rows
 from .types import Feature, Inputs, Result, TrackLike
 
 if TYPE_CHECKING:
@@ -136,7 +137,9 @@ def storage_name(feature: object) -> str:
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
 
 
-def _read_track_universe(ds: "Dataset") -> frozenset[tuple[str, str]]:
+def _read_track_universe(
+    ds: "Dataset", tracks_run_id: str | None = None
+) -> frozenset[tuple[str, str]]:
     """All ``(group, sequence)`` pairs the dataset can process, from tracks.
 
     This is the *intended* sequence universe — the pipeline's target scope
@@ -145,11 +148,18 @@ def _read_track_universe(ds: "Dataset") -> frozenset[tuple[str, str]]:
     (``manifest.py``): only rows whose track file actually exists are kept.
     Returns an empty set if the tracks index is absent (e.g. a fresh dataset),
     which makes the cache check fall back to the legacy "any parquet" glob.
+
+    ``tracks_run_id`` must be the *same* selector the steps resolve with, and it
+    is why this takes one at all. A step pinned to a variant covering part of the
+    index would otherwise be measured for completeness against the whole index,
+    read as permanently incomplete, and mark every downstream step stale on every
+    invocation.
+
+    Reads through the shared typed reader and variant selector rather than its
+    own ``read_csv``, so "which rows count" has one answer across the resolver,
+    ``load_tracks`` and this.
     """
-    idx_path = ds.get_root("tracks") / "index.csv"
-    if not idx_path.exists():
-        return frozenset()
-    df = pd.read_csv(idx_path, keep_default_na=False)
+    df = select_variant_rows(read_tracks_index(ds), tracks_run_id)
     out: set[tuple[str, str]] = set()
     for _, row in df.iterrows():
         abs_path = str(cast(object, row["abs_path"]))
