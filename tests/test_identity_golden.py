@@ -240,6 +240,58 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "global-scaler"}],
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
+    # --- archived analyses: identifiers that must never move ---
+    #
+    # The delivery document owes a manual re-run of the guppies analysis once per
+    # identity-shifting milestone, to confirm a track-only dataset keeps
+    # bit-identical identifiers. These three cases are that check, automated.
+    #
+    # **Their golden lines were transcribed from disk, not generated.** They are
+    # the directory names under ``features/`` in the archived guppies dataset on
+    # JD-SSD, together with the ``_params``/``_inputs`` recorded in each run's
+    # ``params.json``. Regenerating them would pin whatever the code currently
+    # produces, which is exactly the thing under test -- so if one of these moves
+    # under ``MOSAIC_UPDATE_GOLDEN=1``, the change that moved it broke an archived
+    # analysis and the right response is to fix the change, not the file.
+    #
+    # Why they are expected to hold: neither per-frame nor summary identity ever
+    # contained a sequence name, and the archived ``tracks/index.csv`` predates
+    # the ``run_id`` column entirely -- so the tracks term is *absent* rather than
+    # empty, and an absent key digests differently from an empty one.
+    Case(
+        case_id="archive/guppies/trajectory-smooth",
+        feature="trajectory-smooth",
+        params={
+            "speed_threshold": 40.0,
+            "fps": 30.0,
+            "interpolate_centroid": True,
+            "interpolate_pose": False,
+            "expand_frames": 8,
+            "savgol_window": None,
+            "savgol_polyorder": 1,
+        },
+    ),
+    Case(
+        case_id="archive/guppies/id-tag-columns",
+        feature="id-tag-columns",
+        params={
+            "labels": {"kind": "id_tags"},
+            "label_kind": "id_tags",
+            "fields": ["focal"],
+            "field_renames": {"focal": "Focal_fish"},
+        },
+    ),
+    Case(
+        case_id="archive/guppies/speed-angvel-from-smooth",
+        feature="speed-angvel",
+        inputs=[
+            {
+                "feature": "trajectory-smooth__from__tracks",
+                "run_id": "0.1-990067d93d",
+            }
+        ],
+        params={"step_size": 4, "smooth_window": 5, "fps": 30.0},
+    ),
 )
 
 

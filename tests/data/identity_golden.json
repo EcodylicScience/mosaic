@@ -1,5 +1,8 @@
 {
   "approach-avoidance/default": "0.2-d88c49e8a1",
+  "archive/guppies/id-tag-columns": "0.1-53787a4e91",
+  "archive/guppies/speed-angvel-from-smooth": "0.1-14f6a85e03",
+  "archive/guppies/trajectory-smooth": "0.1-990067d93d",
   "arhmm/from-pair-wavelet/scope-a": "0.1-7e06d70d27",
   "arhmm/from-pair-wavelet/scope-ab": "0.1-220923cd52",
   "body-scale/default": "0.1-3b632409e1",
