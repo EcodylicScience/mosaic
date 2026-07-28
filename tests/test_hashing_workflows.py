@@ -201,6 +201,48 @@ def test_h2_upstream_identity_changes_the_run_id_not_the_directory() -> None:
     )
 
 
+def test_h2_tracks_identity_changes_the_run_id_not_the_directory() -> None:
+    """The same invariant for the other input kind, which had no test at all.
+
+    ``storage_suffix()`` reads the ``"tracks"`` literal out of ``Inputs.root``,
+    and item 3.3 leaves that literal in place precisely so this holds. Had the
+    resolved variant been written into ``Inputs`` instead -- the obvious reading
+    of "resolve the literal" -- ``features/<name>__from__tracks/`` would have
+    become one directory per tracks recipe, silently, with every test still
+    green: nothing else asserts the suffix for a tracks input.
+    """
+    feature = _PerFrame()
+    one = Scope(tracks_variants=("convert-trex_npz.0.1-aaaaaaaaaa",))
+    other = Scope(tracks_variants=("trex.0.1-bbbbbbbbbb",))
+
+    first_id, _ = compute_run_id(feature, None, None, one)
+    second_id, _ = compute_run_id(feature, None, None, other)
+    unresolved_id, _ = compute_run_id(feature, None, None, Scope())
+
+    assert first_id != second_id, "the resolved tracks identity must reach the run_id"
+    assert unresolved_id not in {first_id, second_id}, (
+        "a dataset naming no variant must not collide with one that does"
+    )
+    assert feature.inputs.storage_suffix() == "tracks", (
+        "the tracks identity must not reach the storage directory name"
+    )
+
+
+def test_h2_an_unlabelled_tracks_index_leaves_the_identifier_alone() -> None:
+    """The archived-analysis guarantee, at the level of the hash function.
+
+    A dataset converted before tracks carried identities resolves to no variants
+    at all, and an absent term digests differently from an empty one -- so its
+    identifiers are the ones it already has on disk.
+    """
+    feature = _PerFrame()
+    before, _ = compute_run_id(feature, None, None, Scope(entries={("", "seq_a")}))
+    after, _ = compute_run_id(
+        feature, None, None, Scope(entries={("", "seq_a")}, tracks_variants=())
+    )
+    assert before == after
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(

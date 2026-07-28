@@ -27,15 +27,31 @@ from mosaic.runlog import (
 
 @dataclass
 class Scope:
-    """Resolved scope for feature computation.
+    """What a feature run resolved to, before it computes anything.
 
-    ``entries`` is the source of truth -- a set of (group, sequence) tuples.
-    All other identifiers are derived from it.
+    ``entries`` is the source of truth for *which sequences* -- a set of
+    (group, sequence) tuples, from which ``groups``, ``sequences``,
+    ``entry_keys`` and ``entry_map`` are all derived.
+
+    ``tracks_variants`` is the other half of "what this run reads": which tracks
+    recipes produced the tables behind those entries, sorted and deduplicated,
+    empty when nothing said. It rides here because ``build_manifest`` is what
+    learns it and ``compute_run_id`` already takes a ``Scope``, so no third
+    channel is needed between them and no state has to be stashed on the
+    feature's ``Inputs`` -- which is a module-level shared default in two dozen
+    feature modules and would leak a pin across datasets and across tests.
+
+    **It is deliberately computed before the groups/sequences/entries narrowing**
+    (see ``_resolve_tracks``). A scope-free feature gets one identifier for every
+    scope, and a term that moved with the narrowing would quietly end that,
+    minting several identifiers for one computation and leaving ``Pipeline.clean``
+    to delete all but the one it predicted.
     """
 
     entries: set[tuple[str, str]] = field(default_factory=set)
     frame_start: int | None = None
     frame_end: int | None = None
+    tracks_variants: tuple[str, ...] = ()
 
     @property
     def groups(self) -> set[str]:

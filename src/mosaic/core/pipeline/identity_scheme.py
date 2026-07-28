@@ -40,8 +40,16 @@ from ._utils import atomic_write
 
 MARKER_NAME: Final = ".identity_scheme"
 
-FEATURE_IDENTITY_SCHEME: Final = "2"
+FEATURE_IDENTITY_SCHEME: Final = "3"
 """The contract ``compute_run_id`` implements today.
+
+Scheme 3 (item 3.3): the payload gains ``_tracks``, the tracks recipes behind
+the tables a run reads, present only when the index names any. The other input
+kind was already covered -- a ``Result`` carries its upstream ``run_id`` -- so
+this closes the last consumed artifact whose identity the digest omitted.
+Because the term is omitted when absent, a dataset whose tracks predate variant
+identities digests exactly as it did under scheme 2; the marker still moves,
+because what the digest *covers* changed even where its value did not.
 
 Scheme 2 (item 1.1): every ``Result``-shaped reference is pinned to a concrete
 ``run_id`` before the payload is built, so ``_inputs`` carries the upstream run

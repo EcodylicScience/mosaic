@@ -104,13 +104,11 @@ def test_relative_index_resolves_under_a_different_root(tmp_path: Path) -> None:
     shutil.copytree(root_a, root_b)
 
     ds_b = _MockDataset(root_b)
-    scoped, path_map, full_order, path_map_all = _resolve_feature(
-        ds_b, "feat", "0.1-abc", None, None, None
-    )
-    assert scoped == {("g", "s1"), ("g", "s2")}
-    assert full_order == [("g", "s1"), ("g", "s2")]
+    result = _resolve_feature(ds_b, "feat", "0.1-abc", None, None, None)
+    assert result.entries == {("g", "s1"), ("g", "s2")}
+    assert result.full_order == [("g", "s1"), ("g", "s2")]
     # Every resolved path lives under root_b and exists.
-    for resolved, _spec in path_map_all.values():
+    for resolved, _spec in result.path_map_all.values():
         assert resolved.exists()
         assert root_b in resolved.parents
 
@@ -134,12 +132,10 @@ def test_partial_missing_run_skips(tmp_path: Path) -> None:
     (root / "features" / "feat" / "0.1-abc" / "g__s1.parquet").unlink()
 
     ds = _MockDataset(root)
-    scoped, _path_map, full_order, _path_map_all = _resolve_feature(
-        ds, "feat", "0.1-abc", None, None, None
-    )
+    result = _resolve_feature(ds, "feat", "0.1-abc", None, None, None)
     # The surviving entry is kept; the missing one is dropped (recomputed upstream).
-    assert scoped == {("g", "s2")}
-    assert full_order == [("g", "s2")]
+    assert result.entries == {("g", "s2")}
+    assert result.full_order == [("g", "s2")]
 
 
 # --- Dataset.reindex_features ---

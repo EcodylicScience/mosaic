@@ -56,6 +56,33 @@ class ManifestEntry:
 Manifest = dict[str, ManifestEntry]
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedInput:
+    """What one input of a feature resolved to.
+
+    Both resolvers return this rather than a bare tuple. They are unpacked into
+    the same four names by one dispatch loop, so a positional 4-tuple beside a
+    5-tuple would put the new field in a different slot depending on which branch
+    ran -- exactly the kind of difference that reads correctly and is not.
+
+    Attributes:
+        entries: The (group, sequence) pairs surviving the scope narrowing.
+        path_map: Those entries' files.
+        full_order: Every resolvable entry, sorted -- the ordering prev/next
+            adjacency is computed from, which is why it ignores the narrowing.
+        path_map_all: Every resolvable entry's file, likewise unnarrowed.
+        tracks_variants: Which tracks recipes produced them. Only ever non-empty
+            for the tracks resolver; a feature input's own identity is already
+            pinned in ``Inputs`` by ``resolve_references``.
+    """
+
+    entries: set[tuple[str, str]]
+    path_map: dict[tuple[str, str], tuple[Path, LoadSpec]]
+    full_order: list[tuple[str, str]]
+    path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]]
+    tracks_variants: tuple[str, ...] = ()
+
+
 def _ensure_track_shaped(
     feature_name: str,
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -132,13 +159,15 @@ def build_manifest(
     per_input_paths_all: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
     first_full_order: list[tuple[str, str]] = []
 
+    variants: tuple[str, ...] = ()
     for i, item in enumerate(inputs.root):
         if item == "tracks":
-            resolved, path_map, full_order, path_map_all = _resolve_tracks(
+            input_result = _resolve_tracks(
                 ds, tracks_run_id, groups, sequences, entries, on_missing_run
             )
+            variants = input_result.tracks_variants
         else:
-            resolved, path_map, full_order, path_map_all = _resolve_feature(
+            input_result = _resolve_feature(
                 ds,
                 item.feature,
                 item.run_id,
@@ -148,19 +177,19 @@ def build_manifest(
                 on_missing_run,
             )
             if getattr(type(inputs), "_track_input", False):
-                _ensure_track_shaped(item.feature, path_map_all)
-        per_input_entries.append(resolved)
-        per_input_paths.append(path_map)
-        per_input_paths_all.append(path_map_all)
+                _ensure_track_shaped(item.feature, input_result.path_map_all)
+        per_input_entries.append(input_result.entries)
+        per_input_paths.append(input_result.path_map)
+        per_input_paths_all.append(input_result.path_map_all)
         if i == 0:
-            first_full_order = full_order
+            first_full_order = input_result.full_order
 
     # Intersect entries across all inputs
     shared_entries: set[tuple[str, str]] = set()
     if per_input_entries:
         shared_entries = per_input_entries[0].intersection(*per_input_entries[1:])
 
-    scope = Scope(entries=shared_entries)
+    scope = Scope(entries=shared_entries, tracks_variants=variants)
 
     # Build per-group ordering from first input's full order.
     #
@@ -234,15 +263,8 @@ def _resolve_tracks(
     sequences: set[str] | None,
     entries: set[tuple[str, str]] | None = None,
     on_missing_run: MissingRunPolicy = "raise",
-) -> tuple[
-    set[tuple[str, str]],
-    dict[tuple[str, str], tuple[Path, LoadSpec]],
-    list[tuple[str, str]],
-    dict[tuple[str, str], tuple[Path, LoadSpec]],
-]:
+) -> ResolvedInput:
     """Resolve track entries and paths from tracks/index.csv.
-
-    Returns (scoped_entries, scoped_path_map, full_order, path_map_all).
 
     ``run_id`` names one tracks *variant*. It takes ``_resolve_feature``'s
     second-positional slot, and mirrors it -- with one deliberate difference:
@@ -265,13 +287,24 @@ def _resolve_tracks(
     missing. An empty tracks manifest is a legitimate cold-start state that
     ``_read_track_universe``'s glob fallback and ``Dataset.load_tracks``'s
     auto-convert both depend on; it warns instead.
+
+    **``tracks_variants`` is collected before the narrowing, not after.** It is
+    the set of recipes behind every entry this dataset resolves, not behind the
+    subset this call happens to want, and that distinction is what keeps it out
+    of trouble: it feeds the feature identifier, and a scope-free feature must
+    get one identifier for every scope. Were it scoped, ``run_feature(ds, f)``,
+    ``run_feature(ds, f, sequences=["a"])`` and ``...=["b"]`` would mint three
+    identifiers for one computation on a mixed dataset, and ``Pipeline.clean``
+    -- whose keep set is the identifiers it predicted -- would delete two of
+    them. Rows whose ``run_id`` is empty contribute nothing, so a dataset that
+    predates variants yields an empty tuple and hashes exactly as it always has.
     """
     df = select_variant_rows(read_tracks_index(ds), run_id)
     if run_id is not None and df.empty:
         if on_missing_run == "raise":
             msg = f"No tracks rows for run_id {run_id!r} in {tracks_index_path(ds)}"
             raise FileNotFoundError(msg)
-        return set(), {}, [], {}
+        return ResolvedInput(set(), {}, [], {})
 
     # Build full (unscoped) path map and order.
     # One row per (group, sequence) is guaranteed by select_variant_rows, which
@@ -281,6 +314,7 @@ def _resolve_tracks(
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
     missing: list[Path] = []
+    resolved_variants: set[str] = set()
     for _, row in df.iterrows():
         g, s = str(row["group"]), str(row["sequence"])
         entry = (g, s)
@@ -290,6 +324,10 @@ def _resolve_tracks(
             continue
         path_map_all[entry] = (p, ParquetLoadSpec())
         all_entries.append(entry)
+        # Collected here, off the *unscoped* rows, and deliberately not below
+        # in the narrowing loop -- see the note in the docstring.
+        if str(row["run_id"]):
+            resolved_variants.add(str(row["run_id"]))
 
     if missing and not all_entries:
         print(
@@ -316,7 +354,9 @@ def _resolve_tracks(
         scoped.add(entry)
         path_map[entry] = spec
 
-    return scoped, path_map, full_order, path_map_all
+    return ResolvedInput(
+        scoped, path_map, full_order, path_map_all, tuple(sorted(resolved_variants))
+    )
 
 
 def _resolve_feature(
@@ -327,15 +367,12 @@ def _resolve_feature(
     sequences: set[str] | None,
     entries: set[tuple[str, str]] | None = None,
     on_missing_run: MissingRunPolicy = "raise",
-) -> tuple[
-    set[tuple[str, str]],
-    dict[tuple[str, str], tuple[Path, LoadSpec]],
-    list[tuple[str, str]],
-    dict[tuple[str, str], tuple[Path, LoadSpec]],
-]:
+) -> ResolvedInput:
     """Resolve feature result entries and paths from the feature index CSV.
 
-    Returns (scoped_entries, scoped_path_map, full_order, path_map_all).
+    Leaves ``tracks_variants`` empty: a feature input's identity is the upstream
+    ``run_id``, which ``resolve_references`` has already pinned into ``Inputs``
+    where the digest reads it.
 
     ``on_missing_run`` governs a pinned run that the index does not hold. It is
     ``"raise"`` for execution -- consuming a run that is not there is a wrong
@@ -347,7 +384,7 @@ def _resolve_feature(
     """
     idx_path = feature_index_path(ds, feature_name)
     if not idx_path.exists():
-        return set(), {}, [], {}
+        return ResolvedInput(set(), {}, [], {})
 
     if run_id is None:
         # Unreachable from run_feature and from the chain runner: both call
@@ -371,7 +408,7 @@ def _resolve_feature(
             raise
         # The scoped read below filters on the same run_id, so it would fail
         # identically; there is nothing left to resolve.
-        return set(), {}, [], {}
+        return ResolvedInput(set(), {}, [], {})
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
     missing_all: list[Path] = []
@@ -420,7 +457,7 @@ def _resolve_feature(
         scoped.add(entry)
         path_map[entry] = (resolved, ParquetLoadSpec())
 
-    return scoped, path_map, full_order, path_map_all
+    return ResolvedInput(scoped, path_map, full_order, path_map_all)
 
 
 def _load_neighbor(

@@ -54,6 +54,9 @@ class Case:
         frame_start: Start of the frame range term.
         frame_end: End of the frame range term.
         scope: Resolved scope entries. Only affects ``scope_dependent`` features.
+        tracks_variants: Resolved tracks recipes. Affects any feature reading
+            ``tracks``, scope-dependent or not, and is omitted from the payload
+            when empty -- which is why every pre-existing case is unaffected.
     """
 
     case_id: str
@@ -63,6 +66,7 @@ class Case:
     frame_start: int | None = None
     frame_end: int | None = None
     scope: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    tracks_variants: tuple[str, ...] = field(default_factory=tuple)
 
 
 # Features that construct from ``["tracks"]`` with default params. Listed
@@ -240,6 +244,29 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "global-scaler"}],
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
+    # --- the resolved tracks variant (item 3.3) ---
+    #
+    # ``speed-angvel/default`` above is the same feature with no variants
+    # resolved, so the four together pin the whole rule: absent differs from
+    # present, one variant differs from two, and two orderings of one pair agree.
+    Case(
+        case_id="speed-angvel/tracks-one-variant",
+        feature="speed-angvel",
+        tracks_variants=("convert-trex_npz.0.1-aaaaaaaaaa",),
+    ),
+    Case(
+        case_id="speed-angvel/tracks-two-variants",
+        feature="speed-angvel",
+        tracks_variants=("convert-trex_npz.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb"),
+    ),
+    # Deliberately equal to the line above: which recipes a run read is a set,
+    # so the two spellings must digest alike. The equality in the data file is
+    # the assertion.
+    Case(
+        case_id="speed-angvel/tracks-two-variants-reversed",
+        feature="speed-angvel",
+        tracks_variants=("trex.0.1-bbbbbbbbbb", "convert-trex_npz.0.1-aaaaaaaaaa"),
+    ),
     # --- archived analyses: identifiers that must never move ---
     #
     # The delivery document owes a manual re-run of the guppies analysis once per
@@ -298,7 +325,7 @@ CASES: tuple[Case, ...] = (
 def _identifier(case: Case) -> str:
     """Compute the identifier for *case*, with no filesystem involved."""
     feature = build_feature(case.feature, case.inputs, case.params)
-    scope = Scope(entries=set(case.scope))
+    scope = Scope(entries=set(case.scope), tracks_variants=case.tracks_variants)
     run_id, _ = compute_run_id(feature, case.frame_start, case.frame_end, scope)
     return run_id
 

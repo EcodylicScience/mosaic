@@ -366,6 +366,20 @@ def compute_run_id(
     ``identity_dump()`` drops ``HASH_EXCLUDE``-marked params (throughput knobs
     like ``infer_batch_size``) so retuning them doesn't bust the cache.
 
+    ``_tracks`` names the tracks recipes behind the tables a run reads, and is
+    **added only when there are any** -- the same omit-an-absent-term rule that
+    lets ``_scope_entries`` exist for scope-dependent features without disturbing
+    the rest, since ``json.dumps(sort_keys=True)`` digests an absent key
+    differently from an empty one. Rows written before tracks carried an identity
+    have an empty ``run_id`` and contribute nothing, so every dataset converted
+    before Stage 3 keeps the identifiers it already has.
+
+    It is a term of its own rather than a substitution inside ``_inputs`` because
+    ``_inputs`` is also the wire form: ``run_feature`` ships
+    ``feature.inputs.model_dump()`` to a process worker that rebuilds it with
+    ``Inputs.model_validate``, where anything but the bare ``"tracks"`` literal
+    fails validation.
+
     Raises:
         MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
     """
@@ -384,6 +398,12 @@ def compute_run_id(
     }
     if feature.scope_dependent:
         hashable["_scope_entries"] = sorted(scope.entries)
+    if scope.tracks_variants:
+        # Sorted here as well as in the resolver. Which recipes a run read is a
+        # *set*, and `_ready` preserves list order on purpose, so hashing the
+        # tuple as given would make two spellings of one answer two identifiers
+        # for any caller that built a Scope by hand.
+        hashable["_tracks"] = sorted(scope.tracks_variants)
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
 
@@ -631,7 +651,17 @@ def _run_feature_impl(
             # computed), so this is provenance, not identity -- it makes the
             # edge readable without re-deriving it, and feeds the
             # reverse-dependency index in item 6.1.
-            "_resolved": resolution_payload(resolutions),
+            #
+            # The tracks half joins it here rather than inside `_inputs`, which
+            # has to stay the literal the process worker can revalidate. Same
+            # standing as the rest: `_tracks` is already in the digest, so this
+            # is the readable copy, and it is empty on a dataset whose tracks
+            # predate variant identities.
+            "_resolved": resolution_payload(resolutions)
+            + [
+                {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
+                for variant in scope.tracks_variants
+            ],
         }
         atomic_write(
             params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
