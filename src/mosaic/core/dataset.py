@@ -1077,17 +1077,30 @@ class Dataset:
         return results
 
     def _entry_stamps(self) -> dict[tuple[str, str], str]:
-        """``(group, sequence) -> started_at`` for every standardized-tracks row.
+        """``(group, sequence) -> latest started_at`` across that entry's rows.
 
         ``started_at`` is stamped fresh by ``RunIndexRowBase`` on every append, so
         comparing it across a conversion says which entries that conversion
         actually rewrote -- which set membership alone cannot, since a superseded
         row stays in the index rather than disappearing from it.
+
+        Aggregated per entry rather than per row, now that an entry can carry
+        several variants. The dict comprehension this replaces also produced one
+        stamp per entry -- last row wins -- and happened to pick the right one,
+        because ``IndexCSV`` removes a rewritten row and re-appends it at the
+        end, so a touched entry's newest stamp was always last. That is a real
+        property of the writer and an unstated dependency here: nothing declares
+        it, nothing tests it, and it is invisible at this call site. Asking for
+        the latest stamp says what is meant instead of relying on where the row
+        sits.
         """
-        return {
-            (str(r["group"]), str(r["sequence"])): str(r["started_at"])
-            for _, r in read_tracks_index(self).iterrows()
-        }
+        stamps: dict[tuple[str, str], str] = {}
+        for _, row in read_tracks_index(self).iterrows():
+            entry = (str(row["group"]), str(row["sequence"]))
+            stamp = str(row["started_at"])
+            if stamp > stamps.get(entry, ""):
+                stamps[entry] = stamp
+        return stamps
 
     def _warn_superseded_entries(self, before: dict[tuple[str, str], str]) -> None:
         """Say when a conversion left older rows for the same tables behind.

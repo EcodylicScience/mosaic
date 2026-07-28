@@ -21,7 +21,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
 
 
 def _dataset(base: Path) -> Dataset:
@@ -56,6 +56,15 @@ def _one_row(ds: Dataset) -> pd.Series:
     df = read_tracks_index(ds)
     assert len(df) == 1, f"expected exactly one row, got {len(df)}"
     return df.iloc[0]
+
+
+def _track_parquet(ds: Dataset, sequence: str, n_rows: int = 40) -> Path:
+    """A real parquet under tracks/, for tests that only need a row to point at."""
+    root = ds.get_root("tracks")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{sequence}.parquet"
+    pd.DataFrame({"frame": range(n_rows), "id": [0] * n_rows}).to_parquet(path)
+    return path
 
 
 def _tables_by_sequence(ds: Dataset) -> dict[str, Path]:
@@ -362,6 +371,93 @@ def test_a_conversion_that_rewrites_the_same_names_says_nothing(
     ds.convert_all_tracks(overwrite=True)
 
     assert "were not rewritten" not in capsys.readouterr().err
+
+
+def test_an_entrys_stamp_is_its_latest_whatever_the_row_order(tmp_path: Path) -> None:
+    """One stamp per entry, taken as the newest rather than the last row.
+
+    The supersede warning asks "did this call touch this entry", which an entry
+    carrying several variants can only answer by looking across its rows. The
+    dict comprehension this replaces also produced one stamp per entry -- last
+    row wins -- and was right in practice only because ``IndexCSV`` re-appends a
+    rewritten row at the end, so the newest stamp happened to be last. Here the
+    newest row is written first, which is the arrangement that told them apart.
+    """
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    ds = _dataset(tmp_path)
+    path = _track_parquet(ds, "seq_a")
+    for run_id, stamp in [
+        ("convert-x.0.1-newer0000", "2026-07-28T12:00:00+00:00"),
+        ("convert-x.0.1-older0000", "2026-07-01T12:00:00+00:00"),
+    ]:
+        write_tracks_row(
+            ds,
+            run_id=run_id,
+            group="",
+            sequence="seq_a",
+            out_path=path,
+            producer="convert-x",
+            std_format="trex_v1",
+            n_rows=40,
+        )
+        frame = read_tracks_index(ds)
+        frame.loc[frame["run_id"] == run_id, "started_at"] = stamp
+        frame.to_csv(tracks_index_path(ds), index=False)
+
+    assert list(read_tracks_index(ds)["run_id"]) == [
+        "convert-x.0.1-newer0000",
+        "convert-x.0.1-older0000",
+    ]
+    assert ds._entry_stamps()[("", "seq_a")] == "2026-07-28T12:00:00+00:00"
+
+
+def test_drop_entries_can_retire_one_variant_and_keep_the_rest(
+    tmp_path: Path,
+) -> None:
+    """Retiring a recipe is also how an ambiguous entry stops being ambiguous."""
+    from mosaic.core.pipeline.tracks_index import select_variant_rows, write_tracks_row
+
+    ds = _dataset(tmp_path)
+    for run_id in ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb"):
+        write_tracks_row(
+            ds,
+            run_id=run_id,
+            group="",
+            sequence="seq_a",
+            out_path=_track_parquet(ds, "seq_a"),
+            producer=run_id.split(".")[0],
+            std_format="trex_v1",
+            n_rows=40,
+        )
+    with pytest.raises(ValueError, match="tracks_run_id"):
+        _ = select_variant_rows(read_tracks_index(ds))
+
+    assert ds.drop_entries([("", "seq_a")], run_id="trex.0.1-bbbbbbbbbb") == 1
+
+    remaining = read_tracks_index(ds)
+    assert list(remaining["run_id"]) == ["convert-x.0.1-aaaaaaaaaa"]
+    assert len(select_variant_rows(remaining)) == 1
+
+
+def test_drop_entries_without_a_variant_takes_every_row(tmp_path: Path) -> None:
+    """The default stays what a rename cleanup wants: the entry, entirely."""
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    ds = _dataset(tmp_path)
+    for run_id in ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb"):
+        write_tracks_row(
+            ds,
+            run_id=run_id,
+            group="",
+            sequence="seq_a",
+            out_path=_track_parquet(ds, "seq_a"),
+            producer=run_id.split(".")[0],
+            std_format="trex_v1",
+            n_rows=40,
+        )
+    assert ds.drop_entries([("", "seq_a")]) == 2
+    assert len(read_tracks_index(ds)) == 0
 
 
 def test_an_entry_left_behind_by_a_conversion_is_reported(
