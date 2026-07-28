@@ -222,6 +222,82 @@ def test_feral_infer_batch_size_excluded_from_run_id() -> None:
     assert _runid_hash(p4) != _runid_hash(pcs)
 
 
+def test_feral_device_excluded_from_run_id() -> None:
+    """A model's weights do not change with the card that runs them.
+
+    Keeping `device` in identity meant reloading finished predictions on a
+    machine without a GPU minted a new run_id and asked for a full recompute --
+    which is exactly the "just load the results and analyse them" path.
+    """
+    from mosaic.behavior.feature_library.feral_feature import FeralFeature
+
+    base = {"model_dir": "models/feral/0.1-abc"}
+    gpu = FeralFeature.Params.from_overrides({**base, "device": "cuda"})
+    cpu = FeralFeature.Params.from_overrides({**base, "device": "cpu"})
+
+    assert cpu.model_dump()["device"] == "cpu"
+    assert "device" not in gpu.identity_dump()
+    assert _runid_hash(gpu) == _runid_hash(cpu)
+    # Precision, unlike hardware, does change the output -- and stays hashed.
+    assert _runid_hash(gpu) != _runid_hash(
+        FeralFeature.Params.from_overrides({**base, "inference_autocast": True})
+    )
+
+
+def test_feral_inference_identity_is_pinned() -> None:
+    """The literal identifier the konstanz_trophallaxis analysis depends on.
+
+    FERAL cannot go in tests/data/identity_golden.json: `build_feature("feral",
+    ...)` raises typer.Exit because the feature does not read from tracks by
+    default, and `FeralFeature.__init__` raises ImportError without the optional
+    `feral` extra, which CI does not install. A golden case would be red or
+    permanently skipped -- coverage in name only.
+
+    So pin the same thing one layer down, where no optional dependency is
+    involved: `Params.from_overrides` is a classmethod that never touches
+    `__init__`. This is the exact parameter set of
+    `troph_feral_infer_v2.ipynb` over the konstanz_trophallaxis dataset, whose
+    FERAL run holds 95 sequences of V-JEPA2 inference. If this digest moves, that
+    notebook stops finding its results and asks to recompute them; the notebook
+    asserts the same value, so a mismatch should surface here first.
+    """
+    from mosaic.behavior.feature_library.feral_feature import FeralFeature
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.core.pipeline.types import Result
+
+    crop = (
+        "interaction-crop-pipeline__from__trajectory-smooth__from__tracks"
+        "+pair-interaction-filter__from__trajectory-smooth__from__tracks"
+    )
+    inputs = FeralFeature.Inputs((Result(feature=crop, run_id="0.2-3fcc9dfab9"),))
+    params = FeralFeature.Params.from_overrides(
+        {
+            "feral_code_dir": None,
+            "model_name": "facebook/vjepa2-vitl-fpc32-256-diving48",
+            "predict_per_item": 64,
+            "chunk_length": 64,
+            "chunk_shift": 16,
+            "chunk_step": 1,
+            "resize_to": 256,
+            "device": "cuda",
+            "model_dir": "models/feral/0.1-33340cc70f",
+            "infer_batch_size": 16,
+            "inference_autocast": False,
+        }
+    )
+
+    # scope_dependent is False, so compute_run_id adds no _scope_entries term.
+    assert FeralFeature.scope_dependent is False
+    digest = hash_params(
+        {
+            "_params": params.identity_dump(),
+            "_inputs": inputs.model_dump(),
+            "_frame_range": [None, None],
+        }
+    )
+    assert f"{FeralFeature.version}-{digest}" == "0.1-a3cefdc108"
+
+
 # --- Spec models ---
 
 

@@ -35,7 +35,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class InferenceIndexRow(RunIndexRowBase):
-    """Typed row for an inference index CSV (``predictions/<kind>/index.csv``)."""
+    """Typed row for an inference index CSV (``predictions/<kind>/index.csv``).
+
+    ``video_abs_path`` is stored dataset-root-relative so the index survives a
+    move. A new path column here must also be added to
+    ``_PREDICTIONS_INDEX_PATH_COLUMNS`` in ``core/dataset.py``, or the two
+    path-repair passes will not see it and it silently stops being portable.
+    """
 
     model_run_id: str
     group: str

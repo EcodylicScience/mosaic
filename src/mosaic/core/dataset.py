@@ -112,6 +112,28 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # on TRexIndexRow belongs in this tuple, or it silently stops being portable.
 _TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
 
+# Path-bearing columns on a trained-model index beyond ``abs_path``. The union of
+# every writer's schema, current and historical: ``best_model_path`` and
+# ``metrics_path`` (TrainedModelIndexRow, tracking/ops/train.py), ``data_yaml``
+# (ConvertedDatasetIndexRow, tracking/ops/convert.py), and ``config_path`` /
+# ``metrics_path`` from the legacy ModelIndexRow removed in f7ae561 -- still the
+# schema on disk in every dataset written before that. Named here because both
+# path passes read raw CSVs and have no row class to ask. A union is safe: both
+# passes filter to the columns the frame actually has, so naming one that a given
+# file lacks is a no-op. Any new path column on a model-index row belongs in this
+# tuple, or it silently stops being portable.
+_MODELS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "best_model_path",
+    "metrics_path",
+    "data_yaml",
+    "config_path",
+)
+
+# Path-bearing columns on an inference index beyond ``abs_path``: the video the
+# predictions were made over. Same contract as the two tuples above -- a new path
+# column on InferenceIndexRow belongs here, or it silently stops being portable.
+_PREDICTIONS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path",)
+
 # A tiny registry so you can plug converters: src_format -> callable
 TrackConverter = Callable[[Path, dict], pd.DataFrame]
 TRACK_CONVERTERS: dict[str, TrackConverter] = {}
@@ -837,13 +859,31 @@ class Dataset:
                 results[str(idx_path)] = count
 
         # All roots that may have index files
-        for key in ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]:
+        for key in ["tracks", "tracks_raw", "labels", "media", "media_raw"]:
             record(root_index(key))
 
         # Features: a root-level index plus one per feature
         record(root_index("features"))
         for idx_path in subdir_indexes("features"):
             record(idx_path)
+
+        # Models: per-kind run indexes. ``model_index_path`` writes
+        # ``models/<kind>/index.csv`` and nothing writes a root-level
+        # ``models/index.csv`` -- so visiting only the root, as this loop did,
+        # reached a file that never exists and reported zero. The root is kept
+        # anyway so a future root-level index cannot regress. Consumers depend on
+        # this: ``tracking/model_refs.resolve_model`` reads ``best_model_path``
+        # and hands it to ``resolve_path``.
+        record(root_index("models"), _MODELS_INDEX_PATH_COLUMNS)
+        for idx_path in subdir_indexes("models"):
+            record(idx_path, _MODELS_INDEX_PATH_COLUMNS)
+
+        # Predictions: per-kind run indexes, same shape as models. Neither pass
+        # mentioned this root at all, so ``predictions/<kind>/index.csv`` was
+        # never visited under any spelling.
+        record(root_index("predictions"), _PREDICTIONS_INDEX_PATH_COLUMNS)
+        for idx_path in subdir_indexes("predictions"):
+            record(idx_path, _PREDICTIONS_INDEX_PATH_COLUMNS)
 
         # Labels: per-kind subdirectories (e.g. id_tags)
         for idx_path in subdir_indexes("labels"):
@@ -935,7 +975,7 @@ class Dataset:
             return total_changed
 
         # Walk all roots that have index files
-        for key in ["tracks", "tracks_raw", "media", "media_raw", "models"]:
+        for key in ["tracks", "tracks_raw", "media", "media_raw"]:
             r = self.roots.get(key)
             if not r:
                 continue
@@ -974,6 +1014,41 @@ class Dataset:
                     if subdir.is_dir():
                         sub_idx = subdir / "index.csv"
                         count = _convert_index(sub_idx)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # Models: per-kind run indexes. See the note in rewrite_index_paths --
+        # ``models/<kind>/index.csv`` is the only models index anything writes, so
+        # the root-only walk above reached a file that never exists.
+        models_root = self.roots.get("models")
+        if models_root:
+            mp = self.get_root("models")
+            root_idx = mp / "index.csv"
+            count = _convert_index(root_idx, _MODELS_INDEX_PATH_COLUMNS)
+            if count > 0:
+                results[str(root_idx)] = count
+            if mp.exists():
+                for subdir in mp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx, _MODELS_INDEX_PATH_COLUMNS)
+                        if count > 0:
+                            results[str(sub_idx)] = count
+
+        # Predictions: per-kind run indexes, same shape as models. Neither pass
+        # mentioned this root at all before.
+        predictions_root = self.roots.get("predictions")
+        if predictions_root:
+            pp = self.get_root("predictions")
+            root_idx = pp / "index.csv"
+            count = _convert_index(root_idx, _PREDICTIONS_INDEX_PATH_COLUMNS)
+            if count > 0:
+                results[str(root_idx)] = count
+            if pp.exists():
+                for subdir in pp.iterdir():
+                    if subdir.is_dir():
+                        sub_idx = subdir / "index.csv"
+                        count = _convert_index(sub_idx, _PREDICTIONS_INDEX_PATH_COLUMNS)
                         if count > 0:
                             results[str(sub_idx)] = count
 
