@@ -61,6 +61,27 @@ individually:
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
 | `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
 
+### Platform support
+
+mosaic runs natively on **macOS** and **Linux**. On **Windows**, the core
+analysis pipeline runs natively, but several features depend on components with
+no native-Windows build and need **WSL2** (or Linux):
+
+| Capability                                                        | Native Windows          | WSL2 / Linux | macOS |
+| ----------------------------------------------------------------- | ----------------------- | ------------ | ----- |
+| Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
+| keypoint-MoSeq (`kpms`) -- JAX + Unix sockets                     | No                      | Yes          | Yes   |
+| FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
+| GPU kNN (`gpu`, `faiss-gpu`)                                      | No (`faiss-cpu` works)  | Yes          | n/a   |
+| imgstore read/write (`imgstore`)                                  | Partial                 | Yes          | Yes   |
+| TREx tracking and pose-model training                             | Partial                 | Yes          | Yes   |
+
+Native-Windows support for the core is new; for any **No** / **Partial**
+capability, or if anything misbehaves natively, use **WSL2** (`wsl --install` in
+an admin PowerShell), then follow the Linux setup above inside Ubuntu. Keep the
+repository on the WSL filesystem (for example `~/mosaic`) rather than under
+`/mnt/c`, so index locking and I/O behave as on Linux.
+
 ## Quick start
 
 The [CalMS21 template notebook](notebooks/calms21-template.ipynb) is the

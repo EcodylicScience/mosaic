@@ -19,6 +19,10 @@ The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer; see
 the [project README](https://github.com/EcodylicScience/mosaic#installation)
 for finer-grained options.
 
+**Windows:** the core analysis pipeline runs natively, but keypoint-MoSeq,
+FERAL, GPU faiss, imgstore, and TREx tracking need WSL2 or Linux. See the
+[platform support matrix](https://github.com/EcodylicScience/mosaic#platform-support).
+
 ## Create a dataset
 
 A mosaic dataset is a directory with a YAML or JSON manifest pointing to

@@ -56,24 +56,27 @@ def terminate_group(proc: "subprocess.Popen[str]", *, grace: float = 5.0) -> Non
     if proc.poll() is not None:
         return
 
-    def _signal_group(sig: int) -> None:
+    def _signal_group(*, hard: bool) -> None:
+        # signal.SIGKILL is undefined on Windows, so it is referenced only inside
+        # the POSIX branch; Windows escalates through Popen.kill/terminate.
         try:
             if sys.platform != "win32":
+                sig = signal.SIGKILL if hard else signal.SIGTERM
                 os.killpg(os.getpgid(proc.pid), sig)
-            elif sig == signal.SIGKILL:
+            elif hard:
                 proc.kill()
             else:
                 proc.terminate()
         except (ProcessLookupError, OSError):
             pass
 
-    _signal_group(signal.SIGTERM)
+    _signal_group(hard=False)
     try:
         proc.wait(timeout=grace)
         return
     except subprocess.TimeoutExpired:
         pass
-    _signal_group(signal.SIGKILL)
+    _signal_group(hard=True)
     try:
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
