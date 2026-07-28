@@ -1942,12 +1942,38 @@ class Dataset:
         # Carry transcode derivative links onto the fresh rows (a re-finalize of a
         # transcoded sequence must not drop its routing links), merge with the
         # preserved rows, densify video_order, and write atomically.
+        #
+        # Densified over the sequences THIS write was given, not over the whole
+        # file. ``densify_video_order`` renumbers every row it is handed, and
+        # ``build_prior_order`` skips a blank ``video_order`` cell -- so an
+        # untouched sequence carrying blank cells was being renumbered by name
+        # during someone else's upload, which contradicts this method's own
+        # "preserved verbatim" contract and moves a media composition hash for a
+        # sequence nobody named.
+        #
+        # The partition key is membership in *touched*, not preserved-vs-fresh: a
+        # preserved row can belong to a touched sequence when its ``abs_path``
+        # lives outside the scope directory, and leaving it out would collide its
+        # order with the fresh rows. ``densify_video_order`` mutates in place and
+        # its return is discarded, so *merged* keeps its construction order and
+        # the file's row order is unchanged.
+        #
+        # One behaviour change to know: a legacy index with gappy orders is no
+        # longer globally re-densified as a side effect of an unrelated write.
+        # That cleanup was doing damage; offering it deliberately is a repair
+        # command, not a byproduct of an upload.
         index_path.parent.mkdir(parents=True, exist_ok=True)
         self._carry_forward_derivative_links(fresh, index_path)
         merged: list[dict[str, object]] = [dict(row) for row in preserved]
         merged.extend(fresh)
+        touched = {(scope.group, scope.sequence) for scope in scope_list}
+        in_scope = [
+            row
+            for row in merged
+            if (str(row.get("group", "")), str(row.get("sequence", ""))) in touched
+        ]
         densify_video_order(
-            merged,
+            in_scope,
             session_positions=session_positions,
             prior_order=prior_order,
         )

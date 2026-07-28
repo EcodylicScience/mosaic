@@ -403,6 +403,53 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     assert order == {"a.mp4": 0, "b.mp4": 1}
 
 
+def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> None:
+    """Naming seqA must not renumber seqB, even where seqB's order is blank.
+
+    ``build_prior_order`` skips a blank ``video_order`` cell, so a preserved row
+    carrying one used to reach the densifier as an unknown-order prior and be
+    renumbered by filename -- during someone else's upload.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
+    index_path = tmp_path / "media_raw" / "index.csv"
+
+    seeded: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    untouched: list[dict[str, object]] = []
+    # Curated cells the write must return verbatim: a blank order, and a "1" on
+    # the file whose name sorts first.
+    for name, order in (("z.mp4", "1"), ("y.mp4", ""), ("x.mp4", "0")):
+        row = dict(seeded)
+        row.update(
+            {
+                "name": name,
+                "sequence": "seqB",
+                "abs_path": f"media_raw/seqB/{name}",
+                "video_order": order,
+            }
+        )
+        untouched.append(row)
+    write_media_index_rows(index_path, frame_from_rows(untouched))
+
+    seq_dir = tmp_path / "media_raw" / "seqA"
+    _cfr_mp4(seq_dir / "a.mp4")
+    ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=seq_dir, group="", sequence="seqA", order_by_name={"a.mp4": 0}
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+    after = {
+        row["name"]: row["video_order"]
+        for row in ds.read_media_index()
+        if row["sequence"] == "seqB"
+    }
+    assert after == {"z.mp4": "1", "y.mp4": "", "x.mp4": "0"}
+
+
 def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> None:
     """A rescan reads the order it is about to overwrite instead of re-sorting.
 
