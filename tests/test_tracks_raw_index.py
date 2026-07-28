@@ -247,12 +247,15 @@ def test_convert_all_tracks_merge_source_abs_path_is_relative(tmp_path: Path) ->
     ds.index_tracks_raw([src], patterns=["*.npz"], src_format="trex_npz")
     ds.convert_all_tracks()
 
-    # The two per-id files merged into one standardized parquet.
-    out_parquet = ds.get_root("tracks") / "myseq.parquet"
-    assert out_parquet.exists()
-
     tracks_index = pd.read_csv(ds.get_root("tracks") / "index.csv")
     assert len(tracks_index) == 1
+
+    # The two per-id files merged into one standardized parquet, under the
+    # variant directory this conversion minted.
+    out_parquet = ds.resolve_path(str(tracks_index.loc[0, "abs_path"]))
+    assert out_parquet.name == "myseq.parquet"
+    assert out_parquet.parent.name.startswith("convert-trex_npz.")
+    assert out_parquet.exists()
     source_abs_path = str(tracks_index.loc[0, "source_abs_path"])
     # Now root-relative and portable (was absolute before) -- matches the
     # non-merge convert_one_track path and resolves against the dataset root.

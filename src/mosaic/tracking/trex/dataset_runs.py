@@ -57,6 +57,7 @@ from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     tracks_run_id,
+    tracks_variant_root,
     trex_variant_payload,
     write_tracks_variant,
 )
@@ -389,19 +390,24 @@ def _bridge_npz_to_tracks(
     video_path: Path,
     overwrite: bool,
 ) -> int | None:
-    """Merge per-individual TREx NPZ into ``tracks/<group>__<seq>.parquet``.
+    """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     Reuses the registered ``trex_npz`` converter and mirrors the merge that
     ``Dataset.convert_all_tracks`` performs, but with the authoritative
     (group, sequence) known from the media index (no filename guessing).
     Returns the row count written, or ``None`` if skipped/failed.
+
+    ``tracks_variant`` names the directory as well as the row, so two tracker
+    settings no longer target one path: the skip below asks whether *these
+    settings* already produced this table, not whether any settings did.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
 
     if not npz_paths:
         return None
 
-    out_path = ds.get_root("tracks") / f"{make_entry_key(group, sequence)}.parquet"
+    variant_root = tracks_variant_root(ds.get_root("tracks"), tracks_variant)
+    out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
     if out_path.exists() and not overwrite:
         return None
 

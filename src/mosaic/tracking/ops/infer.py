@@ -25,6 +25,7 @@ from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
+    tracks_variant_root,
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
@@ -133,10 +134,15 @@ def _bridge_df_to_tracks(
     model_pt: Path,
     overwrite: bool,
 ) -> int:
-    """Write an inference DataFrame as a standardized ``tracks/`` parquet."""
+    """Write an inference DataFrame as a standardized ``tracks/`` parquet.
+
+    ``tracks_variant`` names the directory as well as the row, so two models (or
+    two parameter sets) no longer target one path.
+    """
     if df is None or df.empty:
         return 0
-    out_path = ds.get_root("tracks") / f"{make_entry_key(group, sequence)}.parquet"
+    variant_root = tracks_variant_root(ds.get_root("tracks"), tracks_variant)
+    out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
     if out_path.exists() and not overwrite:
         return 0
     df = df.copy()

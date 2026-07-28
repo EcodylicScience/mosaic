@@ -93,6 +93,7 @@ from .pipeline.tracks_identity import (
     convert_variant_payload,
     converter_op,
     tracks_run_id,
+    tracks_variant_root,
     write_tracks_variant,
 )
 from .pipeline.index_lock import index_lock
@@ -2755,14 +2756,15 @@ class Dataset:
         converter = get_track_converter(src_format)
         conv_params = self._converter_params(converter, params)
         # Minted and recorded once per recipe, not per entry, and carried onto
-        # every row this call writes. Also described in tracks/<run_id>/params.json,
-        # which Stage 3.2 turns into the directory holding the parquets themselves.
+        # every row this call writes. Also names the directory the tables live in
+        # and described in its params.json, so a variant is explicable from disk.
         variant = self._tracks_variant(converter, conv_params)
         producer = converter_op(src_format)
 
-        # Where to place standardized file:
-        # group/sequence.parquet if group present, else just sequence.parquet
-        tracks_root = self.get_root("tracks")
+        # Where to place standardized file: one directory per tracks variant,
+        # holding <group>__<seq>.parquet. Two recipes for one sequence no longer
+        # collide, which is what the exists()/overwrite skips below used to hide.
+        variant_root = tracks_variant_root(self.get_root("tracks"), variant)
 
         # If sequence missing/blank and the format can hold several, expand this
         # file into multiple per-sequence outputs
@@ -2794,9 +2796,8 @@ class Dataset:
                     out_group_canon = raw_collection
 
                 # output path -- make_entry_key does the safe-name encoding
-                tracks_root = self.get_root("tracks")
                 stem = make_entry_key(out_group_canon, canon_seq)
-                out_path = tracks_root / f"{stem}.parquet"
+                out_path = variant_root / f"{stem}.parquet"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
                 # Respect overwrite flag when outputs already exist
@@ -2850,7 +2851,7 @@ class Dataset:
         # and the index stores the raw identity plus nothing derivable from it.
         group_value = str(raw_row.get("group", "")) or ""
         rel_name = f"{make_entry_key(group_value, seq_value)}.parquet"
-        out_path = tracks_root / rel_name
+        out_path = variant_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         if out_path.exists() and not overwrite:
@@ -3083,22 +3084,27 @@ class Dataset:
             first_row = group_df.iloc[0]
 
             # Determine output path early so we can honor overwrite=False
-            # without re-loading and merging every NPZ.
+            # without re-loading and merging every NPZ. The variant has to be
+            # minted first now, because it names the directory the path is in --
+            # so the skip below is asking "does *this recipe* already have this
+            # table", where before it asked the weaker "does any recipe".
+            # Minting is cheap and idempotent (`write_tracks_variant` rewrites
+            # one small sidecar), and `convert_one_track` already mints above
+            # both of its skips, so this only makes the two branches agree.
+            converter = get_track_converter(src_format)
+            conv_params = self._converter_params(converter, params, src_format)
+            variant = self._tracks_variant(converter, conv_params)
+
             raw_group_hint = str(first_row.get("group", "")) or ""
             out_group = group  # default: infile (already what we grouped by)
             if group_from in {"filename", "both"} and raw_group_hint:
                 out_group = raw_group_hint
-            tracks_root = self.get_root("tracks")
+            variant_root = tracks_variant_root(self.get_root("tracks"), variant)
             rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
-            out_path = tracks_root / rel_name
+            out_path = variant_root / rel_name
             if out_path.exists() and not overwrite:
                 continue
 
-            converter = get_track_converter(src_format)
-            conv_params = self._converter_params(converter, params, src_format)
-            # Minted and recorded once per recipe, not per entry, and carried
-            # onto the row below.
-            variant = self._tracks_variant(converter, conv_params)
             hints = EntryHints(group=group or "", sequence=sequence or "")
 
             dfs = []

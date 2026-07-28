@@ -373,16 +373,18 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     runs = read_runs(_run_dir(ds), kind="infer-pose")
     assert len(runs) == 1 and runs[0]["status"] == "finished"
 
-    # standardized tracks written for each sequence
-    for s in ("vid1", "vid2"):
-        tp = ds.get_root("tracks") / f"{s}.parquet"
+    # standardized tracks written for each sequence, under the variant directory
+    # the bridge minted -- located through the index, as every reader does.
+    tracks_idx = pd.read_csv(ds.get_root("tracks") / "index.csv")
+    assert set(tracks_idx["sequence"]) == {"vid1", "vid2"}
+    for _, row in tracks_idx.iterrows():
+        tp = ds.resolve_path(str(row["abs_path"]))
         assert tp.exists()
+        assert tp.parent.name.startswith("infer-pose.")
         tdf = pd.read_parquet(tp)
         assert {"frame", "time", "id", "group", "sequence", "poseX0", "poseY0"} <= set(
             tdf.columns
         )
-    tracks_idx = pd.read_csv(ds.get_root("tracks") / "index.csv")
-    assert set(tracks_idx["sequence"]) == {"vid1", "vid2"}
 
     # inference index row per sequence
     from mosaic.tracking.ops.infer import inference_index, prediction_index_path

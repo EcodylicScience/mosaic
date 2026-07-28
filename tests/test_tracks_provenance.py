@@ -57,6 +57,19 @@ def _one_row(ds: Dataset) -> pd.Series:
     return df.iloc[0]
 
 
+def _tables_by_sequence(ds: Dataset) -> dict[str, Path]:
+    """``sequence -> resolved parquet path``, read out of the index.
+
+    Tables live under ``tracks/<variant>/``, so a test that wants one asks the
+    index where it is rather than assembling the path -- which is what every
+    production reader does, and what keeps these assertions layout-agnostic.
+    """
+    return {
+        str(row["sequence"]): ds.resolve_path(str(row["abs_path"]))
+        for _, row in read_tracks_index(ds).iterrows()
+    }
+
+
 def _assert_portable(ds: Dataset, row: pd.Series) -> None:
     """Neither stored path may be absolute, or the index dies on a move."""
     for column in ("abs_path", "source_abs_path"):
@@ -378,16 +391,19 @@ def test_drop_entries_removes_the_row_and_optionally_the_table(
         [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
     )
     ds.convert_all_tracks()
-    parquet = ds.get_root("tracks") / "drop.parquet"
-    assert parquet.exists()
+    # Resolved through the index rather than assembled here: the tables live
+    # under tracks/<variant>/, and the index is what every reader consults.
+    tables = _tables_by_sequence(ds)
+    assert tables["drop"].exists()
+    assert tables["keep"].exists()
 
     dropped = ds.drop_entries([("", "drop")], delete_files=True)
 
     assert dropped == 1
-    assert not parquet.exists()
+    assert not tables["drop"].exists()
     assert [str(s) for s in read_tracks_index(ds)["sequence"]] == ["keep"]
     # The kept row's table is untouched.
-    assert (ds.get_root("tracks") / "keep.parquet").exists()
+    assert tables["keep"].exists()
 
 
 def test_drop_entries_keeps_the_table_by_default(tmp_path: Path) -> None:
@@ -398,9 +414,10 @@ def test_drop_entries_keeps_the_table_by_default(tmp_path: Path) -> None:
         [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
     )
     ds.convert_all_tracks()
+    table = _tables_by_sequence(ds)["seq_a"]
 
     assert ds.drop_entries([("", "seq_a")]) == 1
-    assert (ds.get_root("tracks") / "seq_a.parquet").exists()
+    assert table.exists()
     assert len(read_tracks_index(ds)) == 0
 
 
