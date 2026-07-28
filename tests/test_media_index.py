@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
@@ -401,6 +402,32 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     rows = ds.read_media_index()
     order = {row["name"]: int(row["video_order"]) for row in rows}
     assert order == {"a.mp4": 0, "b.mp4": 1}
+
+
+def test_write_media_index_writes_a_doubly_scoped_file_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two scopes over one directory are caller error, not two rows.
+
+    Left in, the same file carries two sequence names and its uid lands in two
+    sequences' media compositions.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
+    shared = tmp_path / "media_raw" / "shared"
+    _cfr_mp4(shared / "a.mp4")
+
+    ds.write_media_index(
+        [
+            MediaIndexScope(directory=shared, group="", sequence="seqA"),
+            MediaIndexScope(directory=shared, group="", sequence="seqB"),
+        ],
+        extensions=(".mp4",),
+    )
+
+    rows = ds.read_media_index()
+    assert [(row["name"], row["sequence"]) for row in rows] == [("a.mp4", "seqA")]
+    assert "is under two scopes" in capsys.readouterr().err
 
 
 def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> None:

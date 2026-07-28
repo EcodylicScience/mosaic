@@ -1816,11 +1816,16 @@ class Dataset:
         order. Every file found under a scope directory is (re)probed and given
         that scope's identity; ``video_order`` is densified per
         (group, sequence, camera) as "existing videos first by prior order, then
-        this session's videos by arranged position"; every index row not under
-        any scope directory (other sequences, external ``abs_path`` values) is
-        preserved verbatim; and the file is written atomically with
-        root-relative ``abs_path``. This is the single entry point the API's
+        this session's videos by arranged position", **over the passed scopes'
+        sequences only**; every index row not under any scope directory (other
+        sequences, external ``abs_path`` values) is preserved verbatim, order
+        cell included; and the file is written atomically with root-relative
+        ``abs_path``. This is the single entry point the API's
         upload finalize calls -- the API owns none of these semantics itself.
+
+        Overlapping scope directories are caller error, as they are for
+        :meth:`write_tracks_raw_index`: a file scanned by two scopes is written
+        once, first occurrence winning, and the collision is reported to stderr.
         The return carries the written index path and any
         :class:`MediaIndexDisagreement`s -- files whose stored uuid differed from
         the injected one, reported not raised.
@@ -1939,6 +1944,20 @@ class Dataset:
             for name, position in scope.order_by_name.items():
                 session_positions[(scope.group, scope.sequence, name)] = position
 
+        # Overlapping scope directories are caller error, and the sibling
+        # write_tracks_raw_index already says so and dedupes on abs_path. Media
+        # did not, so one file scanned by two scopes landed twice under two
+        # sequence names -- which puts one video uid into two sequences' media
+        # compositions, or twice into one.
+        #
+        # Fresh-vs-fresh only: _row_under_dirs already guarantees preserved and
+        # fresh are disjoint by resolved path, and a blanket dedup across both
+        # would drop a legitimately duplicated external row. Reported rather than
+        # silently collapsed, because nothing else tells the caller its scopes
+        # overlap. Note this is not the same thing as two byte-identical files in
+        # one sequence, which legitimately share one video_uuid and are two rows.
+        fresh = self._dedupe_scope_rows(fresh)
+
         # Carry transcode derivative links onto the fresh rows (a re-finalize of a
         # transcoded sequence must not drop its routing links), merge with the
         # preserved rows, densify video_order, and write atomically.
@@ -1979,6 +1998,34 @@ class Dataset:
         )
         write_media_index_rows(index_path, frame_from_rows(merged))
         return MediaIndexResult(index_path=index_path, disagreements=disagreements)
+
+    @staticmethod
+    def _dedupe_scope_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Keep one row per stored ``abs_path``, first occurrence winning.
+
+        Two :class:`MediaIndexScope`s over one directory each probe the same
+        files and each stamp their own ``(group, sequence)``, so the same file
+        lands twice under two identities. Reported to stderr rather than
+        collapsed silently: the scopes come from a caller who believes they are
+        disjoint, and nothing else would tell them otherwise.
+        """
+        seen: dict[str, dict[str, object]] = {}
+        kept: list[dict[str, object]] = []
+        for row in rows:
+            stored = str(row.get("abs_path", ""))
+            first = seen.get(stored)
+            if first is not None:
+                print(
+                    f"[write_media_index] {stored} is under two scopes "
+                    f"({first.get('group', '')!r}, {first.get('sequence', '')!r}) "
+                    f"and ({row.get('group', '')!r}, {row.get('sequence', '')!r}); "
+                    f"keeping the first.",
+                    file=sys.stderr,
+                )
+                continue
+            seen[stored] = row
+            kept.append(row)
+        return kept
 
     def read_media_index(
         self, index_filename: str = "index.csv"
