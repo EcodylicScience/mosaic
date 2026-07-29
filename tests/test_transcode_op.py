@@ -25,6 +25,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.pipeline.media_index import (
+    MediaIndexScope,
     frame_from_rows,
     read_media_index,
     write_media_index_rows,
@@ -38,10 +39,12 @@ from mosaic.core.pipeline.transcode import (
 from mosaic.media_probe_config import media_thresholds
 
 
-def _write_analysis_required_mp4(path: Path) -> None:
+def _write_analysis_required_mp4(path: Path, duration: str = "2") -> None:
     """Write a variable-frame-rate mp4 that ``derive`` marks analysis-required.
 
     Height/width are >= 64 so the analysis (SVT-AV1) encoder accepts the source.
+    *duration* varies the content, which is how a caller that needs two sources
+    gets two distinct ``video_uuid``s rather than one shared by identical bytes.
     """
     if shutil.which("ffmpeg") is None:
         pytest.skip("ffmpeg is not available")
@@ -52,7 +55,7 @@ def _write_analysis_required_mp4(path: Path) -> None:
         "-f",
         "lavfi",
         "-i",
-        "testsrc=duration=2:size=128x128:rate=30",
+        f"testsrc=duration={duration}:size=128x128:rate=30",
         "-vf",
         "setpts=N/(30+8*sin(N))/TB",
         "-fps_mode",
@@ -375,6 +378,74 @@ def test_an_imgstore_refuses_to_transcode(
         _ = run_op(
             ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
         )
+
+
+def test_a_reorder_produces_zero_re_encodes(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """The M3 acceptance gate, and the whole promise of content-addressed names.
+
+    Under the positional scheme a derivative was named by its rank within the
+    sequence, so swapping two videos renamed both and re-encoded both -- in
+    place, non-transactionally, which is what made a cancel mid-loop leave a row
+    pointing at another video's frames. Named by source uuid, a reorder is
+    metadata: the two files keep their names, the two links keep naming them, and
+    the op's reuse gate skips every source.
+
+    The two sources carry different content on purpose. Byte-identical videos
+    share one ``video_uuid`` by design, so a derivative of either has one name
+    and the assertion would hold without proving anything.
+    """
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    directory = ds.get_root("media_raw") / "s"
+    for name, duration in (("a.mp4", "2"), ("b.mp4", "3")):
+        _write_analysis_required_mp4(directory / name, duration=duration)
+        _require_analysis_required(directory / name)
+
+    def arrange(first: str, second: str) -> None:
+        _ = ds.write_media_index(
+            [
+                MediaIndexScope(
+                    directory=directory,
+                    group="g",
+                    sequence="s",
+                    order_by_name={first: 0, second: 1},
+                )
+            ],
+            extensions=(".mp4",),
+        )
+
+    arrange("a.mp4", "b.mp4")
+    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    _ = run_op(ds, "transcode", params)
+
+    transcode_root = ds.get_root("media") / "transcode"
+    before_files = {p.name: p.stat().st_mtime_ns for p in transcode_root.iterdir()}
+    assert len(before_files) == 2, f"expected two derivatives, got {before_files}"
+    before_links = {
+        row["name"]: row["analysis_derivative_path"]
+        for row in read_media_index(ds.get_root("media_raw") / "index.csv")
+    }
+    before_order = {
+        row["name"]: row["video_order"]
+        for row in read_media_index(ds.get_root("media_raw") / "index.csv")
+    }
+
+    arrange("b.mp4", "a.mp4")
+    _ = run_op(ds, "transcode", params)
+
+    after_order = {
+        row["name"]: row["video_order"]
+        for row in read_media_index(ds.get_root("media_raw") / "index.csv")
+    }
+    assert after_order != before_order, "the arrangement did not actually change"
+    after_files = {p.name: p.stat().st_mtime_ns for p in transcode_root.iterdir()}
+    assert after_files == before_files, "a reorder re-encoded a derivative"
+    after_links = {
+        row["name"]: row["analysis_derivative_path"]
+        for row in read_media_index(ds.get_root("media_raw") / "index.csv")
+    }
+    assert after_links == before_links, "a reorder moved a derivative link"
 
 
 def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> None:
