@@ -231,8 +231,13 @@ def trex_settings(
 ) -> dict[str, object]:
     """Build the settings that define a tracking result -- the ``run_id`` payload.
 
-    A model reference is kept as written rather than resolved: the reference is
-    portable across machines, the path it resolves to is not.
+    **Both model references arrive already resolved to an identity** -- a
+    training ``run_id`` or a weights content digest, never a path. The caller
+    does the resolving, because what these settings must carry is what the model
+    *is*: a bare weights path is a mutable key, and swapping ``best.pt`` in place
+    would let two different runs share one identifier and report the second as
+    already done. This docstring said the opposite for three milestones, which is
+    the state the caller had already left behind for ``detect_model``.
     """
     return {
         "detect_model": str(detect_model) if detect_model is not None else None,
@@ -315,19 +320,39 @@ def _reusable_marker(
     *,
     phase_hash: str,
     video_path: Path,
+    video_uid: str = "",
 ) -> PhaseMarker | None:
     """The marker proving *phase* need not run again, or None.
 
-    An empty ``source`` or ``params_hash`` means *unknown* rather than
-    *mismatched*, and is not grounds for a recompute -- a marker adopted from a
-    directory that predates markers cannot know either.
+    An empty ``source``, ``source_uid`` or ``params_hash`` means *unknown*
+    rather than *mismatched*, and is not grounds for a recompute -- a marker
+    adopted from a directory that predates markers cannot know any of them.
+
+    **The source comparison is uid-first, with the path as fallback** (item 8.5,
+    on 4.2's identity). The path compare answers "does this sequence still
+    resolve to the file it did", which is the question item 8.8 needed; the uid
+    answers "are these the same bytes", which is the question a durable cache
+    needs and is strictly better where both are available. It catches the case
+    the path compare cannot see at all -- a video replaced *in place*, same path,
+    different content -- and it stops a rearrangement that moved a file without
+    changing it from invalidating a conversion.
+
+    The fallback is not decoration. Three populations carry no uid: markers
+    written by ``_adopt_completed_directory`` (empty by design, since an adopted
+    directory cannot prove what produced it), media indexed before the identity
+    columns existed, and directories written before ``source_uid`` did. Dropping
+    the path compare would remove 8.8's protection from exactly the datasets it
+    was written for.
     """
     marker = read_phase_marker(work_dir, phase)
     if marker is None:
         return None
     if marker.params_hash and marker.params_hash != phase_hash:
         return None
-    if marker.source and not _same_video(ds, marker.source, video_path):
+    if marker.source_uid and video_uid:
+        if marker.source_uid != video_uid:
+            return None
+    elif marker.source and not _same_video(ds, marker.source, video_path):
         return None
     return marker
 
@@ -555,6 +580,23 @@ def run_trex(
         detect_model_exec = resolved_model.path
         detect_model_id = resolved_model.model_id
 
+    # The *second* model reference in the same settings dict, and the half item
+    # 8.5's "hashed as a string rather than resolved content" describes that was
+    # still open: the visual-identification weights were carried as a bare path
+    # straight into `TRACK_KEYS`. It is the identical defect -- swap the file and
+    # two runs share one identifier -- and it bites harder here than for the
+    # detector, because item 8.5 makes the working directory a durable cache and
+    # a mutable key on a durable cache never expires.
+    vi_model_exec: Path | str | None = visual_identification_model_path
+    vi_model_id: str | None = None
+    if visual_identification_model_path is not None:
+        vi_ref = str(visual_identification_model_path)
+        vi_parsed = parse_op_run_id(vi_ref)
+        vi_kind = vi_parsed.kind if vi_parsed is not None else "train-identity"
+        resolved_vi = resolve_model(ds, vi_ref, vi_kind)
+        vi_model_exec = resolved_vi.path
+        vi_model_id = resolved_vi.model_id
+
     # Settings that define the tracking result -> the content hash.
     settings = trex_settings(
         detect_model=detect_model_id,
@@ -569,7 +611,7 @@ def run_trex(
         track_max_reassign_time=track_max_reassign_time,
         track_trusted_probability=track_trusted_probability,
         analysis_range=analysis_range,
-        visual_identification_model_path=visual_identification_model_path,
+        visual_identification_model_path=vi_model_id,
         auto_train=auto_train,
         track_extra_settings=track_extra_settings,
     )
@@ -745,6 +787,7 @@ def run_trex(
                         "convert",
                         phase_hash=phase_hashes["convert"],
                         video_path=video_path,
+                        video_uid=video_uid,
                     )
                     # A conversion is only reusable if its output is still
                     # there to reuse -- and where it is is recorded, not
@@ -814,6 +857,7 @@ def run_trex(
                         "track",
                         phase_hash=phase_hashes["track"],
                         video_path=video_path,
+                        video_uid=video_uid,
                     )
                     if track_marker is None:
                         _clear_phase_outputs(seq_dir, "track")
@@ -834,7 +878,7 @@ def run_trex(
                             track_max_reassign_time=track_max_reassign_time,
                             track_trusted_probability=track_trusted_probability,
                             analysis_range=analysis_range,
-                            visual_identification_model_path=visual_identification_model_path,
+                            visual_identification_model_path=vi_model_exec,
                             auto_train=auto_train,
                             extra_settings=track_extra_settings,
                             idle_timeout=idle_timeout,

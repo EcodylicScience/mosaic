@@ -269,6 +269,41 @@ def _infer_variant() -> str:
     )
 
 
+def _trex_run_id_settings() -> str:
+    """The identifier ``trex_settings``' *key set* mints, pinned.
+
+    Nothing else pins it. The ``trex/*`` op cases come from ``TrexParams``, and
+    the variant case above passes a hand-built two-key dict -- so a rename
+    inside ``trex_settings`` moves every TREx run root and tracks variant on
+    disk with a fully green suite. This is the case that fails instead.
+
+    Every argument is given explicitly rather than relying on defaults, because
+    a default that changed would move this line for a reason unrelated to the
+    key set it exists to guard.
+    """
+    from mosaic.tracking.trex.dataset_runs import trex_run_id, trex_settings
+
+    return trex_run_id(
+        trex_settings(
+            detect_model="train-points.0.1-aaaaaaaaaa",
+            detect_type="points",
+            detect_conf_threshold=0.25,
+            detect_iou_threshold=0.7,
+            cm_per_pixel=0.5,
+            meta_encoding="gray",
+            convert_extra_settings=None,
+            track_max_individuals=4,
+            track_max_speed=50.0,
+            track_max_reassign_time=0.5,
+            track_trusted_probability=0.5,
+            analysis_range=None,
+            visual_identification_model_path="train-identity.0.1-bbbbbbbbbb",
+            auto_train=False,
+            track_extra_settings=None,
+        )
+    )
+
+
 def _sleap_variant() -> str:
     # The tracker's own settings, passed through unwrapped -- so this value is
     # byte-identical to sleap_run_id(settings) for the same settings. The model
@@ -410,6 +445,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/sleap-variant": _sleap_variant,
     "tracks/litpose-variant": _litpose_variant,
     "tracks/infer-variant": _infer_variant,
+    "trex/run-id-settings": _trex_run_id_settings,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
     "composition/media-two-cameras": _media_two_cameras,

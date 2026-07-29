@@ -48,8 +48,15 @@ from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 # --- fixtures --------------------------------------------------------------
 
 
-def clean_facts_cells(width: int = 640, height: int = 480) -> dict[str, object]:
-    """Flat + JSON facts cells for one analysis-clean media row."""
+def clean_facts_cells(
+    width: int = 640, height: int = 480, video_uuid: str = ""
+) -> dict[str, object]:
+    """Flat + JSON facts cells for one analysis-clean media row.
+
+    ``video_uuid`` defaults empty, which is the state of every media index
+    written before the identity columns existed -- so the tests that do not pass
+    one exercise the reuse guard's *path* fallback, deliberately.
+    """
     facts: MediaFacts = store_facts(
         width=width,
         height=height,
@@ -57,8 +64,8 @@ def clean_facts_cells(width: int = 640, height: int = 480) -> dict[str, object]:
         frame_count=100,
         codec="h264",
         duration=100 / 30.0,
-        video_uuid="",
-        identity_scheme="",
+        video_uuid=video_uuid,
+        identity_scheme="video/1" if video_uuid else "",
     )
     facts = dataclasses.replace(
         facts,
@@ -76,6 +83,7 @@ class MediaEntry:
     sequence: str
     filename: str
     camera: str = ""
+    video_uuid: str = ""
 
 
 def write_media_index(ds: Dataset, entries: list[MediaEntry]) -> None:
@@ -104,7 +112,7 @@ def write_media_index(ds: Dataset, entries: list[MediaEntry]) -> None:
                 "codec": "h264",
                 "media_type": "video",
                 "video_order": 0,
-                **clean_facts_cells(),
+                **clean_facts_cells(video_uuid=entry.video_uuid),
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
@@ -615,3 +623,71 @@ def test_a_partial_run_still_records_its_index_row(ds: Dataset, trex: FakeTrex) 
     assert not str(rows.iloc[0]["video_abs_path"]).startswith("/"), (
         "stored root-relative so a move does not read as a source change"
     )
+
+
+# --- 8.5: the reuse comparison is uid-first, with the path as fallback -------
+
+
+def test_a_video_replaced_in_place_forces_a_recompute(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The case the path compare cannot see at all.
+
+    Same sequence, same filename, different bytes. ``_same_video`` compares
+    resolved paths and calls this unchanged, so before item 8.5 the second run
+    reused a conversion of content that no longer existed. The uid is what
+    notices.
+    """
+    write_media_index(
+        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
+    )
+    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+
+    write_media_index(
+        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-bbb")]
+    )
+    second = dr.run_trex(ds, entries=[("", "vid1")])
+
+    assert second == run_id, "settings did not change, so neither does the identity"
+    assert len(trex.converted) == 2, "the replaced video was not re-converted"
+
+
+def test_the_same_video_under_a_new_name_is_not_a_recompute(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The other direction, and the one item 8.5 exists for.
+
+    A rearrangement can change which file a sequence resolves to without
+    changing the bytes. The path compare calls that a source change and throws
+    away hours of conversion; the uid says it is the same video.
+    """
+    write_media_index(
+        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
+    )
+    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+
+    write_media_index(
+        ds, [MediaEntry(sequence="vid1", filename="renamed.mp4", video_uuid="uid-aaa")]
+    )
+    second = dr.run_trex(ds, entries=[("", "vid1")])
+
+    assert second == run_id
+    assert len(trex.converted) == 1, "the same bytes were converted twice"
+
+
+def test_an_absent_uid_still_falls_back_to_the_path(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """Item 8.8's protection survives for the datasets it was written for.
+
+    Media indexed before the identity columns carries no uid, and neither does a
+    marker adopted from a pre-marker directory. Dropping the path compare would
+    remove the guard from exactly those.
+    """
+    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
+
+    second = dr.run_trex(ds, entries=[("", "vid1")])
+
+    assert second == run_id
+    assert [p.name for p in trex.converted] == ["vid1.mp4", "vid2.mp4"]

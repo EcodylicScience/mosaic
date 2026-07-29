@@ -31,5 +31,6 @@
   "transcode/recipe-hash": "d3d37f3add",
   "transcode/run-id": "transcode-c385da723b",
   "trex/defaults": "d8a5094e59",
-  "trex/max-individuals": "da40ef26e3"
+  "trex/max-individuals": "da40ef26e3",
+  "trex/run-id-settings": "trex.0.1-5a5da77582"
 }
