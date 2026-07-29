@@ -21,6 +21,7 @@ import pytest
 
 from mosaic.core.pipeline._utils import Scope, hash_params
 from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline.media_index import read_media_index
 from mosaic.core.pipeline.run import _scope_term, compute_run_id, run_feature
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
@@ -38,6 +39,7 @@ from .conftest import (
     add_media_sequence,
     add_track_sequences,
     add_tracks_variant,
+    add_transcode_derivative,
     track_sequences,
 )
 
@@ -176,23 +178,77 @@ def test_h1_tracking_intermediates_are_separated_from_results(
     assert scenario_dataset.get_root("_tracking").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M3: derived media is named positionally and media/ is not organized by "
-        "artifact kind. Closes with implementation items 7.1 and 7.3."
-    ),
-)
 def test_h1_derived_media_is_organized_by_kind(
-    scenario_dataset: Dataset,
+    scenario_dataset_with_media: Dataset,
 ) -> None:
-    """``media/`` carries no sequence semantics; every child of it is a kind."""
-    media = scenario_dataset.get_root("media")
-    assert (media / "transcode").is_dir()
-    assert track_sequences(scenario_dataset)
-    assert not any(
-        (media / name).exists() for name in track_sequences(scenario_dataset)
+    """``media/`` carries no sequence semantics; every child of it is a kind.
+
+    Enumerated positively rather than probed by name. The earlier form asked
+    whether ``media/<each track sequence>`` existed, which passes on an empty
+    media root and cannot see a sequence-named child under any other name -- so
+    it would have stayed green through the layout it was written to reject.
+
+    ``scenario_dataset_with_media`` rather than the track-only fixture: the
+    assertion is about a real derivative's placement, and the composed fixture is
+    what keeps two H3 scenarios' no-media starting state intact.
+    """
+    dataset = scenario_dataset_with_media
+    derivative = add_transcode_derivative(dataset, "seq_a")
+    media = dataset.get_root("media")
+
+    assert derivative.parent == media / "transcode"
+    assert {path.name for path in media.iterdir()} <= {
+        "index.csv",
+        "transcode",
+        "frames",
+    }
+    assert track_sequences(dataset), "the fixture has no sequences to be wrong about"
+
+
+def test_h1_a_derivative_is_named_for_its_source_not_its_sequence(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """The name carries the source's identity and the recipe, and nothing else.
+
+    A positional or sequence-derived name is what made a reorder rewrite files in
+    place; asserting the sequence name is *absent* is what keeps the old scheme
+    from creeping back under a new spelling.
+    """
+    dataset = scenario_dataset_with_media
+    derivative = add_transcode_derivative(dataset, "seq_a")
+    original = next(
+        row
+        for row in read_media_index(dataset.get_root("media_raw") / "index.csv")
+        if row["sequence"] == "seq_a"
     )
+
+    assert derivative.name.split(".")[0] == original["video_uuid"]
+    assert "seq_a" not in derivative.name
+
+    back_link = next(
+        row
+        for row in read_media_index(dataset.get_root("media") / "index.csv")
+        if row["name"] == derivative.name
+    )
+    assert back_link["source_video_uuid"] == original["video_uuid"]
+
+
+def test_h1_the_transcode_is_a_side_branch_nothing_downstream_consumed(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """A playback proxy is made for a browser; no feature reads it.
+
+    Asserted as identifier invariance rather than through
+    ``consumed_source_roots``: on this fixture the tracks index is hand-written
+    with three columns, so that cell reads empty for reasons that have nothing to
+    do with whether a derivative exists.
+    """
+    dataset = scenario_dataset_with_media
+    before = run_feature(dataset, _PerFrame()).run_id
+    _ = add_transcode_derivative(dataset, "seq_a")
+    after = run_feature(dataset, _PerFrame()).run_id
+
+    assert before == after, "a side-branch derivative reached a feature's identity"
 
 
 # --- H2: recipe change -- same input, different how ---------------------------

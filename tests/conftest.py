@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic_media.transcode import Target
+
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 
 # Modules the CI workflow installs through extras (`.[wavelets,imgstore]`).
@@ -365,6 +367,90 @@ def scenario_dataset_with_media(
     ``scenario_dataset``, and giving it media would give all of them an ffprobe
     dependency for scenarios that never open a video. A scenario that needs media
     asks for it, and inherits the skip guard by asking.
+
+    ``seq_b`` deliberately stays media-less, and the track-only fixture stays
+    track-only: two H3 scenarios *are* the transition from no media to media, and
+    seeding it would make one vacuous and fail the other outright.
     """
     add_media_sequence(scenario_dataset, "seq_a")
     return scenario_dataset
+
+
+def add_transcode_derivative(
+    dataset: Dataset, sequence: str, *, target: Target = "playback"
+) -> Path:
+    """Register a derivative for *sequence*'s first video, without encoding one.
+
+    A stub, because nothing being tested reads a derivative's bytes -- what is
+    read is its *name*, so it is written under the scheme the transcode op uses
+    and the recipe is computed through the op's own function rather than
+    hard-coded (the recipe folds environment-driven thresholds, so a literal
+    would pin the suite to one machine).
+
+    Both links are written, in the order the op writes them: the back-link row
+    into the ``media`` index, then the forward-link cell onto the original.
+
+    ``playback`` by default, matching the scenario this exists for -- a proxy
+    made so a browser can play the video, which the tracker, frame extraction,
+    crops and every feature ignore.
+    """
+    from mosaic_media import CHROME_149
+    from mosaic_media.transcode import ANALYSIS_ENCODING, PLAYBACK_ENCODING
+
+    from mosaic.core.media.facts_columns import (
+        MEDIA_INDEX_COLUMNS,
+        derivative_column_for_target,
+    )
+    from mosaic.core.pipeline.media_index import (
+        frame_from_rows,
+        read_media_index,
+        write_media_index_rows,
+    )
+    from mosaic.core.pipeline.transcode import (
+        TRANSCODE_KIND_DIRECTORY,
+        TranscodeParams,
+        transcode_recipe_hash,
+    )
+    from mosaic.media_probe_config import media_thresholds
+
+    raw_index = dataset.get_root("media_raw") / "index.csv"
+    originals = [dict(row) for row in read_media_index(raw_index)]
+    matches = [row for row in originals if row.get("sequence") == sequence]
+    if not matches:
+        raise AssertionError(f"no media_raw row for sequence {sequence!r}")
+    original = matches[0]
+    video_uuid = original["video_uuid"]
+
+    recipe = transcode_recipe_hash(
+        TranscodeParams(entry=("", sequence), target=target),
+        ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
+        CHROME_149,
+        media_thresholds(),
+    )
+    transcode_root = dataset.get_root("media") / TRANSCODE_KIND_DIRECTORY
+    transcode_root.mkdir(parents=True, exist_ok=True)
+    derivative = transcode_root / f"{video_uuid}.{recipe}.{target}.mp4"
+    _ = derivative.write_bytes(b"stub")
+
+    media_index = dataset.get_root("media") / "index.csv"
+    rows = [dict(row) for row in read_media_index(media_index)]
+    row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    row.update(
+        {
+            "name": derivative.name,
+            "group": original.get("group", ""),
+            "sequence": sequence,
+            "abs_path": dataset.relative_to_root(str(derivative)),
+            "source_video_uuid": video_uuid,
+            "recipe_hash": recipe,
+        }
+    )
+    rows.append(row)
+    write_media_index_rows(media_index, frame_from_rows(rows))
+
+    column = derivative_column_for_target(target)
+    for candidate in originals:
+        if candidate.get("video_uuid") == video_uuid:
+            candidate[column] = f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
+    write_media_index_rows(raw_index, frame_from_rows(list(originals)))
+    return derivative
