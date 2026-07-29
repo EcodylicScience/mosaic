@@ -698,3 +698,67 @@ def test_the_scheme_column_is_back_compatible(tmp_path: Path) -> None:
             r["sequence"]: r.get("identity_scheme", "") for r in csv.DictReader(handle)
         }
     assert rows == {"seq_a": "", "seq_b": FEATURE_IDENTITY_SCHEME}
+
+
+_REPLACE_PROBE = """
+import sys
+from pathlib import Path
+from dataclasses import dataclass
+from mosaic.core.pipeline.index_csv import IndexCSV, SchemaRowBase
+
+@dataclass(frozen=True)
+class Row(SchemaRowBase):
+    key: str = ""
+    value: str = ""
+
+path, name, barrier = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+index = IndexCSV(path, Row)
+index.ensure()
+barrier.write_text("ready")
+while len(list(barrier.parent.glob("*.ready"))) < 2:
+    pass
+# Each writer declares a whole set of its own, several rows wide, so a torn or
+# interleaved write shows up as a file mixing the two.
+index.replace([Row(key=name, value=name) for _ in range(200)])
+"""
+
+
+def test_concurrent_index_replaces_never_tear_the_file(tmp_path: Path) -> None:
+    """``replace`` serializes, so a reader always sees one writer's whole set.
+
+    Deliberately NOT a lost-update test. ``rows`` is computed by the caller
+    before the lock is taken, so two processes each declaring a different whole
+    set have the last one win, entire -- which is what a projection means. What
+    the lock guarantees is that the file is never a mixture of the two, and never
+    half-written: every surviving row belongs to one writer, and the file parses.
+    """
+    index_path = tmp_path / "index.csv"
+    gate = tmp_path / "gate"
+    gate.mkdir()
+
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _REPLACE_PROBE,
+                str(index_path),
+                name,
+                str(gate / f"{name}.ready"),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for name in ("first", "second")
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err.decode()[-800:]
+
+    with index_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    # Every row carries the writer that produced it, so a mixture is detectable.
+    writers = {row["value"] for row in rows}
+    assert len(writers) == 1, f"the file mixes two writers' sets: {writers}"
+    assert {row["key"] for row in rows} == writers
+    assert len(rows) == 200, "a partial set survived"

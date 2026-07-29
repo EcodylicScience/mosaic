@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, SchemaRowBase
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,3 +731,102 @@ class TestAdoptHook:
         assert idx.latest_run_id() == "r1"
         idx.mark_finished("r1")
         assert list(idx.read(run_id="r1")["sequence"]) == ["fresh"]
+
+
+@dataclass(frozen=True, slots=True)
+class PathlessRow(SchemaRowBase):
+    """A row that names a sequence rather than a file -- the 4.4 shape."""
+
+    group: str = ""
+    sequence: str = ""
+    composition: str = ""
+    member_count: int = 0
+
+
+class TestARowNeedNotNameAFile:
+    """``IndexCSV`` over a row class with no ``abs_path``."""
+
+    def test_ensure_append_and_read_work_without_a_path_column(
+        self, tmp_path: Path
+    ) -> None:
+        idx: IndexCSV[PathlessRow] = IndexCSV(
+            tmp_path / "sequences.csv", PathlessRow, dedup_keys=["group", "sequence"]
+        )
+        idx.append([PathlessRow(sequence="a", composition="abc", member_count=2)])
+        idx.append([PathlessRow(sequence="a", composition="def", member_count=3)])
+        idx.append([PathlessRow(sequence="b", composition="ghi", member_count=1)])
+
+        frame = idx.read()
+        assert dict(zip(frame["sequence"], frame["composition"])) == {
+            "a": "def",
+            "b": "ghi",
+        }
+
+    def test_a_path_question_is_refused_rather_than_key_errored(
+        self, tmp_path: Path
+    ) -> None:
+        """The message names what was asked for, not a missing pandas column."""
+        idx: IndexCSV[PathlessRow] = IndexCSV(tmp_path / "sequences.csv", PathlessRow)
+        idx.append([PathlessRow(sequence="a")])
+
+        with pytest.raises(TypeError, match="has no abs_path"):
+            _ = idx.read(filter_ext=".parquet")
+        with pytest.raises(TypeError, match="has no abs_path"):
+            _ = idx.read(validate_paths=True)
+        with pytest.raises(TypeError, match="has no abs_path"):
+            _ = idx.prune_missing(Path)
+
+    def test_prune_missing_cannot_delete_a_composition_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        """The reason the row has no path at all.
+
+        Had it borrowed the sequence's directory to satisfy ``IndexRowBase``,
+        a moved or unmounted directory would drop the stored drift baseline
+        rule P3 says must be kept -- silently, and reported as "nothing was
+        dropped".
+        """
+        idx: IndexCSV[PathlessRow] = IndexCSV(tmp_path / "sequences.csv", PathlessRow)
+        idx.append([PathlessRow(sequence="a", composition="abc")])
+        with pytest.raises(TypeError):
+            _ = idx.prune_missing(lambda _: tmp_path / "gone")
+        assert list(idx.read()["composition"]) == ["abc"]
+
+
+class TestReplace:
+    def test_replace_writes_exactly_the_rows_given(self, tmp_path: Path) -> None:
+        """A projection, not an accumulation: what is gone must leave."""
+        idx: IndexCSV[PathlessRow] = IndexCSV(
+            tmp_path / "sequences.csv", PathlessRow, dedup_keys=["group", "sequence"]
+        )
+        idx.append([PathlessRow(sequence="a"), PathlessRow(sequence="b")])
+
+        idx.replace([PathlessRow(sequence="b", composition="new")])
+
+        frame = idx.read()
+        assert list(frame["sequence"]) == ["b"]
+        assert list(frame["composition"]) == ["new"]
+
+    def test_replace_with_nothing_leaves_a_headered_empty_file(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "sequences.csv"
+        idx: IndexCSV[PathlessRow] = IndexCSV(path, PathlessRow)
+        idx.append([PathlessRow(sequence="a")])
+
+        idx.replace([])
+
+        assert idx.read().empty
+        assert list(pd.read_csv(path, nrows=0).columns) == list(idx.schema)
+
+    def test_replace_projects_onto_the_schema(self, tmp_path: Path) -> None:
+        """Column order is fixed and an off-schema key never widens the file."""
+        path = tmp_path / "sequences.csv"
+        idx: IndexCSV[PathlessRow] = IndexCSV(path, PathlessRow)
+        idx.replace([PathlessRow(sequence="a", member_count=3)])
+        assert list(pd.read_csv(path, nrows=0).columns) == list(idx.schema)
+
+    def test_replace_leaves_no_temp_orphan(self, tmp_path: Path) -> None:
+        idx: IndexCSV[PathlessRow] = IndexCSV(tmp_path / "sequences.csv", PathlessRow)
+        idx.replace([PathlessRow(sequence="a")])
+        assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []

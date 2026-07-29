@@ -11,11 +11,33 @@ import pandas as pd
 from ._utils import atomic_write, now_iso
 from .index_lock import index_lock
 
-RowT = TypeVar("RowT", bound="IndexRowBase")
+RowT = TypeVar("RowT", bound="SchemaRowBase")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class IndexRowBase:
+class SchemaRowBase:
+    """The column contract alone: a dataclass whose fields are the CSV columns.
+
+    Carries no field of its own. It exists so :class:`IndexCSV` can serve an
+    index whose rows do not name a file -- a per-sequence composition row is a
+    property of a *sequence*, and a sequence is not a file.
+
+    Giving such a row a directory to satisfy a base class would be worse than it
+    looks. :meth:`IndexRowBase.__post_init__` existence-checks an absolute path,
+    so a sequence whose media sits on an unmounted share would crash *row
+    construction*; :meth:`IndexCSV.prune_missing` would then delete composition
+    rows whenever a directory moved, silently destroying the drift baseline rule
+    P3 says must be stored rather than recomputed; and ``read(filter_ext=...)``
+    would be testing a directory against a file suffix.
+
+    The naming reads backwards on purpose. ``IndexRowBase`` keeps the plain name
+    because it is what six of the seven row types in the toolkit actually extend;
+    this one is the narrower contract underneath it.
+    """
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexRowBase(SchemaRowBase):
     """Minimal index row -- just a validated abs_path."""
 
     abs_path: Path
@@ -116,6 +138,26 @@ class IndexCSV(Generic[RowT]):
             msg = f"{self.row_cls.__name__} is not a run index row type"
             raise TypeError(msg)
 
+    def _assert_path_index(self) -> None:
+        """Refuse a path question an index whose rows have no path cannot answer.
+
+        Both callers below index ``df["abs_path"]`` directly, so without this the
+        failure is a pandas ``KeyError`` naming a column rather than a message
+        naming what was asked for.
+        """
+        if not issubclass(self.row_cls, IndexRowBase):
+            msg = (
+                f"{self.row_cls.__name__} has no abs_path, so this index cannot "
+                f"filter or validate by path"
+            )
+            raise TypeError(msg)
+
+    def _empty_frame(self) -> pd.DataFrame:
+        """A zero-row frame carrying exactly this index's schema and dtypes."""
+        return pd.DataFrame(
+            {col: pd.Series(dtype=dtype) for col, dtype in self.schema.items()}
+        )
+
     def _read_frame(self) -> pd.DataFrame:
         """Read the CSV with this index's declared string columns kept as strings.
 
@@ -150,9 +192,7 @@ class IndexCSV(Generic[RowT]):
         if self.path.exists():
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(
-            {col: pd.Series(dtype=dtype) for col, dtype in self.schema.items()}
-        )
+        df = self._empty_frame()
         atomic_write(self.path, lambda p: df.to_csv(p, index=False))
 
     def read(
@@ -204,6 +244,7 @@ class IndexCSV(Generic[RowT]):
                 msg = f"No entries for run_id '{run_id}' in {self.path}"
                 raise FileNotFoundError(msg)
         if filter_ext is not None:
+            self._assert_path_index()
             df = df[df["abs_path"].str.endswith(filter_ext)].reset_index(drop=True)
         if groups is not None:
             df = df[df["group"].isin(set(groups))].reset_index(drop=True)
@@ -217,6 +258,7 @@ class IndexCSV(Generic[RowT]):
             df = df[mask].reset_index(drop=True)
         if not validate_paths:
             return df
+        self._assert_path_index()
         # Resolve relative paths against the dataset root (grandparent of
         # the index file: features/<name>/index.csv -> features -> dataset_root)
         base = self.path.parent.parent.parent
@@ -301,6 +343,49 @@ class IndexCSV(Generic[RowT]):
 
         atomic_write(self.path, _write)
 
+    def replace(self, rows: list[RowT]) -> None:
+        """Rewrite the index to exactly *rows*: one locked block, one atomic write.
+
+        The operation three of the toolkit's writers already perform by hand --
+        ``write_media_index_rows``, ``write_tracks_raw_index_rows`` and the
+        labels-index appender each rebuild a whole file -- expressed once, with
+        the lock the hand-rolled versions did not take.
+
+        Wanted rather than expressible as :meth:`append` because a projection is
+        not an accumulation: a per-sequence composition index says "these are the
+        sequences this root has, and this is what each is made of", so a sequence
+        that has gone away must leave, and dedup keys can only ever add. A caller
+        that wants to add one row still calls ``append``.
+
+        ``ensure()`` runs before the lock for the reason ``append`` gives: the
+        lock's ``O_CREAT`` would otherwise materialize a zero-byte file that
+        ``ensure`` then declines to header. The frame is projected onto the
+        schema, so column order is fixed and an extra key is dropped rather than
+        widening the file.
+
+        **What the lock here does and does not buy**, because the difference
+        matters and is easy to assume away. It serializes the writes, so the file
+        is never torn and every row in it belongs to one writer's set. It does
+        **not** merge two writers: ``rows`` is computed by the caller before the
+        lock is taken, so two processes each declaring a different whole set will
+        have the last one win, entire. That is correct for a projection -- a
+        caller saying "this is everything" cannot also be saying "keep what you
+        had" -- and it is why :meth:`append`, whose merge happens inside the lock,
+        stays the primitive for accumulating rows.
+
+        For the per-sequence composition index that consequence is bounded and
+        was accepted deliberately: the losing writer's projection described an
+        index state that has already been superseded, so the result is stale
+        rather than wrong, it over-reports rather than under-reports on the next
+        comparison, and the next write heals it. Anything needing a merge under
+        contention wants ``append``.
+        """
+        self.ensure()
+        with index_lock(self.path):
+            frame = pd.DataFrame(rows) if rows else self._empty_frame()
+            projected = frame[list(self.schema)]
+            atomic_write(self.path, lambda p: projected.to_csv(p, index=False))
+
     def prune_missing(
         self,
         resolver: Callable[[str], Path],
@@ -324,6 +409,7 @@ class IndexCSV(Generic[RowT]):
             The dropped rows as a DataFrame (empty if none). The index file is
             rewritten (unless *dry_run*) only when at least one row is dropped.
         """
+        self._assert_path_index()
         if not self.path.exists():
             return pd.DataFrame()
         # Locked for the whole read-decide-write, not just the write: this is a
