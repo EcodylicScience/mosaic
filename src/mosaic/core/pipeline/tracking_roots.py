@@ -32,6 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from mosaic.core.pipeline.markers import PhaseName
+
 __all__ = [
     "TRACKING_ROOT",
     "TRACKING_ROOTS",
@@ -80,11 +82,20 @@ class TrackingRoot:
     silently stops being portable, and the add-a-tracker recipe had to carry a
     checklist item asking people to remember. One row per tracker, and the
     portability passes read it.
+
+    ``phases`` is every gated phase this producer completes, and the sweeper
+    needs *all* of them before it will call a directory finished. Without it,
+    a TREx run whose conversion completed and whose tracking was killed reads as
+    complete on the convert marker alone -- and gets reclaimed at its age, taking
+    a conversion someone is still using. "Which phases did this tool promise" is
+    producer knowledge, and this is where the sweeper is allowed to have it
+    without importing the producer.
     """
 
     key: str
     retention: RetentionClass
     outputs: tuple[str, ...]
+    phases: tuple[PhaseName, ...]
     path_columns: tuple[str, ...] = ()
 
     @property
@@ -102,18 +113,21 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             key="trex",
             retention="tracker",
             outputs=("*.pv", "*.settings", "*.results", "data/*.npz"),
+            phases=("convert", "track"),
             path_columns=("video_abs_path", "pv_path"),
         ),
         TrackingRoot(
             key="sleap",
             retention="tracker",
             outputs=("*.predictions.slp", "*.analysis.h5"),
+            phases=("track",),
             path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
         ),
         TrackingRoot(
             key="litpose",
             retention="tracker",
             outputs=("*.predictions.csv",),
+            phases=("track",),
             path_columns=("video_abs_path", "csv_path"),
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
@@ -122,15 +136,22 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # shorter clock rather than a cache. One root per inference kind, because
         # each is a separate op with its own identifiers.
         TrackingRoot(
-            key="infer-pose", retention="inference", outputs=("predictions.parquet",)
+            key="infer-pose",
+            retention="inference",
+            outputs=("predictions.parquet",),
+            phases=("infer",),
         ),
         TrackingRoot(
-            key="infer-points", retention="inference", outputs=("predictions.parquet",)
+            key="infer-points",
+            retention="inference",
+            outputs=("predictions.parquet",),
+            phases=("infer",),
         ),
         TrackingRoot(
             key="infer-localizer",
             retention="inference",
             outputs=("predictions.parquet",),
+            phases=("infer",),
         ),
     )
 }

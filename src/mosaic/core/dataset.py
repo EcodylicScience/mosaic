@@ -25,6 +25,7 @@ from typing import (
     Tuple,
 )
 
+
 import numpy as np
 import pandas as pd
 import yaml  # pip install pyyaml
@@ -149,6 +150,7 @@ from .pipeline.tracks_raw_index import (
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
+    from .pipeline.sweep import SweepClass, SweepReport
 
 
 def _normalize_patterns(pats) -> tuple[str, ...]:
@@ -361,26 +363,35 @@ def _backfill_tracking_roots(roots: Dict[str, str]) -> Dict[str, str]:
     return roots
 
 
-def legacy_tracking_roots(roots: Mapping[str, str]) -> dict[str, str]:
-    """Tracker roots still pointing at their pre-item-8.1 location.
+_SOURCE_ROOT_KEYS: Final[tuple[str, ...]] = ("tracks_raw", "media_raw", "labels")
 
-    ``{root key: declared path}`` for every tracker root that resolves outside
-    ``_tracking`` -- in practice ``{"trex": "tracks_raw/trex"}`` on a dataset
-    converted before the relocation. Empty on a current one.
+
+def legacy_tracking_roots(roots: Mapping[str, str]) -> dict[str, str]:
+    """Tracker roots still nested inside a *source* root -- the pre-8.1 layout.
+
+    ``{root key: declared path}``, in practice ``{"trex": "tracks_raw/trex"}`` on
+    a dataset converted before the relocation. Empty on a current one.
 
     Two callers need this and want opposite things from it. A raw-tracks scan
-    wants to know that tracker output is sitting *inside* a source root, where
-    its exclusion cannot reach; a sweeper wants to know that a root it is about
-    to delete under holds user content, and to decline. Both questions are "which
-    roots did not move", so they are answered once here rather than by two
-    spellings of the same string comparison.
+    wants to know that tracker output is sitting inside a source root, where its
+    exclusion cannot reach; a sweeper wants to know that a root it is about to
+    delete under holds user content, and to decline. Both questions are "is this
+    root somewhere uploads live", so they are answered once here.
+
+    **Nested-in-a-source-root, not merely absent-from-``_tracking``.** The first
+    spelling was the latter, and it reported a root pointing *outside the
+    dataset* as legacy -- which is a different fault with a different repair, and
+    telling someone their root is inside ``tracks_raw`` when it is on another
+    volume sends them to fix the wrong thing. Both still decline the sweep, so
+    the cost was a misleading message rather than a deletion.
     """
     return {
         key: declared
         for key, declared in roots.items()
         if key in TRACKING_ROOTS
         and declared
-        and TRACKING_ROOT not in PurePosixPath(str(declared).replace("\\", "/")).parts
+        and PurePosixPath(str(declared).replace("\\", "/")).parts[:1]
+        in {(source,) for source in _SOURCE_ROOT_KEYS}
     }
 
 
@@ -2351,6 +2362,182 @@ class Dataset:
         """Read the media index as string-cell records (empty list if absent)."""
         media_root = self.get_root(self.resolve_media_root())
         return _read_media_index(media_root / index_filename)
+
+    def sweep_tracking(
+        self,
+        *,
+        apply: bool,
+        roots: Sequence[str] | None = None,
+        retention_overrides: Mapping[str, float] | None = None,
+        execution_id: str = "",
+        now: "datetime.datetime | None" = None,
+    ) -> "SweepReport":
+        """Reclaim finished tracker intermediates under ``_tracking`` (item 8.4).
+
+        Dry-run unless *apply*. Walks ``<_tracking>/<tool>/<run_id>/<entry>/``,
+        classifies each entry directory from its markers, its index row and its
+        age, and removes only the classes the decision module authorizes -- rows
+        first, then files, so a crash between them leaves rows naming absent
+        files (which :meth:`reindex` repairs) rather than files nothing names.
+
+        **The claim is the gate.** A directory a live execution holds is never a
+        candidate, and neither is one this dataset's index does not yet name:
+        several producers append their rows only after the whole batch, so
+        mid-run most finished directories are unrowed and every one of them is
+        work in progress.
+
+        Three gates decline before anything is read, each returning a report with
+        ``considered=False`` rather than raising. The third is the one that
+        matters most: a dataset whose tracker root still points inside
+        ``tracks_raw`` (the pre-item-8.1 layout) is refused outright, because
+        deleting under it would delete user uploads.
+
+        Root resolution and the writes live here; the decisions live in
+        :mod:`~mosaic.core.pipeline.sweep`, which knows nothing about datasets.
+
+        Args:
+            apply: Perform the deletions. Default is a report.
+            roots: Restrict to these tracker root keys.
+            retention_overrides: Per retention class, in days.
+            execution_id: The asking execution, so its own claims read as
+                ``mine``. A sweeper normally passes none, which matches nothing.
+            now: Override for the current instant, for tests.
+
+        Returns:
+            A :class:`~mosaic.core.pipeline.sweep.SweepReport`.
+        """
+        from .pipeline.sweep import (
+            RetentionClass,
+            SweepEntry,
+            classify_entry,
+            declined_sweep,
+            deletable,
+            retention_days,
+            summarize,
+        )
+        from .pipeline.tracking_roots import TRACKING_ROOTS
+
+        if not self.has_root(TRACKING_ROOT):
+            return declined_sweep("no-tracking-root")
+        if legacy_tracking_roots(self.roots):
+            return declined_sweep("legacy-layout")
+
+        base = self.base_dir.resolve()
+        wanted = set(roots) if roots is not None else set(TRACKING_ROOTS)
+        overrides: dict[RetentionClass, float] = {}
+        for name, days in (retention_overrides or {}).items():
+            if name in ("tracker", "inference"):
+                overrides[name] = days
+
+        decided: list[SweepEntry] = []
+        for key in sorted(wanted & set(TRACKING_ROOTS)):
+            if not self.has_root(key):
+                continue
+            root = self.get_root(key)
+            if base not in root.resolve().parents and root.resolve() != base:
+                return declined_sweep("root-outside-dataset")
+            if not root.exists():
+                continue
+            rowed = self._rowed_entries(key)
+            window = retention_days(key, overrides)
+            for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+                for entry_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+                    decided.append(
+                        classify_entry(
+                            entry_dir,
+                            root_key=key,
+                            run_id=run_dir.name,
+                            entry=entry_dir.name,
+                            run_log_base=self.base_dir,
+                            execution_id=execution_id,
+                            rowed=(run_dir.name, entry_dir.name) in rowed,
+                            promoted=False,
+                            max_age_days=window,
+                            now=now,
+                        )
+                    )
+
+        report = summarize(decided, applied=apply)
+        if not apply:
+            return report
+        return self._perform_sweep(report, deletable)
+
+    def _rowed_entries(self, root_key: str) -> set[tuple[str, str]]:
+        """``(run_id, entry key)`` pairs this root's index names.
+
+        An unreadable or absent index yields the empty set, which classifies
+        every directory as ``unrowed`` -- and unrowed is refused, so the failure
+        direction of not being able to read the index is "delete nothing".
+        """
+        from .pipeline.dataset_indexes import reconcilable_index
+
+        factory = reconcilable_index(root_key)
+        index_path = self.get_root(root_key) / "index.csv"
+        if factory is None or not index_path.exists():
+            return set()
+        try:
+            frame = pd.read_csv(index_path)
+        except (OSError, pd.errors.ParserError):
+            return set()
+        if "run_id" not in frame.columns:
+            return set()
+        rowed: set[tuple[str, str]] = set()
+        for _, row in frame.iterrows():
+            run_id = str(row["run_id"])
+            stored = str(row.get("abs_path", ""))
+            rowed.add((run_id, Path(stored).name))
+        return rowed
+
+    def _perform_sweep(
+        self,
+        report: "SweepReport",
+        is_deletable: Callable[["SweepClass"], bool],
+    ) -> "SweepReport":
+        """Drop the rows, then remove the directories, for the authorized set.
+
+        Rows before files, the rule ``IndexCSV.drop_entries`` documents and
+        ``delete_set`` already follows: a crash between the two leaves rows
+        naming files that are gone, which :meth:`reindex` repairs, rather than
+        files nothing names, which nothing finds.
+        """
+        import shutil
+        from dataclasses import replace
+
+        from .pipeline.dataset_indexes import reconcilable_index
+
+        candidates = [e for e in report.entries if is_deletable(e.verdict)]
+        by_root: dict[str, list[tuple[str, str]]] = {}
+        for entry in candidates:
+            by_root.setdefault(entry.root_key, []).append((entry.run_id, entry.entry))
+
+        rows_dropped = 0
+        for root_key, pairs in sorted(by_root.items()):
+            factory = reconcilable_index(root_key)
+            index_path = self.get_root(root_key) / "index.csv"
+            if factory is None or not index_path.exists():
+                continue
+            index = factory(index_path)
+            for run_id, entry in pairs:
+                dropped = index.drop_entries([("", entry)], run_id=run_id)
+                rows_dropped += len(dropped)
+
+        removed: list[Path] = []
+        reclaimed = 0
+        for entry in candidates:
+            try:
+                shutil.rmtree(entry.path)
+            except OSError as exc:
+                print(f"[sweep] could not remove {entry.path}: {exc}", file=sys.stderr)
+                continue
+            removed.append(entry.path)
+            reclaimed += entry.bytes_on_disk
+
+        return replace(
+            report,
+            removed=removed,
+            rows_dropped=rows_dropped,
+            bytes_reclaimed=reclaimed,
+        )
 
     def sequence_uniformity(
         self,

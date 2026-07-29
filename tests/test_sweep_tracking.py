@@ -1,0 +1,304 @@
+"""The tracker sweeper -- item 8.4, and M5's second gate.
+
+The gate is *the sweeper does not delete in-flight work*, and it is asserted
+twice on purpose: once as the rule (``inflight`` is not in the deletable set,
+which covers every path) and once as behaviour (a live claim survives
+``apply=True`` with the window set to zero, which proves the rule is wired to
+something). Neither alone is enough -- the first cannot see a bug in the walk,
+the second only covers the arrangement it builds.
+"""
+
+from __future__ import annotations
+
+import datetime
+from pathlib import Path
+
+import pytest
+
+from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.pipeline.markers import (
+    PhaseMarker,
+    new_inflight,
+    write_inflight,
+    write_phase_marker,
+)
+from mosaic.core.pipeline.sweep import (
+    _DELETABLE,
+    SweepClass,
+    deletable,
+    retention_days,
+)
+
+_NOW = datetime.datetime(2026, 7, 29, 12, 0, tzinfo=datetime.timezone.utc)
+
+
+def _dataset(tmp_path: Path) -> Dataset:
+    manifest = new_dataset_manifest(name="sweep", base_dir=tmp_path / "ds")
+    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+
+
+def _entry(
+    ds: Dataset,
+    *,
+    root_key: str = "trex",
+    run_id: str = "trex.1.0-aaaa",
+    sequence: str = "seq_a",
+    finished_days_ago: float | None = None,
+    rowed: bool = True,
+    claim_expires_in: float | None = None,
+) -> Path:
+    """A tracker working directory in a chosen state.
+
+    Built through the real marker writers rather than by hand: a fixture that
+    writes its own JSON would keep passing after the marker schema moved.
+    """
+    seq_dir = ds.get_root(root_key) / run_id / sequence
+    seq_dir.mkdir(parents=True, exist_ok=True)
+    (seq_dir / "out.pv").write_bytes(b"x" * 16)
+
+    if finished_days_ago is not None:
+        stamp = (_NOW - datetime.timedelta(days=finished_days_ago)).isoformat()
+        from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+
+        for phase in TRACKING_ROOTS[root_key].phases:
+            write_phase_marker(
+                seq_dir,
+                PhaseMarker(phase=phase, run_id=run_id, completed_at=stamp),
+            )
+    if claim_expires_in is not None:
+        claim = new_inflight(
+            execution_id="other-exec",
+            host="other-host",
+            pid=1,
+            phase=None,
+            idle_seconds=claim_expires_in,
+        )
+        write_inflight(seq_dir, claim)
+    if rowed:
+        _row(ds, root_key, run_id, sequence, seq_dir)
+    return seq_dir
+
+
+def _row(ds: Dataset, root_key: str, run_id: str, sequence: str, path: Path) -> None:
+    from mosaic.tracking.trex.dataset_runs import (
+        TRexIndexRow,
+        trex_index,
+        trex_index_path,
+    )
+
+    assert root_key == "trex", "only the trex row shape is built here"
+    idx = trex_index(trex_index_path(ds))
+    idx.ensure()
+    idx.append(
+        [
+            TRexIndexRow(
+                run_id=run_id,
+                group="",
+                sequence=sequence,
+                abs_path=Path(ds.relative_to_root(path)),
+                video_abs_path="",
+                params_hash="",
+            )
+        ]
+    )
+
+
+# --- The gate ----------------------------------------------------------------
+
+
+def test_in_flight_is_not_a_deletable_class() -> None:
+    """The rule, stated once and covering every path through the walk."""
+    assert "inflight" not in _DELETABLE
+    assert not deletable("inflight")
+
+
+def test_a_live_claim_survives_an_applied_sweep_with_no_window(tmp_path: Path) -> None:
+    """The gate as behaviour: the rule is wired to something.
+
+    ``min`` window and ``apply=True`` is the most aggressive call the surface
+    admits, and a directory finished long ago but *claimed* must still be there
+    afterwards. This is the overnight-batch case -- a run whose earlier entries
+    are finished while a later one is still going.
+    """
+    ds = _dataset(tmp_path)
+    held = _entry(ds, finished_days_ago=90.0, claim_expires_in=3600.0)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"tracker": 0.0}, now=_NOW
+    )
+
+    assert held.exists(), "the sweeper deleted work another execution holds"
+    assert (held / "out.pv").exists()
+    assert [e.verdict for e in report.entries] == ["inflight"]
+    assert report.removed == []
+
+
+def test_an_unrowed_directory_is_refused(tmp_path: Path) -> None:
+    """Mid-batch, most finished directories are unrowed and all are live work.
+
+    Several producers append their index rows only after the whole batch, so
+    "no row names it" is the *normal* state of a healthy run in progress --
+    the opposite of what it sounds like.
+    """
+    ds = _dataset(tmp_path)
+    unrowed = _entry(ds, finished_days_ago=90.0, rowed=False)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"tracker": 0.0}, now=_NOW
+    )
+
+    assert unrowed.exists()
+    assert [e.verdict for e in report.entries] == ["unrowed"]
+
+
+def test_a_directory_with_no_marker_is_foreign_and_refused(tmp_path: Path) -> None:
+    """A root pointed somewhere that is not a tracker root reclaims nothing."""
+    ds = _dataset(tmp_path)
+    stranger = ds.get_root("trex") / "not-a-run" / "not-an-entry"
+    stranger.mkdir(parents=True)
+    (stranger / "somebody.txt").write_text("mine")
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"tracker": 0.0}, now=_NOW
+    )
+
+    assert (stranger / "somebody.txt").exists()
+    assert [e.verdict for e in report.entries] == ["foreign"]
+
+
+# --- What it does reclaim ----------------------------------------------------
+
+
+def test_a_finished_aged_entry_goes_with_its_row(tmp_path: Path) -> None:
+    """The ordinary reclaim: files removed, row dropped, bytes reported."""
+    import pandas as pd
+
+    from mosaic.tracking.trex.dataset_runs import trex_index_path
+
+    ds = _dataset(tmp_path)
+    old = _entry(ds, finished_days_ago=30.0)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not old.exists()
+    assert report.removed == [old]
+    assert report.rows_dropped == 1
+    assert report.bytes_reclaimed > 0
+    assert len(pd.read_csv(trex_index_path(ds))) == 0
+
+
+def test_a_finished_entry_inside_its_window_is_held_and_said_so(
+    tmp_path: Path,
+) -> None:
+    """ "Would delete 0" must not read as "there was nothing here"."""
+    ds = _dataset(tmp_path)
+    recent = _entry(ds, finished_days_ago=1.0)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert recent.exists()
+    assert [e.verdict for e in report.entries] == ["complete_young"]
+    assert report.held_for_age == 1
+
+
+def test_a_half_finished_trex_run_is_not_complete(tmp_path: Path) -> None:
+    """Convert done, track killed: one marker, and it is not a finished run.
+
+    Reading whichever markers happen to be present would take the convert stamp
+    as the answer and reclaim the directory at its age -- throwing away a
+    conversion someone is still using. The registry declares both phases, so
+    the question asked is "are all of them there".
+    """
+    ds = _dataset(tmp_path)
+    half = ds.get_root("trex") / "trex.1.0-bbbb" / "seq_a"
+    half.mkdir(parents=True)
+    (half / "out.pv").write_bytes(b"x" * 16)
+    write_phase_marker(
+        half,
+        PhaseMarker(
+            phase="convert",
+            run_id="trex.1.0-bbbb",
+            completed_at=(_NOW - datetime.timedelta(days=90)).isoformat(),
+        ),
+    )
+    _row(ds, "trex", "trex.1.0-bbbb", "seq_a", half)
+
+    report = ds.sweep_tracking(apply=False, now=_NOW)
+
+    assert [e.verdict for e in report.entries] == ["incomplete"]
+
+
+def test_an_expired_claim_is_reclaimable(tmp_path: Path) -> None:
+    """The only cross-host authority is the expiry the claim carries itself."""
+    ds = _dataset(tmp_path)
+    abandoned = _entry(ds, finished_days_ago=None, claim_expires_in=1.0)
+
+    report = ds.sweep_tracking(apply=False, now=_NOW + datetime.timedelta(days=365))
+
+    assert [e.verdict for e in report.entries] == ["expired_claim"]
+
+
+# --- Gates, retention, determinism -------------------------------------------
+
+
+def test_a_legacy_layout_declines_rather_than_deleting(tmp_path: Path) -> None:
+    """A tracker root still inside tracks_raw holds user uploads beneath it."""
+    ds = _dataset(tmp_path)
+    ds.roots["trex"] = "tracks_raw/trex"
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not report.considered
+    assert report.declined == "legacy-layout"
+    assert report.removed == []
+
+
+def test_a_root_outside_the_dataset_declines(tmp_path: Path) -> None:
+    """Item 9.1's rule, enforced where being wrong costs files."""
+    ds = _dataset(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    ds.roots["trex"] = str(outside)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not report.considered
+    assert report.declined == "root-outside-dataset"
+
+
+def test_inference_output_is_kept_for_less_time_than_tracker_output() -> None:
+    """Item 8.4's table is data on the registry, not a branch per tool."""
+    assert retention_days("infer-pose") < retention_days("trex")
+
+
+def test_a_dry_run_removes_nothing(tmp_path: Path) -> None:
+    """Dry-run is the default and must not be one in name only."""
+    ds = _dataset(tmp_path)
+    old = _entry(ds, finished_days_ago=30.0)
+
+    report = ds.sweep_tracking(apply=False, now=_NOW)
+
+    assert old.exists()
+    assert report.removed == []
+    assert [e.verdict for e in report.entries] == ["complete_aged"]
+
+
+def test_two_runs_agree(tmp_path: Path) -> None:
+    """Filesystem order is not stable, so the walk sorts and the report must too."""
+    ds = _dataset(tmp_path)
+    for sequence in ("seq_c", "seq_a", "seq_b"):
+        _ = _entry(ds, sequence=sequence, finished_days_ago=30.0)
+
+    first = ds.sweep_tracking(apply=False, now=_NOW).payload()
+    second = ds.sweep_tracking(apply=False, now=_NOW).payload()
+
+    assert first == second
+
+
+@pytest.mark.parametrize("verdict", ["inflight", "unrowed", "foreign"])
+def test_every_refused_class_is_reported_to_the_operator(verdict: SweepClass) -> None:
+    """A class nothing prints is a class nobody repairs."""
+    from mosaic.core.pipeline.sweep import REFUSED_NOTES
+
+    assert verdict in REFUSED_NOTES
+    assert not deletable(verdict)

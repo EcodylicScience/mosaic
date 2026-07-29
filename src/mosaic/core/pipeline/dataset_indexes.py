@@ -24,7 +24,7 @@ a list of roots.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
@@ -115,16 +115,26 @@ def iter_dataset_indexes(
 
 
 class ReconcilableIndex(Protocol):
-    """What the reconciler needs from an index, and nothing more.
+    """What the reconciler and the sweeper need from an index, and nothing more.
 
     A structural type rather than ``IndexCSV[SomeRow]``, because ``IndexCSV`` is
     generic in its row and invariant, so no single parameterization names the
-    features index and the tracker indexes at once. What they share is this one
-    method, which is what the reconciler actually calls.
+    features index and the tracker indexes at once. What they share is these two
+    methods, which are what the two passes actually call: the reconciler drops
+    rows whose file is gone, the sweeper drops the rows for entries it is about
+    to remove.
     """
 
     def prune_missing(
         self, resolver: Callable[[str], Path], *, dry_run: bool = False
+    ) -> pd.DataFrame: ...
+
+    def drop_entries(
+        self,
+        entries: Iterable[tuple[str, str]],
+        *,
+        run_id: str | None = None,
+        dry_run: bool = False,
     ) -> pd.DataFrame: ...
 
 

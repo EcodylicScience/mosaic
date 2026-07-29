@@ -20,6 +20,7 @@ from mosaic.cli.index_media import index_media_command
 from mosaic.cli.index_tracks import index_tracks_command
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reindex import reindex_command
+from mosaic.cli.sweep_tracking import sweep_tracking_command
 from mosaic.cli.reprobe_media import reprobe_media_command
 from mosaic.cli.run import run_command
 from mosaic.cli.runs import runs_command
@@ -55,6 +56,7 @@ _ = app.command(name="index-tracks")(index_tracks_command)
 _ = app.command(name="reindex")(reindex_command)
 _ = app.command(name="reprobe-media")(reprobe_media_command)
 _ = app.command(name="prune-media")(prune_media_command)
+_ = app.command(name="sweep-tracking")(sweep_tracking_command)
 _ = app.command(name="convert-tracks")(convert_tracks_command)
 _ = app.command(name="convert-labels")(convert_labels_command)
 
