@@ -120,6 +120,7 @@ from .pipeline.sequence_index import (
     sequence_labels,
     write_sequence_compositions,
 )
+from .pipeline.dataset_indexes import iter_dataset_indexes
 from .pipeline.tracking_roots import (
     TRACKING_ROOT,
     TRACKING_ROOTS,
@@ -172,35 +173,18 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
     return normalized
 
 
-# Path-bearing columns on the tracker index beyond ``abs_path``: the source
-# video the run consumed and the ``.pv`` it produced. Named here because both
-# path passes read raw CSVs and have no row class to ask. Any new path column
-# on TRexIndexRow belongs in this tuple, or it silently stops being portable.
-_TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
-
-# Path-bearing columns on the SLEAP tracker index beyond ``abs_path``: the source
-# video and the two run artifacts (predictions ``.slp`` and analysis ``.h5``). Any
-# new path column on SleapIndexRow belongs here, or it silently stops being portable.
-_SLEAP_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
-    "video_abs_path",
-    "slp_path",
-    "analysis_h5_path",
-)
-
-# Path-bearing columns on the Lightning Pose tracker index beyond ``abs_path``:
-# the source video and the predictions CSV. Any new path column on
-# LitposeIndexRow belongs here, or it silently stops being portable.
-_LITPOSE_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "csv_path")
-
 # Per-root, the path-bearing columns beyond ``abs_path``. One table rather than a
 # special case per root, because both path passes read raw CSVs and have no row
 # class to ask -- so a column missing from here silently stops being portable,
 # which is what happened to the tracks index's ``source_abs_path`` until now.
+#
+# The tracker entries come from the tracking-root registry rather than being
+# listed here: three hand-written tuples beside a table of three roots is the
+# arrangement where adding a fourth tracker means remembering a second place,
+# and the add-a-tracker recipe had a checklist item for exactly that.
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
-    "trex": _TREX_INDEX_PATH_COLUMNS,
-    "sleap": _SLEAP_INDEX_PATH_COLUMNS,
-    "litpose": _LITPOSE_INDEX_PATH_COLUMNS,
+    **{key: root.path_columns for key, root in TRACKING_ROOTS.items()},
 }
 
 # The track-converter registry moved to ``core.track_converter``. That is what
@@ -983,57 +967,16 @@ class Dataset:
                 df.to_csv(idx_path, index=False)
             return changed
 
+        # Which files are indexes is one question, answered in one place (item
+        # 6.1). This pass and ``make_portable`` each used to enumerate them in
+        # their own closures, and the tracker roots had to be appended to both by
+        # hand -- so a new tracker was portable in one pass and not the other,
+        # with nothing failing to say so.
         results: dict[str, int] = {}
-
-        # Roots are resolved through get_root, never read raw out of
-        # self.roots: a root is stored relative to the dataset, so ``Path(root)``
-        # resolves against the process CWD instead -- which reads as "no index
-        # here" for a file pass and raises FileNotFoundError for a directory
-        # walk. Every root below is also guarded for existence, since a root may
-        # be declared in the manifest and not yet created on disk.
-        def subdir_indexes(key: str) -> list[Path]:
-            if not self.has_root(key):
-                return []
-            root = self.get_root(key)
-            if not root.exists():
-                return []
-            return [d / "index.csv" for d in sorted(root.iterdir()) if d.is_dir()]
-
-        def root_index(key: str) -> Path | None:
-            return self.get_root(key) / "index.csv" if self.has_root(key) else None
-
-        def record(idx_path: Path | None, extra: Sequence[str] = ()) -> None:
-            if idx_path is None:
-                return
-            count = rewrite_index(idx_path, extra)
+        for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
+            count = rewrite_index(index.path, index.path_columns)
             if count > 0:
-                results[str(idx_path)] = count
-
-        # All roots that may have index files
-        for key in ["tracks", "tracks_raw", "labels", "media", "media_raw", "models"]:
-            record(root_index(key), _INDEX_PATH_COLUMNS.get(key, ()))
-
-        # Features: a root-level index plus one per feature
-        record(root_index("features"))
-        for idx_path in subdir_indexes("features"):
-            record(idx_path)
-
-        # Labels: per-kind subdirectories (e.g. id_tags)
-        for idx_path in subdir_indexes("labels"):
-            record(idx_path)
-
-        # Frames: per-method subdirectories (uniform, kmeans)
-        for idx_path in subdir_indexes("frames"):
-            record(idx_path)
-
-        # Tracker runs. Reached by root key, not by a loop over the top-level
-        # roots above: each tracker root (``_tracking/trex``, ``_tracking/sleap``,
-        # ``_tracking/litpose``) is a *subdirectory* of the ``_tracking`` root,
-        # whose own index.csv that loop never visits. (Raw tracker output was moved
-        # out of ``tracks_raw`` so it holds only user-uploaded content.)
-        record(root_index("trex"), _INDEX_PATH_COLUMNS["trex"])
-        record(root_index("sleap"), _INDEX_PATH_COLUMNS["sleap"])
-        record(root_index("litpose"), _INDEX_PATH_COLUMNS["litpose"])
+                results[str(index.path)] = count
 
         return results
 
@@ -1110,82 +1053,20 @@ class Dataset:
                 df.to_csv(idx_path, index=False)
             return total_changed
 
-        # Walk all roots that have index files
-        for key in ["tracks", "tracks_raw", "media", "media_raw", "models"]:
-            r = self.roots.get(key)
-            if not r:
-                continue
-            rp = self.get_root(key)
-            idx_path = rp / "index.csv"
-            count = _convert_index(idx_path, _INDEX_PATH_COLUMNS.get(key, ()))
+        # One enumeration, shared with ``rewrite_index_paths`` (item 6.1). The
+        # hand-written copy this replaces had already drifted: it visited
+        # ``labels`` and ``features`` in bespoke blocks, appended each tracker
+        # root separately, and omitted the inference roots entirely.
+        for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
+            count = _convert_index(index.path, index.path_columns)
             if count > 0:
-                results[str(idx_path)] = count
-
-        # Labels: per-kind subdirectories
-        labels_root = self.roots.get("labels")
-        if labels_root:
-            lp = self.get_root("labels")
-            idx = lp / "index.csv"
-            count = _convert_index(idx)
-            if count > 0:
-                results[str(idx)] = count
-            if lp.exists():
-                for subdir in lp.iterdir():
-                    if subdir.is_dir():
-                        sub_idx = subdir / "index.csv"
-                        count = _convert_index(sub_idx)
-                        if count > 0:
-                            results[str(sub_idx)] = count
-
-        # Features: per-feature subdirectories (possibly with run_id subdirs)
-        features_root = self.roots.get("features")
-        if features_root:
-            fp = self.get_root("features")
-            root_idx = fp / "index.csv"
-            count = _convert_index(root_idx)
-            if count > 0:
-                results[str(root_idx)] = count
-            if fp.exists():
-                for subdir in fp.iterdir():
-                    if subdir.is_dir():
-                        sub_idx = subdir / "index.csv"
-                        count = _convert_index(sub_idx)
-                        if count > 0:
-                            results[str(sub_idx)] = count
-
-        # Frames: per-method subdirectories
-        frames_root = self.roots.get("frames")
-        if frames_root:
-            frp = self.get_root("frames")
-            if frp.exists():
-                for subdir in frp.iterdir():
-                    if subdir.is_dir():
-                        sub_idx = subdir / "index.csv"
-                        count = _convert_index(sub_idx)
-                        if count > 0:
-                            results[str(sub_idx)] = count
-
-        # Tracker runs: see the note in rewrite_index_paths -- the trex / sleap /
-        # litpose roots are subdirectories of ``_tracking``, so the loop above
-        # misses them.
-        if self.has_root("trex"):
-            trex_idx = self.get_root("trex") / "index.csv"
-            count = _convert_index(trex_idx, _INDEX_PATH_COLUMNS["trex"])
-            if count > 0:
-                results[str(trex_idx)] = count
-        if self.has_root("sleap"):
-            sleap_idx = self.get_root("sleap") / "index.csv"
-            count = _convert_index(sleap_idx, _INDEX_PATH_COLUMNS["sleap"])
-            if count > 0:
-                results[str(sleap_idx)] = count
-        if self.has_root("litpose"):
-            litpose_idx = self.get_root("litpose") / "index.csv"
-            count = _convert_index(litpose_idx, _INDEX_PATH_COLUMNS["litpose"])
-            if count > 0:
-                results[str(litpose_idx)] = count
+                results[str(index.path)] = count
 
         # --- 8c. run_info.json files (frame extraction manifests) ---
-        if frames_root:
+        # Not an index, so it is not in the enumeration above: a run manifest is
+        # a JSON blob a frame-extraction run wrote, and the shared walk is about
+        # ``index.csv`` files.
+        if self.has_root("frames"):
             frp = self.get_root("frames")
             if frp.exists():
                 for ri_path in frp.rglob("run_info.json"):
@@ -1388,6 +1269,54 @@ class Dataset:
                 continue
             results[str(idx_path)] = len(dropped)
 
+        return results
+
+    def reindex(
+        self, root: str | None = None, *, dry_run: bool = True
+    ) -> dict[str, int]:
+        """Reconcile every index in the dataset against the files on disk.
+
+        Item 6.1's reconciler, root-agnostic. Drops index rows whose ``abs_path``
+        no longer resolves to an existing file and leaves every still-present row
+        intact -- the same rule :meth:`reindex_features` applies to ``features/``
+        alone, over every root that has an ``IndexCSV`` behind it: ``tracks``, and
+        each tracker and inference root under ``_tracking``.
+
+        **Relocated is not missing.** Paths resolve through :meth:`resolve_path`,
+        so a moved or synced dataset keeps its rows; for those,
+        :meth:`make_portable` is the pass that wants running. Never deletes
+        anything but rows.
+
+        **Why the ``_tracking`` roots matter here.** Until this existed they were
+        reached by no reindex, prune or portability pass at all, so a tracker
+        working directory removed by hand left a row naming it forever. It is
+        also the half item 8.4's sweeper deliberately does not own: the sweeper
+        drops the rows *it* invalidates, and everything deleted by hand is this
+        pass's to repair.
+
+        Args:
+            root: Restrict to one root key. If None, every registered root is
+                reconciled.
+            dry_run: If True (default), report what would be dropped without
+                writing.
+
+        Returns:
+            ``{index_csv_path: num_rows_dropped}`` for every index with drops.
+        """
+        from .pipeline.dataset_indexes import iter_dataset_indexes, reconcilable_index
+
+        results: dict[str, int] = {}
+        for index in iter_dataset_indexes(self):
+            if root is not None and index.root_key != root:
+                continue
+            factory = reconcilable_index(index.root_key)
+            if factory is None or not index.path.exists():
+                continue
+            dropped = factory(index.path).prune_missing(
+                self.resolve_path, dry_run=dry_run
+            )
+            if len(dropped) > 0:
+                results[str(index.path)] = len(dropped)
         return results
 
     def list_groups(self) -> list[str]:

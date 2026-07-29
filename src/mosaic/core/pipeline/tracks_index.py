@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Final, get_args
 import pandas as pd
 
 from mosaic.core.helpers import to_safe_name, validate_entry_name
+from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
@@ -498,3 +499,8 @@ def write_tracks_row(
         ),
     )
     tracks_index(tracks_index_path(ds)).append([row])
+
+
+# Item 6.1: reconciled through the shared registry, beside the tracker
+# indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
+register_reconcilable_index("tracks", tracks_index)

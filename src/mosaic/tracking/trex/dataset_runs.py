@@ -56,6 +56,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.tracking.model_refs import resolve_model
+from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
@@ -929,3 +930,8 @@ def list_trex_runs(ds: Dataset) -> pd.DataFrame:
     if not idx_path.exists():
         return pd.DataFrame(columns=[f.name for f in dataclasses.fields(TRexIndexRow)])
     return pd.read_csv(idx_path)
+
+
+# Item 6.1: the reconciler opens this root's index through the registry, so
+# ``core`` never imports ``tracking`` to reach a row class.
+register_reconcilable_index("trex", trex_index)

@@ -60,6 +60,7 @@ from mosaic.core.pipeline.markers import (
     write_inflight,
     write_phase_marker,
 )
+from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
@@ -751,3 +752,8 @@ def list_litpose_runs(ds: Dataset) -> pd.DataFrame:
             columns=[f.name for f in dataclasses.fields(LitposeIndexRow)]
         )
     return pd.read_csv(idx_path)
+
+
+# Item 6.1: the reconciler opens this root's index through the registry, so
+# ``core`` never imports ``tracking`` to reach a row class.
+register_reconcilable_index("litpose", litpose_index)

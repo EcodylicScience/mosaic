@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
@@ -214,3 +215,8 @@ def drifted_entries(
         if was and now and was != now:
             drifted.append(entry)
     return tuple(drifted)
+
+
+# Item 6.1: reconciled through the shared registry, beside the tracker
+# indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
+register_reconcilable_index("features", feature_index)

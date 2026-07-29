@@ -73,11 +73,19 @@ class TrackingRoot:
     directory. They are not a completeness test -- a completion marker is, and
     that is item 8.2's -- but they are what distinguishes a directory a tracker
     wrote from a directory something else left behind.
+
+    ``path_columns`` are this root's path-bearing index columns *beyond*
+    ``abs_path``. They live here rather than in a table beside ``default_roots``
+    because that table is what a new tracker forgets: a column missing from it
+    silently stops being portable, and the add-a-tracker recipe had to carry a
+    checklist item asking people to remember. One row per tracker, and the
+    portability passes read it.
     """
 
     key: str
     retention: RetentionClass
     outputs: tuple[str, ...]
+    path_columns: tuple[str, ...] = ()
 
     @property
     def default_path(self) -> str:
@@ -94,16 +102,19 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             key="trex",
             retention="tracker",
             outputs=("*.pv", "*.settings", "*.results", "data/*.npz"),
+            path_columns=("video_abs_path", "pv_path"),
         ),
         TrackingRoot(
             key="sleap",
             retention="tracker",
             outputs=("*.predictions.slp", "*.analysis.h5"),
+            path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
         ),
         TrackingRoot(
             key="litpose",
             retention="tracker",
             outputs=("*.predictions.csv",),
+            path_columns=("video_abs_path", "csv_path"),
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
         # emitted *before* schema coercion, which is what you want when debugging
