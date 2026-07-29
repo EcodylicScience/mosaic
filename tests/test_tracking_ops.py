@@ -570,6 +570,130 @@ def test_sleap_unresolvable_model_raises(tmp_path):
         resolve_sleap_models([str(empty)])
 
 
+# --- litpose op (registered; run_id parity with the standalone run_litpose) -
+
+
+def _fake_litpose_model(
+    root: Path, name: str = "lp_model", weights: bytes = b"weights"
+) -> Path:
+    """A minimal Lightning Pose model directory (config.yaml + a checkpoint)."""
+    model_dir = root / name
+    ckpt = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    ckpt.write_bytes(weights)
+    (model_dir / "config.yaml").write_text(
+        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail]\n"
+    )
+    return model_dir
+
+
+def test_litpose_registered_as_gpu_convert_op():
+    assert "litpose" in OPS
+    d = describe_op("litpose")
+    assert d["category"] == "convert"
+    assert {"model_path", "litpose_overrides", "entries"} <= set(
+        d["params_schema"]["properties"]
+    )
+    from mosaic.core.pipeline.ops import op_resource_class
+
+    # declared "gpu" despite category "convert" (LP video inference needs the GPU)
+    assert op_resource_class("litpose") == "gpu"
+
+
+def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
+    # LitposeOp must produce the same content run_id as calling run_litpose directly
+    # for the same settings. Scope to a missing sequence so the run short-circuits
+    # (empty media) after the model resolves but before any litpose binary is used.
+    from mosaic.tracking import run_litpose
+
+    ds = _make_dataset(tmp_path)
+    model = _fake_litpose_model(tmp_path)
+    direct = run_litpose(ds, model_path=str(model), sequences=["nonexistent"])
+    via_op = run_op(
+        ds, "litpose", {"model_path": str(model), "sequences": ["nonexistent"]}
+    )
+    assert direct == via_op
+    assert direct.startswith("litpose.2.3-")
+
+
+def test_litpose_params_exclude_throughput_from_run_id():
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.tracking.ops.litpose import LitposeParams
+
+    a = LitposeParams(
+        model_path="m",
+        precision="fp32",
+        idle_timeout=900,
+        max_runtime=None,
+        overwrite=False,
+        convert_to_tracks=True,
+    )
+    b = LitposeParams(
+        model_path="m",
+        precision="fp16",
+        idle_timeout=30,
+        max_runtime=60,
+        overwrite=True,
+        convert_to_tracks=False,
+    )
+    assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
+    c = LitposeParams(
+        model_path="m", litpose_overrides={"data.image_resize_dims.height": 256}
+    )
+    assert hash_params(c.identity_dump()) != hash_params(a.identity_dump())
+
+
+def test_litpose_model_identity_is_content_not_path(tmp_path):
+    # Two model directories with identical config + weights mint the same model_id
+    # (and so the same run_id); different weights mint a different one.
+    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+
+    a = _fake_litpose_model(tmp_path / "a", weights=b"same-weights")
+    b = _fake_litpose_model(tmp_path / "b", weights=b"same-weights")
+    c = _fake_litpose_model(tmp_path / "c", weights=b"other-weights")
+
+    id_a = resolve_litpose_model(str(a)).model_id
+    id_b = resolve_litpose_model(str(b)).model_id
+    id_c = resolve_litpose_model(str(c)).model_id
+    assert id_a == id_b  # same content, different paths -> same identity
+    assert id_a != id_c  # different weights -> different identity
+
+
+def test_litpose_config_is_part_of_identity(tmp_path):
+    # config.yaml shapes the output (resize dims, keypoint names), so it reaches
+    # identity: same weights + different config -> different run.
+    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+
+    a = _fake_litpose_model(tmp_path / "a")
+    b = _fake_litpose_model(tmp_path / "b")
+    (b / "config.yaml").write_text(
+        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
+    )
+    assert (
+        resolve_litpose_model(str(a)).model_id != resolve_litpose_model(str(b)).model_id
+    )
+
+
+def test_litpose_unresolvable_model_raises(tmp_path):
+    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+
+    with pytest.raises(FileNotFoundError):
+        resolve_litpose_model(str(tmp_path / "missing"))
+    # a checkpoint but no config.yaml
+    no_config = tmp_path / "no_config"
+    ckpt = no_config / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b"w")
+    with pytest.raises(FileNotFoundError):
+        resolve_litpose_model(str(no_config))
+    # a config.yaml but no checkpoint
+    no_ckpt = tmp_path / "no_ckpt"
+    no_ckpt.mkdir()
+    (no_ckpt / "config.yaml").write_text("model: {}\n")
+    with pytest.raises(FileNotFoundError):
+        resolve_litpose_model(str(no_ckpt))
+
+
 # --- convert-points op (real converter, no heavy backend) ------------------
 
 

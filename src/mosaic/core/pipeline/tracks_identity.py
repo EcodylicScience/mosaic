@@ -44,6 +44,7 @@ __all__ = [
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
+    "litpose_variant_payload",
     "sleap_variant_payload",
     "tracks_run_id",
     "trex_variant_payload",
@@ -137,6 +138,23 @@ def sleap_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
     The settings carry the model as a content digest (never a path) and the
     tracking knobs only -- scope-free -- so one value still names one variant
     across every sequence the run covered.
+    """
+    return dict(settings)
+
+
+def litpose_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
+    """What determines a table bridged from a Lightning Pose run: the settings.
+
+    Passed through unwrapped, exactly like :func:`sleap_variant_payload`, so the
+    value this mints is byte-identical to the integration's own
+    ``litpose_run_id(settings)``. ``tracks/litpose.<v>-<digest>/`` and
+    ``_tracking/litpose/litpose.<v>-<digest>/`` then read as obviously the same
+    run, and the op run identity and the tracks variant identity are one digest
+    rather than two.
+
+    Lightning Pose is pose-only, so the settings carry the model as a content
+    digest (never a path) and the Hydra overrides only -- scope-free -- so one
+    value still names one variant across every sequence the run covered.
     """
     return dict(settings)
 

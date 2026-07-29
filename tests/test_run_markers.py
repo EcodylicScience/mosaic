@@ -74,7 +74,7 @@ def test_phase_marker_round_trips(tmp_path: Path) -> None:
         execution_id="EXEC1",
         completed_at="2026-07-27T12:00:00+00:00",
         source="media_raw/seq/vid1.mp4",
-        recorded_output="tracks_raw/trex/trex-abc/seq/vid1.pv",
+        recorded_output="_tracking/trex/trex-abc/seq/vid1.pv",
     )
     write_phase_marker(tmp_path, marker)
 

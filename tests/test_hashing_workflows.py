@@ -154,23 +154,16 @@ def test_h1_cold_run_lands_where_expected(scenario_dataset: Dataset) -> None:
     assert written == {"seq_a.parquet", "seq_b.parquet"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M5: tracker intermediates still default under tracks_raw/trex and inference "
-        "writes a top-level predictions/ root. Closes when the _tracking root lands "
-        "(implementation item 8.1)."
-    ),
-)
 def test_h1_tracking_intermediates_are_separated_from_results(
     scenario_dataset: Dataset,
 ) -> None:
     """``tracks/`` means standardized results; every intermediate goes elsewhere.
 
-    Asserted through ``has_root`` rather than ``get_root``, which raises
-    ``KeyError`` on an unset root -- so this used to die before reaching an
-    assertion at all, and a strict xfail only proves a test fails, not that it
-    fails for the reason its marker claims.
+    Raw tracker output (TREx / SLEAP / Lightning Pose) now lives under the
+    first-class ``_tracking`` root rather than inside ``tracks_raw`` or ``tracks``,
+    so ``tracks_raw`` holds only user-uploaded content. Asserted through
+    ``has_root`` rather than ``get_root``, which raises ``KeyError`` on an unset
+    root.
     """
     roots = {p.name for p in Path(scenario_dataset.get_root("tracks")).iterdir()}
     assert "trex" not in roots, "a tracker intermediate is living inside tracks/"

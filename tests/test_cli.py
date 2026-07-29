@@ -289,6 +289,7 @@ def test_tracking_list_and_describe() -> None:
         "infer-localizer",
         "trex",
         "sleap",
+        "litpose",
         "convert-points",
     }
 

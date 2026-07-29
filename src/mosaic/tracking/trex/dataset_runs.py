@@ -524,7 +524,7 @@ def run_trex(
     Returns the content-addressed ``run_id``.
     """
     if not ds.has_root("trex"):
-        ds.set_root("trex", "tracks_raw/trex")
+        ds.set_root("trex", "_tracking/trex")
 
     # Resolve the detection model *before* the settings that name it, because
     # what the settings must carry is the model's identity and not the string

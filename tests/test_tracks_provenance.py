@@ -31,8 +31,10 @@ def _dataset(base: Path) -> Dataset:
         roots={
             "tracks_raw": str(base / "tracks_raw"),
             "tracks": str(base / "tracks"),
-            "trex": str(base / "tracks_raw" / "trex"),
-            "sleap": str(base / "tracks_raw" / "sleap"),
+            "_tracking": str(base / "_tracking"),
+            "trex": str(base / "_tracking" / "trex"),
+            "sleap": str(base / "_tracking" / "sleap"),
+            "litpose": str(base / "_tracking" / "litpose"),
             "media_raw": str(base / "media_raw"),
             "models": str(base / "models"),
         },
@@ -216,13 +218,13 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
     # The tracker run and the tracks variant are separate columns, so an
     # op-version bump does not relocate the table.
     assert str(row["producer_run_id"]) == "trex.0.1-cccccccccc"
-    assert str(row["source_abs_path"]).startswith("tracks_raw/trex/")
+    assert str(row["source_abs_path"]).startswith("_tracking/trex/")
     assert set(str(row["consumed_source_roots"]).split(",")) == {"trex", "media_raw"}
     _assert_portable(ds, row)
 
 
 def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> None:
-    """``trex`` nests under ``tracks_raw``; naming the parent would lose which."""
+    """``trex`` nests under ``_tracking``; naming the parent would lose which."""
     from mosaic.tracking.trex.dataset_runs import _bridge_npz_to_tracks
 
     ds = _dataset(tmp_path)
@@ -245,6 +247,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
 
     roots = set(str(_one_row(ds)["consumed_source_roots"]).split(","))
     assert "trex" in roots
+    assert "_tracking" not in roots
     assert "tracks_raw" not in roots
 
 
@@ -767,8 +770,68 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     assert str(row["run_id"]) == "sleap.1.6-bbbbbbbbbb"
     # the tracker run and the tracks variant are separate columns
     assert str(row["producer_run_id"]) == "sleap.1.6-cccccccccc"
-    assert str(row["source_abs_path"]).startswith("tracks_raw/sleap/")
+    assert str(row["source_abs_path"]).startswith("_tracking/sleap/")
     # the video (media_raw) and the predictions (sleap); the external model
     # directory sits under no dataset root, so it contributes nothing
     assert set(str(row["consumed_source_roots"]).split(",")) == {"sleap", "media_raw"}
+    _assert_portable(ds, row)
+
+
+# --- writer 6: the Lightning Pose bridge -----------------------------------
+
+
+def _litpose_csv(path: Path, *, n: int = 6) -> None:
+    """A tiny single-animal DeepLabCut / Lightning Pose CSV: 1 bodypart, *n* frames."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
+    lines = [
+        "scorer,heatmap_tracker,heatmap_tracker,heatmap_tracker",
+        "bodyparts,nose,nose,nose",
+        "coords,x,y,likelihood",
+    ]
+    for i in range(n):
+        x, y = rng.uniform(0, 100, 2)
+        lines.append(f"{i},{x:.6f},{y:.6f},0.9")
+    path.write_text("\n".join(lines))
+
+
+def test_the_litpose_bridge_records_the_run_and_a_portable_source(
+    tmp_path: Path,
+) -> None:
+    """The Lightning Pose bridge writes a tracks producer path with full provenance."""
+    from mosaic.tracking.litpose.dataset_runs import _bridge_csv_to_tracks
+
+    ds = _dataset(tmp_path)
+    seq_dir = ds.get_root("litpose") / "litpose.2.3-aaaaaaaaaa" / "vid1"
+    csv = seq_dir / "vid1.predictions.csv"
+    _litpose_csv(csv)
+    video = ds.get_root("media_raw") / "vid1.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"v")
+
+    written = _bridge_csv_to_tracks(
+        ds,
+        "",
+        "vid1",
+        csv,
+        tracks_variant="litpose.2.3-bbbbbbbbbb",
+        producer_run_id="litpose.2.3-cccccccccc",
+        video_path=video,
+        model_files=[],
+        fps=30.0,
+        overwrite=True,
+    )
+
+    assert written is not None
+    n_rows, n_individuals = written
+    assert n_rows == 6 and n_individuals == 1
+    row = _one_row(ds)
+    assert str(row["producer"]) == "litpose"
+    assert str(row["run_id"]) == "litpose.2.3-bbbbbbbbbb"
+    # the tracker run and the tracks variant are separate columns
+    assert str(row["producer_run_id"]) == "litpose.2.3-cccccccccc"
+    assert str(row["source_abs_path"]).startswith("_tracking/litpose/")
+    # the video (media_raw) and the predictions (litpose); the external model
+    # directory sits under no dataset root, so it contributes nothing
+    assert set(str(row["consumed_source_roots"]).split(",")) == {"litpose", "media_raw"}
     _assert_portable(ds, row)
