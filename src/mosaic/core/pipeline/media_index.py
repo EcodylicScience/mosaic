@@ -105,8 +105,15 @@ def load_media_index_frame(index_path: Path) -> pd.DataFrame:
     Missing columns are added, and text columns (everything non-numeric) are
     coerced to an object dtype with NaN replaced by ``""`` so later cell writes
     do not trip pandas' incompatible-dtype warning on all-empty float columns.
+
+    An empty file reads as an empty frame, not as an error. ``index_lock``
+    creates the index it is asked to hold when it does not exist yet -- a lock
+    needs an inode -- so a caller that acquires the lock before its first read
+    finds a zero-byte file where it expected none. Nothing else produces one:
+    ``atomic_write`` renames a fully-written temp into place, so a zero-byte
+    index is always a freshly-locked absent one rather than a truncated one.
     """
-    if index_path.exists():
+    if index_path.exists() and index_path.stat().st_size > 0:
         df = pd.read_csv(index_path)
     else:
         df = pd.DataFrame(columns=MEDIA_INDEX_COLUMNS)

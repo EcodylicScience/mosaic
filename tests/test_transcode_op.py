@@ -23,7 +23,7 @@ from mosaic_media.transcode import ANALYSIS_ENCODING, TranscodeError
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
-from mosaic.core.media.facts_columns import row_to_facts
+from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.pipeline.media_index import (
     frame_from_rows,
     read_media_index,
@@ -478,3 +478,87 @@ def test_transcode_params_reject_unknown_key():
 
     with pytest.raises(ValidationError):
         TranscodeParams.model_validate({"entry": ("", "vid1"), "bogus": 1})
+
+
+# Two processes, each linking a different source. Both read the index before
+# either writes, so an unserialized writer computes its whole output frame from a
+# starting state the other has already moved past.
+_LINK_PROBE = """
+import sys
+from pathlib import Path
+
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.transcode import set_forward_link
+
+manifest, uuid, barrier = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+ds = Dataset(manifest_path=manifest).load()
+
+barrier.write_text("ready")
+while len(list(barrier.parent.glob("*.ready"))) < 2:
+    pass
+set_forward_link(
+    ds, Path(f"{uuid}.mp4"), uuid, f"transcode/{uuid}.r.analysis.mp4", "analysis"
+)
+"""
+
+
+def test_two_concurrent_forward_links_both_survive(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """``set_forward_link`` is a whole-file rewrite, so it needs the lock.
+
+    Two sources of one entry transcoding in parallel is the ordinary case: the op
+    links each source after its own iteration, and a queue running two entries at
+    once does the same across entries. Each writer reads the whole index, sets one
+    cell, and writes the whole index back -- so without serialization the second
+    writes a frame that never contained the first's cell, and the link is lost
+    with no error on either side. The derivative file survives, unreferenced,
+    which is precisely the state the pruner would then read as garbage.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = make_media_dataset(tmp_path)
+    index_path = ds.get_root("media_raw") / "index.csv"
+    rows: list[dict[str, object]] = []
+    for uuid in ("uuid-a", "uuid-b"):
+        row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+        row.update(
+            {
+                "name": uuid,
+                "group": "g",
+                "sequence": "s",
+                "abs_path": f"media_raw/{uuid}.mp4",
+                "video_uuid": uuid,
+            }
+        )
+        rows.append(row)
+    write_media_index_rows(index_path, frame_from_rows(rows))
+
+    gate = tmp_path / "gate"
+    gate.mkdir()
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _LINK_PROBE,
+                str(ds.manifest_path),
+                uuid,
+                str(gate / f"{uuid}.ready"),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for uuid in ("uuid-a", "uuid-b")
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err.decode()[-800:]
+
+    linked = {
+        str(row["video_uuid"]): str(row["analysis_derivative_path"])
+        for row in read_media_index(index_path)
+    }
+    assert linked == {
+        "uuid-a": "transcode/uuid-a.r.analysis.mp4",
+        "uuid-b": "transcode/uuid-b.r.analysis.mp4",
+    }, f"a concurrent forward link was lost: {linked}"

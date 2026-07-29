@@ -64,6 +64,7 @@ from mosaic.core.media.facts_columns import (
     series_facts_or_none,
 )
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.media_index import (
     build_media_index_row,
     load_media_index_frame,
@@ -208,19 +209,27 @@ def set_forward_link(
     path would attach it to a row whose identity says it describes a different
     video. Writes only the column for *target*, leaving the other target's link
     untouched. Idempotent.
+
+    Setting one cell rewrites the whole index, so the read and the write are one
+    locked block: the op links each source after its own iteration, and two
+    sources -- or two entries on a queue -- linking in parallel would otherwise
+    each write a frame that never contained the other's cell. The loser's link is
+    lost with no error, leaving a derivative file nothing references, which is
+    exactly the state a pruner reads as garbage.
     """
     raw_root = ds.get_root(ds.resolve_media_root())
     index_path = raw_root / "index.csv"
-    df = load_media_index_frame(index_path)
-    matches = df["video_uuid"].fillna("").astype(str) == source_video_uuid
-    if not bool(matches.any()):
-        message = (
-            f"no media_raw row carries video_uuid {source_video_uuid} for "
-            f"{source}; re-probe the index before transcoding"
-        )
-        raise TranscodeError(message)
-    df.loc[matches, derivative_column_for_target(target)] = derivative_rel
-    write_media_index_rows(index_path, df)
+    with index_lock(index_path):
+        df = load_media_index_frame(index_path)
+        matches = df["video_uuid"].fillna("").astype(str) == source_video_uuid
+        if not bool(matches.any()):
+            message = (
+                f"no media_raw row carries video_uuid {source_video_uuid} for "
+                f"{source}; re-probe the index before transcoding"
+            )
+            raise TranscodeError(message)
+        df.loc[matches, derivative_column_for_target(target)] = derivative_rel
+        write_media_index_rows(index_path, df)
 
 
 def _derivative_row(
@@ -279,27 +288,35 @@ def _set_back_link(
     source_video_uuid: str,
     recipe_hash: str,
 ) -> None:
-    """Record (or replace) the derivative's ``media`` index row (idempotent)."""
+    """Record (or replace) the derivative's ``media`` index row (idempotent).
+
+    Locked for the same reason as :func:`set_forward_link`: appending one row
+    rewrites the whole derivative index, so two registrations in flight at once
+    would each write a frame built from a read that predates the other. The row
+    is built inside the lock too -- it stats the output file, and the answer must
+    describe the same state the write commits.
+    """
     index_path = ds.get_root("media") / "index.csv"
-    df = load_media_index_frame(index_path)
-    row = _derivative_row(
-        ds,
-        group,
-        sequence,
-        source,
-        output_path,
-        facts,
-        verdict,
-        video_order,
-        source_video_uuid,
-        recipe_hash,
-    )
-    abs_value = str(row["abs_path"])
-    if not df.empty:
-        df = df[df["abs_path"].astype(str) != abs_value]
-    new_row = pd.DataFrame([row], columns=MEDIA_INDEX_COLUMNS)
-    combined = new_row if df.empty else pd.concat([df, new_row], ignore_index=True)
-    write_media_index_rows(index_path, combined)
+    with index_lock(index_path):
+        df = load_media_index_frame(index_path)
+        row = _derivative_row(
+            ds,
+            group,
+            sequence,
+            source,
+            output_path,
+            facts,
+            verdict,
+            video_order,
+            source_video_uuid,
+            recipe_hash,
+        )
+        abs_value = str(row["abs_path"])
+        if not df.empty:
+            df = df[df["abs_path"].astype(str) != abs_value]
+        new_row = pd.DataFrame([row], columns=MEDIA_INDEX_COLUMNS)
+        combined = new_row if df.empty else pd.concat([df, new_row], ignore_index=True)
+        write_media_index_rows(index_path, combined)
 
 
 @register_op
