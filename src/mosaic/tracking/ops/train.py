@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Annotated
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
-from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.tracking.model_refs import resolve_model
@@ -186,6 +187,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         train_pose_model(
             data_yaml,
@@ -244,6 +246,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         train_point_model(
             data_yaml,
@@ -310,6 +313,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         result = train_localizer(
             dataset_dir,

@@ -22,6 +22,13 @@ import re
 
 import pytest
 
+from pathlib import Path
+
+from mosaic.core.pipeline.identity_scheme import (
+    FEATURE_IDENTITY_SCHEME,
+    read_identity_scheme,
+    write_identity_scheme,
+)
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
     OpRunId,
@@ -162,3 +169,40 @@ def test_op_runs_are_born_under_a_named_scheme() -> None:
     to move this line too.
     """
     assert OP_IDENTITY_SCHEME == "1"
+
+
+def test_an_op_run_root_records_the_scheme_that_minted_it(tmp_path: Path) -> None:
+    """Item 0.4's owed reach, and it must land before item 4.6 moves a digest.
+
+    A scheme marker cannot be retrofitted onto identifiers already on disk --
+    doing so requires knowing which contract produced each of them, which is
+    exactly the provenance that does not exist. So an op run root records its
+    family's scheme *before* the train and infer digests move, not after.
+    """
+    run_root = tmp_path / "train-pose.0.1-abcdef0123"
+    run_root.mkdir()
+    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
+
+    assert read_identity_scheme(run_root) == OP_IDENTITY_SCHEME
+
+
+def test_the_op_and_feature_families_record_different_markers(
+    tmp_path: Path,
+) -> None:
+    """One marker names one family. Sharing a number would make a bump lie.
+
+    A feature-scheme bump that also marked every model and tracker run as
+    re-minted would be worse than no marker at all, which is the whole reason
+    these constants are per family.
+    """
+    op_root = tmp_path / "op"
+    feature_root = tmp_path / "feature"
+    op_root.mkdir()
+    feature_root.mkdir()
+
+    write_identity_scheme(op_root, OP_IDENTITY_SCHEME)
+    write_identity_scheme(feature_root, FEATURE_IDENTITY_SCHEME)
+
+    assert read_identity_scheme(op_root) == OP_IDENTITY_SCHEME
+    assert read_identity_scheme(feature_root) == FEATURE_IDENTITY_SCHEME
+    assert OP_IDENTITY_SCHEME != FEATURE_IDENTITY_SCHEME

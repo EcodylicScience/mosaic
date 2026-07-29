@@ -54,7 +54,12 @@ import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
-from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline.op_identity import (
+    OP_IDENTITY_SCHEME,
+    op_run_id,
+    parse_op_run_id,
+)
 from mosaic.core.pipeline.tracks_identity import (
     tracks_run_id,
     tracks_variant_root,
@@ -545,6 +550,7 @@ def run_trex(
     run_id = trex_run_id(settings)
     run_root = trex_run_root(ds, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
+    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
     # What names the *tracks variant* this run's tables belong to, as distinct
     # from the tracker run that produced them. Minted once here rather than per

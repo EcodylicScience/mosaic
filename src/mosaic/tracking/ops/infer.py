@@ -21,7 +21,8 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
-from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
@@ -231,6 +232,7 @@ def _run_inference_op(
     ctx.set_total(len(work))
     run_root = prediction_run_root(ds, kind, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
+    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
     idx = inference_index(prediction_index_path(ds, kind))
     idx.ensure()
     rows: list[InferenceIndexRow] = []

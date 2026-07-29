@@ -18,16 +18,18 @@ detector would cause the event it exists to detect. It is provenance, in the
 same sense as ``mosaic-media``'s ``identity_scheme`` and ``prober_version``
 beside a ``video_uuid``.
 
-**Scope: feature runs only, for now.** The retrofit hazard applies to an
-identifier that already exists *and* is about to move, which today is feature
-identity alone -- items 1.1, stage 3 and 4.4 all change that payload's shape.
-Tracks variants do not exist yet and can be born marked; no dataset holds any
-transcode derivative; and the model, tracker, frames and inference digests are
-untouched by any planned stage. Widening later means per-family constants
-(``FRAMES_IDENTITY_SCHEME`` and so on) rather than one global number, because
-six independent hash functions cannot honestly share one: bumping it for a
-feature change would falsely mark every model and tracker row as re-minted, and
-a marker that lies is worse than none.
+**Scope: feature runs, and now op runs.** The retrofit hazard applies to an
+identifier that already exists *and* is about to move. That was feature identity
+alone until item 4.6, which moves the ``train`` and ``infer`` digests by folding
+a weights digest into them -- so an op run root now records its family's scheme
+too, and it records it *before* the digest moves rather than after, because a
+marker cannot be retrofitted onto identifiers already on disk.
+
+The constants stay per family (``FEATURE_IDENTITY_SCHEME``,
+``OP_IDENTITY_SCHEME``, ``TRACKS_IDENTITY_SCHEME``, the two composition ones)
+rather than collapsing into one number. Six independent hash functions cannot
+honestly share a marker: bumping it for a feature change would falsely mark every
+model and tracker run as re-minted, and a marker that lies is worse than none.
 """
 
 from __future__ import annotations
@@ -79,24 +81,30 @@ _ALGORITHM: Final = "sha1"
 _DIGEST_BYTES: Final = 5
 
 
-def identity_scheme_payload() -> dict[str, str | int]:
-    """The marker's contents."""
+def identity_scheme_payload(scheme: str) -> dict[str, str | int]:
+    """The marker's contents for one identity family."""
     return {
-        "scheme": FEATURE_IDENTITY_SCHEME,
+        "scheme": scheme,
         "algo": _ALGORITHM,
         "bytes": _DIGEST_BYTES,
     }
 
 
-def write_identity_scheme(run_root: Path) -> None:
+def write_identity_scheme(run_root: Path, scheme: str) -> None:
     """Record the scheme that minted *run_root*.
 
     Atomic, and deliberately not best-effort: a silently missing marker is the
     exact state the detector must catch, so failing loudly beats writing
     nothing. Idempotent -- rewriting with the same contents is harmless, and a
     run root is rewritten on every invocation including a pure cache hit.
+
+    *scheme* is required rather than defaulted to the feature one. mosaic has
+    several independent identity functions and a marker names exactly one of
+    them; a default would let a new family inherit another's number silently,
+    which is the "a marker that lies is worse than none" failure this module
+    exists to avoid. There is one caller per family and each states its own.
     """
-    payload = json.dumps(identity_scheme_payload(), indent=2, sort_keys=True)
+    payload = json.dumps(identity_scheme_payload(scheme), indent=2, sort_keys=True)
     atomic_write(run_root / MARKER_NAME, lambda p: p.write_text(payload + "\n"))
 
 

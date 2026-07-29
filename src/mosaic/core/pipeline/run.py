@@ -750,7 +750,7 @@ def _run_feature_impl(
     # It enters no hash and no path. Folding it into compute_run_id would make
     # the marker itself move every identifier, so the detector would cause the
     # event it exists to detect.
-    write_identity_scheme(run_root)
+    write_identity_scheme(run_root, FEATURE_IDENTITY_SCHEME)
 
     # Index CSV setup -- the permanent record of what-ran (run_id, version,
     # params_hash, started_at per entry); complemented by params.json in run_root.
