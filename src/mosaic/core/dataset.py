@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -120,6 +120,7 @@ from .pipeline.sequence_index import (
     sequence_labels,
     write_sequence_compositions,
 )
+from .pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
@@ -336,16 +337,64 @@ default_roots = {
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
     "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
     # Raw tracker output lives under _tracking/ (not tracks_raw/), so tracks_raw
-    # holds only user-uploaded content.
-    "_tracking": "_tracking",  # parent of the per-tracker raw-output roots below
-    "trex": "_tracking/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
-    "sleap": "_tracking/sleap",  # run-addressed SLEAP outputs (.predictions.slp, .analysis.h5)
-    "litpose": "_tracking/litpose",  # run-addressed Lightning Pose outputs (predictions.csv)
+    # holds only user-uploaded content. The per-tool roots come from the registry
+    # rather than being spelled here: item 8.1 asked for one literal, and a dict
+    # literal per tool is how it became six.
+    TRACKING_ROOT: TRACKING_ROOT,  # parent of the per-tracker raw-output roots
+    **{key: root.default_path for key, root in TRACKING_ROOTS.items()},
     "predictions": "predictions",  # run-addressed model-inference outputs (before -> tracks)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
     "frames": "media/frames",  # extracted video frames (PNGs), can be very large
 }
+
+
+def _backfill_tracking_roots(roots: Dict[str, str]) -> Dict[str, str]:
+    """Add the tracking roots a manifest predating item 8.1 does not declare.
+
+    ``load`` replaces ``roots`` wholesale, so a manifest written before the
+    ``_tracking`` root existed carries neither it nor the per-tool keys beneath
+    it. Left alone that is not a cosmetic gap: ``get_root("_tracking")`` raises,
+    so the sweeper crashes on exactly the datasets that most need sweeping.
+
+    **Absent keys are filled; present ones are never repointed.** A dataset whose
+    ``trex`` root still reads ``tracks_raw/trex`` keeps it. Silently moving it
+    would orphan every run already on disk *and* strand the index that names
+    them -- and the legacy location is a state the sweeper must be able to
+    recognize and decline, which it cannot do if loading has quietly erased the
+    evidence. This is item 7.1's precedent applied to roots rather than to files:
+    name the legacy class, refuse to act on it, leave it visible.
+
+    In-place on the mapping ``load`` was handed, and returned for the caller to
+    assign, so a manifest that needs no backfill is untouched and ``save`` round-
+    trips it byte-identically.
+    """
+    for key in (TRACKING_ROOT, *TRACKING_ROOTS):
+        _ = roots.setdefault(key, default_roots[key])
+    return roots
+
+
+def legacy_tracking_roots(roots: Mapping[str, str]) -> dict[str, str]:
+    """Tracker roots still pointing at their pre-item-8.1 location.
+
+    ``{root key: declared path}`` for every tracker root that resolves outside
+    ``_tracking`` -- in practice ``{"trex": "tracks_raw/trex"}`` on a dataset
+    converted before the relocation. Empty on a current one.
+
+    Two callers need this and want opposite things from it. A raw-tracks scan
+    wants to know that tracker output is sitting *inside* a source root, where
+    its exclusion cannot reach; a sweeper wants to know that a root it is about
+    to delete under holds user content, and to decline. Both questions are "which
+    roots did not move", so they are answered once here rather than by two
+    spellings of the same string comparison.
+    """
+    return {
+        key: declared
+        for key, declared in roots.items()
+        if key in TRACKING_ROOTS
+        and declared
+        and TRACKING_ROOT not in PurePosixPath(str(declared).replace("\\", "/")).parts
+    }
 
 
 def new_dataset_manifest(
@@ -600,10 +649,8 @@ class Dataset:
             "media": "",
             "tracks_raw": "",
             "tracks": "",
-            "_tracking": "",
-            "trex": "",
-            "sleap": "",
-            "litpose": "",
+            TRACKING_ROOT: "",
+            **{key: "" for key in TRACKING_ROOTS},
             "predictions": "",
             "features": "",
             "labels": "",
@@ -683,7 +730,7 @@ class Dataset:
         self.name = data.get("name", self.name)
         self.version = str(data.get("version", self.version))
         self.format = data.get("format", fmt)
-        self.roots = data.get("roots", self.roots)
+        self.roots = _backfill_tracking_roots(data.get("roots", self.roots))
         self.meta = data.get("meta", self.meta)
 
         # Continuous dataset fields

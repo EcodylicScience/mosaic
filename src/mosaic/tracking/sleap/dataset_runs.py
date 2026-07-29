@@ -61,6 +61,7 @@ from mosaic.core.pipeline.markers import (
     write_inflight,
     write_phase_marker,
 )
+from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.pipeline.tracks_identity import (
@@ -524,8 +525,8 @@ def run_sleap(
 
     Returns the content-addressed ``run_id``.
     """
-    if not ds.has_root("sleap"):
-        ds.set_root("sleap", "_tracking/sleap")
+    if not ds.has_root(SLEAP_KIND):
+        ds.set_root(SLEAP_KIND, tracking_root_default(SLEAP_KIND))
 
     # Resolve the model *before* the settings that name it, because what the
     # settings carry is the weights' identity, not the paths that pointed at

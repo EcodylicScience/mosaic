@@ -56,6 +56,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.tracking.model_refs import resolve_model
+from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
     op_run_id,
@@ -523,8 +524,8 @@ def run_trex(
 
     Returns the content-addressed ``run_id``.
     """
-    if not ds.has_root("trex"):
-        ds.set_root("trex", "_tracking/trex")
+    if not ds.has_root(TREX_KIND):
+        ds.set_root(TREX_KIND, tracking_root_default(TREX_KIND))
 
     # Resolve the detection model *before* the settings that name it, because
     # what the settings must carry is the model's identity and not the string
