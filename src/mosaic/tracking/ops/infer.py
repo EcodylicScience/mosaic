@@ -18,7 +18,6 @@ import pandas as pd
 from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
@@ -190,8 +189,12 @@ def _run_inference_op(
     if not ds.has_root("predictions"):
         ds.set_root("predictions", "predictions")
 
-    model_pt, base_run_id = resolve_model(ds, params.model, train_kind)
-    model_id = base_run_id or hash_params({"path": str(model_pt)})
+    model = resolve_model(ds, params.model, train_kind)
+    # The training run when there is one, the weights' digest otherwise -- never
+    # the path. Hashing the path meant swapping best.pt in place reused the same
+    # identifier, and moving unchanged weights minted a new one; both were wrong
+    # in the direction that reports a cache hit over the wrong model.
+    model_id = model.model_id
     run_id = infer_run_id(kind, version, params, model_id)
     ctx.set_run_id(run_id)
 
@@ -246,7 +249,7 @@ def _run_inference_op(
 
             seq_dir = run_root / key
             seq_dir.mkdir(parents=True, exist_ok=True)
-            df = per_video(str(model_pt), video_path, seq_dir, facts)
+            df = per_video(str(model.path), video_path, seq_dir, facts)
             pred_path = seq_dir / "predictions.parquet"
             if df is not None and not df.empty:
                 df.to_parquet(pred_path, index=False)
@@ -264,14 +267,14 @@ def _run_inference_op(
                     kind=kind,
                     seq_dir=seq_dir,
                     video_path=video_path,
-                    model_pt=Path(model_pt),
+                    model_pt=model.path,
                     overwrite=params.overwrite,
                 )
 
             rows.append(
                 InferenceIndexRow(
                     run_id=run_id,
-                    model_run_id=base_run_id,
+                    model_run_id=model.run_id,
                     group=group,
                     sequence=sequence,
                     abs_path=Path(ds.relative_to_root(seq_dir)),

@@ -10,8 +10,10 @@ imported lazily inside ``run()`` so registration stays import-light.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+
+import pandas as pd
 from typing import TYPE_CHECKING, Annotated
 
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
@@ -49,8 +51,14 @@ def train_run_id(
         data_fingerprint: Digest of the training data, from
             ``fingerprint_dataset``. Content, so retraining on changed
             annotations is a different model.
-        base_run_id: The run this one fine-tunes from, or ``""``. Retraining
-            lineage is part of what produced the weights.
+        base_run_id: What names the model this one fine-tunes from, or ``""``.
+            The training run when there is one; the weights' content digest when
+            the base was handed in as a bare path. Never the path itself -- a
+            path is a location, so two fine-tunes from different weights sitting
+            at one path used to mint one identifier whenever their params and
+            data matched. The parameter keeps its name because the payload key
+            ``"base"`` does, and renaming that would move every registered-lineage
+            training identifier for no reason.
     """
     return op_run_id(
         kind,
@@ -74,10 +82,45 @@ class TrainedModelIndexRow(RunIndexRowBase):
     metrics_path: str
     n_epochs: int
     status: str
+    # The base weights' content digest, recorded whether or not they had a run to
+    # name them. Provenance, never identity: ``base_run_id`` already carries what
+    # enters the hash, and this says which exact bytes were behind it. Defaulted
+    # so every existing construction site keeps working, and not path-bearing, so
+    # no portability rewrite list.
+    base_digest: str = ""
+
+
+TRAINED_MODEL_INDEX_COLUMNS: list[str] = [
+    field.name for field in fields(TrainedModelIndexRow)
+]
+
+
+def adopt_trained_model_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bring a trained-model index read off disk up to the current schema.
+
+    ``trained_model_index`` had no ``adopt`` hook. Survivable while the schema
+    was fixed; not survivable the moment it grows a column, because an absent
+    one concatenated against a real row widens ``n_epochs`` and ``100`` reaches
+    disk as ``100.0``. Every column built with an explicit ``object`` dtype, the
+    same shape as ``tracks_index.adopt_legacy_columns``.
+    """
+    out = pd.DataFrame(index=df.index)
+    for column in TRAINED_MODEL_INDEX_COLUMNS:
+        if column in df.columns:
+            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
+        else:
+            cells = [""] * len(df)
+        out[column] = pd.Series(cells, index=df.index, dtype="object")
+    return out
 
 
 def trained_model_index(path: Path) -> IndexCSV[TrainedModelIndexRow]:
-    return IndexCSV(path, TrainedModelIndexRow, dedup_keys=["run_id"])
+    return IndexCSV(
+        path,
+        TrainedModelIndexRow,
+        dedup_keys=["run_id"],
+        adopt=adopt_trained_model_columns,
+    )
 
 
 # --- Shared helpers ------------------------------------------------------
@@ -91,6 +134,7 @@ def _finalize_training(
     p: Params,
     base_model: str,
     base_run_id: str,
+    base_digest: str,
     best_model_path: Path,
     metrics_path: Path,
     n_epochs: int,
@@ -104,6 +148,7 @@ def _finalize_training(
                 kind=kind,
                 base_model=base_model,
                 base_run_id=base_run_id,
+                base_digest=base_digest,
                 best_model_path=ds.relative_to_root(best_model_path),
                 metrics_path=(
                     ds.relative_to_root(metrics_path) if metrics_path.exists() else ""
@@ -176,9 +221,15 @@ class TrainPoseOp(Op[PoseTrainParams]):
         data_yaml = Path(ds.resolve_path(params.data))
         model_arg = params.model
         base_run_id = ""
+        base_digest = ""
         if params.base_model:
-            base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
-            model_arg = str(base_pt)
+            base = resolve_model(ds, params.base_model, self.kind)
+            # model_id, not run_id: a bare path has no run, and hashing "" there
+            # let two fine-tunes from *different* weights collide whenever their
+            # params and data matched.
+            base_run_id = base.model_id
+            base_digest = base.digest
+            model_arg = str(base.path)
 
         run_id = train_run_id(
             self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
@@ -213,6 +264,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
             params,
             params.base_model,
             base_run_id,
+            base_digest,
             run_root / "train" / "weights" / "best.pt",
             run_root / "train" / "results.csv",
             params.epochs,
@@ -235,9 +287,15 @@ class TrainPointsOp(Op[PointTrainParams]):
         data_yaml = Path(ds.resolve_path(params.data))
         model_arg = params.model
         base_run_id = ""
+        base_digest = ""
         if params.base_model:
-            base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
-            model_arg = str(base_pt)
+            base = resolve_model(ds, params.base_model, self.kind)
+            # model_id, not run_id: a bare path has no run, and hashing "" there
+            # let two fine-tunes from *different* weights collide whenever their
+            # params and data matched.
+            base_run_id = base.model_id
+            base_digest = base.digest
+            model_arg = str(base.path)
 
         run_id = train_run_id(
             self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
@@ -276,6 +334,7 @@ class TrainPointsOp(Op[PointTrainParams]):
             params,
             params.base_model,
             base_run_id,
+            base_digest,
             run_root / "train" / "weights" / "best.pt",
             run_root / "train" / "results.csv",
             params.epochs,
@@ -298,9 +357,12 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         dataset_dir = Path(ds.resolve_path(params.dataset_dir))
         weights = None
         base_run_id = ""
+        base_digest = ""
         if params.base_model:
-            base_pt, base_run_id = resolve_model(ds, params.base_model, self.kind)
-            weights = str(base_pt)
+            base = resolve_model(ds, params.base_model, self.kind)
+            base_run_id = base.model_id
+            base_digest = base.digest
+            weights = str(base.path)
 
         run_id = train_run_id(
             self.kind,
@@ -308,6 +370,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             params,
             fingerprint_dataset(dataset_dir),
             base_run_id,
+            base_digest,
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.epochs)
@@ -342,6 +405,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             params,
             params.base_model,
             base_run_id,
+            base_digest,
             Path(result.best_model_path),
             run_root / "train" / "results.csv",
             params.epochs,

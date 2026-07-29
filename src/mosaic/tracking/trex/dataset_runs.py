@@ -55,6 +55,7 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.tracking.model_refs import resolve_model
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
     op_run_id,
@@ -525,9 +526,36 @@ def run_trex(
     if not ds.has_root("trex"):
         ds.set_root("trex", "tracks_raw/trex")
 
+    # Resolve the detection model *before* the settings that name it, because
+    # what the settings must carry is the model's identity and not the string
+    # that pointed at it. A bare weights path is a mutable key: swap best.pt and
+    # two tracker runs share one variant directory, reporting the second as
+    # already done.
+    #
+    # This is a reordering, and it changes behaviour in one visible way worth
+    # stating: an unresolvable model reference now aborts before any run root or
+    # tracks variant is recorded, where it used to be swallowed and handed to
+    # TREx to complain about. Failing before anything is written is the better
+    # half of that trade -- a recorded variant naming a model that could not be
+    # found describes a run that never happened.
+    detect_model_exec: Path | str | None = detect_model
+    detect_model_id: str | None = None
+    if detect_model is not None:
+        ref = str(detect_model)
+        # Ask the identity module, not the string. The old `ref.rsplit("-", 1)[0]`
+        # read "train-points.0.1-<digest>" as the kind "train-points.0.1", which
+        # is not registered, so resolve_model looked for a path that never
+        # existed. A ref that is not a run identifier at all (a bare weights
+        # path) falls back rather than guessing, for the same reason.
+        parsed = parse_op_run_id(ref)
+        model_kind = parsed.kind if parsed is not None else "train-points"
+        resolved_model = resolve_model(ds, ref, model_kind)
+        detect_model_exec = resolved_model.path
+        detect_model_id = resolved_model.model_id
+
     # Settings that define the tracking result -> the content hash.
     settings = trex_settings(
-        detect_model=detect_model,
+        detect_model=detect_model_id,
         detect_type=detect_type,
         detect_conf_threshold=detect_conf_threshold,
         detect_iou_threshold=detect_iou_threshold,
@@ -567,28 +595,6 @@ def run_trex(
         TREX_VERSION,
         settings,
     )
-
-    # Resolve a training run_id (e.g. "train-points-<hash>") to its best.pt weights for the
-    # trex invocation -- the train->track handoff. The run_id hash above intentionally keys on
-    # the original reference (portable across machines), not the resolved absolute path.
-    detect_model_exec: Path | str | None = detect_model
-    if detect_model is not None and not Path(str(detect_model)).exists():
-        from mosaic.tracking.model_refs import resolve_model
-
-        ref = str(detect_model)
-        # Ask the identity module, not the string. The old `ref.rsplit("-", 1)[0]`
-        # read "train-points.0.1-<digest>" as the kind "train-points.0.1", which
-        # is not registered, so resolve_model looked for a path that never
-        # existed. A ref that is not a run identifier at all (a bare weights
-        # path) falls back rather than guessing, for the same reason.
-        parsed = parse_op_run_id(ref)
-        model_kind = parsed.kind if parsed is not None else "train-points"
-        try:
-            detect_model_exec, _ = resolve_model(ds, ref, model_kind)
-        except (FileNotFoundError, KeyError):
-            detect_model_exec = (
-                detect_model  # let TREx surface a clear "not found" error
-            )
 
     params_path = run_root / "run_params.json"
     try:

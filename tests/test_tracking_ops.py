@@ -309,8 +309,13 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     assert mdf.iloc[0]["base_run_id"] == ""
 
     # resolve_model turns the run_id into its best.pt (train->track handoff)
-    best, base = resolve_model(ds, r1, "train-pose")
-    assert best.name == "best.pt" and base == r1
+    resolved = resolve_model(ds, r1, "train-pose")
+    assert resolved.path.name == "best.pt"
+    assert resolved.run_id == r1
+    # A registered model is named by its run, so the digest never reaches
+    # identity -- but it is measured and recorded either way.
+    assert resolved.model_id == r1
+    assert len(resolved.digest) == 16
 
     # retrain from r1 -> lineage recorded
     r2 = run_op(
@@ -318,6 +323,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     )
     mdf2 = trained_model_index(model_index_path(ds, "train-pose")).read(run_id=r2)
     assert mdf2.iloc[0]["base_run_id"] == r1
+    assert mdf2.iloc[0]["base_digest"] == resolved.digest
 
 
 def test_train_pose_cancel(tmp_path, monkeypatch):

@@ -50,13 +50,21 @@ __all__ = [
     "write_tracks_variant",
 ]
 
-TRACKS_IDENTITY_SCHEME: Final = "1"
+TRACKS_IDENTITY_SCHEME: Final = "2"
 """The contract this module implements today.
 
 Per family, like ``FEATURE_IDENTITY_SCHEME`` and ``OP_IDENTITY_SCHEME``: one
 number cannot honestly cover several independent hash functions, and a marker
 that lies is worse than none. Tracks variants are born marked -- they did not
-exist before this scheme -- so nothing has to be retrofitted.
+exist before scheme 1 -- so nothing has to be retrofitted.
+
+Scheme 2 (item 4.6): an inference variant's ``model`` term is now what *names*
+the model -- its training run, or the weights' content digest when it was handed
+in as a bare path -- where it used to be a digest of the path string. Two
+detectors sitting at one path used to share one variant, and moving unchanged
+weights used to mint a new one. Only ``infer_variant_payload`` is affected; a
+converted or tracked variant's payload is untouched, and scheme-1 sidecars stay
+on disk saying so.
 """
 
 
@@ -124,6 +132,13 @@ def infer_variant_payload(
     The op params plus the model that produced the predictions, matching
     ``infer_run_id`` term for term and for the same reason: leaving the model out
     would let two detectors share one identifier.
+
+    *model_id* is what **names** the model, never where it sits: a training run
+    identity, or the weights' content digest when there is no run to name them
+    (item 4.6). It used to be a digest of the path string, which meant swapping
+    ``best.pt`` in place reused the identifier and moving unchanged weights
+    minted a new one -- wrong in both directions, and the first is the one that
+    reports a cache hit over another model's output.
     """
     return {"params": dict(params_identity), "model": model_id}
 

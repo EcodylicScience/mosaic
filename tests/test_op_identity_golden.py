@@ -76,6 +76,8 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.pipeline.types import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
+from mosaic.tracking.ops.infer import infer_run_id
+from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "op_identity_golden.json"
@@ -272,6 +274,43 @@ def _media_empty() -> str:
     return media_composition([]).digest
 
 
+# train_run_id, infer_run_id and trex_settings mint identifiers that nothing in
+# either corpus pinned -- the module docstring already confessed the gap. Item
+# 4.6 changes what their model term *means*, which is the moment to close it.
+# Literal model ids, so these stay filesystem-free.
+
+
+def _train_run_id() -> str:
+    return train_run_id(
+        "train-pose",
+        "0.1",
+        _op_params("train-pose", data="d.yaml", epochs=3),
+        "deadbeefcafe",
+        "train-pose.0.1-aaaaaaaaaa",
+    )
+
+
+def _train_run_id_from_a_bare_path() -> str:
+    # The population item 4.6 moves: a base with no run to name it now
+    # contributes its weights digest where it used to contribute "".
+    return train_run_id(
+        "train-pose",
+        "0.1",
+        _op_params("train-pose", data="d.yaml", epochs=3),
+        "deadbeefcafe",
+        "0123456789abcdef",
+    )
+
+
+def _infer_run_id() -> str:
+    return infer_run_id(
+        "infer-points",
+        "0.1",
+        _op_params("infer-points", model="m.pt"),
+        "train-points.0.1-aaaaaaaaaa",
+    )
+
+
 def _tracks_raw_two_files() -> str:
     return tracks_raw_composition(
         [
@@ -292,6 +331,9 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "composition/media-two-cameras": _media_two_cameras,
     "composition/media-empty": _media_empty,
     "composition/tracks-raw-two-files": _tracks_raw_two_files,
+    "train-pose/run-id": _train_run_id,
+    "train-pose/run-id-bare-base": _train_run_id_from_a_bare_path,
+    "infer-points/run-id": _infer_run_id,
 }
 
 
