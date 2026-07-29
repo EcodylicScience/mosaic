@@ -18,13 +18,21 @@ from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 
-# Modules the CI workflow installs through extras (`.[wavelets,imgstore]`).
+# Modules the CI workflow installs through extras (`.[wavelets,imgstore,sleap]`).
 # `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
 # presents as a skip rather than a failure -- a green CI that ran less than the
 # workflow installed for. That is not hypothetical: the test step used to invoke
 # `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
 # both extras before the first test ran.
-CI_REQUIRED_MODULES = ("imgstore", "pywt")
+#
+# `h5py` is here because the list was already one module behind the suite: the
+# SLEAP integration arrived depending on it, correctly guarded by
+# ``importorskip``, and CI neither installed it nor demanded it -- so nine tests
+# (every SLEAP marker and reuse test, the three converter tests, and the SLEAP
+# provenance test) skipped green. **A new optional dependency joins the install
+# line and this tuple in the same change**, or its tests stop being evidence:
+# adding it to the install alone leaves nothing to notice when it next vanishes.
+CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py")
 
 # The same argument, for a binary rather than a module. Probing shells out to a
 # system ffprobe, so every test that indexes real media hard-*fails* without one

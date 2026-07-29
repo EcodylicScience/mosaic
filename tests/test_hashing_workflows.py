@@ -25,6 +25,7 @@ from mosaic.core.pipeline.media_index import read_media_index
 from mosaic.core.pipeline.run import _scope_term, compute_run_id, run_feature
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.types import (
     InputRequire,
@@ -154,21 +155,62 @@ def test_h1_cold_run_lands_where_expected(scenario_dataset: Dataset) -> None:
     assert written == {"seq_a.parquet", "seq_b.parquet"}
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "M5: the _tracking root exists, but nothing keeps a scan out of it -- "
+        "iter_track_files filters on basenames and cannot express a directory "
+        "exclusion -- and inference still writes a top-level predictions/ root. "
+        "Closes with implementation items 8.1's exclusion clause and 8.7."
+    ),
+)
 def test_h1_tracking_intermediates_are_separated_from_results(
     scenario_dataset: Dataset,
 ) -> None:
     """``tracks/`` means standardized results; every intermediate goes elsewhere.
 
-    Raw tracker output (TREx / SLEAP / Lightning Pose) now lives under the
-    first-class ``_tracking`` root rather than inside ``tracks_raw`` or ``tracks``,
-    so ``tracks_raw`` holds only user-uploaded content. Asserted through
-    ``has_root`` rather than ``get_root``, which raises ``KeyError`` on an unset
-    root.
+    Raw tracker output (TREx / SLEAP / Lightning Pose) lives under the
+    first-class ``_tracking`` root rather than inside ``tracks_raw`` or
+    ``tracks``, so ``tracks_raw`` holds only user-uploaded content.
+
+    **Asserted by planting a file, because the root existing proves nothing.**
+    The earlier form checked ``has_root("_tracking")`` and that the directory
+    was present -- both of which ``default_roots`` plus ``_ensure_roots`` satisfy
+    on a dataset where no tracker has ever run, so it passed while the milestone
+    gate it stands for ("``_tracking`` is invisible to the raw-tracks scanner")
+    was entirely unimplemented. Separation is a property of the *scan*, so the
+    scan is what this runs.
+
+    ``ds.base_dir`` rather than the ``tracks_raw`` root is the search directory
+    on purpose: after the relocation ``_tracking`` is a sibling of ``tracks_raw``
+    and a ``tracks_raw``-rooted scan cannot reach it whether or not an exclusion
+    exists. Only a scan from above can tell the two apart.
     """
-    roots = {p.name for p in Path(scenario_dataset.get_root("tracks")).iterdir()}
+    dataset = scenario_dataset
+    roots = {p.name for p in Path(dataset.get_root("tracks")).iterdir()}
     assert "trex" not in roots, "a tracker intermediate is living inside tracks/"
-    assert scenario_dataset.has_root("_tracking"), "the _tracking root does not exist"
-    assert scenario_dataset.get_root("_tracking").exists()
+    assert dataset.has_root("_tracking"), "the _tracking root does not exist"
+
+    intermediate = (
+        dataset.get_root("_tracking")
+        / "trex"
+        / "trex.1.0-abcdef0123"
+        / "seq_a"
+        / "data"
+    )
+    intermediate.mkdir(parents=True, exist_ok=True)
+    (intermediate / "seq_a_id0.npz").write_bytes(b"")
+
+    index_path = dataset.index_tracks_raw(
+        [dataset.base_dir], patterns=["*.npz"], src_format="trex_npz", compute_md5=False
+    )
+    indexed = read_tracks_raw_index(index_path)
+    reached = [row["abs_path"] for row in indexed if "_tracking" in row["abs_path"]]
+    assert not reached, f"the raw-tracks scanner walked into _tracking: {reached}"
+
+    assert not dataset.has_root("predictions"), (
+        "inference still declares a top-level predictions/ root (item 8.7)"
+    )
 
 
 def test_h1_derived_media_is_organized_by_kind(

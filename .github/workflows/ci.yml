@@ -59,7 +59,7 @@ jobs:
           # `uv pip install`, not `uv sync`: the lock cannot resolve on every
           # platform (see the environment notes in CONTRIBUTING).
           uv pip install -e '../mosaic_media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore]'
+          uv pip install -e '.[wavelets,imgstore,sleap]'
           uv pip install pytest ruff
 
       - name: Test
