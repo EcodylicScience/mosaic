@@ -2171,7 +2171,9 @@ class Dataset:
         is also the tests' oracle: what a writer wrote and what a rebuild
         produces must agree, and a divergence is a bug in one of them.
         """
-        if not self.has_root(root):
+        try:
+            _ = self.get_root(root)
+        except KeyError:
             return None
         if root == "media_raw":
             if self.resolve_media_root() != "media_raw":

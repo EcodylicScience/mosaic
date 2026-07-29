@@ -362,6 +362,39 @@ class MissingConsumedRootsDeclaration(AttributeError):
     """
 
 
+def encode_consumed_roots(roots: Iterable[str]) -> str:
+    """Encode a feature's declared source roots into one index cell.
+
+    Sorted and deduplicated, so one set of roots has one spelling however the
+    feature listed them -- the same reason ``encode_source_roots`` sorts on the
+    tracks row, and the same reason identity payloads sort their collections.
+    """
+    return ",".join(sorted({root for root in roots if root}))
+
+
+def entry_composition(feature: Feature, scope: Scope, entry: tuple[str, str]) -> str:
+    """What this entry was made of, under the roots *feature* declares.
+
+    Recorded on the index row, never hashed for a per-frame feature -- see
+    ``FeatureIndexRow``. One root is the whole of today's reality (two features
+    declare ``media_raw``, forty declare nothing), so the common answers are a
+    bare digest and ``""``; several roots join as ``root=digest`` pairs so the
+    cell stays readable and says which value came from where.
+
+    Empty means "nothing recorded", which covers a feature that declares no root
+    and a root that has recorded no composition for this entry. Both mean the
+    same thing to a reader: draw no conclusion.
+    """
+    roots = sorted({root for root in feature.consumed_roots if root})
+    found = [(root, scope.composition_of(entry, root)) for root in roots]
+    present = [(root, digest) for root, digest in found if digest]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return present[0][1]
+    return ",".join(f"{root}={digest}" for root, digest in present)
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -841,6 +874,10 @@ def _run_feature_impl(
                     group=meta.group,
                     sequence=meta.sequence,
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
+                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                    consumed_composition=entry_composition(
+                        feature, scope, (meta.group, meta.sequence)
+                    ),
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -911,6 +948,10 @@ def _run_feature_impl(
                     group=meta.group,
                     sequence=meta.sequence,
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
+                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                    consumed_composition=entry_composition(
+                        feature, scope, (meta.group, meta.sequence)
+                    ),
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -978,6 +1019,10 @@ def _run_feature_impl(
                     group=group,
                     sequence=sequence,
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
+                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                    consumed_composition=entry_composition(
+                        feature, scope, (group, sequence)
+                    ),
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,

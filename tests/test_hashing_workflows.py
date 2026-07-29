@@ -22,6 +22,7 @@ import pytest
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import compute_run_id, run_feature
+from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.types import (
@@ -478,3 +479,67 @@ def test_h5_scope_term_carries_composition_hashes() -> None:
     survive the hash.
     """
     raise NotImplementedError("requires per-root composition hashes")
+
+
+# --- what a feature row records, as against what its identifier carries -------
+
+
+class _MediaReader(_PerFrame):
+    """A per-frame feature that opens video, like ``egocentric-crop`` does."""
+
+    name = "scenario-media-reader"
+    consumed_roots: tuple[str, ...] = ("media_raw",)
+
+
+def test_a_feature_row_records_the_composition_it_consumed(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """Item 5.1's features half: on the row, never in the identifier.
+
+    A per-frame identifier names a directory holding *every* entry, so a
+    per-entry fact in it would rename the directory that holds another
+    sequence's already-correct output (rule P2d). The composition each entry
+    consumed belongs beside that entry's row, which is what item 6.2 turns into a
+    per-entry delete set -- H3 case 1's "tracks and features **go**", deleted
+    rather than re-identified.
+    """
+    ds = scenario_dataset_with_media
+    result = run_feature(ds, _MediaReader())
+
+    frame = feature_index(
+        feature_index_path(ds, "scenario-media-reader__from__tracks")
+    ).read(run_id=result.run_id)
+    rows = {row["sequence"]: row for _, row in frame.iterrows()}
+
+    expected = dict(
+        zip(
+            read_sequence_index(ds, "media_raw")["sequence"],
+            read_sequence_index(ds, "media_raw")["composition"],
+        )
+    )
+    assert rows["seq_a"]["consumed_roots"] == "media_raw"
+    assert rows["seq_a"]["consumed_composition"] == expected["seq_a"] != ""
+    # seq_b has tracks but no media, so there is nothing to record for it -- and
+    # that is a different state from "media exists and is unestablishable".
+    assert rows["seq_b"]["consumed_composition"] == ""
+
+
+def test_a_composition_does_not_reach_a_per_frame_identifier(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """The recorded value is not in the digest, and this is what proves it.
+
+    One feature, one recipe, two scopes -- one carrying a composition and one
+    not. A per-frame identifier is a property of the recipe, so it must not
+    notice the difference; the row beside the output is where the difference is
+    recorded.
+    """
+    bare = compute_run_id(_MediaReader(), None, None, Scope())
+    carrying = compute_run_id(
+        _MediaReader(),
+        None,
+        None,
+        Scope(compositions={("", "seq_a"): {"media_raw": "abc"}}),
+    )
+    assert bare == carrying, "a composition reached a per-frame identifier"
+    assert run_feature(scenario_dataset_with_media, _MediaReader()).run_id == bare[0]

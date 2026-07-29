@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,12 +46,34 @@ class Scope:
     scope, and a term that moved with the narrowing would quietly end that,
     minting several identifiers for one computation and leaving ``Pipeline.clean``
     to delete all but the one it predicted.
+
+    ``compositions`` rides here for the same reason -- ``build_manifest`` is what
+    reads them and ``compute_run_id`` already takes a ``Scope`` -- but under the
+    **opposite** rule, and a reader who generalises from ``tracks_variants`` gets
+    it wrong. A tracks variant is a property of the dataset under the selector,
+    so it is collected before the narrowing. A composition is inherently
+    per-entry: it is keyed on ``(group, sequence)`` and there is no
+    dataset-wide answer to collect. It is therefore populated for the entries
+    actually in scope, and it reaches a digest only for a ``scope_dependent``
+    feature -- where per-entry facts are already what identity is made of.
     """
 
     entries: set[tuple[str, str]] = field(default_factory=set)
     frame_start: int | None = None
     frame_end: int | None = None
     tracks_variants: tuple[str, ...] = ()
+    compositions: Mapping[tuple[str, str], Mapping[str, str]] = field(
+        default_factory=dict
+    )
+
+    def composition_of(self, entry: tuple[str, str], root: str) -> str:
+        """*root*'s recorded composition for *entry*, or ``""`` when none is.
+
+        An honest empty, and callers must treat it as **absent** rather than as a
+        value: two sequences whose compositions are both unrecorded are not known
+        to be alike.
+        """
+        return self.compositions.get(entry, {}).get(root, "")
 
     @property
     def groups(self) -> set[str]:

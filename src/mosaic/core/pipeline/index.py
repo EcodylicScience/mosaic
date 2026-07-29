@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -71,6 +71,51 @@ class FeatureIndexRow(RunIndexRowBase):
     # Reconstructed rows (Dataset.reindex_features) cannot know the historical
     # value and must leave it empty for the same reason.
     identity_scheme: str = ""
+    # What this entry was made from, recorded and never hashed -- item 5.1's
+    # features half, which item 4.4 makes computable.
+    #
+    # ``consumed_roots`` is the feature's declaration (comma-joined, sorted);
+    # ``consumed_composition`` is this entry's composition under those roots at
+    # the moment it was computed. Both are empty for the forty features that
+    # declare no root, which is the ordinary case and not a gap.
+    #
+    # Recorded rather than hashed, and the distinction is the whole design. A
+    # per-frame identifier names a directory holding *every* entry, so a
+    # per-entry fact in it would rename the directory that holds another
+    # sequence's already-correct output (rule P2d). The composition each entry
+    # consumed belongs beside that entry's row, where item 6.2 can turn it into a
+    # per-entry delete set -- which is what H3 case 1 actually asks for: "tracks
+    # and features **go**", deleted, not re-identified.
+    consumed_roots: str = ""
+    consumed_composition: str = ""
+
+
+def adopt_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bring a feature index read off disk up to the current schema, in memory.
+
+    ``feature_index`` had no ``adopt`` hook, which was survivable while every
+    added column was a string: ``_read_frame`` passes ``keep_default_na=False``
+    and ``to_csv`` writes NaN as empty, so a missing string column round-trips as
+    ``""``. It stops being survivable the moment one is numeric -- an absent
+    column concatenated against a real row widens the integer, and ``40`` reaches
+    disk as ``40.0``. The hook is cheap now and load-bearing later.
+
+    Same shape as ``tracks_index.adopt_legacy_columns``: every column built with
+    an explicit ``object`` dtype, missing ones added empty, NaN coerced, and
+    off-schema columns dropped.
+    """
+    out = pd.DataFrame(index=df.index)
+    for column in FEATURE_INDEX_COLUMNS:
+        if column in df.columns:
+            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
+        else:
+            cells = [""] * len(df)
+        out[column] = pd.Series(cells, index=df.index, dtype="object")
+    return out
+
+
+FEATURE_INDEX_COLUMNS: list[str] = [field.name for field in fields(FeatureIndexRow)]
+"""The schema, in CSV order. Derived from the row so the two cannot drift."""
 
 
 def feature_index(path: Path) -> IndexCSV[FeatureIndexRow]:
@@ -79,6 +124,7 @@ def feature_index(path: Path) -> IndexCSV[FeatureIndexRow]:
         path,
         FeatureIndexRow,
         dedup_keys=["run_id", "group", "sequence"],
+        adopt=adopt_feature_columns,
     )
 
 

@@ -41,10 +41,10 @@ is recorded rather than left to be rediscovered.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, get_args
 
 import pandas as pd
 
@@ -145,6 +145,21 @@ def sequence_index_path(ds: Dataset, root: SourceRoot) -> Path:
     return ds.get_root(root) / "sequences.csv"
 
 
+def _root_or_none(ds: Dataset, root: SourceRoot) -> Path | None:
+    """*root*'s per-sequence index path, or ``None`` when the root is unset.
+
+    Asks ``get_root`` and catches, rather than testing ``has_root`` first, for
+    the reason ``read_tracks_index`` gives: the duck-typed dataset stand-ins in
+    the test suite implement ``get_root`` and nothing else, and a reader that
+    needs more of the ``Dataset`` surface than it uses is a reader those
+    stand-ins cannot serve.
+    """
+    try:
+        return sequence_index_path(ds, root)
+    except KeyError:
+        return None
+
+
 def sequence_index(path: Path) -> IndexCSV[SequenceIndexRow]:
     """Factory: an ``IndexCSV`` configured for the per-sequence schema.
 
@@ -207,10 +222,8 @@ def read_sequence_index(ds: Dataset, root: SourceRoot) -> pd.DataFrame:
     Never writes, so reading a legacy dataset from a read-only mount works and
     merely looking at it does not rewrite it.
     """
-    if not ds.has_root(root):
-        return empty_sequence_frame()
-    path = sequence_index_path(ds, root)
-    if not path.exists():
+    path = _root_or_none(ds, root)
+    if path is None or not path.exists():
         return empty_sequence_frame()
     raw = pd.read_csv(path, keep_default_na=False, dtype=str)
     return adopt_sequence_columns(raw)
@@ -232,9 +245,9 @@ def write_sequence_compositions(
     Call this **after** the index write and **outside** its lock -- see the
     module docstring for why that order is not interchangeable.
     """
-    if not ds.has_root(root):
+    path = _root_or_none(ds, root)
+    if path is None:
         return None
-    path = sequence_index_path(ds, root)
     scheme = _SCHEME_BY_ROOT[root]
     stamped = now_iso()
     rows = [
@@ -343,3 +356,36 @@ def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
         return empty_label_frame()
     raw = pd.read_csv(path, keep_default_na=False, dtype=str)
     return adopt_label_columns(raw)
+
+
+def read_entry_compositions(
+    ds: Dataset,
+    entries: Iterable[tuple[str, str]],
+) -> dict[tuple[str, str], dict[str, str]]:
+    """Every source root's recorded composition, for each of *entries*.
+
+    Two levels -- entry, then root -- rather than one flattened value per entry.
+    Flattening is what item 4.4's H3 case 2 exists to rule out: a track-only
+    sequence gaining its first video would move a tracks-only identifier, and one
+    combined hash cannot tell that apart from a change that mattered.
+
+    Reads at most one ``sequences.csv`` per declared source root, once, rather
+    than once per entry. A root with no index, an entry with no row in it, and an
+    unestablishable composition all contribute **nothing** -- not an empty string.
+    That distinction is the mechanism the omission rule rests on: an absent key
+    digests differently from a key whose value is empty, which is what keeps an
+    identifier still on a dataset that has recorded no compositions yet.
+    """
+    wanted = set(entries)
+    if not wanted:
+        return {}
+    found: dict[tuple[str, str], dict[str, str]] = {}
+    for root in get_args(SourceRoot):
+        frame = read_sequence_index(ds, root)
+        for _, row in frame.iterrows():
+            key = (str(row["group"]), str(row["sequence"]))
+            digest = str(row["composition"])
+            if key not in wanted or not digest:
+                continue
+            found.setdefault(key, {})[root] = digest
+    return found

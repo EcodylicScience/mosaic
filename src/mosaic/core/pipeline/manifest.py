@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ...core.helpers import make_entry_key
+from .sequence_index import read_entry_compositions
 from ._utils import Scope
 from .index import (
     feature_index,
@@ -189,7 +190,17 @@ def build_manifest(
     if per_input_entries:
         shared_entries = per_input_entries[0].intersection(*per_input_entries[1:])
 
-    scope = Scope(entries=shared_entries, tracks_variants=variants)
+    # Per-entry, and therefore read *after* the narrowing -- the opposite of
+    # tracks_variants above, which is a property of the dataset under the
+    # selector. Reading every source root rather than only the ones this feature
+    # declares keeps the resolver ignorant of features: what is *hashed* is
+    # decided at the one payload site, and what is merely *recorded* on the index
+    # row wants the others.
+    scope = Scope(
+        entries=shared_entries,
+        tracks_variants=variants,
+        compositions=read_entry_compositions(ds, shared_entries),
+    )
 
     # Build per-group ordering from first input's full order.
     #
