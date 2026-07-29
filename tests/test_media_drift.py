@@ -253,3 +253,113 @@ def test_the_status_display_reports_a_source_that_moved(
     assert list(after["cached"]) == list(before["cached"]), (
         "drift is a source verdict; it must not change the cache verdict"
     )
+
+
+# --- item 6.2: a cache hit does not erase the signal above ---------------------
+
+
+def _reorder_seq_a(ds: Dataset) -> None:
+    """Swap seq_a's two clips. No bytes move; the composition does."""
+    _ = ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=ds.get_root("media_raw") / "seq_a",
+                group="",
+                sequence="seq_a",
+                order_by_name={"b.mp4": 0, "a.mp4": 1},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+
+def _crop_outputs(ds: Dataset, run_id: str) -> dict[str, int]:
+    """mtime per output parquet of the crop run, so a recompute is observable."""
+    from mosaic.core.pipeline.index import feature_run_root
+
+    run_root = feature_run_root(ds, "drift-crop-probe__from__tracks", run_id)
+    return {p.name: p.stat().st_mtime_ns for p in sorted(run_root.glob("*.parquet"))}
+
+
+@pytest.mark.usefixtures("requires_ffprobe")
+class TestACacheHitDoesNotLaunderTheBaseline:
+    """A skipped entry records what it was made from, not what is true now.
+
+    The pre-pass writes an index row for every entry it skips, and that row
+    carries the one cell ``drifted_entries`` compares. Re-deriving it there would
+    stamp "built from the present" onto an output that was not recomputed --
+    after which the display above reports no drift, over a parquet still built
+    from the old arrangement. The signal would erase itself on the first ordinary
+    re-run, which is the wrong-answer class this milestone exists to prevent.
+    """
+
+    def test_a_drifted_entry_recomputes_rather_than_being_skipped(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """The assertion is on the parquet, not on the verdict.
+
+        Asserting "no drift afterwards" would pass against the defect too --
+        laundering produces exactly that. What separates the two is whether the
+        output was rewritten, so that is what is measured.
+        """
+        from mosaic.core.pipeline.run import run_feature
+
+        ds = scenario_dataset_with_media
+        first = run_feature(ds, _CropLike())
+        before = _crop_outputs(ds, first.run_id)
+        assert before, "the fixture produced no outputs to reason about"
+
+        _reorder_seq_a(ds)
+        second = run_feature(ds, _CropLike())
+
+        assert second.run_id == first.run_id, (
+            "a composition is recorded, never hashed -- the identifier must not move"
+        )
+        after = _crop_outputs(ds, second.run_id)
+        assert after["seq_a.parquet"] != before["seq_a.parquet"], (
+            "the entry whose source moved was served from cache"
+        )
+        assert after["seq_b.parquet"] == before["seq_b.parquet"], (
+            "an entry whose source did not move was recomputed"
+        )
+
+    def test_the_recomputed_row_then_records_the_new_composition(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """Having recomputed, the row is honest and the display goes quiet.
+
+        **This one does not reject the laundering**, and saying so is the point:
+        run against the defect it passes, because laundering produces a quiet
+        display too. It was written expecting to discriminate and does not. It
+        earns its place guarding the opposite regression -- a recompute that
+        fails to write the new composition, leaving drift reported forever -- and
+        the discriminating assertion is the sibling above, on the parquet.
+        """
+        from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
+        from mosaic.core.pipeline.run import run_feature
+
+        ds = scenario_dataset_with_media
+        _ = run_feature(ds, _CropLike())
+        _reorder_seq_a(ds)
+        _ = run_feature(ds, _CropLike())
+
+        pipeline = Pipeline()
+        _ = pipeline.add(FeatureStep("crop", _CropLike, {}))
+        assert list(pipeline.status(ds)["drift"]) == [""], (
+            "a recomputed entry still reports drift, so the row was not rewritten"
+        )
+
+    def test_an_undrifted_entry_is_still_served_from_cache(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """The cost guard. Carrying a value forward must not defeat the cache."""
+        from mosaic.core.pipeline.run import run_feature
+
+        ds = scenario_dataset_with_media
+        first = run_feature(ds, _CropLike())
+        before = _crop_outputs(ds, first.run_id)
+
+        second = run_feature(ds, _CropLike())
+        assert _crop_outputs(ds, second.run_id) == before, (
+            "nothing moved, so nothing should have been recomputed"
+        )

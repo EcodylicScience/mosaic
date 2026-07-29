@@ -44,6 +44,7 @@ from .index import (
     feature_index_path,
     feature_run_root,
     missing_outputs_error,
+    recorded_consumption,
 )
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
@@ -897,6 +898,22 @@ def _run_feature_impl(
     if custom_check is not None and not callable(custom_check):
         custom_check = None  # not a validator method; use the default
 
+    # What each entry recorded consuming, before this run touches the index. A
+    # skipped entry carries its own value forward; re-deriving it here would
+    # assert that an output not recomputed was built from whatever is true now,
+    # and `drifted_entries` compares exactly this cell -- so the evidence of a
+    # source having moved would erase itself on the first ordinary re-run.
+    prior_compositions: dict[tuple[str, str], str] = (
+        {
+            entry: digest
+            for entry, (_roots, digest) in recorded_consumption(
+                ds, storage_feature_name, run_id
+            ).items()
+        }
+        if feature.consumed_roots
+        else {}
+    )
+
     skip_keys: set[str] = set()
     if state_ready and not overwrite:
         for entry_key in manifest:
@@ -933,6 +950,21 @@ def _run_feature_impl(
                     file=sys.stderr,
                 )
                 continue
+            entry = (meta.group, meta.sequence)
+            recorded = prior_compositions.get(entry)
+            was_made_from = recorded if recorded is not None else ""
+            now_made_of = entry_composition(feature, scope, entry)
+            if was_made_from and now_made_of and was_made_from != now_made_of:
+                # The source moved under an output that is still on disk. Serving
+                # it would be the wrong answer this milestone exists to prevent,
+                # and recording it would restamp the only cell that says so.
+                # Recompute: costly, loud, and never destructive.
+                print(
+                    f"[feature:{feature.name}] source moved under cached output "
+                    f"for ({group},{sequence}); recomputing.",
+                    file=sys.stderr,
+                )
+                continue
             _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
@@ -942,9 +974,10 @@ def _run_feature_impl(
                     sequence=meta.sequence,
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                    consumed_composition=entry_composition(
-                        feature, scope, (meta.group, meta.sequence)
-                    ),
+                    # Carried, never re-derived. An entry with no prior row is an
+                    # output nothing describes, so its provenance is unknown and
+                    # says so, rather than claiming the present.
+                    consumed_composition=was_made_from,
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
