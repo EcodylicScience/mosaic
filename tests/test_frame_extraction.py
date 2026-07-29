@@ -11,6 +11,8 @@ import dataclasses
 import json
 from pathlib import Path
 
+import pytest
+
 import numpy as np
 import pandas as pd
 
@@ -377,3 +379,145 @@ def test_a_frames_row_stores_its_video_paths_root_relative(
     for path in json.loads(stored):
         assert not Path(path).is_absolute(), f"not portable: {path}"
         assert ds.resolve_path(path).exists(), f"does not resolve: {path}"
+
+
+def _spec(*, seq_dir, overwrite: bool):
+    """A minimal work spec: only ``seq_dir`` and ``overwrite`` are read here."""
+    from mosaic.tracking.frame_extraction.dataset_runs import _ExtractSpec
+
+    return _ExtractSpec(
+        group="",
+        sequence="seq_a",
+        camera="",
+        video_paths=(),
+        facts=(),
+        video_uuids="",
+        media_composition="",
+        seq_dir=seq_dir,
+        run_id="uniform-aaaaaaaaaa",
+        params_hash="aaaaaaaaaa",
+        n_frames=1,
+        method="uniform",
+        start_frame=None,
+        end_frame=None,
+        candidate_step=1,
+        crop=None,
+        random_state=42,
+        kmeans_resize=(64, 64),
+        kmeans_grayscale=True,
+        kmeans_max_candidates=None,
+        kmeans_batch_size=1024,
+        kmeans_max_iter=100,
+        kmeans_n_init="auto",
+        overwrite=overwrite,
+    )
+
+
+# --- item 6.4's first carve-out: frames a rearrangement must not destroy -------
+
+
+class TestOverwriteRefuses:
+    """P4's carve-out, enforced at the destroyer rather than at the deleter.
+
+    ``Pipeline.clean`` never reached ``frames``; ``overwrite=True`` did, and
+    because ``overwrite`` is ``HASH_EXCLUDE`` it removed the *same* directory
+    ``AnnotationFrame.image_path`` names.
+    """
+
+    def test_an_existing_directory_refuses_rather_than_being_removed(
+        self, tmp_path: Path
+    ) -> None:
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            AnnotatedFramesWouldBeDestroyed,
+            _refuse_to_overwrite,
+        )
+
+        occupied = tmp_path / "run" / "seq_a"
+        occupied.mkdir(parents=True)
+        (occupied / "frame_000000.png").write_bytes(b"x")
+
+        spec = _spec(seq_dir=occupied, overwrite=True)
+        with pytest.raises(AnnotatedFramesWouldBeDestroyed, match="revision"):
+            _refuse_to_overwrite([spec])
+
+        assert (occupied / "frame_000000.png").exists(), "the frame set went"
+
+    def test_it_refuses_before_any_work_starts(self, tmp_path: Path) -> None:
+        """Naming every conflict at once, rather than aborting partway.
+
+        Raising inside the worker would leave some sequences extracted and the
+        index carrying rows for them -- a half-applied run whose report is a
+        traceback.
+        """
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            AnnotatedFramesWouldBeDestroyed,
+            _refuse_to_overwrite,
+        )
+
+        first = tmp_path / "run" / "a"
+        second = tmp_path / "run" / "b"
+        for directory in (first, second):
+            directory.mkdir(parents=True)
+
+        with pytest.raises(AnnotatedFramesWouldBeDestroyed) as caught:
+            _refuse_to_overwrite(
+                [
+                    _spec(seq_dir=first, overwrite=True),
+                    _spec(seq_dir=second, overwrite=True),
+                ]
+            )
+
+        message = str(caught.value)
+        assert str(first) in message and str(second) in message
+
+    def test_an_absent_directory_is_no_conflict(self, tmp_path: Path) -> None:
+        from mosaic.tracking.frame_extraction.dataset_runs import _refuse_to_overwrite
+
+        _refuse_to_overwrite([_spec(seq_dir=tmp_path / "nothing", overwrite=True)])
+
+    def test_overwrite_false_never_refuses(self, tmp_path: Path) -> None:
+        """Skipping an existing directory is the ordinary, untouched path."""
+        from mosaic.tracking.frame_extraction.dataset_runs import _refuse_to_overwrite
+
+        occupied = tmp_path / "run" / "seq_a"
+        occupied.mkdir(parents=True)
+        _refuse_to_overwrite([_spec(seq_dir=occupied, overwrite=False)])
+
+
+class TestTheRevisionTerm:
+    """The only term allowed to move the frozen extraction identifier."""
+
+    def test_the_default_reproduces_the_frozen_identifier(self) -> None:
+        """Byte-identical at revision 0, which the op corpus also pins."""
+        from mosaic.core.pipeline._utils import hash_params
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            ExtractFramesParams,
+            frames_run_id,
+        )
+
+        params = ExtractFramesParams(n_frames=100)
+        assert frames_run_id("uniform", params) == (
+            f"uniform-{hash_params(params.identity_dump())}"
+        )
+
+    def test_a_bumped_revision_mints_a_new_run(self) -> None:
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            ExtractFramesParams,
+            frames_run_id,
+        )
+
+        base = frames_run_id("uniform", ExtractFramesParams(n_frames=100))
+        bumped = frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
+
+        assert bumped != base
+        assert bumped.startswith("uniform-")
+
+    def test_two_revisions_differ_from_each_other(self) -> None:
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            ExtractFramesParams,
+            frames_run_id,
+        )
+
+        first = frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
+        second = frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=2))
+        assert first != second

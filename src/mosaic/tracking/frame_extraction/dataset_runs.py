@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -151,6 +150,12 @@ class ExtractFramesParams(Params):
     groups: Annotated[list[str] | None, HASH_EXCLUDE] = None
     sequences: Annotated[list[str] | None, HASH_EXCLUDE] = None
     overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    # A deliberate new selection, and the only term allowed to move the frozen
+    # extraction identifier. HASH_EXCLUDE keeps it out of ``identity_dump()``;
+    # ``frames_run_id`` adds it to the payload only when non-zero, so the
+    # default reproduces every identifier already on disk. Bump it to extract a
+    # different selection without disturbing the frames an annotation points at.
+    revision: Annotated[int, HASH_EXCLUDE] = 0
     parallel_workers: Annotated[int | str | None, HASH_EXCLUDE] = "auto"
     parallel_mode: Annotated[str, HASH_EXCLUDE] = "thread"
 
@@ -247,11 +252,11 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
     Manifest path-rewriting (which needs the Dataset) is done by the caller.
     """
     seq_dir = spec.seq_dir
-    if seq_dir.exists() and not spec.overwrite:
+    if seq_dir.exists():
+        # Reached only with overwrite=False: `_refuse_to_overwrite` has already
+        # raised for the other case, before any worker started.
         print(f"[extract_frames] skip {_spec_label(spec)} (exists, overwrite=False)")
         return None
-    if spec.overwrite and seq_dir.exists():
-        shutil.rmtree(seq_dir)
 
     kmeans_kw = dict(
         kmeans_resize=spec.kmeans_resize,
@@ -370,6 +375,54 @@ def _resolve_max_workers(parallel_workers: int | str | None) -> int:
     return n if n > 1 else 1
 
 
+class AnnotatedFramesWouldBeDestroyed(RuntimeError):
+    """``overwrite=True`` would remove a frame set an annotation may reference."""
+
+
+def _refuse_to_overwrite(specs: Sequence[_ExtractSpec]) -> None:
+    """Refuse to re-extract over a directory that already holds frames.
+
+    Rule P4's first carve-out. ``overwrite`` is ``HASH_EXCLUDE``, so it does not
+    reach the identifier -- meaning ``overwrite=True`` removed the *same*
+    directory ``AnnotationFrame.image_path`` names, on Dolt-tracked rows carrying
+    keypoint annotation labor, recoverable only by re-annotating.
+
+    Unconditional, and that is the point. Mosaic cannot ask whether a frame set
+    carries annotations: it imports no control plane and queries no Dolt. A
+    marker file written by the control plane would fail *open* -- an absent
+    marker is indistinguishable from a control plane that never wrote one -- and
+    failing open on human labor is the one direction P4 forbids. Refusing every
+    overwrite is stronger, needs no cross-repo contract, and costs only an
+    operation that was never useful: re-extracting into a directory whose
+    contents nothing describes.
+
+    A deliberate new selection is a new run, through ``revision``.
+
+    Raised before any worker starts, naming every conflict at once. Raising
+    inside ``_extract_one`` would abort partway with some sequences extracted and
+    the index carrying rows for them -- a half-applied run whose report is a
+    traceback.
+    """
+    occupied = sorted(
+        {
+            str(spec.seq_dir)
+            for spec in specs
+            if spec.overwrite and spec.seq_dir.exists()
+        }
+    )
+    if not occupied:
+        return
+    listed = "\n  ".join(occupied)
+    message = (
+        f"overwrite=True would remove {len(occupied)} existing frame "
+        f"directory(ies):\n  {listed}\n"
+        f"Annotations reference these images by path, and mosaic cannot tell "
+        f"whether any exist. Extract a new selection instead by bumping "
+        f"`revision`, which mints a new run and leaves these in place."
+    )
+    raise AnnotatedFramesWouldBeDestroyed(message)
+
+
 def frames_run_id(method: str, params: ExtractFramesParams) -> str:
     """Mint an extraction run identifier. **Frozen -- do not change this.**
 
@@ -389,8 +442,20 @@ def frames_run_id(method: str, params: ExtractFramesParams) -> str:
 
     ``ExtractFramesOp.version`` stays declared -- ``list_ops`` and ``describe_op``
     read it -- but it is provenance here, not identity.
+
+    **``revision`` is the one term that may enter, and only when it is set.**
+    It is ``HASH_EXCLUDE``, so ``identity_dump()`` never carries it, and it is
+    added to the payload here only when non-zero -- the omit-when-absent rule
+    ``compute_run_id`` already applies to ``_tracks`` and ``_scope_entries``,
+    and for the identical reason: ``json.dumps(sort_keys=True)`` digests an
+    absent key differently from a key whose value is empty. So revision 0
+    reproduces every identifier on every dataset in existence, byte for byte,
+    and the golden corpus proves it rather than this docstring asserting it.
     """
-    return f"{method}-{hash_params(params.identity_dump())}"
+    payload = params.identity_dump()
+    if params.revision:
+        payload["_revision"] = int(params.revision)
+    return f"{method}-{hash_params(payload)}"
 
 
 def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) -> str:
@@ -476,6 +541,8 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
                 overwrite=p.overwrite,
             )
         )
+
+    _refuse_to_overwrite(specs)
 
     ctx.set_total(len(specs))
     idx = frames_index(frames_index_path(ds, method_norm))
