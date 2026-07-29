@@ -358,6 +358,21 @@ def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
     return adopt_label_columns(raw)
 
 
+def decode_consumed_roots(cell: str) -> tuple[str, ...]:
+    """The roots a ``consumed_roots`` cell names, in the order it names them.
+
+    The reader for what ``encode_consumed_roots`` wrote, kept beside the
+    composition encoder for the same reason it exists: three callers now parse
+    this cell -- the drift comparison, ``run_feature``'s pre-pass and the
+    reverse-dependency walk -- and three spellings of "which roots" would be
+    three answers to the same question.
+
+    An empty cell yields an empty tuple: a consumer that declared nothing, which
+    a caller must not confuse with one whose declared root recorded nothing.
+    """
+    return tuple(root for root in cell.split(",") if root)
+
+
 def encode_entry_composition(recorded: Mapping[str, str], roots: Iterable[str]) -> str:
     """Encode one entry's recorded compositions into a single index cell.
 

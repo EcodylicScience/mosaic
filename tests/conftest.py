@@ -175,9 +175,18 @@ def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> 
 
 
 def add_tracks_variant(
-    dataset: Dataset, run_id: str, *sequences: str, n_rows: int = 40
+    dataset: Dataset,
+    run_id: str,
+    *sequences: str,
+    n_rows: int = 40,
+    consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
 ) -> None:
     """Write a variant-addressed track table per sequence, through the real writer.
+
+    ``consumed_source_roots`` defaults to what all three conversion writers pass,
+    so a row this produces answers "which root would a change have to be under?"
+    the way a converted row does. Overridable to ``()`` for a scenario about a
+    row that predates the column.
 
     The counterpart to :func:`add_track_sequences`, which stays deliberately
     unlabelled -- it is the pre-Stage-3 dataset every existing analysis has, and
@@ -229,6 +238,7 @@ def add_tracks_variant(
             producer=run_id.split(".")[0],
             std_format="trex_v1",
             n_rows=n_rows,
+            consumed_source_roots=consumed_source_roots,
         )
 
 

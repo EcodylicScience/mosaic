@@ -156,6 +156,8 @@ def recorded_consumption(
     establishable. Neither is evidence of change; both are item 6.2's to fail
     closed on. Entries declaring no root are dropped here, having nothing to say.
     """
+    from .sequence_index import decode_consumed_roots
+
     index = feature_index(feature_index_path(ds, feature_name))
     if not index.path.exists():
         return {}
@@ -166,9 +168,7 @@ def recorded_consumption(
 
     recorded: dict[tuple[str, str], tuple[tuple[str, ...], str]] = {}
     for _, row in rows.iterrows():
-        roots = tuple(
-            root for root in str(row.get("consumed_roots", "")).split(",") if root
-        )
+        roots = decode_consumed_roots(str(row.get("consumed_roots", "")))
         if not roots:
             continue
         entry = (str(row["group"]), str(row["sequence"]))
