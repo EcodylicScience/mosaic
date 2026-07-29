@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz converter
 from mosaic.core.dataset import Dataset
@@ -434,7 +435,16 @@ def test_write_tracks_raw_index_external_scope_dir_stays_absolute(
     assert rows[0]["abs_path"] == str(external / "c.npy")
 
 
-def test_write_tracks_raw_index_compute_md5_populates_hash(tmp_path: Path) -> None:
+def test_write_tracks_raw_index_hashes_by_default_and_can_be_turned_off(
+    tmp_path: Path,
+) -> None:
+    """On by default, because the ``tracks_raw`` composition is over these.
+
+    The old default was False and nothing in the toolkit ever passed True, so
+    the column was empty in every real dataset -- which would leave every
+    sequence's composition unestablishable. ``--no-md5`` stays for a corpus too
+    slow to hash, and what it buys is an honest empty rather than a wrong value.
+    """
     base = (tmp_path / "ds").resolve()
     ds = _make_dataset(base)
     seq_dir = base / "tracks_raw" / "seqA"
@@ -445,10 +455,45 @@ def test_write_tracks_raw_index_compute_md5_populates_hash(tmp_path: Path) -> No
     )
 
     ds.write_tracks_raw_index([scope], patterns=["*.npy"])
-    assert ds.read_tracks_raw_index()[0]["md5"] == ""  # default: no hash
-
-    ds.write_tracks_raw_index([scope], patterns=["*.npy"], compute_md5=True)
     assert ds.read_tracks_raw_index()[0]["md5"] != ""
+
+    ds.write_tracks_raw_index([scope], patterns=["*.npy"], compute_md5=False)
+    assert ds.read_tracks_raw_index()[0]["md5"] == ""
+
+
+def test_write_tracks_raw_index_carries_a_digest_forward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unchanged file is not re-hashed, which is what makes the default affordable.
+
+    Every scope directory is rescanned on every write, so without the
+    carry-forward a re-finalize would re-read every byte of a sequence to
+    reproduce digests it already had.
+    """
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    seq_dir = base / "tracks_raw" / "seqA"
+    seq_dir.mkdir(parents=True)
+    (seq_dir / "a.npy").write_bytes(b"payload")
+    scope = TracksRawIndexScope(
+        directory=seq_dir, group="", sequence="seqA", src_format="calms21_npy"
+    )
+
+    ds.write_tracks_raw_index([scope], patterns=["*.npy"])
+    first = ds.read_tracks_raw_index()[0]["md5"]
+
+    def _refuse(path: Path, chunk: int = 1 << 20) -> str:
+        raise AssertionError(f"re-hashed an unchanged file: {path}")
+
+    monkeypatch.setattr("mosaic.core.dataset._md5", _refuse)
+    ds.write_tracks_raw_index([scope], patterns=["*.npy"])
+    assert ds.read_tracks_raw_index()[0]["md5"] == first
+
+    # A changed file has a new size, so the carried digest is not reused.
+    monkeypatch.undo()
+    (seq_dir / "a.npy").write_bytes(b"a longer payload than before")
+    ds.write_tracks_raw_index([scope], patterns=["*.npy"])
+    assert ds.read_tracks_raw_index()[0]["md5"] != first
 
 
 def test_write_tracks_raw_index_empty_scopes_rewrites_existing_verbatim(

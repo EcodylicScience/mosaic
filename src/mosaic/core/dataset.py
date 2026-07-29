@@ -240,6 +240,19 @@ LABEL_INDEX_COLUMNS = [
 
 
 def _md5(path: Path, chunk=1 << 20) -> str:
+    """The raw-source checksum recorded in ``tracks_raw/index.csv``.
+
+    Still md5, deliberately, though identity elsewhere is sha1 (``hash_params``)
+    and blake2b (``mosaic-media``'s content digest). The column is named ``md5``
+    and its value is copied verbatim into ``TracksIndexRow.source_md5``, the
+    label index, and every one of the six registered label converters -- one of
+    which, ``label_converter_template.py``, is the documented extension point a
+    third-party converter is written against. Renaming it there would break an
+    out-of-tree converter with no error, only an empty cell, which is the rename
+    the migration rule forbids. The algorithm rides *inside* the composition
+    payload instead (see ``composition``), so switching it later changes every
+    digest rather than producing an incomparable one that looks comparable.
+    """
     h = hashlib.md5()
     with path.open("rb") as f:
         while True:
@@ -2033,6 +2046,42 @@ class Dataset:
             write_media_index_rows(index_path, frame_from_rows(merged))
         return MediaIndexResult(index_path=index_path, disagreements=disagreements)
 
+    def _prior_digests(self, index_path: Path) -> dict[Path, str]:
+        """A prior row's ``md5``, reusable when the file it describes has not moved.
+
+        Keyed on the resolved absolute path and admitted only when the stored
+        ``size_bytes`` and ``mtime_iso`` both still match the file on disk --
+        the same shape, and for the same reason, as the media write path's facts
+        cache. Without it, turning checksums on by default would re-hash every
+        raw file under a scope directory on every re-finalize, which for a corpus
+        on a slow share is the difference between a usable default and one
+        everybody turns off.
+
+        A size-and-mtime match is **not** proof of identical content, and this
+        is the write path, which is allowed to be cheap. The audit that catches a
+        file replaced in place with the same size and timestamp is a separate
+        unconditional re-hash, exactly as ``reprobe-media`` is for measurements;
+        do not apply this shortcut there, because a cache that skips the read
+        skips the comparison that IS the check.
+        """
+        digests: dict[Path, str] = {}
+        for row in _read_tracks_raw_index(index_path):
+            stored = str(row.get("abs_path", "") or "").strip()
+            digest = str(row.get("md5", "") or "").strip()
+            if not stored or not digest:
+                continue
+            resolved = self.resolve_path(stored).resolve()
+            try:
+                stat_result = resolved.stat()
+            except OSError:
+                continue
+            if str(row.get("size_bytes", "")) != str(stat_result.st_size):
+                continue
+            if str(row.get("mtime_iso", "")) != mtime_iso(stat_result.st_mtime):
+                continue
+            digests[resolved] = digest
+        return digests
+
     @staticmethod
     def _dedupe_scope_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         """Keep one row per stored ``abs_path``, first occurrence winning.
@@ -2702,7 +2751,7 @@ class Dataset:
         group_from: Optional[str] = None,
         group_pattern: Optional[str] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
-        compute_md5: bool = False,
+        compute_md5: bool = True,
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
@@ -2733,10 +2782,27 @@ class Dataset:
         exclude_patterns : Iterable[str] | None
             Glob patterns to exclude
         compute_md5 : bool
-            If True, compute MD5 hash of each file (slow for large files). Default False.
+            Checksum each source file. **Default True**, because the
+            ``tracks_raw`` composition hash (item 4.4) is over these checksums,
+            so an off-by-default column leaves every sequence's composition
+            unestablishable -- which is what it was for every dataset, since
+            nothing in the toolkit ever passed True. A digest is carried forward
+            from the existing row when the stored path, size and mtime all still
+            match, so a re-index re-hashes only what changed. Pass False for a
+            corpus too large or too slow to hash and accept an unestablished
+            composition: an honest empty, not a wrong value.
         """
         out_csv = self.get_root("tracks_raw") / index_filename
         rows: list[TracksRawIndexRow] = []
+        # Advisory, and read before the lock like the media probe phase's caches:
+        # a stale entry costs a re-hash, never a wrong digest, because every hit
+        # is re-validated against the file's current size and mtime.
+        carried = self._prior_digests(out_csv) if compute_md5 else {}
+
+        def _digest(path: Path) -> str:
+            if not compute_md5:
+                return ""
+            return carried.get(path.resolve()) or _md5(path)
 
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
@@ -2778,7 +2844,7 @@ class Dataset:
                     group=grp,
                     sequence=seq,
                     src_format=src_format,
-                    md5=_md5(p) if compute_md5 else "",
+                    md5=_digest(p),
                 )
             )
 
@@ -2801,7 +2867,7 @@ class Dataset:
         index_filename: str = "index.csv",
         recursive: bool = True,
         exclude_patterns: Optional[Iterable[str]] = None,
-        compute_md5: bool = False,
+        compute_md5: bool = True,
     ) -> Path:
         """Project explicit raw-track assignments into a valid tracks_raw index.
 
@@ -2837,7 +2903,16 @@ class Dataset:
         # --- Scan phase: expensive, read-only, unlocked. ---
         # Stat-ing (and, with compute_md5, hashing) every file under every scope
         # is the slow part, so the lock is taken below for the merge and write
-        # only. The rows to preserve are re-read authoritatively there.
+        # only. The rows to preserve are re-read authoritatively there; this read
+        # is advisory, and a stale entry costs a re-hash rather than a wrong
+        # digest because every hit is re-validated against size and mtime.
+        carried = self._prior_digests(out_csv) if compute_md5 else {}
+
+        def _digest(path: Path) -> str:
+            if not compute_md5:
+                return ""
+            return carried.get(path.resolve()) or _md5(path)
+
         fresh: list[TracksRawIndexRow] = []
         for scope in scope_list:
             for path, st in iter_track_files(
@@ -2854,7 +2929,7 @@ class Dataset:
                         group=scope.group,
                         sequence=scope.sequence,
                         src_format=scope.src_format,
-                        md5=_md5(path) if compute_md5 else "",
+                        md5=_digest(path),
                     )
                 )
 

@@ -48,6 +48,17 @@ def index_tracks_command(
         bool,
         typer.Option("--recursive/--no-recursive", help="Recurse into subdirectories."),
     ] = True,
+    md5: Annotated[
+        bool,
+        typer.Option(
+            "--md5/--no-md5",
+            help=(
+                "Checksum each source file. On by default: the tracks_raw "
+                "composition hash is over these checksums, and a re-index "
+                "re-hashes only what changed. --no-md5 leaves it unestablished."
+            ),
+        ),
+    ] = True,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the index path as JSON.")
     ] = False,
@@ -64,6 +75,7 @@ def index_tracks_command(
                 recursive=recursive,
                 group_from=group_from,
                 group_pattern=group_pattern,
+                compute_md5=md5,
             )
     except Exception as exc:  # noqa: BLE001 - surface indexing errors cleanly
         fail(f"index-tracks failed: {exc}")
