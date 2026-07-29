@@ -253,3 +253,93 @@ def write_sequence_compositions(
     ]
     sequence_index(path).replace(rows)
     return path
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceLabelRow(SchemaRowBase):
+    """One row of the dataset-level ``sequences.csv``: what a sequence is called.
+
+    Separate from :class:`SequenceIndexRow`, and separate for a reason worth
+    stating because item 4.4's wording says otherwise. A composition is a
+    property of ``(sequence, root)`` -- a sequence has one per root and they
+    change independently. A label is a property of the sequence alone. Put it on
+    the per-root row and a sequence with both media and tracks carries two
+    display names that can disagree, with no rule saying which wins, and
+    ``Dataset.set_display_name`` has to pick a root it has no basis to pick.
+
+    ``group``/``sequence`` are the stable **token**: minted once, part of every
+    filename and every index join key, and never rewritten. ``display_group``
+    and ``display_name`` are the label: relabelled freely, read by humans, and
+    touching nothing on disk. An empty label means "no label recorded", and every
+    reader falls back to the token -- so a dataset that never names anything
+    behaves exactly as it did before this file existed.
+
+    ``derived_from`` is reserved for item 8.6, where a promoted manual correction
+    records the tracker run it was corrected from. Declared now rather than added
+    later so the schema does not move once datasets hold rows.
+    """
+
+    group: str = ""
+    sequence: str = ""
+    display_group: str = ""
+    display_name: str = ""
+    derived_from: str = ""
+
+
+SEQUENCE_LABEL_COLUMNS: Final[list[str]] = [
+    field.name for field in fields(SequenceLabelRow)
+]
+"""The label schema, in CSV order. Derived from the row so the two cannot drift."""
+
+
+def sequence_label_path(ds: Dataset) -> Path:
+    """Where a dataset's sequence labels live: one file, at the dataset root.
+
+    Not under a source root, because a label is not a property of a root. Beside
+    the manifest, because it is a property of the dataset the manifest describes.
+    """
+    return ds.base_dir / "sequences.csv"
+
+
+def sequence_labels(path: Path) -> IndexCSV[SequenceLabelRow]:
+    """Factory: an ``IndexCSV`` configured for the label schema."""
+    return IndexCSV(
+        path,
+        SequenceLabelRow,
+        dedup_keys=["group", "sequence"],
+        adopt=adopt_label_columns,
+    )
+
+
+def empty_label_frame() -> pd.DataFrame:
+    """The full-schema, zero-row frame an absent label file reads as."""
+    return pd.DataFrame(
+        {column: pd.Series(dtype="object") for column in SEQUENCE_LABEL_COLUMNS}
+    )
+
+
+def adopt_label_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bring a label frame read off disk up to the current schema, in memory."""
+    out = pd.DataFrame(index=df.index)
+    for column in SEQUENCE_LABEL_COLUMNS:
+        if column in df.columns:
+            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
+        else:
+            cells = [""] * len(df)
+        out[column] = pd.Series(cells, index=df.index, dtype="object")
+    deduped = out.drop_duplicates(subset=["group", "sequence"], keep="last")
+    return deduped.reset_index(drop=True)
+
+
+def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
+    """Read a dataset's sequence labels, projected onto the current schema.
+
+    The single reader. Absent reads as the full-schema empty frame -- which every
+    dataset predating item 4.1 is, and which is why the fallback to the token has
+    to be the ordinary path rather than an error case.
+    """
+    path = sequence_label_path(ds)
+    if not path.exists():
+        return empty_label_frame()
+    raw = pd.read_csv(path, keep_default_na=False, dtype=str)
+    return adopt_label_columns(raw)

@@ -37,8 +37,24 @@ def sequences_command(
             "(mosaic convert-tracks)."
         )
     seqs = ds.list_sequences(group=group)
+    # The only place mosaic lists sequence strings to a human, so the only place
+    # a recorded label should displace the token. One read for the whole listing
+    # rather than one per row; sequences with no label keep their token, which is
+    # every sequence in a dataset that has never named one.
+    labels = ds.display_names()
+    labelled = [(seq, labels.get((group or "", seq), "")) for seq in seqs]
     if as_json:
-        emit_json({"sequences": seqs})
+        # Both, and named: a script consuming this needs the token to pass back
+        # to --sequence, and a human reading it wants the label.
+        emit_json(
+            {
+                "sequences": seqs,
+                "labelled": [
+                    {"sequence": seq, "display_name": label or seq}
+                    for seq, label in labelled
+                ],
+            }
+        )
     else:
-        for seq in seqs:
-            typer.echo(seq)
+        for seq, label in labelled:
+            typer.echo(f"{seq}  ({label})" if label else seq)

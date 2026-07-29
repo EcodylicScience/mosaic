@@ -33,7 +33,12 @@ from mosaic_media import (
     MediaProbeError,
 )
 
-from .helpers import ensure_text_column, make_entry_key, to_safe_name
+from .helpers import (
+    ensure_text_column,
+    make_entry_key,
+    to_safe_name,
+    validate_entry_name,
+)
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
@@ -100,8 +105,12 @@ from .pipeline.tracks_identity import (
 from .pipeline.composition import media_composition, tracks_raw_composition
 from .pipeline.index_lock import index_lock
 from .pipeline.sequence_index import (
+    SequenceLabelRow,
     SourceRoot,
+    read_sequence_labels,
     sequence_index_path,
+    sequence_label_path,
+    sequence_labels,
     write_sequence_compositions,
 )
 from .pipeline.tracks_index import (
@@ -1350,6 +1359,21 @@ class Dataset:
         # function of group/sequence, recomputed on every write anyway.
         df = legacy_view(read_tracks_index(self))
 
+        # The label beside the token, never instead of it. Every other column
+        # here is keyed on group/sequence and a caller filters with them, so
+        # replacing them would break the thing this method is for; a
+        # display_name column is additive and lets a listing show both.
+        #
+        # parse_hierarchy still reads the **token**. validate_entry_name's error
+        # text steers users to encode hierarchy there with "__", and a factor
+        # parsed out of a freely-relabelled string would change meaning the
+        # moment someone renamed a sequence for readability.
+        labels = self.display_names()
+        df["display_name"] = [
+            labels.get((str(group), str(sequence)), str(sequence))
+            for group, sequence in zip(df["group"], df["sequence"])
+        ]
+
         if level_names:
             # Parse each row into hierarchy levels
             parsed_rows = []
@@ -2086,6 +2110,54 @@ class Dataset:
             key: tracks_raw_composition(group) for key, group in members.items()
         }
         _ = write_sequence_compositions(self, "tracks_raw", compositions=compositions)
+
+    def display_names(self) -> dict[tuple[str, str], str]:
+        """Every recorded sequence label, keyed by its ``(group, sequence)`` token.
+
+        One read for a listing, rather than one per row. Sequences with no
+        recorded label are absent from the mapping, so a caller falls back to the
+        token by ``.get(key, default)`` rather than by testing for emptiness.
+        """
+        frame = read_sequence_labels(self)
+        return {
+            (str(row["group"]), str(row["sequence"])): str(row["display_name"])
+            for _, row in frame.iterrows()
+            if str(row["display_name"])
+        }
+
+    def display_name(self, group: str, sequence: str) -> str:
+        """What to call this sequence to a human: its label, or its token.
+
+        The fallback is the whole design. A token is a perfectly good name until
+        someone chooses a better one, so a dataset that has never recorded a
+        label reads exactly as it did before labels existed -- and no caller
+        needs to branch.
+        """
+        return self.display_names().get(
+            (group, sequence), make_entry_key(group, sequence)
+        )
+
+    def set_display_name(
+        self, group: str, sequence: str, name: str, *, display_group: str = ""
+    ) -> None:
+        """Record what to call *(group, sequence)*. Touches no file but this one.
+
+        That is item 4.1's entire point: relabelling is metadata, so it must not
+        move a directory, rewrite an ``abs_path``, or change the token that every
+        filename and every index join key is built from. Passing ``""`` clears
+        the label and returns the sequence to being called by its token.
+        """
+        path = sequence_label_path(self)
+        sequence_labels(path).append(
+            [
+                SequenceLabelRow(
+                    group=validate_entry_name(group, "group"),
+                    sequence=validate_entry_name(sequence, "sequence"),
+                    display_group=display_group,
+                    display_name=name,
+                )
+            ]
+        )
 
     def rebuild_sequence_index(self, root: SourceRoot) -> Path | None:
         """Recompute *root*'s per-sequence index from that root's ``index.csv``.
