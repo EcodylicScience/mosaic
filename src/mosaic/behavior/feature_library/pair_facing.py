@@ -158,9 +158,7 @@ class PairFacing:
 
         all_rows: list[pd.DataFrame] = []
 
-        iter_groups = (
-            df.groupby(C.seq_col) if C.seq_col in df.columns else [(None, df)]
-        )
+        iter_groups = df.groupby(C.seq_col) if C.seq_col in df.columns else [(None, df)]
 
         for _, gseq in iter_groups:
             ids = sorted(gseq[C.id_col].unique())
@@ -180,8 +178,12 @@ class PairFacing:
 
             for focal_id, target_id in permutations(ids, 2):
                 pair_df = self._compute_directed_pair(
-                    per_id[focal_id], per_id[target_id],
-                    head_x, head_y, abd_x, abd_y,
+                    per_id[focal_id],
+                    per_id[target_id],
+                    head_x,
+                    head_y,
+                    abd_x,
+                    abd_y,
                 )
                 if pair_df is None or pair_df.empty:
                     continue
@@ -199,9 +201,14 @@ class PairFacing:
                 out[col] = df[col].iloc[0]
 
         cols = [
-            C.frame_col, "focal_id", "target_id",
-            "body_angle_deg", "bearing_deg", "angle_diff_deg",
-            "distance", "is_facing",
+            C.frame_col,
+            "focal_id",
+            "target_id",
+            "body_angle_deg",
+            "bearing_deg",
+            "angle_diff_deg",
+            "distance",
+            "is_facing",
         ]
         extra = [c for c in out.columns if c not in cols]
         return out[cols + extra]
@@ -210,7 +217,10 @@ class PairFacing:
         self,
         df_f: pd.DataFrame,
         df_t: pd.DataFrame,
-        head_x: str, head_y: str, abd_x: str, abd_y: str,
+        head_x: str,
+        head_y: str,
+        abd_x: str,
+        abd_y: str,
     ) -> pd.DataFrame | None:
         merged = df_f.merge(
             df_t[[C.frame_col, head_x, head_y]],
@@ -245,25 +255,30 @@ class PairFacing:
 
         valid = np.isfinite(angle_diff) & np.isfinite(distance)
         is_facing = (
-            (angle_diff < p.angle_thresh_deg)
-            & (distance < p.dist_thresh)
-            & valid
+            (angle_diff < p.angle_thresh_deg) & (distance < p.dist_thresh) & valid
         )
 
-        return pd.DataFrame({
-            C.frame_col: merged[C.frame_col].to_numpy(),
-            "body_angle_deg": body_angle,
-            "bearing_deg": bearing,
-            "angle_diff_deg": angle_diff,
-            "distance": distance,
-            "is_facing": is_facing,
-        })
+        return pd.DataFrame(
+            {
+                C.frame_col: merged[C.frame_col].to_numpy(),
+                "body_angle_deg": body_angle,
+                "bearing_deg": bearing,
+                "angle_diff_deg": angle_diff,
+                "distance": distance,
+                "is_facing": is_facing,
+            }
+        )
 
     def _empty_output(self) -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
-                C.frame_col, "focal_id", "target_id",
-                "body_angle_deg", "bearing_deg", "angle_diff_deg",
-                "distance", "is_facing",
+                C.frame_col,
+                "focal_id",
+                "target_id",
+                "body_angle_deg",
+                "bearing_deg",
+                "angle_diff_deg",
+                "distance",
+                "is_facing",
             ]
         )

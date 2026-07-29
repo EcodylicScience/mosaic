@@ -87,9 +87,7 @@ def _import_feral(feral_code_dir: str | Path | None = None):
             "(pulls feral from https://github.com/Skovorp/feral), or set "
             "feral_code_dir to a local checkout of the package."
         ) from e
-    return SimpleNamespace(
-        model=model, dataset=dataset, utils=utils, metrics=metrics
-    )
+    return SimpleNamespace(model=model, dataset=dataset, utils=utils, metrics=metrics)
 
 
 def _resolve_backbone_key(value: str) -> str:
@@ -131,16 +129,12 @@ def _load_checkpoint_state_dict(raw):
     meta = None
     if isinstance(raw, dict) and "state_dict" in raw:
         state_dict = raw["state_dict"]
-        meta = {
-            k: raw[k]
-            for k in ("class_names", "is_multilabel", "cfg")
-            if k in raw
-        }
+        meta = {k: raw[k] for k in ("class_names", "is_multilabel", "cfg") if k in raw}
     else:
         state_dict = raw
-    is_old_hfmodel = any(
-        k.startswith("model.") for k in state_dict
-    ) and not any(k.startswith("backbone.") for k in state_dict)
+    is_old_hfmodel = any(k.startswith("model.") for k in state_dict) and not any(
+        k.startswith("backbone.") for k in state_dict
+    )
     if is_old_hfmodel:
         state_dict = {
             ("backbone." + k if k.startswith("model.") else k): v
@@ -158,9 +152,7 @@ def _load_into(model, state_dict) -> None:
     random initialization -- into an actionable error.
     """
     result = model.load_state_dict(state_dict, strict=False)
-    missing = [
-        k for k in result.missing_keys if "num_batches_tracked" not in k
-    ]
+    missing = [k for k in result.missing_keys if "num_batches_tracked" not in k]
     if missing or result.unexpected_keys:
         raise RuntimeError(
             "FERAL checkpoint does not match FeralModel "
@@ -195,7 +187,7 @@ def _check_feral(feral_code_dir: str | Path | None = None) -> None:
 def _chunked(seq, k):
     """Yield successive k-sized sublists of ``seq`` (last may be shorter)."""
     for i in range(0, len(seq), k):
-        yield seq[i:i + k]
+        yield seq[i : i + k]
 
 
 class FeralTrainingConfig(StrictModel):
@@ -499,9 +491,7 @@ class FeralFeature:
 
         # Fall back to checkpoint-embedded metadata (new dict-format checkpoints)
         if not self._class_names and ckpt_meta and ckpt_meta.get("class_names"):
-            self._class_names = {
-                int(k): v for k, v in ckpt_meta["class_names"].items()
-            }
+            self._class_names = {int(k): v for k, v in ckpt_meta["class_names"].items()}
             num_classes = len(self._class_names)
 
         # Override from params if explicitly set
@@ -770,7 +760,8 @@ class FeralFeature:
                 model_ema.ema.load_state_dict(ckpt["ema_state_dict"])
             log.info(
                 "Resuming training from epoch %d (best_map=%.4f)",
-                start_epoch, best_map,
+                start_epoch,
+                best_map,
             )
 
         # Progress callback -- writes summary.csv after each epoch
@@ -868,7 +859,11 @@ class FeralFeature:
 
                 val_metrics = calculate_multiclass_metrics(answers, class_names, "val")
                 val_f1 = calculate_f1_metrics(
-                    answers, labels_json, "val", is_multilabel, "val",
+                    answers,
+                    labels_json,
+                    "val",
+                    is_multilabel,
+                    "val",
                     cfg.get("multilabel_threshold", 0.85),
                 )
                 val_map = calc_frame_level_map(answers, labels_json, "val")
@@ -889,13 +884,11 @@ class FeralFeature:
                         save_model(model, str(best_checkpoint_path), ckpt_metadata)
                     best_map = val_map
                     epochs_without_improvement = 0
-                elif (
-                    model_ema is not None
-                    and ema_map > val_map
-                    and ema_map > best_map
-                ):
+                elif model_ema is not None and ema_map > val_map and ema_map > best_map:
                     if best_checkpoint_path is not None:
-                        save_model(model_ema.ema, str(best_checkpoint_path), ckpt_metadata)
+                        save_model(
+                            model_ema.ema, str(best_checkpoint_path), ckpt_metadata
+                        )
                     best_map = ema_map
                     epochs_without_improvement = 0
                 else:
@@ -928,10 +921,7 @@ class FeralFeature:
                     ckpt_data["ema_state_dict"] = model_ema.ema.state_dict()
                 torch.save(ckpt_data, checkpoint_path)
 
-            if (
-                tc.patience is not None
-                and epochs_without_improvement >= tc.patience
-            ):
+            if tc.patience is not None and epochs_without_improvement >= tc.patience:
                 log.info("Early stopping at epoch %d", epoch)
                 break
 
@@ -958,13 +948,15 @@ class FeralFeature:
 
         # --- Test set evaluation ---
         test_metrics = {}
-        if (
-            "test" in labels_json.get("splits", {})
-            and labels_json["splits"]["test"]
-        ):
+        if "test" in labels_json.get("splits", {}) and labels_json["splits"]["test"]:
             test_metrics = self._evaluate_partition(
-                cfg, labels_json, num_classes, is_multilabel, class_names,
-                "test", device,
+                cfg,
+                labels_json,
+                num_classes,
+                is_multilabel,
+                class_names,
+                "test",
+                device,
             )
 
         # Store metrics
@@ -993,7 +985,10 @@ class FeralFeature:
         if self._model is None:
             return {}
         loader = self._build_eval_loader(
-            cfg, labels_json, num_classes, partition,
+            cfg,
+            labels_json,
+            num_classes,
+            partition,
         )
         # Post-training test eval runs full float32 (no autocast). This is
         # the canonical test_metrics number that lands in reports.json --
@@ -1001,7 +996,11 @@ class FeralFeature:
         # FeralFeature.evaluate() will produce when called on this run
         # later. See class docstring for the full precision convention.
         answers = self._run_inference_loop(
-            self._model, loader, num_classes, is_multilabel, device,
+            self._model,
+            loader,
+            num_classes,
+            is_multilabel,
+            device,
         )
         # _evaluate_partition uses partition both as the split name and as
         # the metric-name prefix (matches pre-refactor behavior).
@@ -1010,7 +1009,10 @@ class FeralFeature:
             "class_names": {str(k): v for k, v in class_names.items()},
         }
         return self.compute_metrics(
-            answers, labels_json_with_names, partition, prefix=partition,
+            answers,
+            labels_json_with_names,
+            partition,
+            prefix=partition,
             multilabel_threshold=cfg.get("multilabel_threshold", 0.85),
         )
 
@@ -1148,16 +1150,12 @@ class FeralFeature:
             **self._config,
             "num_classes": len(self._classes),
             "class_names": {str(k): v for k, v in self._class_names.items()},
-            "model_name": self._config.get(
-                "model_name", self.params.model_name
-            ),
+            "model_name": self._config.get("model_name", self.params.model_name),
             "predict_per_item": self._config.get(
                 "predict_per_item", self.params.predict_per_item
             ),
             "fc_drop_rate": self._config.get("fc_drop_rate", 0.5),
-            "freeze_encoder_layers": self._config.get(
-                "freeze_encoder_layers", 14
-            ),
+            "freeze_encoder_layers": self._config.get("freeze_encoder_layers", 14),
             "version": self.version,
         }
         with open(run_root / "feral_config.json", "w") as f:
@@ -1182,7 +1180,11 @@ class FeralFeature:
         _import_feral(self.params.feral_code_dir)
         import torch
         import torchvision
-        from feral.dataset import get_frame_ids, read_range_video_decord, get_frame_count  # type: ignore[import-not-found]
+        from feral.dataset import (
+            get_frame_ids,
+            read_range_video_decord,
+            get_frame_count,
+        )  # type: ignore[import-not-found]
 
         p = self.params
         device = next(self._model.parameters()).device
@@ -1212,9 +1214,11 @@ class FeralFeature:
         # "Precision convention".
         if p.inference_autocast and device.type == "cuda":
             import torch.amp
+
             ac_ctx = torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda")
         else:
             import contextlib
+
             ac_ctx = contextlib.nullcontext()
 
         def _run_chunk_batch(abs_video_path, batch_frames):
@@ -1229,7 +1233,9 @@ class FeralFeature:
             """
             tensors = []
             for frames in batch_frames:
-                vt = read_range_video_decord(str(abs_video_path), frames)  # (T, C, H, W)
+                vt = read_range_video_decord(
+                    str(abs_video_path), frames
+                )  # (T, C, H, W)
                 vt = resize(vt)
                 vt = norm(vt * scale)
                 tensors.append(vt)
@@ -1245,10 +1251,11 @@ class FeralFeature:
                 if len(batch_frames) == 1:
                     raise
                 mid = len(batch_frames) // 2
-                return (_run_chunk_batch(abs_video_path, batch_frames[:mid])
-                        + _run_chunk_batch(abs_video_path, batch_frames[mid:]))
+                return _run_chunk_batch(
+                    abs_video_path, batch_frames[:mid]
+                ) + _run_chunk_batch(abs_video_path, batch_frames[mid:])
             return [
-                probs[n * out_tokens:(n + 1) * out_tokens]
+                probs[n * out_tokens : (n + 1) * out_tokens]
                 for n in range(len(batch_frames))
             ]
 
@@ -1289,7 +1296,10 @@ class FeralFeature:
                 continue
 
             frame_ids = get_frame_ids(
-                total_frames, p.chunk_shift, p.chunk_length, p.chunk_step,
+                total_frames,
+                p.chunk_shift,
+                p.chunk_length,
+                p.chunk_step,
             )
 
             # Per-frame prediction accumulator
@@ -1382,15 +1392,25 @@ class FeralFeature:
 
         rows = []
         for target_id, sub in df.groupby("target_id"):
-            rows.append({
-                "video_path": f"egocentric_id{target_id}.mp4",
-                "target_id": target_id,
-                "start_frame": int(sub[C.frame_col].min()) if C.frame_col in sub.columns else 0,
-                "end_frame": int(sub[C.frame_col].max()) if C.frame_col in sub.columns else 0,
-                "n_frames": len(sub),
-                C.group_col: sub[C.group_col].iloc[0] if C.group_col in sub.columns else "",
-                C.seq_col: sub[C.seq_col].iloc[0] if C.seq_col in sub.columns else "",
-            })
+            rows.append(
+                {
+                    "video_path": f"egocentric_id{target_id}.mp4",
+                    "target_id": target_id,
+                    "start_frame": int(sub[C.frame_col].min())
+                    if C.frame_col in sub.columns
+                    else 0,
+                    "end_frame": int(sub[C.frame_col].max())
+                    if C.frame_col in sub.columns
+                    else 0,
+                    "n_frames": len(sub),
+                    C.group_col: sub[C.group_col].iloc[0]
+                    if C.group_col in sub.columns
+                    else "",
+                    C.seq_col: sub[C.seq_col].iloc[0]
+                    if C.seq_col in sub.columns
+                    else "",
+                }
+            )
         return pd.DataFrame(rows)
 
     def _predict_label(self, frame_probs: np.ndarray) -> int:
@@ -1537,19 +1557,29 @@ class FeralFeature:
         is_multilabel = labels_json.get("is_multilabel", False)
 
         loader = cls._build_eval_loader(
-            cfg, labels_json, num_classes, partition,
-            batch_size=batch_size, num_workers=num_workers,
+            cfg,
+            labels_json,
+            num_classes,
+            partition,
+            batch_size=batch_size,
+            num_workers=num_workers,
         )
         if loader is None:
             return []
 
         model = cls.load_trained_model(
-            run_root, device=device, feral_code_dir=feral_code_dir,
+            run_root,
+            device=device,
+            feral_code_dir=feral_code_dir,
         )
         try:
             torch_device = next(model.parameters()).device
             answers = cls._run_inference_loop(
-                model, loader, num_classes, is_multilabel, torch_device,
+                model,
+                loader,
+                num_classes,
+                is_multilabel,
+                torch_device,
                 progress_label=partition,
                 progress_interval=progress_interval,
             )
@@ -1581,6 +1611,7 @@ class FeralFeature:
             calc_frame_level_map,
             calculate_f1_metrics,
         )
+
         if not answers:
             return {}
         if prefix is None:
@@ -1592,11 +1623,17 @@ class FeralFeature:
         metrics: dict = {}
         metrics.update(calculate_multiclass_metrics(answers, class_names, prefix))
         metrics[f"{prefix}_frame_level_map"] = calc_frame_level_map(
-            answers, labels_json, partition,
+            answers,
+            labels_json,
+            partition,
         )
         metrics.update(
             calculate_f1_metrics(
-                answers, labels_json, partition, is_multilabel, prefix,
+                answers,
+                labels_json,
+                partition,
+                is_multilabel,
+                prefix,
                 multilabel_threshold,
             )
         )

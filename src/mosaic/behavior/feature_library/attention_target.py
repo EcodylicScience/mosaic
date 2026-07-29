@@ -126,24 +126,26 @@ class AttentionTarget:
             idx = facing.groupby(["focal_id", C.frame_col])["angle_diff_deg"].idxmin()
             picked = facing.loc[
                 idx, ["focal_id", C.frame_col, "target_id", "angle_diff_deg"]
-            ].rename(columns={
-                "target_id": "attention_target_id",
-                "angle_diff_deg": "attention_target_angle_diff_deg",
-            })
+            ].rename(
+                columns={
+                    "target_id": "attention_target_id",
+                    "angle_diff_deg": "attention_target_angle_diff_deg",
+                }
+            )
         else:
             picked = pd.DataFrame(
                 columns=[
-                    "focal_id", C.frame_col,
-                    "attention_target_id", "attention_target_angle_diff_deg",
+                    "focal_id",
+                    C.frame_col,
+                    "attention_target_id",
+                    "attention_target_angle_diff_deg",
                 ]
             )
 
         # Outer-join onto the full (focal_id, frame) grid so frames without a
         # facing target appear with NA target.
         full_index = (
-            df[["focal_id", C.frame_col]]
-            .drop_duplicates()
-            .reset_index(drop=True)
+            df[["focal_id", C.frame_col]].drop_duplicates().reset_index(drop=True)
         )
         out = full_index.merge(picked, on=["focal_id", C.frame_col], how="left")
 
@@ -178,9 +180,13 @@ class AttentionTarget:
                 out[col] = df[col].iloc[0]
 
         cols = [
-            C.frame_col, "focal_id",
-            "attention_target_id", "attention_target_angle_diff_deg",
-            "focal_group", "target_group", "attention_type",
+            C.frame_col,
+            "focal_id",
+            "attention_target_id",
+            "attention_target_angle_diff_deg",
+            "focal_group",
+            "target_group",
+            "attention_type",
         ]
         extra = [c for c in out.columns if c not in cols]
         return (
@@ -192,8 +198,12 @@ class AttentionTarget:
     def _empty_output(self) -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
-                C.frame_col, "focal_id",
-                "attention_target_id", "attention_target_angle_diff_deg",
-                "focal_group", "target_group", "attention_type",
+                C.frame_col,
+                "focal_id",
+                "attention_target_id",
+                "attention_target_angle_diff_deg",
+                "focal_group",
+                "target_group",
+                "attention_type",
             ]
         )

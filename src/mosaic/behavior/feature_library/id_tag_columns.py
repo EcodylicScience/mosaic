@@ -90,15 +90,17 @@ class IdTagColumns:
                     fields = [k for k in data.keys() if k not in ("ids", "id")]
                     labels: dict = {}
                     for idx, fid in enumerate(ids):
-                        fid_key = int(fid) if hasattr(fid, 'item') else fid
+                        fid_key = int(fid) if hasattr(fid, "item") else fid
                         labels[fid_key] = {
-                            f: int(data[f][idx]) if hasattr(data[f][idx], 'item')
+                            f: int(data[f][idx])
+                            if hasattr(data[f][idx], "item")
                             else data[f][idx]
                             for f in fields
                         }
                     self._labels[(group, sequence)] = labels
                 elif path.suffix == ".json":
                     import json
+
                     raw = json.loads(path.read_text())
                     self._labels[(group, sequence)] = raw.get("labels", {})
             except Exception:

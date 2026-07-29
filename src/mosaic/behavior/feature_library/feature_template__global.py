@@ -30,7 +30,14 @@ import numpy as np
 import pandas as pd
 
 # from .registry import register_feature  # <-- uncomment when ready
-from mosaic.core.pipeline.types import DependencyLookup, InputRequire, Inputs, InputStream, Params, Result
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    InputRequire,
+    Inputs,
+    InputStream,
+    Params,
+    Result,
+)
 
 
 @final
@@ -51,7 +58,9 @@ class MyGlobalFeature:
       4. apply() maps per-sequence data using the fitted model
     """
 
-    category = "global"  # diagram color: "per-frame" / "summary" / "tag" / "global" / custom
+    category = (
+        "global"  # diagram color: "per-frame" / "summary" / "tag" / "global" / custom
+    )
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False

@@ -391,8 +391,10 @@ class EgocentricCrop:
                 tx = df_target[tx_col].to_numpy(dtype=np.float64)
                 ty = df_target[ty_col].to_numpy(dtype=np.float64)
                 valid = (
-                    np.isfinite(nx) & np.isfinite(ny)
-                    & np.isfinite(tx) & np.isfinite(ty)
+                    np.isfinite(nx)
+                    & np.isfinite(ny)
+                    & np.isfinite(tx)
+                    & np.isfinite(ty)
                 )
                 angles[valid] = np.arctan2(ny[valid] - ty[valid], nx[valid] - tx[valid])
 
@@ -675,7 +677,9 @@ class EgocentricCrop:
                     str(path), codec, float(output_fps), (crop_w, crop_h), isColor=False
                 )
             else:
-                writer = create_video_writer(video_out_path, output_fps, (crop_w, crop_h))
+                writer = create_video_writer(
+                    video_out_path, output_fps, (crop_w, crop_h)
+                )
 
         frames_dir = None
         if p.output_mode in ("frames", "both"):
@@ -705,7 +709,11 @@ class EgocentricCrop:
         # which otherwise decodes all `total_frames` frames just to skip past
         # them.  Big speedup when df_target covers a small subrange of the video.
         max_relevant_frame = int(frame_array.max()) if len(frame_array) else -1
-        progress_total = min(max_relevant_frame + 1, total_frames) if max_relevant_frame >= 0 else total_frames
+        progress_total = (
+            min(max_relevant_frame + 1, total_frames)
+            if max_relevant_frame >= 0
+            else total_frames
+        )
 
         try:
             while True:
@@ -717,7 +725,11 @@ class EgocentricCrop:
 
                 pos = frame_to_pos.get(frame_idx)
                 if pos is not None:
-                    angle = float(angles[pos]) if (p.rotate_to_heading or p.center_offset_px != 0.0) else 0.0
+                    angle = (
+                        float(angles[pos])
+                        if (p.rotate_to_heading or p.center_offset_px != 0.0)
+                        else 0.0
+                    )
                     center = (float(centers_x[pos]), float(centers_y[pos]))
                     crop = self._extract_egocentric_crop(frame, center, angle)
 

@@ -264,15 +264,23 @@ class PairInteractionFilter:
 
         all_segments: list[pd.DataFrame] = []
 
-        for _, gseq in df.groupby(C.seq_col) if C.seq_col in df.columns else [(None, df)]:
+        for _, gseq in (
+            df.groupby(C.seq_col) if C.seq_col in df.columns else [(None, df)]
+        ):
             ids = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
 
             for id_a, id_b in combinations(ids, 2):
                 segments = self._detect_pair_interactions(
-                    gseq, id_a, id_b, order_col, x_col, y_col,
-                    shift_dist, max_dist,
+                    gseq,
+                    id_a,
+                    id_b,
+                    order_col,
+                    x_col,
+                    y_col,
+                    shift_dist,
+                    max_dist,
                 )
                 if segments is not None and not segments.empty:
                     all_segments.append(segments)
@@ -280,8 +288,12 @@ class PairInteractionFilter:
         if not all_segments:
             return pd.DataFrame(
                 columns=[
-                    C.frame_col, "id_a", "id_b",
-                    "interaction_id", "interaction_start", "interaction_end",
+                    C.frame_col,
+                    "id_a",
+                    "id_b",
+                    "interaction_id",
+                    "interaction_start",
+                    "interaction_end",
                 ]
             )
 
@@ -306,8 +318,12 @@ class PairInteractionFilter:
         """Detect interaction segments for a single pair."""
         p = self.params
 
-        df_a = gseq[gseq[C.id_col] == id_a][[order_col, x_col, y_col, C.orientation_col]]
-        df_b = gseq[gseq[C.id_col] == id_b][[order_col, x_col, y_col, C.orientation_col]]
+        df_a = gseq[gseq[C.id_col] == id_a][
+            [order_col, x_col, y_col, C.orientation_col]
+        ]
+        df_b = gseq[gseq[C.id_col] == id_b][
+            [order_col, x_col, y_col, C.orientation_col]
+        ]
 
         if df_a.empty or df_b.empty:
             return None
@@ -332,8 +348,12 @@ class PairInteractionFilter:
 
         # Per-frame interaction condition
         meets_cond = _check_interaction_conditions(
-            x_a, y_a, orient_a,
-            x_b, y_b, orient_b,
+            x_a,
+            y_a,
+            orient_a,
+            x_b,
+            y_b,
+            orient_b,
             shift_dist=shift_dist,
             max_dist=max_dist,
             max_inv_orientation_diff_deg=p.max_inv_orientation_diff_deg,
@@ -342,7 +362,9 @@ class PairInteractionFilter:
 
         # Morphological filtering
         if p.morphological_structure_size > 0:
-            meets_cond = _remove_bool_islands(meets_cond, p.morphological_structure_size)
+            meets_cond = _remove_bool_islands(
+                meets_cond, p.morphological_structure_size
+            )
 
         # Find long runs
         runs = _find_long_true_runs(
@@ -359,13 +381,17 @@ class PairInteractionFilter:
         for seg_id, (start_idx, end_idx) in enumerate(runs):
             seg_frames = frames[start_idx:end_idx]
             for f in seg_frames:
-                rows.append({
-                    C.frame_col: int(f),
-                    "id_a": id_a,
-                    "id_b": id_b,
-                    "interaction_id": seg_id,
-                    "interaction_start": int(frames[start_idx]),
-                    "interaction_end": int(frames[min(end_idx - 1, len(frames) - 1)]),
-                })
+                rows.append(
+                    {
+                        C.frame_col: int(f),
+                        "id_a": id_a,
+                        "id_b": id_b,
+                        "interaction_id": seg_id,
+                        "interaction_start": int(frames[start_idx]),
+                        "interaction_end": int(
+                            frames[min(end_idx - 1, len(frames) - 1)]
+                        ),
+                    }
+                )
 
         return pd.DataFrame(rows)

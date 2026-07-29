@@ -15,7 +15,12 @@ from scipy.spatial.distance import pdist
 
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import DependencyLookup, InputStream, Params, TrackInputs
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    InputStream,
+    Params,
+    TrackInputs,
+)
 
 from .helpers import ensure_columns
 from .registry import register_feature

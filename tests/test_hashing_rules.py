@@ -130,7 +130,9 @@ def test_every_feature_declares_consumed_roots() -> None:
         for cls in FEATURES.values()
         if not hasattr(cls, "consumed_roots")
     ]
-    assert not missing, f"features with no consumed_roots declaration: {sorted(missing)}"
+    assert not missing, (
+        f"features with no consumed_roots declaration: {sorted(missing)}"
+    )
 
 
 # Names a feature calls to reach media past its inputs. Closed, and therefore

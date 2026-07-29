@@ -209,7 +209,13 @@ class InteractionCropPipeline:
         resolved = self._ds.resolve_media(group, sequence)
 
         # Group by interaction segment
-        required = ["id_a", "id_b", "interaction_id", "interaction_start", "interaction_end"]
+        required = [
+            "id_a",
+            "id_b",
+            "interaction_id",
+            "interaction_start",
+            "interaction_end",
+        ]
         for col in required:
             if col not in df.columns:
                 raise ValueError(
@@ -307,7 +313,9 @@ class InteractionCropPipeline:
             angle_is_degrees = infer_angle_degrees(df_target[p.angle_col])
 
         # Pre-compute geometry for all frames (vectorized)
-        angles, centers_x, centers_y = self._precompute_geometry(df_target, angle_is_degrees)
+        angles, centers_x, centers_y = self._precompute_geometry(
+            df_target, angle_is_degrees
+        )
         frame_indices = df_target[C.frame_col].to_numpy(dtype=int)
         frame_set = set(frame_indices.tolist())
         frame_to_geom_idx = {int(f): i for i, f in enumerate(frame_indices)}
@@ -317,15 +325,23 @@ class InteractionCropPipeline:
         if not p.grayscale:
             try:
                 writer = FFmpegVideoWriter(
-                    video_out, crop_w, crop_h, fps=output_fps,
-                    hwaccel=True, preset="fast",
+                    video_out,
+                    crop_w,
+                    crop_h,
+                    fps=output_fps,
+                    hwaccel=True,
+                    preset="fast",
                 )
             except (RuntimeError, MediaProbeError):
                 writer = create_video_writer(video_out, output_fps, (crop_w, crop_h))
         else:
             codec = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(
-                str(video_out), codec, float(output_fps), (crop_w, crop_h), isColor=False
+                str(video_out),
+                codec,
+                float(output_fps),
+                (crop_w, crop_h),
+                isColor=False,
             )
 
         n_written = 0
@@ -392,20 +408,26 @@ class InteractionCropPipeline:
             ny = df_target[f"{p.pose.y_prefix}{neck_idx}"].to_numpy(dtype=np.float64)
             tx = df_target[f"{p.pose.x_prefix}{tail_idx}"].to_numpy(dtype=np.float64)
             ty = df_target[f"{p.pose.y_prefix}{tail_idx}"].to_numpy(dtype=np.float64)
-            valid = np.isfinite(nx) & np.isfinite(ny) & np.isfinite(tx) & np.isfinite(ty)
+            valid = (
+                np.isfinite(nx) & np.isfinite(ny) & np.isfinite(tx) & np.isfinite(ty)
+            )
             angles[valid] = np.arctan2(ny[valid] - ty[valid], nx[valid] - tx[valid])
 
         # --- Centers ---
         mode = p.center_mode
         if mode == "default":
-            xs = np.column_stack([
-                df_target[f"{p.pose.x_prefix}{i}"].to_numpy(dtype=np.float64)
-                for i in range(p.pose.pose_n)
-            ])
-            ys = np.column_stack([
-                df_target[f"{p.pose.y_prefix}{i}"].to_numpy(dtype=np.float64)
-                for i in range(p.pose.pose_n)
-            ])
+            xs = np.column_stack(
+                [
+                    df_target[f"{p.pose.x_prefix}{i}"].to_numpy(dtype=np.float64)
+                    for i in range(p.pose.pose_n)
+                ]
+            )
+            ys = np.column_stack(
+                [
+                    df_target[f"{p.pose.y_prefix}{i}"].to_numpy(dtype=np.float64)
+                    for i in range(p.pose.pose_n)
+                ]
+            )
             cx = np.nanmean(xs, axis=1)
             cy = np.nanmean(ys, axis=1)
         elif mode == "pose0" or isinstance(mode, int):
@@ -446,7 +468,8 @@ class InteractionCropPipeline:
             pre_crop_size = int(max(crop_w, crop_h) * p.margin_factor)
 
             pre_crop = safe_crop_with_padding(
-                frame, (int(cx), int(cy)),
+                frame,
+                (int(cx), int(cy)),
                 (pre_crop_size, pre_crop_size),
                 pad_value=p.background_color,
             )
@@ -454,19 +477,23 @@ class InteractionCropPipeline:
             M = cv2.getRotationMatrix2D(pre_center, angle_deg, 1.0)
             bv = (p.background_color,) * (n_channels if n_channels > 1 else 1)
             rotated = cv2.warpAffine(
-                pre_crop, M, (pre_crop_size, pre_crop_size),
+                pre_crop,
+                M,
+                (pre_crop_size, pre_crop_size),
                 flags=p.interpolation,
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=bv,
             )
             crop = safe_crop_with_padding(
-                rotated, (pre_crop_size // 2, pre_crop_size // 2),
+                rotated,
+                (pre_crop_size // 2, pre_crop_size // 2),
                 (crop_w, crop_h),
                 pad_value=p.background_color,
             )
         else:
             crop = safe_crop_with_padding(
-                frame, (int(cx), int(cy)),
+                frame,
+                (int(cx), int(cy)),
                 (crop_w, crop_h),
                 pad_value=p.background_color,
             )
@@ -475,9 +502,14 @@ class InteractionCropPipeline:
         if p.body_mask:
             mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
             cv2.ellipse(
-                mask, (crop_w // 2, crop_h // 2),
+                mask,
+                (crop_w // 2, crop_h // 2),
                 (p.body_mask_length_px // 2, p.body_mask_width_px // 2),
-                0, 0, 360, 255, -1,
+                0,
+                0,
+                360,
+                255,
+                -1,
             )
             if crop.ndim == 3:
                 crop = cv2.bitwise_and(crop, crop, mask=mask)

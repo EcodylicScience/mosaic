@@ -215,7 +215,9 @@ class GlobalIdentityModel:
                 continue
             if len(imgs) > p.max_images_per_identity:
                 rng = np.random.default_rng(42)
-                indices = rng.choice(len(imgs), p.max_images_per_identity, replace=False)
+                indices = rng.choice(
+                    len(imgs), p.max_images_per_identity, replace=False
+                )
                 imgs = [imgs[i] for i in indices]
             print(
                 f"[identity-model]   {identity_names[label_idx]}: {len(imgs)} images",
@@ -342,16 +344,12 @@ class GlobalIdentityModel:
             group_set: set[str] = set()
             entry_keys = self._iter_entry_keys(inputs)
             for entry_key in entry_keys:
-                group = (
-                    entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
-                )
+                group = entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
                 group_set.add(group)
             identity_names = sorted(group_set)
             name_to_label = {name: i for i, name in enumerate(identity_names)}
             for entry_key in entry_keys:
-                group = (
-                    entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
-                )
+                group = entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
                 if group in name_to_label:
                     seq_to_label[entry_key] = name_to_label[group]
         else:
@@ -371,9 +369,7 @@ class GlobalIdentityModel:
             keys.append(entry_key)
         return keys
 
-    def _load_crop_frames(
-        self, entry_key: str, df: pd.DataFrame
-    ) -> list[np.ndarray]:
+    def _load_crop_frames(self, entry_key: str, df: pd.DataFrame) -> list[np.ndarray]:
         """Load egocentric crop frame images for a sequence.
 
         Resolves the EgocentricCrop output directory and reads every PNG

@@ -171,7 +171,9 @@ class ExtractLabeledTemplates:
             if provenance_path.exists():
                 self._provenance = pd.read_parquet(provenance_path)
                 for _, row in self._provenance.iterrows():
-                    self._sequence_splits[(row["group"], row["sequence"])] = row["split"]
+                    self._sequence_splits[(row["group"], row["sequence"])] = row[
+                        "split"
+                    ]
 
             return True
         return False

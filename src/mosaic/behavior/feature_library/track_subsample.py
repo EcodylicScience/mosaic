@@ -22,6 +22,7 @@ Example::
     )
     ds.run_feature(crop)
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -210,9 +211,7 @@ class TrackSubsample:
         stride = max(1, len(df) // target_frames)
         return df.iloc[::stride].head(target_frames).reset_index(drop=True)
 
-    def _kmeans_seeds(
-        self, df: pd.DataFrame, n_clusters: int
-    ) -> list[int] | None:
+    def _kmeans_seeds(self, df: pd.DataFrame, n_clusters: int) -> list[int] | None:
         """Pick `n_clusters` seed row indices via k-means on canonical pose.
 
         Returns row positions in `df` (not `frame` values), or None when the
@@ -270,9 +269,9 @@ class TrackSubsample:
 
         from sklearn.cluster import KMeans
 
-        km = KMeans(
-            n_clusters=n_clusters, random_state=p.seed, n_init="auto"
-        ).fit(feats)
+        km = KMeans(n_clusters=n_clusters, random_state=p.seed, n_init="auto").fit(
+            feats
+        )
 
         chosen_pos: list[int] = []
         for c in range(n_clusters):

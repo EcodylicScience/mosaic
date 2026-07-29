@@ -17,7 +17,14 @@ from scipy.ndimage import gaussian_filter1d
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, NNResult, Params, Result
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    Inputs,
+    InputStream,
+    NNResult,
+    Params,
+    Result,
+)
 
 from .helpers import feature_columns
 from .registry import register_feature

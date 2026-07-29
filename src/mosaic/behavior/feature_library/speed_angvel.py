@@ -245,9 +245,7 @@ class SpeedAngvel:
         if step_size is not None:
             out["speed_step"] = _compute_speed(x, y, step=step_size, **dt_kw)
             if angle is not None:
-                out["angvel_step"] = _compute_angvel(
-                    angle, step=step_size, **dt_kw
-                )
+                out["angvel_step"] = _compute_angvel(angle, step=step_size, **dt_kw)
 
         meta = C.meta_set() & set(sub.columns)
         return out.join(sub[sorted(meta)])

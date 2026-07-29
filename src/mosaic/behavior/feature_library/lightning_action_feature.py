@@ -263,9 +263,7 @@ class LightningActionFeature:
 
             # Persist trained model to a temp location (save_state copies to run_root)
             self._model_dir = Path(tempfile.mkdtemp(prefix="la_model_"))
-            shutil.copytree(
-                output_dir, self._model_dir / "model", dirs_exist_ok=True
-            )
+            shutil.copytree(output_dir, self._model_dir / "model", dirs_exist_ok=True)
             self._la_model = Model.from_dir(str(self._model_dir / "model"))
             self._config = config
 
@@ -417,9 +415,7 @@ class LightningActionFeature:
 
     # --- Helpers ---
 
-    def _load_bundle(
-        self, bundle: LightningActionModelBundle, base_dir: Path
-    ) -> None:
+    def _load_bundle(self, bundle: LightningActionModelBundle, base_dir: Path) -> None:
         self._feature_columns = bundle["feature_columns"]
         self._classes = bundle["classes"]
         self._class_names = bundle["class_names"]
@@ -446,15 +442,11 @@ class LightningActionFeature:
             split_df = split_df.reset_index(drop=True)
 
             # Write features CSV
-            split_df[feat_cols].to_csv(
-                features_dir / f"{split_name}.csv", index=False
-            )
+            split_df[feat_cols].to_csv(features_dir / f"{split_name}.csv", index=False)
 
             # Write labels CSV (one-hot encoded)
             label_vals = split_df["label"].values
-            one_hot = np.zeros(
-                (len(label_vals), len(self._classes)), dtype=int
-            )
+            one_hot = np.zeros((len(label_vals), len(self._classes)), dtype=int)
             for i, cls in enumerate(self._classes):
                 one_hot[:, i] = (label_vals == cls).astype(int)
             label_df = pd.DataFrame(one_hot, columns=self._class_names)

@@ -90,9 +90,7 @@ class XgboostFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(GlobalModelParams[XgboostModelArtifact]):
-        model: XgboostModelArtifact | None = Field(
-            default_factory=XgboostModelArtifact
-        )
+        model: XgboostModelArtifact | None = Field(default_factory=XgboostModelArtifact)
         strategy: Literal["multiclass", "one_vs_rest"] = "multiclass"
         decision_threshold: float | Mapping[int, float] | None = None
         default_class: int
@@ -135,9 +133,7 @@ class XgboostFeature:
         # Branch 1: cached model in run_root
         cached_path = run_root / "xgboost_model.joblib"
         if cached_path.exists():
-            bundle: XgboostModelBundle = XgboostModelArtifact().from_path(
-                cached_path
-            )
+            bundle: XgboostModelBundle = XgboostModelArtifact().from_path(cached_path)
             self._model = bundle["model"]
             self._feature_columns = bundle["feature_columns"]
             self._classes = bundle["classes"]
@@ -233,9 +229,7 @@ class XgboostFeature:
                 eval_metric="mlogloss",
             )
             if self.params.class_weight == "balanced":
-                class_counts = np.bincount(
-                    y_train, minlength=max(self._classes) + 1
-                )
+                class_counts = np.bincount(y_train, minlength=max(self._classes) + 1)
                 weights = np.where(
                     class_counts > 0,
                     len(y_train) / (len(self._classes) * class_counts),
@@ -283,9 +277,9 @@ class XgboostFeature:
                 y_pred: np.ndarray = np.asarray(self._model.predict(x_test))
             else:
                 assert isinstance(self._model, list)
-                test_probs = np.column_stack([
-                    m.predict_proba(x_test)[:, 1] for m in self._model
-                ])
+                test_probs = np.column_stack(
+                    [m.predict_proba(x_test)[:, 1] for m in self._model]
+                )
                 pred_indices = np.argmax(test_probs, axis=1)
                 y_pred = np.array(
                     [self._classes[int(i)] for i in pred_indices], dtype=np.intp
@@ -317,9 +311,9 @@ class XgboostFeature:
             probs = self._model.predict_proba(feat_matrix)
         else:
             assert isinstance(self._model, list)
-            probs = np.column_stack([
-                m.predict_proba(feat_matrix)[:, 1] for m in self._model
-            ])
+            probs = np.column_stack(
+                [m.predict_proba(feat_matrix)[:, 1] for m in self._model]
+            )
 
         # Apply thresholds
         threshold = self.params.decision_threshold
@@ -386,8 +380,6 @@ class XgboostFeature:
         if self._metrics is not None:
             import json
 
-            (run_root / "reports.json").write_text(
-                json.dumps(self._metrics, indent=2)
-            )
+            (run_root / "reports.json").write_text(json.dumps(self._metrics, indent=2))
             summary = pd.DataFrame(self._metrics).T
             summary.to_csv(run_root / "summary.csv")

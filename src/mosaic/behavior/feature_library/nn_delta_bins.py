@@ -9,7 +9,12 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import DependencyLookup, InputStream, Params, TrackInputs
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    InputStream,
+    Params,
+    TrackInputs,
+)
 
 from .helpers import apply_exclude_cols
 from .registry import register_feature

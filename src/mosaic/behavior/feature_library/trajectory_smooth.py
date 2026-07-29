@@ -142,9 +142,7 @@ class TrajectorySmooth:
 
         out_parts = []
         for _, sub in df.groupby(id_col, sort=False):
-            out_parts.append(
-                self._process_one_id(sub.copy(), p, order_col, pose_pairs)
-            )
+            out_parts.append(self._process_one_id(sub.copy(), p, order_col, pose_pairs))
 
         if not out_parts:
             return pd.DataFrame()
@@ -168,11 +166,14 @@ class TrajectorySmooth:
             sub[col] = sub[col].replace([np.inf, -np.inf], np.nan)
 
         # --- Step 1: Bad-frame detection ---
-        if p.speed_threshold is not None and x_col in sub.columns and y_col in sub.columns:
+        if (
+            p.speed_threshold is not None
+            and x_col in sub.columns
+            and y_col in sub.columns
+        ):
             # Convert threshold to units/frame when fps is given
             threshold_per_frame = (
-                p.speed_threshold / p.fps if p.fps is not None
-                else p.speed_threshold
+                p.speed_threshold / p.fps if p.fps is not None else p.speed_threshold
             )
             x = sub[x_col].to_numpy(dtype=float)
             y = sub[y_col].to_numpy(dtype=float)
