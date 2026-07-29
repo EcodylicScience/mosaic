@@ -52,6 +52,7 @@ from .media.facts_columns import (
     series_facts_or_none,
 )
 from .media.probe_row import probe_video_metadata, row_from_facts
+from .media.uniformity import UniformityVerdict, camera_uniformity
 from .schema import (
     TRACK_SCHEMAS,
     TrackSchema,
@@ -2316,6 +2317,51 @@ class Dataset:
         """Read the media index as string-cell records (empty list if absent)."""
         media_root = self.get_root(self.resolve_media_root())
         return _read_media_index(media_root / index_filename)
+
+    def sequence_uniformity(
+        self,
+        group: str,
+        sequence: str,
+        *,
+        order_by_name: Mapping[str, int] | None = None,
+        index_filename: str = "index.csv",
+    ) -> dict[str, UniformityVerdict]:
+        """Which of a sequence's cameras a reader would refuse, under a proposed order.
+
+        Item 6.5's precheck. *order_by_name* is the arrangement to test, mapping
+        a clip's basename to its position exactly as :class:`MediaIndexScope`
+        carries it; ``None`` tests the order the index already holds. Run it
+        against the arrangement a caller is *about* to commit, because a reorder
+        can move a marginal sequence between readable and unreadable with no
+        artifact deleted and nothing else to notice.
+
+        Returns one entry per camera **that has something to report** -- a
+        mismatch a reader would raise on, or clips whose stored facts could not
+        be rebuilt. An empty mapping means every camera agrees and every clip
+        contributed a measurement, which are two different facts a caller should
+        not have to separate itself (see :class:`UniformityVerdict`).
+
+        A read, never a probe: the facts come out of the media index. Reported
+        against the originals, which is what a rearrangement moves; a sequence a
+        reader would open through analysis transcodes has those derived per
+        video, so their uniformity follows the recipe rather than the order.
+        """
+        rows = [
+            row
+            for row in self.read_media_index(index_filename)
+            if str(row.get("group", "")) == group
+            and str(row.get("sequence", "")) == sequence
+        ]
+        by_camera: dict[str, list[Mapping[str, object]]] = {}
+        for row in rows:
+            by_camera.setdefault(str(row.get("camera", "") or ""), []).append(row)
+
+        reported: dict[str, UniformityVerdict] = {}
+        for camera, camera_rows in sorted(by_camera.items()):
+            verdict = camera_uniformity(camera_rows, order_by_name=order_by_name)
+            if verdict.mismatch is not None or not verdict.established:
+                reported[camera] = verdict
+        return reported
 
     def reprobe_media(
         self, *, apply: bool, skip_unreadable: bool = False
