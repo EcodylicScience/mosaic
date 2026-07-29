@@ -7,6 +7,60 @@ of a diff to interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.4.0 — M3, source identity
+
+**A new file per source root: `<root>/sequences.csv`.** One row per sequence,
+holding the composition hash of what that sequence is made of — the ordered video
+uids for `media_raw`, the raw-file checksums for `tracks_raw`. Written by the
+four index writers as a projection of the index they just committed, and read
+through `read_sequence_index`. Absent reads as empty, so a dataset that has never
+been re-indexed behaves exactly as before.
+
+**And one per dataset: `<base_dir>/sequences.csv`.** A sequence's *label*, as
+distinct from its token. `Dataset.display_name` / `set_display_name` /
+`display_names` are the surface; relabelling touches this file and nothing else,
+so it cannot move a directory or invalidate a run. `(group, sequence)` remains
+what every filename, directory and index join key is built from.
+
+**Identifiers move for one population.** A `scope_dependent` feature that
+declares it reads a source root now carries that root's per-entry composition in
+its identifier (`FEATURE_IDENTITY_SCHEME` 3 → 4). No feature in the toolkit is in
+that population today — the eight scope-dependent features all read tables — so
+in practice nothing on disk re-derives. The golden corpus moved zero lines.
+
+Separately, `train` and `infer` identifiers move **only** where a model was
+handed in as a bare filesystem path. A path is a mutable key: swapping the
+weights reused the identifier, and moving unchanged weights minted a new one.
+Both are now named by the weights' content digest instead. A model referenced by
+its training `run_id` is unaffected. `TRACKS_IDENTITY_SCHEME` 1 → 2 for the same
+reason, on inference variants only.
+
+**New columns, all additive.** `assignment_source` on the media index records how
+each row learned its `(group, sequence)`. `consumed_roots` and
+`consumed_composition` on the feature index record what each entry was made from.
+`base_digest` on the trained-model index. Every one reads back `""` on a row that
+predates it.
+
+**Checksums are on by default.** `Dataset.index_tracks_raw` and
+`write_tracks_raw_index` now hash each source file (`compute_md5=True`), because
+the `tracks_raw` composition is over those checksums and an off-by-default column
+left every sequence's composition unestablishable. A digest is carried forward
+when path, size and mtime all match, so a re-index re-hashes only what changed;
+`mosaic index-tracks --no-md5` opts out and accepts an unestablished composition.
+
+**Imgstores now carry an identity.** A store's `video_uuid` is its
+`__store.uuid`, marked `identity_scheme = "imgstore/1"` so a reader can tell a
+declared identity from a measured one. It is a mint, not a derivation: it cannot
+be re-derived, so a re-probe cannot audit it, and chunks edited in place go
+undetected. Existing indexes pick it up through `index_media` /
+`write_media_index`, not through `reprobe-media`. Transcoding a store is now
+refused by name rather than by accident.
+
+**Contract surface.** `MEDIA_INDEX_COLUMNS` gained `assignment_source`, and
+mosaic-api imports that list in six test modules. `resolve_model` now returns a
+`ResolvedModel` record rather than a `(path, run_id)` tuple; mosaic-api does not
+import it. Nothing else on the five-import contract surface moved.
+
 ## 0.3.0 — M2, versioned tracks
 
 **Tracks tables moved.** A standardized table now lives at
