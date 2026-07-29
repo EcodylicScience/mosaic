@@ -448,6 +448,67 @@ def test_a_reorder_produces_zero_re_encodes(
     assert after_links == before_links, "a reorder moved a derivative link"
 
 
+def test_reverting_the_break_leaves_every_other_cell_and_link_intact(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """The reverse migration for item 7.1's ``[break]``, which is: revert the code.
+
+    7.1 renamed and relocated every derivative, and the rollback rule says a
+    ``[break]`` ships its reverse migration with a test. The migration the
+    milestone sketched -- carrying the old positional name in a column -- is not
+    what shipped, and should not: it would be dead weight on the one index the
+    pruner has to classify. What shipped is additive, and this is the check that
+    says so.
+
+    Reverted code reads this index through a schema with no ``recipe_hash``, so
+    a round-trip through it drops that cell and nothing else. Every other cell
+    survives byte-identical, and the forward link still resolves -- a link cell
+    is a media-root-relative path string, which reverted code anchors the same
+    way, and no file is moved by a revert.
+
+    What a revert does *not* undo is the files: they keep their content-addressed
+    names, which reverted code will not produce. `scripts/clear_transcode_
+    derivatives.py` plus a re-run is the migration in that direction, and a
+    revert also reintroduces 7.2's path-keyed link matching -- a known defect,
+    which is the one way this differs from the additive break in M2.
+    """
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    transcode_root = ds.get_root("media") / "transcode"
+    transcode_root.mkdir(parents=True, exist_ok=True)
+    derivative = transcode_root / "some-uuid.recipe01.analysis.mp4"
+    _ = derivative.write_bytes(b"stub")
+    media_index = ds.get_root("media") / "index.csv"
+    row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    row.update(
+        {
+            "name": derivative.name,
+            "group": "g",
+            "sequence": "s",
+            "abs_path": ds.relative_to_root(str(derivative)),
+            "source_path": "s/vfr.mp4",
+            "source_video_uuid": "some-uuid",
+            "recipe_hash": "recipe01",
+            "video_order": 2,
+            # A comma-bearing JSON cell is what a careless rewrite mangles.
+            "media_facts": '{"video_uuid": "some-uuid", "frame_count": 6}',
+        }
+    )
+    write_media_index_rows(media_index, frame_from_rows([row]))
+    before = {k: v for k, v in read_media_index(media_index)[0].items()}
+
+    # What reverted code sees: the same schema minus the column 7.1 added.
+    reverted_columns = [c for c in MEDIA_INDEX_COLUMNS if c != "recipe_hash"]
+    frame = frame_from_rows([dict(before)])[reverted_columns]
+    frame.to_csv(media_index, index=False)
+
+    after = {k: v for k, v in read_media_index(media_index)[0].items()}
+    assert "recipe_hash" not in after, "the round-trip did not model a revert"
+    assert after == {k: v for k, v in before.items() if k != "recipe_hash"}
+    assert ds.resolve_path(after["abs_path"]).exists(), (
+        "the derivative stopped resolving"
+    )
+
+
 def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> None:
     """With one media root the derivative index *is* the originals index.
 

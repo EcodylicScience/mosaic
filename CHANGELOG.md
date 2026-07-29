@@ -9,6 +9,44 @@ message of their branch, and for both the answer was **nothing**.
 
 ## 0.4.0 — M3, source identity
 
+**Every transcode derivative was renamed and relocated.** A derivative now lives
+at `media/transcode/<video_uuid>.<recipe_hash>.<target>.mp4`, named for the video
+it came from and the recipe that produced it. It used to be named for the video's
+*position* within its sequence, directly under the media root — so reordering two
+videos renamed both and re-encoded both, in place and without a transaction, and
+a crash mid-loop left an index row pointing at another video's frames. The suffix
+was additionally empty for a single-source sequence, so adding a second video
+renamed the first one's derivative. Both are gone: a reorder now touches no
+derivative file at all, and the transcode job is idempotent and skippable.
+
+This is the most observable thing in the release. **A dataset transcoded before
+it holds files no current name resolves to**, and clearing them is the whole
+migration — `scripts/clear_transcode_derivatives.py`, dry-run by default, then a
+re-run of the transcode job rebuilds whatever is wanted. Nothing is lost by
+waiting; the old files are simply unreachable.
+
+`media/index.csv` gained `recipe_hash`, additively, and reverting the release is
+the reverse migration for the rows: reverted code reads the index through a
+schema without that column, drops that cell and no other, and every forward link
+still resolves. The *files* are the half a revert does not undo, and a revert
+also reintroduces the path-keyed derivative matching this release replaced with
+uuid-keyed matching — a known defect, which is the one way this differs from M2's
+purely additive break.
+
+**New: `mosaic prune-media`.** Deletes transcode derivatives that no forward link
+reaches — the ones a retuned recipe leaves stranded. Dry-run by default, with an
+age window so it cannot race a running encode, and it refuses to delete a
+derivative whose source is no longer indexed, since that may be the last copy of
+an archived video. `--relink` repairs instead of deleting where a current recipe
+would reproduce the file. It does not replace the sweep script above: pre-rename
+derivatives sit outside its blast radius, and the two reaches are disjoint.
+
+**Transcoding is now refused on a dataset with no `media_raw` root.** There,
+`media/index.csv` *is* the originals index, so the job was appending derivative
+rows into it and writing links that routing then ignored — wasted work, and an
+originals index left holding rows only `recipe_hash` distinguished from
+originals.
+
 **A new file per source root: `<root>/sequences.csv`.** One row per sequence,
 holding the composition hash of what that sequence is made of — the ordered video
 uids for `media_raw`, the raw-file checksums for `tracks_raw`. Written by the

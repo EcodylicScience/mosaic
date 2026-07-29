@@ -20,6 +20,16 @@ identity is persisted outside this dataset) and the crop visualizers'
 
 Dry run unless ``--apply``. A timestamped backup precedes any write, matching
 the re-probe command, because this rewrites a production index in place.
+
+**Not the same tool as ``mosaic prune-media``, and their reach is disjoint.**
+This is a migration: it clears *every* derivative unconditionally, and its
+correctness argument is that after the naming change nothing here is reachable
+by construction -- true exactly once. The pruner is selective and permanent: it
+deletes only what no forward link names, and only under the kind directory.
+Which matters because the pre-rename derivatives this exists for sit *directly
+under the media root*, as siblings of ``index.csv`` and ``frames/``, usually
+with live links still pointing at them -- outside the pruner's blast radius by
+design. Neither tool subsumes the other.
 """
 
 from __future__ import annotations
@@ -58,18 +68,26 @@ class ClearReport:
 
 def clear_transcode_derivatives(dataset: Dataset, *, apply: bool) -> ClearReport:
     """Clear every transcode derivative the dataset records or holds."""
+    declined = ClearReport(
+        considered=False,
+        applied=False,
+        links_cleared=0,
+        rows_removed=0,
+        files_removed=0,
+    )
     # No distinct derivative index means no derivatives to clear, and the media
     # index is the originals index -- touching it would destroy curated data.
     if dataset.resolve_media_root() != "media_raw":
-        return ClearReport(
-            considered=False,
-            applied=False,
-            links_cleared=0,
-            rows_removed=0,
-            files_removed=0,
-        )
-
+        return declined
     originals_index = dataset.get_root("media_raw") / "index.csv"
+    # The root *key* being set is not the same question as the two roots being
+    # two places. A manifest may point both names at one directory -- or at two
+    # spellings of one, through a symlink or a ".." -- and then the "originals"
+    # index and the "derivative" index are one file, which this pass would
+    # rewrite twice: once keeping every row and once truncating it to nothing.
+    # Compared resolved, as the re-probe command does.
+    if dataset.get_root("media").resolve() == dataset.get_root("media_raw").resolve():
+        return declined
     originals = read_media_index(originals_index) if originals_index.exists() else []
 
     links_cleared = 0

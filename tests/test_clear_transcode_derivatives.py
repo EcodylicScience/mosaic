@@ -156,6 +156,49 @@ def test_a_single_root_dataset_is_untouched(single_root_dataset: Dataset) -> Non
     assert (ds.get_root("media") / "index.csv").read_text() == before
 
 
+def test_two_root_names_for_one_directory_are_untouched(tmp_path: Path) -> None:
+    """Set-ness is not the question; being two places is.
+
+    The root-key gate passes here -- ``media_raw`` is set -- but both names
+    resolve to one directory, so the "originals" index and the "derivative"
+    index are one file. Unguarded, this pass rewrites it twice: once keeping
+    every row with its links stripped, then once truncating it to nothing. The
+    originals would be gone from the index and their files deleted.
+    """
+    base = (tmp_path / "dataset").resolve()
+    dataset = Dataset(
+        manifest_path=base / "dataset.yaml",
+        roots={
+            "media": str(base / "media"),
+            # A second spelling of one directory, which is legal in a manifest.
+            "media_raw": str(base / "media" / "." / ".." / "media"),
+        },
+    )
+    dataset.ensure_roots()
+    dataset.save()
+    index_path = dataset.get_root("media") / "index.csv"
+    original = base / "media" / "entry.mp4"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.touch()
+    rows: list[dict[str, object]] = [
+        {
+            "name": "entry.mp4",
+            "group": "g1",
+            "sequence": "entry",
+            "abs_path": dataset.relative_to_root(str(original)),
+            "video_uuid": "U",
+        }
+    ]
+    write_media_index_rows(index_path, frame_from_rows(rows))
+    before = index_path.read_bytes()
+
+    report = clear_transcode_derivatives(dataset, apply=True)
+
+    assert not report.considered
+    assert index_path.read_bytes() == before
+    assert original.exists(), "an original was deleted"
+
+
 def test_dry_run_writes_nothing(transcoded_dataset: Dataset) -> None:
     ds = transcoded_dataset
     before = (ds.get_root("media") / "index.csv").read_text()
