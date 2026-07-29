@@ -38,7 +38,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 from mosaic_media import MediaProbeError
 
@@ -51,6 +50,7 @@ from mosaic.core.pipeline.media_index import (
 )
 from mosaic.core.stored_paths import resolve_stored_path
 
+from .drift import IdentityChange, classify_identity
 from .facts_columns import (
     FACTS_JSON_COLUMN,
     MEDIA_INDEX_COLUMNS,
@@ -74,14 +74,6 @@ UNMEASURED_LINK_COLUMNS = frozenset(
         "recipe_hash",
     }
 )
-
-IdentityChange = Literal[
-    "minted",
-    "unchanged",
-    "content_digest_changed",
-    "video_uuid_changed",
-    "unmintable",
-]
 
 
 class ReprobeAbort(Exception):
@@ -315,51 +307,6 @@ def _facts_cell_is_stale(row: Mapping[str, object]) -> bool:
     return row_facts_or_none(row) is None
 
 
-def _classify(row: Mapping[str, object], probe: ProbeMetadata) -> IdentityChange:
-    """Compare a row's recorded identity against the freshly probed one.
-
-    Absence is tested before divergence and wins: a row that recorded no identity
-    has nothing for the measurement to diverge from, so it is minted, not
-    drifted. Treating an absent value as a differing one would report every row
-    of a pre-identity media index as drift on the one run where a clean report
-    matters.
-
-    **The absence test is split by what the row's regime actually mints**, and
-    that split is not optional. A store carries a uuid (its ``__store.uuid``,
-    open item O5) and never a ``content_digest`` -- there is no elementary stream
-    to hash. Under a single "either is empty" test a store would stay permanently
-    ``unmintable``, so ``reprobe --apply`` could never backfill the uuid onto an
-    already-indexed row. Under a naive fix it would classify ``"minted"`` on
-    every run, because ``recorded_digest`` is empty forever, and
-    :func:`_needs_patch` would then rewrite the index and drop a backup on every
-    run without bound -- the failure that function's docstring already warns
-    about. Branching on whether the *probe* produced a digest gives each regime
-    its own settled state.
-    """
-    if not probe["video_uuid"]:
-        # No identity at all: a store whose metadata carries no uuid, or a probe
-        # that produced nothing. Neither has anything to mint or compare.
-        return "unmintable"
-    recorded_uuid = read_link_cell(row, "video_uuid")
-    if not probe["content_digest"]:
-        # A store: uuid-only. It settles on the uuid alone, and a re-recorded
-        # store (a fresh mint in the same directory) is detected. Chunks edited
-        # in place are not -- see STORE_IDENTITY_SCHEME, which exists to say so.
-        if not recorded_uuid:
-            return "minted"
-        if recorded_uuid != probe["video_uuid"]:
-            return "video_uuid_changed"
-        return "unchanged"
-    recorded_digest = read_link_cell(row, "content_digest")
-    if not recorded_uuid or not recorded_digest:
-        return "minted"
-    if recorded_digest != probe["content_digest"]:
-        return "content_digest_changed"
-    if recorded_uuid != probe["video_uuid"]:
-        return "video_uuid_changed"
-    return "unchanged"
-
-
 def _needs_patch(row: Mapping[str, object], change: IdentityChange) -> bool:
     """True when this row's line would not be written back identically.
 
@@ -500,7 +447,7 @@ def _probe_media_index(
             )
             continue
         stat_result = path.stat()
-        change = _classify(row, probe)
+        change = classify_identity(row, probe)
         probed.append(
             ProbedRow(
                 row_number=row_number,

@@ -47,7 +47,9 @@ from .index import (
 )
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
+from .fit_scope import write_fit_scope
 from .resolve import resolution_payload, resolve_references
+from .sequence_index import encode_entry_composition
 from .types import (
     COLUMNS,
     ArtifactSpec,
@@ -384,15 +386,14 @@ def entry_composition(feature: Feature, scope: Scope, entry: tuple[str, str]) ->
     Empty means "nothing recorded", which covers a feature that declares no root
     and a root that has recorded no composition for this entry. Both mean the
     same thing to a reader: draw no conclusion.
+
+    The encoding lives in :func:`encode_entry_composition` rather than here,
+    because item 5.1's tracks half writes the same cell on the tracks row and two
+    spellings of one answer would be two answers to item 6.2's walk.
     """
     roots = sorted({root for root in feature.consumed_roots if root})
-    found = [(root, scope.composition_of(entry, root)) for root in roots]
-    present = [(root, digest) for root, digest in found if digest]
-    if not present:
-        return ""
-    if len(present) == 1:
-        return present[0][1]
-    return ",".join(f"{root}={digest}" for root, digest in present)
+    recorded = {root: scope.composition_of(entry, root) for root in roots}
+    return encode_entry_composition(recorded, roots)
 
 
 def _scope_term(feature: Feature, scope: Scope) -> list[list[object]]:
@@ -739,15 +740,22 @@ def _run_feature_impl(
             "_params": json_ready(feature.params),
             "_inputs": feature.inputs.model_dump(),
             "_frame_range": [frame_start, frame_end],
-            # The resolved fit scope, which was previously hashed and discarded,
-            # leaving a scope_dependent run's training set unrecoverable from
-            # disk. Sorted for a stable diff, and a precondition for the
+            # The scope of **this invocation**, which was previously hashed and
+            # discarded. Sorted for a stable diff, and a precondition for the
             # reverse-dependency index in stage 6.1.
             #
-            # Meaningful only for scope_dependent = True runs. A scope-free
-            # feature gets one run_id for every scope, so two differently scoped
-            # invocations share this file and the value is "whichever ran last"
-            # rather than the union -- which is not what an edge walk needs.
+            # Not the fit scope, despite the key's name, and the distinction is
+            # item 5.3's. This block runs unconditionally and *before* the fit
+            # gate below, so for a scope-free feature -- one run_id for every
+            # scope, so two differently scoped invocations share this file -- the
+            # value is "whichever ran last" rather than the union or the training
+            # set. `fit_scope.json` is written only when a fit actually ran and
+            # is the answer to "what was this state trained on"; read it through
+            # `fit_and_apply_scopes`, which pairs it with the index rows that are
+            # the apply record.
+            #
+            # The key is not renamed: a rule test asserts this spelling, and the
+            # value is honest for the question it does answer.
             "_scope": {
                 "scope_dependent": feature.scope_dependent,
                 "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
@@ -844,6 +852,13 @@ def _run_feature_impl(
 
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
+        # Item 5.3, and the placement is the item. Written here rather than
+        # beside params.json because only this branch means a fit actually ran:
+        # params.json is written on every invocation, before load_state, so its
+        # `_scope` is the scope of whichever run came last. For a params-level
+        # fitter -- scope-free, so every apply scope shares one run root -- those
+        # two are different answers, and this is the one that stays true.
+        write_fit_scope(run_root, scope, scope_dependent=feature.scope_dependent)
 
     # Apply phase — index rows are flushed periodically for interrupt recovery
     _IDX_FLUSH_EVERY = 10

@@ -39,6 +39,7 @@ from .helpers import (
     to_safe_name,
     validate_entry_name,
 )
+from .media.drift import MeasurementOrigin, MediaDrift, classify_identity
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     ProbeMetadata,
@@ -476,6 +477,11 @@ class ProbedEntry:
     ``sync_uuid`` are store *facts* read from imgstore metadata (empty for a
     plain video); deriving the sequence identity from them is the caller's job,
     so this stays identity-free.
+
+    ``origin`` says where ``probe`` came from, and it is load-bearing rather than
+    diagnostic: item 5.2's drift check cannot tell a file whose bytes moved from a
+    caller injecting a measurement of a different file without it. Last, with a
+    default, so the imgstore site's keyword arguments are unaffected.
     """
 
     path: Path
@@ -484,6 +490,7 @@ class ProbedEntry:
     media_type: str
     camera: str = ""
     sync_uuid: str = ""
+    origin: MeasurementOrigin = "probed"
 
 
 @dataclass(frozen=True)
@@ -534,10 +541,24 @@ class MediaIndexDisagreement:
 
 @dataclass(frozen=True)
 class MediaIndexResult:
-    """The written index path plus any stale-override disagreements."""
+    """The written index path, plus what the write noticed about its own inputs.
+
+    ``disagreements`` are stale overrides: a caller injected a measurement of a
+    different file than the row described. ``drift`` is item 5.2's check -- a
+    file whose bytes moved under a stable path, found because the write re-probed
+    it and still held what the row recorded. The two are kept apart because they
+    call for different responses: one is an ordinary re-upload, the other is a
+    source changing outside the system.
+
+    Both are reported and neither aborts. By the time this runs the file is
+    already in place, and refusing the write would leave the index describing a
+    file that no longer exists -- strictly worse. Blocking a *derivation* from a
+    changed source is item 6.2's job, and it fires from ``run_feature``.
+    """
 
     index_path: Path
     disagreements: list[MediaIndexDisagreement]
+    drift: list[MediaDrift] = field(default_factory=list)
 
 
 @dataclass
@@ -1568,19 +1589,25 @@ class Dataset:
                 injected = facts_map.get(p.name)
                 if injected is not None:
                     results.append(
-                        ProbedEntry(p, st, row_from_facts(injected), "video")
+                        ProbedEntry(
+                            p, st, row_from_facts(injected), "video", origin="injected"
+                        )
                     )
                     continue
                 cached = cache.get(p.resolve())
                 if cached is not None:
-                    results.append(ProbedEntry(p, st, row_from_facts(cached), "video"))
+                    results.append(
+                        ProbedEntry(
+                            p, st, row_from_facts(cached), "video", origin="cached"
+                        )
+                    )
                     continue
                 try:
                     probe = futures[p].result()
                 except (OSError, MediaProbeError) as e:
                     print(f"[WARN] skip {p}: {e}", file=sys.stderr)
                     continue
-                results.append(ProbedEntry(p, st, probe, "video"))
+                results.append(ProbedEntry(p, st, probe, "video", origin="probed"))
 
         # One entry per imgstore directory (one camera of a recording). The
         # Motif camera_serial / synchronizationuuid ride along as store facts;
@@ -1903,38 +1930,24 @@ class Dataset:
         # the prior order they carry -- happens again inside the lock below.
         existing = _read_media_index(index_path)
 
-        # A scoped file's prior stored uuid, by basename -- the rows this write
-        # overrides. Used to detect a stale override: a file whose stored uuid
-        # differs from the one now injected is no longer the file the injected
-        # facts describe.
+        # The prior row for each scoped file, and -- when its file has not moved
+        # -- the measurement that row already holds. Built in one pass, on one
+        # key, because they answer two halves of the same question.
         #
-        # A bare basename is not unique across scopes: two sequences each holding
-        # a "video.mp4" collide, and the survivor would be compared against the
-        # other sequence's file. This report is advisory, so an ambiguous
-        # basename simply carries no prior uuid and reports nothing, rather than
-        # naming a disagreement between two unrelated files.
-        prior_uuid_by_name: dict[str, str] = {}
-        ambiguous_names: set[str] = set()
-        for row in existing:
-            if not self._row_under_dirs(row, scope_dirs):
-                continue
-            name = Path(str(row["abs_path"])).name
-            if name in prior_uuid_by_name or name in ambiguous_names:
-                ambiguous_names.add(name)
-                _ = prior_uuid_by_name.pop(name, None)
-                continue
-            prior_uuid_by_name[name] = media_row_uuid(row)
-
-        # A prior row's measurement, reusable when the file it describes has not
-        # moved. Keyed on the resolved path rather than the basename: two
-        # sequences can each hold a "video.mp4", and where the uuid map above
-        # degrades to reporting nothing, a basename-keyed cache would serve one
-        # sequence's measurement for the other sequence's file.
+        # Keyed on the **resolved path**, never the basename. Two sequences can
+        # each hold a "video.mp4", and a basename key would serve one sequence's
+        # measurement for the other's file. This replaces a basename-keyed uuid
+        # map that degraded to reporting nothing on a collision: correct, but it
+        # meant the case most in need of a comparison was the one case that got
+        # none, twenty lines above a cache that was path-keyed for this reason.
         #
-        # This is the WRITE path, which is allowed to be cheap. The audit path
-        # -- reprobe-media -- re-probes unconditionally and is what detects a
-        # file replaced in place on a share. Do not apply this shortcut there:
-        # a cache that skips the probe skips the comparison that IS the check.
+        # The cache is the WRITE path being cheap, and it is allowed to be. The
+        # audit path -- reprobe-media -- re-probes unconditionally and is what
+        # detects a file replaced in place on a share. Do not apply this shortcut
+        # there: a cache that skips the probe skips the comparison that IS the
+        # check. What escapes here is narrower than that sounds -- a replacement
+        # preserving size *and* mtime exactly -- and is recorded in `drift.py`.
+        prior_row_by_path: dict[Path, dict[str, str]] = {}
         cached_facts_by_path: dict[Path, MediaFacts] = {}
         for row in existing:
             if not self._row_under_dirs(row, scope_dirs):
@@ -1942,10 +1955,11 @@ class Dataset:
             stored = read_link_cell(row, "abs_path")
             if not stored:
                 continue
+            resolved = self.resolve_path(stored).resolve()
+            prior_row_by_path[resolved] = dict(row)
             facts = row_facts_or_none(row)
             if facts is None:
                 continue
-            resolved = self.resolve_path(stored).resolve()
             try:
                 stat_result = resolved.stat()
             except OSError:
@@ -1957,6 +1971,7 @@ class Dataset:
             cached_facts_by_path[resolved] = facts
 
         disagreements: list[MediaIndexDisagreement] = []
+        drift: list[MediaDrift] = []
 
         # Probe each scope directory and assign its explicit identity; collect
         # this session's arranged positions keyed (group, sequence, basename).
@@ -1975,16 +1990,47 @@ class Dataset:
                 # A probed imgstore supplies its own camera/sync_uuid from store
                 # metadata (read once in _probe_dir_rows); scope.camera is only
                 # an override for a plain video the caller tags with a camera.
-                injected_uuid = str(entry.probe.get("video_uuid", ""))
-                prior_uuid = prior_uuid_by_name.get(entry.path.name, "")
-                if prior_uuid and injected_uuid and prior_uuid != injected_uuid:
-                    disagreements.append(
-                        MediaIndexDisagreement(
-                            basename=entry.path.name,
-                            prior_uuid=prior_uuid,
-                            injected_uuid=injected_uuid,
-                        )
-                    )
+                #
+                # The same inequality means two different things, and only
+                # `entry.origin` tells them apart. Against an INJECTED
+                # measurement it is a caller describing a different file than the
+                # row did -- an ordinary re-upload, which is what
+                # MediaIndexDisagreement has always reported. Against a PROBED
+                # one it is the bytes having moved under a stable path, which is
+                # drift (item 5.2). A CACHED measurement *is* the stored one, so
+                # comparing it could only ever produce a false positive.
+                prior = prior_row_by_path.get(entry.path.resolve())
+                if prior is not None and entry.origin != "cached":
+                    change = classify_identity(prior, entry.probe)
+                    if change in ("content_digest_changed", "video_uuid_changed"):
+                        if entry.origin == "injected":
+                            disagreements.append(
+                                MediaIndexDisagreement(
+                                    basename=entry.path.name,
+                                    prior_uuid=media_row_uuid(prior),
+                                    injected_uuid=str(
+                                        entry.probe.get("video_uuid", "")
+                                    ),
+                                )
+                            )
+                        else:
+                            drift.append(
+                                MediaDrift(
+                                    stored_path=read_link_cell(prior, "abs_path"),
+                                    resolved_path=entry.path,
+                                    change=change,
+                                    recorded_uuid=media_row_uuid(prior),
+                                    measured_uuid=str(
+                                        entry.probe.get("video_uuid", "")
+                                    ),
+                                    recorded_digest=read_link_cell(
+                                        prior, "content_digest"
+                                    ),
+                                    measured_digest=str(
+                                        entry.probe.get("content_digest", "")
+                                    ),
+                                )
+                            )
                 fresh.append(
                     build_media_index_row(
                         path=entry.path,
@@ -2078,7 +2124,16 @@ class Dataset:
             )
             write_media_index_rows(index_path, frame_from_rows(merged))
         self._write_media_compositions(merged)
-        return MediaIndexResult(index_path=index_path, disagreements=disagreements)
+        for moved in drift:
+            print(
+                f"[write_media_index] drift: {moved.stored_path} "
+                f"({moved.change}) recorded={moved.recorded_uuid or '-'} "
+                f"measured={moved.measured_uuid or '-'}",
+                file=sys.stderr,
+            )
+        return MediaIndexResult(
+            index_path=index_path, disagreements=disagreements, drift=drift
+        )
 
     def _write_media_compositions(self, rows: list[dict[str, object]]) -> None:
         """Project the media rows just committed into ``media_raw/sequences.csv``.

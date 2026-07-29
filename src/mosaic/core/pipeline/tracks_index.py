@@ -37,12 +37,17 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, get_args
 
 import pandas as pd
 
 from mosaic.core.helpers import to_safe_name, validate_entry_name
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.sequence_index import (
+    SourceRoot,
+    encode_entry_composition,
+    read_entry_compositions,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -53,6 +58,7 @@ __all__ = [
     "TRACKS_INDEX_PATH_COLUMNS",
     "TracksIndexRow",
     "adopt_legacy_columns",
+    "consumed_composition_for",
     "consumed_roots_for",
     "encode_source_roots",
     "legacy_view",
@@ -97,6 +103,21 @@ class TracksIndexRow(RunIndexRowBase):
     under ``tracks_raw`` invalidate this?", and because a multi-valued *path*
     cell would need split/rewrite/rejoin support the portability passes do not
     have. Empty means "not establishable", never "none".
+
+    ``consumed_composition`` is what those roots *held* for this entry when the
+    table was written -- item 5.1's tracks half, and the value that closes the one
+    dated gap in the Stage 4 design. ``consumed_source_roots`` answers "which root
+    would a change have to be under?"; only this answers "has it changed?", which
+    is the question item 6.2's walk actually asks. Encoded by
+    :func:`encode_entry_composition`, the same minter the feature row uses.
+
+    **It sits on the row and never in ``run_id``**, and the distinction is forced
+    rather than stylistic. A tracks variant is params-only and scope-free (item
+    3.1): one identity names one recipe covering many sequences, which under one
+    variant legitimately hold *different* compositions. Folding a per-sequence
+    value into the name would rename one recipe's whole directory because one
+    other sequence's source moved -- the same reason a per-frame feature records
+    its composition here rather than in its identifier (rule P2d).
     """
 
     group: str
@@ -108,6 +129,7 @@ class TracksIndexRow(RunIndexRowBase):
     source_md5: str = ""
     consumed_source_roots: str = ""
     n_rows: int = 0
+    consumed_composition: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -396,6 +418,31 @@ def read_tracks_index(ds: Dataset) -> pd.DataFrame:
     return adopt_legacy_columns(raw)
 
 
+def consumed_composition_for(
+    ds: Dataset, group: str, sequence: str, roots: Iterable[str]
+) -> str:
+    """What *roots* recorded for this entry, as one cell -- item 5.1's tracks half.
+
+    Only the **source** roots among *roots* can answer: a composition exists for
+    a root that holds what cannot be recomputed, and ``consumed_source_roots``
+    legitimately names derived ones too (the TREx bridge records ``trex``, the
+    inference bridge ``models``). Filtering against :data:`SourceRoot` rather than
+    against "has a ``sequences.csv``" keeps the answer the same on a dataset whose
+    projection has not been written yet -- absent, not wrong.
+
+    Read per entry rather than per variant, deliberately. One variant covers many
+    sequences and their compositions differ, so there is no per-variant answer to
+    cache. The two small reads this costs sit beside a parquet write and a locked
+    whole-file index append, which dominate them.
+    """
+    source_roots = [root for root in roots if root in get_args(SourceRoot)]
+    if not source_roots:
+        return ""
+    entry = (group, sequence)
+    recorded = read_entry_compositions(ds, [entry]).get(entry, {})
+    return encode_entry_composition(recorded, source_roots)
+
+
 def write_tracks_row(
     ds: Dataset,
     *,
@@ -427,13 +474,18 @@ def write_tracks_row(
     parquet: ``IndexRowBase`` existence-checks an absolute ``abs_path``, which is
     what a ``tracks`` root outside the dataset tree produces.
     """
+    # Validated first, because the composition is looked up by the same key the
+    # row is written under: a lookup on the raw value would miss for the caller
+    # that reads its group off a pandas Series as a numpy scalar.
+    entry_group = validate_entry_name(str(group) if group is not None else "", "group")
+    entry_sequence = validate_entry_name(
+        str(sequence) if sequence is not None else "", "sequence"
+    )
     row = TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=run_id,
-        group=validate_entry_name(str(group) if group is not None else "", "group"),
-        sequence=validate_entry_name(
-            str(sequence) if sequence is not None else "", "sequence"
-        ),
+        group=entry_group,
+        sequence=entry_sequence,
         producer=producer,
         std_format=std_format,
         producer_run_id=producer_run_id,
@@ -441,5 +493,8 @@ def write_tracks_row(
         source_md5=source_md5,
         consumed_source_roots=encode_source_roots(consumed_source_roots),
         n_rows=int(n_rows),
+        consumed_composition=consumed_composition_for(
+            ds, entry_group, entry_sequence, consumed_source_roots
+        ),
     )
     tracks_index(tracks_index_path(ds)).append([row])

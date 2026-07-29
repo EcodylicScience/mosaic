@@ -6,9 +6,9 @@ import shutil
 import sys
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Final
 
 import pandas as pd
 from mosaic_media import MediaFacts
@@ -16,6 +16,11 @@ from mosaic_media import MediaFacts
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.media_index import media_members_from_rows
+from mosaic.core.pipeline.sequence_index import (
+    encode_entry_composition,
+    read_entry_compositions,
+)
 from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, register_op, run_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
@@ -41,7 +46,27 @@ def frames_index_path(ds: Dataset, method: str) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class FramesIndexRow(RunIndexRowBase):
-    """Typed row for the frames index CSV."""
+    """Typed row for the frames index CSV.
+
+    ``video_uuids`` and ``media_composition`` are item 5.1's frames half: what
+    this frame set was cut from, recorded and never hashed. The extraction
+    identifier is frozen (see :func:`frames_run_id`), so this is the only place
+    the answer can be written down.
+
+    **Both, not either.** ``video_uuids`` names the individual files, which is
+    what item 5.1's table asks for and what survives the sequence being
+    rearranged around them. ``media_composition`` names the arrangement, and it
+    is the one that matters here: ``_extract_frames_multi`` pools candidates
+    across a camera's clips using *global* frame indices, so a frame set is per
+    camera over an ordered clip list and a reorder genuinely changes what a
+    stored index refers to. Item 5.1's "extracted frames are already per-video on
+    disk" is true only of a single-clip camera.
+
+    ``video_uuids`` is in ``video_order`` and is **never sorted** -- it is the
+    arrangement, and sorting it would make two orderings record alike. Contrast
+    ``consumed_source_roots`` on the tracks row, which is a set and is sorted.
+    Empty means not establishable, never "no videos".
+    """
 
     method: str
     group: str
@@ -51,6 +76,38 @@ class FramesIndexRow(RunIndexRowBase):
     params_hash: str
     n_frames_extracted: int = 0
     n_frames_requested: int = 0
+    video_uuids: str = ""
+    media_composition: str = ""
+
+
+FRAMES_INDEX_COLUMNS: Final[list[str]] = [
+    field.name for field in fields(FramesIndexRow)
+]
+"""The schema, in CSV order. Derived from the row so the two cannot drift."""
+
+
+def adopt_frames_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bring a frames index read off disk up to the current schema, in memory.
+
+    The same hook ``tracks_index`` and the feature index carry, added here with
+    the columns above rather than after someone meets the failure. Without it the
+    first append to a pre-Stage-5 index concatenates a frame missing two columns
+    with one that has them, and every older row's ``n_frames_extracted`` is
+    widened to float on the way through -- ``40`` reaching disk as ``40.0``,
+    which is the trap ``index_csv`` documents and this repo has already paid for
+    once.
+
+    Must return a **schema-complete** frame: filling only the new columns would
+    leave ``list_runs`` raising on ``finished_at``.
+    """
+    out = pd.DataFrame(index=df.index)
+    for column in FRAMES_INDEX_COLUMNS:
+        if column in df.columns:
+            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
+        else:
+            cells = [""] * len(df)
+        out[column] = pd.Series(cells, index=df.index, dtype="object")
+    return out.reset_index(drop=True)
 
 
 def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
@@ -61,6 +118,7 @@ def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
         # (run_id, group, sequence), so without it a partial re-run of one camera
         # would dedup away the other camera's row.
         dedup_keys=["run_id", "group", "sequence", "camera"],
+        adopt=adopt_frames_columns,
     )
 
 
@@ -97,6 +155,55 @@ class ExtractFramesParams(Params):
     parallel_mode: Annotated[str, HASH_EXCLUDE] = "thread"
 
 
+def _source_identity_maps(
+    ds: Dataset, entries: Iterable[tuple[str, str]]
+) -> tuple[dict[tuple[str, str, str], str], dict[tuple[str, str], str]]:
+    """What each camera was cut from: its ordered uids, and its composition.
+
+    **Read from the media index, never from ``ResolvedMedia.facts``**, though
+    those are already in hand and carry a ``video_uuid`` each. ``route_media_row``
+    hands back the *derivative's* facts for a sequence whose verdict marks an
+    analysis transcode required, so that uid names the transcode rather than the
+    source. It would look right, round-trip fine, and join to nothing in
+    ``media_raw`` -- after which every staleness check on this row answers
+    "unchanged" for as long as the dataset exists. Reading the index means the
+    uids and the composition come from one place and cannot disagree.
+
+    A legacy ``media``-rooted dataset records nothing, the same carve-out
+    ``Dataset._write_media_compositions`` makes: that root holds derivatives, and
+    a derivative has no composition of its own (rule P6).
+
+    One member without an identity makes the whole camera unestablishable rather
+    than partially named -- ``composition.py``'s completeness rule, applied to the
+    same members so the two answers agree.
+    """
+    wanted = set(entries)
+    if not wanted or ds.resolve_media_root() != "media_raw":
+        return {}, {}
+    members = media_members_from_rows(ds.read_media_index())
+    uids: dict[tuple[str, str, str], str] = {}
+    for entry, entry_members in members.items():
+        if entry not in wanted:
+            continue
+        for camera in {member.camera for member in entry_members}:
+            ordered = sorted(
+                (member for member in entry_members if member.camera == camera),
+                key=lambda member: member.video_order,
+            )
+            group, sequence = entry
+            uids[(group, sequence, camera)] = (
+                ""
+                if any(not member.uid for member in ordered)
+                else ",".join(member.uid for member in ordered)
+            )
+    recorded = read_entry_compositions(ds, wanted)
+    compositions = {
+        entry: encode_entry_composition(recorded.get(entry, {}), ["media_raw"])
+        for entry in wanted
+    }
+    return uids, compositions
+
+
 @dataclass(frozen=True, slots=True)
 class _ExtractSpec:
     """Picklable unit of work for one (group, sequence, camera) -- process-safe."""
@@ -106,6 +213,8 @@ class _ExtractSpec:
     camera: str
     video_paths: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
+    video_uuids: str
+    media_composition: str
     seq_dir: Path
     run_id: str
     params_hash: str
@@ -203,6 +312,8 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
         if len(spec.video_paths) > 1
         else str(spec.video_paths[0]),
         params_hash=spec.params_hash,
+        video_uuids=spec.video_uuids,
+        media_composition=spec.media_composition,
     )
 
 
@@ -295,6 +406,12 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
     # verdict, so a required-but-unlinked entry raises (fail loud) rather than
     # opening a defective original, and a routed entry carries the analysis
     # derivative's facts.
+    # Resolved once for the whole scope rather than per entry: one media-index
+    # read and one pass per source root, where a per-entry lookup would re-read
+    # both files for every camera.
+    source_uids, source_compositions = _source_identity_maps(
+        ds, [(entry.group, entry.sequence) for entry in scope]
+    )
     specs: list[_ExtractSpec] = []
     for entry in scope:
         group, sequence, camera, resolved = (
@@ -315,6 +432,8 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
                 camera=camera,
                 video_paths=tuple(resolved.paths),
                 facts=facts,
+                video_uuids=source_uids.get((group, sequence, camera), ""),
+                media_composition=source_compositions.get((group, sequence), ""),
                 seq_dir=seq_dir,
                 run_id=run_id,
                 params_hash=params_hash,
@@ -498,9 +617,7 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
     """
     frames_root = ds.get_root("frames")
     if not frames_root.exists():
-        return pd.DataFrame(
-            columns=[f.name for f in dataclasses.fields(FramesIndexRow)]
-        )
+        return pd.DataFrame(columns=FRAMES_INDEX_COLUMNS)
 
     methods = (
         [method] if method else [d.name for d in frames_root.iterdir() if d.is_dir()]
@@ -509,11 +626,15 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
     for m in methods:
         idx_path = frames_root / m / "index.csv"
         if idx_path.exists():
-            dfs.append(pd.read_csv(idx_path))
+            # Through the typed reader, not a bare read_csv: inference reads an
+            # all-digit cell as int64 and an empty one as NaN, so a numeric-looking
+            # ``video_uuids`` or ``params_hash`` would come back as a number and a
+            # blank as the float NaN that ``adopt_frames_columns`` exists to keep
+            # off this frame. The same defect item 0.2 fixed for four other
+            # readers, in the one that was missed.
+            dfs.append(frames_index(idx_path).read())
     if not dfs:
-        return pd.DataFrame(
-            columns=[f.name for f in dataclasses.fields(FramesIndexRow)]
-        )
+        return pd.DataFrame(columns=FRAMES_INDEX_COLUMNS)
     return pd.concat(dfs, ignore_index=True)
 
 

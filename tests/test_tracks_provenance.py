@@ -349,6 +349,110 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         _ = select_variant_rows(rows)
 
 
+# --- item 5.1's tracks half: the composition a table consumed ---------------
+#
+# ``consumed_source_roots`` says which root a change would have to be under;
+# only ``consumed_composition`` says whether it has changed. Until this cell
+# existed, a ``tracks_raw`` change moved nothing downstream -- the one dated gap
+# in the Stage 4 design, named at items 4.4 and 5.1.
+
+
+def test_a_converted_table_records_the_composition_it_consumed(
+    tmp_path: Path,
+) -> None:
+    """The recorded cell is the value ``tracks_raw/sequences.csv`` holds."""
+    from mosaic.core.pipeline.sequence_index import read_sequence_index
+
+    ds = _dataset(tmp_path)
+    _trex_npz(ds.get_root("tracks_raw") / "seq_a.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+
+    recorded = str(_one_row(ds)["consumed_composition"])
+    assert recorded, "a converted table recorded no composition"
+
+    projected = read_sequence_index(ds, "tracks_raw")
+    expected = {
+        (str(row["group"]), str(row["sequence"])): str(row["composition"])
+        for _, row in projected.iterrows()
+    }
+    assert recorded == expected[("", "seq_a")]
+
+
+def test_a_changed_source_moves_the_composition_a_reconversion_records(
+    tmp_path: Path,
+) -> None:
+    """The dated gap, closed: a ``tracks_raw`` change is now visible downstream.
+
+    Nothing about the *recipe* changes here -- same converter, same version, same
+    params -- so the variant identity is deliberately unmoved. What moves is the
+    recorded edge, which is exactly the split item 3.1 fixes: the name says how a
+    table was produced, the row says what it was produced from.
+    """
+    ds = _dataset(tmp_path)
+    source = ds.get_root("tracks_raw") / "seq_a.npz"
+    _trex_npz(source, seed=0)
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks()
+    before = _one_row(ds)
+    variant_before = str(before["run_id"])
+    composition_before = str(before["consumed_composition"])
+    assert composition_before
+
+    # Same sequence, different bytes -- a corrected upload.
+    _trex_npz(source, seed=1)
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    ds.convert_all_tracks(overwrite=True)
+
+    after = _one_row(ds)
+    assert str(after["consumed_composition"]) != composition_before, (
+        "a changed source left the recorded composition alone"
+    )
+    assert str(after["run_id"]) == variant_before, (
+        "the recipe did not change, so the variant identity must not move"
+    )
+
+
+def test_a_derived_root_contributes_nothing_to_the_composition(
+    tmp_path: Path,
+) -> None:
+    """Only source roots can answer, and the bridges legitimately name others.
+
+    The TREx bridge records ``{trex, media_raw}`` and the inference bridge
+    ``{media_raw, models}``. Neither ``trex`` nor ``models`` holds anything that
+    cannot be recomputed, so neither has a composition -- and asking for one must
+    yield nothing rather than an empty-string member that would compare equal to
+    a genuinely different sequence.
+    """
+    from mosaic.core.pipeline.tracks_index import consumed_composition_for
+
+    ds = _dataset(tmp_path)
+    _trex_npz(ds.get_root("tracks_raw") / "seq_a.npz")
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+
+    assert consumed_composition_for(ds, "", "seq_a", ["trex", "models"]) == ""
+    # ... while the source root among them still answers.
+    assert consumed_composition_for(ds, "", "seq_a", ["trex", "tracks_raw"]) != ""
+
+
+def test_an_unindexed_source_records_nothing_rather_than_guessing(
+    tmp_path: Path,
+) -> None:
+    """No projection yet is *absent*, not "composed of nothing"."""
+    from mosaic.core.pipeline.tracks_index import consumed_composition_for
+
+    ds = _dataset(tmp_path)
+    assert consumed_composition_for(ds, "", "never_indexed", ["tracks_raw"]) == ""
+
+
 # --- superseded entries ----------------------------------------------------
 #
 # A converter that changes how it spells an entry writes rows under the new

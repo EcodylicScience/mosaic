@@ -358,6 +358,35 @@ def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
     return adopt_label_columns(raw)
 
 
+def encode_entry_composition(recorded: Mapping[str, str], roots: Iterable[str]) -> str:
+    """Encode one entry's recorded compositions into a single index cell.
+
+    The one minter for that cell, shared by the feature row and the tracks row,
+    because two spellings of one answer would be two answers to item 6.2's walk.
+
+    One root is the whole of today's reality -- two features declare
+    ``media_raw``, a converted tracks table reads ``tracks_raw`` -- so the common
+    forms are a bare digest and ``""``. Several roots join as ``root=digest``
+    pairs, sorted, so the cell says which value came from where without a second
+    column to keep in step.
+
+    Empty means **nothing recorded**, never "recorded as empty". It covers a
+    consumer that declares no source root and a root that has recorded no
+    composition for this entry, and a reader must draw no conclusion from it --
+    two entries whose compositions are both unrecorded are not known to be alike.
+    """
+    present = [
+        (root, digest)
+        for root in sorted({root for root in roots if root})
+        if (digest := recorded.get(root, ""))
+    ]
+    if not present:
+        return ""
+    if len(present) == 1:
+        return present[0][1]
+    return ",".join(f"{root}={digest}" for root, digest in present)
+
+
 def read_entry_compositions(
     ds: Dataset,
     entries: Iterable[tuple[str, str]],

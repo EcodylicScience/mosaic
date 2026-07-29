@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.tracking.frame_extraction import (
     FramesIndexRow,
@@ -20,6 +21,7 @@ from mosaic.tracking.frame_extraction import (
     select_kmeans_frames,
     select_uniform_frames,
 )
+from mosaic.tracking.frame_extraction.dataset_runs import _source_identity_maps
 
 
 # --- Frames Index ---
@@ -198,3 +200,155 @@ class TestSelectKmeansFrames:
         a = select_kmeans_frames(candidates, features, 4, random_state=7)
         b = select_kmeans_frames(candidates, features, 4, random_state=7)
         assert a.tolist() == b.tolist()
+
+
+# --- item 5.1's frames half: what a frame set was cut from -------------------
+
+
+class TestSourceIdentity:
+    """The uids and composition a frames row records.
+
+    The interesting property is *where the uids come from*. They are read from
+    the media index, not from the ``ResolvedMedia.facts`` already in hand at the
+    call site, because a routed entry carries the analysis derivative's facts and
+    those name the transcode rather than the source.
+    """
+
+    def test_uids_follow_video_order_and_are_not_sorted(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """The cell is the arrangement, so its order is semantic."""
+        ds = scenario_dataset_with_media
+        uids, _ = _source_identity_maps(ds, [("", "seq_a")])
+
+        by_order = {
+            int(row["video_order"]): str(row["video_uuid"])
+            for row in ds.read_media_index()
+            if str(row["sequence"]) == "seq_a"
+        }
+        expected = [by_order[i] for i in sorted(by_order)]
+        assert uids[("", "seq_a", "")] == ",".join(expected)
+        assert len(expected) == 2, "the fixture must hold two videos to order"
+
+    def test_a_reorder_moves_the_recorded_uids(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """A rearrangement is exactly what this cell exists to make visible."""
+        from mosaic.core.pipeline.media_index import MediaIndexScope
+
+        ds = scenario_dataset_with_media
+        before, _ = _source_identity_maps(ds, [("", "seq_a")])
+
+        _ = ds.write_media_index(
+            [
+                MediaIndexScope(
+                    directory=ds.get_root("media_raw") / "seq_a",
+                    group="",
+                    sequence="seq_a",
+                    order_by_name={"b.mp4": 0, "a.mp4": 1},
+                )
+            ],
+            extensions=(".mp4",),
+        )
+        after, _ = _source_identity_maps(ds, [("", "seq_a")])
+
+        assert after[("", "seq_a", "")] != before[("", "seq_a", "")]
+        assert sorted(after[("", "seq_a", "")].split(",")) == sorted(
+            before[("", "seq_a", "")].split(",")
+        ), "a reorder must move the order, not the membership"
+
+    def test_the_composition_is_the_projected_one(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """Recorded, never recomputed -- so it cannot disagree with the baseline."""
+        from mosaic.core.pipeline.sequence_index import read_sequence_index
+
+        ds = scenario_dataset_with_media
+        _, compositions = _source_identity_maps(ds, [("", "seq_a")])
+
+        projected = read_sequence_index(ds, "media_raw")
+        expected = {
+            (str(r["group"]), str(r["sequence"])): str(r["composition"])
+            for _, r in projected.iterrows()
+        }
+        assert compositions[("", "seq_a")] == expected[("", "seq_a")]
+        assert compositions[("", "seq_a")]
+
+    def test_a_sequence_with_no_media_records_nothing(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """Absent, not "composed of nothing" -- seq_b is track-only."""
+        ds = scenario_dataset_with_media
+        uids, compositions = _source_identity_maps(ds, [("", "seq_b")])
+
+        assert uids == {}
+        assert compositions == {("", "seq_b"): ""}
+
+    def test_a_legacy_media_rooted_dataset_records_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """That root holds derivatives, and a derivative has no composition (P6).
+
+        The same carve-out ``Dataset._write_media_compositions`` makes, so the
+        two never disagree about which dataset shapes have an answer.
+        """
+        from mosaic.core.dataset import Dataset as _Dataset
+
+        ds = _Dataset(
+            manifest_path=tmp_path / "dataset.yaml",
+            roots={"media": str(tmp_path / "media")},
+        )
+        ds.ensure_roots()
+
+        assert _source_identity_maps(ds, [("", "seq_a")]) == ({}, {})
+
+    def test_one_identityless_member_unestablishes_the_whole_camera(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """A partial list would compare equal to a genuinely different sequence.
+
+        ``composition.py`` applies this rule to the digest; the uid cell has to
+        apply it too, or the two answers disagree about the same sequence. An
+        imgstore chunk or a row written before identity existed is how this state
+        arises in the wild.
+        """
+        ds = scenario_dataset_with_media
+        established, _ = _source_identity_maps(ds, [("", "seq_a")])
+        assert established[("", "seq_a", "")], "the fixture must start established"
+
+        index_path = ds.get_root("media_raw") / "index.csv"
+        frame = pd.read_csv(index_path, keep_default_na=False, dtype=str)
+        frame.loc[frame.index[0], "video_uuid"] = ""
+        frame.to_csv(index_path, index=False)
+
+        uids, _ = _source_identity_maps(ds, [("", "seq_a")])
+        assert uids[("", "seq_a", "")] == "", (
+            "one member without an identity must unestablish the whole camera"
+        )
+
+
+def test_an_extracted_frame_set_records_what_it_was_cut_from(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """End to end, because the interesting part is the wiring, not the values.
+
+    ``_source_identity_maps`` is tested above; what this adds is that the answer
+    survives the spec being pickled into a worker and reaching the index row. A
+    unit test of the resolver plus an unexercised assignment is exactly the shape
+    that looks right and is not.
+    """
+    from mosaic.tracking import extract_frames
+    from mosaic.tracking.frame_extraction import list_frame_runs
+
+    ds = scenario_dataset_with_media
+    expected_uids, expected_compositions = _source_identity_maps(ds, [("", "seq_a")])
+
+    _ = extract_frames(ds, n_frames=2, method="uniform", sequences=["seq_a"])
+
+    runs = list_frame_runs(ds, method="uniform")
+    rows = runs[runs["sequence"] == "seq_a"]
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert str(row["video_uuids"]) == expected_uids[("", "seq_a", "")]
+    assert str(row["media_composition"]) == expected_compositions[("", "seq_a")]
+    assert str(row["video_uuids"]), "a frame set recorded no source identity"
