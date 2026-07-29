@@ -26,11 +26,13 @@ accessible from mosaic.core.dataset module.
 from . import calms21
 from . import deeplabcut
 from . import mabe22
+from . import sleap
 from . import trex
 
 __all__ = [
     "calms21",
     "deeplabcut",
     "mabe22",
+    "sleap",
     "trex",
 ]

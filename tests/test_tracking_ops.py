@@ -132,6 +132,7 @@ def test_registry_has_builtin_ops():
         "infer-localizer",
     }
     assert "trex" in kinds
+    assert "sleap" in kinds
     for op in list_ops(domain="tracking"):
         assert op["kind"] in kinds and op["category"] in {
             "extract",
@@ -451,6 +452,122 @@ def test_trex_params_exclude_throughput_from_run_id():
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
     c = TrexParams(detect_model="other.pt")
     assert hash_params(c.identity_dump()) != hash_params(a.identity_dump())
+
+
+# --- sleap op (registered; run_id parity with the standalone run_sleap) -----
+
+
+def _fake_sleap_model(root: Path, name: str = "model") -> Path:
+    """A minimal SLEAP model directory with a checkpoint, for identity tests."""
+    model_dir = root / name
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "best.ckpt").write_bytes(b"weights")
+    return model_dir
+
+
+def test_sleap_registered_as_gpu_convert_op():
+    assert "sleap" in OPS
+    d = describe_op("sleap")
+    assert d["category"] == "convert"
+    assert {"model_paths", "tracker", "entries"} <= set(
+        d["params_schema"]["properties"]
+    )
+    from mosaic.core.pipeline.ops import op_resource_class
+
+    # declared "gpu" despite category "convert" (SLEAP inference wants the GPU)
+    assert op_resource_class("sleap") == "gpu"
+
+
+def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
+    # SleapOp must produce the same content run_id as calling run_sleap directly for the
+    # same settings. Scope to a missing sequence so the run short-circuits (empty media)
+    # after the model resolves but before any sleap binary is used.
+    from mosaic.tracking import run_sleap
+
+    ds = _make_dataset(tmp_path)
+    model = _fake_sleap_model(tmp_path)
+    direct = run_sleap(ds, model_paths=[str(model)], sequences=["nonexistent"])
+    via_op = run_op(
+        ds, "sleap", {"model_paths": [str(model)], "sequences": ["nonexistent"]}
+    )
+    assert direct == via_op
+    assert direct.startswith("sleap.1.6-")
+
+
+def test_sleap_params_exclude_throughput_from_run_id():
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.tracking.ops.sleap import SleapParams
+
+    a = SleapParams(
+        model_paths=["m"],
+        batch_size=4,
+        device=None,
+        idle_timeout=900,
+        max_runtime=None,
+        overwrite=False,
+        convert_to_tracks=True,
+    )
+    b = SleapParams(
+        model_paths=["m"],
+        batch_size=16,
+        device="cpu",
+        idle_timeout=30,
+        max_runtime=60,
+        overwrite=True,
+        convert_to_tracks=False,
+    )
+    assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
+    c = SleapParams(model_paths=["m"], peak_threshold=0.5)
+    assert hash_params(c.identity_dump()) != hash_params(a.identity_dump())
+
+
+def test_sleap_model_identity_is_content_not_path(tmp_path):
+    # Two model directories with identical weights mint the same model_id (and so
+    # the same run_id); different weights mint a different one. "Name the weights,
+    # not the path they sat at."
+    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+
+    a = tmp_path / "a" / "model"
+    b = tmp_path / "b" / "model"
+    for d in (a, b):
+        d.mkdir(parents=True)
+        (d / "best.ckpt").write_bytes(b"same-weights")
+    c = tmp_path / "c" / "model"
+    c.mkdir(parents=True)
+    (c / "best.ckpt").write_bytes(b"other-weights")
+
+    id_a = resolve_sleap_models([str(a)]).model_id
+    id_b = resolve_sleap_models([str(b)]).model_id
+    id_c = resolve_sleap_models([str(c)]).model_id
+    assert id_a == id_b  # same content, different paths -> same identity
+    assert id_a != id_c  # different content -> different identity
+
+
+def test_sleap_model_order_is_significant(tmp_path):
+    # Top-down passes two directories (centroid, then centered-instance); the order
+    # is not interchangeable, so it must reach identity.
+    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+
+    d1 = tmp_path / "centroid"
+    d2 = tmp_path / "instance"
+    d1.mkdir()
+    d2.mkdir()
+    (d1 / "best.ckpt").write_bytes(b"centroid")
+    (d2 / "best.ckpt").write_bytes(b"instance")
+    forward = resolve_sleap_models([str(d1), str(d2)]).model_id
+    reverse = resolve_sleap_models([str(d2), str(d1)]).model_id
+    assert forward != reverse
+
+
+def test_sleap_unresolvable_model_raises(tmp_path):
+    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+
+    with pytest.raises(FileNotFoundError):
+        resolve_sleap_models([str(tmp_path / "missing")])
+    empty = tmp_path / "no_ckpt"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError):
+        resolve_sleap_models([str(empty)])
 
 
 # --- convert-points op (real converter, no heavy backend) ------------------

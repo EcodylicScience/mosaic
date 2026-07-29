@@ -32,6 +32,7 @@ def _dataset(base: Path) -> Dataset:
             "tracks_raw": str(base / "tracks_raw"),
             "tracks": str(base / "tracks"),
             "trex": str(base / "tracks_raw" / "trex"),
+            "sleap": str(base / "tracks_raw" / "sleap"),
             "media_raw": str(base / "media_raw"),
             "models": str(base / "models"),
         },
@@ -709,3 +710,65 @@ def test_one_entry_registering_a_key_twice_still_matches(tmp_path: Path) -> None
 
     hit = _Dataset._match_media_sequence(keymap, "s")
     assert hit is not None and hit["sequence"] == "s"
+
+
+# --- writer 5: the SLEAP bridge --------------------------------------------
+
+
+def _sleap_analysis_h5(path: Path, *, n: int = 6) -> None:
+    """A tiny matlab-layout SLEAP analysis HDF5: 1 track, 1 node, *n* frames."""
+    import json as _json
+
+    import h5py
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
+    # canonical (frame, track, node, xy) -> matlab (track, xy, node, frame)
+    tracks = rng.random((n, 1, 1, 2))
+    arr = np.transpose(tracks, (1, 3, 2, 0))
+    with h5py.File(str(path), "w") as f:
+        d = f.create_dataset("tracks", data=arr)
+        d.attrs["dims"] = _json.dumps(["track", "xy", "node", "frame"])
+
+
+def test_the_sleap_bridge_records_the_run_and_a_portable_source(
+    tmp_path: Path,
+) -> None:
+    """The SLEAP bridge writes the fifth tracks producer path with full provenance."""
+    pytest.importorskip("h5py")
+    from mosaic.tracking.sleap.dataset_runs import _bridge_analysis_h5_to_tracks
+
+    ds = _dataset(tmp_path)
+    seq_dir = ds.get_root("sleap") / "sleap.1.6-aaaaaaaaaa" / "vid1"
+    h5 = seq_dir / "vid1.analysis.h5"
+    _sleap_analysis_h5(h5)
+    video = ds.get_root("media_raw") / "vid1.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"v")
+
+    written = _bridge_analysis_h5_to_tracks(
+        ds,
+        "",
+        "vid1",
+        h5,
+        tracks_variant="sleap.1.6-bbbbbbbbbb",
+        producer_run_id="sleap.1.6-cccccccccc",
+        video_path=video,
+        model_checkpoints=[],
+        fps=30.0,
+        overwrite=True,
+    )
+
+    assert written is not None
+    n_rows, n_tracks = written
+    assert n_rows == 6 and n_tracks == 1
+    row = _one_row(ds)
+    assert str(row["producer"]) == "sleap"
+    assert str(row["run_id"]) == "sleap.1.6-bbbbbbbbbb"
+    # the tracker run and the tracks variant are separate columns
+    assert str(row["producer_run_id"]) == "sleap.1.6-cccccccccc"
+    assert str(row["source_abs_path"]).startswith("tracks_raw/sleap/")
+    # the video (media_raw) and the predictions (sleap); the external model
+    # directory sits under no dataset root, so it contributes nothing
+    assert set(str(row["consumed_source_roots"]).split(",")) == {"sleap", "media_raw"}
+    _assert_portable(ds, row)

@@ -96,6 +96,35 @@ itself):
 Xvfb :99 -screen 0 1280x1024x24 &     # one persistent display; pass display=":99"
 ```
 
+### Tracking videos with SLEAP (optional)
+
+If you already have a trained [SLEAP](https://sleap.ai) model, mosaic can drive
+`sleap-track` to run pose inference + identity tracking and bridge the result
+into standardized tracks — one `sleap` op, the same shape as TRex:
+
+```python
+from mosaic.tracking import run_sleap
+
+# one model directory, or two for a top-down model (centroid, then centered-instance)
+run_sleap(ds, model_paths=["models/sleap_bottomup"])          # standalone / notebook
+```
+
+or through the op runner: `mosaic run --kind sleap --model-paths models/sleap_bottomup`.
+
+**Own-environment setup.** SLEAP 1.6 is heavy (PyTorch + Qt), so install it in
+its **own** environment rather than the mosaic env:
+
+```bash
+uv tool install "sleap[nn]"                 # puts sleap-track / sleap-convert on $PATH
+# or a dedicated conda env:  conda create -n sleap ... ; then MOSAIC_SLEAP_CONDA_ENV=sleap
+```
+
+mosaic finds the console scripts on `$PATH` by default; point it elsewhere with
+`sleap_conda_env=`/`MOSAIC_SLEAP_CONDA_ENV` or `sleap_bin=`/`MOSAIC_SLEAP_BIN`.
+Unlike TRex, SLEAP inference is headless and needs no `Xvfb`. Reading SLEAP's
+analysis HDF5 in the mosaic env needs `h5py` (bundled in the `[recommended]`
+extra); no SLEAP package is imported on the mosaic side.
+
 ## Run features
 
 Features are composable pipeline stages. Each produces per-sequence

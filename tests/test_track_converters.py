@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the converters
@@ -409,3 +410,133 @@ def test_the_error_says_what_to_do_instead() -> None:
 
     with pytest.raises(ValueError, match="__"):
         _ = validate_entry_name("a/b", "sequence")
+
+
+# --- SLEAP analysis-HDF5 converter -------------------------------------------
+
+
+def _write_sleap_analysis_h5(
+    path: Path,
+    tracks_ftn2: np.ndarray,
+    scores_ftn: np.ndarray | None = None,
+    *,
+    preset: str = "matlab",
+    with_dims: bool = True,
+) -> None:
+    """Write a synthetic SLEAP analysis HDF5 from a canonical tracks array.
+
+    *tracks_ftn2* is ``(frame, track, node, 2)``; *scores_ftn* is
+    ``(frame, track, node)`` or None. ``matlab`` writes the transposed layout
+    ``sleap-convert`` produces by default; ``standard`` writes the Python-native
+    layout -- both carry a ``dims`` attribute so the converter reorders either.
+    """
+    import h5py
+
+    if preset == "matlab":
+        arr = np.transpose(tracks_ftn2, (1, 3, 2, 0))  # (track, xy, node, frame)
+        dims = ["track", "xy", "node", "frame"]
+        sarr = (
+            np.transpose(scores_ftn, (1, 2, 0)) if scores_ftn is not None else None
+        )
+        sdims = ["track", "node", "frame"]
+    else:  # standard / python-native
+        arr = tracks_ftn2
+        dims = ["frame", "track", "node", "xy"]
+        sarr = scores_ftn
+        sdims = ["frame", "track", "node"]
+
+    with h5py.File(str(path), "w") as f:
+        d = f.create_dataset("tracks", data=arr)
+        if with_dims:
+            d.attrs["dims"] = json.dumps(dims)
+        if sarr is not None:
+            s = f.create_dataset("point_scores", data=sarr)
+            if with_dims:
+                s.attrs["dims"] = json.dumps(sdims)
+
+
+def _two_track_fixture() -> tuple[np.ndarray, np.ndarray]:
+    """4 frames, 2 tracks, 2 nodes. Track 0 present 0-3; track 1 present 1-2."""
+    tracks = np.full((4, 2, 2, 2), np.nan)
+    # track 0: a moving point pair on every frame
+    for fr in range(4):
+        tracks[fr, 0, 0] = [10.0 + fr, 20.0]
+        tracks[fr, 0, 1] = [12.0 + fr, 22.0]
+    # track 1: present only on frames 1 and 2
+    for fr in (1, 2):
+        tracks[fr, 1, 0] = [100.0, 200.0 + fr]
+        tracks[fr, 1, 1] = [102.0, 202.0 + fr]
+    scores = np.full((4, 2, 2), np.nan)
+    scores[:, 0, :] = 0.9
+    scores[1:3, 1, :] = 0.8
+    return tracks, scores
+
+
+def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
+    pytest.importorskip("h5py")
+    from mosaic.core.track_library.sleap import (
+        SleapAnalysisH5Converter,
+        SleapConvertParams,
+    )
+
+    tracks, scores = _two_track_fixture()
+    h5 = tmp_path / "vid1.analysis.h5"
+    _write_sleap_analysis_h5(h5, tracks, scores, preset="matlab")
+
+    conv = SleapAnalysisH5Converter()
+    df = conv.convert(h5, SleapConvertParams(fps=25.0), EntryHints(group="g", sequence="s"))
+
+    # one id per track, present-frame rows only
+    assert set(df["id"]) == {0, 1}
+    assert len(df[df["id"] == 0]) == 4
+    assert len(df[df["id"] == 1]) == 2
+    # required trex_v1 columns + pose prefixes + confidence
+    for col in ("frame", "time", "id", "group", "sequence", "poseX0", "poseY1", "poseP0"):
+        assert col in df.columns
+    # hints and fps drive group / sequence / time
+    assert set(df["group"]) == {"g"} and set(df["sequence"]) == {"s"}
+    t0 = df[df["id"] == 0].sort_values("frame")
+    assert list(t0["frame"]) == [0, 1, 2, 3]
+    assert t0["time"].iloc[2] == pytest.approx(2 / 25.0)
+    # track 1 only on frames 1,2
+    assert sorted(df[df["id"] == 1]["frame"]) == [1, 2]
+
+
+def test_sleap_converter_reorders_by_dims_matlab_equals_standard(tmp_path: Path) -> None:
+    pytest.importorskip("h5py")
+    from mosaic.core.track_library.sleap import (
+        SleapAnalysisH5Converter,
+        SleapConvertParams,
+    )
+
+    tracks, scores = _two_track_fixture()
+    m = tmp_path / "m.analysis.h5"
+    s = tmp_path / "s.analysis.h5"
+    _write_sleap_analysis_h5(m, tracks, scores, preset="matlab")
+    _write_sleap_analysis_h5(s, tracks, scores, preset="standard")
+
+    conv = SleapAnalysisH5Converter()
+    hints = EntryHints(group="", sequence="x")
+    dm = conv.convert(m, SleapConvertParams(), hints).sort_values(["id", "frame"])
+    dstd = conv.convert(s, SleapConvertParams(), hints).sort_values(["id", "frame"])
+    # the dims attribute makes the transposed and native layouts equivalent
+    pd.testing.assert_frame_equal(
+        dm.reset_index(drop=True), dstd.reset_index(drop=True)
+    )
+
+
+def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -> None:
+    pytest.importorskip("h5py")
+    from mosaic.core.track_library.sleap import (
+        SleapAnalysisH5Converter,
+        SleapConvertParams,
+    )
+
+    tracks, scores = _two_track_fixture()
+    h5 = tmp_path / "nodims.analysis.h5"
+    _write_sleap_analysis_h5(h5, tracks, scores, preset="matlab", with_dims=False)
+    df = SleapAnalysisH5Converter().convert(
+        h5, SleapConvertParams(), EntryHints(group="", sequence="x")
+    )
+    assert set(df["id"]) == {0, 1}
+    assert len(df[df["id"] == 0]) == 4

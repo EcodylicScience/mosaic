@@ -172,6 +172,15 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # on TRexIndexRow belongs in this tuple, or it silently stops being portable.
 _TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
 
+# Path-bearing columns on the SLEAP tracker index beyond ``abs_path``: the source
+# video and the two run artifacts (predictions ``.slp`` and analysis ``.h5``). Any
+# new path column on SleapIndexRow belongs here, or it silently stops being portable.
+_SLEAP_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "video_abs_path",
+    "slp_path",
+    "analysis_h5_path",
+)
+
 # Per-root, the path-bearing columns beyond ``abs_path``. One table rather than a
 # special case per root, because both path passes read raw CSVs and have no row
 # class to ask -- so a column missing from here silently stops being portable,
@@ -179,6 +188,7 @@ _TREX_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "pv_path")
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
     "trex": _TREX_INDEX_PATH_COLUMNS,
+    "sleap": _SLEAP_INDEX_PATH_COLUMNS,
 }
 
 # The track-converter registry moved to ``core.track_converter``. That is what
@@ -319,6 +329,7 @@ default_roots = {
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
     "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
     "trex": "tracks_raw/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
+    "sleap": "tracks_raw/sleap",  # run-addressed SLEAP outputs (.predictions.slp, .analysis.h5)
     "predictions": "predictions",  # run-addressed model-inference outputs (before -> tracks)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
@@ -579,6 +590,7 @@ class Dataset:
             "tracks_raw": "",
             "tracks": "",
             "trex": "",
+            "sleap": "",
             "predictions": "",
             "features": "",
             "labels": "",
@@ -955,8 +967,10 @@ class Dataset:
         # Tracker runs. Reached by root key, not by the default location
         # ``tracks_raw/trex`` -- that is a *subdirectory* of the tracks_raw root
         # above, whose own index.csv the loop never visits, and item 8.1 moves
-        # it to ``_tracking/trex`` anyway.
+        # it to ``_tracking/trex`` anyway. SLEAP's ``tracks_raw/sleap`` is the
+        # same shape and needs the same explicit reach.
         record(root_index("trex"), _INDEX_PATH_COLUMNS["trex"])
+        record(root_index("sleap"), _INDEX_PATH_COLUMNS["sleap"])
 
         return results
 
@@ -1088,13 +1102,19 @@ class Dataset:
                         if count > 0:
                             results[str(sub_idx)] = count
 
-        # Tracker runs: see the note in rewrite_index_paths -- the trex root is
-        # a subdirectory of tracks_raw by default, so the loop above misses it.
+        # Tracker runs: see the note in rewrite_index_paths -- the trex / sleap
+        # roots are subdirectories of tracks_raw by default, so the loop above
+        # misses them.
         if self.has_root("trex"):
             trex_idx = self.get_root("trex") / "index.csv"
             count = _convert_index(trex_idx, _INDEX_PATH_COLUMNS["trex"])
             if count > 0:
                 results[str(trex_idx)] = count
+        if self.has_root("sleap"):
+            sleap_idx = self.get_root("sleap") / "index.csv"
+            count = _convert_index(sleap_idx, _INDEX_PATH_COLUMNS["sleap"])
+            if count > 0:
+                results[str(sleap_idx)] = count
 
         # --- 8c. run_info.json files (frame extraction manifests) ---
         if frames_root:

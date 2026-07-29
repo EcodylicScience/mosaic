@@ -288,6 +288,7 @@ def test_tracking_list_and_describe() -> None:
         "infer-points",
         "infer-localizer",
         "trex",
+        "sleap",
         "convert-points",
     }
 
