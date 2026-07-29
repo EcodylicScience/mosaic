@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PROVENANCE_COLUMNS",
+    "index_records",
     "Verdict",
     "reached_by",
 ]
@@ -89,7 +90,7 @@ to delete needs to know which.
 """
 
 
-def _records(frame: pd.DataFrame) -> list[dict[str, str]]:
+def index_records(frame: pd.DataFrame) -> list[dict[str, str]]:
     """A frame's rows as plain string dicts.
 
     The one place pandas' partially-typed row access is turned into something the
@@ -152,7 +153,7 @@ def _tracks_rows(
     """
     frame = read_tracks_index(ds)
     rows: list[dict[str, object]] = []
-    for record in _records(frame):
+    for record in index_records(frame):
         entry = (str(record.get("group", "")), str(record.get("sequence", "")))
         if entry not in wanted:
             continue
@@ -196,7 +197,7 @@ def _feature_rows(
         if not index.path.exists():
             continue
         frame = index.read(validate_paths=False)
-        for record in _records(frame):
+        for record in index_records(frame):
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))
             if entry not in wanted:
                 continue
@@ -291,7 +292,7 @@ def _transitive_rows(
         if not index.path.exists():
             continue
         frame = index.read(validate_paths=False)
-        records = _records(frame)
+        records = index_records(frame)
         variants_by_run: dict[str, set[str]] = {}
         for record in records:
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))

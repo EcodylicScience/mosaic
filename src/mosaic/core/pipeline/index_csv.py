@@ -459,13 +459,68 @@ class IndexCSV(Generic[RowT]):
         # A sorted list rather than a set: ``isin`` takes a sequence, and the
         # order makes a dropped-row report read the same way twice.
         wanted = sorted({str(run_id) for run_id in run_ids})
-        if not wanted or not self.path.exists():
+        if not wanted:
+            return self._empty_frame()
+        return self._drop_where(lambda df: df["run_id"].isin(wanted), dry_run=dry_run)
+
+    def drop_entries(
+        self,
+        entries: Iterable[tuple[str, str]],
+        *,
+        run_id: str | None = None,
+        dry_run: bool = False,
+    ) -> pd.DataFrame:
+        """Drop rows for the given ``(group, sequence)`` entries.
+
+        The per-entry sibling of :meth:`drop_runs`, for a change that invalidates
+        some of a run's outputs and not others. *run_id* narrows it to one run;
+        ``None`` drops the entries from every run in the file.
+
+        Same lock, same rewrite-only-if-something-drops rule. A caller deleting
+        files as well must unlink them *after* this returns, so a crash between
+        the two leaves rows naming files that are gone -- which a reconcile
+        removes -- rather than files nothing names, which nothing finds.
+        """
+        wanted = {(str(group), str(sequence)) for group, sequence in entries}
+        if not wanted:
+            return self._empty_frame()
+        if run_id is not None:
+            self._assert_run_index()
+
+        def mask_of(df: pd.DataFrame) -> "pd.Series[bool]":
+            paired = [
+                (str(group), str(sequence)) in wanted
+                for group, sequence in zip(df["group"], df["sequence"], strict=True)
+            ]
+            selected = pd.Series(paired, index=df.index)
+            if run_id is None:
+                return selected
+            return selected & (df["run_id"] == run_id)
+
+        return self._drop_where(mask_of, dry_run=dry_run)
+
+    def _drop_where(
+        self,
+        mask_of: Callable[[pd.DataFrame], "pd.Series[bool]"],
+        *,
+        dry_run: bool,
+    ) -> pd.DataFrame:
+        """Drop the rows *mask_of* selects, under the lock, atomically.
+
+        The shared body of :meth:`drop_runs` and :meth:`drop_entries`, and the
+        lock is why it is shared rather than written twice: both are a DELETE
+        racing concurrent appends, so a row landing between the read and the
+        rewrite would be erased by a keep set computed before it existed. A dry
+        run holds it too -- it reports what a real run would drop, and that answer
+        means nothing against a moving file.
+        """
+        if not self.path.exists():
             return self._empty_frame()
         with index_lock(self.path):
             df = self._read_frame()
             if df.empty:
                 return df.iloc[0:0]
-            drop_mask = df["run_id"].isin(wanted)
+            drop_mask = mask_of(df)
             keep = df[~drop_mask].reset_index(drop=True)
             dropped = df[drop_mask].reset_index(drop=True)
             if len(dropped) > 0 and not dry_run:
