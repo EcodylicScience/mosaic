@@ -74,6 +74,11 @@ from .track_converter import (
 # a reordering. Item 1.3 moved it to `core.track_converter`, so the cycle is
 # gone and this is an ordinary import.
 from .track_library.trex import strip_trex_seq
+from .media.prune import (
+    PruneReport,
+    declined_report,
+    prune_media as _prune_media,
+)
 from .media.reprobe import (
     ReprobeAbort,
     ReprobeReport,
@@ -2357,6 +2362,99 @@ class Dataset:
             base_directory=_dataset_base_dir(self),
             apply=apply,
             skip_unreadable=skip_unreadable,
+        )
+
+    def prune_media(
+        self,
+        *,
+        apply: bool,
+        min_age_hours: float = 24.0,
+        relink: bool = False,
+        include_stray: bool = False,
+    ) -> PruneReport:
+        """Delete the transcode derivatives no forward link reaches.
+
+        A retuned recipe writes a new derivative and overwrites the link cell,
+        leaving the previous file and its row behind with nothing addressing
+        them; this is what removes them. Deleting one costs a re-encode that was
+        going to happen anyway -- the op's reuse gate needs the link as well as
+        the file -- so *relink* is where the value is: it writes the cell for an
+        unreferenced file a current recipe would reproduce, turning the next
+        run's encode into a skip, and clears a cell whose file is gone.
+
+        Dry-run unless *apply*. *min_age_hours* holds back anything modified
+        inside the window, so a prune cannot race a running encode.
+
+        Four gates decline before anything is read, each returning a report with
+        ``considered=False`` rather than raising -- "would prune 0" on a dataset
+        that can never hold a derivative reads as an invitation to pass
+        ``--apply``, which is the wrong thing to tell someone.
+
+        Root resolution lives here and the decisions live in
+        :mod:`~mosaic.core.media.prune`, which knows nothing about datasets.
+        """
+        from mosaic_media import CHROME_149
+        from mosaic_media.transcode import ANALYSIS_ENCODING, PLAYBACK_ENCODING
+
+        from mosaic.core.media.prune import TARGETS
+        from mosaic.core.pipeline.transcode import (
+            TRANSCODE_KIND_DIRECTORY,
+            TranscodeParams,
+            transcode_recipe_hash,
+        )
+        from mosaic.media_probe_config import media_thresholds
+
+        if not self.has_root("media"):
+            return declined_report("no-media-root")
+        # `resolve_media_root` answers "media_raw" the moment that root is set,
+        # so both of the next two are needed: the first rejects a dataset that
+        # never had one, the second a manifest that points both names at one
+        # place. Compared resolved, as reprobe does -- an unnormalized ".." or a
+        # symlink would make one file look like two indexes, and `index_lock` is
+        # re-entrant per resolved path, so a run that took "both" locks would
+        # hold one and perform two writes inside it.
+        if self.resolve_media_root() != "media_raw":
+            return declined_report("single-root")
+        media_root = self.get_root("media")
+        media_raw_root = self.get_root("media_raw")
+        if media_root.resolve() == media_raw_root.resolve():
+            return declined_report("one-index")
+        transcode_root = (media_root / TRANSCODE_KIND_DIRECTORY).resolve()
+        # Roots are free-form strings and `frames` defaults to `media/frames`, so
+        # a manifest may legally nest one inside another. Nested under the kind
+        # directory, originals or extracted frames would be walked as derivative
+        # candidates.
+        nested = [media_raw_root.resolve()]
+        if self.has_root("frames"):
+            nested.append(self.get_root("frames").resolve())
+        if any(
+            root == transcode_root or transcode_root in root.parents for root in nested
+        ):
+            return declined_report("nested-root")
+
+        live_recipes = {
+            target: transcode_recipe_hash(
+                # `entry` and `allow_hardware` are both HASH_EXCLUDE, so any
+                # entry yields the recipe every current run of this target would
+                # name its output after.
+                TranscodeParams(entry=("", ""), target=target),
+                ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
+                CHROME_149,
+                media_thresholds(),
+            )
+            for target in TARGETS
+        }
+        return _prune_media(
+            media_raw_root / "index.csv",
+            derivative_index_path=media_root / "index.csv",
+            media_root=media_root,
+            transcode_root=transcode_root,
+            base_directory=_dataset_base_dir(self),
+            live_recipes=live_recipes,
+            apply=apply,
+            min_age_hours=min_age_hours,
+            relink=relink,
+            include_stray=include_stray,
         )
 
     def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
