@@ -54,6 +54,12 @@ from mosaic_media.transcode import ANALYSIS_ENCODING
 from pydantic import RootModel
 
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.composition import (
+    MediaMember,
+    SourceMember,
+    media_composition,
+    tracks_raw_composition,
+)
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.transcode import (
     TranscodeParams,
@@ -226,12 +232,66 @@ def _infer_variant() -> str:
     )
 
 
+# The per-sequence composition hashes (item 4.4). Function cases for the same
+# reason the tracks variants above are: what has to be pinned is the payload
+# *wrapper*, because renaming a key inside one would move every stored
+# composition and a corpus that called ``hash_params`` with a hand-built dict
+# would stay green straight through it. The reordered case is beside the ordered
+# one deliberately -- a pair that agreed would be the defect, visible in the data
+# file rather than only in a test.
+
+
+def _media_single_camera() -> str:
+    return media_composition(
+        [
+            MediaMember(camera="", video_order=0, uid="uid-a"),
+            MediaMember(camera="", video_order=1, uid="uid-b"),
+        ]
+    ).digest
+
+
+def _media_reordered() -> str:
+    return media_composition(
+        [
+            MediaMember(camera="", video_order=0, uid="uid-b"),
+            MediaMember(camera="", video_order=1, uid="uid-a"),
+        ]
+    ).digest
+
+
+def _media_two_cameras() -> str:
+    return media_composition(
+        [
+            MediaMember(camera="camB", video_order=0, uid="uid-b"),
+            MediaMember(camera="camA", video_order=0, uid="uid-a"),
+        ]
+    ).digest
+
+
+def _media_empty() -> str:
+    return media_composition([]).digest
+
+
+def _tracks_raw_two_files() -> str:
+    return tracks_raw_composition(
+        [
+            SourceMember(name="a.npy", digest="digest-a", algo="md5"),
+            SourceMember(name="b.npy", digest="digest-b", algo="md5"),
+        ]
+    ).digest
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,
     "tracks/trex-variant": _trex_variant,
     "tracks/infer-variant": _infer_variant,
+    "composition/media-single-camera": _media_single_camera,
+    "composition/media-reordered": _media_reordered,
+    "composition/media-two-cameras": _media_two_cameras,
+    "composition/media-empty": _media_empty,
+    "composition/tracks-raw-two-files": _tracks_raw_two_files,
 }
 
 
@@ -278,6 +338,7 @@ def test_every_family_is_covered() -> None:
         "infer-pose",
         "infer-points",
         "infer-localizer",
+        "composition",
         "tracks",
     }
     assert families == expected, f"family coverage changed: {families ^ expected}"
