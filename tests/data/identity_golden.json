@@ -32,6 +32,7 @@
   "pair-posedistance-pca/default": "0.1-c217c7a3fd",
   "pair-posedistance-pca/scope-a": "0.1-a1ebe3550f",
   "pair-posedistance-pca/scope-ab": "0.1-9931fb1e91",
+  "pair-posedistance-pca/scope-ab-composition-ignored": "0.1-9931fb1e91",
   "pair-position/default": "0.1-684f4115dc",
   "pair-wavelet/default": "0.1-0fbf2d766d",
   "pair-wavelet/params-nfreq": "0.1-9221abe0f4",

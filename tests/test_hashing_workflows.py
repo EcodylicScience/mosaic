@@ -19,9 +19,9 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import Scope, hash_params
 from mosaic.core.pipeline.index import feature_index, feature_index_path
-from mosaic.core.pipeline.run import compute_run_id, run_feature
+from mosaic.core.pipeline.run import _scope_term, compute_run_id, run_feature
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -34,7 +34,12 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 
-from .conftest import add_track_sequences, add_tracks_variant, track_sequences
+from .conftest import (
+    add_media_sequence,
+    add_track_sequences,
+    add_tracks_variant,
+    track_sequences,
+)
 
 # --- Mock features -----------------------------------------------------------
 #
@@ -313,8 +318,10 @@ def test_h2_an_unpinned_run_over_two_variants_refuses_rather_than_guessing(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "M3/M4: no composition hash and no consumed-root record exist, so the blast "
-        "radius cannot be enumerated. Closes with Stage 5 and item 6.2."
+        "M4: the composition hash and the consumed-root record now exist (item "
+        "4.4, and item 5.1's features half). What is still missing is the "
+        "reverse-dependency walk that turns a changed composition into a delete "
+        "set -- item 6.2."
     ),
 )
 def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
@@ -332,30 +339,10 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "M3/M4: same prerequisites as case 1. This is the case that ruled out a "
-        "single per-sequence hash, so it is the one most worth having as a test."
-    ),
-)
-def test_h3_case2_a_new_source_invalidates_nothing(
-    scenario_dataset: Dataset,
-) -> None:
-    """A track-only sequence gains its first video: the delete set is empty.
-
-    Nothing that consumes video had ever been runnable here, so the change adds
-    capability rather than invalidating anything. A single hash over all sources
-    would have thrown away a feature chain months deep to no purpose.
-    """
-    raise NotImplementedError("requires per-root composition hashes")
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M3/M4: the tracks row now records `producer` and `consumed_source_roots` "
-        "(item 2.4, Stage 2), so which producer made a table and which roots it "
-        "read are both answerable. What is still missing is the composition hash "
-        "that says a root *changed*, and the reverse-dependency walk that turns "
-        "that into a blast radius -- Stage 5 and item 6.2."
+        "M4: the tracks row records `producer` and `consumed_source_roots` (item "
+        "2.4), and the composition hash that says a root *changed* now exists "
+        "(item 4.4). What is still missing is the reverse-dependency walk that "
+        "turns that into a blast radius -- item 6.2."
     ),
 )
 def test_h3_case3_only_the_branch_whose_source_changed_is_invalidated(
@@ -465,20 +452,105 @@ def test_h5_widening_the_scope_moves_a_global_fit_identifier(
     assert (_run_dir(scenario_dataset, feature_dir, wide) / "state.txt").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M3: the scope term carries bare (group, sequence) pairs; composition "
-        "hashes do not exist yet. Closes with implementation item 4.4."
-    ),
-)
+class _GlobalMediaFit(_GlobalFit):
+    """Scope-dependent *and* media-reading: the only shape the term reaches."""
+
+    name = "scenario-global-media-fit"
+    consumed_roots: tuple[str, ...] = ("media_raw",)
+
+
 def test_h5_scope_term_carries_composition_hashes() -> None:
     """The scope term is a sorted list of ``(group, sequence, composition hash)``.
 
-    A list, never a set of bare hashes: cardinality and distinctness have to
-    survive the hash.
+    A pure function of the ``Scope``, so this needs no dataset. Four claims, each
+    a way the term could be got wrong quietly.
     """
-    raise NotImplementedError("requires per-root composition hashes")
+    both = {("", "seq_a"), ("", "seq_b")}
+    distinct = Scope(
+        entries=both,
+        compositions={
+            ("", "seq_a"): {"media_raw": "aaaaaaaaaa"},
+            ("", "seq_b"): {"media_raw": "bbbbbbbbbb"},
+        },
+    )
+    shared = Scope(
+        entries=both,
+        compositions={
+            ("", "seq_a"): {"media_raw": "aaaaaaaaaa"},
+            ("", "seq_b"): {"media_raw": "aaaaaaaaaa"},
+        },
+    )
+    bare = Scope(entries=both)
+
+    reader = _GlobalMediaFit()
+
+    # A list, not a set of bare hashes: two sequences sharing one composition are
+    # still two entries, and a set would have collapsed them.
+    assert compute_run_id(reader, None, None, distinct) != compute_run_id(
+        reader, None, None, shared
+    )
+
+    # The composition reaches the identifier of a feature that declares the root.
+    assert compute_run_id(reader, None, None, distinct) != compute_run_id(
+        reader, None, None, bare
+    )
+
+    # And not of one that does not -- the guard against coupling every
+    # table-only feature to a root it never opened.
+    assert compute_run_id(_GlobalFit(), None, None, distinct) == compute_run_id(
+        _GlobalFit(), None, None, bare
+    )
+
+    # The omission rule, which is what kept the golden corpus still: an entry
+    # with no composition contributes a two-element entry. Compared through
+    # `hash_params` rather than by ==, because that is where the claim lives:
+    # `identity_ready` maps tuples and lists alike, so the term this builds is
+    # byte-identical to the `sorted(scope.entries)` the payload carried before
+    # item 4.4, even though a list and a tuple are not `==`.
+    assert hash_params(_scope_term(reader, bare)) == hash_params(sorted(bare.entries))
+    assert _scope_term(reader, distinct) == [
+        ["", "seq_a", [["media_raw", "aaaaaaaaaa"]]],
+        ["", "seq_b", [["media_raw", "bbbbbbbbbb"]]],
+    ]
+
+
+def test_h3_case2_a_new_source_invalidates_nothing(
+    scenario_dataset: Dataset,
+) -> None:
+    """A track-only sequence gains its first video: the delete set is empty.
+
+    The case that ruled out a single per-sequence hash, so it is the one most
+    worth having as a test. Nothing that consumes video had ever been runnable
+    here, so the change adds capability rather than invalidating anything -- and
+    one hash over all a sequence's sources would have thrown away a feature chain
+    months deep to no purpose.
+    """
+    before_perframe = run_feature(scenario_dataset, _PerFrame()).run_id
+    before_fit = run_feature(scenario_dataset, _GlobalFit()).run_id
+
+    add_media_sequence(scenario_dataset, "seq_a")
+
+    assert run_feature(scenario_dataset, _PerFrame()).run_id == before_perframe
+    assert run_feature(scenario_dataset, _GlobalFit()).run_id == before_fit, (
+        "a media composition appearing where there was none moved a tracks-only "
+        "identifier"
+    )
+    # The media composition really did appear -- otherwise this passes vacuously.
+    assert read_sequence_index(scenario_dataset, "media_raw").iloc[0]["composition"]
+
+
+def test_h3_case2_the_branch_that_consumed_it_does_move(
+    scenario_dataset: Dataset,
+) -> None:
+    """The other half: scoped invalidation is scoped, not absent.
+
+    Without this, "nothing was invalidated" would be satisfied just as well by a
+    composition that reached nothing at all.
+    """
+    before = run_feature(scenario_dataset, _GlobalMediaFit()).run_id
+    add_media_sequence(scenario_dataset, "seq_a")
+    after = run_feature(scenario_dataset, _GlobalMediaFit()).run_id
+    assert after != before
 
 
 # --- what a feature row records, as against what its identifier carries -------

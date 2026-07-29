@@ -395,6 +395,44 @@ def entry_composition(feature: Feature, scope: Scope, entry: tuple[str, str]) ->
     return ",".join(f"{root}={digest}" for root, digest in present)
 
 
+def _scope_term(feature: Feature, scope: Scope) -> list[list[object]]:
+    """The ``_scope_entries`` term: a sorted list of ``(group, sequence[, comp])``.
+
+    **The third element is omitted, never empty**, and that is the whole
+    mechanism. ``json.dumps(sort_keys=True)`` digests ``["", "a"]`` differently
+    from ``["", "a", []]``, so a two-element entry is byte-identical to what
+    ``sorted(scope.entries)`` produced before this term existed -- which is what
+    keeps every identifier still on a dataset that has recorded no compositions,
+    and what makes the golden diff for this change *zero moved lines*. Same
+    omit-an-absent-term rule ``_tracks`` and ``tracks_identity``'s ``upstream``
+    already state.
+
+    A **list**, never a set of bare digests: two sequences sharing one
+    composition are still two entries, and a set would collapse them, so
+    cardinality and distinctness would not survive the hash.
+
+    The third element is itself a sorted list of ``[root, digest]`` pairs rather
+    than one combined digest, so ``params.json`` and the golden corpus stay
+    readable and no second minter is introduced with a second scheme to keep
+    honest. Every feature that exists today declares at most one root.
+
+    Mixed entries within one scope are correct, not a wart: a sequence whose
+    composition is recorded and one whose is not are genuinely different states,
+    and a fit over both must move when the first changes and must not move
+    because the second is unknown.
+    """
+    roots = sorted({root for root in feature.consumed_roots if root})
+    term: list[list[object]] = []
+    for group, sequence in sorted(scope.entries):
+        pairs = [
+            [root, digest]
+            for root in roots
+            if (digest := scope.composition_of((group, sequence), root))
+        ]
+        term.append([group, sequence, pairs] if pairs else [group, sequence])
+    return term
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -450,7 +488,7 @@ def compute_run_id(
         "_frame_range": [frame_start, frame_end],
     }
     if feature.scope_dependent:
-        hashable["_scope_entries"] = sorted(scope.entries)
+        hashable["_scope_entries"] = _scope_term(feature, scope)
     if scope.tracks_variants:
         # Sorted here as well as in the resolver. Which recipes a run read is a
         # *set*, and `_ready` preserves list order on purpose, so hashing the
@@ -712,7 +750,21 @@ def _run_feature_impl(
             # rather than the union -- which is not what an edge walk needs.
             "_scope": {
                 "scope_dependent": feature.scope_dependent,
+                "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
                 "entries": [list(entry) for entry in sorted(scope.entries)],
+                # Load-bearing, not garnish. Two runs both marked scheme 4 can
+                # differ because one ran before a `sequences.csv` existed and one
+                # after -- honest, since a scheme names the contract rather than
+                # the values, but only legible if the values are written down.
+                # Recorded for *every* root rather than the consumed ones, so
+                # item 5.2's drift check and item 6.2's blast walk can explain a
+                # run without re-deriving it.
+                "compositions": {
+                    make_entry_key(group, sequence): dict(sorted(per_root.items()))
+                    for (group, sequence), per_root in sorted(
+                        scope.compositions.items()
+                    )
+                },
             },
             # Which concrete upstream run each reference was pinned to. The
             # identifier already covers these (they were pinned before it was

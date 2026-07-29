@@ -57,6 +57,13 @@ class Case:
         tracks_variants: Resolved tracks recipes. Affects any feature reading
             ``tracks``, scope-dependent or not, and is omitted from the payload
             when empty -- which is why every pre-existing case is unaffected.
+        compositions: Per-entry ``(group, sequence, ((root, digest), ...))``
+            source compositions. **Literals only.** This corpus is deliberately
+            filesystem-free, so a value here stands in for what
+            ``build_manifest`` would have read, never for a real one. Affects a
+            ``scope_dependent`` feature that declares the matching root, and is
+            omitted from the payload otherwise -- which is why every pre-existing
+            case is unaffected by item 4.4.
     """
 
     case_id: str
@@ -67,6 +74,9 @@ class Case:
     frame_end: int | None = None
     scope: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     tracks_variants: tuple[str, ...] = field(default_factory=tuple)
+    compositions: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = field(
+        default_factory=tuple
+    )
 
 
 # Features that construct from ``["tracks"]`` with default params. Listed
@@ -158,6 +168,21 @@ CASES: tuple[Case, ...] = (
         case_id="pair-posedistance-pca/scope-ab",
         feature="pair-posedistance-pca",
         scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    # The item 4.4 guard, and it is a guard rather than coverage: this feature
+    # declares consumed_roots = (), so a composition in scope must reach nothing.
+    # Its identifier must equal `pair-posedistance-pca/scope-ab` exactly -- if it
+    # ever differs, a composition leaked into a feature that does not read the
+    # root, which is the false invalidation the media-storage note warns about
+    # and which would couple every table-only feature to media it never opened.
+    Case(
+        case_id="pair-posedistance-pca/scope-ab-composition-ignored",
+        feature="pair-posedistance-pca",
+        scope=(("", "seq_a"), ("", "seq_b")),
+        compositions=(
+            ("", "seq_a", (("media_raw", "aaaaaaaaaa"),)),
+            ("", "seq_b", (("tracks_raw", "bbbbbbbbbb"),)),
+        ),
     ),
     # --- feature-to-feature inputs ---
     Case(
@@ -325,7 +350,14 @@ CASES: tuple[Case, ...] = (
 def _identifier(case: Case) -> str:
     """Compute the identifier for *case*, with no filesystem involved."""
     feature = build_feature(case.feature, case.inputs, case.params)
-    scope = Scope(entries=set(case.scope), tracks_variants=case.tracks_variants)
+    scope = Scope(
+        entries=set(case.scope),
+        tracks_variants=case.tracks_variants,
+        compositions={
+            (group, sequence): dict(pairs)
+            for group, sequence, pairs in case.compositions
+        },
+    )
     run_id, _ = compute_run_id(feature, case.frame_start, case.frame_end, scope)
     return run_id
 

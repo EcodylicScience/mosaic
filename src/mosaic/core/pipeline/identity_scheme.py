@@ -42,7 +42,7 @@ from ._utils import atomic_write
 
 MARKER_NAME: Final = ".identity_scheme"
 
-FEATURE_IDENTITY_SCHEME: Final = "3"
+FEATURE_IDENTITY_SCHEME: Final = "4"
 """The contract ``compute_run_id`` implements today.
 
 Scheme 3 (item 3.3): the payload gains ``_tracks``, the tracks recipes behind
@@ -52,6 +52,26 @@ this closes the last consumed artifact whose identity the digest omitted.
 Because the term is omitted when absent, a dataset whose tracks predate variant
 identities digests exactly as it did under scheme 2; the marker still moves,
 because what the digest *covers* changed even where its value did not.
+
+Scheme 4 (item 4.4): a ``scope_dependent`` feature's scope term carries, per
+entry, the recorded composition of each source root that feature declares it
+opens. The shape is unchanged for an entry with no recorded composition -- the
+third element is *omitted*, not empty -- so a dataset holding no per-sequence
+index mints identifiers byte-identical to scheme 3's, and the golden corpus moved
+zero lines when this landed.
+
+Anticipating the obvious objection: two runs both marked "4" can differ because
+one ran before a ``sequences.csv`` existed and one after. That is honest. A
+scheme names the *contract*, not the values, and both runs implement contract 4
+faithfully; what changed between them is a dataset fact, exactly as adding a
+sequence to the scope is. The values themselves are written unhashed into
+``params.json``'s ``_scope`` block, so the difference is legible rather than
+inferred. What a marker must never do is claim contract 4 for a run minted under
+3, and it does not.
+
+Scheme 3 (item 3.3): the digest gained a ``_tracks`` term naming which tracks
+recipes a run read, resolved from the index rather than from the ``"tracks"``
+literal the caller wrote.
 
 Scheme 2 (item 1.1): every ``Result``-shaped reference is pinned to a concrete
 ``run_id`` before the payload is built, so ``_inputs`` carries the upstream run
