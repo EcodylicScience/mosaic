@@ -3,7 +3,7 @@
 ``TRexIndexRow`` carries three paths, not one: the working directory, the
 source video, and the ``.pv``. Only ``abs_path`` was ever made portable, and
 neither path pass reached the tracker root at all -- its default location,
-``tracks_raw/trex``, is a *subdirectory* of the tracks_raw root, whose own
+``_tracking/trex``, is a *subdirectory* of the ``_tracking`` root, whose own
 ``index.csv`` the loops never visited.
 
 That was invisible until the tracker's reuse guard began comparing the stored

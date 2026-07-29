@@ -182,6 +182,11 @@ _SLEAP_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
     "analysis_h5_path",
 )
 
+# Path-bearing columns on the Lightning Pose tracker index beyond ``abs_path``:
+# the source video and the predictions CSV. Any new path column on
+# LitposeIndexRow belongs here, or it silently stops being portable.
+_LITPOSE_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("video_abs_path", "csv_path")
+
 # Per-root, the path-bearing columns beyond ``abs_path``. One table rather than a
 # special case per root, because both path passes read raw CSVs and have no row
 # class to ask -- so a column missing from here silently stops being portable,
@@ -190,6 +195,7 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
     "trex": _TREX_INDEX_PATH_COLUMNS,
     "sleap": _SLEAP_INDEX_PATH_COLUMNS,
+    "litpose": _LITPOSE_INDEX_PATH_COLUMNS,
 }
 
 # The track-converter registry moved to ``core.track_converter``. That is what
@@ -329,8 +335,12 @@ default_roots = {
     # ── derived (computed by mosaic, regenerable) ──
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
     "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
-    "trex": "tracks_raw/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
-    "sleap": "tracks_raw/sleap",  # run-addressed SLEAP outputs (.predictions.slp, .analysis.h5)
+    # Raw tracker output lives under _tracking/ (not tracks_raw/), so tracks_raw
+    # holds only user-uploaded content.
+    "_tracking": "_tracking",  # parent of the per-tracker raw-output roots below
+    "trex": "_tracking/trex",  # run-addressed TREx outputs (.pv, data/*.npz, settings)
+    "sleap": "_tracking/sleap",  # run-addressed SLEAP outputs (.predictions.slp, .analysis.h5)
+    "litpose": "_tracking/litpose",  # run-addressed Lightning Pose outputs (predictions.csv)
     "predictions": "predictions",  # run-addressed model-inference outputs (before -> tracks)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
@@ -590,8 +600,10 @@ class Dataset:
             "media": "",
             "tracks_raw": "",
             "tracks": "",
+            "_tracking": "",
             "trex": "",
             "sleap": "",
+            "litpose": "",
             "predictions": "",
             "features": "",
             "labels": "",
@@ -965,13 +977,14 @@ class Dataset:
         for idx_path in subdir_indexes("frames"):
             record(idx_path)
 
-        # Tracker runs. Reached by root key, not by the default location
-        # ``tracks_raw/trex`` -- that is a *subdirectory* of the tracks_raw root
-        # above, whose own index.csv the loop never visits, and item 8.1 moves
-        # it to ``_tracking/trex`` anyway. SLEAP's ``tracks_raw/sleap`` is the
-        # same shape and needs the same explicit reach.
+        # Tracker runs. Reached by root key, not by a loop over the top-level
+        # roots above: each tracker root (``_tracking/trex``, ``_tracking/sleap``,
+        # ``_tracking/litpose``) is a *subdirectory* of the ``_tracking`` root,
+        # whose own index.csv that loop never visits. (Raw tracker output was moved
+        # out of ``tracks_raw`` so it holds only user-uploaded content.)
         record(root_index("trex"), _INDEX_PATH_COLUMNS["trex"])
         record(root_index("sleap"), _INDEX_PATH_COLUMNS["sleap"])
+        record(root_index("litpose"), _INDEX_PATH_COLUMNS["litpose"])
 
         return results
 
@@ -1103,8 +1116,8 @@ class Dataset:
                         if count > 0:
                             results[str(sub_idx)] = count
 
-        # Tracker runs: see the note in rewrite_index_paths -- the trex / sleap
-        # roots are subdirectories of tracks_raw by default, so the loop above
+        # Tracker runs: see the note in rewrite_index_paths -- the trex / sleap /
+        # litpose roots are subdirectories of ``_tracking``, so the loop above
         # misses them.
         if self.has_root("trex"):
             trex_idx = self.get_root("trex") / "index.csv"
@@ -1116,6 +1129,11 @@ class Dataset:
             count = _convert_index(sleap_idx, _INDEX_PATH_COLUMNS["sleap"])
             if count > 0:
                 results[str(sleap_idx)] = count
+        if self.has_root("litpose"):
+            litpose_idx = self.get_root("litpose") / "index.csv"
+            count = _convert_index(litpose_idx, _INDEX_PATH_COLUMNS["litpose"])
+            if count > 0:
+                results[str(litpose_idx)] = count
 
         # --- 8c. run_info.json files (frame extraction manifests) ---
         if frames_root:

@@ -125,6 +125,39 @@ Unlike TRex, SLEAP inference is headless and needs no `Xvfb`. Reading SLEAP's
 analysis HDF5 in the mosaic env needs `h5py` (bundled in the `[recommended]`
 extra); no SLEAP package is imported on the mosaic side.
 
+### Tracking videos with Lightning Pose (optional)
+
+If you already have a trained
+[Lightning Pose](https://lightning-pose.readthedocs.io) model, mosaic can run its
+pose inference and bridge the result into standardized tracks — one `litpose` op,
+the same shape as TRex and SLEAP. Lightning Pose is single-animal and per-frame
+(no cross-frame identity), so each video yields one `id=0` track:
+
+```python
+from mosaic.tracking import run_litpose
+
+run_litpose(ds, model_path="models/litpose_model")            # standalone / notebook
+```
+
+or through the op runner:
+`mosaic run --kind litpose --params '{"model_path": "models/litpose_model"}'`.
+
+**Own-environment setup.** Lightning Pose is heavy (PyTorch + Lightning + NVIDIA
+DALI) and its video inference needs a Linux CUDA GPU, so install it in its **own**
+environment rather than the mosaic env:
+
+```bash
+pip install lightning-pose      # in a dedicated env; puts `litpose` on $PATH
+# or a conda env:  conda create -n litpose ... ; then MOSAIC_LITPOSE_CONDA_ENV=litpose
+```
+
+mosaic finds the `litpose` script on `$PATH` by default (and runs inference through
+that environment's `python`); point it elsewhere with
+`litpose_conda_env=`/`MOSAIC_LITPOSE_CONDA_ENV` or
+`litpose_bin=`/`MOSAIC_LITPOSE_BIN`. Lightning Pose inference is headless and needs
+no `Xvfb`. Its DeepLabCut-style CSV is read by the built-in `deeplabcut` converter;
+no Lightning Pose package is imported on the mosaic side.
+
 ## Run features
 
 Features are composable pipeline stages. Each produces per-sequence

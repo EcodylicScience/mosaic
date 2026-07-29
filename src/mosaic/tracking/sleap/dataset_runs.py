@@ -525,7 +525,7 @@ def run_sleap(
     Returns the content-addressed ``run_id``.
     """
     if not ds.has_root("sleap"):
-        ds.set_root("sleap", "tracks_raw/sleap")
+        ds.set_root("sleap", "_tracking/sleap")
 
     # Resolve the model *before* the settings that name it, because what the
     # settings carry is the weights' identity, not the paths that pointed at

@@ -74,6 +74,7 @@ from mosaic.core.pipeline.tracks_identity import (
     convert_variant_payload,
     converter_op,
     infer_variant_payload,
+    litpose_variant_payload,
     sleap_variant_payload,
     tracks_run_id,
     trex_variant_payload,
@@ -81,6 +82,7 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.pipeline.types import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
+from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 from mosaic.tracking.ops.infer import infer_run_id
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
@@ -156,6 +158,19 @@ OP_CASES: tuple[OpCase, ...] = (
             model_paths=["models/sleap_centroid", "models/sleap_instance"],
             tracker="simple",
             peak_threshold=0.3,
+        ),
+    ),
+    # --- litpose --------------------------------------------------------------
+    OpCase(
+        case_id="litpose/single-model",
+        params=_op_params("litpose", model_path="models/litpose_model"),
+    ),
+    OpCase(
+        case_id="litpose/with-overrides",
+        params=_op_params(
+            "litpose",
+            model_path="models/litpose_model",
+            litpose_overrides={"data.image_resize_dims.height": 256},
         ),
     ),
     # --- transcode params (the recipe itself is pinned below) -----------------
@@ -263,6 +278,19 @@ def _sleap_variant() -> str:
         SLEAP_VERSION,
         sleap_variant_payload(
             {"model": "0123456789abcdef", "tracker": "flow", "peak_threshold": 0.2}
+        ),
+    )
+
+
+def _litpose_variant() -> str:
+    # The integration's own settings, passed through unwrapped -- so this value is
+    # byte-identical to litpose_run_id(settings) for the same settings. The model
+    # term is a content digest (a literal here), never a path.
+    return tracks_run_id(
+        LITPOSE_KIND,
+        LITPOSE_VERSION,
+        litpose_variant_payload(
+            {"model": "0123456789abcdef", "litpose_overrides": None}
         ),
     )
 
@@ -380,6 +408,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/convert-variant": _convert_variant,
     "tracks/trex-variant": _trex_variant,
     "tracks/sleap-variant": _sleap_variant,
+    "tracks/litpose-variant": _litpose_variant,
     "tracks/infer-variant": _infer_variant,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
@@ -428,6 +457,7 @@ def test_every_family_is_covered() -> None:
         "frames",
         "trex",
         "sleap",
+        "litpose",
         "transcode",
         "train-pose",
         "train-points",

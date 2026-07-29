@@ -12,6 +12,7 @@ from mosaic.tracking.frame_extraction import (
     get_frame_paths,
     list_frame_runs,
 )
+from mosaic.tracking.litpose import list_litpose_runs, run_litpose
 from mosaic.tracking.sleap import list_sleap_runs, run_sleap
 from mosaic.tracking.trex import list_trex_runs, run_trex
 
@@ -42,8 +43,10 @@ __all__ = [
     "get_frame_manifests",
     "get_frame_paths",
     "list_frame_runs",
+    "list_litpose_runs",
     "list_sleap_runs",
     "list_trex_runs",
+    "run_litpose",
     "run_sleap",
     "run_trex",
 ]

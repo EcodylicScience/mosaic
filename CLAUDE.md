@@ -132,7 +132,10 @@ the central object users interact with. A `Dataset` manages a fixed set of
 named roots:
 
 - `media/`        — video files + `index.csv` (ffprobe metadata)
-- `tracks_raw/`   — raw input tracks/labels + `index.csv`
+- `tracks_raw/`   — user-uploaded raw tracks/labels + `index.csv`
+- `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
+                  (`trex` / `sleap` / `litpose`), before conversion; kept out of
+                  `tracks_raw/` so that root holds only user-uploaded content
 - `tracks/<variant>/` — standardized `<group>__<seq>.parquet`, one directory
                   per tracks recipe, + a single typed `index.csv`
 - `labels/<kind>/` — converted manual labels (`.npz`)
@@ -234,7 +237,8 @@ src/mosaic/
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
     ├── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
-    └── sleap/                  # SLEAP CLI wrapper (own env; MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN; sleap-track + analysis-h5 bridge)
+    ├── sleap/                  # SLEAP CLI wrapper (own env; MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN; sleap-track + analysis-h5 bridge)
+    └── litpose/                # Lightning Pose wrapper (own env; MOSAIC_LITPOSE_CONDA_ENV / MOSAIC_LITPOSE_BIN; single-animal, reuses the deeplabcut converter)
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,
