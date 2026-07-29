@@ -19,7 +19,7 @@ src/mosaic/
 │   ├── schema.py        # Track schema validation
 │   ├── analysis.py      # Clustering metrics
 │   ├── helpers.py       # Label loading, safe name encoding
-│   └── track_library/   # Track format converters (CalMS21, MABe22, TREx)
+│   └── track_library/   # Track format converters (CalMS21, MABe22, TREx, SLEAP, DeepLabCut)
 ├── behavior/
 │   ├── feature_library/ # ~30 registered feature implementations
 │   ├── model_library/   # Legacy — being phased out (see repo summary)

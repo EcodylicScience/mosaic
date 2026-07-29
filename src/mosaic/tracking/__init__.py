@@ -12,6 +12,7 @@ from mosaic.tracking.frame_extraction import (
     get_frame_paths,
     list_frame_runs,
 )
+from mosaic.tracking.sleap import list_sleap_runs, run_sleap
 from mosaic.tracking.trex import list_trex_runs, run_trex
 
 # Explicit re-export: importing the ops subpackage runs its registration side
@@ -41,6 +42,8 @@ __all__ = [
     "get_frame_manifests",
     "get_frame_paths",
     "list_frame_runs",
+    "list_sleap_runs",
     "list_trex_runs",
+    "run_sleap",
     "run_trex",
 ]

@@ -44,6 +44,7 @@ __all__ = [
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
+    "sleap_variant_payload",
     "tracks_run_id",
     "trex_variant_payload",
     "tracks_variant_root",
@@ -120,6 +121,22 @@ def trex_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
 
     The settings are scope-free -- knobs only, no video paths -- so one value
     still names one variant across every sequence the run covered.
+    """
+    return dict(settings)
+
+
+def sleap_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
+    """What determines a table bridged from a SLEAP run: the tracker settings.
+
+    Passed through unwrapped, exactly like :func:`trex_variant_payload`, so the
+    value this mints is byte-identical to the integration's own
+    ``sleap_run_id(settings)``. ``tracks/sleap.<v>-<digest>/`` and
+    ``sleap/sleap.<v>-<digest>/`` then read as obviously the same run, and the op
+    run identity and the tracks variant identity are one digest rather than two.
+
+    The settings carry the model as a content digest (never a path) and the
+    tracking knobs only -- scope-free -- so one value still names one variant
+    across every sequence the run covered.
     """
     return dict(settings)
 

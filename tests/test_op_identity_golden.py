@@ -74,6 +74,7 @@ from mosaic.core.pipeline.tracks_identity import (
     convert_variant_payload,
     converter_op,
     infer_variant_payload,
+    sleap_variant_payload,
     tracks_run_id,
     trex_variant_payload,
 )
@@ -82,6 +83,7 @@ from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
 from mosaic.tracking.ops.infer import infer_run_id
 from mosaic.tracking.ops.train import train_run_id
+from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "op_identity_golden.json"
@@ -141,6 +143,20 @@ OP_CASES: tuple[OpCase, ...] = (
     OpCase(
         case_id="trex/max-individuals",
         params=_op_params("trex", track_max_individuals=4, cm_per_pixel=0.05),
+    ),
+    # --- sleap ----------------------------------------------------------------
+    OpCase(
+        case_id="sleap/single-model",
+        params=_op_params("sleap", model_paths=["models/sleap_bottomup"]),
+    ),
+    OpCase(
+        case_id="sleap/top-down",
+        params=_op_params(
+            "sleap",
+            model_paths=["models/sleap_centroid", "models/sleap_instance"],
+            tracker="simple",
+            peak_threshold=0.3,
+        ),
     ),
     # --- transcode params (the recipe itself is pinned below) -----------------
     OpCase(
@@ -235,6 +251,19 @@ def _infer_variant() -> str:
         "infer-points",
         "0.1",
         infer_variant_payload({"conf": 0.5}, "train-points.0.1-aaaaaaaaaa"),
+    )
+
+
+def _sleap_variant() -> str:
+    # The tracker's own settings, passed through unwrapped -- so this value is
+    # byte-identical to sleap_run_id(settings) for the same settings. The model
+    # term is a content digest (a literal here), never a path.
+    return tracks_run_id(
+        SLEAP_KIND,
+        SLEAP_VERSION,
+        sleap_variant_payload(
+            {"model": "0123456789abcdef", "tracker": "flow", "peak_threshold": 0.2}
+        ),
     )
 
 
@@ -350,6 +379,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,
     "tracks/trex-variant": _trex_variant,
+    "tracks/sleap-variant": _sleap_variant,
     "tracks/infer-variant": _infer_variant,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
@@ -397,6 +427,7 @@ def test_every_family_is_covered() -> None:
     expected = {
         "frames",
         "trex",
+        "sleap",
         "transcode",
         "train-pose",
         "train-points",

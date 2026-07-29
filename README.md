@@ -10,8 +10,8 @@ training, and annotated video output.
 
 Given pose tracks (per-frame keypoints with identities), mosaic produces:
 
-- standardized parquet track tables from CalMS21, MABe22, TREx, DeepLabCut, or
-  user-defined formats;
+- standardized parquet track tables from CalMS21, MABe22, TREx, SLEAP,
+  DeepLabCut, or user-defined formats;
 - per-frame and per-sequence behavioral features — kinematic, social, spectral,
   and reduction;
 - unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,

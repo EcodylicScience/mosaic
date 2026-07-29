@@ -220,7 +220,7 @@ src/mosaic/
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
-│   └── track_library/          # track converters (CalMS21, MABe22, TREx, DeepLabCut)
+│   └── track_library/          # track converters (CalMS21, MABe22, TREx, SLEAP, DeepLabCut)
 ├── behavior/
 │   ├── feature_library/        # ~35+ per-frame + global features (plugin)
 │   │   ├── movement/           # optional movement-library integration
@@ -233,7 +233,8 @@ src/mosaic/
     ├── pose_training/          # YOLO pose, POLO point, localizer training
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
-    └── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
+    ├── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
+    └── sleap/                  # SLEAP CLI wrapper (own env; MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN; sleap-track + analysis-h5 bridge)
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,
