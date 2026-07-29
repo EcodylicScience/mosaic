@@ -395,11 +395,116 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
             tdf.columns
         )
 
-    # inference index row per sequence
-    from mosaic.tracking.ops.infer import inference_index, prediction_index_path
+    # The audit parquet per sequence, under _tracking rather than a root of its
+    # own (item 8.7). There is no inference index to assert against any more:
+    # the edge from a tracks table back to the run that produced it is
+    # ``producer_run_id``, asserted above through the variant directory, and the
+    # index this replaced was written, never read, and non-portable.
+    from mosaic.tracking.ops.infer import infer_run_root
 
-    iidx = inference_index(prediction_index_path(ds, "infer-pose"))
-    assert set(iidx.read(run_id=run_id)["sequence"]) == {"vid1", "vid2"}
+    run_root = infer_run_root(ds, "infer-pose", run_id)
+    assert {p.name for p in run_root.iterdir() if p.is_dir()} == {"vid1", "vid2"}
+    for sequence in ("vid1", "vid2"):
+        assert (run_root / sequence / "predictions.parquet").exists()
+
+
+# --- infer under the marker protocol (items 8.2 / 8.3, via 8.7) ------------
+
+
+def _fake_pose_model(monkeypatch, tmp_path) -> Path:
+    """Patch the pose backend out and return a bare weights path."""
+    import mosaic.tracking.pose_training.inference as inf
+
+    def fake_run_inference(model, video, output_dir=None, **kw):
+        return ["r"]
+
+    def fake_to_df(results):
+        return pd.DataFrame(
+            {
+                "frame": range(4),
+                "id": [0] * 4,
+                "poseX0": [1.0] * 4,
+                "poseY0": [2.0] * 4,
+                "poseP0": [0.9] * 4,
+            }
+        )
+
+    monkeypatch.setattr(inf, "run_inference", fake_run_inference)
+    monkeypatch.setattr(inf, "inference_to_dataframe", fake_to_df)
+    model = tmp_path / "m.pt"
+    model.write_bytes(b"w")
+    return model
+
+
+def test_a_finished_inference_entry_carries_a_completion_marker(tmp_path, monkeypatch):
+    """The sweeper reads markers, not producers.
+
+    Inference was the one thing writing under ``_tracking`` that spoke none of
+    the protocol -- so a sweeper would have had to special-case it, or fall back
+    to mtime for that root alone, which defeats writing it once.
+    """
+    from mosaic.core.pipeline.markers import read_inflight, read_phase_marker
+    from mosaic.tracking.ops.infer import infer_run_root
+
+    ds = _make_dataset(tmp_path)
+    model = _fake_pose_model(monkeypatch, tmp_path)
+
+    run_id = run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
+
+    seq_dir = infer_run_root(ds, "infer-pose", run_id) / "vid1"
+    marker = read_phase_marker(seq_dir, "infer")
+    assert marker is not None
+    assert marker.run_id == run_id
+    assert marker.completed_at
+    assert marker.recorded_output.endswith("predictions.parquet")
+    # And the claim is released, or the next run reads a dead directory as busy.
+    assert read_inflight(seq_dir) is None
+
+
+def test_an_entry_held_by_another_execution_is_skipped(tmp_path, monkeypatch):
+    """A claim, not a cache -- two writers on one predictions.parquet.
+
+    Asserted by the *absence* of output rather than by a log line: the point is
+    that the second execution did not write, not that it said so.
+    """
+    import shutil
+
+    from mosaic.core.pipeline.markers import new_inflight, write_inflight
+    from mosaic.tracking.ops.infer import infer_run_root
+
+    ds = _make_dataset(tmp_path)
+    model = _fake_pose_model(monkeypatch, tmp_path)
+
+    # Learn the identifier by running, rather than predicting it: ``model_id``
+    # for bare weights is their content digest, and a hand-built prediction that
+    # got it wrong would plant the claim in a directory nothing ever visits --
+    # passing the "did not write" half for the wrong reason.
+    run_id = run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
+    run_root = infer_run_root(ds, "infer-pose", run_id)
+    shutil.rmtree(run_root)
+
+    held = run_root / "vid1"
+    held.mkdir(parents=True)
+    write_inflight(
+        held,
+        new_inflight(
+            execution_id="someone-else",
+            host="other-host",
+            pid=1,
+            phase="infer",
+            idle_seconds=3600.0,
+        ),
+    )
+
+    assert (
+        run_op(ds, "infer-pose", {"model": str(model), "convert_to_tracks": True})
+        == run_id
+    )
+
+    assert not (held / "predictions.parquet").exists(), "wrote into a held directory"
+    assert (run_root / "vid2" / "predictions.parquet").exists(), (
+        "an unheld entry must still run"
+    )
 
 
 # --- trex op (registered; run_id parity with the standalone run_trex) -------

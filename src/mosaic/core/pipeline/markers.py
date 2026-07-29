@@ -89,8 +89,15 @@ __all__ = [
     "write_phase_marker",
 ]
 
-PhaseName = Literal["convert", "track"]
-PHASE_NAMES: Final[tuple[PhaseName, ...]] = ("convert", "track")
+PhaseName = Literal["convert", "track", "infer"]
+PHASE_NAMES: Final[tuple[PhaseName, ...]] = ("convert", "track", "infer")
+"""Every gated phase any producer under ``_tracking`` can be in.
+
+``infer`` joined when item 8.7 moved model inference under that root. It is not a
+tracker phase and shares nothing with the other two beyond this protocol -- which
+is the point: the sweeper reads markers, not producers, so a fourth kind of
+output joins by writing one rather than by teaching the sweeper about itself.
+"""
 
 InflightState = Literal["free", "mine", "live", "expired", "orphaned"]
 

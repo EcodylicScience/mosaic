@@ -1,27 +1,47 @@
 """Model-inference tracking ops: pose, points (POLO), localizer.
 
 Each op runs a trained model over the scoped videos, writes raw per-video
-predictions under ``predictions/<kind>/<run_id>/``, and (by default) bridges the
-resulting DataFrame into standardized ``tracks/<group>__<seq>.parquet`` -- the
+predictions under ``_tracking/<infer-kind>/<run_id>/``, and (by default) bridges
+the resulting DataFrame into standardized ``tracks/<group>__<seq>.parquet`` -- the
 extract -> train -> infer -> tracks loop. The ``model`` param is a weights path
 OR a prior training ``run_id`` (resolved via the model index). Heavy backends
 import lazily inside ``run()``.
+
+**The parquet is an audit artifact, not a cache** (item 8.7). Inference re-runs
+unconditionally: what the file is for is showing what a detector emitted *before*
+schema coercion, which is what you want when debugging a bad model. It has no
+index of its own -- it used to, and that index was written, never read, and
+reached by no portability pass, so its one unique column was silently wrong on
+any moved dataset. The edge from a tracks table back to the run that produced it
+is ``producer`` / ``producer_run_id`` on the tracks row, with this directory as
+its ``source_abs_path``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import socket
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable
+from typing import TYPE_CHECKING, Annotated, Callable, Final
 
 import pandas as pd
 from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline.markers import (
+    PhaseMarker,
+    clear_inflight,
+    inflight_state,
+    new_inflight,
+    read_inflight,
+    write_inflight,
+    write_phase_marker,
+)
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
+from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
@@ -32,38 +52,47 @@ from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_r
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
+from mosaic.runlog import now_iso
 from mosaic.tracking.model_refs import resolve_model
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
-# --- Inference index -----------------------------------------------------
+# --- Where inference output lands ----------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class InferenceIndexRow(RunIndexRowBase):
-    """Typed row for an inference index CSV (``predictions/<kind>/index.csv``)."""
+def infer_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
+    """``_tracking/<infer-kind>/<run_id>/`` -- item 8.7's relocation.
 
-    model_run_id: str
-    group: str
-    sequence: str
-    video_abs_path: str
-    start_frame: int
-    end_frame: int
-    n_rows: int
+    Formerly ``predictions/<kind>/<run_id>/`` under a root of its own. That root
+    was written and never read: no resolver, no CLI command, no reindex, prune or
+    portability pass, and no reference in any sibling repository. Its index was
+    not merely unread but unmaintainable -- ``video_abs_path`` was stored
+    absolute and reached by no portability pass, so it was silently wrong on
+    every moved or synced dataset.
+
+    Nothing of value went with it. Every column of the deleted row survives
+    elsewhere: the run identifier and the entry as ``producer_run_id`` and
+    ``group``/``sequence`` on the tracks row, the model as ``params.model`` in
+    ``tracks/<variant>/params.json`` (a superset -- it carries a weights digest
+    where the old column carried ``""`` for bare-path weights), the frame range
+    in the same params blob, ``n_rows`` on the tracks row, and this directory as
+    its ``source_abs_path``. Only ``video_abs_path`` had no survivor, and it was
+    the wrong one.
+
+    The parquet stays as an audit artifact under the shorter retention window of
+    item 8.4: it is what shows what a detector emitted before schema coercion,
+    which is exactly what a bad model needs to be diagnosed against.
+    """
+    return ds.get_root(kind) / run_id
 
 
-def inference_index(path: Path) -> IndexCSV[InferenceIndexRow]:
-    return IndexCSV(path, InferenceIndexRow, dedup_keys=["run_id", "group", "sequence"])
-
-
-def prediction_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
-    return ds.get_root("predictions") / kind / run_id
-
-
-def prediction_index_path(ds: Dataset, kind: str) -> Path:
-    return ds.get_root("predictions") / kind / "index.csv"
+# The inactivity bound for one video's inference. Generous, because a large model
+# over a long video can be silent for a long time and a claim that expires under
+# a live run invites a second execution into the same directory. The sweeper
+# reads the expiry the claim carries rather than this constant (item 8.3).
+_INFER_IDLE_SECONDS: Final = 3600.0
 
 
 # --- Params --------------------------------------------------------------
@@ -186,8 +215,8 @@ def _run_inference_op(
     per_video: Callable[[str, Path, Path, MediaFacts | None], pd.DataFrame | None],
 ) -> str:
     """Shared scaffold: resolve model, loop scoped videos, predict, bridge."""
-    if not ds.has_root("predictions"):
-        ds.set_root("predictions", "predictions")
+    if not ds.has_root(kind):
+        ds.set_root(kind, tracking_root_default(kind))
 
     model = resolve_model(ds, params.model, train_kind)
     # The training run when there is one, the weights' digest otherwise -- never
@@ -233,31 +262,62 @@ def _run_inference_op(
         work.append((group, sequence, resolved.paths[0], facts))
 
     ctx.set_total(len(work))
-    run_root = prediction_run_root(ds, kind, run_id)
+    run_root = infer_run_root(ds, kind, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
-    idx = inference_index(prediction_index_path(ds, kind))
-    idx.ensure()
-    rows: list[InferenceIndexRow] = []
 
-    try:
-        for i, (group, sequence, video_path, facts) in enumerate(work):
-            ctx.check_cancel()
-            key = make_entry_key(group, sequence)
-            ctx.progress.on_entry_start(i, len(work), key)
-            ctx.progress.on_phase("infer", key)
+    done = 0
+    for i, (group, sequence, video_path, facts) in enumerate(work):
+        ctx.check_cancel()
+        key = make_entry_key(group, sequence)
+        ctx.progress.on_entry_start(i, len(work), key)
+        ctx.progress.on_phase("infer", key)
 
-            seq_dir = run_root / key
-            seq_dir.mkdir(parents=True, exist_ok=True)
+        seq_dir = run_root / key
+        seq_dir.mkdir(parents=True, exist_ok=True)
+
+        # A claim, not a cache. Inference still re-infers unconditionally -- the
+        # completion marker below records that output is whole, and nothing gates
+        # on it, because turning this into a cache is a behaviour change with its
+        # own failure mode (a silently skipped re-run over a corrected video) and
+        # is not what item 8.7 asked for. What the claim prevents is two
+        # executions writing one ``predictions.parquet`` at once, which is the
+        # guard the three trackers already have and this path did not.
+        if (
+            inflight_state(
+                read_inflight(seq_dir),
+                run_log_base=ds.base_dir,
+                execution_id=ctx.execution_id,
+            )
+            == "live"
+        ):
+            print(
+                f"[{kind}] ({group}, {sequence}) is held by another execution; "
+                "skipping it.",
+                file=sys.stderr,
+            )
+            ctx.progress.on_entry_end(i + 1, len(work), key)
+            continue
+
+        write_inflight(
+            seq_dir,
+            new_inflight(
+                execution_id=ctx.execution_id,
+                host=socket.gethostname(),
+                pid=os.getpid(),
+                phase="infer",
+                idle_seconds=_INFER_IDLE_SECONDS,
+            ),
+        )
+        try:
             df = per_video(str(model.path), video_path, seq_dir, facts)
             pred_path = seq_dir / "predictions.parquet"
             if df is not None and not df.empty:
                 df.to_parquet(pred_path, index=False)
 
-            n_rows = 0
             if params.convert_to_tracks and df is not None and not df.empty:
                 ctx.progress.on_phase("bridge", key)
-                n_rows = _bridge_df_to_tracks(
+                _ = _bridge_df_to_tracks(
                     ds,
                     df,
                     group,
@@ -271,29 +331,35 @@ def _run_inference_op(
                     overwrite=params.overwrite,
                 )
 
-            rows.append(
-                InferenceIndexRow(
+            # Written after the bridge, not after the parquet. A directory whose
+            # output has not reached ``tracks/`` is not finished, and the sweeper
+            # reads this marker to decide what may be reclaimed -- so marking it
+            # complete a moment early is how an unbridged run gets deleted.
+            write_phase_marker(
+                seq_dir,
+                PhaseMarker(
+                    phase="infer",
                     run_id=run_id,
-                    model_run_id=model.run_id,
-                    group=group,
-                    sequence=sequence,
-                    abs_path=Path(ds.relative_to_root(seq_dir)),
-                    video_abs_path=str(video_path),
-                    start_frame=int(params.start_frame),
-                    end_frame=int(params.end_frame)
-                    if params.end_frame is not None
-                    else -1,
-                    n_rows=n_rows,
-                )
+                    execution_id=ctx.execution_id,
+                    completed_at=now_iso(),
+                    source=str(ds.relative_to_root(video_path)),
+                    source_uid=facts.video_uuid if facts else "",
+                    recorded_output=str(ds.relative_to_root(pred_path))
+                    if pred_path.exists()
+                    else "",
+                ),
             )
-            ctx.progress.on_entry_end(i + 1, len(work), key)
-            ctx.heartbeat(i + 1)
-    finally:
-        if rows:
-            idx.append(rows)
-            idx.mark_finished(run_id)
+            done += 1
+        finally:
+            # Released whatever happened, including a cancel: a claim outliving
+            # its process is what makes the next run read a dead directory as
+            # busy, and only its expiry would ever free it.
+            clear_inflight(seq_dir)
 
-    print(f"[{kind}] completed run_id={run_id} ({len(rows)}/{len(work)}) -> {run_root}")
+        ctx.progress.on_entry_end(i + 1, len(work), key)
+        ctx.heartbeat(i + 1)
+
+    print(f"[{kind}] completed run_id={run_id} ({done}/{len(work)}) -> {run_root}")
     return run_id
 
 

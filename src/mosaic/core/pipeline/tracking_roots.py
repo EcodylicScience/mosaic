@@ -105,12 +105,28 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             retention="tracker",
             outputs=("*.predictions.csv",),
         ),
+        # Model inference (item 8.7). Audit-only: the parquet is what a detector
+        # emitted *before* schema coercion, which is what you want when debugging
+        # a bad model -- and nothing reads it back, so it is a byproduct on a
+        # shorter clock rather than a cache. One root per inference kind, because
+        # each is a separate op with its own identifiers.
+        TrackingRoot(
+            key="infer-pose", retention="inference", outputs=("predictions.parquet",)
+        ),
+        TrackingRoot(
+            key="infer-points", retention="inference", outputs=("predictions.parquet",)
+        ),
+        TrackingRoot(
+            key="infer-localizer",
+            retention="inference",
+            outputs=("predictions.parquet",),
+        ),
     )
 }
 """Every root under ``_tracking``, keyed by root key.
 
-Inference joins this table when item 8.7 relocates it out of the top-level
-``predictions`` root; it is the one entry whose retention is ``inference``.
+The keys are the op kinds, so ``ds.get_root(kind)`` answers for a tracker and an
+inference op alike and no caller has to know which it is holding.
 """
 
 

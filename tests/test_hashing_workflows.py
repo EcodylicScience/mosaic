@@ -155,15 +155,6 @@ def test_h1_cold_run_lands_where_expected(scenario_dataset: Dataset) -> None:
     assert written == {"seq_a.parquet", "seq_b.parquet"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M5: the _tracking root exists, but nothing keeps a scan out of it -- "
-        "iter_track_files filters on basenames and cannot express a directory "
-        "exclusion -- and inference still writes a top-level predictions/ root. "
-        "Closes with implementation items 8.1's exclusion clause and 8.7."
-    ),
-)
 def test_h1_tracking_intermediates_are_separated_from_results(
     scenario_dataset: Dataset,
 ) -> None:

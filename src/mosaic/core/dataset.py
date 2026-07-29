@@ -346,7 +346,6 @@ default_roots = {
     # literal per tool is how it became six.
     TRACKING_ROOT: TRACKING_ROOT,  # parent of the per-tracker raw-output roots
     **{key: root.default_path for key, root in TRACKING_ROOTS.items()},
-    "predictions": "predictions",  # run-addressed model-inference outputs (before -> tracks)
     "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
     "models": "models",  # trained models, reports, plots
     "frames": "media/frames",  # extracted video frames (PNGs), can be very large
@@ -655,7 +654,6 @@ class Dataset:
             "tracks": "",
             TRACKING_ROOT: "",
             **{key: "" for key in TRACKING_ROOTS},
-            "predictions": "",
             "features": "",
             "labels": "",
             "models": "",

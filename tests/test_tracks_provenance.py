@@ -263,8 +263,8 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
     from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 
     ds = _dataset(tmp_path)
-    ds.set_root("predictions", str(tmp_path / "predictions"))
-    seq_dir = ds.get_root("predictions") / "infer-points" / "run" / "vid1"
+    ds.set_root("infer-points", str(tmp_path / "_tracking" / "infer-points"))
+    seq_dir = ds.get_root("infer-points") / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
     video = ds.get_root("media_raw") / "vid1.mp4"
     video.parent.mkdir(parents=True, exist_ok=True)
@@ -293,7 +293,7 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
     assert str(row["producer"]) == "infer-points"
     assert str(row["run_id"]) == "infer-points.0.1-bbbbbbbbbb"
     assert str(row["producer_run_id"]) == "infer-points.0.1-bbbbbbbbbb"
-    assert str(row["source_abs_path"]).startswith("predictions/infer-points/")
+    assert str(row["source_abs_path"]).startswith("_tracking/infer-points/")
     assert set(str(row["consumed_source_roots"]).split(",")) == {"media_raw", "models"}
     _assert_portable(ds, row)
 
@@ -315,7 +315,7 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
     from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 
     ds = _dataset(tmp_path)
-    ds.set_root("predictions", str(tmp_path / "predictions"))
+    ds.set_root("infer-points", str(tmp_path / "_tracking" / "infer-points"))
     _trex_npz(ds.get_root("tracks_raw") / "vid1.npz")
     _ = ds.index_tracks_raw(
         [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
@@ -323,7 +323,7 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
     ds.convert_all_tracks()
     assert str(_one_row(ds)["producer"]) == "convert-trex_npz"
 
-    seq_dir = ds.get_root("predictions") / "infer-points" / "run" / "vid1"
+    seq_dir = ds.get_root("infer-points") / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame({"frame": range(5), "poseX0": [1.0] * 5, "poseY0": [2.0] * 5})
     _ = _bridge_df_to_tracks(
