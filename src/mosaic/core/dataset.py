@@ -83,6 +83,7 @@ from .pipeline.media_index import (
     MediaIndexScope,
     build_media_index_row,
     build_prior_order,
+    media_members_from_rows,
     densify_video_order,
     frame_from_rows,
     mtime_iso,
@@ -96,7 +97,13 @@ from .pipeline.tracks_identity import (
     tracks_variant_root,
     write_tracks_variant,
 )
+from .pipeline.composition import media_composition, tracks_raw_composition
 from .pipeline.index_lock import index_lock
+from .pipeline.sequence_index import (
+    SourceRoot,
+    sequence_index_path,
+    write_sequence_compositions,
+)
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
@@ -113,6 +120,7 @@ from .pipeline.tracks_raw_index import (
     frame_from_rows as _tracks_frame_from_rows,
     iter_track_files,
     read_tracks_raw_index as _read_tracks_raw_index,
+    source_members_from_rows,
     write_tracks_raw_index_rows,
 )
 
@@ -1715,6 +1723,7 @@ class Dataset:
             densify_video_order(dedup, session_positions={}, prior_order=prior_order)
             df_out = frame_from_rows(dedup)
             write_media_index_rows(out_csv, df_out)
+        self._write_media_compositions(dedup)
 
         multi_count = 0
         if not df_out.empty:
@@ -2044,7 +2053,64 @@ class Dataset:
                 prior_order=prior_order,
             )
             write_media_index_rows(index_path, frame_from_rows(merged))
+        self._write_media_compositions(merged)
         return MediaIndexResult(index_path=index_path, disagreements=disagreements)
+
+    def _write_media_compositions(self, rows: list[dict[str, object]]) -> None:
+        """Project the media rows just committed into ``media_raw/sequences.csv``.
+
+        Computed from the in-memory rows rather than by re-reading the file:
+        cheaper, and it is exactly the state this process committed. The repair
+        path recomputes from disk and both go through the same functions, so the
+        two cannot diverge.
+
+        Skipped when the media root resolves to ``media`` -- a legacy dataset
+        with no ``media_raw``, where the index holds derivatives. A derivative is
+        named by its source's identity and has no composition of its own (rule
+        P6), so the honest answer there is no row at all.
+
+        Called after the index write and outside its lock. See
+        :mod:`mosaic.core.pipeline.sequence_index` for why that order cannot be
+        inverted.
+        """
+        if self.resolve_media_root() != "media_raw":
+            return
+        members = media_members_from_rows(rows)
+        compositions = {key: media_composition(group) for key, group in members.items()}
+        _ = write_sequence_compositions(self, "media_raw", compositions=compositions)
+
+    def _write_tracks_raw_compositions(self, rows: list[dict[str, object]]) -> None:
+        """Project the raw-track rows just committed into ``tracks_raw/sequences.csv``."""
+        members = source_members_from_rows(rows)
+        compositions = {
+            key: tracks_raw_composition(group) for key, group in members.items()
+        }
+        _ = write_sequence_compositions(self, "tracks_raw", compositions=compositions)
+
+    def rebuild_sequence_index(self, root: SourceRoot) -> Path | None:
+        """Recompute *root*'s per-sequence index from that root's ``index.csv``.
+
+        The repair entry point, for a projection left absent or stale by a crash
+        between the two writes, or by a hand-edited index. Returns the written
+        path, or ``None`` when the root is unset.
+
+        It reads from disk where the writers project from the rows they just
+        committed, and both go through the same composition functions -- so this
+        is also the tests' oracle: what a writer wrote and what a rebuild
+        produces must agree, and a divergence is a bug in one of them.
+        """
+        if not self.has_root(root):
+            return None
+        if root == "media_raw":
+            if self.resolve_media_root() != "media_raw":
+                return None
+            rows = [dict(row) for row in self.read_media_index()]
+            self._write_media_compositions(rows)
+        else:
+            index_path = self.get_root(root) / "index.csv"
+            rows = [dict(row) for row in _read_tracks_raw_index(index_path)]
+            self._write_tracks_raw_compositions(rows)
+        return sequence_index_path(self, root)
 
     def _prior_digests(self, index_path: Path) -> dict[Path, str]:
         """A prior row's ``md5``, reusable when the file it describes has not moved.
@@ -2856,6 +2922,7 @@ class Dataset:
         df = _tracks_frame_from_rows(rows)
         with index_lock(out_csv):
             write_tracks_raw_index_rows(out_csv, df)
+        self._write_tracks_raw_compositions(df.to_dict("records"))
         print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
         return out_csv
 
@@ -2952,6 +3019,7 @@ class Dataset:
             merged = [*preserved, *fresh]
             frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
             write_tracks_raw_index_rows(out_csv, frame)
+        self._write_tracks_raw_compositions(frame.to_dict("records"))
         return out_csv
 
     def read_tracks_raw_index(

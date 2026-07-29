@@ -27,7 +27,12 @@ from typing import TypeVar
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, AssignmentSource
+from mosaic.core.media.facts_columns import (
+    MEDIA_INDEX_COLUMNS,
+    AssignmentSource,
+    media_row_uuid,
+)
+from mosaic.core.pipeline.composition import MediaMember
 from mosaic.core.pipeline._utils import atomic_write
 
 # Numeric media-index columns; every other column is a text cell that must round
@@ -333,3 +338,39 @@ def densify_video_order(
         row["video_order"] = order
         result.append(row)
     return result
+
+
+def media_members_from_rows(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[tuple[str, str], list[MediaMember]]:
+    """Group media-index rows into per-sequence composition members.
+
+    Lives here rather than in ``composition`` because it reads the media schema,
+    and ``composition`` is deliberately free of it -- the same split that keeps
+    the hashing half testable with no fixture.
+
+    Grouped on the exact ``(group, sequence)`` cells, the way
+    ``resolve_media_scope`` groups, and never through ``_match_media_rows``,
+    whose third fallback is a lowercased substring match on ``name``: a substring
+    match would put one sequence's video into another's composition.
+
+    ``video_uuid`` is read through :func:`media_row_uuid`, which collapses ``""``,
+    the string ``"nan"`` and a float NaN to one absent form. A raw cell read would
+    hash the literal ``"nan"`` for a row a CSV round-trip had emptied.
+    """
+    members: dict[tuple[str, str], list[MediaMember]] = {}
+    for row in rows:
+        key = (str(row.get("group", "") or ""), str(row.get("sequence", "") or ""))
+        raw_order = str(row.get("video_order", "") or "").strip()
+        try:
+            order = int(float(raw_order)) if raw_order else 0
+        except ValueError:
+            order = 0
+        members.setdefault(key, []).append(
+            MediaMember(
+                camera=str(row.get("camera", "") or ""),
+                video_order=order,
+                uid=media_row_uuid(row),
+            )
+        )
+    return members

@@ -60,6 +60,8 @@ from typing import TypedDict
 
 import pandas as pd
 
+from mosaic.core.pipeline.composition import SourceMember
+
 from mosaic.core.helpers import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.media_index import mtime_iso
@@ -241,3 +243,38 @@ def build_tracks_raw_row(
         "mtime_iso": mtime_iso(stat.st_mtime),
         "md5": md5,
     }
+
+
+def source_members_from_rows(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[tuple[str, str], list[SourceMember]]:
+    """Group raw-source rows into per-sequence composition members.
+
+    The tracks_raw counterpart of ``media_members_from_rows``, and beside this
+    schema for the same reason.
+
+    ``name`` is the stored path's basename rather than the path itself, so the
+    composition survives the dataset moving between machines -- a hashed value
+    cannot be rewritten by the portability passes the way ``abs_path`` is.
+
+    A row whose ``sequence`` is blank is **skipped**: that is the
+    ``multi_sequences_per_file`` shape, where the grouping lives in ``group`` and
+    the file covers many sequences at once. Composing them under one key
+    ``(group, "")`` would mint a value describing no sequence in particular, and
+    a fiction is worse here than an absence.
+    """
+    members: dict[tuple[str, str], list[SourceMember]] = {}
+    for row in rows:
+        sequence = str(row.get("sequence", "") or "")
+        if not sequence:
+            continue
+        key = (str(row.get("group", "") or ""), sequence)
+        stored = str(row.get("abs_path", "") or "")
+        members.setdefault(key, []).append(
+            SourceMember(
+                name=Path(stored).name,
+                digest=str(row.get("md5", "") or ""),
+                algo="md5",
+            )
+        )
+    return members
