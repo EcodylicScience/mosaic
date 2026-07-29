@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import os
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -22,6 +23,13 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 # `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
 # both extras before the first test ran.
 CI_REQUIRED_MODULES = ("imgstore", "pywt")
+
+# The same argument, for a binary rather than a module. Probing shells out to a
+# system ffprobe, so every test that indexes real media hard-*fails* without one
+# rather than skipping -- and the failure names a codec, not a missing tool.
+# ``requires_ffprobe`` turns that into a skip locally; under CI a missing binary
+# is a broken environment, exactly as a missing extra is.
+CI_REQUIRED_BINARIES = ("ffprobe",)
 
 
 def pytest_configure() -> None:
@@ -43,6 +51,24 @@ def pytest_configure() -> None:
             "that the test step does not re-sync the environment away "
             "(uv run --no-sync)."
         )
+    absent = [name for name in CI_REQUIRED_BINARIES if shutil.which(name) is None]
+    if absent:
+        raise pytest.UsageError(
+            f"CI installs {', '.join(absent)} through ffmpeg, but it is not on "
+            "PATH. Every media test would skip instead of running."
+        )
+
+
+@pytest.fixture
+def requires_ffprobe() -> None:
+    """Skip a test that needs to measure real media when ffprobe is absent.
+
+    Requested by fixtures rather than by tests, so a test inherits the guard from
+    the media it asks for. Under CI ``pytest_configure`` has already refused to
+    start, so this never fires there.
+    """
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe is not on PATH")
 
 
 @pytest.fixture
@@ -283,3 +309,62 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         return dest, frames
 
     return _make
+
+
+def add_media_sequence(
+    dataset: Dataset,
+    sequence: str,
+    *,
+    videos: tuple[str, ...] = ("a.mp4", "b.mp4"),
+    frames: int = 6,
+) -> None:
+    """Give *sequence* real videos under ``media_raw`` and index them.
+
+    Driven through ``Dataset.write_media_index``, the assignment path the control
+    plane uses, so the media index and the composition it projects are the ones
+    production produces rather than a hand-built stand-in.
+
+    Each video's content varies with its filename. Two all-black videos are
+    byte-identical and therefore share one ``video_uuid`` by design, so a
+    composition over them is genuinely unchanged by a reorder -- which would make
+    an ordering assertion pass while testing nothing.
+    """
+    from mosaic.core.pipeline.media_index import MediaIndexScope
+
+    directory = dataset.get_root("media_raw") / sequence
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in videos:
+        shade = sum(name.encode()) % 200 + 20
+        writer = cv2.VideoWriter(
+            str(directory / name), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, (64, 48)
+        )
+        for _ in range(frames):
+            writer.write(np.full((48, 64, 3), shade, np.uint8))
+        writer.release()
+
+    _ = dataset.write_media_index(
+        [
+            MediaIndexScope(
+                directory=directory,
+                group="",
+                sequence=sequence,
+                order_by_name={name: i for i, name in enumerate(videos)},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+
+@pytest.fixture
+def scenario_dataset_with_media(
+    scenario_dataset: Dataset, requires_ffprobe: None
+) -> Dataset:
+    """``scenario_dataset``, plus two videos on ``seq_a``.
+
+    **Composed rather than widened.** Three modules use the track-only
+    ``scenario_dataset``, and giving it media would give all of them an ffprobe
+    dependency for scenarios that never open a video. A scenario that needs media
+    asks for it, and inherits the skip guard by asking.
+    """
+    add_media_sequence(scenario_dataset, "seq_a")
+    return scenario_dataset
