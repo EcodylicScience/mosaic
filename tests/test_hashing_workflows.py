@@ -371,46 +371,89 @@ def test_h2_an_unpinned_run_over_two_variants_refuses_rather_than_guessing(
 # --- H3: source change -- the input moved -------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M4: the composition hash and the consumed-root record now exist (item "
-        "4.4, and item 5.1's features half). What is still missing is the "
-        "reverse-dependency walk that turns a changed composition into a delete "
-        "set -- item 6.2."
-    ),
-)
 def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
-    scenario_dataset: Dataset,
+    scenario_dataset_with_media: Dataset,
 ) -> None:
-    """Reorder or reassign: tracks and features go, transcodes and frames stay.
+    """Reorder: tracks and features go, transcodes stay.
 
     Tracking consumed the composition -- frames are concatenated into one
     sequence-global index, so order genuinely is part of its input. Derivatives
     are named by source uid, so nothing moves and nothing re-encodes.
+
+    "Go" is answered by the delete set. The survivals are answered one level up,
+    by item 6.1's walk never enumerating those kinds -- so this asserts the
+    delete set's membership is exactly ``{tracks, features}`` rather than
+    checking each survivor by name, which would pass just as well if the walk
+    grew an arm and the deleter filtered it out.
     """
-    raise NotImplementedError("requires the composition hash and consumed-root record")
+    from mosaic.core.pipeline.delete_set import delete_set
+    from mosaic.core.pipeline.media_index import MediaIndexScope
+
+    from tests.conftest import add_tracks_variant, add_transcode_derivative
+    from tests.test_provenance import _PlainFeature
+
+    ds = scenario_dataset_with_media
+    # The producer that reads media: the TREx bridge passes the video and its own
+    # NPZ, and the derived half filters out, leaving media_raw on the row.
+    variant = "trex.0.1-aaaaaaaaaa"
+    add_tracks_variant(ds, variant, "seq_a", consumed_source_roots=("media_raw",))
+    derivative = add_transcode_derivative(ds, "seq_a")
+    _ = run_feature(ds, _PlainFeature())
+
+    _ = ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=ds.get_root("media_raw") / "seq_a",
+                group="",
+                sequence="seq_a",
+                order_by_name={"b.mp4": 0, "a.mp4": 1},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+    report = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+    kinds = {candidate.kind for candidate in report.candidates}
+
+    assert "tracks" in kinds, "the tracked variant survived a change to its input"
+    assert "features" in kinds, "the feature built on it survived"
+    assert kinds <= {"tracks", "features"}, (
+        f"a change to media_raw reached something it must not: {sorted(kinds)}"
+    )
+    assert derivative.exists(), (
+        "a transcode is named for the video it came from, so a reorder must "
+        "neither delete nor re-encode it"
+    )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M4: the tracks row records `producer` and `consumed_source_roots` (item "
-        "2.4), and the composition hash that says a root *changed* now exists "
-        "(item 4.4). What is still missing is the reverse-dependency walk that "
-        "turns that into a blast radius -- item 6.2."
-    ),
-)
 def test_h3_case3_only_the_branch_whose_source_changed_is_invalidated(
-    scenario_dataset: Dataset,
+    scenario_dataset_with_media: Dataset,
 ) -> None:
     """Two producers, one sequence: a tracks_raw change spares the tracked variant.
 
     Both variants are ``tracks/<something>/A.parquet`` with identical columns,
     deliberately, so a downstream feature never has to ask which produced them.
-    The index row is where the answer is kept for the one job that needs it.
+    The index row is where the answer is kept for the one job that needs it, and
+    the walk is what asks.
+
+    Asserted in both directions. Checking only that ``tracks_raw`` spares the
+    tracked variant would pass against a walk that reached nothing at all.
     """
-    raise NotImplementedError("requires the consumed-root record")
+    from mosaic.core.pipeline.provenance import reached_by
+
+    from tests.conftest import add_tracks_variant
+
+    ds = scenario_dataset_with_media
+    converted = "convert-dlc.0.1-aaaaaaaaaa"
+    tracked = "trex.0.1-bbbbbbbbbb"
+    add_tracks_variant(ds, converted, "seq_a", consumed_source_roots=("tracks_raw",))
+    add_tracks_variant(ds, tracked, "seq_a", consumed_source_roots=("media_raw",))
+
+    from_uploads = reached_by(ds, [("", "seq_a")], "tracks_raw")
+    from_media = reached_by(ds, [("", "seq_a")], "media_raw")
+
+    assert set(from_uploads[from_uploads["kind"] == "tracks"]["run_id"]) == {converted}
+    assert set(from_media[from_media["kind"] == "tracks"]["run_id"]) == {tracked}
 
 
 # --- H4: human input -- what cannot be recomputed -----------------------------
@@ -430,24 +473,61 @@ def test_h4_a_promoted_correction_lands_in_a_source_root_with_lineage(
     raise NotImplementedError("requires the promotion gesture")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M4: the delete set does not exist yet, so its carve-outs cannot be "
-        "asserted. Closes with items 6.2 and 6.4."
-    ),
-)
 def test_h4_annotated_frames_and_labels_are_never_in_a_delete_set(
-    scenario_dataset: Dataset,
+    scenario_dataset_with_media: Dataset,
 ) -> None:
-    """An annotated frame stays valid across a rearrangement; labels are remapped.
+    """An annotated frame stays valid across a rearrangement; labels are not deleted.
 
     An annotated frame teaches a model what a subject looks like, which is true
-    regardless of which sequence the image came from. Converted labels shift
-    with the cumulative frame offsets, and both offsets are derivable from the
-    per-video frame counts already in the media index, so a remap is exact.
+    regardless of which sequence the image came from. Converted labels shift with
+    the cumulative frame offsets and are remapped rather than destroyed.
+
+    **Both guarantees are structural rather than filtered.** Item 6.1's walk
+    enumerates tracks and features and nothing else, so no branch in the deleter
+    can forget a carve-out -- there is none to forget. The assertion is written
+    against the delete set anyway, because that is the surface a future change
+    would break, and it must fail loudly if the walk ever grows a frames or
+    labels arm without one.
+
+    The labels half of the promise is kept at the *gesture* rather than here: a
+    reorder over a sequence with converted labels is blocked until item 9.3 gives
+    the remap a source side to be checked against. Deleting them was never on the
+    table; shipping an inexact rewrite over human-authored scoring was the thing
+    to refuse.
     """
-    raise NotImplementedError("requires the scoped delete set")
+    from mosaic.core.pipeline.delete_set import delete_set
+    from mosaic.core.pipeline.media_index import MediaIndexScope
+
+    ds = scenario_dataset_with_media
+
+    labels_index = ds.get_root("labels") / "behavior" / "index.csv"
+    labels_index.parent.mkdir(parents=True, exist_ok=True)
+    _ = labels_index.write_text(
+        "kind,label_format,group,sequence,abs_path\n"
+        "behavior,individual_pair_v1,,seq_a,labels/behavior/seq_a.npz\n"
+    )
+
+    _ = ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=ds.get_root("media_raw") / "seq_a",
+                group="",
+                sequence="seq_a",
+                order_by_name={"b.mp4": 0, "a.mp4": 1},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+    report = delete_set(ds, [("", "seq_a")], "media_raw")
+
+    classified = [*report.candidates, *report.declined]
+    assert not any(item.kind == "frames" for item in classified), (
+        "a frame set entered the delete set; annotations reference those images"
+    )
+    assert not any(item.kind == "labels" for item in classified), (
+        "a label file entered the delete set; converted labels are remapped"
+    )
 
 
 # --- H5: scope -- the dataset grew --------------------------------------------
