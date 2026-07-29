@@ -2335,6 +2335,26 @@ class Dataset:
         Resolves the roots and hands plain paths to
         :func:`~mosaic.core.media.reprobe.reprobe_media`, which knows nothing
         about datasets, so root resolution has exactly one home.
+
+        **Re-projects ``media_raw/sequences.csv`` after an applied run**, because
+        ``video_uuid`` is a term of the media composition and this is the one
+        command that rewrites it. Left out, the single pass whose purpose is
+        correcting identity would leave every composition it invalidated on disk
+        still claiming to be current -- and item 6.2 compares exactly those
+        values, so the staleness would be invisible rather than loud.
+
+        Sequential, never nested: the index is written and released inside
+        :func:`~mosaic.core.media.reprobe.reprobe_media`, and the projection
+        follows. Writing the projection first would record a composition for an
+        index state that had not committed.
+
+        This does not make the audit path agree with the write path on caching,
+        and must not be read as a step toward that. ``drift``'s module docstring
+        keeps the three apart deliberately -- *scan has no baseline, write has one
+        and uses it, audit re-probes unconditionally* -- and the audit's no-cache
+        rule is the only thing that catches a replacement preserving size and
+        mtime. What is added here is the projection refresh the audit owed, not a
+        shared cache.
         """
         index_filename = "index.csv"
         try:
@@ -2355,7 +2375,7 @@ class Dataset:
             candidate = self.get_root("media") / index_filename
             if candidate.resolve() != index_path.resolve():
                 derivative_index_path = candidate
-        return _reprobe_media(
+        report = _reprobe_media(
             index_path,
             derivative_index_path=derivative_index_path,
             media_raw_root=media_raw_root,
@@ -2363,6 +2383,9 @@ class Dataset:
             apply=apply,
             skip_unreadable=skip_unreadable,
         )
+        if report.applied:
+            _ = self.rebuild_sequence_index("media_raw")
+        return report
 
     def prune_media(
         self,

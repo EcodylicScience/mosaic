@@ -1598,3 +1598,73 @@ def test_an_imgstore_row_is_detected_without_a_media_type_cell(
     assert report.unprobeable == []
     assert report.minted == 1
     assert _by_name(dataset)[store_dir.name]["media_facts"]
+
+
+# --- the projection the audit owed (item 6.2's baseline) ---------------------
+
+
+def _composition(ds: Dataset, sequence: str) -> str:
+    """The stored ``media_raw`` composition for *sequence*, or ``""`` if none."""
+    from mosaic.core.pipeline.sequence_index import read_sequence_index
+
+    frame = read_sequence_index(ds, "media_raw")
+    rows = frame[frame["sequence"] == sequence]
+    return "" if rows.empty else str(rows.iloc[0]["composition"])
+
+
+def test_an_applied_reprobe_projects_the_composition_it_minted(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    """``video_uuid`` is a term of the composition, and this mints it.
+
+    A legacy index carries no identity, so the projection over it is
+    unestablishable. Re-probing mints the uuids -- and until the projection is
+    rewritten, ``media_raw/sequences.csv`` still says unestablishable, which item
+    6.2 would read as "no evidence of change" for as long as the dataset exists.
+    """
+    write_cfr_mp4(dataset.base_dir / "media_raw" / "seq" / "a.mp4")
+    _ = _seed_legacy(
+        dataset,
+        [
+            _legacy_row(
+                name="a.mp4", group="", sequence="seq", abs_path="media_raw/seq/a.mp4"
+            )
+        ],
+    )
+    assert _composition(dataset, "seq") == "", (
+        "the legacy index has no identity to compose"
+    )
+
+    report = dataset.reprobe_media(apply=True)
+    assert report.applied
+
+    minted = _composition(dataset, "seq")
+    assert minted, "the projection still says unestablishable after an applied re-probe"
+    assert minted == _rebuilt(dataset, "seq"), (
+        "the projection disagrees with what a rebuild from the same index produces"
+    )
+
+
+def _rebuilt(ds: Dataset, sequence: str) -> str:
+    """The composition a rebuild derives, as the oracle for what was written."""
+    _ = ds.rebuild_sequence_index("media_raw")
+    return _composition(ds, sequence)
+
+
+def test_a_dry_run_leaves_the_projection_alone(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    """Writing nothing means writing nothing -- including the projection."""
+    write_cfr_mp4(dataset.base_dir / "media_raw" / "seq" / "a.mp4")
+    _ = _seed_legacy(
+        dataset,
+        [
+            _legacy_row(
+                name="a.mp4", group="", sequence="seq", abs_path="media_raw/seq/a.mp4"
+            )
+        ],
+    )
+
+    report = dataset.reprobe_media(apply=False)
+    assert report.changed and not report.applied
+    assert _composition(dataset, "seq") == ""
