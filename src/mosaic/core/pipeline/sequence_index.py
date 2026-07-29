@@ -370,21 +370,35 @@ def encode_entry_composition(recorded: Mapping[str, str], roots: Iterable[str]) 
     pairs, sorted, so the cell says which value came from where without a second
     column to keep in step.
 
+    **The shape follows what was declared, not what was found.** A consumer
+    declaring two roots writes a labelled pair for each even where one recorded
+    nothing (``tracks_raw=abc,media_raw=``), because the alternative -- emitting
+    only what was present -- collapses "two roots, one recorded" onto the same
+    bare digest as "one root, recorded", and a reader comparing the two cannot
+    tell which root the digest came from. That is the honest-empty rule one level
+    up: an empty needs a companion saying which kind of empty it is, and here the
+    declaration is the companion.
+
     Empty means **nothing recorded**, never "recorded as empty". It covers a
-    consumer that declares no source root and a root that has recorded no
-    composition for this entry, and a reader must draw no conclusion from it --
-    two entries whose compositions are both unrecorded are not known to be alike.
+    consumer that declares no source root and one whose every declared root has
+    recorded nothing, and a reader must draw no conclusion from it -- two entries
+    whose compositions are both unrecorded are not known to be alike.
+
+    Only the labelled branch changes shape, and no consumer takes it today: both
+    tracks bridges filter to exactly one source root (a TREx run reads
+    ``media_raw`` and ``trex``, an inference run ``media_raw`` and ``models``, and
+    the derived halves drop out), and the two features that declare a root declare
+    one. Item 8.6 is what takes it -- a promoted correction lands in ``tracks_raw``
+    beside a video in ``media_raw`` -- so this is settled before the milestone that
+    would otherwise settle it by accident.
     """
-    present = [
-        (root, digest)
-        for root in sorted({root for root in roots if root})
-        if (digest := recorded.get(root, ""))
-    ]
-    if not present:
+    declared = sorted({root for root in roots if root})
+    found = [(root, recorded.get(root, "")) for root in declared]
+    if not any(digest for _, digest in found):
         return ""
-    if len(present) == 1:
-        return present[0][1]
-    return ",".join(f"{root}={digest}" for root, digest in present)
+    if len(declared) == 1:
+        return found[0][1]
+    return ",".join(f"{root}={digest}" for root, digest in found)
 
 
 def read_entry_compositions(

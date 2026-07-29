@@ -21,6 +21,7 @@ from mosaic.core.pipeline.composition import MEDIA_COMPOSITION_SCHEME
 from mosaic.core.pipeline.media_index import MediaIndexScope
 from mosaic.core.pipeline.sequence_index import (
     SEQUENCE_INDEX_COLUMNS,
+    encode_entry_composition,
     read_sequence_index,
     sequence_index_path,
 )
@@ -396,3 +397,67 @@ def test_the_projection_survives_a_csv_round_trip_with_integer_counts(
 
     raw = pd.read_csv(sequence_index_path(ds, "media_raw"), keep_default_na=False)
     assert list(raw["member_count"].astype(str)) == ["2"]
+
+
+# --- the cell encoding (item 6.2 reads it, so its shape is load-bearing) -------
+
+
+class TestEncodeEntryComposition:
+    """The one minter for the ``consumed_composition`` cell.
+
+    Its output is compared against itself across time -- a row written months ago
+    against a value encoded now -- so the shape has to be a function of the
+    declaration alone. A shape that varied with what happened to be recorded
+    would make two different states encode alike.
+    """
+
+    def test_no_declared_root_records_nothing(self) -> None:
+        assert encode_entry_composition({}, []) == ""
+        assert encode_entry_composition({"media_raw": "abc"}, []) == ""
+
+    def test_one_declared_root_records_a_bare_digest(self) -> None:
+        """The form every cell on every dataset carries today."""
+        assert encode_entry_composition({"media_raw": "abc"}, ["media_raw"]) == "abc"
+
+    def test_one_declared_root_with_nothing_recorded_is_empty(self) -> None:
+        assert encode_entry_composition({}, ["media_raw"]) == ""
+        assert encode_entry_composition({"tracks_raw": "abc"}, ["media_raw"]) == ""
+
+    def test_two_declared_roots_are_labelled_and_sorted(self) -> None:
+        assert (
+            encode_entry_composition(
+                {"tracks_raw": "def", "media_raw": "abc"},
+                ["tracks_raw", "media_raw"],
+            )
+            == "media_raw=abc,tracks_raw=def"
+        )
+
+    def test_a_declared_root_that_recorded_nothing_still_appears(self) -> None:
+        """The case this encoding exists for.
+
+        Emitting only what was found would return the bare ``"abc"`` here -- the
+        same cell a consumer declaring ``media_raw`` alone writes. The two say
+        different things and must not compare equal.
+        """
+        cell = encode_entry_composition(
+            {"media_raw": "abc"}, ["media_raw", "tracks_raw"]
+        )
+        assert cell == "media_raw=abc,tracks_raw="
+        assert cell != encode_entry_composition({"media_raw": "abc"}, ["media_raw"])
+
+    def test_two_declared_roots_recording_nothing_is_empty(self) -> None:
+        """Not ``media_raw=,tracks_raw=``: a cell carrying no digest is unknown.
+
+        Spelling it out would make it compare unequal to the ``""`` a legacy row
+        holds, turning "nothing recorded, then and now" into drift.
+        """
+        assert encode_entry_composition({}, ["media_raw", "tracks_raw"]) == ""
+
+    def test_the_declaration_order_does_not_reach_the_cell(self) -> None:
+        """Two spellings of one declaration are one answer."""
+        recorded = {"media_raw": "abc", "tracks_raw": "def"}
+        assert encode_entry_composition(
+            recorded, ["media_raw", "tracks_raw"]
+        ) == encode_entry_composition(
+            recorded, ["tracks_raw", "media_raw", "media_raw"]
+        )
