@@ -136,3 +136,57 @@ def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
     idx = feature_index(feature_index_path(ds, feature_name))
     run_id = idx.latest_run_id()
     return run_id, feature_run_root(ds, feature_name, run_id)
+
+
+def drifted_entries(
+    ds: Dataset, feature_name: str, run_id: str
+) -> tuple[tuple[str, str], ...]:
+    """Entries whose source has moved since this run recorded what it consumed.
+
+    Item 5.2's chain-runner half. Both sides are already on disk, so this is two
+    small index reads and no probe: the run's rows carry the composition each
+    entry was built from (item 5.1's features half), and ``<root>/sequences.csv``
+    carries what that entry is made of now (item 4.4). A difference between them
+    is a source that moved under a finished run.
+
+    **Recorded against recorded, never recomputed.** A value recomputed from the
+    present agrees with itself by construction, which is the argument
+    ``sequence_index`` makes for storing compositions at all. It also keeps
+    ``Pipeline.status`` free of any filesystem measurement -- a status display
+    that probed would be unusable on the corpora this exists for.
+
+    **Both sides must be non-empty to count**, and that is the honest-empty rule
+    rather than caution. An empty recorded cell means the run predates item 5.1
+    or its root could not be established; an empty current one means the
+    projection has not been written or is unestablishable now. Neither is
+    evidence of change, and reporting either as drift would light up every
+    pre-Stage-5 run in the display. Unknown is item 6.2's to fail closed on, not
+    this function's to guess at.
+    """
+    from .sequence_index import encode_entry_composition, read_entry_compositions
+
+    index = feature_index(feature_index_path(ds, feature_name))
+    if not index.path.exists():
+        return ()
+    try:
+        rows = index.read(run_id=run_id)
+    except FileNotFoundError:
+        return ()
+
+    recorded: dict[tuple[str, str], tuple[list[str], str]] = {}
+    for _, row in rows.iterrows():
+        roots = [root for root in str(row.get("consumed_roots", "")).split(",") if root]
+        if not roots:
+            continue
+        entry = (str(row["group"]), str(row["sequence"]))
+        recorded[entry] = (roots, str(row.get("consumed_composition", "")))
+    if not recorded:
+        return ()
+
+    current = read_entry_compositions(ds, recorded.keys())
+    drifted: list[tuple[str, str]] = []
+    for entry, (roots, was) in sorted(recorded.items()):
+        now = encode_entry_composition(current.get(entry, {}), roots)
+        if was and now and was != now:
+            drifted.append(entry)
+    return tuple(drifted)

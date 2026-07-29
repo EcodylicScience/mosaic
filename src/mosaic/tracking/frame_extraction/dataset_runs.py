@@ -317,6 +317,29 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
     )
 
 
+def _relative_video_paths(ds: Dataset, stored: str) -> str:
+    """Make a ``video_abs_path`` cell dataset-root-relative, keeping its shape.
+
+    The cell is a JSON array for a multi-clip camera and a bare path otherwise.
+    That encoding is **not** changed here: no production code parses it, so a
+    second spelling would be pure cost, and adding one would mean an index could
+    hold two forms of the same answer -- the shape this program keeps arguing
+    against. Only the paths inside it move.
+    """
+    if not stored:
+        return stored
+    if not stored.startswith("["):
+        return ds.relative_to_root(Path(stored))
+    try:
+        parsed: object = json.loads(stored)
+    except ValueError:
+        return stored
+    if not isinstance(parsed, list):
+        return stored
+    listed: list[object] = parsed
+    return json.dumps([ds.relative_to_root(Path(str(item))) for item in listed])
+
+
 def _rewrite_manifest(ds: Dataset, seq_dir: Path) -> None:
     """Rewrite run_info.json with dataset-relative paths for portability."""
     manifest_path = seq_dir / "run_info.json"
@@ -463,10 +486,23 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
         if row is not None:
             # _rewrite_manifest needs the absolute seq_dir; store the row with a
             # dataset-root-relative abs_path so the index stays portable.
+            #
+            # ``video_abs_path`` is made relative the same way and for the same
+            # reason. It was the one path cell in this row left absolute, and
+            # "frames" is absent from ``_INDEX_PATH_COLUMNS``, so no portability
+            # pass ever reached it -- a moved or synced dataset kept a frames
+            # index pointing at the old machine's tree. Registering it there
+            # instead would not work: those passes do prefix substring
+            # replacement with no split support, and this cell is multi-valued
+            # for a multi-clip camera. Storing it relative makes it portable by
+            # construction. Rows written before this stay absolute and keep
+            # resolving, per migration M1's add-do-not-rename rule.
             _rewrite_manifest(ds, row.abs_path)
             index_rows.append(
                 dataclasses.replace(
-                    row, abs_path=Path(ds.relative_to_root(row.abs_path))
+                    row,
+                    abs_path=Path(ds.relative_to_root(row.abs_path)),
+                    video_abs_path=_relative_video_paths(ds, row.video_abs_path),
                 )
             )
 

@@ -16,6 +16,11 @@ import pytest
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.drift import classify_identity
 from mosaic.core.pipeline.media_index import MediaIndexScope
+from mosaic.core.pipeline.types import Inputs, Params
+
+
+class _P(Params):
+    pass
 
 
 def _dataset(base: Path) -> Dataset:
@@ -155,3 +160,96 @@ class TestClassifierIsShared:
         from mosaic.core.media import reprobe
 
         assert reprobe.classify_identity is classify_identity
+
+
+# --- item 5.2's other half: the chain runner shows a source that moved --------
+
+
+class _CropLike:
+    """A per-frame feature that opens video, the shape ``egocentric-crop`` has.
+
+    Local rather than imported from the scenario suite: what matters here is only
+    that it declares ``consumed_roots``, so its rows carry the composition each
+    entry was built from. Borrowing a scenario stub would couple this file to the
+    H1-H5 spec suite, which is about identity rather than about display.
+    """
+
+    name = "drift-crop-probe"
+    version = "0.1"
+    parallelizable = False
+    scope_dependent = False
+    consumed_roots: tuple[str, ...] = ("media_raw",)
+
+    def __init__(
+        self,
+        inputs: Inputs | None = None,
+        params: dict[str, object] | _P | None = None,
+    ) -> None:
+        self.inputs = inputs if inputs is not None else Inputs(("tracks",))
+        self.params = params if isinstance(params, _P) else _P.from_overrides(params)
+
+    def load_state(
+        self, run_root: Path, artifact_paths: object, dependency_lookups: object
+    ) -> bool:
+        return True
+
+    def fit(self, inputs: object) -> None:
+        pass
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df):
+        return df
+
+
+@pytest.mark.usefixtures("requires_ffprobe")
+def test_the_status_display_reports_a_source_that_moved(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """A reorder under a finished run shows up as drift, and costs no probe.
+
+    Both sides are already on disk -- the run's recorded ``consumed_composition``
+    and what ``media_raw/sequences.csv`` holds now -- so this is two index reads.
+    ``probe_video_metadata`` is made to raise for the duration, because a status
+    display that measured the filesystem would be unusable on the corpora this
+    exists for, and asserting only the drift count would not notice if it began
+    to.
+    """
+    from mosaic.core.pipeline.media_index import MediaIndexScope
+    from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
+
+    ds = scenario_dataset_with_media
+    pipeline = Pipeline()
+    _ = pipeline.add(FeatureStep("crop", _CropLike, {}))
+    _ = pipeline.run(ds)
+
+    before = pipeline.status(ds)
+    assert list(before["drift"]) == [""], "a freshly run pipeline must show no drift"
+
+    # Reorder seq_a's two clips. No bytes change; the composition does.
+    _ = ds.write_media_index(
+        [
+            MediaIndexScope(
+                directory=ds.get_root("media_raw") / "seq_a",
+                group="",
+                sequence="seq_a",
+                order_by_name={"b.mp4": 0, "a.mp4": 1},
+            )
+        ],
+        extensions=(".mp4",),
+    )
+
+    import mosaic.core.dataset as dataset_module
+
+    def _refuse(path: Path) -> object:
+        raise AssertionError(f"status() probed the filesystem: {path}")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(dataset_module, "probe_video_metadata", _refuse)
+        after = pipeline.status(ds)
+
+    assert list(after["drift"]) == [1], "a reordered source was not reported"
+    assert list(after["cached"]) == list(before["cached"]), (
+        "drift is a source verdict; it must not change the cache verdict"
+    )

@@ -24,7 +24,12 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key, resolve_frame_range
 
 from ._utils import Scope, derive_storage_name
-from .index import feature_index_path, feature_run_root, list_feature_runs
+from .index import (
+    drifted_entries,
+    feature_index_path,
+    feature_run_root,
+    list_feature_runs,
+)
 from .manifest import build_manifest
 from .resolve import resolve_references
 from .run import compute_run_id
@@ -544,6 +549,7 @@ class Pipeline:
                         "n_seq": "-",
                         "runs": "-",
                         "cached": "-" if not info["stale"] else "stale",
+                        "drift": "-",
                         "modified": "-",
                     }
                 )
@@ -580,6 +586,18 @@ class Pipeline:
                 if rr.exists():
                     modified = _newest_mtime(rr)
 
+            # Item 5.2's chain-runner half, as a sibling column rather than a
+            # fifth value in `cached`. `cached` is a *cache* verdict -- is the
+            # output on disk and complete -- and drift is a *source* verdict.
+            # Folding them together would make `cached == "drift"` mean "I no
+            # longer know whether it is cached", which is not what was measured:
+            # a drifted run is complete and loadable, and superseded is not
+            # invalid (rule P4). Deciding what to do about it is item 6.2's.
+            drift = (
+                drifted_entries(dataset, info["storage_name"], expected)
+                if (expected := str(info["expected_run_id"]))
+                else ()
+            )
             row: dict[str, object] = {
                 "step": step.name,
                 "feature": info.get("feature_short", info["storage_name"]),
@@ -587,6 +605,7 @@ class Pipeline:
                 "n_seq": n_seq,
                 "runs": n_runs,
                 "cached": cached_display,
+                "drift": len(drift) or "",
                 "modified": modified,
             }
             if "error" in info:
@@ -601,6 +620,7 @@ class Pipeline:
         self.results = {}
         loaded: list[str] = []
         missing: list[tuple[str, str]] = []
+        drifted: list[tuple[str, int]] = []
 
         for info in resolved:
             step = info["step"]
@@ -613,6 +633,17 @@ class Pipeline:
                     run_id=info["expected_run_id"],
                 )
                 loaded.append(step.name)
+                # Loaded anyway, and reported. A drifted run was correctly
+                # derived from a state its run_id still describes -- it is old,
+                # not wrong (rule P4's "superseded is not invalid"). Refusing
+                # here would destroy the ability to compare across source
+                # revisions, which is a thing users want; deciding to delete is
+                # item 6.2's gesture, behind an explicit force.
+                moved = drifted_entries(
+                    dataset, info["storage_name"], str(info["expected_run_id"])
+                )
+                if moved:
+                    drifted.append((step.name, len(moved)))
             else:
                 reason = "stale (upstream changed)" if info["stale"] else "not cached"
                 missing.append((step.name, reason))
@@ -623,6 +654,11 @@ class Pipeline:
             print(f"  Loaded: {', '.join(loaded)}")
         if missing:
             print(f"  Missing: {', '.join(f'{n} ({r})' for n, r in missing)}")
+        if drifted:
+            moved_by_step = ", ".join(
+                f"{name} ({count} sequence(s))" for name, count in drifted
+            )
+            print(f"  Drift: source has moved under {moved_by_step}")
         return self.results
 
     def run(

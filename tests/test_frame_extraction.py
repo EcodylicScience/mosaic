@@ -8,6 +8,7 @@ algorithms.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 import numpy as np
@@ -352,3 +353,27 @@ def test_an_extracted_frame_set_records_what_it_was_cut_from(
     assert str(row["video_uuids"]) == expected_uids[("", "seq_a", "")]
     assert str(row["media_composition"]) == expected_compositions[("", "seq_a")]
     assert str(row["video_uuids"]), "a frame set recorded no source identity"
+
+
+def test_a_frames_row_stores_its_video_paths_root_relative(
+    scenario_dataset_with_media: Dataset,
+) -> None:
+    """The one path cell in this row that no portability pass ever reached.
+
+    ``"frames"`` is absent from ``_INDEX_PATH_COLUMNS``, so a moved or synced
+    dataset kept a frames index pointing at the old tree. Registering it there
+    would not help -- those passes do prefix substring replacement and this cell
+    is multi-valued -- so it is made portable by construction instead.
+    """
+    from mosaic.tracking import extract_frames
+    from mosaic.tracking.frame_extraction import list_frame_runs
+
+    ds = scenario_dataset_with_media
+    _ = extract_frames(ds, n_frames=2, method="uniform", sequences=["seq_a"])
+
+    rows = list_frame_runs(ds, method="uniform")
+    stored = str(rows[rows["sequence"] == "seq_a"].iloc[0]["video_abs_path"])
+    assert stored.startswith("["), "seq_a holds two clips, so the cell stays a list"
+    for path in json.loads(stored):
+        assert not Path(path).is_absolute(), f"not portable: {path}"
+        assert ds.resolve_path(path).exists(), f"does not resolve: {path}"
