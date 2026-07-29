@@ -56,6 +56,7 @@ class _FeatureBase:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     def load_state(
         self,

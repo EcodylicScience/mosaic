@@ -95,6 +95,7 @@ class ExtractLabeledTemplates:
     version = "0.1"
     parallelizable = False
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     LabeledTemplatesArtifact = LabeledTemplatesArtifact
     LabeledProvenanceArtifact = LabeledProvenanceArtifact

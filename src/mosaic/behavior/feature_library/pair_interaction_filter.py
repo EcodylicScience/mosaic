@@ -21,7 +21,6 @@ from typing import final
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
 from scipy.ndimage import binary_closing, binary_opening
 
 from mosaic.core.pipeline.types import (
@@ -191,6 +190,7 @@ class PairInteractionFilter:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

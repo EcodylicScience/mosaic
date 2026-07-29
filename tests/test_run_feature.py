@@ -93,6 +93,7 @@ class _StatelessFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -139,6 +140,7 @@ class _StatefulFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -200,6 +202,7 @@ class _EmptyInputFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "empty"

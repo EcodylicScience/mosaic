@@ -70,6 +70,7 @@ class ExtractTemplates:
     version = "0.1"
     parallelizable = False
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     TemplatesArtifact = TemplatesArtifact
     ProvenanceArtifact = ProvenanceArtifact

@@ -154,6 +154,7 @@ class GlobalIdentityDinoV2Temporal:
     # apply are two runs with two identifiers rather than one that silently
     # reuses a network fitted on a narrower scope.
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = DinoV2TemporalIdentityArtifact
 

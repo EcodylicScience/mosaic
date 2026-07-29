@@ -24,6 +24,7 @@ class _TrackOnlyFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput]):
         pass
@@ -58,6 +59,7 @@ class _MixedInputFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -133,6 +135,7 @@ class _TestFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput]):
         pass

@@ -52,7 +52,11 @@ from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
 from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
 from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
-from mosaic.core.pipeline.run import MissingScopeDeclaration, compute_run_id
+from mosaic.core.pipeline.run import (
+    MissingConsumedRootsDeclaration,
+    MissingScopeDeclaration,
+    compute_run_id,
+)
 
 PIPELINE_DIR = Path(inspect.getfile(compute_run_id)).parent
 
@@ -117,6 +121,72 @@ def test_every_feature_declares_scope_dependent() -> None:
     assert not missing, (
         f"features with no scope_dependent declaration: {sorted(missing)}"
     )
+
+
+def test_every_feature_declares_consumed_roots() -> None:
+    """The mechanical mirror of the scope-declaration sweep, one field over."""
+    missing = [
+        str(getattr(cls, "name", cls.__name__))
+        for cls in FEATURES.values()
+        if not hasattr(cls, "consumed_roots")
+    ]
+    assert not missing, f"features with no consumed_roots declaration: {sorted(missing)}"
+
+
+# Names a feature calls to reach media past its inputs. Closed, and therefore
+# incomplete by construction -- a new accessor is a one-line addition on the
+# commit that introduces it, and until then this check cannot see it. Stated
+# rather than implied, exactly as ``_fit_reads_its_stream`` admits its own limits.
+_MEDIA_ACCESSORS = (
+    "resolve_media",
+    "resolve_media_scope",
+    "MultiVideoReader",
+    "open_frame_reader",
+)
+
+
+def test_features_that_open_video_declare_media_raw() -> None:
+    """A feature that reads video says which root it read.
+
+    Not a style rule. ``egocentric-crop`` concatenates a sequence's videos
+    through ``MultiVideoReader``, so reordering them changes its pixels -- and
+    item 6.2's per-entry delete set reads this declaration, so an undeclared
+    reader is a stale crop nothing deletes.
+
+    Name-based and therefore imperfect: it cannot see a path carried in through
+    params, and it would miss an accessor not in the list above. It fails closed
+    on the ones that exist, which is what catches the *next* video feature.
+    """
+    violations: list[str] = []
+    for cls in FEATURES.values():
+        try:
+            source = inspect.getsource(cls)
+        except (OSError, TypeError):
+            continue
+        if not any(accessor in source for accessor in _MEDIA_ACCESSORS):
+            continue
+        if "media_raw" not in getattr(cls, "consumed_roots", ()):
+            violations.append(str(getattr(cls, "name", cls.__name__)))
+    assert not violations, (
+        f"features read media but do not declare consumed_roots = "
+        f"('media_raw',): {sorted(violations)}"
+    )
+
+
+def test_missing_consumed_roots_declaration_names_the_feature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The error says what to declare, not merely that something is absent.
+
+    Against a real registered feature with the declaration removed, like its
+    ``scope_dependent`` sibling, so the message is the one a genuinely undeclared
+    feature would produce.
+    """
+    feature = build_feature("speed-angvel", None, None)
+    monkeypatch.delattr(type(feature), "consumed_roots")
+
+    with pytest.raises(MissingConsumedRootsDeclaration, match="speed-angvel"):
+        _ = compute_run_id(feature, None, None, Scope())
 
 
 def test_missing_scope_declaration_names_the_feature(

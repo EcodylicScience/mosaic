@@ -76,6 +76,7 @@ class PairPoseDistancePCA:
     version = "0.1"
     parallelizable = True
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):
         pass

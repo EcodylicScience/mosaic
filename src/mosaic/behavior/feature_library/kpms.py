@@ -198,6 +198,7 @@ class KpmsFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     KpmsModelBundle = KpmsModelBundle
     KpmsModelArtifact = KpmsModelArtifact

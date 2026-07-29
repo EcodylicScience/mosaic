@@ -117,6 +117,7 @@ class ArHmmFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = ArHmmModelArtifact
 

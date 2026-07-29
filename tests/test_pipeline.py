@@ -170,6 +170,7 @@ class _ScopedSpeed(SpeedAngvel):
 
     name = "scoped-speed"
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
 
 def test_scope_dependent_run_id_matches_on_disk(tmp_path: Path) -> None:

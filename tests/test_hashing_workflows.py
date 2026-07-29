@@ -52,6 +52,7 @@ class _FeatureBase:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Params(Params):
         pass
@@ -93,6 +94,7 @@ class _GlobalFit(_PerFrame):
     name = "scenario-global-fit"
     version = "0.1"
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     def load_state(
         self,

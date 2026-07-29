@@ -62,6 +62,7 @@ class VizGlobalColored:
     # this declaration wrong** -- the plot would then vary with scope under one
     # identifier. Change it to True in the same commit that connects the hook.
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[ResultColumn]):
         _require: ClassVar[InputRequire] = "empty"

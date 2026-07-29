@@ -218,6 +218,7 @@ class TemporalStackingFeature:
     version = "0.3"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):
         pass

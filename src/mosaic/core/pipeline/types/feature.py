@@ -40,12 +40,38 @@ class InputStream:
 
 
 class Feature(Protocol):
-    """Feature protocol -- 4 attributes, 4 methods."""
+    """Feature protocol -- 5 attributes, 4 methods."""
 
     name: str
     version: str
     parallelizable: bool
     scope_dependent: bool
+    consumed_roots: tuple[str, ...]
+    """The **source roots this feature opens directly**, outside its inputs.
+
+    The obvious reading is wrong, so read this one. It is not "the roots my data
+    came from": a feature consuming ``"tracks"`` declares ``()``, because
+    ``tracks/`` is a *derived* root and the manifest already hands it the tables.
+    It is the roots the feature reaches past its inputs to read -- today, the two
+    that open video through ``resolve_media`` / ``MultiVideoReader``.
+
+    **Why a tracks-consuming feature declares nothing.** If it carried
+    ``tracks_raw``'s composition, a change under ``tracks_raw`` would move its
+    identifier without the tracks parquet having changed a byte -- a false
+    invalidation, and precisely the "couple every per-sequence feature to the
+    whole dataset" hazard the media-storage decision note warns about. The honest
+    path is transitive: a change under ``tracks_raw`` re-produces the tracks
+    table, which moves the tracks variant identity, which is already in this
+    feature's ``_tracks`` term.
+
+    **Known gap, and it is dated rather than papered over.** That transitivity is
+    incomplete until item 5.1 gives the tracks variant a source-content term:
+    ``tracks_identity`` says so itself -- "this names the recipe, not the input".
+    So between Stage 4 and 5.1 a ``tracks_raw`` change moves nothing downstream.
+    Declaring ``("tracks_raw",)`` would close that by false invalidation, which is
+    the wrong trade: an honest miss beats a confident wrong value, but a
+    *spurious* miss is neither.
+    """
 
     @property
     def inputs(self) -> InputsLike: ...

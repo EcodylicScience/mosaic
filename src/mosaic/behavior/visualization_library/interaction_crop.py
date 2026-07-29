@@ -79,6 +79,7 @@ class InteractionCropPipeline:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ("media_raw",)
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

@@ -132,6 +132,7 @@ class TimelinePlot:
     # vary with scope under one identifier. Change it to True in the same commit
     # that connects the hook.
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
     name = "viz-timeline"
     version = "0.1"
     parallelizable = False

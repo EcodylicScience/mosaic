@@ -87,6 +87,7 @@ class GlobalIdentityModel:
     # discovers the label set from them. Fold the scope into the run_id so two
     # training subsets with identical params+inputs don't collide on one run.
     scope_dependent = True
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"

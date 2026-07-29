@@ -327,6 +327,7 @@ class FeralFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"

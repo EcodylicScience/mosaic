@@ -351,6 +351,17 @@ class MissingScopeDeclaration(AttributeError):
     """
 
 
+class MissingConsumedRootsDeclaration(AttributeError):
+    """A feature reached identity computation without declaring ``consumed_roots``.
+
+    The same argument as :class:`MissingScopeDeclaration`, one field over. A
+    default of ``()`` would let the next feature that opens video ship
+    undeclared and silently claim to read nothing -- and item 6.2's per-entry
+    delete set reads this declaration, so an empty one is a stale crop nothing
+    deletes.
+    """
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -390,6 +401,15 @@ def compute_run_id(
             f"'scope_dependent', so its identity cannot be computed. Declare it: "
             f"True if fit() derives anything from the set of sequences in scope, "
             f"False if each entry is computed from itself alone."
+        )
+    if not hasattr(feature, "consumed_roots"):
+        name = getattr(feature, "name", type(feature).__name__)
+        raise MissingConsumedRootsDeclaration(
+            f"feature {name!r} ({type(feature).__name__}) declares no "
+            f"'consumed_roots', so what it reads outside its inputs is unknown. "
+            f"Declare it: the source roots this feature opens directly -- "
+            f"('media_raw',) if it reads video, () for a feature that only reads "
+            f"the tables its inputs hand it, which is almost all of them."
         )
     hashable: dict[str, object] = {
         "_params": feature.params.identity_dump(),

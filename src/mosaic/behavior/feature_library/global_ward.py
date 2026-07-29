@@ -77,6 +77,7 @@ class GlobalWardClustering:
     version = "0.3"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = WardModelArtifact
 

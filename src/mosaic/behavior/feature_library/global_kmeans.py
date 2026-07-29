@@ -129,6 +129,7 @@ class GlobalKMeansClustering:
     version: str = "0.4"
     parallelizable = False
     scope_dependent = False
+    consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = KMeansModelArtifact
     ClusterCentersArtifact = KMeansClusterCentersArtifact
