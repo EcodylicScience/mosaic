@@ -53,6 +53,7 @@ from __future__ import annotations
 import csv
 import fnmatch
 import os
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,7 @@ from mosaic.core.pipeline.composition import SourceMember
 
 from mosaic.core.helpers import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, is_under_tracking_root
 from mosaic.core.pipeline.media_index import mtime_iso
 
 # Column schema and order for ``tracks_raw/index.csv``. Owned here (not in the
@@ -186,8 +188,28 @@ def iter_track_files(
     written index is order-stable regardless of filesystem iteration order. The
     identity-free scan shared by :meth:`Dataset.index_tracks_raw` (scan-and-
     derive) and :meth:`Dataset.write_tracks_raw_index` (assignment-driven).
+
+    **``_tracking`` is never descended into** -- item 8.1's exclusion clause, and
+    half of M5's gate. A tracker writes per-individual ``data/*.npz`` and
+    predictions CSVs into its working directory, and this scan looks for exactly
+    those extensions; reaching them would index generated intermediates as user
+    raw tracks and fold their checksums into a sequence's ``tracks_raw``
+    composition, silently invalidating every downstream cache on each tracker
+    re-run.
+
+    It is a *component* test rather than an ``exclude_patterns`` entry, because
+    ``exclude_patterns`` matches basenames and a directory exclusion cannot be
+    written as one -- ``_tracking`` never appears as a file's name, so the glob
+    would match nothing while the walk descended anyway. That is not a gap
+    callers could have worked around; it was unexpressible.
+
+    Skips are counted rather than announced per file: on a real tracker root that
+    would be thousands of lines. The count goes to stderr in one line, because a
+    scan that quietly returns less than the caller expected is the thing worth
+    noticing.
     """
     by_resolved: dict[Path, tuple[Path, os.stat_result]] = {}
+    skipped = 0
     for directory in search_dirs:
         for pattern in patterns:
             matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
@@ -198,10 +220,19 @@ def iter_track_files(
                     continue
                 if any(fnmatch.fnmatch(path.name, ex) for ex in exclude_patterns):
                     continue
+                if is_under_tracking_root(path.parts):
+                    skipped += 1
+                    continue
                 resolved = path.resolve()
                 if resolved in by_resolved:
                     continue
                 by_resolved[resolved] = (path, path.stat())
+    if skipped:
+        print(
+            f"[INFO] skipped {skipped} generated file(s) under {TRACKING_ROOT}/ "
+            "-- tracker intermediates are not raw tracks",
+            file=sys.stderr,
+        )
     return [by_resolved[key] for key in sorted(by_resolved)]
 
 

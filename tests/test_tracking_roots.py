@@ -8,9 +8,13 @@ rewrites what is already on disk.
 
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 from pathlib import Path
 
+import cv2
+import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
@@ -26,8 +30,17 @@ from mosaic.core.pipeline.tracking_roots import (
     is_under_tracking_root,
     tracking_root_default,
 )
+from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 
 _REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "mosaic"
+
+
+def _write_mp4(path: Path, nframes: int = 4) -> None:
+    """A tiny real video, so ffprobe has something to measure."""
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+    for _ in range(nframes):
+        writer.write(np.zeros((48, 64, 3), np.uint8))
+    writer.release()
 
 
 # --- The registry ------------------------------------------------------------
@@ -86,6 +99,83 @@ def test_no_module_spells_the_tracker_root_path_itself() -> None:
     assert not stray, (
         "the tracker root path is spelled outside the registry:\n" + "\n".join(stray)
     )
+
+
+# --- The exclusion: half of M5's gate ----------------------------------------
+
+
+def test_the_raw_tracks_scanner_does_not_descend_into_tracking(tmp_path: Path) -> None:
+    """A tracker's per-individual NPZ is not a user raw track.
+
+    The consequence if it were, which is why this is a gate rather than tidiness:
+    ``index_tracks_raw`` folds each indexed file's checksum into that sequence's
+    ``tracks_raw`` composition, so every tracker re-run would move the
+    composition and invalidate every downstream feature cache -- with no error
+    and no log line.
+    """
+    base = tmp_path / "ds"
+    uploaded = base / "tracks_raw" / "seq_a.npz"
+    uploaded.parent.mkdir(parents=True)
+    _ = uploaded.write_bytes(b"")
+    generated = base / TRACKING_ROOT / "trex" / "trex.1.0-aaaa" / "seq_a" / "data"
+    generated.mkdir(parents=True)
+    _ = (generated / "seq_a_fish0.npz").write_bytes(b"")
+
+    found = [path for path, _stat in iter_track_files([base], ["*.npz"])]
+
+    assert found == [uploaded]
+
+
+def test_the_exclusion_is_not_expressible_as_an_exclude_pattern(tmp_path: Path) -> None:
+    """Why it is a component test and not a caller-supplied glob.
+
+    ``exclude_patterns`` matches ``path.name``. ``_tracking`` is never a file's
+    name, so the pattern a caller would reach for matches nothing and the walk
+    descends anyway. This pins that the caller-side workaround genuinely does not
+    exist, so nobody removes the component check believing one does.
+    """
+    base = tmp_path / "ds"
+    generated = base / TRACKING_ROOT / "trex" / "run" / "seq_a"
+    generated.mkdir(parents=True)
+    _ = (generated / "seq_a.npz").write_bytes(b"")
+
+    matched = fnmatch.filter(
+        [str(p.name) for p in generated.rglob("*.npz")], TRACKING_ROOT
+    )
+
+    assert matched == [], "a basename pattern cannot name a directory"
+    assert iter_track_files([base], ["*.npz"], exclude_patterns=[TRACKING_ROOT]) == []
+
+
+def test_the_media_scanner_does_not_descend_into_tracking(
+    tmp_path: Path, requires_ffprobe: None
+) -> None:
+    """A tracker's debug frames and re-encoded clips are not source media.
+
+    ``index_media`` filters on extension alone, so a generated ``.mp4`` under a
+    tracker root would be indexed as an *original* -- earning a ``video_uuid``
+    and a place in a sequence's media composition, which is a derived file
+    claiming to be a source.
+    """
+    base = tmp_path / "ds"
+    for sub in ("media_raw", "media", "tracks"):
+        (base / sub).mkdir(parents=True)
+    dataset = Dataset(
+        manifest_path=base / "dataset.yaml",
+        roots={
+            "media_raw": str(base / "media_raw"),
+            "media": str(base / "media"),
+            "tracks": str(base / "tracks"),
+        },
+    )
+    _write_mp4(base / "media_raw" / "seq_a.mp4")
+    debug = base / TRACKING_ROOT / "trex" / "run" / "seq_a"
+    debug.mkdir(parents=True)
+    _write_mp4(debug / "debug.mp4")
+
+    indexed = pd.read_csv(dataset.index_media([base], extensions=(".mp4",)))
+
+    assert [Path(p).name for p in indexed["abs_path"]] == ["seq_a.mp4"]
 
 
 # --- The backfill ------------------------------------------------------------

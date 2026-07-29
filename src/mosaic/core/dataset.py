@@ -120,7 +120,11 @@ from .pipeline.sequence_index import (
     sequence_labels,
     write_sequence_compositions,
 )
-from .pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
+from .pipeline.tracking_roots import (
+    TRACKING_ROOT,
+    TRACKING_ROOTS,
+    is_under_tracking_root,
+)
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
@@ -1630,6 +1634,8 @@ class Dataset:
                 continue
             candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
             for cand in candidates:
+                if is_under_tracking_root(cand.parts):
+                    continue
                 if cand.is_dir() and is_imgstore(cand):
                     imgstore_dirs.add(cand.resolve())
 
@@ -1637,6 +1643,7 @@ class Dataset:
         # (ffprobe / MediaFacts, I/O bound) happens afterward through a bounded
         # thread pool so many-file search dirs index in parallel.
         probe_candidates: list[tuple[Path, os.stat_result]] = []
+        tracking_skipped = 0
         for d in search:
             if not d.exists():
                 print(f"[WARN] search dir missing: {d}", file=sys.stderr)
@@ -1647,6 +1654,14 @@ class Dataset:
                     continue
                 # Skip macOS resource forks (._* files)
                 if p.name.startswith("._"):
+                    continue
+                # Never descend into `_tracking` (item 8.1). A tracker writes
+                # debug frames and re-encoded clips into its working directory,
+                # and this glob filters on extension alone -- so a generated
+                # `.mp4` would be indexed as *source* media, giving a derived
+                # file a `video_uuid` and a place in a sequence's composition.
+                if is_under_tracking_root(p.parts):
+                    tracking_skipped += 1
                     continue
                 # Skip files that live inside an imgstore directory (its chunks).
                 if imgstore_dirs and any(
@@ -1661,6 +1676,13 @@ class Dataset:
                     print(f"[WARN] skip {p}: {e}", file=sys.stderr)
                     continue
                 probe_candidates.append((p, st))
+
+        if tracking_skipped:
+            print(
+                f"[INFO] skipped {tracking_skipped} generated file(s) under "
+                f"{TRACKING_ROOT}/ -- tracker output is not source media",
+                file=sys.stderr,
+            )
 
         # Probe deterministically by resolved path so pool completion order
         # never affects the returned order.
