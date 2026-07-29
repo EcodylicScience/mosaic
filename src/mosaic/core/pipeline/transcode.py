@@ -335,6 +335,24 @@ class TranscodeOp(Op[TranscodeParams]):
 
     def run(self, ds: "Dataset", params: TranscodeParams, ctx: "JobContext") -> str:
         group, sequence = params.entry
+        # A second explicit refusal, for the same reason as the imgstore one
+        # below: without it this ran and quietly did harm. On a dataset with no
+        # `media_raw`, `get_root("media")` and the originals index are the same
+        # file, so the back-link appended a derivative row *into* the originals
+        # index and the forward link went to the same place. `route_derivatives`
+        # is then False (`Dataset.media_routing_context`), so nothing ever read
+        # what was produced: the encode was wasted and the originals index was
+        # left holding rows that only `recipe_hash` distinguishes from originals.
+        # That is also the one dataset shape `prune-media` must decline, so
+        # refusing here keeps its decline a statement about history rather than
+        # about damage still being done.
+        if ds.resolve_media_root() != "media_raw":
+            message = (
+                f"{group}/{sequence}: this dataset has no media_raw root, so "
+                f"media/index.csv is its originals index; a derivative written "
+                f"there would never be read"
+            )
+            raise TranscodeError(message)
         matched = ds.match_media_rows(group, sequence)
         sources = [
             (int(row.get("video_order", 0) or 0), ds.resolve_path(row["abs_path"]), row)

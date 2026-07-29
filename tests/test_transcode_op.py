@@ -377,6 +377,46 @@ def test_an_imgstore_refuses_to_transcode(
         )
 
 
+def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> None:
+    """With one media root the derivative index *is* the originals index.
+
+    The op used to run here and quietly do harm: the back-link appended a
+    derivative row into the originals index, the forward link went to the same
+    file, and ``route_derivatives`` was then False -- so nothing ever read what
+    the encode produced. The refusal is checked before any row is matched, so a
+    dataset in this shape fails immediately rather than after an encode.
+    """
+    base = (tmp_path / "dataset").resolve()
+    ds = Dataset(
+        manifest_path=base / "dataset.yaml", roots={"media": str(base / "media")}
+    )
+    ds.ensure_roots()
+    ds.save()
+    index_path = ds.get_root("media") / "index.csv"
+    original = base / "media" / "entry.mp4"
+    original.touch()
+    row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    row.update(
+        {
+            "name": "entry.mp4",
+            "group": "g",
+            "sequence": "s",
+            "abs_path": ds.relative_to_root(str(original)),
+            "video_uuid": "U",
+        }
+    )
+    write_media_index_rows(index_path, frame_from_rows([row]))
+    before = index_path.read_bytes()
+
+    with pytest.raises(TranscodeError, match="no media_raw root"):
+        _ = run_op(
+            ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
+        )
+
+    assert index_path.read_bytes() == before, "the originals index was written to"
+    assert not (ds.get_root("media") / "transcode").exists()
+
+
 def test_the_run_identity_ignores_the_source_order() -> None:
     assert transcode_run_id("abc123", ["b", "a"]) == transcode_run_id(
         "abc123", ["a", "b"]
