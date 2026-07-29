@@ -14,7 +14,7 @@ from concurrent.futures import (
     wait,
 )
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -395,6 +395,58 @@ def entry_composition(feature: Feature, scope: Scope, entry: tuple[str, str]) ->
     roots = sorted({root for root in feature.consumed_roots if root})
     recorded = {root: scope.composition_of(entry, root) for root in roots}
     return encode_entry_composition(recorded, roots)
+
+
+CacheDisposition = Literal["serve", "recompute", "undetectable"]
+"""What may be done with a cached entry, given what it recorded consuming.
+
+Item 6.2's refusal, and its three answers rather than two. ``serve`` and
+``recompute`` are the obvious pair; ``undetectable`` is the case that has to be
+named separately or the rule defeats the cache permanently.
+"""
+
+
+def cached_entry_disposition(recorded: str, current: str) -> CacheDisposition:
+    """Whether a cached entry may be served, must be recomputed, or cannot be told.
+
+    Fail closed means *recompute* here, not prompt: a library has no one to ask,
+    and the cost of being wrong is CPU rather than data. But it has to converge,
+    and that is what splits ``unknown`` in two.
+
+    - **Both sides known and equal** -- serve. The ordinary answer.
+    - **Both known and different** -- recompute. The source moved under an output
+      still on disk.
+    - **Exactly one side known** -- recompute. Either the entry predates item 5.1
+      and nothing says what it was built from, or the projection that would say
+      has gone. Recomputing *resolves* it: the row then records what is true now,
+      and the next run serves. One wrong cache miss, by construction -- the
+      migration shape M1 established.
+    - **Neither side known** -- ``undetectable``. Recomputing would resolve
+      nothing, because the row it wrote would record the same empty and the next
+      run would recompute again, forever. A dataset whose media was indexed
+      before item 4.4 is exactly this state, so failing closed here would mean an
+      unbounded recompute on every run of the two features that declare a root.
+      Serve it, and say out loud that drift cannot be detected until the
+      projection exists.
+
+    The distinction is the honest-empty rule applied to a decision rather than to
+    a value: an empty needs a companion saying which kind of empty it is, and
+    here the companion is the other side.
+    """
+    if recorded and current:
+        return "serve" if recorded == current else "recompute"
+    if recorded or current:
+        return "recompute"
+    return "undetectable"
+
+
+def _disposition_reason(recorded: str, current: str) -> str:
+    """Why a cached entry was refused, in the words a user can act on."""
+    if recorded and current:
+        return "its source moved"
+    if recorded:
+        return "the composition it was built from is no longer recorded"
+    return "nothing records what it was built from"
 
 
 def _scope_term(feature: Feature, scope: Scope) -> list[list[object]]:
@@ -915,6 +967,11 @@ def _run_feature_impl(
     )
 
     skip_keys: set[str] = set()
+    # Entries whose provenance neither side can establish. Collected rather than
+    # reported per entry: on a dataset with no projection this is every entry,
+    # and one line naming the repair is worth more than two hundred naming the
+    # symptom.
+    undetectable: set[tuple[str, str]] = set()
     if state_ready and not overwrite:
         for entry_key in manifest:
             group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
@@ -954,17 +1011,20 @@ def _run_feature_impl(
             recorded = prior_compositions.get(entry)
             was_made_from = recorded if recorded is not None else ""
             now_made_of = entry_composition(feature, scope, entry)
-            if was_made_from and now_made_of and was_made_from != now_made_of:
-                # The source moved under an output that is still on disk. Serving
-                # it would be the wrong answer this milestone exists to prevent,
-                # and recording it would restamp the only cell that says so.
-                # Recompute: costly, loud, and never destructive.
+            disposition = cached_entry_disposition(was_made_from, now_made_of)
+            if disposition == "recompute":
+                # Serving this would be the wrong answer this milestone exists to
+                # prevent, and recording it would restamp the only cell that says
+                # so. Costly, loud, and never destructive.
                 print(
-                    f"[feature:{feature.name}] source moved under cached output "
-                    f"for ({group},{sequence}); recomputing.",
+                    f"[feature:{feature.name}] cannot serve cached output for "
+                    f"({group},{sequence}): {_disposition_reason(was_made_from, now_made_of)}"
+                    f"; recomputing.",
                     file=sys.stderr,
                 )
                 continue
+            if disposition == "undetectable":
+                undetectable.add(entry)
             _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
@@ -984,6 +1044,17 @@ def _run_feature_impl(
                 )
             )
             skip_keys.add(entry_key)
+
+    if undetectable:
+        roots = ", ".join(sorted({root for root in feature.consumed_roots if root}))
+        print(
+            f"[feature:{feature.name}] served {len(undetectable)} cached "
+            f"entry(ies) whose source cannot be checked: neither the run nor "
+            f"{roots} records a composition for them, so a change under "
+            f"{roots} would go unnoticed. Run `mosaic reindex` (or "
+            f"`mosaic reprobe-media --apply` for media) to write the projection.",
+            file=sys.stderr,
+        )
 
     compute_manifest = (
         {k: v for k, v in manifest.items() if k not in skip_keys}

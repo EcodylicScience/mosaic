@@ -363,3 +363,84 @@ class TestACacheHitDoesNotLaunderTheBaseline:
         assert _crop_outputs(ds, second.run_id) == before, (
             "nothing moved, so nothing should have been recomputed"
         )
+
+
+# --- item 6.2: the refusal's three answers ------------------------------------
+
+
+class TestCachedEntryDisposition:
+    """Fail closed means recompute -- but it has to converge.
+
+    A rule that recomputes whenever provenance is unknown would, on a dataset
+    with no projection at all, recompute on every run forever: the row it wrote
+    would record the same empty, and the next run would ask the same question.
+    Splitting "one side known" from "neither side known" is what bounds it.
+    """
+
+    def test_agreement_is_served(self) -> None:
+        from mosaic.core.pipeline.run import cached_entry_disposition
+
+        assert cached_entry_disposition("abc", "abc") == "serve"
+
+    def test_a_moved_source_is_recomputed(self) -> None:
+        from mosaic.core.pipeline.run import cached_entry_disposition
+
+        assert cached_entry_disposition("abc", "def") == "recompute"
+
+    def test_one_known_side_is_recomputed_and_converges(self) -> None:
+        """Either the row predates item 5.1 or the projection has gone.
+
+        Recomputing resolves it -- the new row records what is true now -- so the
+        next run serves. One wrong cache miss, by construction.
+        """
+        from mosaic.core.pipeline.run import cached_entry_disposition
+
+        assert cached_entry_disposition("", "abc") == "recompute"
+        assert cached_entry_disposition("abc", "") == "recompute"
+        # Having recomputed, the two agree and the entry is served.
+        assert cached_entry_disposition("abc", "abc") == "serve"
+
+    def test_neither_side_known_is_undetectable_rather_than_recomputed(self) -> None:
+        """The case that would otherwise defeat the cache permanently.
+
+        A dataset whose media was indexed before item 4.4 records no composition
+        on either side. Recomputing teaches nothing and would repeat forever, so
+        the entry is served and the gap is reported instead.
+        """
+        from mosaic.core.pipeline.run import cached_entry_disposition
+
+        assert cached_entry_disposition("", "") == "undetectable"
+
+
+@pytest.mark.usefixtures("requires_ffprobe")
+class TestTheRefusalInRunFeature:
+    def test_an_entry_with_no_recorded_provenance_recomputes_once(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """And exactly once -- the second run serves it.
+
+        Asserting the convergence, not just the refusal: a rule that recomputed
+        every time would pass an assertion that only checked the first run.
+        """
+        from mosaic.core.pipeline.index import feature_index, feature_index_path
+        from mosaic.core.pipeline.run import run_feature
+
+        ds = scenario_dataset_with_media
+        first = run_feature(ds, _CropLike())
+
+        # Blank the recorded cell the way a pre-item-5.1 row carries it, leaving
+        # the projection in place so exactly one side is unknown.
+        index = feature_index(feature_index_path(ds, "drift-crop-probe__from__tracks"))
+        frame = index.read()
+        frame["consumed_composition"] = ""
+        frame.to_csv(index.path, index=False)
+
+        before = _crop_outputs(ds, first.run_id)
+        second = run_feature(ds, _CropLike())
+        after = _crop_outputs(ds, second.run_id)
+        assert after != before, "an entry with no recorded provenance was served"
+
+        third = run_feature(ds, _CropLike())
+        assert _crop_outputs(ds, third.run_id) == after, (
+            "the refusal did not converge: the entry recomputed twice"
+        )
