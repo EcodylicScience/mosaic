@@ -54,6 +54,10 @@ from mosaic_media.transcode import ANALYSIS_ENCODING
 from pydantic import RootModel
 
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.tracking.frame_extraction.dataset_runs import (
+    ExtractFramesParams,
+    frames_run_id,
+)
 from mosaic.core.pipeline.composition import (
     MediaMember,
     SourceMember,
@@ -320,7 +324,28 @@ def _tracks_raw_two_files() -> str:
     ).digest
 
 
+# The frame-extraction identifier, minted through its own function rather than
+# recomputed here. The OpCase above pins the *payload* -- a field added to
+# ``ExtractFramesParams`` moves it -- but nothing pinned ``frames_run_id``
+# itself, so a term added inside the minter moved the one identifier this file
+# calls permanently frozen while every line stayed green. Item 6.4's revision
+# term is exactly such a term, which is what made the gap worth closing.
+#
+# The revision case sits beside the default one deliberately: a pair that agreed
+# would be the defect, and it is visible in the data file rather than only here.
+
+
+def _frames_run_id() -> str:
+    return frames_run_id("uniform", ExtractFramesParams(n_frames=100))
+
+
+def _frames_run_id_revised() -> str:
+    return frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
+    "frames/run-id": _frames_run_id,
+    "frames/run-id-revision-1": _frames_run_id_revised,
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,
