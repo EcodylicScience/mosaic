@@ -26,6 +26,7 @@ from mosaic.core.helpers import make_entry_key, resolve_frame_range
 from ._utils import Scope, derive_storage_name
 from .index import (
     drifted_entries,
+    feature_index,
     feature_index_path,
     feature_run_root,
     list_feature_runs,
@@ -901,18 +902,20 @@ class Pipeline:
                     }
                 )
 
-            # Clean index.csv if not dry_run
+            # Drop the rows that named the directories just removed. A run on
+            # disk but not in the keep set is exactly what was deleted above; a
+            # run the index knows and disk does not is left alone, which is what
+            # the old expression's second clause said and this says by omission.
+            #
+            # Through IndexCSV rather than a bare read-modify-write: that took no
+            # lock, so a worker appending between its read and its write lost the
+            # row, and it re-parsed every surviving cell, which rewrites a
+            # `version` of "0.10" as 0.1 and a params_hash of "0123456789" as
+            # 123456789 -- an index contradicting the identifiers it holds.
             if not dry_run:
-                idx_path = feature_index_path(dataset, storage)
-                if idx_path.exists():
-                    idx_df = pd.read_csv(idx_path, keep_default_na=False)
-                    before = len(idx_df)
-                    idx_df = idx_df[
-                        idx_df["run_id"].isin(keep_set)
-                        | ~idx_df["run_id"].isin(all_rids)
-                    ]
-                    if len(idx_df) < before:
-                        idx_df.to_csv(idx_path, index=False)
+                _ = feature_index(feature_index_path(dataset, storage)).drop_runs(
+                    set(all_rids) - keep_set
+                )
 
         # Safeguard #3: last line of defense. If any keeper directory that
         # existed before the loop is now gone, something destroyed data it

@@ -830,3 +830,78 @@ class TestReplace:
         idx: IndexCSV[PathlessRow] = IndexCSV(tmp_path / "sequences.csv", PathlessRow)
         idx.replace([PathlessRow(sequence="a")])
         assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+class TestDropRuns:
+    """The index half of deleting a run, and the reason it is not a bare rewrite."""
+
+    def test_it_drops_only_the_named_runs(self, tmp_path: Path) -> None:
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, run_id="0.1-aaaaaaaaaa", sequence="a")])
+        idx.append([_feature_row(tmp_path, run_id="0.1-bbbbbbbbbb", sequence="b")])
+        idx.append([_feature_row(tmp_path, run_id="0.1-cccccccccc", sequence="c")])
+
+        dropped = idx.drop_runs({"0.1-bbbbbbbbbb"})
+
+        assert list(dropped["sequence"]) == ["b"]
+        assert sorted(idx.read()["sequence"]) == ["a", "c"]
+
+    def test_an_unknown_run_drops_nothing_and_rewrites_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller may name runs it is unsure about; the file must not move."""
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, sequence="a")])
+        before = (tmp_path / "index.csv").read_bytes()
+
+        dropped = idx.drop_runs({"0.1-nosuchrun"})
+
+        assert dropped.empty
+        assert (tmp_path / "index.csv").read_bytes() == before
+
+    def test_an_empty_request_touches_nothing(self, tmp_path: Path) -> None:
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, sequence="a")])
+        before = (tmp_path / "index.csv").read_bytes()
+
+        assert idx.drop_runs(set()).empty
+        assert (tmp_path / "index.csv").read_bytes() == before
+
+    def test_a_dry_run_reports_without_writing(self, tmp_path: Path) -> None:
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append([_feature_row(tmp_path, run_id="0.1-aaaaaaaaaa", sequence="a")])
+        before = (tmp_path / "index.csv").read_bytes()
+
+        dropped = idx.drop_runs({"0.1-aaaaaaaaaa"}, dry_run=True)
+
+        assert list(dropped["sequence"]) == ["a"]
+        assert (tmp_path / "index.csv").read_bytes() == before
+
+    def test_a_surviving_row_keeps_its_string_cells(self, tmp_path: Path) -> None:
+        """The corruption a bare ``pd.read_csv`` round trip caused.
+
+        ``0.10`` re-parses as ``0.1`` and a leading-zero digest loses its zero,
+        while the ``run_id`` that embeds both keeps the original spelling -- an
+        index contradicting its own identifiers, which is the failure the dtype
+        map exists to prevent. Dropping a *sibling* row is what forces the
+        rewrite, so the surviving row is collateral.
+        """
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append(
+            [
+                _feature_row(
+                    tmp_path,
+                    version="0.10",
+                    params_hash="0123456789",
+                    run_id="0.10-0123456789",
+                    sequence="keeper",
+                )
+            ]
+        )
+        idx.append([_feature_row(tmp_path, run_id="0.1-doomed0000", sequence="goner")])
+
+        _ = idx.drop_runs({"0.1-doomed0000"})
+
+        text = (tmp_path / "index.csv").read_text()
+        assert ",0.10-0123456789," in text
+        assert ",0.10," in text and ",0123456789," in text

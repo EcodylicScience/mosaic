@@ -33,6 +33,7 @@ def _make_run_dir(root, storage, rid):
 
 def _patch_clean_helpers(monkeypatch, storage_root, runs_on_disk):
     """Wire feature_run_root / list_feature_runs / feature_index_path to tmp_path."""
+
     def fake_feature_run_root(_dataset, storage, rid):
         return storage_root / storage / rid
 
@@ -64,18 +65,14 @@ def _resolved_step(name, storage, rid):
 class TestCleanSharedStorage:
     """Two steps sharing one storage path must both be kept."""
 
-    def test_dry_run_keeps_both_sibling_runs(
-        self, tmp_path, monkeypatch, fake_dataset
-    ):
+    def test_dry_run_keeps_both_sibling_runs(self, tmp_path, monkeypatch, fake_dataset):
         storage = "ffgroups__from__smooth__from__tracks"
         rid_a, rid_b = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
 
         _make_run_dir(tmp_path, storage, rid_a)
         _make_run_dir(tmp_path, storage, rid_b)
 
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [rid_a, rid_b]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -113,11 +110,13 @@ class TestCleanSharedStorage:
 
         # Write an index csv with rows for all three rids
         idx_path = tmp_path / storage / "index.csv"
-        pd.DataFrame({
-            "run_id": [rid_a, rid_b, rid_orphan, "0.1-deadbeef00"],
-            "group": ["g1"] * 4,
-            "sequence": ["s1"] * 4,
-        }).to_csv(idx_path, index=False)
+        pd.DataFrame(
+            {
+                "run_id": [rid_a, rid_b, rid_orphan, "0.1-deadbeef00"],
+                "group": ["g1"] * 4,
+                "sequence": ["s1"] * 4,
+            }
+        ).to_csv(idx_path, index=False)
 
         _patch_clean_helpers(
             monkeypatch, tmp_path, {storage: [rid_a, rid_b, rid_orphan]}
@@ -154,9 +153,7 @@ class TestCleanSharedStorage:
         assert rid_orphan not in rid_set
         assert "0.1-deadbeef00" in rid_set
 
-    def test_single_step_unchanged_behavior(
-        self, tmp_path, monkeypatch, fake_dataset
-    ):
+    def test_single_step_unchanged_behavior(self, tmp_path, monkeypatch, fake_dataset):
         """Single-step case should still treat non-matching rids as orphans."""
         storage = "speed-angvel__from__smooth__from__tracks"
         keep_rid = "0.1-1111111111"
@@ -165,9 +162,7 @@ class TestCleanSharedStorage:
         _make_run_dir(tmp_path, storage, keep_rid)
         _make_run_dir(tmp_path, storage, orphan_rid)
 
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [keep_rid, orphan_rid]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [keep_rid, orphan_rid]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -181,9 +176,7 @@ class TestCleanSharedStorage:
         assert statuses[keep_rid] == "current"
         assert statuses[orphan_rid] == "would remove"
 
-    def test_callback_steps_skipped(
-        self, tmp_path, monkeypatch, fake_dataset
-    ):
+    def test_callback_steps_skipped(self, tmp_path, monkeypatch, fake_dataset):
         """CallbackSteps in resolved list should not contribute to clean()."""
         storage = "speed-angvel__from__smooth__from__tracks"
         keep_rid = "0.1-1111111111"
@@ -223,9 +216,7 @@ class TestCleanSafeguards:
     These tests verify the safeguards raise instead of silently destroying.
     """
 
-    def test_global_keeper_conflict_raises(
-        self, tmp_path, monkeypatch, fake_dataset
-    ):
+    def test_global_keeper_conflict_raises(self, tmp_path, monkeypatch, fake_dataset):
         """Safeguard #1: simulate the pre-fix bug via a broken keep-set."""
         storage = "ffgroups__from__smooth__from__tracks"
         rid_a, rid_b = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
@@ -233,9 +224,7 @@ class TestCleanSafeguards:
         _make_run_dir(tmp_path, storage, rid_a)
         _make_run_dir(tmp_path, storage, rid_b)
 
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [rid_a, rid_b]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -271,9 +260,7 @@ class TestCleanSafeguards:
         _make_run_dir(tmp_path, storage, rid_a)
         _make_run_dir(tmp_path, storage, rid_b)
 
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [rid_a, rid_b]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -316,9 +303,7 @@ class TestCleanSafeguards:
 
         _make_run_dir(tmp_path, storage, rid_a)
         _make_run_dir(tmp_path, storage, rid_b)
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [rid_a, rid_b]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [rid_a, rid_b]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -370,9 +355,7 @@ class TestCleanSafeguards:
         rid_keeper = "0.1-keeper0000"  # directory never created
 
         _make_run_dir(tmp_path, storage, rid_orphan)
-        _patch_clean_helpers(
-            monkeypatch, tmp_path, {storage: [rid_orphan]}
-        )
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [rid_orphan]})
 
         pipe = Pipeline()
         monkeypatch.setattr(
@@ -385,3 +368,117 @@ class TestCleanSafeguards:
         # Orphan removed cleanly; keeper's missing directory is fine.
         assert "removed" in df["status"].values
         assert not (tmp_path / storage / rid_orphan).exists()
+
+
+class TestCleanWritesTheIndexThroughIndexCSV:
+    """The rewrite used to be a bare ``pd.read_csv``/``to_csv``.
+
+    It took no lock and pinned no dtypes, so it could lose a concurrent
+    worker's append and re-parsed every cell it kept. Routing it through
+    ``IndexCSV.drop_runs`` fixes both; these assert the second, which is
+    deterministic, and the shape of the first.
+    """
+
+    def test_a_surviving_row_keeps_its_string_cells(
+        self, tmp_path, monkeypatch, fake_dataset
+    ):
+        """A kept row is collateral of dropping a sibling, and must not re-parse.
+
+        ``0.10`` becoming ``0.1`` and ``0123456789`` losing its zero would leave
+        the index contradicting the ``run_id`` that embeds both.
+        """
+        from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
+
+        storage = "feat__from__tracks"
+        keeper, doomed = "0.10-0123456789", "0.1-bbbbbbbbbb"
+        _make_run_dir(tmp_path, storage, keeper)
+        _make_run_dir(tmp_path, storage, doomed)
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [keeper, doomed]})
+
+        index_path = tmp_path / storage / "index.csv"
+        idx = feature_index(index_path)
+        for rid, version, digest, sequence in (
+            (keeper, "0.10", "0123456789", "s1"),
+            (doomed, "0.1", "bbbbbbbbbb", "s2"),
+        ):
+            parquet = tmp_path / storage / rid / "g1__s1.parquet"
+            idx.append(
+                [
+                    FeatureIndexRow(
+                        abs_path=parquet,
+                        run_id=rid,
+                        feature=storage,
+                        version=version,
+                        group="g1",
+                        sequence=sequence,
+                        params_hash=digest,
+                        n_rows=5,
+                    )
+                ]
+            )
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [_resolved_step("f", storage, keeper)],
+        )
+        _ = pipe.clean(fake_dataset, dry_run=False)
+
+        text = index_path.read_text()
+        assert ",0.10-0123456789," in text, "the kept row's identifier was rewritten"
+        assert ",0.10," in text and ",0123456789," in text
+        assert doomed not in text, "the removed run's row survived"
+
+    def test_the_rewrite_is_locked(self, tmp_path, monkeypatch, fake_dataset):
+        """Held for the whole read-decide-write, not just the write.
+
+        A DELETE racing an append: a row landing between the two would be erased
+        by a keep set computed before it existed. Asserted through the lock
+        rather than by racing processes, which is what ``index_csv`` already does
+        for ``prune_missing``.
+        """
+        from mosaic.core.pipeline import index_csv as index_csv_mod
+        from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
+
+        storage = "feat__from__tracks"
+        keeper, doomed = "0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"
+        _make_run_dir(tmp_path, storage, keeper)
+        _make_run_dir(tmp_path, storage, doomed)
+        _patch_clean_helpers(monkeypatch, tmp_path, {storage: [keeper, doomed]})
+
+        index_path = tmp_path / storage / "index.csv"
+        idx = feature_index(index_path)
+        idx.append(
+            [
+                FeatureIndexRow(
+                    abs_path=tmp_path / storage / doomed / "g1__s1.parquet",
+                    run_id=doomed,
+                    feature=storage,
+                    version="0.1",
+                    group="g1",
+                    sequence="s2",
+                    params_hash="bbbbbbbbbb",
+                    n_rows=5,
+                )
+            ]
+        )
+
+        locked: list[str] = []
+        real_lock = index_csv_mod.index_lock
+
+        def recording_lock(path):
+            locked.append(str(path))
+            return real_lock(path)
+
+        monkeypatch.setattr(index_csv_mod, "index_lock", recording_lock)
+
+        pipe = Pipeline()
+        monkeypatch.setattr(
+            pipe,
+            "_resolve_step_cache",
+            lambda _ds: [_resolved_step("f", storage, keeper)],
+        )
+        _ = pipe.clean(fake_dataset, dry_run=False)
+
+        assert str(index_path) in locked, "the index was rewritten without its lock"

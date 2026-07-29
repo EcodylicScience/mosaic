@@ -428,6 +428,50 @@ class IndexCSV(Generic[RowT]):
                 atomic_write(self.path, lambda p: keep.to_csv(p, index=False))
             return dropped
 
+    def drop_runs(
+        self,
+        run_ids: Iterable[str],
+        *,
+        dry_run: bool = False,
+    ) -> pd.DataFrame:
+        """Drop every row belonging to one of *run_ids*.
+
+        The index half of deleting a run: the caller removes the directory, this
+        removes the rows that named it. A run absent from the file contributes
+        nothing, so a caller may pass identifiers it is unsure about.
+
+        Locked for the whole read-decide-write, and for ``prune_missing``'s
+        reason: this is a DELETE racing concurrent appends, so a row landing
+        between the read and the rewrite would be erased by a keep set computed
+        before it existed. A dry run holds the lock too -- it reports what a real
+        run would drop, and that answer means nothing against a moving file.
+
+        Args:
+            run_ids: The run identifiers whose rows are to go.
+            dry_run: Report what would be dropped without rewriting.
+
+        Returns:
+            The dropped rows (empty if none). The file is rewritten only when at
+            least one row is dropped, so a call that removes nothing leaves it
+            byte-identical.
+        """
+        self._assert_run_index()
+        # A sorted list rather than a set: ``isin`` takes a sequence, and the
+        # order makes a dropped-row report read the same way twice.
+        wanted = sorted({str(run_id) for run_id in run_ids})
+        if not wanted or not self.path.exists():
+            return self._empty_frame()
+        with index_lock(self.path):
+            df = self._read_frame()
+            if df.empty:
+                return df.iloc[0:0]
+            drop_mask = df["run_id"].isin(wanted)
+            keep = df[~drop_mask].reset_index(drop=True)
+            dropped = df[drop_mask].reset_index(drop=True)
+            if len(dropped) > 0 and not dry_run:
+                atomic_write(self.path, lambda p: keep.to_csv(p, index=False))
+            return dropped
+
     def ordered_entries(
         self,
         run_id: str | None = None,
