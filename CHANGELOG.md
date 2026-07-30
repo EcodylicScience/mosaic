@@ -7,6 +7,68 @@ of a diff to interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.5.0 — M5, consolidation
+
+**Tracker intermediates moved to `_tracking/`, and inference lost its root.**
+A TREx, SLEAP or Lightning Pose run now writes under `_tracking/<tool>/<run_id>/`
+instead of `tracks_raw/trex/…`, and model inference writes under
+`_tracking/<infer-kind>/<run_id>/` instead of a top-level `predictions/`. So
+`tracks_raw` holds only what a person uploaded, which is what lets a raw-track
+scan tell source from byproduct.
+
+**A dataset created before this keeps its own layout, deliberately.** Loading
+one adds the `_tracking` roots it never declared — otherwise anything keyed on
+them raises — but a `trex` root already reading `tracks_raw/trex` is **left
+exactly where it is**. Repointing it would orphan every run on disk and strand
+the index naming them. The consequence to know: on such a dataset the tracker
+keeps writing inside `tracks_raw`, where a `*.npz` scan of that root will index
+its per-individual intermediates as user raw tracks and fold them into the
+sequence's composition. If that matters to you, move the directory and update
+`roots.trex` in `dataset.yaml` by hand; nothing does it for you, and the sweeper
+refuses to run at all while a tracker root sits inside a source root.
+
+**New: `mosaic sweep-tracking`.** Deletes tracker working directories that are
+finished and past their retention window — 14 days for tracker output, 3 for
+inference audit parquets — dry-run by default. It never touches work in
+progress: a directory a live execution holds, one this dataset's index does not
+yet name, or one carrying no mosaic marker is reported and left alone. Rows go
+before files, so an interrupted sweep leaves rows naming absent directories,
+which `mosaic reindex` repairs.
+
+**`mosaic reindex --root` covers every root, not just `features/`.** The
+`_tracking` indexes were reached by no reindex, prune or portability pass at
+all, so a working directory removed by hand left a row naming it forever.
+
+**New: `promote_correction`.** A corrected track set copies into
+`tracks_raw/<entry>/` as `corrected.rev<N>`, an append-only series — nothing is
+overwritten, and each revision moves that sequence's composition, which is what
+invalidates the artifacts built from it. Blocked while derivatives exist; forcing
+promotes and deletes nothing.
+
+**Roots must resolve inside the dataset.** `set_root` and `new_dataset_manifest`
+refuse one that does not; a dataset already holding one still loads. **`abs_path`
+is unchanged and stays able to point outside** — that is how a second dataset
+references a video living inside a first without copying it, and it is the
+mechanism that replaced shared-video membership.
+
+**Contract surface: two additions, no removals.** `index_media` gains
+`media_layout="per_sequence"`, which reads `(group, sequence)` from the entry
+directory the control plane already writes — the default is unchanged, so no
+existing dataset is re-identified. `Dataset.sweep_tracking` and
+`Dataset.reindex` are new. `InferenceIndexRow`, `inference_index` and
+`prediction_index_path` are **gone**; nothing outside mosaic imported them, and
+every column of that row survives on the tracks row or in
+`tracks/<variant>/params.json`.
+
+Identity moved for one narrow population: a TREx run that sets
+`visual_identification_model_path`, which is now resolved to the model's
+identity rather than carried as a path. Both golden corpora otherwise gained
+lines and moved none.
+
+Owed to `mosaic-api`: raise the floor to `mosaic-behavior>=0.5.0`, and fix
+`MINIMUM_MOSAIC_VERSION`, still `"0.1.0"` and so passing vacuously against the
+`>=0.4.0` already declared.
+
 ## 0.4.0 — M3, source identity
 
 **Every transcode derivative was renamed and relocated.** A derivative now lives

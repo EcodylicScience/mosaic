@@ -134,8 +134,17 @@ named roots:
 - `media/`        — video files + `index.csv` (ffprobe metadata)
 - `tracks_raw/`   — user-uploaded raw tracks/labels + `index.csv`
 - `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
-                  (`trex` / `sleap` / `litpose`), before conversion; kept out of
-                  `tracks_raw/` so that root holds only user-uploaded content
+                  (`trex` / `sleap` / `litpose`) and of model inference
+                  (`infer-pose` / `infer-points` / `infer-localizer`), before
+                  conversion. Kept out of `tracks_raw/` so that root holds only
+                  user-uploaded content, and **excluded by name from every scan
+                  that walks the dataset for user content** — the exclusion is a
+                  path-component check in `iter_track_files` and `index_media`,
+                  because `exclude_patterns` matches basenames and cannot express
+                  a directory. Locations come from the registry in
+                  [`core/pipeline/tracking_roots.py`](src/mosaic/core/pipeline/tracking_roots.py),
+                  never spelled inline; `mosaic sweep-tracking` reclaims what is
+                  finished and past its retention window
 - `tracks/<variant>/` — standardized `<group>__<seq>.parquet`, one directory
                   per tracks recipe, + a single typed `index.csv`
 - `labels/<kind>/` — converted manual labels (`.npz`)
@@ -265,6 +274,12 @@ raw tracks/labels
    ├─ index_tracks_raw()     → tracks_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
+
+run_trex / run_sleap / run_litpose / infer-*
+   ├─ (working)              → _tracking/<tool>/<run_id>/<group>__<seq>/
+   └─ (bridged)              → tracks/<variant>/<group>__<seq>.parquet
+        ↑ reclaimed by `mosaic sweep-tracking`; a correction is promoted back
+          out with `promote_correction` → tracks_raw/<entry>/corrected.rev<N>
 
 run_feature(...)             → features/<name>/<run_id>/*.parquet
                                                  └── run_id = <version>-<SHA1 of params+inputs+frame range>
