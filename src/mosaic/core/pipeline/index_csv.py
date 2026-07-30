@@ -596,3 +596,49 @@ class IndexCSV(Generic[RowT]):
             if sel.any():
                 df.loc[sel, "finished_at"] = now_iso()
                 atomic_write(self.path, lambda p: df.to_csv(p, index=False))
+
+    def remap_run_id(
+        self,
+        old_run_id: str,
+        new_run_id: str,
+        *,
+        path_rewrite: Callable[[str], str] | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Restamp every row of *old_run_id* to *new_run_id*, preserving all else.
+
+        The index half of re-addressing a run whose identity *function* moved while
+        its inputs did not: the run's directory is renamed on disk, and this
+        restamps the rows that named it -- ``run_id`` to the new value, and
+        ``abs_path`` through *path_rewrite* to point into the renamed directory.
+
+        A cell rewrite rather than a drop-and-append, deliberately: ``started_at``
+        and ``finished_at`` are ``init=False`` on :class:`RunIndexRowBase`, so a
+        rebuilt row would reset them. Restamping two cells and writing every other
+        one back byte-identical is the only way to move a run's identity without
+        losing when it ran.
+
+        One locked read-modify-write, one atomic write, for the reason every
+        DELETE-shaped method here takes the lock: a concurrent append landing
+        between the read and the rewrite would be lost. Idempotent -- a second run
+        finds no rows under the old id and returns 0. Returns the number of rows
+        restamped; the file is rewritten only when at least one matches.
+        """
+        self._assert_run_index()
+        if not self.path.exists():
+            return 0
+        with index_lock(self.path):
+            df = self._read_frame()
+            if df.empty:
+                return 0
+            mask = df["run_id"] == old_run_id
+            matched = int(mask.sum())
+            if matched == 0 or dry_run:
+                return matched
+            df.loc[mask, "run_id"] = new_run_id
+            if path_rewrite is not None and "abs_path" in df.columns:
+                df.loc[mask, "abs_path"] = [
+                    path_rewrite(str(cell)) for cell in df.loc[mask, "abs_path"]
+                ]
+            atomic_write(self.path, lambda p: df.to_csv(p, index=False))
+            return matched

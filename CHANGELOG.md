@@ -7,6 +7,46 @@ of a diff to interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.7.0 — M7, reconcile
+
+**A dataset can now be brought forward after an identity change, in place.** Every
+milestone up to here makes a change loud rather than silent -- a new scheme marker,
+a moved digest -- but leaves the actual migration to a full recompute. `mosaic
+reconcile` (and `Dataset.reconcile`) is the pass that recomputes each feature,
+tracks, and label identifier from the current code, compares it against the one on
+disk, and -- where the recorded provenance confirms the recipe is unchanged --
+re-addresses the artifact under its new identifier rather than recomputing it: the
+directory moves, the index rows and `params.json` are restamped, the scheme marker
+is refreshed, and the index is backed up first. It runs bottom-up, so a moved
+tracks or label variant carries its feature consumers to their new identifiers in
+the same pass.
+
+**It never guesses.** A run whose recipe cannot be confirmed unchanged -- one that
+predates the scheme marker, whose upstream was never pinned, or whose digest moved
+under the *current* scheme with nothing to explain it -- is reported and left where
+it is, to be recomputed by an ordinary run. A version bump is a new recipe, not a
+re-address: the recomputed identifier keeps the run's recorded version, so bumping a
+feature or converter version leaves existing runs `ok`. The pass reads the
+`.identity_scheme` marker each run was minted under, so it is idempotent and
+resumable -- a re-run over an already-migrated dataset reports every run `ok`.
+
+**Dry-run by default.** `mosaic reconcile --manifest <ds>.yaml` reports what would
+move as a classified list (`ok`, `scheme_stale`, `identity_shift_relocatable`,
+`identity_shift_recompute`, `unresolvable_pre_provenance`); `--apply` performs the
+confirmed re-addresses and marker refreshes; `--only <kind>` narrows to one artifact
+kind; `--json` emits the report. A full run also folds in the two cheap index-hygiene
+passes -- dropping dangling rows (`reindex`) and rewriting non-portable `abs_path`
+cells (`make_portable`). The heavier media and tracking passes stay their own
+commands: `reprobe-media` (source drift), `prune-media` (stranded transcodes), and
+`sweep-tracking` (expired working directories) probe or delete and carry their own
+reports. `--force` is reserved for a future destructive path; the forward pass
+itself produces nothing to delete.
+
+**Contract surface: nothing moved.** M7 is mosaic-library-only. `Dataset.reconcile`
+and the reconcile engine are imported by no sibling repo, and none of the five
+`mosaic` symbols `mosaic-api` imports changed. The `mosaic-behavior>=0.6.0` floor
+owed since M6 becomes `>=0.7.0`.
+
 ## 0.6.0 — M6, labels
 
 **Converted labels now have the provenance and identity tracks already had.** A

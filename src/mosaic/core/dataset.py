@@ -172,6 +172,7 @@ from .pipeline.tracks_raw_index import (
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
+    from .pipeline.reconcile import ReconcileReport
     from .pipeline.sweep import SweepClass, SweepReport
 
 
@@ -1379,6 +1380,66 @@ class Dataset:
             if len(dropped) > 0:
                 results[str(index.path)] = len(dropped)
         return results
+
+    def reconcile(
+        self,
+        *,
+        apply: bool = False,
+        force: bool = False,
+        only: tuple[str, ...] = (),
+    ) -> ReconcileReport:
+        """Recompute every artifact's identifier and re-address what moved.
+
+        The forward pass over the identity machinery: for each feature (and, as
+        their reconcilers land, tracks and labels) run, recompute its ``run_id``
+        from the *current* code, compare it against the recorded one, and -- where
+        the recorded provenance confirms the inputs did not change -- re-address the
+        artifact under its new identifier rather than recomputing it. A run whose
+        inputs cannot be confirmed unchanged is reported and left, to be recomputed
+        by an ordinary run; the current version is never stamped onto history that
+        cannot be verified.
+
+        Where ``reindex`` reconciles the index against the *disk* (dropping rows
+        for missing files), this reconciles the on-disk identifiers against the
+        *code*. It is the pass to run after a hashing-scheme change: it reads the
+        ``.identity_scheme`` marker each run was minted under, so it is idempotent
+        and resumable, and a re-run over an already-migrated dataset reports every
+        run ``ok``.
+
+        Args:
+            apply: If False (default), report what would change without touching
+                anything. If True, refresh stale markers and perform every
+                confirmed re-address (a directory move plus an index rewrite, with
+                the index backed up first).
+            force: Reserved for the destructive path (deleting derivatives whose
+                identity moved but could not be re-addressed); not yet wired.
+            only: Restrict to these artifact kinds (e.g. ``("features",)``). Empty
+                means every registered kind.
+
+        Returns:
+            A :class:`~mosaic.core.pipeline.reconcile.ReconcileReport` classifying
+            every artifact and recording what ``apply`` did.
+        """
+        import dataclasses
+
+        from .pipeline.reconcile import identity_reconcilers, run_reconcile
+
+        # identity_reconcilers imports the built-in reconciler modules for their
+        # registration side effect, the same seam FEATURES/OPS use.
+        reconcilers = identity_reconcilers(self, only)
+        report = run_reconcile(reconcilers, apply=apply, force=force)
+
+        # Compose the cheap, always-safe index-hygiene passes so one command brings
+        # a dataset fully current. Only on a full run -- a narrowed ``only`` is
+        # asking about one artifact kind, not the whole tree. The heavier
+        # media/tracking passes (``reprobe-media``, ``prune-media``,
+        # ``sweep-tracking``) stay separate commands: they probe or delete, and have
+        # their own reports and abort semantics.
+        if only:
+            return report
+        pruned = self.reindex(dry_run=not apply)
+        repathed = self.make_portable(dry_run=not apply)
+        return dataclasses.replace(report, pruned=pruned, repathed=repathed)
 
     def list_groups(self) -> list[str]:
         """The group names in ``tracks/index.csv``, sorted. Empty when there are none.

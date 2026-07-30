@@ -564,6 +564,62 @@ def compute_run_id(
     return f"{feature.version}-{params_hash}", params_hash
 
 
+def build_run_params_payload(
+    feature: Feature,
+    frame_start: int | None,
+    frame_end: int | None,
+    scope: Scope,
+    feature_resolutions: list[dict[str, str | None]],
+) -> dict[str, object]:
+    """The ``params.json`` save payload -- provenance, deliberately not the digest.
+
+    The single site that builds the ``{_params, _inputs, _frame_range, _scope,
+    _resolved}`` document, so no caller reconstructs it: ``run_feature`` writes it,
+    and ``Dataset.reconcile`` reuses it to restamp a re-addressed run's provenance
+    with the upstream ids it now resolves to. Deliberately ``json_ready``, not
+    ``identity_dump`` -- it keeps HASH_EXCLUDE fields and is never hashed.
+
+    ``_scope`` is the scope of *this invocation*, not the fit scope (item 5.3):
+    written unconditionally, so for a scope-free feature it is "whichever ran
+    last"; ``fit_scope.json`` answers "what was this state trained on". The values
+    are load-bearing, not garnish -- two runs both marked one scheme can differ
+    because one ran before a ``sequences.csv`` existed and one after, honest only
+    if the values are written down. Compositions are recorded for *every* root, so
+    a drift check and a blast walk can explain a run without re-deriving it.
+
+    ``_resolved`` is which concrete upstream each reference pinned to. The digest
+    already covers these (they were pinned before it was computed), so this is the
+    readable copy, feeding the reverse-dependency walk. *feature_resolutions* is the
+    feature-to-feature and params half (from ``resolution_payload``); the tracks and
+    labels variants are appended here from the scope -- they ride in ``_resolved``
+    rather than ``_inputs``, which must stay the literal the process worker
+    revalidates, and match what the digest's ``_tracks``/``_labels`` terms cover.
+    """
+    return {
+        "_params": json_ready(feature.params),
+        "_inputs": feature.inputs.model_dump(),
+        "_frame_range": [frame_start, frame_end],
+        "_scope": {
+            "scope_dependent": feature.scope_dependent,
+            "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
+            "entries": [list(entry) for entry in sorted(scope.entries)],
+            "compositions": {
+                make_entry_key(group, sequence): dict(sorted(per_root.items()))
+                for (group, sequence), per_root in sorted(scope.compositions.items())
+            },
+        },
+        "_resolved": list(feature_resolutions)
+        + [
+            {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
+            for variant in scope.tracks_variants
+        ]
+        + [
+            {"where": "inputs[labels]", "feature": "labels", "run_id": variant}
+            for variant in scope.labels_variants
+        ],
+    }
+
+
 def run_feature(
     ds: Dataset,
     feature: Feature,
@@ -806,69 +862,12 @@ def _run_feature_impl(
 
     params_path = run_root / "params.json"
     try:
-        # Deliberately json_ready(feature.params), not identity_dump(): this is
-        # the provenance record of what ran, so it keeps HASH_EXCLUDE fields
-        # that identity drops. It is therefore NOT the hash payload and must
-        # never be mistaken for one.
-        save_payload: dict[str, object] = {
-            "_params": json_ready(feature.params),
-            "_inputs": feature.inputs.model_dump(),
-            "_frame_range": [frame_start, frame_end],
-            # The scope of **this invocation**, which was previously hashed and
-            # discarded. Sorted for a stable diff, and a precondition for the
-            # reverse-dependency index in stage 6.1.
-            #
-            # Not the fit scope, despite the key's name, and the distinction is
-            # item 5.3's. This block runs unconditionally and *before* the fit
-            # gate below, so for a scope-free feature -- one run_id for every
-            # scope, so two differently scoped invocations share this file -- the
-            # value is "whichever ran last" rather than the union or the training
-            # set. `fit_scope.json` is written only when a fit actually ran and
-            # is the answer to "what was this state trained on"; read it through
-            # `fit_and_apply_scopes`, which pairs it with the index rows that are
-            # the apply record.
-            #
-            # The key is not renamed: a rule test asserts this spelling, and the
-            # value is honest for the question it does answer.
-            "_scope": {
-                "scope_dependent": feature.scope_dependent,
-                "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
-                "entries": [list(entry) for entry in sorted(scope.entries)],
-                # Load-bearing, not garnish. Two runs both marked scheme 4 can
-                # differ because one ran before a `sequences.csv` existed and one
-                # after -- honest, since a scheme names the contract rather than
-                # the values, but only legible if the values are written down.
-                # Recorded for *every* root rather than the consumed ones, so
-                # item 5.2's drift check and item 6.2's blast walk can explain a
-                # run without re-deriving it.
-                "compositions": {
-                    make_entry_key(group, sequence): dict(sorted(per_root.items()))
-                    for (group, sequence), per_root in sorted(
-                        scope.compositions.items()
-                    )
-                },
-            },
-            # Which concrete upstream run each reference was pinned to. The
-            # identifier already covers these (they were pinned before it was
-            # computed), so this is provenance, not identity -- it makes the
-            # edge readable without re-deriving it, and feeds the
-            # reverse-dependency index in item 6.1.
-            #
-            # The tracks half joins it here rather than inside `_inputs`, which
-            # has to stay the literal the process worker can revalidate. Same
-            # standing as the rest: `_tracks` is already in the digest, so this
-            # is the readable copy, and it is empty on a dataset whose tracks
-            # predate variant identities.
-            "_resolved": resolution_payload(resolutions)
-            + [
-                {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
-                for variant in scope.tracks_variants
-            ]
-            + [
-                {"where": "inputs[labels]", "feature": "labels", "run_id": variant}
-                for variant in scope.labels_variants
-            ],
-        }
+        # Built by the one payload site (build_run_params_payload) so no caller
+        # reconstructs the document -- the same single-site rule the identity
+        # payload follows. Deliberately provenance, not the hash payload.
+        save_payload = build_run_params_payload(
+            feature, frame_start, frame_end, scope, resolution_payload(resolutions)
+        )
         atomic_write(
             params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
         )
