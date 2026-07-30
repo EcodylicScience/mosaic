@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import validate_entry_name
+from mosaic.core.helpers import entry_directory, validate_entry_name
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import (
     SequenceLabelRow,
@@ -147,7 +147,7 @@ def promote_correction(
     # O3 decided per-sequence subdirectories for tracks_raw, and this is the
     # gesture that needs them: a flat root cannot hold a revision series without
     # the sequence name being part of every filename.
-    destination = ds.get_root("tracks_raw") / _entry_directory(group, sequence)
+    destination = entry_directory(ds.get_root("tracks_raw"), group, sequence)
     revision = next_revision(destination) if destination.exists() else 1
 
     # Run *before* the change, where every row reads `current` and the answer is
@@ -206,18 +206,6 @@ def promote_correction(
         derived_from=derived_from,
         reached=reached,
     )
-
-
-def _entry_directory(group: str, sequence: str) -> str:
-    """The per-sequence subdirectory name, ``make_entry_key``'s spelling.
-
-    One level, not ``<group>/<sequence>``: ``group`` is legitimately empty, and
-    two levels collapse when it is -- which would make one directory serve as
-    both a sequence's and a group's.
-    """
-    from mosaic.core.helpers import make_entry_key
-
-    return make_entry_key(group, sequence)
 
 
 def _suffixes(path: Path) -> str:

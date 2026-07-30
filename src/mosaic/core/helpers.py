@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote
 
@@ -68,6 +69,44 @@ def make_entry_key(group: str, sequence: str) -> str:
     safe_group = to_safe_name(group) if group else ""
     safe_seq = to_safe_name(sequence)
     return f"{safe_group + '__' if safe_group else ''}{safe_seq}"
+
+
+def parse_entry_key(key: str) -> tuple[str, str]:
+    """``make_entry_key``'s inverse: ``(group, sequence)`` from a composite key.
+
+    A key with no ``__`` is a sequence with no group, which is the common case
+    rather than the edge -- every dataset the control plane creates has
+    ``group=""``.
+
+    Splits on the **first** ``__``, matching how the key was built: the group is
+    one level, and a sequence containing ``__`` (which ``parse_hierarchy`` reads
+    as further levels) keeps it. Percent-decoding both halves undoes
+    ``to_safe_name``, so a name that needed encoding round-trips.
+    """
+    safe_group, separator, safe_sequence = key.partition("__")
+    if not separator:
+        return "", from_safe_name(key)
+    return from_safe_name(safe_group), from_safe_name(safe_sequence)
+
+
+def entry_directory(root: Path, group: str, sequence: str) -> Path:
+    """Where one entry's files live under *root* -- item 9.2's declared layout.
+
+    **One level, named by the entry key, not ``<group>/<sequence>``.** ``group``
+    is an optional namespace and is legitimately empty, which two levels cannot
+    express: ``Path(root) / "" / "seq"`` silently collapses to ``root/seq``, and
+    then entry ``("", "a")`` and entry ``("a", "b")`` both want ``root/a`` -- one
+    as a sequence directory, one as a group directory. The entry key has no such
+    collision (``a`` versus ``a__b``), and item 2.5's entry-name rule guarantees
+    it is a single path component.
+
+    It is also the spelling ``tracks/``, ``features/``, ``labels/`` and every
+    tracker working directory already use, so declaring the layout introduces no
+    second convention to learn. Open item O3 decided the same shape for
+    ``tracks_raw``, which is why this takes the root as an argument rather than
+    living on one.
+    """
+    return root / make_entry_key(group, sequence)
 
 
 # =============================================================================

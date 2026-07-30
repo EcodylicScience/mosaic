@@ -19,6 +19,7 @@ from typing import (
     Dict,
     Final,
     Iterable,
+    Literal,
     Mapping,
     Optional,
     Protocol,
@@ -37,6 +38,7 @@ from mosaic_media import (
 from .helpers import (
     ensure_text_column,
     make_entry_key,
+    parse_entry_key,
     to_safe_name,
     validate_entry_name,
 )
@@ -391,6 +393,20 @@ def validate_root_inside(base_dir: Path, path: str | Path, key: str) -> Path:
             "root that is inside."
         )
     return candidate
+
+
+MediaLayout = Literal["stem", "per_sequence"]
+"""How ``index_media`` derives identity for a file no track table names.
+
+``stem`` is the historical heuristic: the filename stem is the sequence, so a
+multi-clip sequence re-derives as one sequence per clip. ``per_sequence`` reads
+item 9.2's declared layout -- ``<media_raw>/<entry key>/`` -- which is what the
+control plane already writes and what nothing in mosaic could read back.
+
+``stem`` remains the default deliberately: ``sequence_match_mode="prefix"``
+exists to serve split recordings under the flat layout, and flipping the default
+would silently re-identify every dataset relying on it.
+"""
 
 
 _SOURCE_ROOT_KEYS: Final[tuple[str, ...]] = ("tracks_raw", "media_raw", "labels")
@@ -1762,6 +1778,7 @@ class Dataset:
         index_filename: str = "index.csv",
         recursive: bool = True,
         sequence_match_mode: str = "exact",
+        media_layout: MediaLayout | str = "stem",
     ) -> Path:
         """
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
@@ -1800,6 +1817,10 @@ class Dataset:
               are named like ``session01_001.mp4``, ``session01_002.mp4`` mapping
               to sequence ``session01``.
         """
+        if media_layout not in ("stem", "per_sequence"):
+            raise ValueError(
+                f"media_layout must be 'stem' or 'per_sequence', got {media_layout!r}"
+            )
         if sequence_match_mode not in {"exact", "prefix"}:
             raise ValueError(
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
@@ -1823,10 +1844,33 @@ class Dataset:
             meta = self._match_media_sequence(
                 seq_key_map, entry.path.stem, mode=sequence_match_mode
             )
-            # When no track match, use the stem as sequence so each entry is its
-            # own sequence (not all lumped together under an empty key).
-            fallback_seq = entry.path.stem
-            fallback_safe = to_safe_name(entry.path.stem)
+            # Where identity comes from when no track table names this file.
+            #
+            # ``per_sequence`` reads it from the *directory*, which is item 9.2's
+            # declared layout: ``<media_raw>/<entry key>/*.mp4``, one level named
+            # by ``make_entry_key``. That is the layout the control plane already
+            # writes -- and until now nothing in mosaic could read it back, so a
+            # multi-clip sequence re-derived as one sequence per file.
+            #
+            # ``stem`` stays the default, which grandfathers the flat layout
+            # rather than migrating it. ``sequence_match_mode="prefix"`` exists
+            # to serve split recordings under that layout, and a default flip
+            # would silently re-identify every dataset that relies on it.
+            if media_layout == "per_sequence":
+                fallback_group, fallback_seq = parse_entry_key(entry.path.parent.name)
+                fallback_safe = to_safe_name(fallback_seq)
+                if meta is None and fallback_group:
+                    meta = {
+                        "group": fallback_group,
+                        "sequence": fallback_seq,
+                        "group_safe": to_safe_name(fallback_group),
+                        "sequence_safe": fallback_safe,
+                    }
+            else:
+                # When no track match, use the stem as sequence so each entry is
+                # its own sequence (not all lumped together under an empty key).
+                fallback_seq = entry.path.stem
+                fallback_safe = to_safe_name(entry.path.stem)
             rows.append(
                 build_media_index_row(
                     path=entry.path,
