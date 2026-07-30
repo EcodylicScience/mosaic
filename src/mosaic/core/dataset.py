@@ -2440,6 +2440,7 @@ class Dataset:
                 continue
             rowed = self._rowed_entries(key)
             window = retention_days(key, overrides)
+            promoted_runs = self._promoted_from()
             for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
                 for entry_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
                     decided.append(
@@ -2451,7 +2452,7 @@ class Dataset:
                             run_log_base=self.base_dir,
                             execution_id=execution_id,
                             rowed=(run_dir.name, entry_dir.name) in rowed,
-                            promoted=False,
+                            promoted=run_dir.name in promoted_runs,
                             max_age_days=window,
                             now=now,
                         )
@@ -2461,6 +2462,30 @@ class Dataset:
         if not apply:
             return report
         return self._perform_sweep(report, deletable)
+
+    def _promoted_from(self) -> set[str]:
+        """Producer runs a promoted correction has superseded (items 8.4 / 8.6).
+
+        Item 8.4 makes promotion the *primary* eviction signal and age the
+        fallback, for a reason worth keeping: once a corrected track set is in
+        ``tracks_raw``, the tracker output it was corrected from has served its
+        purpose and its retention window is beside the point. The link is
+        ``derived_from`` on the dataset-level ``sequences.csv`` -- the column item
+        4.1 declared and left unused for exactly this.
+
+        An absent label file means nothing has been promoted, which is the
+        ordinary state and not an error.
+        """
+        path = sequence_label_path(self)
+        if not path.exists():
+            return set()
+        try:
+            frame = sequence_labels(path).read()
+        except (OSError, pd.errors.ParserError):
+            return set()
+        if "derived_from" not in frame.columns:
+            return set()
+        return {str(value) for value in frame["derived_from"] if str(value)}
 
     def _rowed_entries(self, root_key: str) -> set[tuple[str, str]]:
         """``(run_id, entry key)`` pairs this root's index names.

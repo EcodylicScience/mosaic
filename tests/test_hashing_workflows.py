@@ -485,18 +485,56 @@ def test_h3_case3_only_the_branch_whose_source_changed_is_invalidated(
 # --- H4: human input -- what cannot be recomputed -----------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "M4: interactive correction and the promotion gesture do not exist "
-        "(implementation item 8.6, itself gated on open item O1)."
-    ),
-)
 def test_h4_a_promoted_correction_lands_in_a_source_root_with_lineage(
-    scenario_dataset: Dataset,
+    scenario_dataset: Dataset, tmp_path: Path
 ) -> None:
-    """A correction cannot be recomputed, so it is source, not a derived variant."""
-    raise NotImplementedError("requires the promotion gesture")
+    """A correction cannot be recomputed, so it is source, not a derived variant.
+
+    The three halves of the claim, asserted separately because each could hold
+    without the others: it lands under a **source** root (rule P1), it carries
+    the **lineage** of the run it was corrected from (item 4.1's reserved
+    column, written at last), and it moves that sequence's **composition** --
+    which is what makes every artifact built from it stale, with no new identity
+    machinery involved.
+
+    Interactive correction still does not exist; the editor is what was missing,
+    and the library half needs none. Open item O1 resolved in M5 to an
+    append-only revision series, so the file is ``corrected.rev1`` rather than
+    the sequence's name.
+    """
+    import numpy as np
+
+    from mosaic.core.pipeline.promotion import promote_correction
+    from mosaic.core.pipeline.sequence_index import (
+        read_sequence_index,
+        sequence_label_path,
+        sequence_labels,
+    )
+
+    dataset = scenario_dataset
+    correction = tmp_path / "seq_a_fish0.npz"
+    np.savez(correction, X=np.array([1.0, 2.0]), Y=np.array([3.0, 4.0]))
+
+    report = promote_correction(
+        dataset,
+        "",
+        "seq_a",
+        correction,
+        derived_from="trex.1.0-abcdef0123",
+        apply=True,
+    )
+
+    assert report.applied
+    landed = report.promoted[0]
+    assert landed.parent.parent == dataset.get_root("tracks_raw")
+    assert landed.name == "corrected.rev1.npz"
+
+    labels = sequence_labels(sequence_label_path(dataset)).read()
+    row = labels[labels["sequence"] == "seq_a"].iloc[0]
+    assert row["derived_from"] == "trex.1.0-abcdef0123"
+
+    composed = read_sequence_index(dataset, "tracks_raw")
+    assert composed[composed["sequence"] == "seq_a"].iloc[0]["composition"]
 
 
 def test_h4_annotated_frames_and_labels_are_never_in_a_delete_set(

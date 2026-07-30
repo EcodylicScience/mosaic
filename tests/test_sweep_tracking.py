@@ -302,3 +302,40 @@ def test_every_refused_class_is_reported_to_the_operator(verdict: SweepClass) ->
 
     assert verdict in REFUSED_NOTES
     assert not deletable(verdict)
+
+
+# --- 8.6's signal: promotion outranks age ------------------------------------
+
+
+def test_a_promoted_run_is_reclaimable_before_its_window(tmp_path: Path) -> None:
+    """Item 8.4's "promotion is the primary signal, age is the fallback".
+
+    Once a corrected track set is in ``tracks_raw``, the tracker output it was
+    corrected from has served its purpose -- so its retention window stops being
+    the question. Without this the class existed with no producer and the design's
+    ordering was aspirational.
+    """
+    ds = _dataset(tmp_path)
+    recent = _entry(ds, finished_days_ago=1.0)
+    ds.set_display_name("", "seq_a", "")
+
+    import numpy as np
+
+    from mosaic.core.pipeline.promotion import promote_correction
+
+    correction = tmp_path / "seq_a_fish0.npz"
+    np.savez(correction, X=np.array([1.0]), Y=np.array([2.0]))
+    _ = promote_correction(
+        ds,
+        "",
+        "seq_a",
+        correction,
+        derived_from="trex.1.0-aaaa",
+        apply=True,
+        force=True,
+    )
+
+    report = ds.sweep_tracking(apply=False, now=_NOW)
+
+    assert [e.verdict for e in report.entries] == ["promoted"]
+    assert recent.exists(), "a dry run must not delete"

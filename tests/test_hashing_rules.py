@@ -509,9 +509,13 @@ def test_a_prediction_survives_an_upstream_that_holds_only_older_runs(
         "comes from build_manifest over an upstream index that does not exist "
         "yet, while execution hashes the real entries. Item 1.1 does not reach "
         "this -- the divergence is in the scope term, not _inputs. Closing it "
-        "means predicting the entry set of a run that has not happened, which "
-        "belongs with the chain-runner work (implementation item 9.6). It "
-        "cannot cause a wrong execution: an uncached upstream forces "
+        "means predicting the entry set of a run that has not happened. "
+        "**Nobody is scheduled to.** It named implementation item 9.6, and M5 "
+        "removed that item from the programme: the front-end scope it was "
+        "written for changed, so the chain runner is not becoming the primary "
+        "execution surface and the prediction has no owner. Kept red rather "
+        "than deleted, because the residual is real and worth stating -- and "
+        "harmless, for the reason it always gave: an uncached upstream forces "
         "cached=False, so the predicted identifier gates no skip."
     ),
 )
