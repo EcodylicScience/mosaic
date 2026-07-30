@@ -7,6 +7,54 @@ of a diff to interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.6.0 — M6, labels
+
+**Converted labels now have the provenance and identity tracks already had.** A
+converted label set used to live at `labels/<kind>/<group>__<seq>.npz`, flat, with
+nothing recording which recipe produced it or what it was made from. It now lives
+under `labels/<kind>/<run_id>/<group>__<seq>.npz` behind a single typed
+`labels/<kind>/index.csv`, one index per kind, mirroring `tracks/`. The row carries
+the converter identity, the op run behind it, and `consumed_source_roots` — which
+distinguishes a **scored** set converted from an upload (`labels_raw`), a
+**derived** set (the seam exists; no producer does this yet), and an **authored**
+set minted in-process (id-tag columns, empty `run_id`, still flat).
+
+**New source root: `labels_raw`.** It joins `media_raw` and `tracks_raw` as a
+place that holds only what a person uploaded, with its own composition hash over
+the raw-file checksums, so a label upload moves the identity of everything
+converted from it exactly the way a track upload does. A dataset created before
+this gains the root on load; nothing on disk moves for it.
+
+**The label-converter extension point changed.** A `LabelConverter` now returns
+`list[LabelEntry]` — data — and the `Dataset` writes the `.npz` and the typed row,
+the same split `tracks` made. Converters carry a version and typed `Params`, are
+keyed by `(source_format, label_kind)`, and register through
+`core/label_converter.py` rather than `dataset.py`. A custom label converter
+written against the old protocol must move to returning entries; the four built-in
+converters and the templates already have. `convert_all_labels()` re-converts once
+on a dataset converted before this release, because the output path changed.
+
+**Feature identity now covers which label set a run read.** `compute_run_id` gains
+a `_labels` term and `FEATURE_IDENTITY_SCHEME` moves 4 → 5. As with `_tracks`, the
+term is omitted when there is nothing to say, so a run that reads no labels keeps
+its identifier and the golden corpus moved zero lines — the shift is confined to
+features that consume labels. `labels_run_id` is the additive selector, keyword-only
+on `run_feature` and `Dataset.run_feature`, defaulting to today's behaviour.
+
+**Migration both ways.** `migrate_labels_raw` copies label rows out of
+`tracks_raw` into `labels_raw` (files stay where they are); `revert_labels`
+flattens the variant directories back to the old flat layout and restores the
+untyped index. Rearranging a sequence that carries labels is still refused — the
+frame-index remap that would make it safe is not built.
+
+**Contract surface: nothing moved.** M6 is mosaic-library only. The label-converter
+registry, `LabelEntry` and the labels index are imported by no sibling repo, and
+none of the five `mosaic` symbols `mosaic-api` imports changed. The
+`mosaic-behavior>=0.5.0` floor owed since M5 is now `>=0.6.0`, and
+`MINIMUM_MOSAIC_VERSION` in the contract test — still `"0.1.0"`, still passing
+vacuously — is owed the same fix. Authoring internal scoring in Dolt and
+projecting it into `labels_raw` on commit stays future work.
+
 ## 0.5.0 — M5, consolidation
 
 **Tracker intermediates moved to `_tracking/`, and inference lost its root.**
