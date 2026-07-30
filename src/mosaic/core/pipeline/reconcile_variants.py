@@ -37,7 +37,11 @@ from mosaic.core.pipeline.labels_identity import (
     label_convert_variant_payload,
     write_labels_variant,
 )
-from mosaic.core.pipeline.labels_index import labels_index, labels_index_path
+from mosaic.core.pipeline.labels_index import (
+    labels_index,
+    labels_index_path,
+    read_labels_index,
+)
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
 from mosaic.core.pipeline.reconcile import (
     PassBuilder,
@@ -404,7 +408,13 @@ class LabelsReconciler(_VariantReconciler):
             index_path = labels_index_path(self._ds, kind_dir.name)
             if not index_path.exists():
                 continue
-            frame = labels_index(index_path).read()
+            # read_labels_index projects onto the current schema, so a legacy flat
+            # index with no run_id column reads as rows with an empty run_id (which
+            # are not variants) rather than raising -- the generic IndexCSV.read
+            # does not adopt, so it must not be used here.
+            frame = read_labels_index(self._ds, kind_dir.name)
+            if "run_id" not in frame.columns:
+                continue
             for run_id in sorted({str(v) for v in frame["run_id"] if str(v)}):
                 yield _VariantSite(
                     run_id, kind_dir / run_id, index_path, kind_dir, kind_dir.name
