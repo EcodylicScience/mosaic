@@ -363,6 +363,36 @@ def _backfill_tracking_roots(roots: Dict[str, str]) -> Dict[str, str]:
     return roots
 
 
+def validate_root_inside(base_dir: Path, path: str | Path, key: str) -> Path:
+    """Return *path* unchanged, or raise because it leaves the dataset.
+
+    Item 9.1, implementing rule P7: roots always live inside the dataset tree,
+    and external storage is expressed as *search directories* whose files are
+    referenced by absolute ``abs_path`` from an index that lives inside. An
+    outside root puts that root's own ``index.csv`` outside too, and then the
+    dataset is no longer the thing you can copy, archive or sync.
+
+    Absolute is fine when it lands inside. The rule is about where a root is, not
+    how it is written -- and ``rewrite_index_paths`` relativizes an
+    inside-absolute root on its next run anyway.
+
+    The comparison resolves both sides. An unnormalized ``..`` or a symlink would
+    otherwise let a root leave the dataset while reading as though it stayed.
+    """
+    candidate = Path(path)
+    absolute = candidate if candidate.is_absolute() else base_dir / candidate
+    resolved = absolute.resolve()
+    root = base_dir.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(
+            f"root {key!r} would resolve outside the dataset: {resolved} is not "
+            f"under {root}. Roots live inside the dataset (item 9.1); to use "
+            "storage elsewhere, index those files by absolute abs_path from a "
+            "root that is inside."
+        )
+    return candidate
+
+
 _SOURCE_ROOT_KEYS: Final[tuple[str, ...]] = ("tracks_raw", "media_raw", "labels")
 
 
@@ -416,15 +446,20 @@ def new_dataset_manifest(
     Returns the path to the created YAML.
     """
     base_dir = Path(base_dir).resolve()
-    # Normalize roots -> relative paths (portable) when inside base_dir
+    # Roots are normalized to relative paths, which is the portable form. An
+    # outside root now *raises* rather than being kept absolute (item 9.1): the
+    # old fallback was the one mechanism letting a root -- and therefore that
+    # root's own index.csv -- live outside the dataset it belongs to.
+    #
+    # Files elsewhere are still reachable, by the mechanism rule P7 names: index
+    # them by absolute `abs_path` from a root that is inside. That is what a
+    # second dataset does to reference a video living inside a first one.
     norm_roots = {}
     for k, v in roots.items():
+        _ = validate_root_inside(base_dir, v, k)
         full = (base_dir / Path(v)).resolve()
         full.mkdir(parents=True, exist_ok=True)
-        try:
-            norm_roots[k] = str(full.relative_to(base_dir))
-        except ValueError:
-            norm_roots[k] = str(full)  # outside base_dir, keep absolute
+        norm_roots[k] = str(full.relative_to(base_dir))
 
     manifest = {
         "name": name,
@@ -829,11 +864,37 @@ class Dataset:
     def set_root(self, key: str, path: str | Path) -> None:
         """Set a named dataset root and create the directory if needed.
 
+        **A root must resolve inside the dataset** (item 9.1, implementing rule
+        P7). An outside root puts that root's ``index.csv`` outside the dataset
+        too, which is the scattering the rule removes: the dataset stops being
+        the thing you can copy, archive or sync.
+
+        Absolute *is* allowed, so long as it lands inside -- the rule is about
+        where a root is, not how it is spelled, and the portability pass
+        relativizes an inside-absolute root on its next run.
+
+        **What this does not pin is ``abs_path``, and that is deliberate.** An
+        individual file may be referenced by absolute path from an index that
+        lives inside the dataset -- which is how a second dataset references a
+        video living inside a first one without copying it, and what the future
+        import gesture will use. Open item O2 resolved to that arrangement rather
+        than to shared membership, so the separation is load-bearing: pinning
+        ``abs_path`` too would remove the mechanism, not tighten it.
+
+        Validated here rather than on read, the same boundary rule item 2.5
+        applies to entry names: a dataset that already holds an outside root
+        keeps resolving, so looking at a legacy dataset does not raise. What
+        refuses to act on one is the sweeper, which declines rather than
+        deleting.
+
         Args:
             key: Root name (e.g. ``"media_raw"``, ``"tracks"``).
             path: Directory path (absolute or relative to dataset root).
+
+        Raises:
+            ValueError: If *path* resolves outside the dataset directory.
         """
-        self.roots[key] = str(Path(path))
+        self.roots[key] = str(validate_root_inside(self.base_dir, path, key))
         self._ensure_roots()
 
     def _ensure_roots(self) -> None:
