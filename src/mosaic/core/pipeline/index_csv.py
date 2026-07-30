@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -74,6 +74,33 @@ _TYPE_TO_DTYPE: dict[type, str] = {
     bool: "boolean",
     Path: "string",
 }
+
+
+def project_to_schema(df: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    """Rebuild *df* as exactly *columns*: missing added empty, NaN as ``""``.
+
+    The projection every typed index's ``adopt`` hook needs, in one place. An
+    index read off disk may predate a column, carry a real NaN in a widened one
+    (a previous hand-written writer concatenated onto a frame read with default NA
+    handling), or hold an off-schema column an old writer emitted. This adds the
+    missing columns empty, coerces NaN to ``""``, drops the off-schema ones, and
+    builds every column with an explicit ``object`` dtype -- so a later
+    ``pd.concat`` with a real row cannot widen an integer column to a float
+    (``40`` reaching disk as ``40.0``, the same trap that made ``identity_scheme``
+    a ``str``). Idempotent: a frame already in schema is projected onto itself.
+
+    Built column by column into a fresh frame rather than mutated in place: that
+    gives the projection and the column order for free and never widens a dtype by
+    assigning into an existing column.
+    """
+    out = pd.DataFrame(index=df.index)
+    for column in columns:
+        if column in df.columns:
+            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
+        else:
+            cells = [""] * len(df)
+        out[column] = pd.Series(cells, index=df.index, dtype="object")
+    return out.reset_index(drop=True)
 
 
 def _infer_schema(row_cls: type) -> dict[str, str]:

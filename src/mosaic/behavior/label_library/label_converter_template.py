@@ -1,430 +1,255 @@
-"""
-Template for creating new label converters.
+"""Template for creating new label converters.
 
 To create a new label converter:
-1. Copy this file to a new name (e.g., boris_behavior.py)
-2. Update the class name and registration attributes
-3. Implement the convert() method with your format-specific logic
-4. Import in label_library/__init__.py to register it
-5. Test with dataset.convert_all_labels(source_format="your_format")
 
-The converter will be automatically registered and available for use.
-"""
+1. Copy this file to a new name (e.g. ``boris_behavior.py``).
+2. Rename the class and its ``Params`` model, and set the class variables
+   (``src_format`` / ``label_kind`` / ``label_format`` / ``version`` / ``Params``).
+3. Add any format-specific fields to the ``Params`` model.
+4. Implement ``convert()`` -- it returns one :class:`LabelEntry` per sequence and
+   never touches the filesystem; the ``Dataset`` writes the ``.npz`` files and the
+   typed index row.
+5. Register it in ``label_library/__init__.py`` with
+   :func:`~mosaic.core.label_converter.register_label_converter`.
 
-from pathlib import Path
-from typing import Optional, Dict, Any
-import pandas as pd
-import numpy as np
+Usage from a ``Dataset`` (unchanged by the new contract):
 
-from mosaic.core.helpers import make_entry_key, to_safe_name
-
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    """Helper to merge user params with defaults."""
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
-
-
-class MyLabelConverter:
-    """
-    Template for a label converter.
-
-    This converter reads labels from [describe source format] and converts
-    them to per-sequence npz files in the behavior dataset format.
-
-    Usage
-    -----
-    After implementing this converter and importing it in __init__.py:
-
+    >>> from mosaic.core import Dataset
+    >>> dataset = Dataset("/path/to/dataset")
+    >>> # Index the raw annotation files into labels_raw/index.csv. This is the
+    >>> # label sibling of index_tracks_raw -- raw labels no longer share the
+    >>> # tracks_raw root.
+    >>> dataset.index_labels_raw(
+    ...     ["/path/to/annotations"],
+    ...     patterns="*.csv",
+    ...     src_format="my_format",  # Must match this converter's src_format.
+    ... )
+    >>> # Convert. The Dataset reads labels_raw, dispatches to this converter,
+    >>> # and writes labels/<kind>/<run_id>/*.npz plus the typed index row.
     >>> dataset.convert_all_labels(
     ...     kind="behavior",
     ...     source_format="my_format",
-    ...     # Add any format-specific parameters here
+    ...     # Any Params field can be passed as a keyword here:
+    ...     default_fps=30.0,
     ... )
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Annotated
+
+import numpy as np
+
+from mosaic.core.label_converter import (
+    LabelConvertParams,
+    LabelConverter,
+    LabelEntry,
+)
+from mosaic.core.pipeline.types import HASH_EXCLUDE
+
+
+class MyLabelParams(LabelConvertParams):
+    """Parameters for :class:`MyLabelConverter`.
+
+    ``group_from`` and ``strict_schema`` are already declared on
+    :class:`~mosaic.core.label_converter.LabelConvertParams` -- do not redeclare
+    them. Add only what this format needs.
+
+    A field that changes the labels is a plain (hashed) field: it is part of the
+    label variant identity, so two conversions that differ in it mint two
+    variants. A validation-only or throughput-only knob is tagged
+    ``HASH_EXCLUDE`` so retuning it never busts the cache, even though it still
+    appears in ``params.json`` and reaches the converter.
     """
 
-    # ============ REGISTRATION ATTRIBUTES (REQUIRED) ============
-    # These MUST be class attributes for registration to work
+    # A parameter that changes the labels -- hashed. Written into the payload,
+    # so it is part of the output and belongs in the identity.
+    default_fps: float = 30.0
 
-    src_format = "my_format"           # Must match tracks_raw/index.csv src_format column
-    label_kind = "behavior"            # e.g., "behavior", "id_tags", "poses"
-    label_format = "my_format_v1"      # Unique identifier for this format version
+    # A knob that does not change the labels -- excluded from the identity.
+    verbose: Annotated[bool, HASH_EXCLUDE] = False
 
-    # ============ DEFAULT PARAMETERS ============
 
-    _defaults = dict(
-        group_from="filename",          # How to determine group name: 'filename', 'infile', or 'both'
-        # Add format-specific parameters here:
-        # fps=30.0,
-        # delimiter=",",
-        # time_col="Time",
-        # etc.
-    )
+class MyLabelConverter(LabelConverter[MyLabelParams]):
+    """Template for a label converter.
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None, **kwargs):
+    Reads labels from [describe your source format] and returns one
+    :class:`~mosaic.core.label_converter.LabelEntry` per sequence. It returns
+    *data*, never files: the ``Dataset`` writes each entry's ``payload`` into
+    ``labels/<kind>/<run_id>/`` and records the typed index row, so this class
+    must not compute output paths, write ``.npz`` files, or handle overwrite.
+
+    Class variables:
+        src_format: Matched against the ``labels_raw/index.csv`` ``src_format``
+            column, and passed as ``source_format`` to ``convert_all_labels``.
+        label_kind: The kind produced (``"behavior"``, ``"id_tags"``, ...), i.e.
+            the ``labels/<kind>/`` subdirectory.
+        label_format: The on-disk payload format a reader dispatches on.
+        version: Declared compatibility version, a visible segment of the label
+            variant identity. Bump it by hand when the output semantics change.
+        Params: The typed parameter model above.
+    """
+
+    src_format = "my_format"
+    label_kind = "behavior"
+    label_format = "my_format_v1"
+    version = "0.1"
+    Params = MyLabelParams
+
+    def convert(
+        self,
+        src_path: Path,
+        params: MyLabelParams,
+        raw_row: Mapping[str, object],
+    ) -> list[LabelEntry]:
+        """Read one source file into one :class:`LabelEntry` per sequence.
+
+        Args:
+            src_path: The raw label file to read.
+            params: Typed conversion parameters. These, plus ``src_format``,
+                ``label_kind`` and ``version``, are what the label variant
+                identity is made of.
+            raw_row: The ``labels_raw/index.csv`` row, carrying the group hint
+                and the source ``md5``. Never hashed.
+
+        Returns:
+            One :class:`LabelEntry` per sequence found in the file. Each entry's
+            ``payload`` is the exact dict of arrays and scalars a reader loads
+            from the ``.npz`` (the dict the old contract passed to
+            ``np.savez_compressed``).
         """
-        Initialize the converter with parameters.
-
-        Parameters
-        ----------
-        params : dict, optional
-            Configuration parameters (merged with _defaults)
-        **kwargs : additional keyword arguments
-            Can override params values
-        """
-        self.params = _merge_params(params, self._defaults)
-        self.params.update(kwargs)
-
-    # ============ MAIN CONVERSION METHOD (REQUIRED) ============
-
-    def convert(self,
-                src_path: Path,
-                raw_row: pd.Series,
-                labels_root: Path,
-                params: dict,
-                overwrite: bool,
-                existing_pairs: set[tuple[str, str]]) -> list[dict]:
-        """
-        Convert one source file to per-sequence label npz files.
-
-        This is the main method that does the conversion work. Implement your
-        format-specific logic here.
-
-        Parameters
-        ----------
-        src_path : Path
-            Path to source label file
-        raw_row : pd.Series
-            Row from tracks_raw/index.csv with metadata (group, md5, etc.)
-        labels_root : Path
-            Output directory (e.g., dataset_root/labels/behavior/)
-        params : dict
-            Conversion parameters (combined with self.params)
-        overwrite : bool
-            Whether to overwrite existing files
-        existing_pairs : set[tuple[str, str]]
-            Set of (group, sequence) pairs already converted
-
-        Returns
-        -------
-        list[dict]
-            List of index row dicts to append to labels/index.csv
-
-        Notes
-        -----
-        Each index row dict should contain:
-        - kind: str (e.g., "behavior")
-        - label_format: str (e.g., "my_format_v1")
-        - group: str
-        - sequence: str
-        - group_safe: str (safe filename version of group)
-        - sequence_safe: str (safe filename version of sequence)
-        - abs_path: str (path to output npz file)
-        - source_abs_path: str (path to input file)
-        - source_md5: str (MD5 hash of source file)
-        - n_frames: int (number of frames in this sequence)
-        - label_ids: str (comma-separated label IDs, e.g., "0,1,2,3")
-        - label_names: str (comma-separated label names, e.g., "attack,investigate,mount,other")
-        - (any additional metadata fields your format needs)
-
-        Each npz file should contain:
-        - group: str
-        - sequence: str
-        - sequence_key: str (usually same as sequence)
-        - frames: np.ndarray (shape=(T,), dtype=int32) - frame indices
-        - labels: np.ndarray (shape=(T,), dtype=int) - per-frame label IDs
-        - label_ids: np.ndarray (dtype=int) - array of valid label IDs
-        - label_names: np.ndarray (dtype=object) - array of label names
-        - (any additional metadata your format needs)
-        """
-
-        # -------- STEP 1: Load the source file --------
+        # -------- STEP 1: Load the source file. --------
         data = self._load_source_file(src_path)
 
-        # -------- STEP 2: Extract label mapping (if applicable) --------
-        label_map = self._get_label_map(data)  # e.g., {0: "class_a", 1: "class_b"}
+        # -------- STEP 2: Extract the label vocabulary. --------
+        # e.g. {0: "class_a", 1: "class_b"}. Recorded on the index row so a
+        # listing need not open every file.
+        label_map = self._get_label_map(data)
+        label_ids = np.array(list(label_map.keys()), dtype=int)
+        label_names = np.array(list(label_map.values()), dtype=object)
 
-        # -------- STEP 3: Process each sequence --------
-        rows_out: list[dict] = []
+        # The group hint from labels_raw/index.csv, honored per ``group_from``.
+        raw_group_hint = str(raw_row.get("group", "") or "")
 
-        # Example structure (adapt to your format):
-        # Structure could be:
-        # - Single sequence per file
-        # - Multiple sequences in nested structure
-        # - Table format with sequence column
-
-        # Example for nested structure:
+        # -------- STEP 3: One LabelEntry per sequence. --------
+        # The source structure could be a single sequence per file, a nested
+        # {group: {sequence: data}} mapping, or a table with a sequence column.
+        # Adapt _extract_sequences to your format; the loop stays the same.
+        entries: list[LabelEntry] = []
         for group_name, sequences in self._extract_sequences(data).items():
             for seq_id, seq_data in sequences.items():
-                # Extract labels array
-                labels = self._extract_labels(seq_data)
+                # Per-frame label IDs and their frame indices.
+                labels = self._extract_labels(seq_data).astype(np.int32, copy=False)
                 frames = np.arange(len(labels), dtype=np.int32)
 
-                # Determine output group/sequence names
-                group_val = self._determine_group(group_name, raw_row)
+                group_val = self._determine_group(group_name, raw_group_hint, params)
                 seq_val = str(seq_id)
 
-                # Skip if already exists
-                pair = (group_val, seq_val)
-                if not overwrite and pair in existing_pairs and self._output_exists(labels_root, group_val, seq_val):
-                    continue
+                # Build the .npz payload: the arrays and scalars a reader loads.
+                payload: dict[str, object] = {
+                    "group": group_val,
+                    "sequence": seq_val,
+                    "sequence_key": seq_val,
+                    "label_format": self.label_format,
+                    "frames": frames,
+                    "labels": labels,
+                    "label_ids": label_ids,
+                    "label_names": label_names,
+                    "fps": float(params.default_fps),
+                }
 
-                # Create safe filenames
-                safe_group = to_safe_name(group_val) if group_val else ""
-                safe_seq = to_safe_name(seq_val)
-                fname = f"{make_entry_key(group_val, seq_val)}.npz"
-                out_path = labels_root / fname
-
-                # Build npz payload
-                payload = self._build_npz_payload(
-                    group_val, seq_val, frames, labels, label_map
+                entries.append(
+                    LabelEntry(
+                        group=group_val,
+                        sequence=seq_val,
+                        payload=payload,
+                        n_frames=int(labels.shape[0]),
+                        label_ids=tuple(int(i) for i in label_map),
+                        label_names=tuple(label_map.values()),
+                    )
                 )
 
-                # Save npz
-                np.savez_compressed(out_path, **payload)
-                existing_pairs.add(pair)
+        return entries
 
-                # Build index row
-                index_row = self._build_index_row(
-                    group_val, seq_val, safe_group, safe_seq,
-                    out_path, src_path, raw_row, labels, label_map
-                )
-                rows_out.append(index_row)
+    def get_metadata(self) -> dict[str, object]:
+        """Optional format-specific metadata for ``dataset.meta['labels'][kind]``.
 
-        return rows_out
-
-    # ============ OPTIONAL METADATA METHOD ============
-
-    def get_metadata(self) -> dict:
-        """
-        Optional: return format-specific metadata for dataset.meta['labels'][kind].
-
-        This metadata will be merged into dataset.meta['labels']['behavior'] (or other kind).
-        Useful for storing label mappings, format version info, etc.
-
-        Returns
-        -------
-        dict
-            Metadata to merge into dataset.meta['labels'][kind]
-            Common keys: label_ids, label_names, format_version, etc.
+        Merged into ``dataset.meta['labels'][label_kind]``. Useful for a label
+        mapping or a format-version note. Return an empty dict when there is
+        nothing to record.
         """
         return {}
 
     # ============ HELPER METHODS (CUSTOMIZE THESE) ============
 
-    def _load_source_file(self, src_path: Path) -> Any:
+    def _determine_group(
+        self,
+        source_group: str,
+        raw_group_hint: str,
+        params: MyLabelParams,
+    ) -> str:
+        """Pick the output group per ``group_from`` (entry policy, never hashed).
+
+        ``group_from`` selects which group string to assign; it is not a property
+        of the labels, so it is excluded from the variant identity.
         """
-        Load and parse the source label file.
+        if params.group_from in {"filename", "both"} and raw_group_hint:
+            return raw_group_hint
+        return str(source_group or "")
 
-        Parameters
-        ----------
-        src_path : Path
-            Path to source file
+    def _load_source_file(self, src_path: Path) -> object:
+        """Load and parse the source label file.
 
-        Returns
-        -------
-        Any
-            Parsed data structure (format-dependent)
+        Returns:
+            The parsed data structure (format-dependent).
 
-        Examples
-        --------
-        For CSV:
-        >>> return pd.read_csv(src_path)
+        Examples:
+            For CSV: ``return pd.read_csv(src_path)``.
 
-        For JSON:
-        >>> import json
-        >>> with open(src_path) as f:
-        ...     return json.load(f)
+            For JSON::
 
-        For NPY:
-        >>> return np.load(src_path, allow_pickle=True)
+                import json
+                with open(src_path) as f:
+                    return json.load(f)
+
+            For NPY: ``return np.load(src_path, allow_pickle=True)``.
         """
         raise NotImplementedError("Implement _load_source_file for your format")
 
-    def _get_label_map(self, data: Any) -> dict[int, str]:
-        """
-        Extract or define the label mapping.
+    def _get_label_map(self, data: object) -> dict[int, str]:
+        """Extract or define the label mapping.
 
-        Parameters
-        ----------
-        data : Any
-            Loaded data from _load_source_file
+        Args:
+            data: Loaded data from :meth:`_load_source_file`.
 
-        Returns
-        -------
-        dict[int, str]
-            Mapping from label ID to label name
-            Example: {0: "attack", 1: "investigation", 2: "mount"}
+        Returns:
+            Mapping from label ID to label name, e.g.
+            ``{0: "attack", 1: "investigation", 2: "mount"}``.
         """
         raise NotImplementedError("Implement _get_label_map for your format")
 
-    def _extract_sequences(self, data: Any) -> dict:
-        """
-        Extract sequences from the loaded data.
+    def _extract_sequences(self, data: object) -> dict[str, dict[str, object]]:
+        """Extract sequences from the loaded data.
 
-        Parameters
-        ----------
-        data : Any
-            Loaded data from _load_source_file
+        Args:
+            data: Loaded data from :meth:`_load_source_file`.
 
-        Returns
-        -------
-        dict
-            Nested structure: {group_name: {seq_id: seq_data, ...}, ...}
-            Or single level: {"default_group": {seq_id: seq_data, ...}}
+        Returns:
+            A nested ``{group_name: {seq_id: seq_data}}`` mapping. For a
+            single-group file, use one key, e.g. ``{"": {seq_id: seq_data}}``.
         """
         raise NotImplementedError("Implement _extract_sequences for your format")
 
-    def _extract_labels(self, seq_data: Any) -> np.ndarray:
-        """
-        Extract labels array from sequence data.
+    def _extract_labels(self, seq_data: object) -> np.ndarray:
+        """Extract the per-frame label array from one sequence's data.
 
-        Parameters
-        ----------
-        seq_data : Any
-            Data for a single sequence
+        Args:
+            seq_data: Data for a single sequence.
 
-        Returns
-        -------
-        np.ndarray
-            Labels array, shape=(T,), dtype=int
-            Each element is a label ID corresponding to the label_map
+        Returns:
+            An integer array of shape ``(T,)``; each element is a label ID from
+            the label map.
         """
         raise NotImplementedError("Implement _extract_labels for your format")
-
-    def _determine_group(self, source_group: str, raw_row: pd.Series) -> str:
-        """
-        Determine output group name based on group_from parameter.
-
-        Parameters
-        ----------
-        source_group : str
-            Group name from inside the source file
-        raw_row : pd.Series
-            Row from tracks_raw/index.csv
-
-        Returns
-        -------
-        str
-            Group name to use for output
-        """
-        group_from = self.params.get("group_from", "filename")
-        if group_from == "filename":
-            return str(raw_row.get("group", "") or "")
-        elif group_from == "infile":
-            return source_group
-        elif group_from == "both":
-            return str(raw_row.get("group", "") or "")
-        else:
-            return source_group
-
-    def _output_exists(self, labels_root: Path, group: str, sequence: str) -> bool:
-        """Check if output file already exists."""
-        fname = f"{make_entry_key(group, sequence)}.npz"
-        return (labels_root / fname).exists()
-
-    def _build_npz_payload(self,
-                          group: str,
-                          sequence: str,
-                          frames: np.ndarray,
-                          labels: np.ndarray,
-                          label_map: dict) -> dict:
-        """
-        Build the npz file payload.
-
-        Standard keys (required):
-        - group: str
-        - sequence: str
-        - sequence_key: str (usually same as sequence)
-        - frames: np.ndarray (int32, shape=(T,))
-        - labels: np.ndarray (int, shape=(T,))
-        - label_ids: np.ndarray (int)
-        - label_names: np.ndarray (object)
-
-        Parameters
-        ----------
-        group : str
-            Group name
-        sequence : str
-            Sequence name
-        frames : np.ndarray
-            Frame indices
-        labels : np.ndarray
-            Per-frame labels
-        label_map : dict
-            Label ID to name mapping
-
-        Returns
-        -------
-        dict
-            Payload for np.savez_compressed
-        """
-        label_ids = np.array(list(label_map.keys()), dtype=int)
-        label_names = np.array(list(label_map.values()), dtype=object)
-
-        return {
-            "group": group,
-            "sequence": sequence,
-            "sequence_key": sequence,
-            "frames": frames,
-            "labels": labels,
-            "label_ids": label_ids,
-            "label_names": label_names,
-        }
-
-    def _build_index_row(self,
-                        group: str,
-                        sequence: str,
-                        group_safe: str,
-                        sequence_safe: str,
-                        out_path: Path,
-                        src_path: Path,
-                        raw_row: pd.Series,
-                        labels: np.ndarray,
-                        label_map: dict) -> dict:
-        """
-        Build an index row dict for labels/index.csv.
-
-        Parameters
-        ----------
-        group : str
-            Group name
-        sequence : str
-            Sequence name
-        group_safe : str
-            Safe filename version of group
-        sequence_safe : str
-            Safe filename version of sequence
-        out_path : Path
-            Path to output npz file
-        src_path : Path
-            Path to source file
-        raw_row : pd.Series
-            Row from tracks_raw/index.csv
-        labels : np.ndarray
-            Labels array
-        label_map : dict
-            Label ID to name mapping
-
-        Returns
-        -------
-        dict
-            Index row for labels/index.csv
-        """
-        return {
-            "kind": self.label_kind,
-            "label_format": self.label_format,
-            "group": group,
-            "sequence": sequence,
-            "group_safe": group_safe,
-            "sequence_safe": sequence_safe,
-            "abs_path": str(out_path.resolve()),
-            "source_abs_path": str(src_path.resolve()),
-            "source_md5": raw_row.get("md5", ""),
-            "n_frames": int(labels.shape[0]),
-            "label_ids": ",".join(map(str, label_map.keys())),
-            "label_names": ",".join(label_map.values()),
-        }

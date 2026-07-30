@@ -49,6 +49,7 @@ from .index import (
 from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
 from .fit_scope import write_fit_scope
+from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition
 from .types import (
@@ -148,7 +149,7 @@ def _build_result_lookup(
 
 
 def _resolve_dependencies(
-    ds: Dataset, feature: Feature
+    ds: Dataset, feature: Feature, labels_run_id: str | None = None
 ) -> tuple[dict[str, Path], dict[str, DependencyLookup]]:
     """Resolve upstream dependencies from params fields and feature inputs.
 
@@ -205,7 +206,7 @@ def _resolve_dependencies(
             case LabelsSource(kind=str(kind)):
                 if not kind:
                     continue
-                lookup = _build_labels_lookup(ds, kind)
+                lookup = _build_labels_lookup(ds, kind, labels_run_id)
                 if not lookup:
                     msg = (
                         f"Labels lookup is empty for kind={kind!r}, "
@@ -514,7 +515,11 @@ def compute_run_id(
     ``_inputs`` is also the wire form: ``run_feature`` ships
     ``feature.inputs.model_dump()`` to a process worker that rebuilds it with
     ``Inputs.model_validate``, where anything but the bare ``"tracks"`` literal
-    fails validation.
+    fails validation. ``_labels`` is the same story: a ``GroundTruthLabelsSource``
+    resolves to a dataset-wide root under a selector, exactly as ``"tracks"`` does,
+    so pinning its resolved value into ``_inputs`` would move a scope-free
+    consumer's identifier whenever a sequence was added -- it is a Scope term
+    instead.
 
     Raises:
         MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
@@ -549,6 +554,12 @@ def compute_run_id(
         # tuple as given would make two spellings of one answer two identifiers
         # for any caller that built a Scope by hand.
         hashable["_tracks"] = sorted(scope.tracks_variants)
+    if scope.labels_variants:
+        # The label analog of `_tracks` (item 9.3): which label recipes produced
+        # the labels a run read. Same omit-when-absent rule, so a feature that
+        # reads no labels -- almost all of them -- digests exactly as before and
+        # the golden corpus moves only for the labels-consuming features.
+        hashable["_labels"] = sorted(scope.labels_variants)
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
 
@@ -570,6 +581,7 @@ def run_feature(
     check_output: bool = False,
     *,
     tracks_run_id: str | None = None,
+    labels_run_id: str | None = None,
     execution_id: str | None = None,
     owner: str = "",
     track: bool = True,
@@ -676,6 +688,7 @@ def run_feature(
             sequences=sequences,
             entries=entries,
             tracks_run_id=tracks_run_id,
+            labels_run_id=labels_run_id,
             overwrite=overwrite,
             parallel_workers=parallel_workers,
             parallel_mode=parallel_mode,
@@ -698,6 +711,7 @@ def _run_feature_impl(
     sequences: Iterable[str] | None = None,
     entries: Iterable[tuple[str, str]] | None = None,
     tracks_run_id: str | None = None,
+    labels_run_id: str | None = None,
     overwrite: bool = False,
     parallel_workers: int | None = None,
     parallel_mode: str | None = "thread",
@@ -773,6 +787,13 @@ def _run_feature_impl(
             tracks_run_id=tracks_run_id,
         )
 
+    # Labels are a params dependency, not a manifest input, so they are resolved
+    # here rather than inside build_manifest -- and *before* compute_run_id, so a
+    # run over different label content gets a different identifier. The same
+    # labels_run_id is threaded into _resolve_dependencies below, so the variant
+    # the identity is built from is the variant the fit actually reads.
+    scope.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
+
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
     # identity (execution_id, progress, cancel) is deliberately NOT part of it.
     run_id, params_hash = compute_run_id(feature, frame_start, frame_end, scope)
@@ -842,6 +863,10 @@ def _run_feature_impl(
             + [
                 {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
                 for variant in scope.tracks_variants
+            ]
+            + [
+                {"where": "inputs[labels]", "feature": "labels", "run_id": variant}
+                for variant in scope.labels_variants
             ],
         }
         atomic_write(
@@ -875,7 +900,9 @@ def _run_feature_impl(
         feature.bind_dataset(ds)
 
     # Resolve dependencies
-    artifact_paths, dependency_lookups = _resolve_dependencies(ds, feature)
+    artifact_paths, dependency_lookups = _resolve_dependencies(
+        ds, feature, labels_run_id
+    )
 
     # Resolve pair filter
     pair_filter_spec = _resolve_pair_filter(feature.params)
@@ -1320,15 +1347,17 @@ def _deduplicate_column_names(names: list[str]) -> list[str]:
     return result
 
 
-def _build_labels_lookup(ds: Dataset, kind: str) -> dict[tuple[str, str], Path]:
-    try:
-        labels_root = Path(ds.get_root("labels")) / kind
-    except KeyError:
-        return {}
-    idx_path = labels_root / "index.csv"
-    if not idx_path.exists():
-        return {}
-    df = pd.read_csv(idx_path, keep_default_na=False)
+def _build_labels_lookup(
+    ds: Dataset, kind: str, labels_run_id: str | None = None
+) -> dict[tuple[str, str], Path]:
+    """The per-entry ``.npz`` paths for a label *kind*, one row per sequence.
+
+    Resolves through the typed index and :func:`select_label_variant_rows`, so a
+    consumer reads the same variant its identity was built from -- pass the same
+    ``labels_run_id`` here as to :func:`resolve_labels_variants`. A labelled
+    variant supersedes an unlabelled row; two genuine recipes raise.
+    """
+    df = select_label_variant_rows(read_labels_index(ds, kind), labels_run_id)
     lookup: dict[tuple[str, str], Path] = {}
     for _, row in df.iterrows():
         group = str(row.get("group", ""))
@@ -1339,6 +1368,34 @@ def _build_labels_lookup(ds: Dataset, kind: str) -> dict[tuple[str, str], Path]:
             if path.exists():
                 lookup[(group, sequence)] = path
     return lookup
+
+
+def resolve_labels_variants(
+    ds: Dataset, feature: Feature, labels_run_id: str | None = None
+) -> tuple[str, ...]:
+    """Which label recipes this feature's params resolve to, before the digest.
+
+    The label analog of ``_resolve_tracks`` -> ``scope.tracks_variants``, driven
+    from the params fields rather than a manifest input: labels are a
+    ``GroundTruthLabelsSource`` on ``feature.params``, not a ``"tracks"`` input.
+    Each such field's kind is resolved through :func:`select_label_variant_rows`
+    (labelled supersedes unlabelled, two genuine recipes raise), and every
+    non-empty variant it names is collected. Authored kinds (empty ``run_id``)
+    contribute nothing, exactly as unlabelled tracks do, so a dataset with no
+    label recipe keeps the identifiers it already has.
+    """
+    params = getattr(feature, "params", None)
+    if params is None:
+        return ()
+    variants: set[str] = set()
+    for field_name in type(params).model_fields:
+        value = getattr(params, field_name, None)
+        if isinstance(value, LabelsSource) and value.kind:
+            resolved = select_label_variant_rows(
+                read_labels_index(ds, value.kind), labels_run_id
+            )
+            variants.update(str(r) for r in resolved["run_id"] if str(r))
+    return tuple(sorted(variants))
 
 
 def _find_merged_column(column: str, input_index: int, df: pd.DataFrame) -> str | None:

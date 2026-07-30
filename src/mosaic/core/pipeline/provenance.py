@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Literal
 import pandas as pd
 
 from .index import feature_index, feature_index_path, feature_run_root
+from .labels_index import read_labels_index
 from .sequence_index import decode_consumed_roots, encode_entry_composition
 from .tracks_index import consumed_composition_for, read_tracks_index
 
@@ -178,6 +179,64 @@ def _tracks_rows(
     return rows
 
 
+def _label_kinds(ds: Dataset) -> list[str]:
+    """Every converted-label kind, sorted. Empty when the ``labels`` root is unset.
+
+    A kind is a ``labels/<kind>/`` subdirectory that holds an ``index.csv`` -- the
+    variant directories one level below hold none, so they are not mistaken for a
+    kind.
+    """
+    try:
+        root = ds.get_root("labels")
+    except KeyError:
+        return []
+    if not root.exists():
+        return []
+    return sorted(
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and (child / "index.csv").exists()
+    )
+
+
+def _labels_rows(
+    ds: Dataset, wanted: set[tuple[str, str]], root: str
+) -> list[dict[str, object]]:
+    """Converted-label tables for *wanted* whose producer read *root*.
+
+    The label sibling of :func:`_tracks_rows`: a change under ``labels_raw``
+    reaches every scored label kind converted from it. Authored kinds record no
+    consumed root and are not reached; derived kinds record their upstream root.
+    """
+    rows: list[dict[str, object]] = []
+    for kind in _label_kinds(ds):
+        frame = read_labels_index(ds, kind)
+        for record in index_records(frame):
+            entry = (str(record.get("group", "")), str(record.get("sequence", "")))
+            if entry not in wanted:
+                continue
+            declared = decode_consumed_roots(
+                str(record.get("consumed_source_roots", ""))
+            )
+            if root not in declared:
+                continue
+            rows.append(
+                _row(
+                    kind="labels",
+                    name=str(record.get("producer", "")),
+                    run_id=str(record.get("run_id", "")),
+                    group=entry[0],
+                    sequence=entry[1],
+                    abs_path=str(record.get("abs_path", "")),
+                    consumed_roots=declared,
+                    recorded=str(record.get("consumed_composition", "")),
+                    current=consumed_composition_for(ds, entry[0], entry[1], declared),
+                    via="direct",
+                )
+            )
+    return rows
+
+
 def feature_storages(ds: Dataset) -> list[str]:
     """Every feature storage directory, sorted. Empty when the root is unset.
 
@@ -239,15 +298,18 @@ def _current_compositions(ds: Dataset, entry: tuple[str, str]) -> dict[str, str]
     return read_entry_compositions(ds, [entry]).get(entry, {})
 
 
-def _consumed_variants(ds: Dataset, storage: str, run_id: str) -> set[str]:
-    """The tracks variants a feature run read, from its ``params.json``.
+def _consumed_variants(
+    ds: Dataset, storage: str, run_id: str, where: str = "inputs[tracks]"
+) -> set[str]:
+    """The upstream variants a feature run read on edge *where*, from ``params.json``.
 
-    The identifier already carries them -- ``_tracks`` is a hash term -- so this
-    is the readable copy item 0.3 persisted for exactly this walk rather than a
-    second source of truth. A run whose file is missing or unreadable contributes
-    nothing, which leaves it out of the blast radius rather than guessing it in:
-    a run nothing can describe is item 6.2's to fail closed on, not this
-    function's to invent an edge for.
+    *where* selects the ``_resolved`` edge kind: ``inputs[tracks]`` for the tracks
+    variants (the default), ``inputs[labels]`` for the label variants (item 9.3).
+    The identifier already carries them -- ``_tracks`` / ``_labels`` are hash
+    terms -- so this is the readable copy persisted for exactly this walk rather
+    than a second source of truth. A run whose file is missing or unreadable
+    contributes nothing, which leaves it out of the blast radius rather than
+    guessing it in.
     """
     path = feature_run_root(ds, storage, run_id) / "params.json"
     parsed: object
@@ -272,7 +334,7 @@ def _consumed_variants(ds: Dataset, storage: str, run_id: str) -> set[str]:
         if not isinstance(item, dict):
             continue
         reference: Mapping[object, object] = item
-        if reference.get("where") != "inputs[tracks]":
+        if reference.get("where") != where:
             continue
         variant = reference.get("run_id")
         if isinstance(variant, str) and variant:
@@ -285,12 +347,19 @@ def _transitive_rows(
     wanted: set[tuple[str, str]],
     moved_variants: set[str],
     already: set[tuple[str, str, str, str]],
+    *,
+    where: str = "inputs[tracks]",
+    edge: str = "tracks",
 ) -> list[dict[str, object]]:
-    """Feature entries reached through a tracks variant that moved under them.
+    """Feature entries reached through an upstream variant that moved under them.
 
     The arm that matters. Forty of the forty-two registered features declare no
     source root, so their own cell is empty and the direct arm cannot see them --
-    they read media only through tracks, and this is the edge that says so.
+    they read media only through tracks, and (item 9.3) labels only through the
+    ``labels/<kind>/`` tables their inputs hand them, so a labels_raw change
+    reaches ``extract-labeled-templates`` only along this edge. *where* / *edge*
+    select which upstream: ``inputs[tracks]`` / ``tracks`` or ``inputs[labels]`` /
+    ``labels``.
     """
     if not moved_variants:
         return []
@@ -308,7 +377,7 @@ def _transitive_rows(
                 continue
             run_id = str(record.get("run_id", ""))
             if run_id not in variants_by_run:
-                variants_by_run[run_id] = _consumed_variants(ds, storage, run_id)
+                variants_by_run[run_id] = _consumed_variants(ds, storage, run_id, where)
             if not (variants_by_run[run_id] & moved_variants):
                 continue
             if ("features", storage, run_id, _key(entry)) in already:
@@ -324,13 +393,13 @@ def _transitive_rows(
                     consumed_roots=decode_consumed_roots(
                         str(record.get("consumed_roots", ""))
                     ),
-                    # The tracks table moved, not this row's own record -- which
+                    # The upstream table moved, not this row's own record -- which
                     # is empty for a feature declaring no root. Carrying the
                     # feature's own values here would report `unknown` for a row
                     # whose upstream is known to have moved.
-                    recorded="tracks",
+                    recorded=edge,
                     current="moved",
-                    via="tracks",
+                    via=edge,
                 )
             )
     return rows
@@ -348,10 +417,11 @@ def reached_by(
     """Every derived artifact a change to *root* under *changed* reaches.
 
     *changed* is the ``(group, sequence)`` entries whose source moved, and *root*
-    the source root it moved under (``media_raw`` or ``tracks_raw``). Scoping by
-    root is what keeps invalidation honest across roots: uploading a video for
-    visualisation changes only the media composition, so kinematic features built
-    from ``tracks_raw`` that never touched a pixel are not reached at all.
+    the source root it moved under (``media_raw``, ``tracks_raw`` or ``labels_raw``).
+    Scoping by root is what keeps invalidation honest across roots: uploading a
+    video for visualisation changes only the media composition, so kinematic
+    features built from ``tracks_raw`` that never touched a pixel are not reached
+    at all, and re-scoring labels reaches only what consumed ``labels_raw``.
 
     Usable **before** the change as well as after. Run against a dataset the
     change has not yet touched, every row reads ``current`` and the answer is the
@@ -367,15 +437,19 @@ def reached_by(
         return pd.DataFrame(columns=pd.Index(PROVENANCE_COLUMNS))
 
     tracks = _tracks_rows(ds, wanted, root)
+    labels = _labels_rows(ds, wanted, root)
     features = _feature_rows(ds, wanted, root)
 
-    # Only a variant that actually moved propagates. A tracks table whose
-    # composition still matches is not an edge to follow, and one whose verdict is
-    # `unknown` is not either -- an absent record is not evidence of change, and
-    # inventing an edge from it would delete on a guess.
-    moved_variants = {
-        str(row["run_id"]) for row in tracks if row["verdict"] == "drifted"
-    }
+    # Only a variant that actually moved propagates. A table whose composition
+    # still matches is not an edge to follow, and one whose verdict is `unknown`
+    # is not either -- an absent record is not evidence of change, and inventing
+    # an edge from it would delete on a guess.
+    moved_tracks = {str(row["run_id"]) for row in tracks if row["verdict"] == "drifted"}
+    moved_labels = {str(row["run_id"]) for row in labels if row["verdict"] == "drifted"}
+
+    # A feature entry reached by more than one arm is listed once. The direct arm
+    # wins, then the tracks-transitive arm, then the labels-transitive one, each
+    # seeing what the earlier arms already claimed.
     already = {
         (
             "features",
@@ -385,9 +459,23 @@ def reached_by(
         )
         for row in features
     }
-    transitive = _transitive_rows(ds, wanted, moved_variants, already)
+    transitive_tracks = _transitive_rows(
+        ds, wanted, moved_tracks, already, where="inputs[tracks]", edge="tracks"
+    )
+    already |= {
+        (
+            "features",
+            str(r["name"]),
+            str(r["run_id"]),
+            _key((str(r["group"]), str(r["sequence"]))),
+        )
+        for r in transitive_tracks
+    }
+    transitive_labels = _transitive_rows(
+        ds, wanted, moved_labels, already, where="inputs[labels]", edge="labels"
+    )
 
-    rows = [*tracks, *features, *transitive]
+    rows = [*tracks, *labels, *features, *transitive_tracks, *transitive_labels]
     if not rows:
         return pd.DataFrame(columns=pd.Index(PROVENANCE_COLUMNS))
     return pd.DataFrame(rows, columns=pd.Index(PROVENANCE_COLUMNS))

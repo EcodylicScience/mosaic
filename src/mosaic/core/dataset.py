@@ -22,7 +22,6 @@ from typing import (
     Literal,
     Mapping,
     Optional,
-    Protocol,
     Tuple,
 )
 
@@ -36,7 +35,6 @@ from mosaic_media import (
 )
 
 from .helpers import (
-    ensure_text_column,
     make_entry_key,
     parse_entry_key,
     to_safe_name,
@@ -68,6 +66,12 @@ from .track_converter import (
     TrackConverter,
     TrackConvertParams,
     get_track_converter,
+)
+from .label_converter import (
+    LABEL_CONVERTERS,
+    LabelConverter,
+    LabelConvertParams,
+    get_label_converter,
 )
 
 # This import used to sit at the foot of the file behind the one `noqa: E402`
@@ -112,7 +116,18 @@ from .pipeline.tracks_identity import (
     tracks_variant_root,
     write_tracks_variant,
 )
-from .pipeline.composition import media_composition, tracks_raw_composition
+from .pipeline.labels_identity import (
+    label_convert_variant_payload,
+    label_converter_op,
+    labels_run_id,
+    labels_variant_root,
+    write_labels_variant,
+)
+from .pipeline.composition import (
+    labels_raw_composition,
+    media_composition,
+    tracks_raw_composition,
+)
 from .pipeline.index_lock import index_lock
 from .pipeline.sequence_index import (
     SequenceLabelRow,
@@ -137,6 +152,11 @@ from .pipeline.tracks_index import (
     select_variant_rows,
     tracks_index_path,
     write_tracks_row,
+)
+from .pipeline.labels_index import (
+    read_labels_index,
+    select_label_variant_rows,
+    write_labels_row,
 )
 from .pipeline.tracks_raw_index import (
     TracksRawIndexRow,
@@ -206,70 +226,12 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
 # converter class, behind its ``enumerable`` flag.
 
 
-# ----------- Label converter registry -----------
-
-
-class LabelConverter(Protocol):
-    """Protocol for label converter plugins."""
-
-    src_format: str  # e.g., "calms21_npy", "boris_csv"
-    label_kind: str  # e.g., "behavior", "id_tags"
-    label_format: str  # e.g., "calms21_behavior_v1"
-
-    def convert(
-        self,
-        src_path: Path,
-        raw_row: pd.Series,
-        labels_root: Path,
-        params: dict,
-        overwrite: bool,
-        existing_pairs: set[tuple[str, str]],
-    ) -> list[dict]:
-        """
-        Convert a source file to label npz files.
-
-        Returns: List of index row dicts for labels/index.csv
-        """
-        ...
-
-    def get_metadata(self) -> dict:
-        """Optional: return format-specific metadata for dataset.meta['labels'][kind]."""
-        ...
-
-
-# Registry: (src_format, label_kind) -> converter class
-LABEL_CONVERTERS: dict[tuple[str, str], type] = {}
-
-
-def register_label_converter(cls: type):
-    """Decorator to register label converters."""
-    key = (cls.src_format, cls.label_kind)
-    LABEL_CONVERTERS[key] = cls
-    return cls
-
-
-# --- Standardized label metadata ---
-BEHAVIOR_LABEL_MAP = {
-    0: "attack",
-    1: "investigation",
-    2: "mount",
-    3: "other_interaction",
-}
-
-LABEL_INDEX_COLUMNS = [
-    "kind",
-    "label_format",
-    "group",
-    "sequence",
-    "group_safe",
-    "sequence_safe",
-    "abs_path",
-    "source_abs_path",
-    "source_md5",
-    "n_frames",
-    "label_ids",
-    "label_names",
-]
+# The label-converter registry moved to ``mosaic.core.label_converter`` (imported
+# at the top), the same relocation ``track_converter`` made and for the same
+# reason: a converter importing ``dataset`` to register itself while ``dataset``
+# imported the registry to dispatch was the cycle. The typed ``labels/<kind>/``
+# schema lives on ``LabelsIndexRow`` in ``labels_index`` -- there is no
+# ``LABEL_INDEX_COLUMNS`` list to keep in step with it any more.
 
 
 def _md5(path: Path, chunk=1 << 20) -> str:
@@ -324,6 +286,7 @@ default_roots = {
     # ── raw (external, immutable) ──
     "media_raw": "media_raw",  # original uploaded videos — don't touch, may be on NAS
     "tracks_raw": "tracks_raw",  # original tracking files from external tools
+    "labels_raw": "labels_raw",  # raw label files a kind is converted from (uploaded / projected)
     "labels": "labels",  # GT annotations: behavior labels, keypoints, individual IDs
     # ── derived (computed by mosaic, regenerable) ──
     "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
@@ -362,6 +325,20 @@ def _backfill_tracking_roots(roots: Dict[str, str]) -> Dict[str, str]:
     """
     for key in (TRACKING_ROOT, *TRACKING_ROOTS):
         _ = roots.setdefault(key, default_roots[key])
+    return roots
+
+
+def _backfill_source_roots(roots: Dict[str, str]) -> Dict[str, str]:
+    """Add the source roots a manifest predating them does not declare.
+
+    ``labels_raw`` (item 9.3) is new: no manifest written before it carries the
+    key, so ``get_root("labels_raw")`` would raise on every existing dataset and
+    the label converters -- which must resolve it to read what a kind was made
+    from -- would crash rather than fall back. Filled, never repointed, exactly
+    as :func:`_backfill_tracking_roots` handles its own; the readers already
+    tolerate an absent root, but the writers do not.
+    """
+    _ = roots.setdefault("labels_raw", default_roots["labels_raw"])
     return roots
 
 
@@ -692,19 +669,13 @@ class Dataset:
     name: str = "unnamed"
     version: str = "0.1"
     format: str = "yaml"
+    # One empty-valued key per declared root, derived from ``default_roots`` so
+    # the two lists cannot drift: a root added to ``default_roots`` (as
+    # ``labels_raw`` was for item 9.3) is a key here too, without a second edit.
+    # Values stay empty -- this is the "no manifest loaded yet" template, and
+    # ``get_root`` treats an empty root as unset.
     roots: Dict[str, str] = field(
-        default_factory=lambda: {
-            "media_raw": "",
-            "media": "",
-            "tracks_raw": "",
-            "tracks": "",
-            TRACKING_ROOT: "",
-            **{key: "" for key in TRACKING_ROOTS},
-            "features": "",
-            "labels": "",
-            "models": "",
-            "frames": "",
-        }
+        default_factory=lambda: {key: "" for key in default_roots}
     )
     meta: Dict[str, Any] = field(default_factory=dict)
     _path_map: list[tuple[Path, Path]] = field(
@@ -778,7 +749,9 @@ class Dataset:
         self.name = data.get("name", self.name)
         self.version = str(data.get("version", self.version))
         self.format = data.get("format", fmt)
-        self.roots = _backfill_tracking_roots(data.get("roots", self.roots))
+        self.roots = _backfill_source_roots(
+            _backfill_tracking_roots(data.get("roots", self.roots))
+        )
         self.meta = data.get("meta", self.meta)
 
         # Continuous dataset fields
@@ -2322,6 +2295,19 @@ class Dataset:
         }
         _ = write_sequence_compositions(self, "tracks_raw", compositions=compositions)
 
+    def _write_labels_raw_compositions(self, rows: list[dict[str, object]]) -> None:
+        """Project the raw-label rows just committed into ``labels_raw/sequences.csv``.
+
+        The ``tracks_raw`` sibling, differing only in which composition function
+        stamps the members: the raw-source index schema and its member grouping
+        are shared, so ``source_members_from_rows`` serves both roots.
+        """
+        members = source_members_from_rows(rows)
+        compositions = {
+            key: labels_raw_composition(group) for key, group in members.items()
+        }
+        _ = write_sequence_compositions(self, "labels_raw", compositions=compositions)
+
     def display_names(self) -> dict[tuple[str, str], str]:
         """Every recorded sequence label, keyed by its ``(group, sequence)`` token.
 
@@ -2391,6 +2377,10 @@ class Dataset:
                 return None
             rows = [dict(row) for row in self.read_media_index()]
             self._write_media_compositions(rows)
+        elif root == "labels_raw":
+            index_path = self.get_root(root) / "index.csv"
+            rows = [dict(row) for row in _read_tracks_raw_index(index_path)]
+            self._write_labels_raw_compositions(rows)
         else:
             index_path = self.get_root(root) / "index.csv"
             rows = [dict(row) for row in _read_tracks_raw_index(index_path)]
@@ -3505,7 +3495,47 @@ class Dataset:
             corpus too large or too slow to hash and accept an unestablished
             composition: an honest empty, not a wrong value.
         """
-        out_csv = self.get_root("tracks_raw") / index_filename
+        return self._index_raw(
+            target_root="tracks_raw",
+            composition_writer=self._write_tracks_raw_compositions,
+            search_dirs=search_dirs,
+            patterns=patterns,
+            src_format=src_format,
+            index_filename=index_filename,
+            recursive=recursive,
+            multi_sequences_per_file=multi_sequences_per_file,
+            group_from=group_from,
+            group_pattern=group_pattern,
+            exclude_patterns=exclude_patterns,
+            compute_md5=compute_md5,
+        )
+
+    def _index_raw(
+        self,
+        *,
+        target_root: str,
+        composition_writer: Callable[[list[dict[str, object]]], None],
+        search_dirs: Iterable[str | Path],
+        patterns: Iterable[str] | str,
+        src_format: str,
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+        multi_sequences_per_file: bool = False,
+        group_from: Optional[str] = None,
+        group_pattern: Optional[str] = None,
+        exclude_patterns: Optional[Iterable[str]] = None,
+        compute_md5: bool = True,
+    ) -> Path:
+        """Scan a source root and write its ``<root>/index.csv`` + composition.
+
+        The body shared by :meth:`index_tracks_raw` and :meth:`index_labels_raw`.
+        A raw source file carries the same seven columns whichever root it lands
+        in (``group, sequence, abs_path, src_format, size_bytes, mtime_iso,
+        md5``), and the scan, row build and md5 carry-forward are identity-free,
+        so only *target_root* and *composition_writer* -- which sequence-index to
+        project into -- distinguish a tracks source from a label source.
+        """
+        out_csv = self.get_root(target_root) / index_filename
         rows: list[TracksRawIndexRow] = []
         # Advisory, and read before the lock like the media probe phase's caches:
         # a stale entry costs a re-hash, never a wrong digest, because every hit
@@ -3569,9 +3599,52 @@ class Dataset:
         df = _tracks_frame_from_rows(rows)
         with index_lock(out_csv):
             write_tracks_raw_index_rows(out_csv, df)
-        self._write_tracks_raw_compositions(df.to_dict("records"))
-        print(f"[index_tracks_raw] {len(df)} -> {out_csv}")
+        composition_writer(df.to_dict("records"))
+        print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
+
+    def index_labels_raw(
+        self,
+        search_dirs: Iterable[str | Path],
+        patterns: Iterable[str] | str = ("*.csv", "*.npy", "*.pkl"),
+        src_format: str = "boris_aggregated_csv",
+        index_filename: str = "index.csv",
+        recursive: bool = True,
+        multi_sequences_per_file: bool = False,
+        group_from: Optional[str] = None,
+        group_pattern: Optional[str] = None,
+        exclude_patterns: Optional[Iterable[str]] = None,
+        compute_md5: bool = True,
+    ) -> Path:
+        """Scan for raw label files and write ``labels_raw/index.csv``.
+
+        The label sibling of :meth:`index_tracks_raw`, and the source side item
+        9.3 gives converted labels. ``src_format`` names a registered *label*
+        converter (e.g. ``boris_aggregated_csv``), the column a later
+        :meth:`convert_all_labels` filters on. Files are indexed where they lie
+        and never moved, so a format registered as both a track and a label
+        converter -- ``calms21_npy`` -- can be indexed into both roots without
+        copying; membership is by row, and the two compositions stay independent
+        (see :class:`~mosaic.core.pipeline.composition.SourceMember`).
+
+        ``compute_md5`` defaults True for the same reason it does on
+        :meth:`index_tracks_raw`: the ``labels_raw`` composition is over these
+        checksums, and an empty column leaves it unestablishable.
+        """
+        return self._index_raw(
+            target_root="labels_raw",
+            composition_writer=self._write_labels_raw_compositions,
+            search_dirs=search_dirs,
+            patterns=patterns,
+            src_format=src_format,
+            index_filename=index_filename,
+            recursive=recursive,
+            multi_sequences_per_file=multi_sequences_per_file,
+            group_from=group_from,
+            group_pattern=group_pattern,
+            exclude_patterns=exclude_patterns,
+            compute_md5=compute_md5,
+        )
 
     def write_tracks_raw_index(
         self,
@@ -4164,97 +4237,163 @@ class Dataset:
         kind = str(kind or "").lower()
         src_format = source_format or params.get("source_format", "calms21_npy")
 
-        # Look up converter in registry
-        converter_key = (src_format, kind)
-        if converter_key not in LABEL_CONVERTERS:
-            available = list(LABEL_CONVERTERS.keys())
+        # Look up the converter. A missing pair is a caller error (a typo or an
+        # unimported converter module), so raise with the registered pairs listed
+        # rather than proceeding with nothing to do.
+        if (src_format, kind) not in LABEL_CONVERTERS:
+            available = sorted(LABEL_CONVERTERS)
             raise ValueError(
-                f"No label converter registered for (src_format='{src_format}', kind='{kind}'). "
-                f"Available converters: {available}\n"
-                f"To add support for a new format, create a converter in label_library/ "
-                f"and import it in label_library/__init__.py"
+                f"No label converter registered for (src_format='{src_format}', "
+                f"kind='{kind}'). Available: {available}. To add a format, write a "
+                f"converter in label_library/ and import it in "
+                f"label_library/__init__.py."
             )
+        converter = get_label_converter(src_format, kind)
+        conv_params = self._label_converter_params(
+            converter, {**params, **kwargs}, src_format=src_format
+        )
 
-        # Instantiate converter
-        converter_cls = LABEL_CONVERTERS[converter_key]
-        converter = converter_cls(params=params, **kwargs)
-
-        # Load raw index
-        raw_idx = self.get_root("tracks_raw") / "index.csv"
+        # The source side is labels_raw, not tracks_raw: a label file is a label
+        # source even when the same physical file is also a track source (item
+        # 9.3). Read the labels_raw index and filter to this converter's format.
+        raw_idx = self.get_root("labels_raw") / "index.csv"
         if not raw_idx.exists():
             raise FileNotFoundError(
-                "tracks_raw/index.csv not found; run index_tracks_raw first."
+                "labels_raw/index.csv not found; run index_labels_raw first."
             )
-
-        df_raw = pd.read_csv(raw_idx)
+        # keep_default_na=False so an empty group cell stays "" rather than
+        # becoming a float NaN that stringifies to "nan" and reaches an entry key.
+        df_raw = pd.read_csv(raw_idx, keep_default_na=False, dtype=str)
         if "src_format" not in df_raw.columns:
-            raise ValueError("tracks_raw/index.csv missing 'src_format' column.")
+            raise ValueError("labels_raw/index.csv missing 'src_format' column.")
         df_raw = df_raw[df_raw["src_format"].astype(str) == str(src_format)]
         if df_raw.empty:
             raise ValueError(
-                f"No rows in tracks_raw/index.csv with src_format='{src_format}'."
+                f"No rows in labels_raw/index.csv with src_format='{src_format}'."
             )
 
-        # Setup output directory
-        labels_root = self.get_root("labels") / kind
-        labels_root.mkdir(parents=True, exist_ok=True)
-        idx_path = labels_root / "index.csv"
-        _ensure_labels_index(idx_path)
+        # Mint the label variant once -- params-only and scope-free, so one value
+        # names one recipe across every sequence it covers -- and place its .npz
+        # files under labels/<kind>/<run_id>/. A re-conversion with different
+        # params mints a new variant beside the old rather than overwriting it.
+        variant = self._labels_variant(converter, conv_params, label_kind=kind)
+        kind_root = self.get_root("labels") / kind
+        variant_root = labels_variant_root(kind_root, variant)
+        variant_root.mkdir(parents=True, exist_ok=True)
+        producer = label_converter_op(src_format)
 
-        # Load existing pairs
-        existing_pairs: set[tuple[str, str]] = set()
-        if idx_path.exists():
-            df_idx = pd.read_csv(idx_path)
-            if not df_idx.empty:
-                grouped = df_idx.get("group", pd.Series(dtype=str)).fillna("")
-                seqs = df_idx.get("sequence", pd.Series(dtype=str)).fillna("")
-                existing_pairs = set(zip(grouped.astype(str), seqs.astype(str)))
-
-        # Convert each raw file using the converter
-        new_rows: list[dict] = []
+        written = 0
         for _, raw_row in df_raw.iterrows():
             src_path = self.resolve_path(raw_row["abs_path"])
-            created = converter.convert(
-                src_path=src_path,
-                raw_row=raw_row,
-                labels_root=labels_root,
-                params=params,
-                overwrite=overwrite,
-                existing_pairs=existing_pairs,
-            )
-            if created:
-                new_rows.extend(created)
+            source_md5 = str(raw_row.get("md5", "") or "")
+            for entry in converter.convert(src_path, conv_params, raw_row):
+                out_path = (
+                    variant_root / f"{make_entry_key(entry.group, entry.sequence)}.npz"
+                )
+                if out_path.exists() and not overwrite:
+                    continue
+                np.savez_compressed(out_path, **dict(entry.payload))
+                write_labels_row(
+                    self,
+                    run_id=variant,
+                    group=entry.group,
+                    sequence=entry.sequence,
+                    out_path=out_path,
+                    producer=producer,
+                    label_kind=kind,
+                    label_format=converter.label_format,
+                    n_frames=entry.n_frames,
+                    label_ids=",".join(str(i) for i in entry.label_ids),
+                    label_names=",".join(str(n) for n in entry.label_names),
+                    source=src_path,
+                    source_md5=source_md5,
+                    consumed_source_roots=("labels_raw",),
+                )
+                written += 1
 
-        # Update index and metadata
-        if new_rows:
-            # Store dataset-root-relative abs_path so the labels index stays
-            # portable across machines / synced datasets (converters emit
-            # absolute paths).
-            for _r in new_rows:
-                if _r.get("abs_path"):
-                    _r["abs_path"] = self.relative_to_root(_r["abs_path"])
-            _append_labels_index(idx_path, new_rows)
-
-            # Update metadata with converter's metadata
-            labels_meta = self.meta.setdefault("labels", {})
-            labels_meta[kind] = {
-                "index": str(idx_path.resolve()),
-                "label_format": converter.label_format,
-                "updated_at": _now_iso(),
-            }
-
-            # Add format-specific metadata if converter provides it
-            if hasattr(converter, "get_metadata"):
-                labels_meta[kind].update(converter.get_metadata())
-
-            try:
-                self.save()
-            except Exception:
-                pass
+        labels_meta = self.meta.setdefault("labels", {})
+        labels_meta[kind] = {
+            "run_id": variant,
+            "label_format": converter.label_format,
+            "updated_at": _now_iso(),
+            **converter.get_metadata(),
+        }
+        try:
+            self.save()
+        except Exception:
+            pass
 
         print(
-            f"[convert_all_labels] kind={kind} wrote {len(new_rows)} sequences using {src_format} converter (overwrite={overwrite})."
+            f"[convert_all_labels] kind={kind} wrote {written} sequences as "
+            f"variant {variant} using {src_format} (overwrite={overwrite})."
         )
+
+    def _labels_variant(
+        self,
+        converter: LabelConverter[LabelConvertParams],
+        params: LabelConvertParams,
+        *,
+        label_kind: str,
+        observed: Optional[dict] = None,
+    ) -> str:
+        """Mint this label conversion's variant identity and record it.
+
+        The label sibling of :meth:`_tracks_variant`. Params-only and scope-free,
+        so one value names one recipe however many sequences it covers, recorded
+        in ``labels/<kind>/<run_id>/params.json``. The ``kind`` term in the
+        payload domain-separates two kinds that share a ``src_format``.
+        """
+        cls = type(converter)
+        op = label_converter_op(cls.src_format)
+        payload = label_convert_variant_payload(label_kind, params.identity_dump())
+        run_id = labels_run_id(op, cls.version, payload)
+        _ = write_labels_variant(
+            self.get_root("labels") / label_kind,
+            run_id,
+            op,
+            cls.version,
+            label_kind,
+            params.identity_dump(),
+            observed,
+        )
+        return run_id
+
+    def _label_converter_params(
+        self,
+        converter: LabelConverter[LabelConvertParams],
+        overrides: Optional[dict],
+        src_format: str = "",
+    ) -> LabelConvertParams:
+        """Build a label converter's typed params from user overrides.
+
+        The label sibling of :meth:`_converter_params`, with one difference:
+        ``group_from`` is a real ``LabelConvertParams`` field the converter reads
+        (label converters legitimately choose which group string to assign), so it
+        is *kept* here rather than dropped -- it is excluded from identity by being
+        ``HASH_EXCLUDE`` on the model, not by being removed before hashing. Only
+        the entry identity (``group`` / ``sequence``) is dropped, as it travels on
+        the raw row, never in a recipe. ``fps`` falls back to the dataset's
+        ``fps_default`` before it can be hashed, and ``params_by_format`` selects a
+        converter's own keys on a mixed-format dataset.
+        """
+        merged = dict(overrides or {})
+        if src_format and isinstance(merged.get("params_by_format"), dict):
+            by_format: dict = merged.pop("params_by_format")
+            merged = {**merged, **dict(by_format.get(src_format, {}))}
+        else:
+            merged.pop("params_by_format", None)
+        for dropped in ("group", "sequence", "source_format"):
+            merged.pop(dropped, None)
+
+        params_cls = type(converter).Params
+        if "fps" in params_cls.model_fields and "fps" not in merged:
+            fps_default = self.meta.get("fps_default")
+            if fps_default is not None:
+                merged["fps"] = float(fps_default)
+        if "fps_default" in merged:
+            merged.setdefault("fps", float(merged["fps_default"]))
+            merged.pop("fps_default")
+        return params_cls.from_overrides(merged)
 
     def convert_labels_custom(
         self,
@@ -4364,22 +4503,21 @@ class Dataset:
         """
         kind = str(kind or "behavior").lower()
 
-        # Setup output directory
+        # An escape hatch for one-off datasets: the custom function still writes
+        # its .npz files into labels/<kind>/ and returns index-row dicts. It is
+        # *authored*, not scored -- its arbitrary Python has no recipe we could
+        # honestly hash -- so the rows carry an empty run_id (unlabelled, the same
+        # state a hand-authored id_tags row is in) and no consumed source root. A
+        # later registered conversion of the same kind supersedes them by the
+        # resolver's labelled-beats-unlabelled rule.
         labels_root = self.get_root("labels") / kind
         labels_root.mkdir(parents=True, exist_ok=True)
-        idx_path = labels_root / "index.csv"
-        _ensure_labels_index(idx_path)
 
-        # Load existing pairs to avoid duplicates
-        existing_pairs: set[tuple[str, str]] = set()
-        if idx_path.exists():
-            df_idx = pd.read_csv(idx_path)
-            if not df_idx.empty:
-                grouped = df_idx.get("group", pd.Series(dtype=str)).fillna("")
-                seqs = df_idx.get("sequence", pd.Series(dtype=str)).fillna("")
-                existing_pairs = set(zip(grouped.astype(str), seqs.astype(str)))
+        existing = read_labels_index(self, kind)
+        existing_pairs: set[tuple[str, str]] = {
+            (str(row["group"]), str(row["sequence"])) for _, row in existing.iterrows()
+        }
 
-        # Call the custom converter
         new_rows = converter_fn(
             dataset=self,
             labels_root=labels_root,
@@ -4388,31 +4526,41 @@ class Dataset:
             **kwargs,
         )
 
-        # Update index and metadata
-        if new_rows:
-            # Store dataset-root-relative abs_path (see convert_all_labels).
-            for _r in new_rows:
-                if _r.get("abs_path"):
-                    _r["abs_path"] = self.relative_to_root(_r["abs_path"])
-            _append_labels_index(idx_path, new_rows)
+        for row in new_rows or []:
+            abs_path = row.get("abs_path")
+            if not abs_path:
+                continue
+            write_labels_row(
+                self,
+                run_id="",
+                group=row.get("group", ""),
+                sequence=row.get("sequence", ""),
+                out_path=self.resolve_path(abs_path),
+                producer="authored",
+                label_kind=kind,
+                label_format=str(row.get("label_format", label_format)),
+                n_frames=int(row.get("n_frames", 0) or 0),
+                label_ids=str(row.get("label_ids", "")),
+                label_names=str(row.get("label_names", "")),
+            )
 
-            # Update dataset metadata
+        if new_rows:
             labels_meta = self.meta.setdefault("labels", {})
             labels_meta[kind] = {
-                "index": str(idx_path.resolve()),
+                "run_id": "",
                 "label_format": label_format,
                 "updated_at": _now_iso(),
             }
-
             try:
                 self.save()
             except Exception:
                 pass
 
         print(
-            f"[convert_labels_custom] kind={kind} wrote {len(new_rows)} sequences (overwrite={overwrite})."
+            f"[convert_labels_custom] kind={kind} wrote {len(new_rows or [])} "
+            f"sequences (authored, overwrite={overwrite})."
         )
-        return len(new_rows)
+        return len(new_rows or [])
 
     def save_id_labels(
         self,
@@ -4432,11 +4580,7 @@ class Dataset:
             raise ValueError("per_id_labels must contain at least one entry.")
         labels_root = self.get_root("labels") / kind
         labels_root.mkdir(parents=True, exist_ok=True)
-        idx_path = labels_root / "index.csv"
-        _ensure_labels_index(idx_path)
 
-        safe_group = to_safe_name(group) if group else ""
-        safe_seq = to_safe_name(sequence)
         fname = f"{make_entry_key(group, sequence)}.npz"
         out_path = labels_root / fname
         if out_path.exists() and not overwrite:
@@ -4464,21 +4608,23 @@ class Dataset:
 
         np.savez_compressed(out_path, **payload)
 
-        row = {
-            "kind": kind,
-            "label_format": "id_tags_v1",
-            "group": group,
-            "sequence": sequence,
-            "group_safe": safe_group,
-            "sequence_safe": safe_seq,
-            "abs_path": self._relative_to_root(out_path),
-            "source_abs_path": "",
-            "source_md5": "",
-            "n_frames": len(id_keys),
-            "label_ids": ",".join(map(str, id_keys)),
-            "label_names": ",".join(field_names),
-        }
-        _append_labels_index(idx_path, [row])
+        # Authored in place from an external table that is in no raw index -- the
+        # third label provenance (item 9.3): an empty run_id and no consumed
+        # source root, neither scored nor derived, laid out flat rather than under
+        # a variant directory because there is no recipe to name.
+        write_labels_row(
+            self,
+            run_id="",
+            group=group,
+            sequence=sequence,
+            out_path=out_path,
+            producer="authored",
+            label_kind=kind,
+            label_format="id_tags_v1",
+            n_frames=len(id_keys),
+            label_ids=",".join(map(str, id_keys)),
+            label_names=",".join(field_names),
+        )
         return out_path
 
     def convert_id_tags_from_csv(
@@ -4701,29 +4847,28 @@ class Dataset:
         kind: str = "id_tags",
         groups: Optional[Iterable[str]] = None,
         sequences: Optional[Iterable[str]] = None,
+        labels_run_id: Optional[str] = None,
     ) -> dict[tuple[str, str], dict]:
         """
         Load per-id labels for the requested kind.
         Returns {(group, sequence): {"labels": {id: {field: value}}, "sequence_safe": str, "path": str, "metadata": dict}}
         """
-        labels_root = self.get_root("labels") / kind
-        idx_path = labels_root / "index.csv"
-        if not idx_path.exists():
+        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        if df.empty:
             raise FileNotFoundError(
-                f"Labels index not found for kind='{kind}': {idx_path}"
+                f"No labels of kind='{kind}' found; author or convert them first."
             )
-        df = pd.read_csv(idx_path)
         if groups is not None:
-            groups = {str(g) for g in groups}
-            df = df[df["group"].fillna("").astype(str).isin(groups)]
+            wanted_g = {str(g) for g in groups}
+            df = df[df["group"].astype(str).isin(wanted_g)]
         if sequences is not None:
-            sequences = {str(s) for s in sequences}
-            df = df[df["sequence"].fillna("").astype(str).isin(sequences)]
+            wanted_s = {str(s) for s in sequences}
+            df = df[df["sequence"].astype(str).isin(wanted_s)]
         result: dict[tuple[str, str], dict] = {}
         for _, row in df.iterrows():
             group = str(row.get("group", "") or "")
             sequence = str(row.get("sequence", "") or "")
-            safe_seq = row.get("sequence_safe") or to_safe_name(sequence)
+            safe_seq = to_safe_name(sequence)
             abs_path = str(row.get("abs_path", "")).strip()
             if not abs_path:
                 continue
@@ -4761,7 +4906,13 @@ class Dataset:
             }
         return result
 
-    def load_labels(self, group: str, sequence: str, kind: str = "behavior") -> dict:
+    def load_labels(
+        self,
+        group: str,
+        sequence: str,
+        kind: str = "behavior",
+        labels_run_id: Optional[str] = None,
+    ) -> dict:
         """
         Load behavior labels for a specific (group, sequence).
 
@@ -4774,26 +4925,20 @@ class Dataset:
         - label_format: str indicating format version
         - group, sequence, sequence_key: metadata
 
-        For backward compatibility with old dense formats, individual_ids may not be present.
+        Which variant is read follows :func:`select_label_variant_rows`: pass
+        ``labels_run_id`` to name one, otherwise a labelled variant supersedes an
+        unlabelled row and two genuine recipes raise rather than silently taking
+        the first.
         """
-        labels_root = self.get_root("labels") / kind
-        idx_path = labels_root / "index.csv"
-        if not idx_path.exists():
-            raise FileNotFoundError(
-                f"Labels index not found for kind='{kind}': {idx_path}"
-            )
-
-        df = pd.read_csv(idx_path)
-        df = df[(df["group"].fillna("") == group) & (df["sequence"] == sequence)]
+        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        df = df[
+            (df["group"].astype(str) == group)
+            & (df["sequence"].astype(str) == sequence)
+        ]
 
         if len(df) == 0:
             raise ValueError(
                 f"No labels found for group='{group}', sequence='{sequence}', kind='{kind}'"
-            )
-
-        if len(df) > 1:
-            print(
-                f"Warning: Multiple label entries found for ({group}, {sequence}). Using first."
             )
 
         row = df.iloc[0]
@@ -4810,19 +4955,19 @@ class Dataset:
 
         return data
 
-    def get_label_map(self, kind: str = "behavior") -> dict[int, str]:
+    def get_label_map(
+        self, kind: str = "behavior", labels_run_id: Optional[str] = None
+    ) -> dict[int, str]:
         """
         Get the label map {id: name} for a label kind.
 
-        Reads from the labels index.csv (first row).
+        Reads the vocabulary off the resolved variant's first row.
         """
-        idx_path = self.get_root("labels") / kind / "index.csv"
-        if not idx_path.exists():
+        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        if df.empty:
             raise FileNotFoundError(
-                f"Labels index not found for kind='{kind}': {idx_path}"
+                f"No labels of kind='{kind}' found; convert or author them first."
             )
-
-        df = pd.read_csv(idx_path, nrows=1)
         row = df.iloc[0]
 
         ids_str = str(row.get("label_ids", "")).strip()
@@ -5137,57 +5282,6 @@ def _is_empty_like(x: Optional[Any]) -> bool:
     return False
 
 
-def _ensure_labels_index(idx_path: Path):
-    if not idx_path.exists():
-        idx_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(
-            {
-                "kind": pd.Series(dtype="string"),
-                "label_format": pd.Series(dtype="string"),
-                "group": pd.Series(dtype="string"),
-                "sequence": pd.Series(dtype="string"),
-                "group_safe": pd.Series(dtype="string"),
-                "sequence_safe": pd.Series(dtype="string"),
-                "abs_path": pd.Series(dtype="string"),
-                "source_abs_path": pd.Series(dtype="string"),
-                "source_md5": pd.Series(dtype="string"),
-                "n_frames": pd.Series(dtype="Int64"),
-                "label_ids": pd.Series(dtype="string"),
-                "label_names": pd.Series(dtype="string"),
-            }
-        ).to_csv(idx_path, index=False)
-
-
-def _append_labels_index(idx_path: Path, rows: list[dict]):
-    if not idx_path.exists():
-        _ensure_labels_index(idx_path)
-    df = pd.read_csv(idx_path)
-    for col in LABEL_INDEX_COLUMNS:
-        fill = "" if col != "n_frames" else None
-        df = ensure_text_column(df, col, "" if fill is None else fill)
-    updated = df.copy()
-    for r in rows:
-        row = dict(r)
-        row.setdefault("kind", "")
-        row.setdefault("label_format", "")
-        row.setdefault("group", "")
-        row.setdefault("sequence", "")
-        if "group_safe" not in row:
-            row["group_safe"] = to_safe_name(row["group"]) if row["group"] else ""
-        if "sequence_safe" not in row:
-            row["sequence_safe"] = (
-                to_safe_name(row["sequence"]) if row["sequence"] else ""
-            )
-        row.setdefault("abs_path", "")
-        row.setdefault("source_abs_path", "")
-        row.setdefault("source_md5", "")
-        if "n_frames" not in row:
-            row["n_frames"] = ""
-        row.setdefault("label_ids", "")
-        row.setdefault("label_names", "")
-        mask = (updated["group"].fillna("") == row["group"]) & (
-            updated["sequence"].fillna("") == row["sequence"]
-        )
-        updated = updated[~mask]
-        updated = pd.concat([updated, pd.DataFrame([row])], ignore_index=True)
-    updated.to_csv(idx_path, index=False)
+# The hand-written ``_ensure_labels_index`` / ``_append_labels_index`` are gone:
+# ``labels/<kind>/index.csv`` is now the typed ``LabelsIndexRow`` index, written
+# only through ``write_labels_row`` and read only through ``read_labels_index``.

@@ -45,11 +45,13 @@ from typing import Final
 from ._utils import hash_params
 
 __all__ = [
+    "LABELS_RAW_COMPOSITION_SCHEME",
     "MEDIA_COMPOSITION_SCHEME",
     "TRACKS_RAW_COMPOSITION_SCHEME",
     "MediaMember",
     "SequenceComposition",
     "SourceMember",
+    "labels_raw_composition",
     "media_composition",
     "media_composition_payload",
     "source_composition_payload",
@@ -69,6 +71,16 @@ marks would cause the event it exists to detect.
 
 TRACKS_RAW_COMPOSITION_SCHEME: Final = "1"
 """The contract :func:`tracks_raw_composition` implements today. See above."""
+
+LABELS_RAW_COMPOSITION_SCHEME: Final = "1"
+"""The contract :func:`labels_raw_composition` implements today. See above.
+
+A third family rather than a reuse of ``TRACKS_RAW_COMPOSITION_SCHEME``: the two
+roots hash the same *shape* (a checksum list) but over independent membership,
+and one raw file can belong to both -- ``calms21_npy`` is a track source and a
+label source at once -- so ``source_composition_payload`` separates them by
+``kind`` and each carries its own marker.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +219,21 @@ def tracks_raw_composition(members: Sequence[SourceMember]) -> SequenceCompositi
     """Mint a sequence's ``tracks_raw`` composition. Same completeness rule."""
     return _mint(
         source_composition_payload("tracks_raw", members),
+        len(members),
+        all(member.digest for member in members),
+    )
+
+
+def labels_raw_composition(members: Sequence[SourceMember]) -> SequenceComposition:
+    """Mint a sequence's ``labels_raw`` composition. Same completeness rule.
+
+    Uploaded label files and, in a later milestone, files projected from the
+    Dolt scoring store land in the same root, so one composition covers both:
+    membership is by index row, and the digest cannot tell -- nor need it --
+    which writer put a member there.
+    """
+    return _mint(
+        source_composition_payload("labels_raw", members),
         len(members),
         all(member.digest for member in members),
     )

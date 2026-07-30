@@ -25,8 +25,9 @@ with ``force``; the two that exist are the ones where proceeding silently
 destroys something no recipe can rebuild:
 
 - *Converted labels.* Their frame indices are sequence-global, so a reorder
-  shifts every index past the change point. The remap is not built (item 9.3
-  gives it a source side to be checked against first), so M4 refuses rather than
+  shifts every index past the change point. Item 9.3 has since given converted
+  labels a source side (``labels_raw``) they could be re-derived from, but the
+  frame-index remap over it is not built, so this still refuses rather than
   shipping an inexact rewrite over human-authored scoring.
 - *A readability regression.* If the proposed order would make a sequence one
   the reader refuses **and the committed order is one it accepts**, that is a
@@ -270,8 +271,10 @@ def _blocks(
             reasons.append(
                 f"{item.entry!r} has converted labels ({listed}) whose frame "
                 f"indices are sequence-global, so this reorder shifts every index "
-                f"past the change point. The remap is not built; forcing leaves "
-                f"the labels describing different frames"
+                f"past the change point. The labels now have a source side to be "
+                f"re-derived from (labels_raw, item 9.3), but the frame-index remap "
+                f"over that source is not built yet; forcing leaves the labels "
+                f"describing different frames"
             )
     for (group, sequence, camera), verdict in sorted(regressions.items()):
         mismatch = verdict.mismatch
@@ -297,11 +300,14 @@ def _label_kinds(ds: Dataset, entry: tuple[str, str]) -> tuple[str, ...]:
     if not labels_root.exists():
         return ()
     found: set[str] = set()
+    # Only the per-kind indexes match, one directory down; the variant
+    # directories item 9.3 adds a further level down hold no index.csv, so the
+    # glob does not descend into them.
     for index_path in sorted(labels_root.glob("*/index.csv")):
-        # Read as plain records rather than a frame: the labels index is the one
-        # index in the dataset with no typed row and no dtype map (item 6.1's
-        # reconciler is what gives it one), so pandas would infer a numeric
-        # sequence name back into a number here.
+        # Read as plain records rather than a frame: a numeric sequence name read
+        # through pandas would infer back into a number and miss the string entry
+        # this compares against. The labels index is typed now (``LabelsIndexRow``),
+        # but this membership check wants string cells, so it reads them directly.
         try:
             with index_path.open(newline="") as handle:
                 records = list(csv.DictReader(handle))

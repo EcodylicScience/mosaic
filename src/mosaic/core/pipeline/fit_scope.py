@@ -60,6 +60,7 @@ class FitScope:
     scope_dependent: bool
     entries: tuple[tuple[str, str], ...]
     tracks_variants: tuple[str, ...]
+    labels_variants: tuple[str, ...]
     fitted_at: str
     identity_scheme: str
 
@@ -80,6 +81,7 @@ def write_fit_scope(run_root: Path, scope: Scope, *, scope_dependent: bool) -> N
         "scope_dependent": scope_dependent,
         "entries": [list(entry) for entry in sorted(scope.entries)],
         "tracks_variants": sorted(scope.tracks_variants),
+        "labels_variants": sorted(scope.labels_variants),
         "fitted_at": now_iso(),
         "identity_scheme": FEATURE_IDENTITY_SCHEME,
     }
@@ -142,6 +144,9 @@ def read_fit_scope(run_root: Path) -> FitScope | None:
         entries=tuple(entries),
         tracks_variants=tuple(
             str(variant) for variant in _items(raw.get("tracks_variants"))
+        ),
+        labels_variants=tuple(
+            str(variant) for variant in _items(raw.get("labels_variants"))
         ),
         fitted_at=str(raw.get("fitted_at", "")),
         identity_scheme=str(raw.get("identity_scheme", "")),

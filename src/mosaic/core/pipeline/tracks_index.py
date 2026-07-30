@@ -43,7 +43,11 @@ import pandas as pd
 
 from mosaic.core.helpers import to_safe_name, validate_entry_name
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.index_csv import (
+    IndexCSV,
+    RunIndexRowBase,
+    project_to_schema,
+)
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -271,24 +275,10 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns a frame carrying every schema column -- the contract ``IndexCSV``
     requires, because a partial adoption still leaves ``list_runs`` and
-    ``latest_run_id`` raising on ``finished_at``.
+    ``latest_run_id`` raising on ``finished_at``. The projection itself is
+    :func:`project_to_schema`, shared with the other typed indexes.
     """
-    # Built column by column into a fresh frame rather than mutated in place:
-    # that gives the projection and the column order for free, and never widens
-    # a dtype by assigning into an existing column.
-    # Every column is built with an explicit ``object`` dtype. An empty list
-    # assigned to a column lands as ``float64``, and a later ``pd.concat`` with a
-    # real row then widens the integer ``n_rows`` to a float -- so ``40`` reaches
-    # disk as ``40.0``. That is the same trap that made ``identity_scheme`` a
-    # ``str`` rather than an ``int``.
-    out = pd.DataFrame(index=df.index)
-    for column in TRACKS_INDEX_COLUMNS:
-        if column in df.columns:
-            cells = ["" if pd.isna(cell) else cell for cell in df[column]]
-        else:
-            cells = [""] * len(df)
-        out[column] = pd.Series(cells, index=df.index, dtype="object")
-    return out.reset_index(drop=True)
+    return project_to_schema(df, TRACKS_INDEX_COLUMNS)
 
 
 def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataFrame:

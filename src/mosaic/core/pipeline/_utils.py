@@ -47,6 +47,12 @@ class Scope:
     minting several identifiers for one computation and leaving ``Pipeline.clean``
     to delete all but the one it predicted.
 
+    ``labels_variants`` is the exact label analog (item 9.3): which label recipes
+    produced the ``labels/<kind>/`` tables a run reads. It follows every rule
+    ``tracks_variants`` does -- collected before the narrowing, sorted,
+    deduplicated, empty when nothing said -- and enters the identifier through its
+    own ``compute_run_id`` term for the same reason.
+
     ``compositions`` rides here for the same reason -- ``build_manifest`` is what
     reads them and ``compute_run_id`` already takes a ``Scope`` -- but under the
     **opposite** rule, and a reader who generalises from ``tracks_variants`` gets
@@ -62,6 +68,7 @@ class Scope:
     frame_start: int | None = None
     frame_end: int | None = None
     tracks_variants: tuple[str, ...] = ()
+    labels_variants: tuple[str, ...] = ()
     compositions: Mapping[tuple[str, str], Mapping[str, str]] = field(
         default_factory=dict
     )

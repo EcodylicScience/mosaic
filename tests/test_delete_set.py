@@ -153,6 +153,7 @@ class TestDeclines:
                 scope_dependent=True,
                 entries=(("", "seq_a"), ("", "seq_b")),
                 tracks_variants=(),
+                labels_variants=(),
                 fitted_at="",
                 identity_scheme="",
             )
@@ -183,6 +184,7 @@ class TestDeclines:
                 scope_dependent=True,
                 entries=(("", "seq_a"), ("", "seq_b")),
                 tracks_variants=(),
+                labels_variants=(),
                 fitted_at="",
                 identity_scheme="",
             ),

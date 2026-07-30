@@ -61,8 +61,14 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
 from mosaic.core.pipeline.composition import (
     MediaMember,
     SourceMember,
+    labels_raw_composition,
     media_composition,
     tracks_raw_composition,
+)
+from mosaic.core.pipeline.labels_identity import (
+    label_convert_variant_payload,
+    label_converter_op,
+    labels_run_id,
 )
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.transcode import (
@@ -416,6 +422,28 @@ def _tracks_raw_two_files() -> str:
     ).digest
 
 
+def _labels_convert_variant() -> str:
+    # The label variant payload wrapper, pinned for the same reason the tracks one
+    # is: renaming "kind" or "params" here would move every label variant on disk.
+    return labels_run_id(
+        label_converter_op("calms21_npy"),
+        "0.1",
+        label_convert_variant_payload("behavior", {"resident_id": 0, "intruder_id": 1}),
+    )
+
+
+def _labels_raw_two_files() -> str:
+    # Byte-identical members to composition/tracks-raw-two-files, and it MUST mint
+    # a different digest: source_composition_payload separates the two roots by
+    # kind, so a change under one root cannot read as the other.
+    return labels_raw_composition(
+        [
+            SourceMember(name="a.npy", digest="digest-a", algo="md5"),
+            SourceMember(name="b.npy", digest="digest-b", algo="md5"),
+        ]
+    ).digest
+
+
 # The frame-extraction identifier, minted through its own function rather than
 # recomputed here. The OpCase above pins the *payload* -- a field added to
 # ``ExtractFramesParams`` moves it -- but nothing pinned ``frames_run_id``
@@ -445,12 +473,14 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/sleap-variant": _sleap_variant,
     "tracks/litpose-variant": _litpose_variant,
     "tracks/infer-variant": _infer_variant,
+    "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
     "composition/media-two-cameras": _media_two_cameras,
     "composition/media-empty": _media_empty,
     "composition/tracks-raw-two-files": _tracks_raw_two_files,
+    "composition/labels-raw-two-files": _labels_raw_two_files,
     "train-pose/run-id": _train_run_id,
     "train-pose/run-id-bare-base": _train_run_id_from_a_bare_path,
     "infer-points/run-id": _infer_run_id,
@@ -504,8 +534,21 @@ def test_every_family_is_covered() -> None:
         "infer-localizer",
         "composition",
         "tracks",
+        "labels",
     }
     assert families == expected, f"family coverage changed: {families ^ expected}"
+
+
+def test_labels_and_tracks_roots_do_not_collide() -> None:
+    """A label source and a track source of the same bytes stay distinct.
+
+    ``calms21_npy`` is registered as both a track and a label converter, so the
+    same physical file can sit in both raw roots. The composition kind term and
+    the ``convert-labels-`` op prefix are what keep their identifiers apart -- a
+    change under one root must never read as the other.
+    """
+    assert _labels_raw_two_files() != _tracks_raw_two_files()
+    assert label_converter_op("calms21_npy") != converter_op("calms21_npy")
 
 
 @pytest.mark.parametrize("case", OP_CASES, ids=lambda c: c.case_id)

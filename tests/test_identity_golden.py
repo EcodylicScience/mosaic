@@ -74,6 +74,7 @@ class Case:
     frame_end: int | None = None
     scope: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     tracks_variants: tuple[str, ...] = field(default_factory=tuple)
+    labels_variants: tuple[str, ...] = field(default_factory=tuple)
     compositions: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = field(
         default_factory=tuple
     )
@@ -292,6 +293,33 @@ CASES: tuple[Case, ...] = (
         feature="speed-angvel",
         tracks_variants=("trex.0.1-bbbbbbbbbb", "convert-trex_npz.0.1-aaaaaaaaaa"),
     ),
+    # --- the resolved labels variant (item 9.3) ---
+    #
+    # id-tag-columns reads labels, so a resolved label recipe must move its
+    # identifier. The pair pins the whole rule: the two are the same feature and
+    # params, differing only in labels_variants, so present must differ from
+    # absent -- and the ``_labels`` term is omitted when empty, which is why every
+    # pre-existing case (none of which resolves a label variant) is unaffected.
+    # Adjacent, so an accidental agreement would be visible in the data file.
+    Case(
+        case_id="id-tag-columns/no-labels-variant",
+        feature="id-tag-columns",
+        params={
+            "labels": {"kind": "id_tags"},
+            "label_kind": "id_tags",
+            "fields": ["focal"],
+        },
+    ),
+    Case(
+        case_id="id-tag-columns/labels-one-variant",
+        feature="id-tag-columns",
+        params={
+            "labels": {"kind": "id_tags"},
+            "label_kind": "id_tags",
+            "fields": ["focal"],
+        },
+        labels_variants=("convert-labels-boris_aggregated_csv.0.1-cccccccccc",),
+    ),
     # --- archived analyses: identifiers that must never move ---
     #
     # The delivery document owes a manual re-run of the guppies analysis once per
@@ -353,6 +381,7 @@ def _identifier(case: Case) -> str:
     scope = Scope(
         entries=set(case.scope),
         tracks_variants=case.tracks_variants,
+        labels_variants=case.labels_variants,
         compositions={
             (group, sequence): dict(pairs)
             for group, sequence, pairs in case.compositions

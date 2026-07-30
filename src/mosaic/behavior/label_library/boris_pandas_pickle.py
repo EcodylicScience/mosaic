@@ -38,24 +38,72 @@ BORIS User Guide: http://www.boris.unito.it/user_guide/export_events/
 GitHub: https://github.com/olivierfriard/BORIS
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
-from mosaic.core.helpers import make_entry_key, to_safe_name
-
-
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
-    """Helper to merge user params with defaults."""
-    if not overrides:
-        return dict(defaults)
-    out = dict(defaults)
-    out.update({k: v for k, v in overrides.items() if v is not None})
-    return out
+from mosaic.core.helpers import to_safe_name
+from mosaic.core.label_converter import (
+    LabelConvertParams,
+    LabelConverter,
+    LabelEntry,
+)
 
 
-class BorisPandasPickleConverter:
+class BorisPandasPickleParams(LabelConvertParams):
+    """Parameters for the BORIS Pandas pickle converter.
+
+    Every field here changes the parsed labels -- the frame rate, the subject
+    to individual-ID mapping, which behaviors are treated as symmetric pairs,
+    the background label, and the column names read from the export -- so they
+    are all hashed. ``group_from`` and ``strict_schema`` (on the base) are entry
+    policy and validation strictness and are excluded from identity.
+
+    Attributes:
+        fps: Frames per second. If ``None``, auto-detected from the FPS column
+            in the DataFrame.
+        subject_id_map: Mapping from BORIS subject names to numeric IDs, e.g.
+            ``{"bee_0": 0, "bee_1": 1}``. If ``None``, all labels are treated as
+            scene-level (``individual_ids=[-1, -1]``).
+        pair_behaviors: Behavior names that are symmetric pair interactions.
+            These create both ``[i, j]`` and ``[j, i]`` entries.
+        background_label: Label used when no behavior is active (label ID 0).
+        no_focal_subject_name: Name used for behaviors with "No focal subject".
+        include_point_events: Whether to include POINT events (instantaneous
+            behaviors).
+        observation_col: Column name for the observation identifier.
+        subject_col: Column name for the subject.
+        behavior_col: Column name for the behavior.
+        start_col: Column name for the start time.
+        stop_col: Column name for the stop time.
+        behavior_type_col: Column name for the behavior type (STATE/POINT).
+        fps_col: Column name for the FPS value.
+        category_col: Column name for the behavioral category.
+        modifiers_col: Column name for the modifiers.
+    """
+
+    fps: float | None = None
+    subject_id_map: dict[str, int] | None = None
+    pair_behaviors: list[str] | None = None
+    background_label: str = "none"
+    no_focal_subject_name: str = "no_focal_subject"
+    include_point_events: bool = True
+    observation_col: str = "Observation id"
+    subject_col: str = "Subject"
+    behavior_col: str = "Behavior"
+    start_col: str = "Start (s)"
+    stop_col: str = "Stop (s)"
+    behavior_type_col: str = "Behavior type"
+    fps_col: str = "FPS"
+    category_col: str = "Behavioral category"
+    modifiers_col: str = "Modifiers (empty if none)"
+
+
+class BorisPandasPickleConverter(LabelConverter[BorisPandasPickleParams]):
     """
     Convert BORIS Pandas DataFrame pickle to behavior dataset format.
 
@@ -96,106 +144,33 @@ class BorisPandasPickleConverter:
     ...     source_format="boris_pandas_pickle",
     ...     # No subject_id_map: treats all as scene-level
     ... )
-
-    Parameters
-    ----------
-    group_from : str, default="filename"
-        How to determine group name
-    fps : float or None, default=None
-        Frames per second. If None, auto-detected from FPS column in DataFrame
-    subject_id_map : dict or None, default=None
-        Mapping from BORIS subject names to numeric IDs.
-        Example: {"bee_0": 0, "bee_1": 1}
-        If None, all labels treated as scene-level (individual_ids=[-1, -1])
-    pair_behaviors : list[str] or None, default=None
-        List of behavior names that are symmetric pair interactions.
-        These will create both [i, j] and [j, i] entries.
-        Requires exactly 2 subjects per observation.
-    background_label : str, default="none"
-        Label to use when no behavior is active (label ID 0)
-    no_focal_subject_name : str, default="no_focal_subject"
-        Name to use for behaviors with "No focal subject"
-    include_point_events : bool, default=True
-        Whether to include POINT events (instantaneous behaviors)
-    observation_col : str, default="Observation id"
-        Column name for observation identifier
-    subject_col : str, default="Subject"
-        Column name for subject
-    behavior_col : str, default="Behavior"
-        Column name for behavior
-    start_col : str, default="Start (s)"
-        Column name for start time
-    stop_col : str, default="Stop (s)"
-        Column name for stop time
-    behavior_type_col : str, default="Behavior type"
-        Column name for behavior type (STATE/POINT)
-    fps_col : str, default="FPS"
-        Column name for FPS value
     """
 
     # ============ REGISTRATION ATTRIBUTES ============
     src_format = "boris_pandas_pickle"
     label_kind = "behavior"
     label_format = "individual_pair_v1"
+    version = "0.1"
+    Params = BorisPandasPickleParams
 
-    # ============ DEFAULT PARAMETERS ============
-    _defaults = dict(
-        group_from="filename",
-        fps=None,  # Auto-detect from DataFrame
-        subject_id_map=None,  # Map subject names to numeric IDs
-        pair_behaviors=None,  # List of symmetric pair behavior names
-        background_label="none",
-        no_focal_subject_name="no_focal_subject",
-        include_point_events=True,
-        # Column names (can be overridden if BORIS export format changes)
-        observation_col="Observation id",
-        subject_col="Subject",
-        behavior_col="Behavior",
-        start_col="Start (s)",
-        stop_col="Stop (s)",
-        behavior_type_col="Behavior type",
-        fps_col="FPS",
-        category_col="Behavioral category",
-        modifiers_col="Modifiers (empty if none)",
-    )
-
-    def __init__(self, params: Optional[Dict[str, Any]] = None, **kwargs):
-        """Initialize the converter with parameters."""
-        self.params = _merge_params(params, self._defaults)
-        self.params.update(kwargs)
-
-    def convert(self,
-                src_path: Path,
-                raw_row: pd.Series,
-                labels_root: Path,
-                params: dict,
-                overwrite: bool,
-                existing_pairs: set[tuple[str, str]]) -> list[dict]:
+    def convert(
+        self,
+        src_path: Path,
+        params: BorisPandasPickleParams,
+        raw_row: Mapping[str, object],
+    ) -> list[LabelEntry]:
         """
         Convert BORIS Pandas pickle to per-sequence behavior labels.
 
-        Parameters
-        ----------
-        src_path : Path
-            Path to BORIS pickle file (.pkl)
-        raw_row : pd.Series
-            Row from tracks_raw/index.csv
-        labels_root : Path
-            Output directory for label files
-        params : dict
-            Conversion parameters
-        overwrite : bool
-            Whether to overwrite existing files
-        existing_pairs : set[tuple[str, str]]
-            Already converted (group, sequence) pairs
+        Args:
+            src_path: Path to the BORIS pickle file (.pkl).
+            params: Typed conversion parameters.
+            raw_row: The ``labels_raw/index.csv`` row, carrying the group hint
+                and the source md5.
 
-        Returns
-        -------
-        list[dict]
-            Index rows for labels/index.csv
+        Returns:
+            One :class:`LabelEntry` per (observation, subject) sequence.
         """
-        p = self.params
-
         # Load BORIS DataFrame from pickle
         try:
             df = pd.read_pickle(src_path)
@@ -210,11 +185,11 @@ class BorisPandasPickleConverter:
 
         # Validate required columns
         required_cols = [
-            p["observation_col"],
-            p["subject_col"],
-            p["behavior_col"],
-            p["start_col"],
-            p["stop_col"],
+            params.observation_col,
+            params.subject_col,
+            params.behavior_col,
+            params.start_col,
+            params.stop_col,
         ]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
@@ -224,42 +199,44 @@ class BorisPandasPickleConverter:
             )
 
         # Auto-detect FPS if not provided
-        fps = p["fps"]
+        fps = params.fps
         if fps is None:
-            if p["fps_col"] in df.columns:
-                fps_values = df[p["fps_col"]].dropna().unique()
+            if params.fps_col in df.columns:
+                fps_values = df[params.fps_col].dropna().unique()
                 if len(fps_values) == 0:
                     raise ValueError("FPS column exists but contains no valid values")
                 elif len(fps_values) > 1:
-                    print(f"Warning: Multiple FPS values found: {fps_values}. Using first: {fps_values[0]}")
+                    print(
+                        f"Warning: Multiple FPS values found: {fps_values}. Using first: {fps_values[0]}"
+                    )
                 fps = float(fps_values[0])
             else:
                 raise ValueError(
-                    f"FPS not provided and '{p['fps_col']}' column not found in DataFrame. "
+                    f"FPS not provided and '{params.fps_col}' column not found in DataFrame. "
                     f"Please specify fps parameter."
                 )
 
         print(f"Using FPS: {fps}")
 
         # Build label map from unique behaviors
-        unique_behaviors = sorted(df[p["behavior_col"]].dropna().unique())
-        if p["background_label"] not in unique_behaviors:
-            unique_behaviors = [p["background_label"]] + unique_behaviors
+        unique_behaviors = sorted(df[params.behavior_col].dropna().unique())
+        if params.background_label not in unique_behaviors:
+            unique_behaviors = [params.background_label] + unique_behaviors
 
         label_map = {i: name for i, name in enumerate(unique_behaviors)}
         label_name_to_id = {name: i for i, name in label_map.items()}
 
         # Determine group name
-        group_val = self._determine_group("", raw_row)
+        group_val = self._determine_group("", params, raw_row)
 
         # Group by observation and subject
-        obs_col = p["observation_col"]
-        subj_col = p["subject_col"]
+        obs_col = params.observation_col
+        subj_col = params.subject_col
 
         # Handle NaN in subject column (treat as no focal subject)
-        df[subj_col] = df[subj_col].fillna(p["no_focal_subject_name"])
+        df[subj_col] = df[subj_col].fillna(params.no_focal_subject_name)
 
-        rows_out = []
+        entries: list[LabelEntry] = []
 
         # Process each (observation, subject) combination as a sequence
         for (obs_id, subject), obs_subj_df in df.groupby([obs_col, subj_col]):
@@ -269,28 +246,16 @@ class BorisPandasPickleConverter:
             subj_safe = to_safe_name(str(subject))
             seq_val = f"{obs_safe}__{subj_safe}"
 
-            pair = (group_val, seq_val)
-
-            # Skip if exists
-            if not overwrite and pair in existing_pairs:
-                continue
-
             # Convert events to sparse individual_pair_v1 format
             event_frames, event_labels, individual_ids = self._convert_to_sparse_events(
-                obs_subj_df, label_name_to_id, fps, p, str(subject)
+                obs_subj_df, label_name_to_id, fps, params, str(subject)
             )
-
-            # Create safe names and output path
-            safe_group = to_safe_name(group_val) if group_val else ""
-            safe_seq = to_safe_name(seq_val)
-            fname = f"{make_entry_key(group_val, seq_val)}.npz"
-            out_path = labels_root / fname
 
             # Build npz payload
             label_ids = np.array(list(label_map.keys()), dtype=np.int32)
             label_names = np.array(list(label_map.values()), dtype=object)
 
-            payload = {
+            payload: dict[str, object] = {
                 "group": group_val,
                 "sequence": seq_val,
                 "sequence_key": seq_val,
@@ -305,45 +270,37 @@ class BorisPandasPickleConverter:
                 "fps": float(fps),
             }
 
-            # Save npz
-            np.savez_compressed(out_path, **payload)
-            existing_pairs.add(pair)
+            n_frames = int(np.max(event_frames) + 1) if len(event_frames) > 0 else 0
 
-            # Build index row
-            index_row = {
-                "kind": self.label_kind,
-                "label_format": self.label_format,
-                "group": group_val,
-                "sequence": seq_val,
-                "group_safe": safe_group,
-                "sequence_safe": safe_seq,
-                "abs_path": str(out_path.resolve()),
-                "source_abs_path": str(src_path.resolve()),
-                "source_md5": raw_row.get("md5", ""),
-                "n_frames": int(np.max(event_frames) + 1) if len(event_frames) > 0 else 0,
-                "n_events": int(len(event_frames)),
-                "label_ids": ",".join(map(str, label_map.keys())),
-                "label_names": ",".join(label_map.values()),
-                "source_observation": str(obs_id),
-                "source_subject": str(subject),
-                "fps": str(fps),
-            }
-            rows_out.append(index_row)
+            entries.append(
+                LabelEntry(
+                    group=group_val,
+                    sequence=seq_val,
+                    payload=payload,
+                    n_frames=n_frames,
+                    label_ids=tuple(int(i) for i in label_map.keys()),
+                    label_names=tuple(str(n) for n in label_map.values()),
+                )
+            )
 
-        return rows_out
+        return entries
 
-    def get_metadata(self) -> dict:
+    def get_metadata(self) -> dict[str, object]:
         """Return metadata for dataset.meta."""
         return {
-            "fps": self.params.get("fps"),
             "source_format": "BORIS Pandas Pickle",
         }
 
     # ============ HELPER METHODS ============
 
-    def _determine_group(self, source_group: str, raw_row: pd.Series) -> str:
+    def _determine_group(
+        self,
+        source_group: str,
+        params: BorisPandasPickleParams,
+        raw_row: Mapping[str, object],
+    ) -> str:
         """Determine output group name based on group_from parameter."""
-        group_from = self.params.get("group_from", "filename")
+        group_from = params.group_from
         if group_from == "filename":
             return str(raw_row.get("group", "") or "")
         elif group_from == "infile":
@@ -353,50 +310,43 @@ class BorisPandasPickleConverter:
         else:
             return source_group
 
-    def _convert_to_sparse_events(self,
-                                   df: pd.DataFrame,
-                                   label_map: dict,
-                                   fps: float,
-                                   params: dict,
-                                   subject: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _convert_to_sparse_events(
+        self,
+        df: pd.DataFrame,
+        label_map: dict[str, int],
+        fps: float,
+        params: BorisPandasPickleParams,
+        subject: str,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Convert BORIS event table to sparse individual_pair_v1 format.
 
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Events for a single (observation, subject) pair
-        label_map : dict
-            Behavior name to ID mapping
-        fps : float
-            Frames per second
-        params : dict
-            Converter parameters
-        subject : str
-            Subject name from BORIS
+        Args:
+            df: Events for a single (observation, subject) pair.
+            label_map: Behavior name to ID mapping.
+            fps: Frames per second.
+            params: Converter parameters.
+            subject: Subject name from BORIS.
 
-        Returns
-        -------
-        frames : np.ndarray
-            Frame indices, shape (n_events,), dtype int32
-        labels : np.ndarray
-            Behavior labels, shape (n_events,), dtype int32
-        individual_ids : np.ndarray
-            Individual IDs, shape (n_events, 2), dtype int32
+        Returns:
+            A tuple ``(frames, labels, individual_ids)`` where ``frames`` has
+            shape ``(n_events,)`` dtype int32, ``labels`` has shape
+            ``(n_events,)`` dtype int32, and ``individual_ids`` has shape
+            ``(n_events, 2)`` dtype int32.
         """
-        behavior_col = params["behavior_col"]
-        start_col = params["start_col"]
-        stop_col = params["stop_col"]
-        behavior_type_col = params["behavior_type_col"]
-        background_id = label_map[params["background_label"]]
-        include_point = params["include_point_events"]
-        subject_id_map = params.get("subject_id_map")
-        pair_behaviors = params.get("pair_behaviors") or []
+        behavior_col = params.behavior_col
+        start_col = params.start_col
+        stop_col = params.stop_col
+        behavior_type_col = params.behavior_type_col
+        background_id = label_map[params.background_label]
+        include_point = params.include_point_events
+        subject_id_map = params.subject_id_map
+        pair_behaviors = params.pair_behaviors or []
 
         # Determine subject_id
         if subject_id_map and subject in subject_id_map:
             subject_id = subject_id_map[subject]
-        elif subject == params["no_focal_subject_name"]:
+        elif subject == params.no_focal_subject_name:
             subject_id = -1  # Scene-level
         else:
             subject_id = -1  # Default to scene-level if no mapping

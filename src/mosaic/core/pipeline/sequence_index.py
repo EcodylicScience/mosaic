@@ -50,6 +50,7 @@ import pandas as pd
 
 from mosaic.core.pipeline._utils import now_iso
 from mosaic.core.pipeline.composition import (
+    LABELS_RAW_COMPOSITION_SCHEME,
     MEDIA_COMPOSITION_SCHEME,
     TRACKS_RAW_COMPOSITION_SCHEME,
     SequenceComposition,
@@ -72,7 +73,7 @@ __all__ = [
     "write_sequence_compositions",
 ]
 
-SourceRoot = Literal["media_raw", "tracks_raw"]
+SourceRoot = Literal["media_raw", "tracks_raw", "labels_raw"]
 """A root holding what cannot be recomputed, and therefore has a composition.
 
 A closed alias, unlike ``TracksIndexRow.producer`` which is deliberately a bare
@@ -81,13 +82,18 @@ nothing else in the dataset is a *source* -- so the claim is one this module can
 keep, and it makes "which composition function applies" exhaustively checkable
 rather than a dict lookup that can miss.
 
-``labels_raw`` is the third value and is not here yet: the root does not exist,
-and item 9.3 owns creating it along with the Dolt projection that fills it.
+``labels_raw`` holds the raw label files a kind is converted from -- uploaded, or
+in a later milestone projected from the Dolt scoring store. It is not a partition
+of ``tracks_raw``: a format like ``calms21_npy`` is registered as both a track
+converter and a label converter, so one raw file is at once a track source and a
+label source. Membership is therefore by index, not by directory, and the two
+roots hold overlapping files without either owning the other.
 """
 
 _SCHEME_BY_ROOT: Final[dict[str, str]] = {
     "media_raw": MEDIA_COMPOSITION_SCHEME,
     "tracks_raw": TRACKS_RAW_COMPOSITION_SCHEME,
+    "labels_raw": LABELS_RAW_COMPOSITION_SCHEME,
 }
 
 

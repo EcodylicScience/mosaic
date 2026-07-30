@@ -42,8 +42,18 @@ from ._utils import atomic_write
 
 MARKER_NAME: Final = ".identity_scheme"
 
-FEATURE_IDENTITY_SCHEME: Final = "4"
+FEATURE_IDENTITY_SCHEME: Final = "5"
 """The contract ``compute_run_id`` implements today.
+
+Scheme 5 (item 9.3): the payload gains ``_labels``, the label recipes behind the
+``labels/<kind>/`` tables a run reads, present only when a resolved labels variant
+exists. The exact label analog of ``_tracks``, and closing the same hole labels
+had that tracks closed in scheme 3: a run over different label content used to
+share one identifier and one directory, because labels were resolved after the
+digest was minted. Because the term is omitted when absent -- almost every feature
+reads no labels -- a dataset with no labels variant digests exactly as it did
+under scheme 4, and the golden corpus moves only for the labels-consuming
+features. The marker still moves, because what the digest *covers* changed.
 
 Scheme 3 (item 3.3): the payload gains ``_tracks``, the tracks recipes behind
 the tables a run reads, present only when the index names any. The other input

@@ -50,8 +50,9 @@ Usage
 ... )
 """
 
-# Import dataset module to get access to register_label_converter decorator
-from mosaic.core.dataset import register_label_converter
+# The registry lives in ``mosaic.core.label_converter`` (moved out of
+# ``dataset`` to break the converter/dataset import cycle, as tracks did).
+from mosaic.core.label_converter import register_label_converter
 
 # Import all converters to trigger registration
 # Each converter module should define a class decorated with @register_label_converter

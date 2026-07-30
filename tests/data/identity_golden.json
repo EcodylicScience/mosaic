@@ -19,6 +19,8 @@
   "global-kmeans/templates": "0.4-3c21bc4eb4",
   "global-scaler/templates": "0.1-e7c9a576f7",
   "id-tag-columns/default": "0.1-360e7720af",
+  "id-tag-columns/labels-one-variant": "0.1-e538ec7fa1",
+  "id-tag-columns/no-labels-variant": "0.1-0ed02bfded",
   "interaction-crop-pipeline/default": "0.2-33c0805241",
   "movement-filter-interpolate/default": "0.1-be8378c03e",
   "movement-smooth/default": "0.1-d512bf19f6",
