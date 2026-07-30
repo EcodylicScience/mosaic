@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PROVENANCE_COLUMNS",
+    "feature_storages",
     "index_records",
     "Verdict",
     "reached_by",
@@ -177,11 +178,18 @@ def _tracks_rows(
     return rows
 
 
-def _feature_storages(ds: Dataset) -> list[str]:
-    """Every feature storage directory, sorted. Empty when the root is unset."""
-    if not ds.roots.get("features"):
+def feature_storages(ds: Dataset) -> list[str]:
+    """Every feature storage directory, sorted. Empty when the root is unset.
+
+    Through ``get_root`` rather than reaching into ``ds.roots``, which is what the
+    rest of this resolution path does. It matters because ``build_manifest`` is
+    public API that dataset *stand-ins* reach -- they provide the two accessors
+    and not the field -- and item 9.4 put this function on that path.
+    """
+    try:
+        root = ds.get_root("features")
+    except KeyError:
         return []
-    root = ds.get_root("features")
     if not root.exists():
         return []
     return sorted(child.name for child in root.iterdir() if child.is_dir())
@@ -192,7 +200,7 @@ def _feature_rows(
 ) -> list[dict[str, object]]:
     """Feature entries that declared *root* and recorded a composition under it."""
     rows: list[dict[str, object]] = []
-    for storage in _feature_storages(ds):
+    for storage in feature_storages(ds):
         index = feature_index(feature_index_path(ds, storage))
         if not index.path.exists():
             continue
@@ -287,7 +295,7 @@ def _transitive_rows(
     if not moved_variants:
         return []
     rows: list[dict[str, object]] = []
-    for storage in _feature_storages(ds):
+    for storage in feature_storages(ds):
         index = feature_index(feature_index_path(ds, storage))
         if not index.path.exists():
             continue

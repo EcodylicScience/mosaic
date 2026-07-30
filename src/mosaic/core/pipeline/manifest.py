@@ -7,11 +7,10 @@ import sys
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast, overload
+from typing import TYPE_CHECKING, Literal, overload
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from ...core.helpers import make_entry_key
 from .sequence_index import read_entry_compositions
@@ -23,6 +22,7 @@ from .index import (
     missing_outputs_error,
 )
 from .loading import load_entry_data
+from .track_universe import is_track_shaped
 from .tracks_index import read_tracks_index, select_variant_rows, tracks_index_path
 from .types import (
     COLUMNS,
@@ -101,25 +101,54 @@ def _ensure_track_shaped(
     the position columns -- so it needs no producer registry (``core`` must not
     import ``behavior``) and self-maintains as new track producers are added. It is
     a no-op when nothing resolved (empty upstream -> empty manifest, as before).
+
+    The predicate itself lives in ``track_universe.is_track_shaped``, because item
+    9.4's enumerator needs the same question in boolean form. Two spellings of
+    "what is a track" would eventually disagree, and the way they would show it is
+    a table the selector offers and this then rejects.
     """
     if not path_map_all:
         return
     path = next(iter(path_map_all.values()))[0]
     if not path.exists():
         return
-    # pyarrow ships no type stubs here, so read_schema().names is Unknown; pin it.
-    names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
-    columns = set(names)
-    required = {COLUMNS.x_col, COLUMNS.y_col}
-    missing = required - columns
-    if missing:
+    if not is_track_shaped(path):
         raise ValueError(
             f"Feature {feature_name!r} does not produce a track-shaped table "
-            f"(missing {sorted(missing)}); it cannot be used as a track input. "
-            f"A track input must be raw 'tracks' or the Result of a track-producing "
-            f"feature (trajectory-smooth, track-subsample, movement-smooth, "
-            f"movement-filter-interpolate)."
+            f"(needs {sorted({COLUMNS.x_col, COLUMNS.y_col})}); it cannot be used "
+            f"as a track input. A track input must be raw 'tracks' or the Result "
+            f"of a track-producing feature (trajectory-smooth, track-subsample, "
+            f"movement-smooth, movement-filter-interpolate)."
         )
+
+
+def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
+    """The run of *feature_name* nothing downstream consumed (item 9.4).
+
+    Restricted to one storage, because the caller asked for one feature: the
+    dataset-wide question is ``track_universe.track_leaf``, and answering it here
+    would resolve a *different* feature than the one named.
+
+    Falls back to the recorded latest when this feature's runs are not
+    track-shaped -- an ordinary derived feature has no chain to walk, and its
+    runs are pinned by ``resolve_references`` on every path that matters.
+    """
+    from .track_universe import AmbiguousTrackLeaf, track_universe
+
+    mine = [source for source in track_universe(ds) if source.storage == feature_name]
+    if not mine:
+        return latest_feature_run_root(ds, feature_name)[0]
+    consumed = {run for source in track_universe(ds) for run in source.consumed}
+    leaves = [source.run_id for source in mine if source.run_id not in consumed]
+    if len(leaves) == 1:
+        return leaves[0]
+    if not leaves:
+        return latest_feature_run_root(ds, feature_name)[0]
+    raise AmbiguousTrackLeaf(
+        f"{len(leaves)} runs of {feature_name!r} are leaves of the chain, so "
+        f"there is no default: {', '.join(sorted(leaves))}. Name one by passing "
+        "its run_id in the Result."
+    )
 
 
 def build_manifest(
@@ -401,9 +430,17 @@ def _resolve_feature(
         # Unreachable from run_feature and from the chain runner: both call
         # resolve.resolve_references first, so `item.run_id` arrives concrete
         # (item 1.1). Kept for direct callers of build_manifest -- it is public
-        # API -- and because the resolution rule here and there is the same
-        # function, so the two cannot disagree about which run "latest" means.
-        run_id, _ = latest_feature_run_root(ds, feature_name)
+        # API.
+        #
+        # **The leaf of the chain, not the newest run** (item 9.4). It used to be
+        # `latest_feature_run_root`, which sorts on the `finished_at` /
+        # `started_at` strings -- wall-clock ordering, and not reproducible
+        # across a synced dataset: two machines that ran the same work in a
+        # different order disagree about which table is current. The leaf is a
+        # property of the data instead, and two leaves refuse rather than
+        # tiebreak. A dataset with a single chain per feature is unaffected,
+        # which is every dataset that has only ever run one recipe.
+        run_id = _leaf_run_of(ds, feature_name)
 
     idx = feature_index(idx_path)
 
