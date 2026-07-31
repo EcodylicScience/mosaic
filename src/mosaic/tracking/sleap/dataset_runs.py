@@ -434,6 +434,7 @@ def run_sleap(
             "track",
             params_hash=minted.params_hash,
             video_path=item.video_path,
+            video_uid=item.video_uid,
         )
         if reusable is None:
             clear_phase_marker(work_dir, "track")

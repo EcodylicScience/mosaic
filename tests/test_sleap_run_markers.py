@@ -35,7 +35,7 @@ pytest.importorskip("h5py")
 # --- fixtures --------------------------------------------------------------
 
 
-def _clean_facts_cells() -> dict[str, object]:
+def _clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
     facts: MediaFacts = store_facts(
         width=640,
         height=480,
@@ -43,8 +43,8 @@ def _clean_facts_cells() -> dict[str, object]:
         frame_count=100,
         codec="h264",
         duration=100 / 30.0,
-        video_uuid="",
-        identity_scheme="",
+        video_uuid=video_uuid,
+        identity_scheme="video/1" if video_uuid else "",
     )
     facts = dataclasses.replace(
         facts,
@@ -55,17 +55,24 @@ def _clean_facts_cells() -> dict[str, object]:
     return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 
 
-def _write_media_index(ds: Dataset, sequences: list[str]) -> None:
+def _write_media_index(
+    ds: Dataset,
+    sequences: list[str],
+    *,
+    filenames: dict[str, str] | None = None,
+    uids: dict[str, str] | None = None,
+) -> None:
     media_root = ds.get_root(ds.resolve_media_root())
     media_root.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
     for seq in sequences:
-        video = media_root / f"{seq}.mp4"
+        filename = (filenames or {}).get(seq, f"{seq}.mp4")
+        video = media_root / filename
         if not video.exists():
             video.write_bytes(b"fake")
         rows.append(
             {
-                "name": f"{seq}.mp4",
+                "name": filename,
                 "group": "",
                 "sequence": seq,
                 "group_safe": "",
@@ -79,7 +86,7 @@ def _write_media_index(ds: Dataset, sequences: list[str]) -> None:
                 "codec": "h264",
                 "media_type": "video",
                 "video_order": 0,
-                **_clean_facts_cells(),
+                **_clean_facts_cells((uids or {}).get(seq, "")),
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
@@ -267,3 +274,64 @@ def test_different_weights_are_a_different_run(
     b = dr.run_sleap(ds, model_paths=[str(m2)])
     assert a != b
     assert sleap_run_root(ds, a) != sleap_run_root(ds, b)
+
+
+# --- the reuse comparison is uid-first, with the path as fallback ------------
+
+
+def test_a_video_replaced_in_place_forces_a_recompute(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """The case a path comparison cannot see at all.
+
+    Same sequence, same filename, different bytes. Comparing resolved paths
+    calls this unchanged, so the second run reused inference over content that
+    no longer exists. TREx has compared the uid first since item 8.5; SLEAP
+    recorded ``source_uid`` on its markers and never read it back.
+    """
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
+    second = dr.run_sleap(ds, model_paths=[str(model)])
+
+    assert second == run_id, "settings did not change, so neither does the identity"
+    assert len(sleap.tracked) == 2, "the replaced video was not re-inferred"
+
+
+def test_the_same_video_under_a_new_name_is_not_a_recompute(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """The other direction, and the saving the uid comparison buys.
+
+    A rearrangement changes which file a sequence resolves to without changing
+    the bytes. The path comparison calls that a source change and throws away
+    the inference; the uid says it is the same video.
+    """
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+
+    _write_media_index(
+        ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
+    )
+    second = dr.run_sleap(ds, model_paths=[str(model)])
+
+    assert second == run_id
+    assert len(sleap.tracked) == 1, "the same bytes were inferred twice"
+
+
+def test_an_absent_uid_still_falls_back_to_the_path(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """Media indexed before the identity columns carries no uid.
+
+    Dropping the path comparison would remove the source guard from exactly the
+    datasets that cannot supply a uid.
+    """
+    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+    _write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
+
+    second = dr.run_sleap(ds, model_paths=[str(model)])
+
+    assert second == run_id
+    assert len(sleap.tracked) == 2, "a changed source with no uid must re-infer"

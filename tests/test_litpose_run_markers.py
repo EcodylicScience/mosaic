@@ -33,7 +33,7 @@ _BODYPARTS = ("nose", "tail")
 # --- fixtures --------------------------------------------------------------
 
 
-def _clean_facts_cells() -> dict[str, object]:
+def _clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
     facts: MediaFacts = store_facts(
         width=640,
         height=480,
@@ -41,8 +41,8 @@ def _clean_facts_cells() -> dict[str, object]:
         frame_count=100,
         codec="h264",
         duration=100 / 30.0,
-        video_uuid="",
-        identity_scheme="",
+        video_uuid=video_uuid,
+        identity_scheme="video/1" if video_uuid else "",
     )
     facts = dataclasses.replace(
         facts,
@@ -53,17 +53,24 @@ def _clean_facts_cells() -> dict[str, object]:
     return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 
 
-def _write_media_index(ds: Dataset, sequences: list[str]) -> None:
+def _write_media_index(
+    ds: Dataset,
+    sequences: list[str],
+    *,
+    filenames: dict[str, str] | None = None,
+    uids: dict[str, str] | None = None,
+) -> None:
     media_root = ds.get_root(ds.resolve_media_root())
     media_root.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
     for seq in sequences:
-        video = media_root / f"{seq}.mp4"
+        filename = (filenames or {}).get(seq, f"{seq}.mp4")
+        video = media_root / filename
         if not video.exists():
             video.write_bytes(b"fake")
         rows.append(
             {
-                "name": f"{seq}.mp4",
+                "name": filename,
                 "group": "",
                 "sequence": seq,
                 "group_safe": "",
@@ -77,7 +84,7 @@ def _write_media_index(ds: Dataset, sequences: list[str]) -> None:
                 "codec": "h264",
                 "media_type": "video",
                 "video_order": 0,
-                **_clean_facts_cells(),
+                **_clean_facts_cells((uids or {}).get(seq, "")),
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
