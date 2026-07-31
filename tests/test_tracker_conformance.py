@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
 from dataclasses import Field
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -31,6 +33,12 @@ from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS, TrackingRoot
 from mosaic.tracking import register_ops
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.model_refs import (
+    MODEL_KINDS,
+    resolve_model,
+    resolve_model_set,
+    spec_for,
+)
 from mosaic.tracking.litpose.dataset_runs import LitposeIndexRow
 from mosaic.tracking.sleap.dataset_runs import SleapIndexRow
 from mosaic.tracking.trex.dataset_runs import TRexIndexRow
@@ -170,4 +178,112 @@ def test_its_op_run_id_and_tracks_variant_share_one_digest(kind: str) -> None:
 
     assert variant.startswith(f"{kind}."), (
         f"{kind}'s tracks variant is not named for its producer: {variant}"
+    )
+
+
+# --- Model resolution -------------------------------------------------------
+#
+# Two trackers each carried a private resolver: a checkpoint-name table, a
+# config-token table, a find-the-weights walk, a read-the-head-type scan, and a
+# result class -- the same five things twice, differing only in the filenames
+# they looked for. They are gone, and both go through ``model_refs``. These are
+# what stop a fourth tracker reintroducing them, because copying one that has
+# every piece is exactly how this repository grew the second copy.
+
+
+def _runner_module(kind: str) -> ModuleType:
+    """The module a tracker's run loop lives in.
+
+    Reached through the row class rather than a second hand-maintained table, so
+    there is still exactly one place this file names trackers.
+    """
+    return sys.modules[ROW_CLASSES[kind].__module__]
+
+
+# Names a private resolver went by, as prefixes and infixes rather than exact
+# spellings: the point is that no vocabulary of this shape comes back, not that
+# one particular spelling does not.
+_PRIVATE_MODEL_CONSTANTS: tuple[str, ...] = (
+    "CHECKPOINT",
+    "CONFIG_NAMES",
+    "HEAD_TYPES",
+    "MODEL_TYPES",
+)
+
+
+@pytest.mark.parametrize("kind", TRACKERS)
+def test_it_declares_no_model_vocabulary_of_its_own(kind: str) -> None:
+    """No private resolver, and no table for one to consult.
+
+    Which filenames hold a tool's weights, and which tokens name its head, are
+    the tool's entry in ``MODEL_KINDS``. A module-level table here is a resolver
+    growing back.
+    """
+    shared = (resolve_model, resolve_model_set)
+    module = _runner_module(kind)
+    for name, value in vars(module).items():
+        looks_like_a_resolver = (
+            callable(value) and name.startswith("resolve") and "model" in name.lower()
+        )
+        if looks_like_a_resolver and value not in shared:
+            pytest.fail(
+                f"{kind} defines {name}; a model is resolved through "
+                f"mosaic.tracking.model_refs, not per tracker"
+            )
+        if any(token in name for token in _PRIVATE_MODEL_CONSTANTS):
+            pytest.fail(
+                f"{kind} declares {name}; that belongs in its MODEL_KINDS entry"
+            )
+
+
+@pytest.mark.parametrize("kind", TRACKERS)
+def test_it_resolves_its_model_through_the_shared_resolver(kind: str) -> None:
+    """A tracker that consumes a model reaches for the one resolver.
+
+    Gated on the op declaring a model at all, derived from its params rather
+    than listed here, so a future tracker that consumes none is not held to it.
+    Compared by identity, not by name, because a local of the same name would
+    satisfy a name check while resolving nothing shared.
+    """
+    fields = OPS[kind].Params.model_fields
+    if not any("model" in name for name in fields):
+        pytest.skip(f"{kind} declares no model parameter")
+
+    module = _runner_module(kind)
+    bound = [
+        value
+        for name, value in vars(module).items()
+        if name in ("resolve_model", "resolve_model_set")
+    ]
+    assert bound, (
+        f"{kind} declares a model parameter but imports neither resolve_model "
+        f"nor resolve_model_set"
+    )
+    assert all(value in (resolve_model, resolve_model_set) for value in bound), (
+        f"{kind} binds a resolver that is not the shared one"
+    )
+
+
+@pytest.mark.parametrize("kind", sorted(set(TRACKERS) & set(MODEL_KINDS)))
+def test_its_model_spec_is_declared_not_defaulted(kind: str) -> None:
+    """A tracker with a directory model says so, rather than inheriting a default.
+
+    ``spec_for`` falls back to a single weights file for any kind it does not
+    know, which is right for the Ultralytics-backed training ops and wrong here:
+    a directory silently resolved as a file digests the directory and raises.
+
+    ``payload_prefix`` is the sharp one. ``None`` means the identity *is* the
+    bare weights digest, which is what every single-file model mints -- leaving
+    it unset on a directory kind would collide that kind with every prefix-less
+    kind holding the same bytes.
+    """
+    spec = spec_for(kind)
+    assert spec is MODEL_KINDS[kind], (
+        f"{kind} resolved through the train- fallback, not its own entry"
+    )
+    assert spec.shape == "directory"
+    assert spec.roles, f"{kind} declares no significant files"
+    assert spec.payload_prefix, (
+        f"{kind} would mint the bare weights digest, colliding with every "
+        f"prefix-less kind holding the same bytes"
     )

@@ -263,12 +263,30 @@ def test_a_training_kind_inherits_its_frameworks_shape() -> None:
 
 
 def test_the_training_prefix_rule_does_not_overreach() -> None:
-    """The Ultralytics-backed kinds must keep landing on the single-file default.
+    """No registered kind inherits a shape by accident of its name.
 
-    They strip to ``pose`` / ``points`` / ``localizer``, which no spec claims --
-    the narrowness is what makes the rule safe rather than clever.
+    ``train-<framework>`` resolving to ``<framework>``'s spec is a rule about
+    names, and a rule about names collides. Today's training kinds strip to
+    ``pose`` / ``points`` / ``localizer``, which no spec claims, so they land on
+    the single-file default that Ultralytics and the localizer actually produce.
+
+    Checked over the whole registry rather than those three, so a future kind
+    whose stripped name happens to match a spec fails here -- at registration --
+    instead of at its first run, where the symptom is a directory digested as a
+    file.
     """
-    for kind in ("train-pose", "train-points", "train-localizer"):
+    from mosaic.core.pipeline.ops import OPS
+    from mosaic.tracking import register_ops
+
+    register_ops()
+    for kind in sorted(OPS):
+        if kind in MODEL_KINDS:
+            continue  # declared outright, so the fallback never runs
+        framework = kind.removeprefix("train-")
+        assert framework not in MODEL_KINDS or framework == kind, (
+            f"{kind} strips to {framework!r}, which declares a "
+            f"{MODEL_KINDS[framework].shape} model it may not produce"
+        )
         assert spec_for(kind).shape == "file", kind
         assert spec_for(kind).payload_prefix is None, kind
 
