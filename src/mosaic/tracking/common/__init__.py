@@ -9,12 +9,40 @@ work, run what is stale, record what completed, bridge the output into
 
 This package imports ``core`` and nothing from ``behavior``; ``core`` imports
 nothing from here. A tracker's own module keeps what is genuinely its own -- the
-argv it builds, the settings that define its identity, the converter it bridges
-through -- and reaches this package for everything else.
+argv it builds, the settings that define its identity, the phases it runs, and
+the converter it bridges through -- and reaches this package for everything else.
 """
 
 from __future__ import annotations
 
+from mosaic.tracking.common.bridge import (
+    BridgeCounts,
+    existing_counts,
+    frame_counts,
+    publish_tracks_table,
+    tracks_table_path,
+)
+from mosaic.tracking.common.entry import (
+    INFLIGHT_REFRESH_SECONDS,
+    AdoptEvidence,
+    adopt_completed_directory,
+    claim,
+    clear_outputs,
+    open_entry,
+    phase_activity,
+    record_phase,
+    release_entry,
+    reusable_marker,
+    reusable_output,
+)
+from mosaic.tracking.common.index import (
+    TrackerRunRowBase,
+    list_tracker_runs,
+    tracker_index,
+    tracker_index_path,
+)
+from mosaic.tracking.common.mint import MintedRun, mint_tracker_run, tracker_run_root
+from mosaic.tracking.common.scope import TrackerWorkItem, build_work_items
 from mosaic.tracking.common.toolenv import (
     BinMode,
     ToolEnv,
@@ -26,11 +54,36 @@ from mosaic.tracking.common.toolenv import (
 )
 
 __all__ = [
+    "INFLIGHT_REFRESH_SECONDS",
+    "AdoptEvidence",
     "BinMode",
+    "BridgeCounts",
+    "MintedRun",
     "ToolEnv",
     "ToolExitError",
     "ToolNotFoundError",
+    "TrackerRunRowBase",
+    "TrackerWorkItem",
+    "adopt_completed_directory",
+    "build_work_items",
+    "claim",
+    "clear_outputs",
     "conda_invocation",
+    "existing_counts",
+    "frame_counts",
+    "list_tracker_runs",
+    "mint_tracker_run",
+    "open_entry",
+    "phase_activity",
+    "publish_tracks_table",
+    "record_phase",
+    "release_entry",
+    "reusable_marker",
+    "reusable_output",
     "subprocess_env",
     "tool_invocation",
+    "tracker_index",
+    "tracker_index_path",
+    "tracker_run_root",
+    "tracks_table_path",
 ]

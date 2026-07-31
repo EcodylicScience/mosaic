@@ -38,6 +38,7 @@ __all__ = [
     "TRACKING_ROOT",
     "TRACKING_ROOTS",
     "RetentionClass",
+    "TrackingPhase",
     "TrackingRoot",
     "is_under_tracking_root",
     "tracking_root_default",
@@ -68,6 +69,26 @@ longer one.
 
 
 @dataclass(frozen=True, slots=True)
+class TrackingPhase:
+    """One gated phase a producer completes, and what a re-run of it must remove.
+
+    ``clear_globs`` is deliberately not ``TrackingRoot.outputs``. ``outputs`` is
+    the sweeper's evidence that a directory holds real tracker output; these are
+    the files a re-run of *this phase* must delete before it starts, which
+    includes byproducts that are evidence of nothing (TREx's ``average_*.png``)
+    and splits by phase what ``outputs`` lists in one flat tuple. A killed phase
+    leaves partial files behind, and they must not be mistaken for -- or merged
+    with -- the new run's.
+
+    A glob matching a directory removes it as a tree, so a tool whose phase
+    output is a session directory rather than a file is expressible.
+    """
+
+    name: PhaseName
+    clear_globs: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingRoot:
     """One tool's intermediate root, and what the sweeper needs to know about it.
 
@@ -83,51 +104,75 @@ class TrackingRoot:
     checklist item asking people to remember. One row per tracker, and the
     portability passes read it.
 
-    ``phases`` is every gated phase this producer completes, and the sweeper
-    needs *all* of them before it will call a directory finished. Without it,
-    a TREx run whose conversion completed and whose tracking was killed reads as
-    complete on the convert marker alone -- and gets reclaimed at its age, taking
-    a conversion someone is still using. "Which phases did this tool promise" is
-    producer knowledge, and this is where the sweeper is allowed to have it
-    without importing the producer.
+    ``phase_outputs`` is every gated phase this producer completes, in order,
+    with what each one owns. The sweeper needs *all* of them before it will call
+    a directory finished: without that, a TREx run whose conversion completed and
+    whose tracking was killed reads as complete on the convert marker alone, and
+    gets reclaimed at its age, taking a conversion someone is still using. The
+    per-phase globs are here for the same reason the phase names are -- "what
+    does this tool leave, and when" is producer knowledge, and this is where the
+    machinery is allowed to have it without importing the producer.
     """
 
     key: str
     retention: RetentionClass
     outputs: tuple[str, ...]
-    phases: tuple[PhaseName, ...]
+    phase_outputs: tuple[TrackingPhase, ...]
     path_columns: tuple[str, ...] = ()
+
+    @property
+    def phases(self) -> tuple[PhaseName, ...]:
+        """Every gated phase this producer completes, in order."""
+        return tuple(phase.name for phase in self.phase_outputs)
 
     @property
     def default_path(self) -> str:
         """This root's location, relative to the dataset base directory."""
         return f"{TRACKING_ROOT}/{self.key}"
 
+    def clear_globs(self, phase: PhaseName) -> tuple[str, ...]:
+        """What a re-run of *phase* must delete first, empty if it declares none."""
+        for declared in self.phase_outputs:
+            if declared.name == phase:
+                return declared.clear_globs
+        return ()
+
 
 TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
     root.key: root
     for root in (
         # `.pv` + settings from the convert phase, `.results` + per-individual
-        # `data/*.npz` from the track phase.
+        # `data/*.npz` from the track phase. The background image is a convert
+        # byproduct: cleared with the phase that writes it, and evidence of
+        # nothing, so it is not in `outputs`.
         TrackingRoot(
             key="trex",
             retention="tracker",
             outputs=("*.pv", "*.settings", "*.results", "data/*.npz"),
-            phases=("convert", "track"),
+            phase_outputs=(
+                TrackingPhase("convert", ("*.pv", "*.settings", "average_*.png")),
+                TrackingPhase("track", ("*.results", "data/*.npz")),
+            ),
             path_columns=("video_abs_path", "pv_path"),
         ),
+        # The analysis export has no phase of its own -- it is ensured rather
+        # than gated -- so the `.h5` is cleared with the inference it derives
+        # from. Leaving it would strand a stale export from a superseded `.slp`
+        # that the existence-gated export then declines to regenerate.
         TrackingRoot(
             key="sleap",
             retention="tracker",
             outputs=("*.predictions.slp", "*.analysis.h5"),
-            phases=("track",),
+            phase_outputs=(
+                TrackingPhase("track", ("*.predictions.slp", "*.analysis.h5")),
+            ),
             path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
         ),
         TrackingRoot(
             key="litpose",
             retention="tracker",
             outputs=("*.predictions.csv",),
-            phases=("track",),
+            phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
@@ -139,19 +184,19 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             key="infer-pose",
             retention="inference",
             outputs=("predictions.parquet",),
-            phases=("infer",),
+            phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),
         TrackingRoot(
             key="infer-points",
             retention="inference",
             outputs=("predictions.parquet",),
-            phases=("infer",),
+            phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),
         TrackingRoot(
             key="infer-localizer",
             retention="inference",
             outputs=("predictions.parquet",),
-            phases=("infer",),
+            phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),
     )
 }

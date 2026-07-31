@@ -211,7 +211,8 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         overwrite=True,
     )
 
-    assert written == 8
+    assert written is not None
+    assert written.n_rows == 8
     row = _one_row(ds)
     assert str(row["producer"]) == "trex"
     assert str(row["run_id"]) == "trex.0.1-bbbbbbbbbb"
@@ -763,8 +764,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     )
 
     assert written is not None
-    n_rows, n_tracks = written
-    assert n_rows == 6 and n_tracks == 1
+    assert written.n_rows == 6 and written.n_ids == 1
     row = _one_row(ds)
     assert str(row["producer"]) == "sleap"
     assert str(row["run_id"]) == "sleap.1.6-bbbbbbbbbb"
@@ -823,8 +823,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
     )
 
     assert written is not None
-    n_rows, n_individuals = written
-    assert n_rows == 6 and n_individuals == 1
+    assert written.n_rows == 6 and written.n_ids == 1
     row = _one_row(ds)
     assert str(row["producer"]) == "litpose"
     assert str(row["run_id"]) == "litpose.2.3-bbbbbbbbbb"

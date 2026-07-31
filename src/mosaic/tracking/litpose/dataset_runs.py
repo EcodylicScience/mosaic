@@ -27,12 +27,8 @@ no marker, so its partial CSV is discarded and cleared on the next attempt.
 from __future__ import annotations
 
 import dataclasses
-import os
-import shutil
-import socket
 import sys
-import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,22 +42,26 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
-    InflightMarker,
-    PhaseMarker,
-    clear_inflight,
     clear_phase_marker,
-    inflight_state,
-    new_inflight,
-    read_inflight,
-    read_phase_marker,
-    refresh_inflight,
-    write_inflight,
-    write_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
-from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+from mosaic.tracking.common.bridge import (
+    BridgeCounts,
+    existing_counts,
+    publish_tracks_table,
+    tracks_table_path,
+)
+from mosaic.tracking.common.entry import (
+    claim,
+    clear_outputs,
+    open_entry,
+    phase_activity,
+    record_phase,
+    release_entry,
+    reusable_output,
+)
 from mosaic.tracking.common.index import (
     TrackerRunRowBase,
     list_tracker_runs,
@@ -70,9 +70,6 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
-from mosaic.core.schema import ensure_track_schema
-from mosaic.runlog import now_iso
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 
 from .run import run_litpose_predict
@@ -247,79 +244,7 @@ def litpose_settings(
     }
 
 
-# How often the per-line activity callback re-stamps the claim / heartbeat.
-_INFLIGHT_REFRESH_SECONDS: Final = 15.0
-
-
-def _phase_activity(
-    ctx: JobContext,
-    work_dir: Path,
-    claim: InflightMarker,
-    idle_seconds: float,
-) -> Callable[[str], None]:
-    """Build the per-output-line liveness callback for a running Lightning Pose phase.
-
-    Every line Lightning Pose prints is proof the phase is alive. On a throttle it
-    advances the run-log heartbeat and re-stamps the in-flight claim, both
-    best-effort -- a missed refresh only shortens the claim, never aborts the run.
-    """
-    last_refresh = [0.0]
-
-    def _on_line(_line: str) -> None:
-        now = time.monotonic()
-        if now - last_refresh[0] < _INFLIGHT_REFRESH_SECONDS:
-            return
-        last_refresh[0] = now
-        ctx.heartbeat()
-        try:
-            _ = refresh_inflight(work_dir, claim, idle_seconds)
-        except OSError:
-            pass
-
-    return _on_line
-
-
 # --- Per-entry reuse ------------------------------------------------------
-
-
-# The output the inference phase leaves in the working directory: the predictions
-# CSV. A killed inference leaves a partial CSV that must not be mistaken for a
-# finished one.
-_TRACK_OUTPUT_GLOBS: Final[tuple[str, ...]] = ("*.predictions.csv",)
-
-
-def _clear_track_outputs(work_dir: Path) -> None:
-    for pattern in _TRACK_OUTPUT_GLOBS:
-        for path in sorted(work_dir.glob(pattern)):
-            path.unlink(missing_ok=True)
-
-
-def _same_video(ds: Dataset, stored: str, video_path: Path) -> bool:
-    """Is *stored* the path *video_path* now resolves to? Both sides are resolved."""
-    return ds.resolve_path(stored).resolve() == video_path.resolve()
-
-
-def _reusable_track_marker(
-    ds: Dataset,
-    work_dir: Path,
-    *,
-    params_hash: str,
-    video_path: Path,
-) -> PhaseMarker | None:
-    """The marker proving inference need not run again, or None.
-
-    An empty ``source`` or ``params_hash`` means *unknown* rather than
-    *mismatched*, and is not grounds for a recompute -- a marker adopted from a
-    directory that predates markers cannot know either.
-    """
-    marker = read_phase_marker(work_dir, "track")
-    if marker is None:
-        return None
-    if marker.params_hash and marker.params_hash != params_hash:
-        return None
-    if marker.source and not _same_video(ds, marker.source, video_path):
-        return None
-    return marker
 
 
 # Unlike SLEAP/TREx, Lightning Pose is a new integration with no pre-marker run
@@ -344,30 +269,26 @@ def _bridge_csv_to_tracks(
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
-) -> tuple[int, int] | None:
+) -> BridgeCounts | None:
     """Bridge a Lightning Pose CSV into ``tracks/<variant>/<group>__<seq>.parquet``.
 
-    Reuses the registered ``deeplabcut`` converter (Lightning Pose exports the same
-    ``(scorer, bodypart, coord)`` layout) with the authoritative (group, sequence)
-    known from the media index (no filename guessing). Returns ``(n_rows,
-    n_individuals)`` written, or ``None`` if skipped/failed.
+    Reuses the registered ``deeplabcut`` converter -- Lightning Pose exports the
+    same ``(scorer, bodypart, coord)`` layout -- with the authoritative (group,
+    sequence) known from the media index, so no name is guessed from a filename.
+    Returns ``None`` when the conversion failed and nothing was published.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.deeplabcut import DlcParams
 
-    variant_root = tracks_variant_root(ds.get_root("tracks"), tracks_variant)
-    out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
+    out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     if out_path.exists() and not overwrite:
-        # The table is already there; re-derive its counts from disk rather than
-        # returning "unknown", so a reuse run records the same count the fresh run
-        # did instead of overwriting the index row with a zero.
-        return _parquet_counts(out_path)
+        return existing_counts(out_path)
 
     converter = get_track_converter("deeplabcut")
-    conv_params = DlcParams(fps=fps)
-    hints = EntryHints(group=group, sequence=sequence)
     try:
-        df = converter.convert(csv_path, conv_params, hints)
+        df = converter.convert(
+            csv_path, DlcParams(fps=fps), EntryHints(group=group, sequence=sequence)
+        )
     except Exception as exc:
         print(
             f"[run_litpose] convert failed for {csv_path}: {exc}; "
@@ -375,50 +296,18 @@ def _bridge_csv_to_tracks(
             file=sys.stderr,
         )
         return None
-    ensure_track_schema(df, "trex_v1", strict=False, source=f"{group}/{sequence}")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
-
-    write_tracks_row(
+    return publish_tracks_table(
         ds,
-        run_id=tracks_variant,
+        df,
+        kind=LITPOSE_KIND,
         group=group,
         sequence=sequence,
-        out_path=out_path,
-        producer=LITPOSE_KIND,
-        std_format="trex_v1",
-        n_rows=int(len(df)),
+        tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=csv_path.parent,
-        # The video (media root) and the predictions CSV (litpose root) are what
-        # this table was derived from. The external model directory sits under no
-        # dataset root, so it contributes nothing -- its identity is already in the
-        # run_id via the settings digest.
-        consumed_source_roots=consumed_roots_for(
-            ds, [csv_path, video_path, *model_files]
-        ),
+        consumed=[csv_path, video_path, *model_files],
     )
-    return _frame_counts(df)
-
-
-def _frame_counts(df: pd.DataFrame) -> tuple[int, int]:
-    """``(n_rows, n_distinct_ids)`` for a tracks frame."""
-    n_individuals = int(df["id"].nunique()) if "id" in df.columns and len(df) else 0
-    return int(len(df)), n_individuals
-
-
-def _parquet_counts(path: Path) -> tuple[int, int]:
-    """``(n_rows, n_individuals)`` read from an existing tracks parquet.
-
-    Reads only the ``id`` column so a reuse run pays a column read, not a full
-    table load, to keep the index row's count correct.
-    """
-    try:
-        existing = pd.read_parquet(path, columns=["id"])
-    except (OSError, ValueError, KeyError):
-        return 0, 0
-    return _frame_counts(existing)
 
 
 # --- Public entry point ---------------------------------------------------
@@ -519,60 +408,34 @@ def run_litpose(
                 group, sequence = item.group, item.sequence
                 key, video_path, video_uid = item.key, item.video_path, item.video_uid
                 ctx.progress.on_entry_start(i, len(work_items), key)
-                seq_dir = run_root / key
-                seq_dir.mkdir(parents=True, exist_ok=True)
-                csv_path = seq_dir / f"{key}.predictions.csv"
-
-                claim = inflight_state(
-                    read_inflight(seq_dir),
-                    run_log_base=ds.base_dir,
-                    execution_id=ctx.execution_id,
+                opened = open_entry(
+                    ds, ctx, run_root, key, kind=LITPOSE_KIND, overwrite=overwrite
                 )
-                if claim == "live":
-                    print(
-                        f"[run_litpose] ({group}, {sequence}) is held by another "
-                        f"execution; skipping it.",
-                        file=sys.stderr,
-                    )
+                if opened is None:
                     skipped.append(key)
                     ctx.progress.on_entry_end(i + 1, len(work_items), key)
                     continue
+                seq_dir = opened
+                csv_path = seq_dir / f"{key}.predictions.csv"
 
-                if overwrite:
-                    shutil.rmtree(seq_dir)
-                    seq_dir.mkdir(parents=True, exist_ok=True)
-
+                # Lightning Pose deliberately does not adopt a marker-less
+                # directory. Its single output cannot distinguish a complete CSV
+                # from a partial one a killed predict left behind, so a run is
+                # reusable only on the strength of a marker its own predict wrote.
                 try:
-                    write_inflight(
-                        seq_dir,
-                        new_inflight(
-                            execution_id=ctx.execution_id,
-                            host=socket.gethostname(),
-                            pid=os.getpid(),
-                            phase=None,
-                            idle_seconds=idle_timeout,
-                        ),
-                    )
+                    _ = claim(ctx, seq_dir, None, idle_timeout)
 
-                    track_marker = _reusable_track_marker(
-                        ds, seq_dir, params_hash=params_hash, video_path=video_path
+                    reusable = reusable_output(
+                        ds,
+                        seq_dir,
+                        "track",
+                        params_hash=params_hash,
+                        video_path=video_path,
                     )
-                    reusable_csv: Path | None = None
-                    if track_marker is not None and track_marker.recorded_output:
-                        candidate = ds.resolve_path(track_marker.recorded_output)
-                        if candidate.exists():
-                            reusable_csv = candidate
-                    if reusable_csv is None:
+                    if reusable is None:
                         clear_phase_marker(seq_dir, "track")
-                        _clear_track_outputs(seq_dir)
-                        track_claim = new_inflight(
-                            execution_id=ctx.execution_id,
-                            host=socket.gethostname(),
-                            pid=os.getpid(),
-                            phase="track",
-                            idle_seconds=idle_timeout,
-                        )
-                        write_inflight(seq_dir, track_claim)
+                        clear_outputs(seq_dir, LITPOSE_KIND, "track")
+                        track_claim = claim(ctx, seq_dir, "track", idle_timeout)
                         ctx.progress.on_phase("track", key)
                         predict_result = run_litpose_predict(
                             video_path,
@@ -585,30 +448,28 @@ def run_litpose(
                             litpose_conda_env=litpose_conda_env,
                             litpose_bin=litpose_bin,
                             cancel_check=cancel_check,
-                            on_output=_phase_activity(
+                            on_output=phase_activity(
                                 ctx, seq_dir, track_claim, idle_timeout
                             ),
                         )
                         csv_out = predict_result.csv_path
-                        write_phase_marker(
+                        track_marker = record_phase(
+                            ds,
                             seq_dir,
-                            PhaseMarker(
-                                phase="track",
-                                run_id=run_id,
-                                params_hash=params_hash,
-                                execution_id=ctx.execution_id,
-                                completed_at=now_iso(),
-                                source=ds.relative_to_root(video_path),
-                                source_uid=video_uid,
-                                recorded_output=ds.relative_to_root(csv_out),
-                            ),
+                            "track",
+                            ctx=ctx,
+                            run_id=run_id,
+                            params_hash=params_hash,
+                            video_path=video_path,
+                            video_uid=video_uid,
+                            output=csv_out,
                         )
                         recomputed = True
                     else:
-                        csv_out = reusable_csv
+                        track_marker, csv_out = reusable
                         recomputed = False
                 finally:
-                    clear_inflight(seq_dir)
+                    release_entry(seq_dir)
 
                 index_rows.append(
                     LitposeIndexRow(
@@ -643,9 +504,8 @@ def run_litpose(
                         overwrite=overwrite or recomputed,
                     )
                     if bridged is not None:
-                        _n_rows, n_individuals = bridged
                         index_rows[-1] = dataclasses.replace(
-                            index_rows[-1], n_ids=n_individuals
+                            index_rows[-1], n_ids=bridged.n_ids
                         )
 
                 ctx.progress.on_entry_end(i + 1, len(work_items), key)
