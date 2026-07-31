@@ -276,10 +276,16 @@ def test_features_list_and_describe() -> None:
     assert "step_size" in desc["params_schema"]["properties"]
 
 
-def test_tracking_list_and_describe() -> None:
-    ops = json.loads(runner.invoke(app, ["tracking", "list", "--json"]).stdout)
-    kinds = {o["kind"] for o in ops}
-    assert kinds == {
+# Every registered op kind, as one literal. Separated from the discovery test
+# below because the two answer different questions and change for different
+# reasons: discovery asks whether ``tracking list`` and ``tracking describe``
+# work, and is true of any non-empty registry, while this asks what is
+# registered, and is false the moment anything is added. Held together, one
+# literal governed both, so registering an op turned a test named for discovery
+# red -- and two branches adding an op each edited the same assertion inside a
+# test neither of them meant to touch.
+_REGISTERED_OP_KINDS: frozenset[str] = frozenset(
+    {
         "extract-frames",
         "train-pose",
         "train-points",
@@ -292,6 +298,24 @@ def test_tracking_list_and_describe() -> None:
         "litpose",
         "convert-points",
     }
+)
+
+
+def test_registered_op_kinds_are_exactly() -> None:
+    """The registry's contents, pinned so an addition is a deliberate edit.
+
+    Exact rather than a subset: an op that silently stops registering is as much
+    a defect as one that appears unannounced, and only equality catches the first.
+    """
+    ops = json.loads(runner.invoke(app, ["tracking", "list", "--json"]).stdout)
+    assert {o["kind"] for o in ops} == set(_REGISTERED_OP_KINDS)
+
+
+def test_tracking_list_and_describe() -> None:
+    """Discovery works: listing names kinds, describing one carries its schema."""
+    ops = json.loads(runner.invoke(app, ["tracking", "list", "--json"]).stdout)
+    kinds = {o["kind"] for o in ops}
+    assert {"trex", "sleap", "litpose", "extract-frames"} <= kinds
 
     desc = json.loads(
         runner.invoke(app, ["tracking", "describe", "infer-pose", "--json"]).stdout
