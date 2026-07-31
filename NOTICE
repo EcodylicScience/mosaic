@@ -1,0 +1,282 @@
+Mosaic -- mosaic-behavior
+Copyright (C) Ecodylic Science
+
+Mosaic is free software licensed under the GNU Affero General Public
+License, version 3 or (at your option) any later version. The complete
+license text is in LICENSE.
+
+This file records the third-party attributions that travel with mosaic and
+the obligations attached to them. AGPL v3 section 5 requires such notices to
+be preserved in modified and redistributed versions. Keep this file with the
+code.
+
+The reader-facing version of the same facts, with more explanation and the
+reasoning behind each arrangement, is docs/licensing.md.
+
+
+HOW THIRD-PARTY COMPONENTS REACH A USER
+=======================================
+
+Everything under src/, scripts/, tests/, docs/, and notebooks/ is the work of
+Ecodylic Science unless a module docstring says otherwise. Mosaic bundles no
+third-party source code and no trained model weights.
+
+The components below reach a user in one of four ways, and which one decides
+what that user owes:
+
+  invoked        A separate program that mosaic starts and talks to over a
+                 pipe, a socket, or the filesystem. Mosaic does not link it,
+                 import it, or ship it; the user installs it independently.
+
+  optional       A Python distribution named in an optional extra in
+                 pyproject.toml. Installing mosaic-behavior does not install
+                 it. Asking for the extra makes pip fetch it from its own
+                 publisher, under that publisher's license.
+
+  fetched        Model weights that a component downloads from a model hub
+                 the first time it runs. Nothing is fetched at install time,
+                 nothing is redistributed here, and the terms are the ones
+                 the hub entry states at the moment of download.
+
+  reimplemented  An architecture or file format that mosaic implements from
+                 the upstream project's published description or source, so
+                 mosaic can read or write what that project reads and writes.
+                 No upstream code is copied. The attribution is owed anyway.
+
+Two components carry restrictions that the AGPL does not, and both are called
+out below: keypoint-MoSeq prohibits commercial use outright, and TRex requires
+a paid license for company use.
+
+
+TREX -- REIMPLEMENTED ARCHITECTURES, INVOKED PROGRAM, EXCHANGED FORMAT
+=====================================================================
+
+TRex. Copyright (C) Tristan Walter and contributors.
+https://trex.run/ -- https://github.com/mooch443/trex
+
+TRex is licensed under the GNU Affero General Public License v3 or later.
+Its Application/src/commons subtree is maintained under the GNU General
+Public License v3.
+
+    Company use of TRex requires a paid commercial license from the TRex
+    project. Free use is available under AGPL v3 or later. Enquiries:
+    a@trex.run
+
+Reimplemented. src/mosaic/behavior/model_library/ implements the layer
+layouts of TRex's visual identification networks -- the V200 and V118_3
+families of TRex's visual_identification_version setting -- so that mosaic
+can train weights TRex can load and load weights TRex has saved. These are
+independent PyTorch implementations of a published architecture, written
+against TRex's own Python sources under Application/src/tracker/python/,
+which are in the AGPL-licensed main tree rather than the GPL-3.0 commons
+subtree. Mosaic contains no TRex source code, and the modules import and run
+with TRex absent.
+
+Invoked. src/mosaic/tracking/trex/ drives the TRex binary in its own
+environment. Mosaic never links or bundles it.
+
+Format. src/mosaic/core/track_library/ reads TRex track exports. Reading a
+file format creates no license obligation.
+
+Obligation. A user who runs TRex -- to produce the tracks or the checkpoints
+these modules exchange -- obtains TRex from the TRex project and is bound by
+TRex's license, the commercial-use clause included. Nothing in mosaic's
+license grants or substitutes for that.
+
+Citation, owed as scholarly credit:
+
+    Walter, T. and Couzin, I. D. (2021). TRex, a fast multi-animal tracking
+    system with markerless identification, and 2D estimation of posture and
+    visual fields. eLife 10:e64000. https://doi.org/10.7554/eLife.64000
+
+
+KEYPOINT-MOSEQ -- INVOKED, AND NON-COMMERCIAL
+=============================================
+
+keypoint-moseq. Licensor: President and Fellows of Harvard College, through
+the Harvard University Office of Technology Development.
+https://github.com/dattalab/keypoint-moseq
+
+    "End User shall not use the Software for Commercial use and any such use
+    of the Software is expressly prohibited."
+
+Harvard defines commercial use to include fee-for-service arrangements, use
+by core facilities or laboratories providing research services to or with
+for-profit third parties for a fee, and industry-sponsored or collaborative
+research projects granting the sponsor or collaborator commercial rights.
+This is not a copyleft license, so no paid exception cures it; a commercial
+license requires a separate agreement with Harvard (otd@harvard.edu). The
+license also asks that Harvard be acknowledged as the provider, that the
+relevant publications be cited, and that its notices be retained.
+
+Invoked, deliberately at arm's length. keypoint-moseq is not a dependency of
+mosaic-behavior. It appears in no extra, in no dependency group, and in
+mosaic's uv.lock not at all: the directory that installs it,
+src/mosaic/behavior/feature_library/external/, is excluded from the uv
+workspace. The user creates that environment. Mosaic's kpms feature starts
+its interpreter as a subprocess and exchanges newline-delimited JSON over a
+Unix domain socket. Mosaic never imports the package.
+
+That separation is a license requirement, not a convenience. Mosaic is
+AGPL-3.0-or-later, and AGPL section 7 forbids adding a restriction such as
+"non-commercial only" to a covered work. A mosaic that imported or linked
+keypoint-moseq would be a combined work that could not be distributed at all.
+It follows that keypoint-moseq must never be bundled into a packaged mosaic
+installer.
+
+On top of the separation, the kpms feature refuses to start until the user
+sets MOSAIC_KPMS_LICENSE_ACCEPTED=1, asserting that their use is permitted.
+The arhmm feature fits a comparable model in mosaic's own code, with no
+keypoint-MoSeq dependency and no license restriction.
+
+
+ULTRALYTICS YOLO, AND THE POLO FORK -- OPTIONAL
+===============================================
+
+Ultralytics YOLO. Copyright (C) Ultralytics.
+https://github.com/ultralytics/ultralytics
+
+Installed by the [pose] extra, which the curated [recommended] bundle
+includes. Dual-licensed: GNU Affero General Public License v3 or later, or a
+paid Ultralytics Enterprise License that lifts the open-source requirements.
+Its dependency ultralytics-thop carries the same AGPL v3 or later terms and
+is named in no pyproject.toml, arriving only through Ultralytics itself.
+
+POLO. https://github.com/mooch443/POLO
+
+Installed by the [polo] extra, from git. POLO is a third-party fork of
+Ultralytics YOLO adding point detection, and ships the AGPL v3 text. The
+Ultralytics Enterprise License is offered by Ultralytics for its own
+distribution and does not extend to a third-party fork, so [polo] is
+AGPL-only.
+
+Obligation. AGPL v3 section 13 extends the duty to offer Corresponding Source
+to anyone who interacts with the program remotely over a network, so a
+commercial user is reached by operating a pipeline that includes Ultralytics
+as a service, without ever redistributing a copy. Mosaic is itself
+AGPL-3.0-or-later, so there is no incompatibility; the question is whether a
+given use of the combined work can meet the AGPL's obligations. The options
+are to comply, to buy an Enterprise License from Ultralytics for the [pose]
+and [recommended] paths, or to install neither extra.
+
+
+FERAL, AND THE BACKBONE WEIGHTS IT DOWNLOADS
+============================================
+
+FERAL. Copyright (c) Peter Skovorodnikov. Authors Peter Skovorodnikov and
+Jacopo Razzauti (Rockefeller University), equal contribution. MIT License.
+https://github.com/Skovorp/feral
+
+Installed from git by the [feral] extra. MIT imposes no obligation beyond
+preserving the copyright and permission notices, which travel with the
+installed package.
+
+Fetched. FERAL builds its backbone from weights downloaded from the
+HuggingFace hub at first use. Mosaic redistributes none of them, and no hub
+token or license acceptance is involved for any registry entry. The default,
+facebook/vjepa2-vitl-fpc32-256-diving48, declares MIT.
+
+  V-JEPA 2 and V-JEPA 2.1, from facebookresearch/vjepa2 and the
+  facebook/vjepa2-* hub entries. The repository states that "The majority of
+  V-JEPA 2 is licensed under MIT, however portions of the project are
+  available under separate license terms"; three files are Apache-2.0. Each
+  facebook/vjepa2-* card mosaic can reach declares MIT.
+
+  VideoPrism, from the sposiboh/videoprism-*-pt hub entries. These are
+  third-party PyTorch ports, not Google DeepMind's own release, and each
+  port's card declares Apache-2.0. Upstream google-deepmind/videoprism
+  licenses its code under Apache-2.0 and states that "All other materials
+  are licensed under the Creative Commons Attribution 4.0 International
+  License (CC-BY)", which covers the weights. The port's Apache-2.0
+  declaration and the upstream CC-BY-4.0 terms for weights have not been
+  reconciled by either party. A user who needs certainty should obtain the
+  weights from DeepMind directly and observe CC-BY-4.0 attribution.
+
+
+IDENTITY BACKBONE WEIGHTS -- FETCHED
+====================================
+
+The global-identity-embedding feature loads whatever backbone model_name
+names, through timm, and mosaic distributes no weights. The default,
+timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
+
+MegaDescriptor. https://huggingface.co/BVRA/MegaDescriptor-L-384
+
+    Creative Commons Attribution-NonCommercial 4.0 International
+    (CC-BY-NC-4.0). Non-commercial use only.
+
+BVRA/MegaDescriptor-L-384 and BVRA/MegaDescriptor-T-224 both declare
+CC-BY-NC-4.0. The restriction is on the trained parameters, not on mosaic's
+code and not on the architecture. Mosaic never selects MegaDescriptor;
+naming it is the user's deliberate act, and complying with its terms is the
+user's decision.
+
+DINOv2. Copyright (c) Meta Platforms, Inc. and affiliates. Apache License
+2.0. https://github.com/facebookresearch/dinov2
+
+Loaded through torch.hub by the DINOv2 identity backbone. Apache-2.0 imposes
+attribution and notice-preservation obligations only.
+
+
+OTHER INTEGRATED TOOLS
+======================
+
+SLEAP. BSD 3-Clause Clear License. https://sleap.ai/
+An external tracker in its own environment. Mosaic never imports it and does
+not install it: the [sleap] extra installs only h5py, so mosaic's converter
+can read the analysis .h5 SLEAP writes. Reading that file creates no
+obligation.
+
+Lightning Pose. MIT License. https://github.com/paninski-lab/lightning-pose
+An external pose estimator in its own environment, driven the same way.
+
+lightning-action. Paninski lab. MIT License.
+Installed by the [lightning-action] extra and wrapped by
+src/mosaic/behavior/feature_library/lightning_action_feature.py.
+
+
+FFMPEG AND PYAV
+===============
+
+FFmpeg. LGPL-2.1-or-later, or GPL if built with GPL-only components.
+https://ffmpeg.org/
+
+Mosaic shells out to the system ffprobe binary for media indexing and
+probing, and to the system ffmpeg binary for transcoding. Neither is
+distributed with mosaic; the user installs them, and the documented route is
+conda-forge. A redistributor who bundles an ffmpeg build must observe that
+build's terms, which depend on how it was configured.
+
+PyAV. BSD 3-Clause License. https://github.com/PyAV-Org/PyAV
+Installed as the av wheel through mosaic-media[io] and used for in-process
+frame decoding, so reading video needs no ffmpeg binary.
+
+
+MOSAIC-MEDIA
+============
+
+mosaic-media. Copyright (C) Ecodylic Science. Apache License 2.0.
+https://github.com/EcodylicScience/mosaic-media
+
+A sibling package by the same authors, and a required dependency of
+mosaic-behavior. Apache-2.0 is compatible with, and is absorbed by, the
+AGPL v3 terms of the combined work.
+
+
+THE REST OF THE DEPENDENCY GRAPH
+================================
+
+The remaining runtime and development dependencies are permissively licensed
+(BSD, MIT, Apache-2.0, PSF). The NVIDIA CUDA runtime libraries that arrive
+with GPU builds of PyTorch are proprietary but commercially redistributable
+under NVIDIA's own terms; they are not open source and not non-commercial.
+
+The resolved set is recorded in uv.lock, and
+
+    python scripts/gen_third_party_inventory.py
+
+regenerates the full inventory from it: per extra and per dependency group,
+the transitive closure with each distribution's license resolved from PyPI
+metadata and flagged when it is not permissive. It reads the isolated
+keypoint-MoSeq lock as well. No count is written down in this file, because a
+written count goes stale silently; the script emits its own.

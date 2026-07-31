@@ -18,7 +18,11 @@ Two things to know before exporting a model for T-Rex:
   the architecture in metadata and says which setting to use.
 
 The shared architecture and checkpoint machinery lives in
-:mod:`trex_identity_architectures`.
+:mod:`trex_identity_architectures`, which also carries the T-Rex attribution
+this file inherits: the ``V200`` layout is T-Rex's, by Tristan Walter and
+contributors, under AGPL-3.0-or-later, and company use of T-Rex itself requires
+a paid commercial license from that project. This module reimplements a
+published layer layout and contains no T-Rex source code.
 """
 
 from __future__ import annotations

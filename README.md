@@ -63,6 +63,16 @@ individually:
 | `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
 | `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
 
+`pose`, `polo`, and `recommended` install Ultralytics, which is AGPL-3.0. That
+matters more than it looks: AGPL section 13 extends the duty to offer
+Corresponding Source to anyone who interacts with the program over a network, so
+a commercial deployment is reached without ever redistributing a copy.
+Ultralytics sells an Enterprise license for use that cannot meet those terms,
+but it covers Ultralytics' own distribution only — `polo` is a third-party fork,
+so it is AGPL-only. Mosaic is AGPL-3.0-or-later itself, so nothing here is
+incompatible; the question is whether *your* use of the combined work can meet
+the obligations. See [Licensing](docs/licensing.md).
+
 There is deliberately no `kpms` extra. keypoint-MoSeq cannot share an
 environment with mosaic, so the `kpms` feature drives it in a separate one that
 you build yourself — and it is licensed for non-commercial research and academic
@@ -171,10 +181,12 @@ for repo orientation, development commands, and architectural conventions.
 ## License
 
 GNU Affero General Public License v3 or later (AGPLv3+). See
-[LICENSE](LICENSE).
+[LICENSE](LICENSE), and [NOTICE](NOTICE) for the third-party attributions that
+must be preserved with it.
 
-Mosaic drives third-party tools whose terms differ from its own — keypoint-MoSeq
-prohibits commercial use outright, and TRex requires a paid license for company
-use. [Licensing](docs/licensing.md) states which components carry restrictions
-and what mosaic does about them.
+Mosaic bundles no third-party source and no model weights, but it drives tools
+whose terms differ from its own — keypoint-MoSeq prohibits commercial use
+outright, TRex requires a paid license for company use, and Ultralytics is
+AGPL-3.0. [Licensing](docs/licensing.md) states which components carry
+restrictions and what mosaic does about them.
 

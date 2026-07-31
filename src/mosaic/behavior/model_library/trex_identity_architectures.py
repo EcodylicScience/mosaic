@@ -33,6 +33,27 @@ is recorded in exported metadata rather than an assumption baked into a wrapper.
 All ``nn.Module`` subclasses are defined *inside* factory functions: this module
 is imported eagerly by ``mosaic.behavior`` and must stay importable without
 PyTorch installed.
+
+**The architectures are T-Rex's, and the attribution is owed.** They are the
+work of Tristan Walter and contributors (https://trex.run/,
+https://github.com/mooch443/trex). T-Rex is licensed under the GNU Affero
+General Public License v3 or later; its ``Application/src/commons`` subtree is
+maintained under GPL-3.0. What is mirrored here are the Python sources under
+``Application/src/tracker/python/``, which sit in the AGPL main tree rather than
+that subtree.
+
+**Company use of T-Rex requires a paid commercial license** from the T-Rex
+project (a@trex.run). That obligation attaches to running T-Rex, not to running
+mosaic: this module and its two callers are independent PyTorch implementations
+of a published layer layout, written so mosaic can exchange checkpoints with
+T-Rex. They contain no T-Rex source code and they import and run with T-Rex
+absent. A user who runs T-Rex itself obtains it from the T-Rex project and is
+bound by its license. See ``NOTICE`` at the repository root and
+``docs/licensing.md``.
+
+Cite T-Rex as: Walter, T. and Couzin, I. D. (2021). TRex, a fast multi-animal
+tracking system with markerless identification, and 2D estimation of posture and
+visual fields. *eLife* 10:e64000. https://doi.org/10.7554/eLife.64000
 """
 
 from __future__ import annotations

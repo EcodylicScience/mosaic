@@ -159,6 +159,46 @@ be a credible one. That ranking is the published result (Čermák et al., WACV
 mints a new `run_id`, so the two runs coexist and you can compare the reported
 top-1 from each.
 
+## FERAL backbones
+
+The `feral` extra installs FERAL itself under MIT, but the weights it runs on
+are downloaded from the HuggingFace hub at first use and carry their own terms.
+Which backbone `model_name` names decides which. Mosaic's default is
+`vjepa2_vitl_diving48`.
+
+| `feral.backbones` key | Resolves to | License |
+| --------------------- | ----------- | ------- |
+| `vjepa2_vitl_diving48` (mosaic default) | `facebook/vjepa2-vitl-fpc32-256-diving48` | MIT |
+| `vjepa2_vitl_ssv2` | `facebook/vjepa2-vitl-fpc16-256-ssv2` | MIT |
+| `vjepa2_vitl` | `facebook/vjepa2-vitl-fpc64-256` | MIT |
+| `vjepa2_1_vitb_384`, `vjepa2_1_vitl_384`, `vjepa2_1_vitg_384`, `vjepa2_1_vitgg_384` | `facebookresearch/vjepa2` through `torch.hub` | MIT |
+| `videoprism_v1_base` | `sposiboh/videoprism-base-f16r288-pt` | Apache-2.0 per the port's card — see below |
+| `videoprism_v1_large` | `sposiboh/videoprism-large-f8r288-pt` | Apache-2.0 per the port's card — see below |
+
+None of these is gated: there is no click-through and nothing to accept, so a
+download is an ordinary anonymous fetch. The V-JEPA 2 repository states that
+"The majority of V-JEPA 2 is licensed under MIT, however portions of the project
+are available under separate license terms" — three source files are Apache-2.0.
+That qualification is about the repository's code; every `facebook/vjepa2-*`
+model card mosaic can reach declares MIT.
+
+!!! warning "VideoPrism: an unreconciled provenance"
+
+    FERAL's VideoPrism entries do not point at Google DeepMind. They point at
+    the `sposiboh/videoprism-*-pt` repositories, third-party PyTorch ports
+    whose cards describe themselves as a port of Google DeepMind's VideoPrism
+    and declare `apache-2.0`.
+
+    Upstream `google-deepmind/videoprism` licenses its **code** under Apache-2.0
+    and states that "All other materials are licensed under the Creative Commons
+    Attribution 4.0 International License (CC-BY)" — which is what covers the
+    weights. The port re-declares Apache-2.0 over artifacts upstream places
+    under CC-BY-4.0, and neither party has reconciled the two.
+
+    Both licenses are permissive and CC-BY-4.0's substantive obligation is
+    attribution, which this page discharges. If certainty matters for your use,
+    take the weights from DeepMind directly and observe CC-BY-4.0.
+
 ## Third-party components
 
 Read from each project's own license document. Verify against the version you
@@ -169,14 +209,19 @@ install before relying on any row.
 | keypoint-MoSeq | environment you build under `feature_library/external`, run as a subprocess | Harvard OTD Non-Commercial Research and Academic Use | **Prohibited.** No paid exception exists |
 | TRex | external binary in its own environment | AGPL-3.0-or-later (the `Application/src/commons` subtree under GPL-3.0) | **Company use requires a paid commercial license** from the authors |
 | Ultralytics YOLO | `pose` extra, included in `recommended` | AGPL-3.0 | Permitted under AGPL terms; an Enterprise license is sold for use that cannot meet them |
-| POLO | `polo` extra | AGPL-3.0 (fork of Ultralytics) | Permitted under AGPL terms |
+| `ultralytics-thop` | transitive dependency of Ultralytics; named in no `pyproject.toml` | AGPL-3.0-or-later | As Ultralytics |
+| POLO | `polo` extra | AGPL-3.0 (fork of Ultralytics) | Permitted under AGPL terms. The Ultralytics Enterprise license covers Ultralytics' own distribution and does not extend to a third-party fork |
 | SLEAP | external binary in its own environment | BSD 3-Clause Clear | Permitted |
 | Lightning Pose | external binary in its own environment | MIT | Permitted |
 | lightning-action | `lightning-action` extra | MIT | Permitted |
-| FERAL | `feral` extra; V-JEPA 2 backbone | MIT (some V-JEPA 2 files Apache-2.0) | Permitted |
+| FERAL | `feral` extra | MIT | Permitted |
+| FERAL backbone weights | fetched at run time from the HuggingFace hub | per backbone; the default is MIT | See the backbone table below |
 | DINOv2 (`dinov2_vits14`, `dinov2_vitb14`) | `identity` extra, fetched through `torch.hub` | Apache-2.0, code and weights | Permitted |
 | timm | `identity` extra; the loader, not the weights | Apache-2.0 | Permitted |
 | Backbone weights for `global-identity-embedding` | `identity` extra, fetched at run time from the hub id you name | whatever that repository states; the default is MIT | See the table above |
+| FFmpeg / ffprobe | system binaries you install; invoked, never bundled | LGPL-2.1-or-later, or GPL if built with GPL-only components | Permitted. A redistributor who bundles an `ffmpeg` build must observe that build's terms |
+| PyAV (`av`) | `mosaic-media[io]`, for in-process frame decoding | BSD-3-Clause | Permitted |
+| `mosaic-media` | required dependency, same authors | Apache-2.0 | Permitted |
 
 Two rows deserve a second look if you are working commercially.
 
@@ -197,3 +242,40 @@ Mosaic does not require citation, but several of the tools above ask for it, and
 keypoint-MoSeq's license asks that Harvard be acknowledged as the provider and
 the relevant publications cited. If you publish results produced with any of
 these components, cite them as their authors ask.
+
+TRex in particular asks to be cited as Walter, T. and Couzin, I. D. (2021),
+"TRex, a fast multi-animal tracking system with markerless identification, and
+2D estimation of posture and visual fields", *eLife* 10:e64000. Mosaic's
+identity networks reimplement two of TRex's published architectures so
+checkpoints can be exchanged in both directions; they contain no TRex source.
+
+## Regenerating the dependency inventory
+
+The tables above are curated: they name the components that carry an obligation.
+The resolved dependency set behind them is derived rather than curated, and can
+be regenerated at any time:
+
+```bash
+python scripts/gen_third_party_inventory.py            # flagged rows only
+python scripts/gen_third_party_inventory.py --all      # every distribution
+python scripts/gen_third_party_inventory.py --offline  # no network
+```
+
+It reads `uv.lock` and the isolated keypoint-MoSeq lock, walks the transitive
+closure per extra and per dependency group, resolves each license from PyPI
+metadata, and flags whatever is not permissive. It writes nothing and hard-codes
+no counts — the counts come out of the lock, so they cannot go stale silently.
+
+Two things it deliberately does not do. It never asks PyPI about a package
+resolved from git or a path, because the name there can belong to different
+code: `ultralytics` in this lock is the POLO fork, and PyPI serves a real
+release under that same name and version. And it reports "proprietary" and
+"non-commercial" as separate verdicts, because the CUDA runtime libraries that
+arrive with GPU PyTorch are the former and not the latter.
+
+## Attributions
+
+The obligations above, and the citations owed, are recorded in
+[NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) at the
+repository root. AGPL v3 section 5 requires that file to be preserved in
+modified and redistributed versions.

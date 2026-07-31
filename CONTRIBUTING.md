@@ -27,15 +27,20 @@ This repository contains backend tooling for behavioral analysis pipelines. Plea
 
 ## Contributor License Agreement
 
+Two things are true at once, and both are intended. Your contribution enters this repository under the repository's own license, and separately you grant Ecodylic Science a license broad enough to also distribute the work under other terms. The second does not narrow the first: the AGPL grant to everyone who receives this repository is irrevocable, so nothing contributed here can later be withdrawn from the AGPL version, and a differently licensed distribution by Ecodylic Science is an additional channel rather than a replacement.
+
 By submitting a contribution, you confirm that:
 - you have the right to submit the contribution,
 - the contribution is your original work (or you have required permissions),
-- you grant Ecodylic Science a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, modify, and distribute your contribution under any license terms,
-- you understand the contribution will be distributed under this repository's GNU Affero General Public License v3.0 (or any later version).
+- your contribution is offered to this project, and distributed by this project, under the GNU Affero General Public License v3.0 or any later version — the same license as the rest of the repository,
+- you additionally grant Ecodylic Science a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, modify, sublicense, and distribute your contribution under any license terms, including terms other than the AGPL, so that Ecodylic Science may offer this project under a commercial license alongside the AGPL one,
+- you retain copyright in your contribution; the grant above is a license, not an assignment.
 
 ## License
 
-Contributions are provided under the AGPL-3.0-or-later license in `LICENSE`.
+Contributions are provided under the AGPL-3.0-or-later license in `LICENSE`. The additional grant above lets Ecodylic Science also distribute this project under other terms; it changes neither the license under which you received this repository nor the license under which any contribution reaches a recipient of it.
+
+Third-party components that mosaic invokes, optionally installs, or downloads weights from carry their own licenses, and some carry obligations the AGPL does not — keypoint-MoSeq prohibits commercial use outright, and TRex requires a paid license for company use. See [NOTICE](NOTICE) and [Licensing](docs/licensing.md).
 
 ## Security
 

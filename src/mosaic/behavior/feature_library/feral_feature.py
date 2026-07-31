@@ -277,7 +277,10 @@ class FeralFeature:
     model_name : str
         FERAL backbone: a ``feral.backbones.BACKBONES`` key (e.g.
         ``"vjepa2_vitl_diving48"``) or the equivalent HuggingFace slug
-        (default: ``facebook/vjepa2-vitl-fpc32-256-diving48``).
+        (default: ``facebook/vjepa2-vitl-fpc32-256-diving48``). The choice also
+        selects the pretrained weights FERAL downloads from the HuggingFace hub
+        on first use; their licenses differ per entry and are tabulated in
+        ``docs/licensing.md``.
     predict_per_item : int
         Predictions per chunk (default 64).
     chunk_length : int
@@ -328,7 +331,9 @@ class FeralFeature:
         # Optional sys.path override for a local checkout of the `feral`
         # package; None uses the pip-installed package (mosaic[feral]).
         feral_code_dir: Path | None = None
-        # Shared model config
+        # Shared model config. The backbone also selects the pretrained weights
+        # FERAL downloads from the HuggingFace hub on first use. The default's
+        # model card declares MIT; per-entry licenses are in docs/licensing.md.
         model_name: str = "facebook/vjepa2-vitl-fpc32-256-diving48"
         predict_per_item: int = 64
         # Inference hyperparameters
@@ -1670,6 +1675,16 @@ def feral_setup_check(
     ``FeralModel``. With ``build_model=True`` it constructs ``FeralModel``
     (``pretrained=False`` -- no weight download, but the backbone *config* is
     fetched from the HF hub) and does a strict load to fully validate.
+
+    Weights are not downloaded here, but they are downloaded elsewhere. Real
+    training and inference build the backbone with ``pretrained=True``, which
+    fetches the checkpoint named by the resolved ``BACKBONES`` entry from the
+    HuggingFace hub on first use and caches it. Mosaic vendors none of them, and
+    no hub token or license acceptance is involved for any registry entry: the
+    default backbone's model card declares MIT, and none of the entries is
+    gated. The licenses do differ per entry, so which backbone you name decides
+    what terms the weights arrive under -- the per-backbone table is in
+    ``docs/licensing.md``.
 
     Prints a human-readable report and returns a summary dict. Designed to
     replace the old cryptic failures (``HFModel`` ImportError, silent state_dict

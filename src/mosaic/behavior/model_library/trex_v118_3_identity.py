@@ -19,6 +19,12 @@ Two properties are worth stating because getting them wrong is silent:
 - The network is **not** spatial-dimension-agnostic. There is no global average
   pool; ``fc1`` consumes the flattened conv output, so inputs must be resized to
   the trained ``image_size`` before inference.
+
+Attribution lives in :mod:`trex_identity_architectures` and is inherited here:
+the ``V118_3`` layout is T-Rex's, by Tristan Walter and contributors, under
+AGPL-3.0-or-later, and company use of T-Rex itself requires a paid commercial
+license from that project. This module reimplements a published layer layout and
+contains no T-Rex source code.
 """
 
 from __future__ import annotations

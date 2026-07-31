@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,11 +8,13 @@ version = "0.9.0"
 description = "Mosaic — behavior analysis toolkit for animal tracking, feature extraction, and modeling."
 readme = "README.md"
 requires-python = ">=3.12"
+# PEP 639. The SPDX expression replaces both the deprecated `{ file = ... }`
+# table and the `License ::` trove classifier, which cannot coexist with an
+# expression -- setuptools raises rather than warns. `license-files` ships both
+# documents in the wheel, and every listed file must exist or the build fails.
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Ecodylic Science" }]
-license = { file = "LICENSE" }
-classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-]
 dependencies = [
     "numpy>=1.22",
     "pandas>=1.5",
