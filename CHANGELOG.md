@@ -7,6 +7,96 @@ of a diff to interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.8.0 — T-Rex checkpoint interop
+
+**The identity checkpoints mosaic wrote were not loadable by T-Rex, and the ones
+T-Rex wrote were not loadable by mosaic.** Both directions failed on the module
+tree. mosaic built the V200 as an `nn.Sequential`, so its state_dict keys were
+positional (`0.weight`) where T-Rex's are named (`model.conv1.weight`). Reading a
+real T-Rex checkpoint raised. Writing one was worse and quieter: T-Rex loads with
+`load_state_dict(strict=False)` and only *warns* on a key mismatch, so a
+mosaic-exported `.pth` passed to `visual_identification_model_path` produced a
+**randomly-initialised network and a log line**. `GlobalIdentityModel` has
+documented that export as T-Rex-loadable since it was introduced; it was not.
+Both networks now mirror T-Rex's tree — a wrapper whose children are `normalize`
+and `model` — so the keys agree by construction rather than by string surgery.
+
+**`V118_3`'s `bn4` was the wrong normalization layer.** T-Rex uses
+`nn.LayerNorm`; mosaic used `nn.BatchNorm1d(track_running_stats=False)`. The two
+expose an identical state_dict — `weight` and `bias`, no running statistics — so
+a checkpoint cannot distinguish them and the wrong one loaded clean while
+computing different math. Measured against a real 4-mouse checkpoint, using
+T-Rex's own TorchScript as the oracle: `max|Δlogit| = 10.36` and 12% argmax
+agreement, plus a hard crash at batch size 1 and predictions that changed
+depending on which other crops shared the batch. With `LayerNorm` the same
+checkpoint reproduces T-Rex exactly. Anything inferred from that class's
+predictions before 0.8 should be recomputed.
+
+**Input normalization is now a stated contract, not an assumption.** T-Rex's
+`Normalize.forward` differs across builds: some compute `(x / 255 - mean) / std`,
+some pass raw `[0, 255]` through, and some ship the statistics in the checkpoint
+as `normalize.*` buffers. mosaic assumed the first, silently. It is now the
+`input_normalization` parameter (`"imagenet_scaled"` | `"raw255"`), recorded in
+exported metadata and detected on load: buffers in the file win and their values
+are used verbatim, metadata is consulted next, and a checkpoint that states
+neither is genuinely ambiguous — mosaic keeps its previous behaviour and warns,
+naming the override. Existing mosaic exports therefore keep their meaning.
+
+**What moved, for a reader downstream:**
+
+- `global-identity-model` is at `0.2`. Its `run_id` moves and every existing run
+  recomputes. Network numerics are not part of the `run_id` payload, so without
+  the bump `load_state` would have adopted a checkpoint the previous code wrote.
+  One golden line moved; one was added, closing a `scope-a`/`scope-ab` pair the
+  corpus claimed to keep but did not.
+- A new `input_normalization` param on that feature.
+- **The exported `.pth` changed shape**: named `model.*` keys, optional
+  `normalize.*` buffers, and `input_normalization` / `architecture_version` /
+  `model_type` / `class_labels` / `mosaic_checkpoint_version` metadata. Metadata
+  stays primitive because T-Rex reads these files with `weights_only=True`.
+- A TREx run that passes such a file to `visual_identification_model_path` **as a
+  bare path** gets a new `run_id`: an unregistered path is identified by its
+  digest, and re-exporting changes every byte. A run that passes a training
+  `run_id` instead is unaffected. Same narrow population as the 0.5.0 note below.
+- `input_shape` is `(W, H, C)` in both exporters. T-Rex compares it exactly, so
+  the V118_3 exporter's previous `(H, W, C)` was a hard load failure there for
+  any non-square crop. Files already written the other way still read correctly:
+  the old exporter's `"architecture": "v200-native"` marker identifies them.
+- `TRexNativeIdentityNetwork` is now `TRexV118_3IdentityNetwork`, in
+  `model_library/trex_v118_3_identity.py`. **Renamed without an alias.** It was
+  never a V200 — it is T-Rex's `V118_3`, as its own checkpoints say. Checkpoints
+  written by mosaic ≤ 0.7 still load, through a positional-key shim that warns
+  and is removed at 0.9.
+- `V118_3` gained the three `Dropout2d(0.05)` layers T-Rex has and mosaic
+  omitted. Inference is unaffected (dropout is identity in eval mode); training
+  now regularizes as T-Rex does.
+
+**Tests, where there were none.** Nothing previously constructed either network,
+ran a forward pass, or exercised a checkpoint round trip — the whole suite stayed
+green through all of the above. `tests/test_trex_checkpoint_interop.py` pins the
+forward output against T-Rex's own classes, the normalization contract, batch
+invariance, the key layout, the `(W, H, C)` orientation, and the legacy shim;
+`tests/test_trex_checkpoint_real_weights.py` (slow, opt-in via
+`MOSAIC_TREX_MODELS_DIR`) pins agreement with real deployed checkpoints using
+T-Rex's TorchScript sidecar as the oracle — the only test that covers a build
+whose preprocessing the current source no longer represents. torch runs in its
+own CI job.
+
+**A hazard these tests uncovered, which is not fixed here.** torch and xgboost
+each bundle an OpenMP runtime, and a process holding both segfaults on macOS —
+in either import order, inside whichever is first asked to do real work. xgboost
+is a core dependency and torch the optional `identity` extra, so **a session that
+trains an identity model and then an XGBoost classifier can crash**, with no
+Python traceback. Nothing imported torch before these tests, so the suite had
+never met it. `tests/conftest.py` now pins `OMP_NUM_THREADS=1`, which holds for
+the suite; the usual `KMP_DUPLICATE_LIB_OK=TRUE` does *not* stop it here and is
+documented as able to produce silently wrong results. The real fix is an
+environment with one OpenMP runtime, which is outside this change.
+
+**Owed.** mosaic still does not write the TorchScript `*_model.pth` sidecar that
+T-Rex writes beside every checkpoint and falls back to when a state_dict load
+fails. Reading one is supported; writing one needs a TorchScript-clean forward.
+
 ## 0.7.0 — M7, reconcile
 
 **A dataset can now be brought forward after an identity change, in place.** Every

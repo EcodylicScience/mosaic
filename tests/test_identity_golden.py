@@ -228,6 +228,12 @@ CASES: tuple[Case, ...] = (
         scope=(("", "seq_a"),),
     ),
     Case(
+        case_id="global-identity-model/from-egocentric-crop/scope-ab",
+        feature="global-identity-model",
+        inputs=[{"feature": "egocentric-crop"}],
+        scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    Case(
         case_id="global-identity-megadescriptor/from-egocentric-crop/scope-a",
         feature="global-identity-megadescriptor",
         inputs=[{"feature": "egocentric-crop"}],

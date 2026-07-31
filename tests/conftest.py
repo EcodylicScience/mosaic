@@ -2,6 +2,31 @@
 
 from __future__ import annotations
 
+import os as _os
+
+# Pin OpenMP to one thread before any library that links it is imported.
+#
+# torch and xgboost each bundle their own OpenMP runtime, and a process holding
+# both *segfaults* on macOS -- in either import order, inside whichever of them
+# is asked to do real work first. Nothing imported torch until the T-Rex
+# checkpoint tests arrived, so the suite never met this; with them, a full run
+# dies at 92% with SIGSEGV in `load_state_dict` or in an xgboost booster call.
+#
+# The two OpenMP copies are the disease (`torch/lib/libomp.dylib` and
+# `sklearn/.dylibs/libomp.dylib` both ship in the venv). Single-threading them
+# is the mitigation that actually holds: `KMP_DUPLICATE_LIB_OK=TRUE`, the usual
+# advice, does *not* stop the crash here, and it is documented as being able to
+# produce silently wrong results -- not a trade worth making in this codebase.
+# One thread costs the suite ~15s and changes no numerics.
+#
+# `setdefault`, so a caller who wants threads back can say so.
+#
+# This is a real hazard for users too: xgboost is a core dependency and torch an
+# optional extra, so a session that trains an identity model and an XGBoost
+# classifier hits the same crash outside the tests. That half is not fixable
+# from here -- it needs a venv with one OpenMP runtime.
+_os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import csv
 import importlib.util
 import os
@@ -34,6 +59,15 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 # adding it to the install alone leaves nothing to notice when it next vanishes.
 CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py")
 
+# The same rule, scoped to one job. `torch` (via the `identity` extra) is a
+# ~200 MB wheel, so requiring it of every CI run would slow all of them down for
+# tests only one job runs. It gets its own job instead, which sets
+# MOSAIC_CI_IDENTITY=1 -- and inside that job the absence of torch is an error
+# for exactly the reason above: `pytest.importorskip("torch")` would otherwise
+# skip the T-Rex checkpoint tests green, and those are the only thing standing
+# between a refactor and a silently randomly-initialised network inside T-Rex.
+CI_IDENTITY_MODULES = ("torch",)
+
 # The same argument, for a binary rather than a module. Probing shells out to a
 # system ffprobe, so every test that indexes real media hard-*fails* without one
 # rather than skipping -- and the failure names a codec, not a missing tool.
@@ -51,9 +85,10 @@ def pytest_configure() -> None:
     """
     if not os.environ.get("CI"):
         return
-    missing = [
-        name for name in CI_REQUIRED_MODULES if importlib.util.find_spec(name) is None
-    ]
+    required = CI_REQUIRED_MODULES
+    if os.environ.get("MOSAIC_CI_IDENTITY"):
+        required += CI_IDENTITY_MODULES
+    missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         raise pytest.UsageError(
             f"CI installs {', '.join(missing)} through extras, but they are not "

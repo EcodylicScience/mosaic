@@ -3,13 +3,23 @@
 Trains a T-Rex-compatible visual identification model from egocentric crop
 images of individual animals. Uses the V200 CNN architecture to produce
 weights loadable via T-Rex's ``visual_identification_model_path`` setting.
+
+T-Rex builds the network from its own ``visual_identification_version``
+setting, so consuming these weights means setting **both**::
+
+    visual_identification_version    = v200
+    visual_identification_model_path = <run_root>/identity_model
+
+Mismatch that pair, or feed a build whose input preprocessing differs from
+``input_normalization``, and T-Rex logs a warning rather than failing --
+see :mod:`mosaic.behavior.model_library.trex_identity_network`.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, Literal, final
 
 import cv2
 import joblib
@@ -80,7 +90,12 @@ class GlobalIdentityModel:
 
     category = "global"
     name: str = "global-identity-model"
-    version: str = "0.1"
+    # 0.2: the exported checkpoint changed shape (named `model.*` keys mirroring
+    # T-Rex's module tree, optional `normalize.*` buffers, richer metadata).
+    # Network numerics are not part of the run_id payload, so only this version
+    # string can express "the recipe changed" and stop `load_state` adopting a
+    # checkpoint the previous code wrote.
+    version: str = "0.2"
     parallelizable = False
     # The trained model depends on which sequences are in scope: fit() collects
     # training images from the scoped entries and (under group_as_identity)
@@ -103,6 +118,11 @@ class GlobalIdentityModel:
         # Network params
         image_size: tuple[int, int] = (128, 128)
         channels: int = 1
+        # Preprocessing contract the exported weights expect. Must match the
+        # T-Rex build they will be used with: some scale and standardize,
+        # others feed the network raw [0, 255]. See
+        # `model_library.trex_identity_architectures.detect_input_normalization`.
+        input_normalization: Literal["imagenet_scaled", "raw255"] = "imagenet_scaled"
         epochs: int = 150
         learning_rate: float = 0.0001
         batch_size: int = 64
@@ -266,6 +286,7 @@ class GlobalIdentityModel:
             num_classes=num_classes,
             channels=p.channels,
             image_size=p.image_size,
+            input_normalization=p.input_normalization,
         )
         self._history = self._network.fit(
             images_arr,
@@ -294,8 +315,11 @@ class GlobalIdentityModel:
         if self.params.export_trex_weights and isinstance(
             self._network, TRexIdentityNetwork
         ):
+            # T-Rex assigns identities by softmax index and does not preserve
+            # labels, so the class order is the only link back to the animals.
             self._network.export_trex_checkpoint(
-                run_root / f"{self.params.trex_weights_name}.pth"
+                run_root / f"{self.params.trex_weights_name}.pth",
+                class_labels=self._identity_names,
             )
 
         # Save training history

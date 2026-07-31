@@ -77,6 +77,55 @@ jobs:
         # reports green while running less than this workflow installs for.
         run: uv run --no-sync pytest -q
 
+  # The T-Rex checkpoint tests need torch, a ~200 MB wheel that nothing else in
+  # the suite requires. Its own job keeps `test` fast while still making those
+  # tests real evidence: `pytest.importorskip("torch")` would otherwise skip
+  # them green, and they are the only guard on mosaic's identity checkpoints
+  # staying loadable by T-Rex -- which loads `strict=False` and merely warns, so
+  # a mismatch there is a randomly-initialised network, not an error.
+  identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mosaic
+
+      - uses: actions/checkout@v4
+        with:
+          repository: EcodylicScience/mosaic-media
+          path: mosaic_media
+
+      # conftest's CI guard covers the whole suite's required modules and
+      # binaries, so this job matches `test`'s environment and adds to it.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install
+        working-directory: mosaic
+        run: |
+          uv venv
+          uv pip install -e '../mosaic_media[io,cli]'
+          uv pip install -e '.[wavelets,imgstore,sleap,identity]'
+          uv pip install pytest
+
+      - name: Test identity checkpoints
+        working-directory: mosaic
+        env:
+          PYTHONHASHSEED: random
+          # Promotes a missing torch from "skip" to "broken environment".
+          MOSAIC_CI_IDENTITY: "1"
+        run: |
+          uv run --no-sync pytest -q \
+            tests/test_trex_checkpoint_interop.py \
+            tests/test_behavior_import_is_torch_free.py \
+            tests/test_identity_model_artifact.py \
+            tests/test_identity_golden.py
+
   lint-changed:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
