@@ -370,7 +370,6 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             params,
             fingerprint_dataset(dataset_dir),
             base_run_id,
-            base_digest,
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.epochs)
