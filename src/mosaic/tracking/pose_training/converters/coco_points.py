@@ -25,7 +25,11 @@ from .base import (
     normalize_coords,
     write_yolo_label,
 )
-from .cvat_points import _default_group_key, _print_split_summary, split_filenames
+from mosaic.core.annotations.split import (
+    default_group_key,
+    print_split_summary,
+    split_filenames,
+)
 
 
 def _load_coco_multi(
@@ -285,13 +289,13 @@ def convert_coco_points(
         + (f"  (skipped {skipped} with no valid points)" if skipped else "")
     )
     print(f"  Categories: {class_names}, radii: {radii_by_id}")
-    _print_split_summary(
+    print_split_summary(
         split_assignment,
         n_train,
         n_valid,
         n,
         split_by,
-        group_key or _default_group_key,
+        group_key or default_group_key,
     )
 
     return schema

@@ -20,7 +20,11 @@ import cv2
 import numpy as np
 
 from .base import LocalizerSchema
-from .cvat_points import _default_group_key, _print_split_summary, split_filenames
+from mosaic.core.annotations.split import (
+    default_group_key,
+    print_split_summary,
+    split_filenames,
+)
 
 
 def _load_coco(
@@ -367,13 +371,13 @@ def convert_coco_localizer(
         "  Patches: "
         + ", ".join(f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test"))
     )
-    _print_split_summary(
+    print_split_summary(
         split_map,
         n_train,
         n_valid,
         len(usable),
         split_by,
-        group_key or _default_group_key,
+        group_key or default_group_key,
     )
 
     return schema

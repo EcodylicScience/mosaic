@@ -9,7 +9,7 @@ from .base import (
     format_polo_label_line,
     write_yolo_label,
 )
-from .cvat_points import split_filenames
+from mosaic.core.annotations.split import split_filenames
 
 __all__ = [
     "KeypointSchema",

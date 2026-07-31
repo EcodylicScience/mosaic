@@ -21,12 +21,13 @@ import numpy as np
 
 from .base import LocalizerSchema
 from .coco_localizer import _extract_patch
-from .cvat_points import (
-    _assign_splits,
-    _default_group_key,
-    _parse_cvat_xml,
-    _print_split_summary,
+from mosaic.core.annotations.split import (
+    assign_splits,
+    default_group_key,
+    print_split_summary,
 )
+
+from .cvat_points import _parse_cvat_xml
 
 
 def convert_cvat_localizer(
@@ -149,7 +150,7 @@ def convert_cvat_localizer(
         return schema
 
     # ── Assign images to splits ──
-    split_map, n_train, n_valid = _assign_splits(
+    split_map, n_train, n_valid = assign_splits(
         usable,
         split,
         seed,
@@ -273,13 +274,13 @@ def convert_cvat_localizer(
         "  Patches: "
         + ", ".join(f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test"))
     )
-    _print_split_summary(
+    print_split_summary(
         split_map,
         n_train,
         n_valid,
         len(usable),
         split_by,
-        group_key or _default_group_key,
+        group_key or default_group_key,
     )
 
     return schema
