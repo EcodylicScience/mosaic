@@ -29,7 +29,6 @@ from __future__ import annotations
 import dataclasses
 import sys
 from collections.abc import Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -40,26 +39,24 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import IndexCSV
-from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
     clear_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     existing_counts,
     publish_tracks_table,
     tracks_table_path,
 )
+from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
     claim,
     clear_outputs,
-    open_entry,
     phase_activity,
     record_phase,
-    release_entry,
     reusable_output,
 )
 from mosaic.tracking.common.index import (
@@ -366,163 +363,117 @@ def run_litpose(
             "model_type": resolved_model.model_type,
         },
     )
-    params_hash = minted.params_hash
-    run_id = minted.run_id
-    run_root = minted.run_root
-    tracks_variant = minted.tracks_variant
-
     scope = ds.resolve_media_scope(groups, sequences, entries)
     if not scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
-        return run_id
+        return minted.run_id
 
-    work_items = build_work_items(ds, scope, kind=LITPOSE_KIND)
+    def predict_one(job: EntryJob) -> LitposeIndexRow | None:
+        """One entry: the gated inference phase, then the bridge."""
+        item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
+        csv_path = work_dir / f"{item.key}.predictions.csv"
 
-    idx = litpose_index(litpose_index_path(ds))
-    idx.ensure()
-
-    index_rows: list[LitposeIndexRow] = []
-    skipped: list[str] = []
-    managed: AbstractContextManager[JobContext] = (
-        nullcontext(ctx)
-        if ctx is not None
-        else job_context(
-            ds,
-            kind="litpose",
-            target="litpose-predict",
-            execution_id=execution_id,
-            owner=owner,
-            track=track,
-            progress_callback=progress_callback,
-            cancel_token=cancel_token,
+        # Lightning Pose deliberately does not adopt a marker-less directory.
+        # Its single output cannot distinguish a complete CSV from a partial one
+        # a killed predict left behind, so a run is reusable only on the strength
+        # of a marker its own predict wrote.
+        reusable = reusable_output(
+            job.ds,
+            work_dir,
+            "track",
+            params_hash=minted.params_hash,
+            video_path=item.video_path,
         )
+        if reusable is None:
+            clear_phase_marker(work_dir, "track")
+            clear_outputs(work_dir, LITPOSE_KIND, "track")
+            track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            seq_ctx.progress.on_phase("track", item.key)
+            predict_result = run_litpose_predict(
+                item.video_path,
+                csv_path,
+                model_dir=resolved_model.path,
+                precision=precision,
+                overrides=litpose_overrides,
+                idle_timeout=idle_timeout,
+                max_runtime=max_runtime,
+                litpose_conda_env=litpose_conda_env,
+                litpose_bin=litpose_bin,
+                cancel_check=seq_ctx.cancel_token.is_cancelled,
+                on_output=phase_activity(seq_ctx, work_dir, track_claim, idle_timeout),
+            )
+            csv_out = predict_result.csv_path
+            track_marker = record_phase(
+                job.ds,
+                work_dir,
+                "track",
+                ctx=seq_ctx,
+                run_id=minted.run_id,
+                params_hash=minted.params_hash,
+                video_path=item.video_path,
+                video_uid=item.video_uid,
+                output=csv_out,
+            )
+            recomputed = True
+        else:
+            track_marker, csv_out = reusable
+            recomputed = False
+
+        row = LitposeIndexRow(
+            run_id=minted.run_id,
+            group=item.group,
+            sequence=item.sequence,
+            abs_path=Path(job.ds.relative_to_root(work_dir)),
+            # From the marker, so the row names what produced the data rather
+            # than what the scope resolves to now. The two can only differ when
+            # the marker does not know.
+            video_abs_path=(
+                track_marker.source
+                if track_marker.source
+                else job.ds.relative_to_root(item.video_path)
+            ),
+            params_hash=minted.params_hash,
+            model_id=resolved_model.model_id,
+            model_type=resolved_model.model_type,
+            n_ids=1,
+            csv_path=job.ds.relative_to_root(csv_out),
+        )
+
+        if not convert_to_tracks:
+            return row
+        # A recomputed entry must replace its parquet: the bridge otherwise
+        # declines to overwrite, and the table would keep the results of the run
+        # just invalidated.
+        bridged = _bridge_csv_to_tracks(
+            job.ds,
+            item.group,
+            item.sequence,
+            csv_out,
+            tracks_variant=minted.tracks_variant,
+            producer_run_id=minted.run_id,
+            video_path=item.video_path,
+            model_files=[resolved_model.checkpoint, resolved_model.config],
+            fps=item.fps,
+            overwrite=job.overwrite or recomputed,
+        )
+        return row if bridged is None else dataclasses.replace(row, n_ids=bridged.n_ids)
+
+    return run_tracker(
+        ds,
+        kind=LITPOSE_KIND,
+        target="litpose-predict",
+        minted=minted,
+        work_items=build_work_items(ds, scope, kind=LITPOSE_KIND),
+        index=litpose_index(litpose_index_path(ds)),
+        run_entry=predict_one,
+        overwrite=overwrite,
+        execution_id=execution_id,
+        owner=owner,
+        track=track,
+        progress_callback=progress_callback,
+        cancel_token=cancel_token,
+        ctx=ctx,
     )
-    with managed as ctx:
-        ctx.set_run_id(run_id)
-        ctx.set_total(len(work_items))
-        cancel_check = ctx.cancel_token.is_cancelled
-
-        try:
-            for i, item in enumerate(work_items):
-                ctx.check_cancel()
-                group, sequence = item.group, item.sequence
-                key, video_path, video_uid = item.key, item.video_path, item.video_uid
-                ctx.progress.on_entry_start(i, len(work_items), key)
-                opened = open_entry(
-                    ds, ctx, run_root, key, kind=LITPOSE_KIND, overwrite=overwrite
-                )
-                if opened is None:
-                    skipped.append(key)
-                    ctx.progress.on_entry_end(i + 1, len(work_items), key)
-                    continue
-                seq_dir = opened
-                csv_path = seq_dir / f"{key}.predictions.csv"
-
-                # Lightning Pose deliberately does not adopt a marker-less
-                # directory. Its single output cannot distinguish a complete CSV
-                # from a partial one a killed predict left behind, so a run is
-                # reusable only on the strength of a marker its own predict wrote.
-                try:
-                    _ = claim(ctx, seq_dir, None, idle_timeout)
-
-                    reusable = reusable_output(
-                        ds,
-                        seq_dir,
-                        "track",
-                        params_hash=params_hash,
-                        video_path=video_path,
-                    )
-                    if reusable is None:
-                        clear_phase_marker(seq_dir, "track")
-                        clear_outputs(seq_dir, LITPOSE_KIND, "track")
-                        track_claim = claim(ctx, seq_dir, "track", idle_timeout)
-                        ctx.progress.on_phase("track", key)
-                        predict_result = run_litpose_predict(
-                            video_path,
-                            csv_path,
-                            model_dir=resolved_model.path,
-                            precision=precision,
-                            overrides=litpose_overrides,
-                            idle_timeout=idle_timeout,
-                            max_runtime=max_runtime,
-                            litpose_conda_env=litpose_conda_env,
-                            litpose_bin=litpose_bin,
-                            cancel_check=cancel_check,
-                            on_output=phase_activity(
-                                ctx, seq_dir, track_claim, idle_timeout
-                            ),
-                        )
-                        csv_out = predict_result.csv_path
-                        track_marker = record_phase(
-                            ds,
-                            seq_dir,
-                            "track",
-                            ctx=ctx,
-                            run_id=run_id,
-                            params_hash=params_hash,
-                            video_path=video_path,
-                            video_uid=video_uid,
-                            output=csv_out,
-                        )
-                        recomputed = True
-                    else:
-                        track_marker, csv_out = reusable
-                        recomputed = False
-                finally:
-                    release_entry(seq_dir)
-
-                index_rows.append(
-                    LitposeIndexRow(
-                        run_id=run_id,
-                        group=group,
-                        sequence=sequence,
-                        abs_path=Path(ds.relative_to_root(seq_dir)),
-                        video_abs_path=(
-                            track_marker.source
-                            if track_marker is not None and track_marker.source
-                            else ds.relative_to_root(video_path)
-                        ),
-                        params_hash=params_hash,
-                        model_id=resolved_model.model_id,
-                        model_type=resolved_model.model_type,
-                        n_ids=1,
-                        csv_path=ds.relative_to_root(csv_out),
-                    )
-                )
-
-                if convert_to_tracks:
-                    bridged = _bridge_csv_to_tracks(
-                        ds,
-                        group,
-                        sequence,
-                        csv_out,
-                        tracks_variant=tracks_variant,
-                        producer_run_id=run_id,
-                        video_path=video_path,
-                        model_files=[resolved_model.checkpoint, resolved_model.config],
-                        fps=item.fps,
-                        overwrite=overwrite or recomputed,
-                    )
-                    if bridged is not None:
-                        index_rows[-1] = dataclasses.replace(
-                            index_rows[-1], n_ids=bridged.n_ids
-                        )
-
-                ctx.progress.on_entry_end(i + 1, len(work_items), key)
-                ctx.heartbeat(i + 1)
-        except ProcessCancelled as exc:
-            raise Cancelled() from exc
-        finally:
-            if index_rows:
-                idx.append(index_rows)
-                idx.mark_finished(run_id)
-
-    held = f", {len(skipped)} held by another execution" if skipped else ""
-    print(
-        f"[run_litpose] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(work_items)} sequences{held}) -> {run_root}"
-    )
-    return run_id
 
 
 def list_litpose_runs(ds: Dataset) -> pd.DataFrame:

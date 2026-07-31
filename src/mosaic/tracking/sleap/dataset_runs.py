@@ -31,7 +31,6 @@ import dataclasses
 import os
 import sys
 from collections.abc import Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -42,28 +41,26 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import IndexCSV
-from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
     clear_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     existing_counts,
     publish_tracks_table,
     tracks_table_path,
 )
+from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
     AdoptEvidence,
     adopt_completed_directory,
     claim,
     clear_outputs,
-    open_entry,
     phase_activity,
     record_phase,
-    release_entry,
     reusable_output,
 )
 from mosaic.tracking.common.index import (
@@ -406,221 +403,161 @@ def run_sleap(
             "model_type": resolved_models.model_type,
         },
     )
-    params_hash = minted.params_hash
-    run_id = minted.run_id
-    run_root = minted.run_root
-    tracks_variant = minted.tracks_variant
-
     scope = ds.resolve_media_scope(groups, sequences, entries)
     if not scope:
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
-        return run_id
+        return minted.run_id
 
     # sleap-track takes a frame selection as one "start-end" token.
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
 
-    work_items = build_work_items(ds, scope, kind=SLEAP_KIND)
+    def track_one(job: EntryJob) -> SleapIndexRow | None:
+        """One entry: the gated inference phase, the ensured export, the bridge."""
+        item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
+        slp_path = work_dir / f"{item.key}.predictions.slp"
+        h5_path = work_dir / f"{item.key}.analysis.h5"
 
-    idx = sleap_index(sleap_index_path(ds))
-    idx.ensure()
-
-    index_rows: list[SleapIndexRow] = []
-    skipped: list[str] = []
-    managed: AbstractContextManager[JobContext] = (
-        nullcontext(ctx)
-        if ctx is not None
-        else job_context(
-            ds,
-            kind="sleap",
-            target="sleap-track",
-            execution_id=execution_id,
-            owner=owner,
-            track=track,
-            progress_callback=progress_callback,
-            cancel_token=cancel_token,
+        # A .slp alone appears as inference proceeds; the .h5 only after the
+        # export finished, so requiring both is what distinguishes a finished
+        # pre-marker directory from one killed partway.
+        adopt_completed_directory(
+            job.ds,
+            work_dir,
+            minted.run_id,
+            required=("*.predictions.slp", "*.analysis.h5"),
+            record=(AdoptEvidence("track", "*.predictions.slp"),),
         )
+
+        reusable = reusable_output(
+            job.ds,
+            work_dir,
+            "track",
+            params_hash=minted.params_hash,
+            video_path=item.video_path,
+        )
+        if reusable is None:
+            clear_phase_marker(work_dir, "track")
+            clear_outputs(work_dir, SLEAP_KIND, "track")
+            track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            seq_ctx.progress.on_phase("track", item.key)
+            track_result = run_sleap_track(
+                item.video_path,
+                slp_path,
+                model_paths=resolved_models.paths,
+                tracking=tracking,
+                tracker=tracker,
+                similarity=similarity,
+                match=match,
+                track_window=track_window,
+                max_instances=max_instances,
+                max_tracking=max_tracking,
+                peak_threshold=peak_threshold,
+                batch_size=batch_size,
+                frames=frames_arg,
+                device=device,
+                extra_settings=sleap_extra_settings,
+                idle_timeout=idle_timeout,
+                max_runtime=max_runtime,
+                sleap_conda_env=sleap_conda_env,
+                sleap_bin=sleap_bin,
+                cancel_check=seq_ctx.cancel_token.is_cancelled,
+                on_output=phase_activity(seq_ctx, work_dir, track_claim, idle_timeout),
+            )
+            slp_out = track_result.slp_path
+            track_marker = record_phase(
+                job.ds,
+                work_dir,
+                "track",
+                ctx=seq_ctx,
+                run_id=minted.run_id,
+                params_hash=minted.params_hash,
+                video_path=item.video_path,
+                video_uid=item.video_uid,
+                output=slp_out,
+            )
+            recomputed = True
+        else:
+            track_marker, slp_out = reusable
+            recomputed = False
+
+        # Analysis export: deterministic and cheap, so ensured rather than
+        # marker-gated. Re-run only when its output is missing or the inference
+        # it derives from was just recomputed. Published atomically:
+        # sleap-convert truncates its output the instant h5py opens it, so a
+        # killed export would otherwise leave a partial .h5 at the canonical
+        # path -- and this step, unlike inference, is gated on existence rather
+        # than on a completion marker. The rename also settles the case where
+        # sleap-convert names its output per video rather than by -o.
+        if recomputed or not h5_path.exists():
+            h5_path.unlink(missing_ok=True)
+            h5_tmp = work_dir / f"{item.key}.analysis.h5.partial"
+            h5_tmp.unlink(missing_ok=True)
+            export_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            convert_result = run_sleap_convert(
+                slp_out,
+                h5_tmp,
+                idle_timeout=idle_timeout,
+                max_runtime=max_runtime,
+                sleap_conda_env=sleap_conda_env,
+                sleap_bin=sleap_bin,
+                cancel_check=seq_ctx.cancel_token.is_cancelled,
+                on_output=phase_activity(seq_ctx, work_dir, export_claim, idle_timeout),
+            )
+            os.replace(convert_result.analysis_h5_path, h5_path)
+            h5_tmp.unlink(missing_ok=True)
+
+        row = SleapIndexRow(
+            run_id=minted.run_id,
+            group=item.group,
+            sequence=item.sequence,
+            abs_path=Path(job.ds.relative_to_root(work_dir)),
+            # From the marker, so the row names what produced the data rather
+            # than what the scope resolves to now.
+            video_abs_path=(
+                track_marker.source
+                if track_marker.source
+                else job.ds.relative_to_root(item.video_path)
+            ),
+            params_hash=minted.params_hash,
+            model_id=resolved_models.model_id,
+            model_type=resolved_models.model_type,
+            n_ids=0,
+            slp_path=job.ds.relative_to_root(slp_out),
+            analysis_h5_path=job.ds.relative_to_root(h5_path),
+        )
+
+        if not convert_to_tracks:
+            return row
+        bridged = _bridge_analysis_h5_to_tracks(
+            job.ds,
+            item.group,
+            item.sequence,
+            h5_path,
+            tracks_variant=minted.tracks_variant,
+            producer_run_id=minted.run_id,
+            video_path=item.video_path,
+            model_checkpoints=resolved_models.checkpoints,
+            fps=item.fps,
+            overwrite=job.overwrite or recomputed,
+        )
+        return row if bridged is None else dataclasses.replace(row, n_ids=bridged.n_ids)
+
+    return run_tracker(
+        ds,
+        kind=SLEAP_KIND,
+        target="sleap-track",
+        minted=minted,
+        work_items=build_work_items(ds, scope, kind=SLEAP_KIND),
+        index=sleap_index(sleap_index_path(ds)),
+        run_entry=track_one,
+        overwrite=overwrite,
+        execution_id=execution_id,
+        owner=owner,
+        track=track,
+        progress_callback=progress_callback,
+        cancel_token=cancel_token,
+        ctx=ctx,
     )
-    with managed as ctx:
-        ctx.set_run_id(run_id)
-        ctx.set_total(len(work_items))
-        cancel_check = ctx.cancel_token.is_cancelled
-
-        try:
-            for i, item in enumerate(work_items):
-                ctx.check_cancel()
-                group, sequence = item.group, item.sequence
-                key, video_path, video_uid = item.key, item.video_path, item.video_uid
-                ctx.progress.on_entry_start(i, len(work_items), key)
-                opened = open_entry(
-                    ds, ctx, run_root, key, kind=SLEAP_KIND, overwrite=overwrite
-                )
-                if opened is None:
-                    skipped.append(key)
-                    ctx.progress.on_entry_end(i + 1, len(work_items), key)
-                    continue
-                seq_dir = opened
-                slp_path = seq_dir / f"{key}.predictions.slp"
-                h5_path = seq_dir / f"{key}.analysis.h5"
-
-                # A .slp alone appears as inference proceeds; the .h5 only after
-                # the export finished, so requiring both is what distinguishes a
-                # finished pre-marker directory from one killed partway.
-                adopt_completed_directory(
-                    ds,
-                    seq_dir,
-                    run_id,
-                    required=("*.predictions.slp", "*.analysis.h5"),
-                    record=(AdoptEvidence("track", "*.predictions.slp"),),
-                )
-                try:
-                    _ = claim(ctx, seq_dir, None, idle_timeout)
-
-                    reusable = reusable_output(
-                        ds,
-                        seq_dir,
-                        "track",
-                        params_hash=params_hash,
-                        video_path=video_path,
-                    )
-                    if reusable is None:
-                        clear_phase_marker(seq_dir, "track")
-                        clear_outputs(seq_dir, SLEAP_KIND, "track")
-                        track_claim = claim(ctx, seq_dir, "track", idle_timeout)
-                        ctx.progress.on_phase("track", key)
-                        track_result = run_sleap_track(
-                            video_path,
-                            slp_path,
-                            model_paths=resolved_models.paths,
-                            tracking=tracking,
-                            tracker=tracker,
-                            similarity=similarity,
-                            match=match,
-                            track_window=track_window,
-                            max_instances=max_instances,
-                            max_tracking=max_tracking,
-                            peak_threshold=peak_threshold,
-                            batch_size=batch_size,
-                            frames=frames_arg,
-                            device=device,
-                            extra_settings=sleap_extra_settings,
-                            idle_timeout=idle_timeout,
-                            max_runtime=max_runtime,
-                            sleap_conda_env=sleap_conda_env,
-                            sleap_bin=sleap_bin,
-                            cancel_check=cancel_check,
-                            on_output=phase_activity(
-                                ctx, seq_dir, track_claim, idle_timeout
-                            ),
-                        )
-                        slp_out = track_result.slp_path
-                        track_marker = record_phase(
-                            ds,
-                            seq_dir,
-                            "track",
-                            ctx=ctx,
-                            run_id=run_id,
-                            params_hash=params_hash,
-                            video_path=video_path,
-                            video_uid=video_uid,
-                            output=slp_out,
-                        )
-                        recomputed = True
-                    else:
-                        track_marker, slp_out = reusable
-                        recomputed = False
-
-                    # Analysis export: deterministic and cheap, so ensured rather
-                    # than marker-gated. Re-run only when its output is missing or
-                    # the inference it derives from was just recomputed.
-                    #
-                    # Published atomically. sleap-convert (via h5py's "w" mode)
-                    # truncates its output the instant it opens, so a killed
-                    # export would otherwise leave a partial .h5 at the canonical
-                    # path -- and this step, unlike inference, is gated on
-                    # existence, not a completion marker. Writing to a temp path
-                    # and renaming means the canonical .h5 appears only after a
-                    # complete export, so it cannot be a partial file a later
-                    # reuse run trusts. The rename to the canonical name also
-                    # settles the case where sleap-convert names its output per
-                    # video rather than by -o.
-                    if recomputed or not h5_path.exists():
-                        h5_path.unlink(missing_ok=True)
-                        h5_tmp = seq_dir / f"{key}.analysis.h5.partial"
-                        h5_tmp.unlink(missing_ok=True)
-                        convert_claim = claim(ctx, seq_dir, "track", idle_timeout)
-                        convert_result = run_sleap_convert(
-                            slp_out,
-                            h5_tmp,
-                            idle_timeout=idle_timeout,
-                            max_runtime=max_runtime,
-                            sleap_conda_env=sleap_conda_env,
-                            sleap_bin=sleap_bin,
-                            cancel_check=cancel_check,
-                            on_output=phase_activity(
-                                ctx, seq_dir, convert_claim, idle_timeout
-                            ),
-                        )
-                        os.replace(convert_result.analysis_h5_path, h5_path)
-                        h5_tmp.unlink(missing_ok=True)
-                        h5_out = h5_path
-                    else:
-                        h5_out = h5_path
-                finally:
-                    release_entry(seq_dir)
-
-                index_rows.append(
-                    SleapIndexRow(
-                        run_id=run_id,
-                        group=group,
-                        sequence=sequence,
-                        abs_path=Path(ds.relative_to_root(seq_dir)),
-                        video_abs_path=(
-                            track_marker.source
-                            if track_marker is not None and track_marker.source
-                            else ds.relative_to_root(video_path)
-                        ),
-                        params_hash=params_hash,
-                        model_id=resolved_models.model_id,
-                        model_type=resolved_models.model_type,
-                        n_ids=0,
-                        slp_path=ds.relative_to_root(slp_out),
-                        analysis_h5_path=ds.relative_to_root(h5_out),
-                    )
-                )
-
-                if convert_to_tracks:
-                    bridged = _bridge_analysis_h5_to_tracks(
-                        ds,
-                        group,
-                        sequence,
-                        h5_out,
-                        tracks_variant=tracks_variant,
-                        producer_run_id=run_id,
-                        video_path=video_path,
-                        model_checkpoints=resolved_models.checkpoints,
-                        fps=item.fps,
-                        overwrite=overwrite or recomputed,
-                    )
-                    if bridged is not None:
-                        index_rows[-1] = dataclasses.replace(
-                            index_rows[-1], n_ids=bridged.n_ids
-                        )
-
-                ctx.progress.on_entry_end(i + 1, len(work_items), key)
-                ctx.heartbeat(i + 1)
-        except ProcessCancelled as exc:
-            raise Cancelled() from exc
-        finally:
-            if index_rows:
-                idx.append(index_rows)
-                idx.mark_finished(run_id)
-
-    held = f", {len(skipped)} held by another execution" if skipped else ""
-    print(
-        f"[run_sleap] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(work_items)} sequences{held}) -> {run_root}"
-    )
-    return run_id
 
 
 def list_sleap_runs(ds: Dataset) -> pd.DataFrame:
