@@ -191,3 +191,28 @@ def test_a_root_with_no_registered_opener_is_left_alone(tmp_path: Path) -> None:
 
     assert reconcilable_index("media_raw") is None
     assert ds.reindex("media_raw", dry_run=False) == {}
+
+
+def test_every_tracker_root_registers_a_reconcilable_index() -> None:
+    """All of them, not just TREx -- an unregistered root is reclaimed by nothing.
+
+    ``register_reconcilable_index`` is an import side effect of each tracker's
+    ``dataset_runs``, so a new tracker that declares a ``TrackingRoot`` row and
+    forgets the registration leaves its index reachable by no reindex or prune
+    pass: a working directory deleted by hand keeps its row forever, and
+    ``mosaic sweep-tracking`` silently reclaims nothing. Only TREx was asserted,
+    which is exactly the assertion a copied integration passes without doing the
+    thing.
+    """
+    from mosaic.tracking import register_ops
+
+    # Registration happens as the import side effect; this is its explicit marker.
+    register_ops()
+
+    unregistered = sorted(
+        key
+        for key, root in TRACKING_ROOTS.items()
+        if root.retention == "tracker" and reconcilable_index(key) is None
+    )
+
+    assert unregistered == []
