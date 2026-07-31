@@ -1,0 +1,627 @@
+{
+  "coco_keypoints": {
+    "files": {
+      "test/images/vidA__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/vidA__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/vidA__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.281250 0.450000 0.250000 0.233333 0.250000 0.416667 2 0.325000 0.466667 2 0.000000 0.000000 0\n"
+      },
+      "test/labels/vidA__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.381250 0.516667 0.250000 0.233333 0.350000 0.483333 2 0.425000 0.533333 2 0.000000 0.000000 0\n"
+      },
+      "train/images/vidA__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/vidA__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 0.431250 0.550000 0.250000 0.233333 0.400000 0.516667 2 0.475000 0.566667 2 0.000000 0.000000 0\n0 0.618750 0.733333 0.187500 0.183333 0.556250 0.683333 2 0.618750 0.733333 1 0.587500 0.766667 2\n"
+      },
+      "train/labels/vidB__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.481250 0.583333 0.250000 0.233333 0.450000 0.550000 2 0.525000 0.600000 2 0.000000 0.000000 0\n"
+      },
+      "train/labels/vidB__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.581250 0.650000 0.250000 0.233333 0.550000 0.616667 2 0.625000 0.666667 2 0.000000 0.000000 0\n"
+      },
+      "train/labels/vidB__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 0.631250 0.683333 0.250000 0.233333 0.600000 0.650000 2 0.675000 0.700000 2 0.000000 0.000000 0\n0 0.818750 0.866667 0.187500 0.183333 0.756250 0.816667 2 0.818750 0.866667 1 0.787500 0.900000 2\n"
+      },
+      "valid/images/vidA__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/vidB__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/vidA__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 0.331250 0.483333 0.250000 0.233333 0.300000 0.450000 2 0.375000 0.500000 2 0.000000 0.000000 0\n0 0.518750 0.666667 0.187500 0.183333 0.456250 0.616667 2 0.518750 0.666667 1 0.487500 0.700000 2\n"
+      },
+      "valid/labels/vidB__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 0.531250 0.616667 0.250000 0.233333 0.500000 0.583333 2 0.575000 0.633333 2 0.000000 0.000000 0\n0 0.718750 0.800000 0.187500 0.183333 0.656250 0.750000 2 0.718750 0.800000 1 0.687500 0.833333 2\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "nose",
+        "thorax",
+        "abdomen"
+      ],
+      "skeleton": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "type": "KeypointSchema"
+    }
+  },
+  "coco_keypoints_bbox_from_keypoints": {
+    "files": {
+      "test/images/vidA__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/vidA__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/vidA__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.178750 0.256667 0.357500 0.513333 0.250000 0.416667 2 0.325000 0.466667 2 0.000000 0.000000 0\n"
+      },
+      "test/labels/vidA__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.233750 0.293333 0.467500 0.586667 0.350000 0.483333 2 0.425000 0.533333 2 0.000000 0.000000 0\n"
+      },
+      "train/images/vidA__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/vidA__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 0.261250 0.311667 0.522500 0.623333 0.400000 0.516667 2 0.475000 0.566667 2 0.000000 0.000000 0\n0 0.587500 0.725000 0.075000 0.100000 0.556250 0.683333 2 0.618750 0.733333 1 0.587500 0.766667 2\n"
+      },
+      "train/labels/vidB__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.288750 0.330000 0.577500 0.660000 0.450000 0.550000 2 0.525000 0.600000 2 0.000000 0.000000 0\n"
+      },
+      "train/labels/vidB__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.343750 0.366667 0.687500 0.733333 0.550000 0.616667 2 0.625000 0.666667 2 0.000000 0.000000 0\n"
+      },
+      "train/labels/vidB__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 0.371250 0.385000 0.742500 0.770000 0.600000 0.650000 2 0.675000 0.700000 2 0.000000 0.000000 0\n0 0.787500 0.858333 0.075000 0.100000 0.756250 0.816667 2 0.818750 0.866667 1 0.787500 0.900000 2\n"
+      },
+      "valid/images/vidA__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/vidB__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/vidA__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 0.206250 0.275000 0.412500 0.550000 0.300000 0.450000 2 0.375000 0.500000 2 0.000000 0.000000 0\n0 0.487500 0.658333 0.075000 0.100000 0.456250 0.616667 2 0.518750 0.666667 1 0.487500 0.700000 2\n"
+      },
+      "valid/labels/vidB__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 0.316250 0.348333 0.632500 0.696667 0.500000 0.583333 2 0.575000 0.633333 2 0.000000 0.000000 0\n0 0.687500 0.791667 0.075000 0.100000 0.656250 0.750000 2 0.718750 0.800000 1 0.687500 0.833333 2\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "nose",
+        "thorax",
+        "abdomen"
+      ],
+      "skeleton": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "type": "KeypointSchema"
+    }
+  },
+  "coco_localizer": {
+    "files": {
+      "manifest.json": {
+        "kind": "text",
+        "text": "{\n  \"class_names\": [\n    \"mouse\"\n  ],\n  \"num_classes\": 1,\n  \"patch_size\": 16,\n  \"neg_ratio\": 1.0,\n  \"min_negative_dist\": 24.0,\n  \"thresholds\": {},\n  \"splits\": {\n    \"train\": 12,\n    \"valid\": 8,\n    \"test\": 4\n  }\n}"
+      },
+      "test/labels.npy": {
+        "digest": "f839ccb49a528e15",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          4,
+          1
+        ]
+      },
+      "test/patches.npy": {
+        "digest": "24ba2e5e2557e649",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          4,
+          16,
+          16
+        ]
+      },
+      "train/labels.npy": {
+        "digest": "28dab8bddd05412e",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          1
+        ]
+      },
+      "train/patches.npy": {
+        "digest": "a589f682e5e4f3d9",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          16,
+          16
+        ]
+      },
+      "valid/labels.npy": {
+        "digest": "c85613c6441910cc",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          8,
+          1
+        ]
+      },
+      "valid/patches.npy": {
+        "digest": "c63280ef4a9b1412",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          8,
+          16,
+          16
+        ]
+      }
+    },
+    "schema": {
+      "names": [
+        "mouse"
+      ],
+      "thresholds": {},
+      "type": "LocalizerSchema"
+    }
+  },
+  "coco_points": {
+    "files": {
+      "test/images/vidA__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/vidA__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/vidA__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.250000 0.416667\n"
+      },
+      "test/labels/vidA__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.350000 0.483333\n"
+      },
+      "train/images/vidA__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/vidA__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.400000 0.516667\n0 12.0 0.556250 0.683333\n"
+      },
+      "train/labels/vidB__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.450000 0.550000\n"
+      },
+      "train/labels/vidB__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.550000 0.616667\n"
+      },
+      "train/labels/vidB__frame_0003.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.600000 0.650000\n0 12.0 0.756250 0.816667\n"
+      },
+      "valid/images/vidA__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/vidB__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/vidA__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.300000 0.450000\n0 12.0 0.456250 0.616667\n"
+      },
+      "valid/labels/vidB__frame_0001.txt": {
+        "kind": "text",
+        "text": "0 12.0 0.500000 0.583333\n0 12.0 0.656250 0.750000\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "mouse"
+      ],
+      "radii": {
+        "0": 12.0
+      },
+      "type": "PointDetectionSchema"
+    }
+  },
+  "cvat_localizer": {
+    "files": {
+      "manifest.json": {
+        "kind": "text",
+        "text": "{\n  \"class_names\": [\n    \"worker\",\n    \"queen\"\n  ],\n  \"num_classes\": 2,\n  \"patch_size\": 16,\n  \"neg_ratio\": 1.0,\n  \"min_negative_dist\": 24.0,\n  \"thresholds\": {},\n  \"splits\": {\n    \"train\": 24,\n    \"valid\": 12,\n    \"test\": 12\n  }\n}"
+      },
+      "test/labels.npy": {
+        "digest": "ea3309cafd890ab5",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          2
+        ]
+      },
+      "test/patches.npy": {
+        "digest": "45fd9727de060234",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          16,
+          16
+        ]
+      },
+      "train/labels.npy": {
+        "digest": "daeb739befcd50b2",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          24,
+          2
+        ]
+      },
+      "train/patches.npy": {
+        "digest": "29865263667e923a",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          24,
+          16,
+          16
+        ]
+      },
+      "valid/labels.npy": {
+        "digest": "8f79e27b711b92dc",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          2
+        ]
+      },
+      "valid/patches.npy": {
+        "digest": "bdf47128d3f3a6f6",
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [
+          12,
+          16,
+          16
+        ]
+      }
+    },
+    "schema": {
+      "names": [
+        "worker",
+        "queen"
+      ],
+      "thresholds": {},
+      "type": "LocalizerSchema"
+    }
+  },
+  "cvat_points": {
+    "files": {
+      "test/images/vidA__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/vidA__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/vidA__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.250000 0.416667 0.250000 0.333333 0.250000 0.416667 2\n0 0.375000 0.516667 0.250000 0.333333 0.375000 0.516667 2\n0 0.437500 0.566667 0.250000 0.333333 0.437500 0.566667 2\n"
+      },
+      "test/labels/vidA__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.350000 0.483333 0.250000 0.333333 0.350000 0.483333 2\n0 0.475000 0.583333 0.250000 0.333333 0.475000 0.583333 2\n0 0.537500 0.633333 0.250000 0.333333 0.537500 0.633333 2\n"
+      },
+      "train/images/vidA__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/vidA__frame_0003.txt": {
+        "kind": "text",
+        "text": "1 0.400000 0.516667 0.250000 0.333333 0.400000 0.516667 2\n0 0.525000 0.616667 0.250000 0.333333 0.525000 0.616667 2\n0 0.587500 0.666667 0.250000 0.333333 0.587500 0.666667 2\n"
+      },
+      "train/labels/vidB__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 0.450000 0.550000 0.250000 0.333333 0.450000 0.550000 2\n0 0.575000 0.650000 0.250000 0.333333 0.575000 0.650000 2\n0 0.637500 0.700000 0.250000 0.333333 0.637500 0.700000 2\n"
+      },
+      "train/labels/vidB__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 0.550000 0.616667 0.250000 0.333333 0.550000 0.616667 2\n0 0.675000 0.716667 0.250000 0.333333 0.675000 0.716667 2\n0 0.737500 0.766667 0.250000 0.333333 0.737500 0.766667 2\n"
+      },
+      "train/labels/vidB__frame_0003.txt": {
+        "kind": "text",
+        "text": "1 0.600000 0.650000 0.250000 0.333333 0.600000 0.650000 2\n0 0.725000 0.750000 0.250000 0.333333 0.725000 0.750000 2\n0 0.787500 0.800000 0.250000 0.333333 0.787500 0.800000 2\n"
+      },
+      "valid/images/vidA__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/vidB__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/vidA__frame_0001.txt": {
+        "kind": "text",
+        "text": "1 0.300000 0.450000 0.250000 0.333333 0.300000 0.450000 2\n0 0.425000 0.550000 0.250000 0.333333 0.425000 0.550000 2\n0 0.487500 0.600000 0.250000 0.333333 0.487500 0.600000 2\n"
+      },
+      "valid/labels/vidB__frame_0001.txt": {
+        "kind": "text",
+        "text": "1 0.500000 0.583333 0.250000 0.333333 0.500000 0.583333 2\n0 0.625000 0.683333 0.250000 0.333333 0.625000 0.683333 2\n0 0.687500 0.733333 0.250000 0.333333 0.687500 0.733333 2\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "thorax"
+      ],
+      "skeleton": [],
+      "type": "KeypointSchema"
+    }
+  },
+  "cvat_points_polo": {
+    "files": {
+      "test/images/vidA__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/vidA__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/vidA__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 10.0 0.250000 0.416667\n0 10.0 0.375000 0.516667\n0 10.0 0.437500 0.566667\n"
+      },
+      "test/labels/vidA__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 10.0 0.350000 0.483333\n0 10.0 0.475000 0.583333\n0 10.0 0.537500 0.633333\n"
+      },
+      "train/images/vidA__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/vidB__frame_0003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/vidA__frame_0003.txt": {
+        "kind": "text",
+        "text": "1 18.0 0.400000 0.516667\n0 10.0 0.525000 0.616667\n0 10.0 0.587500 0.666667\n"
+      },
+      "train/labels/vidB__frame_0000.txt": {
+        "kind": "text",
+        "text": "0 10.0 0.450000 0.550000\n0 10.0 0.575000 0.650000\n0 10.0 0.637500 0.700000\n"
+      },
+      "train/labels/vidB__frame_0002.txt": {
+        "kind": "text",
+        "text": "0 10.0 0.550000 0.616667\n0 10.0 0.675000 0.716667\n0 10.0 0.737500 0.766667\n"
+      },
+      "train/labels/vidB__frame_0003.txt": {
+        "kind": "text",
+        "text": "1 18.0 0.600000 0.650000\n0 10.0 0.725000 0.750000\n0 10.0 0.787500 0.800000\n"
+      },
+      "valid/images/vidA__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/vidB__frame_0001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/vidA__frame_0001.txt": {
+        "kind": "text",
+        "text": "1 18.0 0.300000 0.450000\n0 10.0 0.425000 0.550000\n0 10.0 0.487500 0.600000\n"
+      },
+      "valid/labels/vidB__frame_0001.txt": {
+        "kind": "text",
+        "text": "1 18.0 0.500000 0.583333\n0 10.0 0.625000 0.683333\n0 10.0 0.687500 0.733333\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "worker",
+        "queen"
+      ],
+      "radii": {
+        "0": 10.0,
+        "1": 18.0
+      },
+      "type": "PointDetectionSchema"
+    }
+  },
+  "lightning_pose": {
+    "files": {
+      "test/images/frame_00000000.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/images/frame_00000002.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "test/labels/frame_00000000.txt": {
+        "kind": "text",
+        "text": "0 0.306250 0.458333 0.135000 0.100000 0.250000 0.416667 2 0.306250 0.458333 2 0.362500 0.500000 0\n"
+      },
+      "test/labels/frame_00000002.txt": {
+        "kind": "text",
+        "text": "0 0.406250 0.525000 0.135000 0.100000 0.350000 0.483333 2 0.406250 0.525000 2 0.462500 0.566667 2\n"
+      },
+      "train/images/frame_00000003.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/frame_00000004.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/frame_00000006.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/images/frame_00000007.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "train/labels/frame_00000003.txt": {
+        "kind": "text",
+        "text": "0 0.456250 0.558333 0.135000 0.100000 0.400000 0.516667 2 0.456250 0.558333 2 0.512500 0.600000 0\n"
+      },
+      "train/labels/frame_00000004.txt": {
+        "kind": "text",
+        "text": "0 0.506250 0.591667 0.135000 0.100000 0.450000 0.550000 2 0.506250 0.591667 2 0.562500 0.633333 2\n"
+      },
+      "train/labels/frame_00000006.txt": {
+        "kind": "text",
+        "text": "0 0.606250 0.658333 0.135000 0.100000 0.550000 0.616667 2 0.606250 0.658333 2 0.662500 0.700000 0\n"
+      },
+      "train/labels/frame_00000007.txt": {
+        "kind": "text",
+        "text": "0 0.656250 0.691667 0.135000 0.100000 0.600000 0.650000 2 0.656250 0.691667 2 0.712500 0.733333 2\n"
+      },
+      "valid/images/frame_00000001.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/images/frame_00000005.png": {
+        "kind": "image",
+        "symlink": true
+      },
+      "valid/labels/frame_00000001.txt": {
+        "kind": "text",
+        "text": "0 0.356250 0.491667 0.135000 0.100000 0.300000 0.450000 2 0.356250 0.491667 2 0.412500 0.533333 2\n"
+      },
+      "valid/labels/frame_00000005.txt": {
+        "kind": "text",
+        "text": "0 0.556250 0.625000 0.135000 0.100000 0.500000 0.583333 2 0.556250 0.625000 2 0.612500 0.666667 2\n"
+      }
+    },
+    "schema": {
+      "names": [
+        "nose",
+        "thorax",
+        "abdomen"
+      ],
+      "skeleton": [],
+      "type": "KeypointSchema"
+    }
+  }
+}
