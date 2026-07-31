@@ -31,13 +31,11 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params
-from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
@@ -68,6 +66,7 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
+from mosaic.tracking.model_refs import resolve_model_set
 
 from .run import run_litpose_predict
 
@@ -106,114 +105,6 @@ class LitposeIndexRow(TrackerRunRowBase):
 def litpose_index(path: Path) -> IndexCSV[LitposeIndexRow]:
     """The litpose run index, one row per (run, entry)."""
     return tracker_index(path, LitposeIndexRow)
-
-
-# --- Model resolution -----------------------------------------------------
-
-# Lightning Pose model-type (head) names, matched against the config text.
-# Longest-first so ``heatmap_mhcrnn`` is not misread as ``heatmap``.
-_MODEL_TYPES: Final[tuple[str, ...]] = (
-    "heatmap_multiview_transformer",
-    "heatmap_mhcrnn",
-    "regression",
-    "heatmap",
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedLitposeModel:
-    """A resolved Lightning Pose model reference: what runs, and what names it.
-
-    ``path`` is the model directory handed to inference. ``checkpoint`` and
-    ``config`` are the weights and the ``config.yaml`` inside it, used both for the
-    content digest and for ``consumed_source_roots``. ``model_id`` is the identity
-    term the settings carry -- a digest of the weights *and* config (the config
-    carries ``image_resize_dims`` / ``keypoint_names``, which change the output),
-    **never a path**. ``model_type`` is provenance read from the config, not
-    identity.
-    """
-
-    path: Path
-    checkpoint: Path
-    config: Path
-    model_id: str
-    model_type: str
-
-
-def _find_checkpoint(model_dir: Path) -> Path:
-    """Return the weights file inside *model_dir*, or raise.
-
-    Prefers a ``*best*`` checkpoint under the canonical
-    ``tb_logs/<name>/version_*/checkpoints/`` layout, deterministically (sorted),
-    so a fixed model directory always resolves to the same weights.
-    """
-    candidates = sorted(model_dir.glob("tb_logs/*/version_*/checkpoints/*.ckpt"))
-    if not candidates:
-        candidates = sorted(model_dir.glob("**/*.ckpt"))
-    if not candidates:
-        raise FileNotFoundError(
-            f"No Lightning Pose checkpoint (tb_logs/.../checkpoints/*.ckpt) found "
-            f"in model directory: {model_dir}"
-        )
-    best = [c for c in candidates if "best" in c.name.lower()]
-    return best[-1] if best else candidates[-1]
-
-
-def _read_model_type(config: Path) -> str:
-    """Best-effort model-type (head) name from the config text, for provenance.
-
-    A token scan over the config *text* rather than a structured parse: it works
-    without a YAML dependency, and this is provenance recorded on the row, not
-    identity, so an empty string when it cannot be read is acceptable.
-    """
-    try:
-        text = config.read_text()
-    except OSError:
-        return ""
-    for model_type in _MODEL_TYPES:
-        if model_type in text:
-            return model_type
-    return ""
-
-
-def resolve_litpose_model(model_path: Path | str) -> ResolvedLitposeModel:
-    """Resolve an external Lightning Pose model directory to weights + a content digest.
-
-    The reference is an external model *directory* (Lightning Pose models are not
-    mosaic training runs), so identity is a digest over the checkpoint and the
-    ``config.yaml``. Resolving here, before anything is minted, means an
-    unresolvable reference aborts before any run root or tracks variant is written.
-    The whole directory is deliberately *not* fingerprinted: Lightning Pose writes
-    ``video_preds/`` into it, which would spuriously bust identity.
-    """
-    model_dir = Path(model_path)
-    if not model_dir.exists():
-        raise FileNotFoundError(
-            f"Lightning Pose model directory does not exist: {model_dir}"
-        )
-    if not model_dir.is_dir():
-        raise NotADirectoryError(
-            f"Lightning Pose model reference is not a directory: {model_dir}"
-        )
-    config = model_dir / "config.yaml"
-    if not config.exists():
-        raise FileNotFoundError(
-            f"Lightning Pose model directory has no config.yaml: {model_dir}"
-        )
-    checkpoint = _find_checkpoint(model_dir)
-    model_id = hash_params(
-        {
-            "litpose_config": file_digest(config),
-            "litpose_weights": file_digest(checkpoint),
-        }
-    )
-    return ResolvedLitposeModel(
-        path=model_dir,
-        checkpoint=checkpoint,
-        config=config,
-        model_id=model_id,
-        model_type=_read_model_type(config),
-    )
 
 
 # --- Settings -------------------------------------------------------------
@@ -346,7 +237,7 @@ def run_litpose(
     # settings carry is the weights' identity, not the path that pointed at them.
     # An unresolvable reference aborts here, before any run root or tracks variant
     # is recorded.
-    resolved_model = resolve_litpose_model(model_path)
+    resolved_model = resolve_model_set(ds, [str(model_path)], LITPOSE_KIND)
 
     settings = litpose_settings(
         model_id=resolved_model.model_id, litpose_overrides=litpose_overrides
@@ -453,7 +344,7 @@ def run_litpose(
             tracks_variant=minted.tracks_variant,
             producer_run_id=minted.run_id,
             video_path=item.video_path,
-            model_files=[resolved_model.checkpoint, resolved_model.config],
+            model_files=list(resolved_model.significant_files),
             fps=item.fps,
             overwrite=job.overwrite or recomputed,
         )

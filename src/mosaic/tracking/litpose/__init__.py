@@ -25,9 +25,7 @@ Equivalently set ``MOSAIC_LITPOSE_CONDA_ENV=litpose`` once and drive it from the
 
 from mosaic.tracking.litpose.dataset_runs import (
     LitposeIndexRow,
-    ResolvedLitposeModel,
     list_litpose_runs,
-    resolve_litpose_model,
     run_litpose,
 )
 from mosaic.tracking.litpose.run import (
@@ -42,9 +40,7 @@ __all__ = [
     "LitposeIndexRow",
     "LitposeNotFoundError",
     "LitposePredictResult",
-    "ResolvedLitposeModel",
     "list_litpose_runs",
-    "resolve_litpose_model",
     "run_litpose",
     "run_litpose_predict",
 ]

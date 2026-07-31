@@ -630,7 +630,7 @@ def test_sleap_model_identity_is_content_not_path(tmp_path):
     # Two model directories with identical weights mint the same model_id (and so
     # the same run_id); different weights mint a different one. "Name the weights,
     # not the path they sat at."
-    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+    from mosaic.tracking.model_refs import resolve_model_set
 
     a = tmp_path / "a" / "model"
     b = tmp_path / "b" / "model"
@@ -641,9 +641,9 @@ def test_sleap_model_identity_is_content_not_path(tmp_path):
     c.mkdir(parents=True)
     (c / "best.ckpt").write_bytes(b"other-weights")
 
-    id_a = resolve_sleap_models([str(a)]).model_id
-    id_b = resolve_sleap_models([str(b)]).model_id
-    id_c = resolve_sleap_models([str(c)]).model_id
+    id_a = resolve_model_set(None, [str(a)], "sleap").model_id
+    id_b = resolve_model_set(None, [str(b)], "sleap").model_id
+    id_c = resolve_model_set(None, [str(c)], "sleap").model_id
     assert id_a == id_b  # same content, different paths -> same identity
     assert id_a != id_c  # different content -> different identity
 
@@ -651,7 +651,7 @@ def test_sleap_model_identity_is_content_not_path(tmp_path):
 def test_sleap_model_order_is_significant(tmp_path):
     # Top-down passes two directories (centroid, then centered-instance); the order
     # is not interchangeable, so it must reach identity.
-    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+    from mosaic.tracking.model_refs import resolve_model_set
 
     d1 = tmp_path / "centroid"
     d2 = tmp_path / "instance"
@@ -659,20 +659,20 @@ def test_sleap_model_order_is_significant(tmp_path):
     d2.mkdir()
     (d1 / "best.ckpt").write_bytes(b"centroid")
     (d2 / "best.ckpt").write_bytes(b"instance")
-    forward = resolve_sleap_models([str(d1), str(d2)]).model_id
-    reverse = resolve_sleap_models([str(d2), str(d1)]).model_id
+    forward = resolve_model_set(None, [str(d1), str(d2)], "sleap").model_id
+    reverse = resolve_model_set(None, [str(d2), str(d1)], "sleap").model_id
     assert forward != reverse
 
 
 def test_sleap_unresolvable_model_raises(tmp_path):
-    from mosaic.tracking.sleap.dataset_runs import resolve_sleap_models
+    from mosaic.tracking.model_refs import resolve_model_set
 
     with pytest.raises(FileNotFoundError):
-        resolve_sleap_models([str(tmp_path / "missing")])
+        resolve_model_set(None, [str(tmp_path / "missing")], "sleap")
     empty = tmp_path / "no_ckpt"
     empty.mkdir()
     with pytest.raises(FileNotFoundError):
-        resolve_sleap_models([str(empty)])
+        resolve_model_set(None, [str(empty)], "sleap")
 
 
 # --- litpose op (registered; run_id parity with the standalone run_litpose) -
@@ -751,15 +751,15 @@ def test_litpose_params_exclude_throughput_from_run_id():
 def test_litpose_model_identity_is_content_not_path(tmp_path):
     # Two model directories with identical config + weights mint the same model_id
     # (and so the same run_id); different weights mint a different one.
-    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+    from mosaic.tracking.model_refs import resolve_model_set
 
     a = _fake_litpose_model(tmp_path / "a", weights=b"same-weights")
     b = _fake_litpose_model(tmp_path / "b", weights=b"same-weights")
     c = _fake_litpose_model(tmp_path / "c", weights=b"other-weights")
 
-    id_a = resolve_litpose_model(str(a)).model_id
-    id_b = resolve_litpose_model(str(b)).model_id
-    id_c = resolve_litpose_model(str(c)).model_id
+    id_a = resolve_model_set(None, [str(a)], "litpose").model_id
+    id_b = resolve_model_set(None, [str(b)], "litpose").model_id
+    id_c = resolve_model_set(None, [str(c)], "litpose").model_id
     assert id_a == id_b  # same content, different paths -> same identity
     assert id_a != id_c  # different weights -> different identity
 
@@ -767,7 +767,7 @@ def test_litpose_model_identity_is_content_not_path(tmp_path):
 def test_litpose_config_is_part_of_identity(tmp_path):
     # config.yaml shapes the output (resize dims, keypoint names), so it reaches
     # identity: same weights + different config -> different run.
-    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+    from mosaic.tracking.model_refs import resolve_model_set
 
     a = _fake_litpose_model(tmp_path / "a")
     b = _fake_litpose_model(tmp_path / "b")
@@ -775,28 +775,29 @@ def test_litpose_config_is_part_of_identity(tmp_path):
         "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
     )
     assert (
-        resolve_litpose_model(str(a)).model_id != resolve_litpose_model(str(b)).model_id
+        resolve_model_set(None, [str(a)], "litpose").model_id
+        != resolve_model_set(None, [str(b)], "litpose").model_id
     )
 
 
 def test_litpose_unresolvable_model_raises(tmp_path):
-    from mosaic.tracking.litpose.dataset_runs import resolve_litpose_model
+    from mosaic.tracking.model_refs import resolve_model_set
 
     with pytest.raises(FileNotFoundError):
-        resolve_litpose_model(str(tmp_path / "missing"))
+        resolve_model_set(None, [str(tmp_path / "missing")], "litpose")
     # a checkpoint but no config.yaml
     no_config = tmp_path / "no_config"
     ckpt = no_config / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
     ckpt.parent.mkdir(parents=True)
     ckpt.write_bytes(b"w")
     with pytest.raises(FileNotFoundError):
-        resolve_litpose_model(str(no_config))
+        resolve_model_set(None, [str(no_config)], "litpose")
     # a config.yaml but no checkpoint
     no_ckpt = tmp_path / "no_ckpt"
     no_ckpt.mkdir()
     (no_ckpt / "config.yaml").write_text("model: {}\n")
     with pytest.raises(FileNotFoundError):
-        resolve_litpose_model(str(no_ckpt))
+        resolve_model_set(None, [str(no_ckpt)], "litpose")
 
 
 # --- convert-points op (real converter, no heavy backend) ------------------

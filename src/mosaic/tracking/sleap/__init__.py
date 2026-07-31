@@ -31,10 +31,8 @@ Equivalently set ``MOSAIC_SLEAP_CONDA_ENV=sleap`` once and drive it from the
 """
 
 from mosaic.tracking.sleap.dataset_runs import (
-    ResolvedSleapModels,
     SleapIndexRow,
     list_sleap_runs,
-    resolve_sleap_models,
     run_sleap,
 )
 from mosaic.tracking.sleap.run import (
@@ -47,14 +45,12 @@ from mosaic.tracking.sleap.run import (
 )
 
 __all__ = [
-    "ResolvedSleapModels",
     "SleapConvertResult",
     "SleapError",
     "SleapIndexRow",
     "SleapNotFoundError",
     "SleapTrackResult",
     "list_sleap_runs",
-    "resolve_sleap_models",
     "run_sleap",
     "run_sleap_convert",
     "run_sleap_track",

@@ -33,13 +33,11 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params
-from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
@@ -71,6 +69,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
+from mosaic.tracking.model_refs import resolve_model_set
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 
 from .run import run_sleap_convert, run_sleap_track
@@ -111,115 +110,6 @@ class SleapIndexRow(TrackerRunRowBase):
 def sleap_index(path: Path) -> IndexCSV[SleapIndexRow]:
     """The sleap run index, one row per (run, entry)."""
     return tracker_index(path, SleapIndexRow)
-
-
-# --- Model resolution -----------------------------------------------------
-
-# SLEAP checkpoint filenames, in preference order. ``best.ckpt`` is current
-# sleap-nn; ``best_model.h5`` is a classic (<=1.4) UNet checkpoint.
-_CHECKPOINT_NAMES: Final[tuple[str, ...]] = ("best.ckpt", "best_model.h5")
-_CONFIG_NAMES: Final[tuple[str, ...]] = ("training_config.yaml", "training_config.json")
-# SLEAP head types, matched against the config text. Longest-first so a
-# ``multi_class_topdown`` config is not misread as ``centered_instance``.
-_HEAD_TYPES: Final[tuple[str, ...]] = (
-    "multi_class_topdown",
-    "multi_class_bottomup",
-    "centered_instance",
-    "single_instance",
-    "centroid",
-    "bottomup",
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedSleapModels:
-    """A resolved SLEAP model reference: what runs, and what names it.
-
-    ``paths`` are the model directories handed to ``sleap-track -m`` (order
-    preserved -- top-down passes centroid then centered-instance). ``checkpoints``
-    is the weights file inside each, used both for the content digest and for
-    ``consumed_source_roots``. ``model_id`` is the identity term the settings
-    carry -- a digest of the weights, **never a path**. ``model_type`` is
-    provenance read from the config, not identity.
-    """
-
-    paths: list[Path]
-    checkpoints: list[Path]
-    model_id: str
-    model_type: str
-
-
-def _find_checkpoint(model_dir: Path) -> Path:
-    """Return the weights file inside *model_dir*, or raise."""
-    for name in _CHECKPOINT_NAMES:
-        candidate = model_dir / name
-        if candidate.exists():
-            return candidate
-    others = sorted(model_dir.glob("*.ckpt"))
-    if others:
-        return others[0]
-    raise FileNotFoundError(
-        f"No SLEAP checkpoint ({' / '.join(_CHECKPOINT_NAMES)}) found in "
-        f"model directory: {model_dir}"
-    )
-
-
-def _read_model_type(model_dir: Path) -> str:
-    """Best-effort model-type (head) name from the training config, for provenance.
-
-    A token scan over the config *text* rather than a structured parse: it works
-    for both the current ``.yaml`` and classic ``.json`` config without a YAML
-    dependency, and this is provenance recorded on the row, not identity, so an
-    empty string when it cannot be read is acceptable.
-    """
-    for name in _CONFIG_NAMES:
-        config = model_dir / name
-        if not config.exists():
-            continue
-        try:
-            text = config.read_text()
-        except OSError:
-            return ""
-        for head in _HEAD_TYPES:
-            if head in text:
-                return head
-        return ""
-    return ""
-
-
-def resolve_sleap_models(model_paths: Sequence[Path | str]) -> ResolvedSleapModels:
-    """Resolve external SLEAP model directory(ies) to weights + a content digest.
-
-    Each reference is an external model *directory* (SLEAP models are not mosaic
-    training runs), so identity is a digest over the weights, order-sensitive
-    across the directories -- top-down's two folders are not interchangeable.
-    Resolving here, before anything is minted, means an unresolvable reference
-    aborts before any run root or tracks variant is written.
-    """
-    if not model_paths:
-        raise ValueError("run_sleap requires at least one model directory")
-    dirs = [Path(m) for m in model_paths]
-    checkpoints: list[Path] = []
-    digests: list[str] = []
-    model_type = ""
-    for model_dir in dirs:
-        if not model_dir.exists():
-            raise FileNotFoundError(
-                f"SLEAP model directory does not exist: {model_dir}"
-            )
-        if not model_dir.is_dir():
-            raise NotADirectoryError(
-                f"SLEAP model reference is not a directory: {model_dir}"
-            )
-        checkpoint = _find_checkpoint(model_dir)
-        checkpoints.append(checkpoint)
-        digests.append(file_digest(checkpoint))
-        if not model_type:
-            model_type = _read_model_type(model_dir)
-    model_id = hash_params({"sleap_weights": digests})
-    return ResolvedSleapModels(
-        paths=dirs, checkpoints=checkpoints, model_id=model_id, model_type=model_type
-    )
 
 
 # --- Settings -------------------------------------------------------------
@@ -376,7 +266,7 @@ def run_sleap(
     # them. An unresolvable reference aborts here, before any run root or tracks
     # variant is recorded -- a recorded variant naming weights that could not be
     # found describes a run that never happened.
-    resolved_models = resolve_sleap_models(model_paths)
+    resolved_models = resolve_model_set(ds, [str(m) for m in model_paths], SLEAP_KIND)
 
     settings = sleap_settings(
         model_id=resolved_models.model_id,
@@ -537,7 +427,7 @@ def run_sleap(
             tracks_variant=minted.tracks_variant,
             producer_run_id=minted.run_id,
             video_path=item.video_path,
-            model_checkpoints=resolved_models.checkpoints,
+            model_checkpoints=list(resolved_models.significant_files),
             fps=item.fps,
             overwrite=job.overwrite or recomputed,
         )
