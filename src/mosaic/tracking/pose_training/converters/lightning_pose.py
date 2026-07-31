@@ -22,10 +22,10 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.annotations import KeypointSchema
+from mosaic.core.annotations.bbox import keypoints_to_bbox
 
 from .base import (
     format_yolo_pose_line,
-    keypoints_to_bbox,
     normalize_coords,
     write_yolo_label,
 )

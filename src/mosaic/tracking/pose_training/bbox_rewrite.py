@@ -14,6 +14,7 @@ This is the post-processing step that lets you train a model whose detection
 bbox encloses the full animal body even when only midline keypoints were
 labeled — without relabeling.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +25,7 @@ from typing import Literal
 import numpy as np
 from PIL import Image
 
-from .converters.base import (
-    BBoxMethod,
-    keypoints_to_bbox,
-)
+from mosaic.core.annotations.bbox import BBoxMethod, keypoints_to_bbox
 
 ImageLinkMode = Literal["copy", "symlink", "auto"]
 
@@ -51,7 +49,9 @@ def _parse_row(line: str, num_kpts: int) -> tuple[int, list[float], np.ndarray] 
     return cls, cxcywh, kp
 
 
-def _format_row(cls: int, cxcywh: tuple[float, float, float, float], kp: np.ndarray) -> str:
+def _format_row(
+    cls: int, cxcywh: tuple[float, float, float, float], kp: np.ndarray
+) -> str:
     """Render a YOLO-pose label row back to string form."""
     parts = [str(cls)] + [f"{v:.6f}" for v in cxcywh]
     for x, y, v in kp:
@@ -188,9 +188,7 @@ def rewrite_dataset_bboxes(
         splits = tuple(s for s in _SPLITS if (src_dir / s / "labels").exists())
 
     if method == "oriented" and (head_idx is None or tail_idx is None):
-        raise ValueError(
-            "method='oriented' requires both head_idx and tail_idx"
-        )
+        raise ValueError("method='oriented' requires both head_idx and tail_idx")
 
     summary: dict = {"total": _empty_split_summary()}
 
@@ -263,7 +261,9 @@ def rewrite_dataset_bboxes(
                         split_sum["rows_fallback_to_isotropic"] += 1
 
                 new_bbox = keypoints_to_bbox(
-                    kps_xy, img_w, img_h,
+                    kps_xy,
+                    img_w,
+                    img_h,
                     method=method,
                     head_idx=head_idx,
                     tail_idx=tail_idx,

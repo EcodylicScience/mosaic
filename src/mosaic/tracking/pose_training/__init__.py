@@ -11,6 +11,12 @@ Requires optional dependency:
 """
 
 from mosaic.core.annotations import KeypointSchema
+from mosaic.core.annotations.bbox import (
+    BboxPolicy,
+    keypoints_to_bbox,
+    keypoints_to_bbox_isotropic,
+    keypoints_to_bbox_oriented,
+)
 
 from . import converters
 from .converters import (
@@ -24,9 +30,6 @@ from .converters import (
 from .converters.base import (
     PointDetectionSchema,
     LocalizerSchema,
-    keypoints_to_bbox,
-    keypoints_to_bbox_isotropic,
-    keypoints_to_bbox_oriented,
 )
 from .bbox_rewrite import rewrite_dataset_bboxes
 from .prep import (
@@ -93,6 +96,7 @@ __all__ = [
     "find_best_model",
     "find_last_checkpoint",
     "inference_to_dataframe",
+    "BboxPolicy",
     "keypoints_to_bbox",
     "keypoints_to_bbox_isotropic",
     "keypoints_to_bbox_oriented",
