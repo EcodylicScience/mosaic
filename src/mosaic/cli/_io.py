@@ -17,6 +17,8 @@ from typing import NoReturn
 
 import typer
 
+from mosaic.core.helpers import parse_entry_tokens
+
 
 @contextlib.contextmanager
 def stdout_to_stderr() -> Generator[None]:
@@ -74,14 +76,11 @@ def load_json_arg(value: str | None) -> object | None:
 
 
 def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
-    """Parse repeated ``group:sequence`` tokens into pairs (split on first ``:``).
+    """Parse repeated ``group:sequence`` tokens into pairs.
 
-    An empty group is allowed (``:seq`` -> ``("", "seq")``).
+    One grammar, in :func:`mosaic.core.helpers.parse_entry_tokens`. This used to
+    reject a token with no ``:`` while the ops reading the same values out of
+    ``--params`` accepted it as a bare sequence in the empty group, so the two
+    ways of naming one entry on one command line disagreed.
     """
-    pairs: list[tuple[str, str]] = []
-    for token in entries or []:
-        if ":" not in token:
-            fail(f"Invalid --entries value {token!r}; expected 'group:sequence'.")
-        group, sequence = token.split(":", 1)
-        pairs.append((group, sequence))
-    return pairs
+    return parse_entry_tokens(entries)

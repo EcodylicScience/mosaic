@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote
@@ -87,6 +88,26 @@ def parse_entry_key(key: str) -> tuple[str, str]:
     if not separator:
         return "", from_safe_name(key)
     return from_safe_name(safe_group), from_safe_name(safe_sequence)
+
+
+def parse_entry_tokens(tokens: Iterable[str] | None) -> list[tuple[str, str]]:
+    """``["group:sequence", ...]`` as ``[(group, sequence), ...]``.
+
+    The grammar a user types when naming entries on a command line or in an op's
+    ``entries`` parameter, as distinct from :func:`parse_entry_key`, which reads
+    the ``__``-joined key those entries are *stored* under.
+
+    Splits on the **first** ``:``, so a sequence name containing one keeps it.
+    A token with no ``:`` is a bare sequence in the empty group, which is the
+    common case rather than the edge: every dataset the control plane creates has
+    ``group=""``, and ``make_entry_key("", seq)`` is just ``seq``. Rejecting it
+    would mean a user has to type a colon to say nothing.
+    """
+    pairs: list[tuple[str, str]] = []
+    for token in tokens or []:
+        group, separator, sequence = token.partition(":")
+        pairs.append((group, sequence) if separator else ("", group))
+    return pairs
 
 
 def entry_directory(root: Path, group: str, sequence: str) -> Path:

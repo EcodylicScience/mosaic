@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
+from mosaic.core.helpers import parse_entry_tokens
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
@@ -87,7 +88,7 @@ class TrexOp(Op[TrexParams]):
         # Heavy TREx imports (subprocess/opencv) stay inside run() so registration is light.
         from mosaic.tracking.trex.dataset_runs import run_trex
 
-        entry_pairs = _parse_entries(params.entries)
+        entry_pairs = parse_entry_tokens(params.entries)
         return run_trex(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
@@ -117,14 +118,3 @@ class TrexOp(Op[TrexParams]):
             # the trex runner resolves them from MOSAIC_TREX_CONDA_ENV / _BIN / _DISPLAY. This
             # keeps the run_id independent of *where* it ran.
         )
-
-
-def _parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
-    """Parse ``["group:sequence", ...]`` into ``[(group, sequence), ...]`` (empty group ok)."""
-    if not entries:
-        return []
-    pairs: list[tuple[str, str]] = []
-    for item in entries:
-        group, sep, sequence = item.partition(":")
-        pairs.append((group, sequence) if sep else ("", group))
-    return pairs

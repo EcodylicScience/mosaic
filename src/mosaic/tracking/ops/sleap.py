@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
+from mosaic.core.helpers import parse_entry_tokens
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
@@ -86,7 +87,7 @@ class SleapOp(Op[SleapParams]):
         # Heavy SLEAP imports (subprocess/h5py) stay inside run() so registration is light.
         from mosaic.tracking.sleap.dataset_runs import run_sleap
 
-        entry_pairs = _parse_entries(params.entries)
+        entry_pairs = parse_entry_tokens(params.entries)
         return run_sleap(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
@@ -115,14 +116,3 @@ class SleapOp(Op[SleapParams]):
             # stays independent of *where* it ran. ``device`` is passed but is
             # HASH_EXCLUDE, so cpu-vs-gpu selection likewise never enters the run_id.
         )
-
-
-def _parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
-    """Parse ``["group:sequence", ...]`` into ``[(group, sequence), ...]`` (empty group ok)."""
-    if not entries:
-        return []
-    pairs: list[tuple[str, str]] = []
-    for item in entries:
-        group, sep, sequence = item.partition(":")
-        pairs.append((group, sequence) if sep else ("", group))
-    return pairs
