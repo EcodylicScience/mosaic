@@ -4,8 +4,14 @@ All long-running tracking operations are registered ``Op``\\s discoverable and
 runnable through the shared registry in :mod:`mosaic.core.pipeline.ops`.
 Importing this package registers the built-in ops (extract / train / infer).
 """
-from mosaic.core.schema import TrackSchema, TRACK_SCHEMAS, register_track_schema, ensure_track_schema
-from mosaic.tracking.model_refs import resolve_model
+
+from mosaic.core.schema import (
+    TrackSchema,
+    TRACK_SCHEMAS,
+    register_track_schema,
+    ensure_track_schema,
+)
+from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.frame_extraction import (
     extract_frames,
     get_frame_manifests,
@@ -39,6 +45,7 @@ __all__ = [
     "ensure_track_schema",
     "register_ops",
     "resolve_model",
+    "resolve_model_set",
     "extract_frames",
     "get_frame_manifests",
     "get_frame_paths",

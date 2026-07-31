@@ -14,7 +14,12 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX, file_digest
-from mosaic.tracking.model_refs import ResolvedModel, resolve_model
+from mosaic.tracking.model_refs import (
+    ModelArtifact,
+    ResolvedModel,
+    resolve_model,
+    resolve_model_set,
+)
 
 
 def test_the_digest_is_stable_and_content_addressed(tmp_path: Path) -> None:
@@ -109,7 +114,19 @@ def test_a_registered_model_is_named_by_its_run(tmp_path: Path) -> None:
 
 def test_the_model_id_is_never_the_path() -> None:
     """The one rule the property exists to enforce."""
-    resolved = ResolvedModel(path=Path("/models/best.pt"), run_id="", digest="abc123")
+    weights = Path("/models/best.pt")
+    resolved = ResolvedModel(
+        artifacts=(
+            ModelArtifact(
+                root=weights,
+                files=(("weights", weights),),
+                exec_path=weights,
+                digest="abc123",
+            ),
+        ),
+        run_id="",
+        digest="abc123",
+    )
     assert resolved.model_id == "abc123"
     assert "best.pt" not in resolved.model_id
 
@@ -118,3 +135,88 @@ def test_an_unresolvable_reference_still_raises(tmp_path: Path) -> None:
     ds = _make_dataset(tmp_path)
     with pytest.raises(FileNotFoundError, match="does not"):
         _ = resolve_model(ds, "train-pose.0.1-nope", "train-pose")
+
+
+# --- Directory-shaped models: the identity payload, pinned by value ----------
+#
+# SLEAP and Lightning Pose models are directories, and each spells its identity
+# payload its own way -- ``{"sleap_weights": [...]}`` over an ordered list of
+# checkpoint digests, ``{"litpose_config": ..., "litpose_weights": ...}`` over a
+# pair. Those spellings reach ``hash_params``, so they name every tracks variant
+# either tracker has ever written.
+#
+# Nothing pinned them. The tests in ``test_tracking_ops.py`` are relational --
+# they assert two models differ, or that order matters -- and every one of them
+# stays green through a rename of a payload key, which would silently re-mint
+# identities on disk that no reconcile was asked for.
+#
+# So: fixed bytes in, exact identifier out. blake2b over fixed bytes is
+# machine-independent, and ``hash_params`` sorts keys, so these are stable
+# values and not a snapshot to be re-blessed. **A change here is a defect unless
+# it is the point of the commit.** Consolidating these resolvers is expected to
+# change how they are *spelled* (which function is called, from which module) and
+# must not change a single digit below.
+
+
+def _make_sleap_model(directory: Path, weights: bytes, head: str) -> Path:
+    """A minimal SLEAP model directory: the checkpoint, and a config for provenance."""
+    directory.mkdir(parents=True)
+    (directory / "best.ckpt").write_bytes(weights)
+    (directory / "training_config.yaml").write_text(f"head_configs:\n  {head}: {{}}\n")
+    return directory
+
+
+def _make_litpose_model(directory: Path, weights: bytes, model_type: str) -> Path:
+    """A minimal Lightning Pose model directory: ``config.yaml`` plus a tb_logs checkpoint."""
+    checkpoints = directory / "tb_logs" / "run" / "version_0" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    (directory / "config.yaml").write_text(f"model:\n  model_type: {model_type}\n")
+    (checkpoints / "best.ckpt").write_bytes(weights)
+    return directory
+
+
+def test_a_sleap_model_directory_mints_a_pinned_identifier(tmp_path: Path) -> None:
+    centroid = _make_sleap_model(tmp_path / "centroid", b"centroid weights", "centroid")
+    resolved = resolve_model_set(None, [str(centroid)], "sleap")
+    assert resolved.model_id == "2bb8be883f"
+    assert resolved.model_type == "centroid"
+
+
+def test_a_sleap_top_down_pair_mints_a_pinned_identifier(tmp_path: Path) -> None:
+    """Two directories, one identity -- and the order is part of it."""
+    centroid = _make_sleap_model(tmp_path / "centroid", b"centroid weights", "centroid")
+    instance = _make_sleap_model(
+        tmp_path / "instance", b"instance weights", "centered_instance"
+    )
+
+    forward = resolve_model_set(None, [str(centroid), str(instance)], "sleap")
+    assert forward.model_id == "9bfb94c526"
+    # Reversed is a different model, not the same one described differently.
+    reverse = resolve_model_set(None, [str(instance), str(centroid)], "sleap")
+    assert reverse.model_id == "ba80135309"
+
+
+def test_a_litpose_model_directory_mints_a_pinned_identifier(tmp_path: Path) -> None:
+    model = _make_litpose_model(tmp_path / "lp", b"lp weights", "heatmap_mhcrnn")
+    resolved = resolve_model_set(None, [str(model)], "litpose")
+    assert resolved.model_id == "7ebb705dc6"
+    assert resolved.model_type == "heatmap_mhcrnn"
+
+
+def test_a_model_directory_is_named_by_its_declared_files_only(tmp_path: Path) -> None:
+    """What a tool writes into a model directory afterwards is not the model.
+
+    Lightning Pose writes ``video_preds/`` into the directory it was loaded from,
+    so an identity that read the whole tree would change the moment inference
+    ran -- the same model would stop matching its own cached output. The rule
+    that prevents it is that identity reads only the declared roles.
+    """
+    model = _make_litpose_model(tmp_path / "lp", b"lp weights", "heatmap")
+    before = resolve_model_set(None, [str(model)], "litpose").model_id
+
+    predictions = model / "video_preds"
+    predictions.mkdir()
+    (predictions / "some_video.csv").write_text("scorer,bodypart,coord\n")
+    (model / "predictions.csv").write_text("anything at all\n")
+
+    assert resolve_model_set(None, [str(model)], "litpose").model_id == before
