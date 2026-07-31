@@ -21,23 +21,6 @@ BBoxMethod = Literal["tight", "isotropic", "oriented"]
 
 
 @dataclass
-class KeypointSchema:
-    """Defines the keypoint layout for a pose model."""
-
-    names: list[str]
-    skeleton: list[tuple[int, int]] = field(default_factory=list)
-
-    @property
-    def num_keypoints(self) -> int:
-        return len(self.names)
-
-    @property
-    def kpt_shape(self) -> list[int]:
-        """Return [num_keypoints, 3] for YOLO data.yaml."""
-        return [self.num_keypoints, 3]
-
-
-@dataclass
 class PointDetectionSchema:
     """Defines the class layout for a point-detection model (e.g. POLO)."""
 

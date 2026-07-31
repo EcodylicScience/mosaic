@@ -22,8 +22,9 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from mosaic.core.annotations import KeypointSchema
+
 from .base import (
-    KeypointSchema,
     format_yolo_pose_line,
     keypoints_to_bbox,
     normalize_coords,
@@ -223,7 +224,7 @@ def convert_coco_keypoints(
         # COCO skeleton edges are already 0-indexed pairs
         skeleton = [(a, b) for a, b in coco_skeleton]
 
-    schema = KeypointSchema(names=selected_names, skeleton=skeleton)
+    schema = KeypointSchema(names=tuple(selected_names), skeleton=tuple(skeleton))
 
     # Find annotated images that have corresponding files on disk
     images_by_filename: dict[str, dict] = {}

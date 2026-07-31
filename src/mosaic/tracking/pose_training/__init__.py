@@ -10,6 +10,8 @@ Requires optional dependency:
     Localizer:  pip install mosaic-behavior[localizer]
 """
 
+from mosaic.core.annotations import KeypointSchema
+
 from . import converters
 from .converters import (
     lightning_pose,
@@ -20,7 +22,6 @@ from .converters import (
     cvat_localizer,
 )
 from .converters.base import (
-    KeypointSchema,
     PointDetectionSchema,
     LocalizerSchema,
     keypoints_to_bbox,

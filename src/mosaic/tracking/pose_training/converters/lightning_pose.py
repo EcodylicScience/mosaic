@@ -21,8 +21,9 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from mosaic.core.annotations import KeypointSchema
+
 from .base import (
-    KeypointSchema,
     format_yolo_pose_line,
     keypoints_to_bbox,
     normalize_coords,
@@ -32,7 +33,7 @@ from .cvat_points import _default_group_key, _print_split_summary, split_filenam
 
 # Default 27-keypoint mouse schema from Lightning Pose
 MOUSE_LP_27 = KeypointSchema(
-    names=[
+    names=(
         "nose",
         "left_ear",
         "right_ear",
@@ -60,8 +61,8 @@ MOUSE_LP_27 = KeypointSchema(
         "right_hip",
         "tail_end",
         "head_midpoint",
-    ],
-    skeleton=[
+    ),
+    skeleton=(
         # Head
         (0, 26),
         (26, 5),
@@ -91,7 +92,7 @@ MOUSE_LP_27 = KeypointSchema(
         (7, 22),
         (22, 23),
         (23, 24),
-    ],
+    ),
 )
 
 
@@ -246,8 +247,8 @@ def convert_lightning_pose(
         keypoint_indices = list(range(len(all_bodyparts)))
 
     schema = KeypointSchema(
-        names=list(selected_bodyparts),
-        skeleton=MOUSE_LP_27.skeleton if keypoint_indices is None else [],
+        names=tuple(selected_bodyparts),
+        skeleton=MOUSE_LP_27.skeleton if keypoint_indices is None else (),
     )
 
     # Filter to frames present in both the extraction manifest and the CSV

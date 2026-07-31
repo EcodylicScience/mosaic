@@ -29,8 +29,9 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from mosaic.core.annotations import KeypointSchema
+
 from .base import (
-    KeypointSchema,
     PointDetectionSchema,
     format_polo_label_line,
     format_yolo_pose_line,
@@ -172,7 +173,7 @@ def convert_cvat_points(
         name_to_id = {}
 
     resolved_names = list(name_to_id.keys()) if name_to_id else []
-    schema = KeypointSchema(names=[keypoint_name], skeleton=[])
+    schema = KeypointSchema(names=(keypoint_name,), skeleton=())
 
     # Filter to annotated images that exist on disk
     usable: list[tuple[dict, Path]] = []

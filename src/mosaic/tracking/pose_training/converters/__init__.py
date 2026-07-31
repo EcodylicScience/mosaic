@@ -1,7 +1,6 @@
 """Format converters for annotation data → YOLO pose / POLO point / localizer labels."""
 
 from .base import (
-    KeypointSchema,
     LocalizerSchema,
     PointDetectionSchema,
     keypoints_to_bbox,
