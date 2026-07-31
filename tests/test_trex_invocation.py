@@ -150,3 +150,41 @@ def test_run_trex_passes_invocation_and_env(monkeypatch: pytest.MonkeyPatch):
     assert captured["cmd"][-2:] == ["-task", "convert"]
     assert captured["env"]["DISPLAY"] == ":99"
     assert out == "ok"
+
+
+# --- argv for TREx's array parameters ---------------------------------------
+
+
+def test_a_flat_array_keeps_the_form_it_has_always_had():
+    """analysis_range and its kind must not move."""
+    from mosaic.tracking.trex.run import _build_args
+
+    assert _build_args({"analysis_range": [0, 1000]}) == [
+        "-analysis_range",
+        "[0,1000]",
+    ]
+
+
+def test_a_nested_array_is_json_because_a_python_repr_is_not_accepted():
+    """What made output_fields unreachable.
+
+    TREx's output_fields is a list of ``[name, [sources]]`` pairs and is how a
+    user asks for tracklet_id or blobid, neither of which is in TREx's default
+    export. Written with str() it came out as a Python repr -- single quotes and
+    spaces -- which TREx's parameter parser rejects, so passing it through
+    track_extra_settings could not work.
+    """
+    from mosaic.tracking.trex.run import _build_args
+
+    fields = [["X", ["RAW", "WCENTROID"]], ["tracklet_id", []]]
+
+    assert _build_args({"output_fields": fields}) == [
+        "-output_fields",
+        '[["X",["RAW","WCENTROID"]],["tracklet_id",[]]]',
+    ]
+
+
+def test_a_mapping_is_json_too():
+    from mosaic.tracking.trex.run import _build_args
+
+    assert _build_args({"opts": {"a": 1}}) == ["-opts", '{"a":1}']

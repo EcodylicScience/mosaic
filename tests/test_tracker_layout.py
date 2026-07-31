@@ -569,3 +569,70 @@ def test_trex_gates_its_two_phases_on_different_parameter_subsets(
     assert convert["params_hash"] != ""
     assert track["params_hash"] != ""
     assert convert["params_hash"] != track["params_hash"]
+
+
+def test_an_extra_trex_column_survives_into_the_tracks_table(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever TREx exports reaches the parquet, including fields mosaic never names.
+
+    TREx's ``output_fields`` decides what its NPZ holds, and mosaic does not set
+    it -- so which columns exist is the user's choice, made through
+    ``track_extra_settings``. What this pins is that the choice is honoured all
+    the way through: the converter flattens every NPZ key rather than a known
+    list, ``ensure_track_schema`` accepts unknown columns, and the bridge
+    concatenates per-individual frames on the *union* of their columns.
+
+    ``tracklet_id`` is the case this exists for. It identifies consecutively
+    tracked frame segments, it is absent from TREx's default ``output_fields``,
+    and it is what future identity work needs -- so the question "will mosaic
+    keep it once TREx emits it" has a recorded answer rather than an assumption.
+    """
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.tracking.trex.run import TRexTrackResult
+
+    fake = _FakeTrex()
+
+    def track_with_extra_fields(
+        pv_path: Path, output_dir: Path, **_kwargs: object
+    ) -> TRexTrackResult:
+        out = Path(output_dir)
+        stem = Path(pv_path).stem
+        data = out / "data"
+        data.mkdir(parents=True, exist_ok=True)
+        npz = data / f"{stem}_fish0.npz"
+        _write_npz(
+            npz,
+            {
+                "frame": np.arange(6),
+                "time": np.arange(6) / 30.0,
+                "X#wcentroid": np.arange(6, dtype=float),
+                "Y#wcentroid": np.arange(6, dtype=float),
+                "poseX0": np.arange(6, dtype=float),
+                "poseY0": np.arange(6, dtype=float),
+                # The two fields a user adds to output_fields beyond TREx's
+                # defaults, and the reason this test exists.
+                "tracklet_id": np.array([0, 0, 0, 1, 1, 1]),
+                "blobid": np.arange(6),
+            },
+        )
+        results = out / f"{stem}.results"
+        results.write_bytes(b"results")
+        return TRexTrackResult(
+            npz_paths=[npz],
+            results_path=results,
+            settings_path=out / f"{stem}.settings",
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
+    monkeypatch.setattr(trex_runs, "run_trex_track", track_with_extra_fields)
+
+    run_id = trex_runs.run_trex(ds)
+
+    table = pd.read_parquet(next(ds.get_root("tracks").rglob("*.parquet")))
+    assert "tracklet_id" in table.columns, "an extra TREx field was dropped"
+    assert "blobid" in table.columns
+    assert sorted(table["tracklet_id"]) == [0, 0, 0, 1, 1, 1]
+    assert run_id.startswith("trex.")

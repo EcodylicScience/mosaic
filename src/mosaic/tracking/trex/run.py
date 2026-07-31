@@ -25,6 +25,7 @@ Requires:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -143,11 +144,28 @@ def _resolve_display(display: str | None) -> dict[str, str] | None:
     return {"DISPLAY": d} if d else None
 
 
+def _is_nested(value: list[Any] | tuple[Any, ...]) -> bool:
+    """Does this sequence contain a sequence or a mapping?"""
+    return any(isinstance(item, (list, tuple, dict)) for item in value)
+
+
 def _build_args(params: dict[str, Any]) -> list[str]:
     """Flatten a param dict into CLI ``-key value`` pairs.
 
     Booleans become bare flags (``-key``) when True and are omitted when
-    False.  ``None`` values are skipped.
+    False. ``None`` values are skipped.
+
+    A flat sequence is written ``[a,b]``, which is what TREx's simple array
+    parameters take and what mosaic has always sent for ``analysis_range``.
+
+    A **nested** one is written as compact JSON instead, because Python's
+    ``str`` of a nested list is its repr -- single quotes and spaces --
+    which TREx's parameter parser does not accept. That made every nested
+    parameter unreachable: ``output_fields``, which is how a user asks TREx
+    to export ``tracklet_id`` or ``blobid``, is a list of ``[name, [sources]]``
+    pairs, so passing it through ``track_extra_settings`` produced argv TREx
+    would reject. Scoping the change to nested values leaves every flat one
+    byte-identical to what it was.
     """
     args: list[str] = []
     for key, value in params.items():
@@ -158,7 +176,13 @@ def _build_args(params: dict[str, Any]) -> list[str]:
                 args.append(f"-{key}")
             continue
         if isinstance(value, (list, tuple)):
-            args.extend([f"-{key}", f"[{','.join(str(v) for v in value)}]"])
+            if _is_nested(value):
+                args.extend([f"-{key}", json.dumps(value, separators=(",", ":"))])
+            else:
+                args.extend([f"-{key}", f"[{','.join(str(v) for v in value)}]"])
+            continue
+        if isinstance(value, dict):
+            args.extend([f"-{key}", json.dumps(value, separators=(",", ":"))])
             continue
         args.extend([f"-{key}", str(value)])
     return args

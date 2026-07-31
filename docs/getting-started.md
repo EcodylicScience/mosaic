@@ -83,6 +83,35 @@ bridges the results into `tracks/`, or from the command line:
 `mosaic track` takes its flags from each tracker's parameter schema, so
 `mosaic tracking describe trex` lists what `--set` accepts.
 
+**Asking TREx for extra columns.** TREx decides what its per-individual `.npz`
+holds with its `output_fields` parameter, and mosaic does not set it, so you get
+TREx's default export. That default does **not** include `tracklet_id` (the
+identifier of a consecutively tracked frame segment) or `blobid`. To keep them,
+pass `output_fields` through `track_extra_settings` with TREx's defaults plus
+what you want:
+
+```python
+run_trex(
+    ds,
+    track_extra_settings={
+        "output_fields": [
+            ["X", ["RAW", "WCENTROID"]], ["Y", ["RAW", "WCENTROID"]],
+            ["SPEED", ["RAW", "WCENTROID"]], ["ANGLE", ["RAW"]],
+            ["time", []], ["frame", []], ["missing", []], ["num_pixels", []],
+            ["tracklet_id", []], ["blobid", []],
+        ]
+    },
+)
+```
+
+Whatever TREx exports reaches `tracks/<variant>/*.parquet` unchanged: the
+converter flattens every field in the `.npz` rather than a known list, and the
+standardized schema accepts additional columns. `output_fields` is part of the
+tracking parameters, so changing it correctly invalidates an existing run rather
+than silently reusing one exported with different columns. Check TREx's
+[parameter reference](https://trex.run/docs/parameters_trex.html) for its current
+default list before trimming this.
+
 **Two-env setup (recommended).** TRex's conda package pins `python=3.11` /
 `numpy=1.26`, so install it in its **own** env rather than the mosaic env:
 
