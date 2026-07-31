@@ -10,6 +10,7 @@ This converter reads pre-extracted frames (from ``mosaic.tracking.extract_frames
 and produces YOLO pose label files for the frame indices present in the extraction
 manifest, avoiding redundant video decoding.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -32,24 +33,64 @@ from .cvat_points import _default_group_key, _print_split_summary, split_filenam
 # Default 27-keypoint mouse schema from Lightning Pose
 MOUSE_LP_27 = KeypointSchema(
     names=[
-        "nose", "left_ear", "right_ear", "left_ear_tip", "right_ear_tip",
-        "left_eye", "right_eye", "neck", "mid_back", "mouse_center",
-        "mid_backend", "mid_backend2", "mid_backend3", "tail_base",
-        "tail1", "tail2", "tail3", "tail4", "tail5", "left_shoulder",
-        "left_midside", "left_hip", "right_shoulder", "right_midside",
-        "right_hip", "tail_end", "head_midpoint",
+        "nose",
+        "left_ear",
+        "right_ear",
+        "left_ear_tip",
+        "right_ear_tip",
+        "left_eye",
+        "right_eye",
+        "neck",
+        "mid_back",
+        "mouse_center",
+        "mid_backend",
+        "mid_backend2",
+        "mid_backend3",
+        "tail_base",
+        "tail1",
+        "tail2",
+        "tail3",
+        "tail4",
+        "tail5",
+        "left_shoulder",
+        "left_midside",
+        "left_hip",
+        "right_shoulder",
+        "right_midside",
+        "right_hip",
+        "tail_end",
+        "head_midpoint",
     ],
     skeleton=[
         # Head
-        (0, 26), (26, 5), (26, 6), (1, 3), (2, 4),
+        (0, 26),
+        (26, 5),
+        (26, 6),
+        (1, 3),
+        (2, 4),
         # Spine
-        (0, 7), (7, 8), (8, 9), (9, 10), (10, 11), (11, 12), (12, 13),
+        (0, 7),
+        (7, 8),
+        (8, 9),
+        (9, 10),
+        (10, 11),
+        (11, 12),
+        (12, 13),
         # Tail
-        (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 25),
+        (13, 14),
+        (14, 15),
+        (15, 16),
+        (16, 17),
+        (17, 18),
+        (18, 25),
         # Left side
-        (7, 19), (19, 20), (20, 21),
+        (7, 19),
+        (19, 20),
+        (20, 21),
         # Right side
-        (7, 22), (22, 23), (23, 24),
+        (7, 22),
+        (22, 23),
+        (23, 24),
     ],
 )
 
@@ -212,18 +253,23 @@ def convert_lightning_pose(
     # Filter to frames present in both the extraction manifest and the CSV
     csv_frame_set = set(df.index.values)
     usable_frames = [
-        rec for rec in extracted_frames
-        if int(rec["frame_index"]) in csv_frame_set
+        rec for rec in extracted_frames if int(rec["frame_index"]) in csv_frame_set
     ]
     if not usable_frames:
-        print(f"[lightning_pose] WARNING: no overlap between extracted frames "
-              f"and LP CSV ({csv_path.name}).  0 labels written.")
+        print(
+            f"[lightning_pose] WARNING: no overlap between extracted frames "
+            f"and LP CSV ({csv_path.name}).  0 labels written."
+        )
         return schema
 
     # Assign frames to splits (use path basenames as filenames for grouping)
     frame_filenames = [Path(rec["path"]).name for rec in usable_frames]
     filename_assignment, n_train, n_valid = split_filenames(
-        frame_filenames, split, seed, split_by=split_by, group_key=group_key,
+        frame_filenames,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
     n = len(usable_frames)
 
@@ -247,8 +293,14 @@ def convert_lightning_pose(
         h = int(rec.get("height", img_h))
 
         line = _extract_keypoints_for_frame(
-            df, frame_idx, selected_bodyparts,
-            w, h, confidence_threshold, bbox_margin, class_id,
+            df,
+            frame_idx,
+            selected_bodyparts,
+            w,
+            h,
+            confidence_threshold,
+            bbox_margin,
+            class_id,
         )
         if line is None:
             skipped += 1
@@ -276,11 +328,19 @@ def convert_lightning_pose(
     if test_imgs.exists() and not any(test_imgs.iterdir()):
         shutil.rmtree(output_dir / "test")
 
-    print(f"[lightning_pose] Wrote {written} labels to {output_dir}"
-          + (f"  (skipped {skipped} degenerate)" if skipped else ""))
-    print(f"  Keypoints: {len(selected_bodyparts)} ({', '.join(selected_bodyparts[:5])}...)")
+    print(
+        f"[lightning_pose] Wrote {written} labels to {output_dir}"
+        + (f"  (skipped {skipped} degenerate)" if skipped else "")
+    )
+    print(
+        f"  Keypoints: {len(selected_bodyparts)} ({', '.join(selected_bodyparts[:5])}...)"
+    )
     _print_split_summary(
-        filename_assignment, n_train, n_valid, n, split_by,
+        filename_assignment,
+        n_train,
+        n_valid,
+        n,
+        split_by,
         group_key or _default_group_key,
     )
 

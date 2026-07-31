@@ -7,6 +7,7 @@ heatmap model.
 Uses the same CVAT for Images 1.1 XML format as :mod:`cvat_points`, producing
 the same ``patches.npy`` / ``labels.npy`` output as :mod:`coco_localizer`.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,12 @@ import numpy as np
 
 from .base import LocalizerSchema
 from .coco_localizer import _extract_patch
-from .cvat_points import _assign_splits, _default_group_key, _parse_cvat_xml, _print_split_summary
+from .cvat_points import (
+    _assign_splits,
+    _default_group_key,
+    _parse_cvat_xml,
+    _print_split_summary,
+)
 
 
 def convert_cvat_localizer(
@@ -144,16 +150,24 @@ def convert_cvat_localizer(
 
     # ── Assign images to splits ──
     split_map, n_train, n_valid = _assign_splits(
-        usable, split, seed, split_by=split_by, group_key=group_key,
+        usable,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
 
     # ── Collect patches per split ──
     half = patch_size // 2
     split_patches: dict[str, list[np.ndarray]] = {
-        "train": [], "valid": [], "test": [],
+        "train": [],
+        "valid": [],
+        "test": [],
     }
     split_labels: dict[str, list[np.ndarray]] = {
-        "train": [], "valid": [], "test": [],
+        "train": [],
+        "valid": [],
+        "test": [],
     }
     np_rng = np.random.RandomState(seed)
 
@@ -256,13 +270,15 @@ def convert_cvat_localizer(
     print(f"[cvat_localizer] Saved {total_saved} patches to {output_dir}")
     print(f"  Classes: {resolved_names}")
     print(
-        f"  Patches: "
-        + ", ".join(
-            f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test")
-        )
+        "  Patches: "
+        + ", ".join(f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test"))
     )
     _print_split_summary(
-        split_map, n_train, n_valid, len(usable), split_by,
+        split_map,
+        n_train,
+        n_valid,
+        len(usable),
+        split_by,
         group_key or _default_group_key,
     )
 

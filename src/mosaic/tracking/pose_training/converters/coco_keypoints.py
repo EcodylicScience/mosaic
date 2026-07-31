@@ -10,6 +10,7 @@ COCO keypoints: flat list [x1, y1, v1, x2, y2, v2, ...] in pixels.
 COCO visibility: 0 = not labeled, 1 = labeled not visible, 2 = labeled visible.
   (same semantics as YOLO visibility flags)
 """
+
 from __future__ import annotations
 
 import json
@@ -199,9 +200,7 @@ def convert_coco_keypoints(
     output_dir = Path(output_dir)
 
     # Load and parse COCO JSON
-    images_by_id, anns_by_image_id, category = _load_coco(
-        coco_json_path, category_name
-    )
+    images_by_id, anns_by_image_id, category = _load_coco(coco_json_path, category_name)
 
     # Extract keypoint names and skeleton from category
     all_kp_names = category.get("keypoints", [])
@@ -253,7 +252,11 @@ def convert_coco_keypoints(
     # Assign to splits
     filenames = [img_rec["file_name"] for img_rec, _, _ in usable]
     split_assignment, n_train, n_valid = split_filenames(
-        filenames, split, seed, split_by=split_by, group_key=group_key,
+        filenames,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
     n = len(usable)
 
@@ -265,17 +268,22 @@ def convert_coco_keypoints(
     # Process each image
     written = 0
     skipped = 0
-    for img_record, img_path, annotations in usable:
+    for img_record, img_path, image_annotations in usable:
         img_w = int(img_record["width"])
         img_h = int(img_record["height"])
         filename = img_record["file_name"]
 
         # Convert all annotations for this image
         lines = []
-        for ann in annotations:
+        for ann in image_annotations:
             line = _coco_ann_to_yolo_line(
-                ann, img_w, img_h, selected_indices,
-                class_id, bbox_source, bbox_margin,
+                ann,
+                img_w,
+                img_h,
+                selected_indices,
+                class_id,
+                bbox_source,
+                bbox_margin,
             )
             if line is not None:
                 lines.append(line)
@@ -312,7 +320,11 @@ def convert_coco_keypoints(
     )
     print(f"  Category: '{category['name']}', keypoints: {len(selected_names)}")
     _print_split_summary(
-        split_assignment, n_train, n_valid, n, split_by,
+        split_assignment,
+        n_train,
+        n_valid,
+        n,
+        split_by,
         group_key or _default_group_key,
     )
 

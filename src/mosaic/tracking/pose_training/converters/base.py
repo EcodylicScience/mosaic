@@ -8,6 +8,7 @@ POLO point label format (per line):
 
 Visibility flags (YOLO): 0 = not labeled, 1 = labeled but occluded, 2 = labeled and visible.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ BBoxMethod = Literal["tight", "isotropic", "oriented"]
 @dataclass
 class KeypointSchema:
     """Defines the keypoint layout for a pose model."""
+
     names: list[str]
     skeleton: list[tuple[int, int]] = field(default_factory=list)
 
@@ -60,8 +62,12 @@ class LocalizerSchema:
 
 
 def _aabb_to_norm_cxcywh(
-    x_min: float, y_min: float, x_max: float, y_max: float,
-    img_w: int, img_h: int,
+    x_min: float,
+    y_min: float,
+    x_max: float,
+    y_max: float,
+    img_w: int,
+    img_h: int,
 ) -> tuple[float, float, float, float]:
     """Clip an AABB to the image, then normalize to center-xywh in [0, 1]."""
     x_min = max(0.0, float(x_min))
@@ -137,7 +143,12 @@ def keypoints_to_bbox_isotropic(
 
     pad = max(float(min_pad_px), float(pad_frac_of_body) * body)
     return _aabb_to_norm_cxcywh(
-        x_min - pad, y_min - pad, x_max + pad, y_max + pad, img_w, img_h,
+        x_min - pad,
+        y_min - pad,
+        x_max + pad,
+        y_max + pad,
+        img_w,
+        img_h,
     )
 
 
@@ -170,7 +181,9 @@ def keypoints_to_bbox_oriented(
 
     if not (head_ok and tail_ok):
         return keypoints_to_bbox_isotropic(
-            kps_xy, img_w, img_h,
+            kps_xy,
+            img_w,
+            img_h,
             head_idx=head_idx if head_ok else None,
             tail_idx=tail_idx if tail_ok else None,
             **(fallback_kwargs or {}),
@@ -182,8 +195,11 @@ def keypoints_to_bbox_oriented(
     L = float(np.linalg.norm(axis))
     if L < 1e-6:
         return keypoints_to_bbox_isotropic(
-            kps_xy, img_w, img_h,
-            head_idx=head_idx, tail_idx=tail_idx,
+            kps_xy,
+            img_w,
+            img_h,
+            head_idx=head_idx,
+            tail_idx=tail_idx,
             **(fallback_kwargs or {}),
         )
 
@@ -193,12 +209,14 @@ def keypoints_to_bbox_oriented(
     ext = length_pad_frac * L
     head_ext = head + u * ext
     tail_ext = tail - u * ext
-    corners = np.stack([
-        head_ext + n * half_side,
-        head_ext - n * half_side,
-        tail_ext + n * half_side,
-        tail_ext - n * half_side,
-    ])
+    corners = np.stack(
+        [
+            head_ext + n * half_side,
+            head_ext - n * half_side,
+            tail_ext + n * half_side,
+            tail_ext - n * half_side,
+        ]
+    )
     x_min, y_min = corners.min(axis=0)
     x_max, y_max = corners.max(axis=0)
     return _aabb_to_norm_cxcywh(x_min, y_min, x_max, y_max, img_w, img_h)
@@ -261,25 +279,32 @@ def keypoints_to_bbox(
         bw = x_max - x_min
         bh = y_max - y_min
         return _aabb_to_norm_cxcywh(
-            x_min - bw * margin, y_min - bh * margin,
-            x_max + bw * margin, y_max + bh * margin,
-            img_w, img_h,
+            x_min - bw * margin,
+            y_min - bh * margin,
+            x_max + bw * margin,
+            y_max + bh * margin,
+            img_w,
+            img_h,
         )
     if method == "isotropic":
         return keypoints_to_bbox_isotropic(
-            kps_xy, img_w, img_h,
+            kps_xy,
+            img_w,
+            img_h,
             pad_frac_of_body=pad_frac_of_body,
             min_pad_px=min_pad_px,
-            head_idx=head_idx, tail_idx=tail_idx,
+            head_idx=head_idx,
+            tail_idx=tail_idx,
         )
     if method == "oriented":
         if head_idx is None or tail_idx is None:
-            raise ValueError(
-                "method='oriented' requires both head_idx and tail_idx"
-            )
+            raise ValueError("method='oriented' requires both head_idx and tail_idx")
         return keypoints_to_bbox_oriented(
-            kps_xy, img_w, img_h,
-            head_idx=head_idx, tail_idx=tail_idx,
+            kps_xy,
+            img_w,
+            img_h,
+            head_idx=head_idx,
+            tail_idx=tail_idx,
             length_pad_frac=length_pad_frac,
             side_pad_frac=side_pad_frac,
             fallback_kwargs={

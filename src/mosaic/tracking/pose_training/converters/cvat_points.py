@@ -17,6 +17,7 @@ Two converters:
 The class is determined by an optional attribute (e.g. ``class``) on each
 point; when absent, all annotations receive class ID 0.
 """
+
 from __future__ import annotations
 
 import random
@@ -87,12 +88,14 @@ def _parse_cvat_xml(
                 x, y = float(xy[0]), float(xy[1])
                 annotations.append((x, y, class_name))
 
-        images.append({
-            "name": name,
-            "width": width,
-            "height": height,
-            "annotations": annotations,
-        })
+        images.append(
+            {
+                "name": name,
+                "width": width,
+                "height": height,
+                "annotations": annotations,
+            }
+        )
 
     return images, list(seen_classes.keys())
 
@@ -192,7 +195,11 @@ def convert_cvat_points(
 
     # Assign to splits
     split_assignment, n_train, n_valid = _assign_splits(
-        usable, split, seed, split_by=split_by, group_key=group_key,
+        usable,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
     n = len(usable)
 
@@ -235,9 +242,7 @@ def convert_cvat_points(
 
             # Single keypoint (visibility = 2 = labeled and visible)
             kp_x, kp_y = normalize_coords(x, y, img_w, img_h)
-            line = format_yolo_pose_line(
-                class_id, (cx, cy, nw, nh), [(kp_x, kp_y, 2)]
-            )
+            line = format_yolo_pose_line(class_id, (cx, cy, nw, nh), [(kp_x, kp_y, 2)])
             lines.append(line)
 
         if not lines:
@@ -273,7 +278,11 @@ def convert_cvat_points(
     if class_counts:
         print(f"  Counts: {class_counts}")
     _print_split_summary(
-        split_assignment, n_train, n_valid, n, split_by,
+        split_assignment,
+        n_train,
+        n_valid,
+        n,
+        split_by,
         group_key or _default_group_key,
     )
 
@@ -283,6 +292,7 @@ def convert_cvat_points(
 # ----------------------------------------------------------------------- #
 # Shared helpers
 # ----------------------------------------------------------------------- #
+
 
 def _resolve_classes(
     class_names: Sequence[str] | None,
@@ -308,7 +318,9 @@ def _print_split_summary(
     n_test = n_total - n_train - n_valid
     if split_by == "group":
         groups_per_split: dict[str, set[str]] = {
-            "train": set(), "valid": set(), "test": set(),
+            "train": set(),
+            "valid": set(),
+            "test": set(),
         }
         for fname, subset in assignment.items():
             groups_per_split[subset].add(key_fn(fname))
@@ -373,7 +385,11 @@ def _assign_splits(
     """
     filenames = [rec["name"] for rec, _ in usable]
     return split_filenames(
-        filenames, split, seed, split_by=split_by, group_key=group_key,
+        filenames,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
 
 
@@ -431,10 +447,10 @@ def split_filenames(
         for gname in group_names[:n_train_g]:
             for fn in groups[gname]:
                 assignment[fn] = "train"
-        for gname in group_names[n_train_g: n_train_g + n_valid_g]:
+        for gname in group_names[n_train_g : n_train_g + n_valid_g]:
             for fn in groups[gname]:
                 assignment[fn] = "valid"
-        for gname in group_names[n_train_g + n_valid_g:]:
+        for gname in group_names[n_train_g + n_valid_g :]:
             for fn in groups[gname]:
                 assignment[fn] = "test"
     else:
@@ -447,9 +463,9 @@ def split_filenames(
         assignment = {}
         for fn in shuffled[:n_items_train]:
             assignment[fn] = "train"
-        for fn in shuffled[n_items_train: n_items_train + n_items_valid]:
+        for fn in shuffled[n_items_train : n_items_train + n_items_valid]:
             assignment[fn] = "valid"
-        for fn in shuffled[n_items_train + n_items_valid:]:
+        for fn in shuffled[n_items_train + n_items_valid :]:
             assignment[fn] = "test"
 
     n_train = sum(1 for v in assignment.values() if v == "train")
@@ -520,6 +536,7 @@ def _write_images(
 # ----------------------------------------------------------------------- #
 # POLO (point-detection) converter
 # ----------------------------------------------------------------------- #
+
 
 def convert_cvat_points_polo(
     cvat_xml_path: str | Path,
@@ -605,7 +622,11 @@ def convert_cvat_points_polo(
         return schema
 
     split_assignment, n_train, n_valid = _assign_splits(
-        usable, split, seed, split_by=split_by, group_key=group_key,
+        usable,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
     n = len(usable)
 
@@ -622,7 +643,11 @@ def convert_cvat_points_polo(
         return format_polo_label_line(cid, radius, x_rel, y_rel)
 
     written, skipped, class_counts = _write_images(
-        usable, output_dir, split_assignment, _make_line, symlink_images,
+        usable,
+        output_dir,
+        split_assignment,
+        _make_line,
+        symlink_images,
         tag="cvat_points_polo",
     )
 
@@ -635,7 +660,11 @@ def convert_cvat_points_polo(
         print(f"  Counts: {class_counts}")
     print(f"  Radii: {radii_by_id}")
     _print_split_summary(
-        split_assignment, n_train, n_valid, n, split_by,
+        split_assignment,
+        n_train,
+        n_valid,
+        n,
+        split_by,
         group_key or _default_group_key,
     )
 
