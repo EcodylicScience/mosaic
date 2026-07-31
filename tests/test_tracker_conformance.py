@@ -287,3 +287,23 @@ def test_its_model_spec_is_declared_not_defaulted(kind: str) -> None:
         f"{kind} would mint the bare weights digest, colliding with every "
         f"prefix-less kind holding the same bytes"
     )
+
+
+def test_the_recipe_does_not_teach_a_private_resolver() -> None:
+    """The docs are where the next tracker author starts, so they are a seam too.
+
+    Asserted over the text rather than over behaviour, the same way the tracker
+    root path is: what it rejects is advice, and advice is invisible to a passing
+    suite. A recipe telling an author to hand-write ``resolve_my_model`` would
+    recreate the duplication the assertions above exist to prevent, and nothing
+    would fail until the fourth tracker landed carrying it.
+    """
+    recipe = Path(__file__).parent.parent / "docs" / "adding-a-tracker.md"
+    text = recipe.read_text()
+    assert "resolve_my_model" not in text, (
+        "the recipe teaches a per-tracker resolver; a model is declared in "
+        "MODEL_KINDS and resolved through model_refs"
+    )
+    assert "resolve_model_set" in text, (
+        "the recipe no longer shows how a tracker resolves its model"
+    )

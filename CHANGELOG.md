@@ -8,6 +8,47 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.10.0 — one tracker driver, and a model that may be a directory
+
+**`mosaic trex` is gone; `mosaic track <kind>` replaces it.** It was 211
+hand-wired lines mirroring params it could drift from, and it had no equivalent
+for SLEAP or Lightning Pose. The new command reads a tracker's own parameter
+schema, so scope and execution are flags and everything tool-specific is
+`--set key=value`, validated against the schema rather than against a second
+copy of it. `mosaic run --kind <tracker>` is unchanged and is still what the
+executor shells out to, so nothing queued or scripted against it moves.
+
+**The three trackers now run through one loop.** Everything a run does around
+the tool — locating it, minting the run, scoping to work items, claiming an
+entry, reusing a finished phase, bridging into `tracks/` — moved into
+`tracking/common/`, and each tracker supplies only what is genuinely its own.
+SLEAP and Lightning Pose picked up T-Rex's content-based reuse gate on the way,
+so a video replaced in place now forces a recompute for all three rather than
+one. What each leaves on disk is unchanged, pinned as a normalized snapshot.
+
+**One count is renamed.** The tracker run indexes carried `n_tracks` for SLEAP
+and `n_individuals` for Lightning Pose, which were not the same quantity; both
+are now `n_ids`. An index written before this reads back under the new name
+without being rewritten.
+
+**A model reference may name a directory.** The resolver was shaped around a
+single `best.pt`, so SLEAP and Lightning Pose — whose models are directories,
+and whose top-down form is an ordered *pair* of them — each carried a private
+resolver and could not be registered as a training run at all. A reference is
+now an artifact described by a per-kind spec: what shape it points at, how many,
+and which files inside it identity is allowed to read. Nothing a tool writes
+back into its own model directory can move that identity, which is what makes
+Lightning Pose's `video_preds/` harmless. Every identifier is preserved exactly;
+no run is re-derived.
+
+**Two observable consequences.** A trained-model row can record a directory
+artifact, so a future framework-native training run has somewhere to say so.
+And the `models/` root was registered under the wrong index shape — naming a
+file nothing has ever written — so it was invisible to `make_portable`,
+`rewrite_index_paths` and `reconcile`. It is reachable now, which means
+`reconcile` will prune trained-model and converted-dataset rows whose artifact
+is gone. `Dataset.reindex` still defaults to a dry run.
+
 ## 0.9.0 — identity backbone, generalized
 
 **The MegaDescriptor identity feature was a generic backbone loader wearing one

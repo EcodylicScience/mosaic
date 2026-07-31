@@ -22,9 +22,11 @@ They decide how much of the rest applies.
    own dependencies.
 2. **Does it produce identity, or pose only?** A pose-only tool has no tracker
    knobs and emits one `id` per instance. Otherwise identical.
-3. **What model does it consume?** An external directory or file the user brings
-   gets a content digest you compute. A mosaic training run goes through
-   `resolve_model(ds, ref, kind)`.
+3. **What *shape* is its model?** One weights file, a directory holding a config
+   beside a checkpoint, an ordered set of directories, or a path stem whose real
+   file has an extension. You declare the shape; you do not write a resolver.
+   `train-<tool>` inherits `<tool>`'s shape, so a mosaic training run and an
+   external directory resolve the same way.
 4. **Can you reuse a converter?** If it exports DeepLabCut-format CSV or HDF5,
    use `src_format="deeplabcut"` and write no converter at all — that is what
    Lightning Pose does.
@@ -32,7 +34,7 @@ They decide how much of the rest applies.
    is an *optional* dependency: lazy-import it with a clear message and guard the
    tests with `pytest.importorskip`.
 
-## The six files
+## The seven files
 
 ### 1. `tracking/<tool>/version.py`
 
@@ -70,12 +72,53 @@ and `ToolExitError` with a `tool_name`. Build argv, call `run_supervised` with
 `env=subprocess_env()`, and return a small result dataclass. Keep the
 `run_supervised` call at module scope here: it is the seam tests patch.
 
-### 3. `tracking/<tool>/dataset_runs.py`
+### 3. `tracking/model_refs.py`
+
+One `ModelKindSpec` entry, keyed by your `TOOL_KIND`. Declaring the shape comes
+before resolving against it, and it is the whole of what used to be a
+per-tracker resolver — a checkpoint-name table, a config-token table, a
+find-the-weights walk and a read-the-head-type scan, written once per tracker
+until two of them said the same thing twice.
+
+```python
+"<tool>": ModelKindSpec(
+    shape="directory",              # or "file", or "prefix" for a bare stem
+    arity="one",                    # "ordered" when a reference is several, in order
+    roles=(
+        RoleSpec(role="config", names=("config.yaml",)),
+        RoleSpec(role="weights", glob="ckpt/*.ckpt", prefer="best"),
+    ),
+    payload_prefix="<tool>",        # names the identity keys: <tool>_config, <tool>_weights
+    config_names=("config.yaml",),  # where model_type is read from, for provenance
+    model_types=("heatmap", ...),   # longest-first, matched against the config text
+    label="MyTool model",           # how an error names it to a human
+),
+```
+
+Four real decisions. **Shape** and **arity** are what a reference points at and
+how many. **Roles** are the files identity is allowed to read — and that is the
+point, not an optimization: whatever the tool writes back into its own model
+directory afterwards is invisible by construction. Lightning Pose writes
+`video_preds/` into the directory it was loaded from, so a whole-tree digest
+would make the model stop matching its own cached output the first time
+inference ran. A role with `in_identity=False` is read for provenance and not
+named; a role with `required=False` may be absent, which is how SLEAP runs
+without a config.
+
+**`payload_prefix` is not optional for a directory.** `None` means the identity
+*is* the bare weights digest — correct for a single `best.pt`, and a collision
+for anything else holding the same bytes.
+
+Order matters when `arity="ordered"`: SLEAP top-down is centroid then
+centered-instance, and swapping them is a different model. The spec says so; you
+do not implement it.
+
+### 4. `tracking/<tool>/dataset_runs.py`
 
 Resolve the model **first**, then mint, then drive:
 
 ```python
-resolved = resolve_my_model(model_path)          # content digest, never a path
+resolved = resolve_model_set(ds, [str(model_path)], TOOL_KIND)  # content, never a path
 settings = my_settings(model_id=resolved.model_id, ...)   # scope-free
 minted = mint_tracker_run(ds, kind=TOOL_KIND, version=TOOL_VERSION,
                           settings=settings, observed={...})
@@ -118,7 +161,7 @@ Then bridge: convert with your converter, and hand the frame to
 `publish_tracks_table`. End the module with
 `register_reconcilable_index(TOOL_KIND, my_index)`.
 
-### 4. `tracking/ops/<tool>.py`
+### 5. `tracking/ops/<tool>.py`
 
 A `TrackerOpParams` subclass with your tool's knobs, and a registered `Op`:
 
@@ -134,7 +177,7 @@ with `HASH_EXCLUDE`; folding one into identity moves an identifier without movin
 the output, which costs a recompute for nothing. Keep heavy imports inside
 `run()`.
 
-### 5. `core/pipeline/tracking_roots.py`
+### 6. `core/pipeline/tracking_roots.py`
 
 One row:
 
@@ -154,7 +197,7 @@ thing, since it includes byproducts that are evidence of nothing. `path_columns`
 is every path-bearing column on your row beyond `abs_path`; a column missing here
 silently stops being portable across machines.
 
-### 6. Exports
+### 7. Exports
 
 Add your tool to `tracking/ops/__init__.py` and re-export `run_<tool>` and
 `list_<tool>_runs` from `tracking/__init__.py`.
@@ -165,7 +208,10 @@ Add your tool to `tracking/ops/__init__.py` and re-export `run_<tool>` and
 - Op run id and tracks variant id are **byte-identical**: pass settings to
   `tracker_variant_payload` unwrapped.
 - The model is named by **content digest, never a path**, resolved before minting,
-  and order-sensitive when there are several.
+  and order-sensitive when there are several. Order-sensitivity is
+  `arity="ordered"` in the spec, not something you implement; and identity reads
+  only the roles the spec declares, so what a tool writes back into its own model
+  directory cannot move it.
 - Settings are **scope-free**: knobs only, no videos and no paths, so one value
   names one variant across every sequence.
 - Identity versus throughput split with `HASH_EXCLUDE`.
@@ -178,6 +224,14 @@ your tracker inherits its assertions the moment its `TrackingRoot` row lands. It
 will fail until you have registered the op, registered a reconcilable index,
 declared phases and path columns, subclassed `TrackerRunRowBase` and
 `TrackerOpParams`, and added both golden cases.
+
+Three of its assertions are about the model, and they are the ones most likely
+to surprise you if you worked from an older integration. Your runner may declare
+no resolver of its own and no filename or head-type table for one to consult;
+if your op declares a model parameter, your runner must bind the shared
+`resolve_model` or `resolve_model_set` (compared by identity, so a same-named
+local will not do); and if your tool's model is a directory, your `MODEL_KINDS`
+entry must say so rather than inheriting the single-file default.
 
 Add to the golden corpus a `<kind>/run-id-settings` case calling your real
 settings builder with every argument explicit, and a `tracks/<kind>-variant`
