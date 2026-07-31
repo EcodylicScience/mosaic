@@ -36,7 +36,6 @@ than bolting one on.
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import shutil
 import socket
@@ -60,10 +59,17 @@ from mosaic.core.pipeline.op_identity import (
     parse_op_run_id,
 )
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-from mosaic.tracking.common.mint import mint_tracker_run
+from mosaic.tracking.common.index import (
+    TrackerRunRowBase,
+    list_tracker_runs,
+    tracker_index,
+    tracker_index_path,
+)
+from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
+from mosaic.tracking.common.scope import build_work_items
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -94,36 +100,29 @@ if TYPE_CHECKING:
 
 
 def trex_run_root(ds: Dataset, run_id: str) -> Path:
-    return ds.get_root("trex") / run_id
+    """Where one trex run keeps its per-entry working directories."""
+    return tracker_run_root(ds, TREX_KIND, run_id)
 
 
 def trex_index_path(ds: Dataset) -> Path:
-    return ds.get_root("trex") / "index.csv"
+    """Where the trex run index lives."""
+    return tracker_index_path(ds, TREX_KIND)
 
 
 @dataclass(frozen=True, slots=True)
-class TRexIndexRow(RunIndexRowBase):
-    """Typed row for the TREx run index CSV.
+class TRexIndexRow(TrackerRunRowBase):
+    """Typed row for the trex run index CSV.
 
-    ``video_abs_path`` and ``pv_path`` are stored the same way ``abs_path`` is:
-    dataset-root-relative when the file is inside the dataset, absolute when it
-    is not. Readers resolve them with :meth:`Dataset.resolve_path`. A stored
-    absolute would never match a freshly resolved one after a move or a sync
-    between machines -- which is the comparison the tracker's reuse guard makes,
-    so it would invert into a permanent recompute. A new path column here must
-    also be added to ``_TREX_INDEX_PATH_COLUMNS`` in ``core/dataset.py``.
+    ``pv_path`` is the tool-specific path column; see :class:`TrackerRunRowBase`
+    for how it is stored and where it must be declared.
     """
 
-    group: str
-    sequence: str
-    video_abs_path: str
-    params_hash: str
-    n_individuals: int = 0
     pv_path: str = ""
 
 
 def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
-    return IndexCSV(path, TRexIndexRow, dedup_keys=["run_id", "group", "sequence"])
+    """The trex run index, one row per (run, entry)."""
+    return tracker_index(path, TRexIndexRow)
 
 
 # --- Settings, whole and per phase ----------------------------------------
@@ -263,21 +262,6 @@ def phase_settings(
 
 
 # --- Per-entry reuse ------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkItem:
-    """One sequence to track, and what it resolved to.
-
-    ``key`` is the ``<group>__<sequence>`` working-directory name; there is
-    exactly one item per key.
-    """
-
-    group: str
-    sequence: str
-    key: str
-    video_path: Path
-    video_uid: str
 
 
 # Outputs each phase leaves in the working directory. Used to clear a phase
@@ -631,54 +615,7 @@ def run_trex(
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return run_id
 
-    # One work item per (group, sequence); first video when several exist. Each
-    # scope entry is one camera; per-camera TREx output (a camera-qualified
-    # seq_dir and a camera in the trex index dedup) is Phase 2, gated on the
-    # store->mp4 transcode a store-directory sequence needs to be TREx-readable
-    # at all -- so single-camera behavior here is unchanged.
-    #
-    # The working directory is keyed on (group, sequence) with no camera, so a
-    # multi-camera sequence's entries all resolve to *one* directory. Collapsing
-    # them here keeps that one-to-one: left as several, the second entry would
-    # see the first's source, call it a change, recompute over the first's
-    # outputs and replace its index row -- on every run, forever.
-    work_items: list[_WorkItem] = []
-    claimed_keys: set[str] = set()
-    for entry in scope:
-        group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-        paths = resolved.paths
-        if len(paths) > 1:
-            print(
-                f"[run_trex] ({group}, {sequence}) has {len(paths)} videos; using "
-                f"the first ({paths[0].name}). Multi-video sequences are not yet "
-                f"merged.",
-                file=sys.stderr,
-            )
-        key = make_entry_key(group, sequence)
-        if key in claimed_keys:
-            print(
-                f"[run_trex] ({group}, {sequence}) camera "
-                f"{entry.camera or '<unnamed>'} shares one output directory with "
-                f"an earlier camera; skipping it. Per-camera tracker output is "
-                f"Phase 2.",
-                file=sys.stderr,
-            )
-            continue
-        claimed_keys.add(key)
-        facts = resolved.facts
-        work_items.append(
-            _WorkItem(
-                group=group,
-                sequence=sequence,
-                key=key,
-                video_path=paths[0],
-                # Advisory in this milestone: recorded so items 4.2 and 8.5 have
-                # it, not yet compared. A media index written before the identity
-                # columns existed carries none, and comparing on an absent value
-                # would change behavior for every such dataset.
-                video_uid=facts[0].video_uuid if facts else "",
-            )
-        )
+    work_items = build_work_items(ds, scope, kind=TREX_KIND)
 
     idx = trex_index(trex_index_path(ds))
     idx.ensure()
@@ -902,7 +839,7 @@ def run_trex(
                             track_marker.source or ds.relative_to_root(video_path)
                         ),
                         params_hash=params_hash,
-                        n_individuals=len(npz_paths),
+                        n_ids=len(npz_paths),
                         pv_path=ds.relative_to_root(pv_path),
                     )
                 )
@@ -941,13 +878,8 @@ def run_trex(
 
 
 def list_trex_runs(ds: Dataset) -> pd.DataFrame:
-    """List TREx runs tracked in the trex index."""
-    if not ds.has_root("trex"):
-        return pd.DataFrame(columns=[f.name for f in dataclasses.fields(TRexIndexRow)])
-    idx_path = trex_index_path(ds)
-    if not idx_path.exists():
-        return pd.DataFrame(columns=[f.name for f in dataclasses.fields(TRexIndexRow)])
-    return pd.read_csv(idx_path)
+    """List trex runs tracked in the trex index."""
+    return list_tracker_runs(ds, TREX_KIND, TRexIndexRow)
 
 
 # Item 6.1: the reconciler opens this root's index through the registry, so

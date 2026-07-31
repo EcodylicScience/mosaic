@@ -202,7 +202,7 @@ def test_a_completed_run_reuses_the_inference(
     # existing parquet rather than replaced with a zero.
     lidx = pd.read_csv(litpose_index_path(ds))
     assert len(lidx) == 1
-    assert int(lidx.iloc[0]["n_individuals"]) == 1
+    assert int(lidx.iloc[0]["n_ids"]) == 1
 
 
 def test_an_interrupted_predict_is_not_trusted(

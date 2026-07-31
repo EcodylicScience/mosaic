@@ -556,7 +556,7 @@ def test_the_reuse_path_reports_the_video_that_produced_the_data(
     assert len(rows) == 1, "one row per (run_id, group, sequence)"
     row = rows.iloc[0]
     assert str(row["video_abs_path"]).endswith("vid1.mp4")
-    assert int(row["n_individuals"]) == 1
+    assert int(row["n_ids"]) == 1
     assert str(row["run_id"]) == run_id
 
 

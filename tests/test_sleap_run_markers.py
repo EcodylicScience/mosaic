@@ -201,7 +201,7 @@ def test_a_completed_run_reuses_the_inference(
     # from the existing parquet rather than replacing the row with a zero.
     sidx = pd.read_csv(sleap_index_path(ds))
     assert len(sidx) == 1
-    assert int(sidx.iloc[0]["n_tracks"]) == 1
+    assert int(sidx.iloc[0]["n_ids"]) == 1
 
 
 def test_an_interrupted_analysis_export_is_not_trusted(

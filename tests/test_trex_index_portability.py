@@ -54,7 +54,7 @@ def dataset_with_trex_row(tmp_path: Path, *, absolute: bool) -> tuple[Dataset, P
                 abs_path=Path(ds.relative_to_root(seq_dir)),
                 video_abs_path=store(video),
                 params_hash="abc",
-                n_individuals=1,
+                n_ids=1,
                 pv_path=store(pv_path),
             )
         ]

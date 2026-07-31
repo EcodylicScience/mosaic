@@ -43,7 +43,7 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -62,7 +62,14 @@ from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-from mosaic.tracking.common.mint import mint_tracker_run
+from mosaic.tracking.common.index import (
+    TrackerRunRowBase,
+    list_tracker_runs,
+    tracker_index,
+    tracker_index_path,
+)
+from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
+from mosaic.tracking.common.scope import build_work_items
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
@@ -79,38 +86,32 @@ if TYPE_CHECKING:
 
 
 def litpose_run_root(ds: Dataset, run_id: str) -> Path:
-    return ds.get_root("litpose") / run_id
+    """Where one litpose run keeps its per-entry working directories."""
+    return tracker_run_root(ds, LITPOSE_KIND, run_id)
 
 
 def litpose_index_path(ds: Dataset) -> Path:
-    return ds.get_root("litpose") / "index.csv"
+    """Where the litpose run index lives."""
+    return tracker_index_path(ds, LITPOSE_KIND)
 
 
 @dataclass(frozen=True, slots=True)
-class LitposeIndexRow(RunIndexRowBase):
-    """Typed row for the Lightning Pose run index CSV.
+class LitposeIndexRow(TrackerRunRowBase):
+    """Typed row for the litpose run index CSV.
 
-    ``video_abs_path`` and ``csv_path`` are stored the way ``abs_path`` is:
-    dataset-root-relative when inside the dataset, absolute when not. Readers
-    resolve them with :meth:`Dataset.resolve_path`. A stored absolute would never
-    match a freshly resolved one after a move or a sync between machines -- which
-    is the comparison the tracker's reuse guard makes, so it would invert into a
-    permanent recompute. A new path column here must also be added to
-    ``_LITPOSE_INDEX_PATH_COLUMNS`` in ``core/dataset.py``.
+    ``video_abs_path`` and ``csv_path`` are the tool-specific path columns; see
+    :class:`TrackerRunRowBase` for how they are stored and where they must be
+    declared.
     """
 
-    group: str
-    sequence: str
-    video_abs_path: str
-    params_hash: str
     model_id: str = ""
     model_type: str = ""
-    n_individuals: int = 1
     csv_path: str = ""
 
 
 def litpose_index(path: Path) -> IndexCSV[LitposeIndexRow]:
-    return IndexCSV(path, LitposeIndexRow, dedup_keys=["run_id", "group", "sequence"])
+    """The litpose run index, one row per (run, entry)."""
+    return tracker_index(path, LitposeIndexRow)
 
 
 # --- Model resolution -----------------------------------------------------
@@ -279,18 +280,6 @@ def _phase_activity(
 
 
 # --- Per-entry reuse ------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkItem:
-    """One sequence to track, and what it resolved to."""
-
-    group: str
-    sequence: str
-    key: str
-    video_path: Path
-    video_uid: str
-    fps: float
 
 
 # The output the inference phase leaves in the working directory: the predictions
@@ -498,45 +487,7 @@ def run_litpose(
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return run_id
 
-    fps_default = float(ds.meta.get("fps_default", 30.0))
-
-    # One work item per (group, sequence); first video when several exist, and
-    # cameras collapse onto one output directory (per-camera output is a later
-    # phase, as in the SLEAP / TREx integrations).
-    work_items: list[_WorkItem] = []
-    claimed_keys: set[str] = set()
-    for entry in scope:
-        group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-        paths = resolved.paths
-        if len(paths) > 1:
-            print(
-                f"[run_litpose] ({group}, {sequence}) has {len(paths)} videos; using "
-                f"the first ({paths[0].name}). Multi-video sequences are not yet "
-                f"merged.",
-                file=sys.stderr,
-            )
-        key = make_entry_key(group, sequence)
-        if key in claimed_keys:
-            print(
-                f"[run_litpose] ({group}, {sequence}) camera "
-                f"{entry.camera or '<unnamed>'} shares one output directory with "
-                f"an earlier camera; skipping it.",
-                file=sys.stderr,
-            )
-            continue
-        claimed_keys.add(key)
-        facts = resolved.facts
-        entry_fps = facts[0].fps if facts and facts[0].fps > 0 else fps_default
-        work_items.append(
-            _WorkItem(
-                group=group,
-                sequence=sequence,
-                key=key,
-                video_path=paths[0],
-                video_uid=facts[0].video_uuid if facts else "",
-                fps=entry_fps,
-            )
-        )
+    work_items = build_work_items(ds, scope, kind=LITPOSE_KIND)
 
     idx = litpose_index(litpose_index_path(ds))
     idx.ensure()
@@ -673,7 +624,7 @@ def run_litpose(
                         params_hash=params_hash,
                         model_id=resolved_model.model_id,
                         model_type=resolved_model.model_type,
-                        n_individuals=1,
+                        n_ids=1,
                         csv_path=ds.relative_to_root(csv_out),
                     )
                 )
@@ -694,7 +645,7 @@ def run_litpose(
                     if bridged is not None:
                         _n_rows, n_individuals = bridged
                         index_rows[-1] = dataclasses.replace(
-                            index_rows[-1], n_individuals=n_individuals
+                            index_rows[-1], n_ids=n_individuals
                         )
 
                 ctx.progress.on_entry_end(i + 1, len(work_items), key)
@@ -715,17 +666,8 @@ def run_litpose(
 
 
 def list_litpose_runs(ds: Dataset) -> pd.DataFrame:
-    """List Lightning Pose runs tracked in the litpose index."""
-    if not ds.has_root("litpose"):
-        return pd.DataFrame(
-            columns=[f.name for f in dataclasses.fields(LitposeIndexRow)]
-        )
-    idx_path = litpose_index_path(ds)
-    if not idx_path.exists():
-        return pd.DataFrame(
-            columns=[f.name for f in dataclasses.fields(LitposeIndexRow)]
-        )
-    return pd.read_csv(idx_path)
+    """List litpose runs tracked in the litpose index."""
+    return list_tracker_runs(ds, LITPOSE_KIND, LitposeIndexRow)
 
 
 # Item 6.1: the reconciler opens this root's index through the registry, so

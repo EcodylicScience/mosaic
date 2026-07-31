@@ -248,9 +248,9 @@ def test_litpose_leaves_this_shape(
         "sequence",
         "video_abs_path",
         "params_hash",
+        "n_ids",
         "model_id",
         "model_type",
-        "n_individuals",
         "csv_path",
     ]
     assert got["index_rows"] == 1
@@ -382,9 +382,9 @@ def test_sleap_leaves_this_shape(
         "sequence",
         "video_abs_path",
         "params_hash",
+        "n_ids",
         "model_id",
         "model_type",
-        "n_tracks",
         "slp_path",
         "analysis_h5_path",
     ]
@@ -539,7 +539,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
         "sequence",
         "video_abs_path",
         "params_hash",
-        "n_individuals",
+        "n_ids",
         "pv_path",
     ]
     assert got["index_rows"] == 1
