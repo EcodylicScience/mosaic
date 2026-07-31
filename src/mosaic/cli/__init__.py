@@ -28,7 +28,7 @@ from mosaic.cli.runs import runs_command
 from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
 from mosaic.cli.tracking import tracking_app
-from mosaic.cli.trex import trex_command
+from mosaic.cli.track import track_command
 from mosaic_media.cli import media_app
 
 app = typer.Typer(
@@ -43,7 +43,7 @@ _ = app.command(name="run")(run_command)
 _ = app.command(name="status")(status_command)
 _ = app.command(name="runs")(runs_command)
 _ = app.command(name="cancel")(cancel_command)
-_ = app.command(name="trex")(trex_command)
+_ = app.command(name="track")(track_command)
 
 # Discover.
 app.add_typer(features_app, name="features")

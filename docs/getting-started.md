@@ -77,6 +77,12 @@ trk  = run_trex_track(conv.pv_path, "out/", track_max_individuals=4,
                       trex_conda_env="track", display=":99")
 ```
 
+Over a whole dataset, `run_trex(ds, ...)` does the same as a tracked job and
+bridges the results into `tracks/`, or from the command line:
+`mosaic track trex -m dataset.yaml --set detect_model=yolo.pt --set track_max_individuals=4`.
+`mosaic track` takes its flags from each tracker's parameter schema, so
+`mosaic tracking describe trex` lists what `--set` accepts.
+
 **Two-env setup (recommended).** TRex's conda package pins `python=3.11` /
 `numpy=1.26`, so install it in its **own** env rather than the mosaic env:
 
@@ -109,7 +115,7 @@ from mosaic.tracking import run_sleap
 run_sleap(ds, model_paths=["models/sleap_bottomup"])          # standalone / notebook
 ```
 
-or through the op runner: `mosaic run --kind sleap --model-paths models/sleap_bottomup`.
+or from the command line: `mosaic track sleap -m dataset.yaml --set model_paths='["models/sleap_bottomup"]'`.
 
 **Own-environment setup.** SLEAP 1.6 is heavy (PyTorch + Qt), so install it in
 its **own** environment rather than the mosaic env:
@@ -140,7 +146,7 @@ run_litpose(ds, model_path="models/litpose_model")            # standalone / not
 ```
 
 or through the op runner:
-`mosaic run --kind litpose --params '{"model_path": "models/litpose_model"}'`.
+`mosaic track litpose -m dataset.yaml --set model_path=models/litpose_model`.
 
 **Own-environment setup.** Lightning Pose is heavy (PyTorch + Lightning + NVIDIA
 DALI) and its video inference needs a Linux CUDA GPU, so install it in its **own**
