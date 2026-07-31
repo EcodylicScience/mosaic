@@ -74,12 +74,12 @@
       ],
       "skeleton": [
         [
-          1,
-          2
+          0,
+          1
         ],
         [
-          2,
-          3
+          1,
+          2
         ]
       ],
       "type": "KeypointSchema"
@@ -160,12 +160,12 @@
       ],
       "skeleton": [
         [
-          1,
-          2
+          0,
+          1
         ],
         [
-          2,
-          3
+          1,
+          2
         ]
       ],
       "type": "KeypointSchema"

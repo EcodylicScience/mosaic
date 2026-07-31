@@ -40,7 +40,8 @@ def _coco(tmp_path: Path, **overrides: Any) -> Path:
                 "id": 1,
                 "name": "mouse",
                 "keypoints": ["nose", "thorax", "tail"],
-                "skeleton": [[0, 1], [1, 2]],
+                # COCO indexes skeleton endpoints from one.
+                "skeleton": [[1, 2], [2, 3]],
             }
         ],
     }
@@ -56,7 +57,7 @@ def _coco(tmp_path: Path, **overrides: Any) -> Path:
 def test_the_schema_comes_from_the_category(tmp_path: Path) -> None:
     annotations = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
     assert annotations.schema.names == ("nose", "thorax", "tail")
-    assert annotations.schema.skeleton == ((0, 1), (1, 2))
+    assert annotations.schema.skeleton == ((0, 1), (1, 2)), "read back zero-based"
     assert annotations.categories == ("mouse",)
     assert annotations.source_format == "coco"
 
@@ -175,7 +176,7 @@ def test_a_keypoint_subset_renumbers_the_skeleton(tmp_path: Path) -> None:
         _coco(tmp_path), tmp_path, keypoint_indices=[0, 1]
     )
     assert annotations.schema.names == ("nose", "thorax")
-    assert annotations.schema.skeleton == ((0, 1),), "the 1-2 edge lost an endpoint"
+    assert annotations.schema.skeleton == ((0, 1),), "the second edge lost an endpoint"
     assert len(annotations.frames[0].objects[0].keypoints) == 2
 
 
@@ -245,3 +246,20 @@ def test_an_unplaced_keypoint_survives_the_round_trip_as_unplaced(
 
     assert tail.visibility == 0
     assert math.isnan(tail.x), "written as the origin, read back as absent"
+
+
+def test_the_written_skeleton_uses_cocos_one_based_endpoints(tmp_path: Path) -> None:
+    """What makes the file readable by anything other than this reader.
+
+    Both directions being wrong the same way round-trips perfectly and still
+    hands every other tool a skeleton shifted by one -- which is how a lost
+    edge showed up only once a real sleap-io read the result.
+    """
+    from mosaic.core.annotations.writers import write_coco_keypoints
+
+    original = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
+    assert original.schema.skeleton == ((0, 1), (1, 2)), "zero-based in memory"
+
+    path = write_coco_keypoints(original, tmp_path / "out" / "ann.json")
+    written = json.loads(path.read_text())
+    assert written["categories"][0]["skeleton"] == [[1, 2], [2, 3]]

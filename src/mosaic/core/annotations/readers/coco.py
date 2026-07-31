@@ -130,10 +130,16 @@ def read_coco_keypoints(
             )
         category = matches[0]
 
+    # COCO indexes skeleton endpoints from one; this representation indexes
+    # from zero. Read straight through, a two-edge skeleton on three keypoints
+    # names node 3, which does not exist -- and nothing downstream checks, so
+    # the dangling edge simply travelled.
     schema = KeypointSchema(
         names=tuple(category.keypoints),
         skeleton=tuple(
-            (edge[0], edge[1]) for edge in category.skeleton if len(edge) >= 2
+            (edge[0] - 1, edge[1] - 1)
+            for edge in category.skeleton
+            if len(edge) >= 2 and edge[0] >= 1 and edge[1] >= 1
         ),
     )
     selected = (

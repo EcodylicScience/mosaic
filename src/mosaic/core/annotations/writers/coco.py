@@ -55,7 +55,9 @@ def write_coco_keypoints(
         "name": annotations.categories[0] if annotations.categories else "animal",
         "supercategory": "animal",
         "keypoints": list(annotations.schema.names),
-        "skeleton": [list(edge) for edge in annotations.schema.skeleton],
+        # Back to COCO's one-based endpoints, which is what every other
+        # reader of this file expects.
+        "skeleton": [[a + 1, b + 1] for a, b in annotations.schema.skeleton],
     }
 
     images: list[dict[str, object]] = []
