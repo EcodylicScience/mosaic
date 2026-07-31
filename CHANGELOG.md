@@ -1,11 +1,70 @@
 # Changelog
 
-One entry per milestone of the hashing and data-consistency program, saying what
-moved on the surface another repository can observe. A paragraph to read instead
-of a diff to interpret.
+One entry per milestone of the hashing and data-consistency program, plus any
+release that moves an identifier or a name on disk, saying what moved on the
+surface another repository can observe. A paragraph to read instead of a diff to
+interpret.
 
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
+
+## 0.9.0 — identity backbone, generalized
+
+**The MegaDescriptor identity feature was a generic backbone loader wearing one
+backbone's name.** `MegaDescriptorNetwork` never contained anything specific to
+MegaDescriptor: it loaded whatever `model_name` named through
+`timm.create_model`, froze it, probed the embedding width, and decided identity
+by cosine k-NN against per-identity prototypes. The name is now the mechanism —
+`global-identity-embedding`, `EmbeddingIdentityNetwork`,
+`identity_embedding_model.joblib` — and the backbone is a parameter, which is
+what it always was. `model_name` now takes a bare timm architecture tag as well
+as a Hugging Face hub id, so one feature reaches both catalogs.
+
+**Preprocessing follows the backbone instead of being asserted.** Normalization
+statistics and input size are read from the loaded model's own `pretrained_cfg`
+through `timm.data.resolve_model_data_config`, rather than hardcoded to
+ImageNet's triple and 384x384. A backbone that declares nothing falls back to
+exactly the old constants, so the no-information path is the previous behaviour
+rather than a third one. Interpolation and crop ratio are deliberately *not*
+adopted: those describe timm's evaluation transform for a full image being
+centre-cropped, and this feature's input is already a tight egocentric crop, so
+honouring a 0.9 crop ratio would discard the border a discriminative marking may
+sit in. `image_size` stays a parameter but defaults to `None`, meaning *follow
+the backbone*; a value pins an override. The resolved configuration is written
+into the exported checkpoint (`format_version` 1 → 2), so reloading a fitted
+model reproduces the preprocessing it was fitted with even if the upstream
+repository changes underneath it.
+
+**The default weights are permissively licensed.** `model_name` defaults to
+`timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k` (MIT) — the same Swin
+architecture MegaDescriptor fine-tuned, carrying ImageNet-22k weights instead of
+wildlife ones. `BVRA/MegaDescriptor-L-384` stays documented and is one parameter
+away; it is CC-BY-NC-4.0 and remains the right choice for academic wildlife
+re-identification, where it substantially outperforms an ImageNet backbone at
+telling individual animals apart. Mosaic distributes no weights: whichever
+backbone is named is fetched at run time under its own license. `docs/licensing.md`
+gains the backbone table and says plainly that the default is the shippable
+option, not the measured one. Unlike `kpms`, there is no acceptance gate — the
+restricted component here is a value the user types, and the default is
+permissive.
+
+**A clean break, and an identity-neutral one.** `global-identity-megadescriptor`
+resolves to nothing. The feature registry has no alias mechanism, and `mosaic
+reconcile` categorically cannot carry a slug rename — it enumerates directories
+under `features/`, and a run whose slug no longer resolves is reported
+`unresolvable_pre_provenance` with nothing moved. But the rename moves no
+digest: a feature's own slug is not in its hash payload, and every `Params`
+field name survived, so a run that pins the three defaults that did change —
+`model_name`, `image_size`, `weights_name` — mints byte-identical `0.1-8aebe700d2`
+under the new name. A golden case pins exactly that. The feature therefore stays
+at version `0.1`, and `FEATURE_IDENTITY_SCHEME` stays `5`: the shape of the
+hashed payload is unchanged, only default values inside it. A dataset holding
+runs under the old slug keeps them, unreachable by name; re-run under the new
+slug, pinning `model_name` if the analysis used MegaDescriptor.
+
+**Contract surface: nothing moved.** No sibling repository references any
+identity slug — mosaic-api, mosaic-app, mosaic-queue and trex reference none of
+the three. The `mosaic-behavior>=0.7.0` floor owed since M7 stands.
 
 ## 0.8.0 — T-Rex checkpoint interop
 

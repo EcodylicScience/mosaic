@@ -18,7 +18,7 @@ Three temporal heads are selectable via ``temporal_head``:
 Sibling implementation to
 :class:`~mosaic.behavior.model_library.trex_identity_network.TRexIdentityNetwork`
 (V200) and
-:class:`~mosaic.behavior.model_library.megadescriptor_identity.MegaDescriptorNetwork`.
+:class:`~mosaic.behavior.model_library.identity_embedding.EmbeddingIdentityNetwork`.
 """
 
 from __future__ import annotations

@@ -4,9 +4,11 @@ Mosaic is released under the **GNU Affero General Public License v3 or later**
 (AGPL-3.0-or-later). See [LICENSE](https://github.com/EcodylicScience/mosaic/blob/main/LICENSE).
 
 Mosaic also drives a number of third-party tools and models, and their terms are
-not all the same as mosaic's. One of them — keypoint-MoSeq — prohibits
-commercial use outright. This page states which components carry restrictions
-that could affect whether you may use them, and what mosaic does about it.
+not all the same as mosaic's. Two carry restrictions worth knowing before you
+start: keypoint-MoSeq prohibits commercial use outright, and the strongest
+available backbone for animal re-identification is non-commercial. This page
+states which components carry restrictions that could affect whether you may use
+them, and what mosaic does about it.
 
 !!! note "Scope"
 
@@ -105,6 +107,58 @@ The `arhmm` feature fits a comparable autoregressive hidden Markov model in
 mosaic's own code, with no keypoint-MoSeq or JAX dependency and no license
 restriction. It is the intended alternative.
 
+## Model weights carry their own license
+
+**Mosaic distributes no model weights.** Every backbone is fetched at run time
+from a source you name, and those weights carry their own license, independent
+of mosaic's. AGPL-3.0-or-later covers this repository's source; it places no
+restriction on the weights you load and confers no rights over them, and
+conversely a non-commercial weights license does not become less restrictive by
+being loaded from AGPL code.
+
+`global-identity-embedding` makes that explicit: `model_name` takes any timm
+architecture tag or Hugging Face hub id, and mosaic loads whatever it names.
+
+| `model_name` | License | Pretraining | Commercial use |
+| ------------ | ------- | ----------- | -------------- |
+| `timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k` (default) | MIT | ImageNet-22k, fine-tuned on ImageNet-1k | Permitted |
+| `BVRA/MegaDescriptor-L-384` | CC-BY-NC-4.0 | 53 animal re-identification datasets | **Prohibited** |
+| `BVRA/MegaDescriptor-T-224` | CC-BY-NC-4.0 | as above, much smaller and faster | **Prohibited** |
+
+!!! warning "MegaDescriptor is non-commercial"
+
+    `BVRA/MegaDescriptor-*` is released under
+    [CC-BY-NC-4.0](https://huggingface.co/BVRA/MegaDescriptor-L-384), which does
+    not permit commercial use. The restriction is on the *weights*, not on
+    mosaic's code, and not on the architecture: MegaDescriptor is a stock
+    `swin_large_patch4_window12_384` — the same Swin the default loads — trained
+    on wildlife re-identification data. Only the trained parameters are
+    restricted.
+
+MegaDescriptor remains the right choice for academic wildlife
+re-identification, where it substantially outperforms a generic ImageNet
+backbone on telling individual animals apart, and it is one parameter away.
+Selecting it, and complying with its terms, is your decision.
+
+### Why this has no acceptance gate, when `kpms` does
+
+The `kpms` refusal exists because merely running that feature *is* use of
+restricted software, with no unrestricted path through it. Here the restricted
+component is a value you type: the default is permissive, mosaic never selects
+MegaDescriptor for you, and naming it is already the deliberate act an
+environment variable would otherwise stand in for. A gate would add friction
+without adding information.
+
+**A note on accuracy, since it bears on the choice.** The default is the
+permissively licensed option, not the most accurate one. MegaDescriptor's entire
+value is that it was pretrained to tell individual animals apart; an ImageNet
+backbone was pretrained to tell a cat from a bus. For near-identical laboratory
+animals expect the default to be a weak zero-shot baseline and MegaDescriptor to
+be a credible one. That ranking is the published result (Čermák et al., WACV
+2024); nobody has measured either on mosaic's own data. Changing `model_name`
+mints a new `run_id`, so the two runs coexist and you can compare the reported
+top-1 from each.
+
 ## Third-party components
 
 Read from each project's own license document. Verify against the version you
@@ -121,6 +175,8 @@ install before relying on any row.
 | lightning-action | `lightning-action` extra | MIT | Permitted |
 | FERAL | `feral` extra; V-JEPA 2 backbone | MIT (some V-JEPA 2 files Apache-2.0) | Permitted |
 | DINOv2 (`dinov2_vits14`, `dinov2_vitb14`) | `identity` extra, fetched through `torch.hub` | Apache-2.0, code and weights | Permitted |
+| timm | `identity` extra; the loader, not the weights | Apache-2.0 | Permitted |
+| Backbone weights for `global-identity-embedding` | `identity` extra, fetched at run time from the hub id you name | whatever that repository states; the default is MIT | See the table above |
 
 Two rows deserve a second look if you are working commercially.
 

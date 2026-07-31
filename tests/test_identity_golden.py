@@ -234,16 +234,33 @@ CASES: tuple[Case, ...] = (
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
     Case(
-        case_id="global-identity-megadescriptor/from-egocentric-crop/scope-a",
-        feature="global-identity-megadescriptor",
+        case_id="global-identity-embedding/from-egocentric-crop/scope-a",
+        feature="global-identity-embedding",
         inputs=[{"feature": "egocentric-crop"}],
         scope=(("", "seq_a"),),
     ),
     Case(
-        case_id="global-identity-megadescriptor/from-egocentric-crop/scope-ab",
-        feature="global-identity-megadescriptor",
+        case_id="global-identity-embedding/from-egocentric-crop/scope-ab",
+        feature="global-identity-embedding",
         inputs=[{"feature": "egocentric-crop"}],
         scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    # The rename from ``global-identity-megadescriptor`` was identity-neutral.
+    # A feature's own slug is not hashed and every Params field name survived,
+    # so pinning the three defaults that moved -- model_name, image_size,
+    # weights_name -- reproduces the digest that feature minted under its old
+    # name, ``0.1-8aebe700d2``. If this line moves, the rename changed a recipe
+    # and not just a name.
+    Case(
+        case_id="global-identity-embedding/from-egocentric-crop/megadescriptor-pinned",
+        feature="global-identity-embedding",
+        inputs=[{"feature": "egocentric-crop"}],
+        params={
+            "model_name": "BVRA/MegaDescriptor-L-384",
+            "image_size": (384, 384),
+            "weights_name": "megadescriptor_identity",
+        },
+        scope=(("", "seq_a"),),
     ),
     Case(
         case_id="global-identity-dinov2-temporal/from-egocentric-crop/scope-a",

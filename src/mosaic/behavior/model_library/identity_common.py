@@ -2,7 +2,7 @@
 
 The V200 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
 keeps its crop-loading and label-mapping logic as private methods. The
-embedding-based identity plugins (MegaDescriptor, DINOv2 + temporal) reuse
+embedding-based identity plugins (a frozen image backbone, DINOv2 + temporal) reuse
 the same pattern, so the relevant logic is lifted here and shared.
 
 Two extra utilities are provided that V200 doesn't need:

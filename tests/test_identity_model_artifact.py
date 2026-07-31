@@ -21,7 +21,7 @@ is enough.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -32,8 +32,8 @@ import pytest
 from mosaic.behavior.feature_library.dinov2_temporal_identity_model import (
     DinoV2TemporalIdentityArtifact,
 )
-from mosaic.behavior.feature_library.megadescriptor_identity_model import (
-    MegaDescriptorIdentityArtifact,
+from mosaic.behavior.feature_library.identity_embedding_model import (
+    EmbeddingIdentityArtifact,
 )
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import Scope
@@ -44,7 +44,7 @@ CROP_INPUTS: list[object] = [{"feature": "egocentric-crop"}]
 
 IDENTITY_SLUGS = (
     "global-identity-model",
-    "global-identity-megadescriptor",
+    "global-identity-embedding",
     "global-identity-dinov2-temporal",
 )
 
@@ -59,6 +59,10 @@ class ArtifactCase:
         network_attr: Name of the network class within that module.
         bundle_name: Fixed filename of the joblib sidecar.
         weights_stem: Default ``weights_name`` param.
+        pattern_of: Reads the artifact class's declared glob pattern. A
+            callable rather than the class itself, because the two artifact
+            classes have no common annotation that survives strict variance
+            checking.
     """
 
     slug: str
@@ -66,15 +70,17 @@ class ArtifactCase:
     network_attr: str
     bundle_name: str
     weights_stem: str
+    pattern_of: Callable[[], str]
 
 
 ARTIFACT_CASES = (
     ArtifactCase(
-        slug="global-identity-megadescriptor",
-        module="mosaic.behavior.model_library.megadescriptor_identity",
-        network_attr="MegaDescriptorNetwork",
-        bundle_name="megadescriptor_identity_model.joblib",
-        weights_stem="megadescriptor_identity",
+        slug="global-identity-embedding",
+        module="mosaic.behavior.model_library.identity_embedding",
+        network_attr="EmbeddingIdentityNetwork",
+        bundle_name="identity_embedding_model.joblib",
+        weights_stem="identity_embedding",
+        pattern_of=lambda: EmbeddingIdentityArtifact().pattern,
     ),
     ArtifactCase(
         slug="global-identity-dinov2-temporal",
@@ -82,6 +88,7 @@ ARTIFACT_CASES = (
         network_attr="DinoV2TemporalNetwork",
         bundle_name="dinov2_temporal_identity_model.joblib",
         weights_stem="dinov2_temporal_identity",
+        pattern_of=lambda: DinoV2TemporalIdentityArtifact().pattern,
     ),
 )
 
@@ -202,8 +209,9 @@ def test_pinning_a_model_moves_the_identifier(case: ArtifactCase) -> None:
 # --- The sidecar indirection ----------------------------------------------
 
 
-def test_megadescriptor_pattern_resolves_past_the_sibling_joblibs(
-    tmp_path: Path,
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_pattern_resolves_past_the_sibling_joblibs(
+    case: ArtifactCase, tmp_path: Path
 ) -> None:
     """Dependency resolution globs the pattern and takes ``files[0]``.
 
@@ -214,26 +222,10 @@ def test_megadescriptor_pattern_resolves_past_the_sibling_joblibs(
     """
     for name in ("identity_names.joblib", "training_history.joblib"):
         _ = (tmp_path / name).write_bytes(b"")
-    _ = (tmp_path / "megadescriptor_identity_model.joblib").write_bytes(b"")
+    _ = (tmp_path / case.bundle_name).write_bytes(b"")
 
-    pattern = MegaDescriptorIdentityArtifact().pattern
-    assert sorted(tmp_path.glob(pattern)) == [
-        tmp_path / "megadescriptor_identity_model.joblib"
-    ]
-
-
-def test_dinov2_temporal_pattern_resolves_past_the_sibling_joblibs(
-    tmp_path: Path,
-) -> None:
-    """As above, for the DINOv2 + temporal sidecar."""
-    for name in ("identity_names.joblib", "training_history.joblib"):
-        _ = (tmp_path / name).write_bytes(b"")
-    _ = (tmp_path / "dinov2_temporal_identity_model.joblib").write_bytes(b"")
-
-    pattern = DinoV2TemporalIdentityArtifact().pattern
-    assert sorted(tmp_path.glob(pattern)) == [
-        tmp_path / "dinov2_temporal_identity_model.joblib"
-    ]
+    assert case.pattern_of() == case.bundle_name
+    assert sorted(tmp_path.glob(case.pattern_of())) == [tmp_path / case.bundle_name]
 
 
 @pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)

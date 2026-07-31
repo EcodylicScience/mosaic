@@ -1,15 +1,21 @@
-"""GlobalIdentityMegaDescriptor feature.
+"""GlobalIdentityEmbedding feature.
 
 Sibling of
 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
-(V200) that uses the MegaDescriptor SwinV2 foundation model as a frozen
-embedding extractor and predicts identities by cosine-similarity k-NN
-against per-identity prototypes computed at fit time.
+(V200) that uses any timm-resolvable image backbone as a frozen embedding
+extractor and predicts identities by cosine-similarity k-NN against
+per-identity prototypes computed at fit time. Nothing is trained, so there is
+no per-animal training cycle -- ``fit()`` only computes prototypes.
 
-MegaDescriptor (Cermak et al., WACV 2024) is pretrained on a metadataset of
-53 wildlife re-identification datasets and outperforms generic foundation
-models (DINOv2, CLIP) on animal re-ID. No per-mouse training cycle is
-required for the zero-shot baseline -- ``fit()`` only computes prototypes.
+Choosing between this and ``global-identity-dinov2-temporal``: this one trains
+nothing and embeds **single frames**, so it is a zero-shot baseline that
+returns an answer in one pass. That one trains a small head on **clips**, so it
+can learn identity cues that only appear over time (gait, posture dynamics) and
+needs a training cycle. Run the cheap one first.
+
+Mosaic distributes no model weights. Whatever ``model_name`` names is fetched
+at run time under its own license -- see
+:mod:`mosaic.behavior.model_library.identity_embedding`.
 """
 
 from __future__ import annotations
@@ -18,12 +24,12 @@ import sys
 from pathlib import Path
 from typing import ClassVar, TypedDict, final
 
-import cv2
 import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.behavior.model_library.identity_embedding import DEFAULT_MODEL_NAME
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputRequire,
@@ -45,11 +51,11 @@ from .registry import register_feature
 # ``lightning_action_feature``. The name is fixed rather than derived from
 # ``weights_name`` because dependency resolution globs it, and the run root also
 # holds ``identity_names.joblib`` and ``training_history.joblib``.
-_BUNDLE_NAME = "megadescriptor_identity_model.joblib"
+_BUNDLE_NAME = "identity_embedding_model.joblib"
 
 
-class MegaDescriptorIdentityBundle(TypedDict):
-    """Sidecar naming the exported MegaDescriptor checkpoint.
+class EmbeddingIdentityBundle(TypedDict):
+    """Sidecar naming the exported embedding-identity checkpoint.
 
     Attributes:
         weights: Checkpoint filename, relative to the bundle's directory.
@@ -62,10 +68,10 @@ class MegaDescriptorIdentityBundle(TypedDict):
     version: str
 
 
-class MegaDescriptorIdentityArtifact(JoblibArtifact[MegaDescriptorIdentityBundle]):
-    """Fitted MegaDescriptor identity bundle (megadescriptor_identity_model.joblib)."""
+class EmbeddingIdentityArtifact(JoblibArtifact[EmbeddingIdentityBundle]):
+    """Fitted embedding-identity bundle (identity_embedding_model.joblib)."""
 
-    feature: str = "global-identity-megadescriptor"
+    feature: str = "global-identity-embedding"
     pattern: str = _BUNDLE_NAME
     load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
@@ -75,8 +81,8 @@ class MegaDescriptorIdentityArtifact(JoblibArtifact[MegaDescriptorIdentityBundle
 
 @final
 @register_feature
-class GlobalIdentityMegaDescriptor:
-    """Train an identity model using MegaDescriptor embeddings + k-NN.
+class GlobalIdentityEmbedding:
+    """Train an identity model from frozen backbone embeddings + k-NN.
 
     Takes EgocentricCrop output as input. Each identity is specified as a
     mapping of identity names to lists of sequences containing that
@@ -86,11 +92,10 @@ class GlobalIdentityMegaDescriptor:
 
     Example::
 
-        ego_result = dataset.run_feature(
-            EgocentricCrop(params={"crop_size": (384, 384)})
-        )
+        ego_result = dataset.run_feature(EgocentricCrop())
 
-        identity_model = GlobalIdentityMegaDescriptor(
+        # The default backbone: MIT-licensed, commercially usable.
+        identity_model = GlobalIdentityEmbedding(
             Inputs((Result(feature="egocentric-crop"),)),
             params={
                 "identities": {
@@ -99,24 +104,39 @@ class GlobalIdentityMegaDescriptor:
                     "mouse_C": ["cage1/day2_mouseC_alone"],
                     "mouse_D": ["cage1/day1_mouseD_alone"],
                 },
-                "model_name": "BVRA/MegaDescriptor-L-384",
-                "image_size": (384, 384),
             },
         )
         result = dataset.run_feature(identity_model)
 
+        # Wildlife-pretrained weights instead: markedly stronger for animal
+        # re-identification, and CC-BY-NC-4.0, so not for commercial use.
+        academic = GlobalIdentityEmbedding(
+            Inputs((Result(feature="egocentric-crop"),)),
+            params={
+                "identities": {...},
+                "model_name": "BVRA/MegaDescriptor-L-384",
+            },
+        )
+
     Params:
-        model: Pre-fitted MegaDescriptorIdentityArtifact to load, skipping the
+        model: Pre-fitted EmbeddingIdentityArtifact to load, skipping the
             fit. Default None (fit from scratch). Pinning one makes an
             inference run's identity carry its training run by reference, so
             the run needs no scope of its own.
         identities: Explicit identity -> sequences mapping.
         group_as_identity: Treat each group name as one identity. Default
             False.
-        model_name: HuggingFace hub id of the MegaDescriptor variant.
-            Default ``"BVRA/MegaDescriptor-L-384"``.
-        image_size: Crop resize target ``(height, width)``. Default
-            ``(384, 384)`` to match ``MegaDescriptor-L-384``.
+        model_name: A bare timm architecture tag or a Hugging Face hub id for
+            the frozen backbone. Default
+            ``"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"`` (MIT).
+            Mosaic ships no weights; whatever is named here is downloaded at
+            run time under its own license. ``"BVRA/MegaDescriptor-L-384"`` is
+            markedly stronger for animal re-identification and is
+            CC-BY-NC-4.0, so it is not available for commercial use.
+        image_size: Crop resize target ``(height, width)``. Default None,
+            meaning follow the backbone's declared input size -- which is
+            almost always what you want, and is the only value correct for
+            every backbone.
         channels: Number of channels read from disk (1 = grayscale,
             3 = RGB). Grayscale inputs are replicated to 3 channels for
             the backbone. Default 3.
@@ -125,11 +145,11 @@ class GlobalIdentityMegaDescriptor:
             Default 2000.
         crop_root: Optional EgocentricCrop output root override.
         weights_name: Stem of the exported ``.pth`` checkpoint. Default
-            ``"megadescriptor_identity"``.
+            ``"identity_embedding"``.
     """
 
     category = "global"
-    name: str = "global-identity-megadescriptor"
+    name: str = "global-identity-embedding"
     version: str = "0.1"
     parallelizable = False
     # fit() reads the ambient stream -- both to discover the label set under
@@ -141,25 +161,27 @@ class GlobalIdentityMegaDescriptor:
     scope_dependent = True
     consumed_roots: tuple[str, ...] = ()
 
-    ModelArtifact = MegaDescriptorIdentityArtifact
+    ModelArtifact = EmbeddingIdentityArtifact
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
-        """MegaDescriptor identity model parameters."""
+        """Embedding-identity model parameters."""
 
         # Pre-fitted model reference: when set (and resolvable), fit is skipped.
-        model: MegaDescriptorIdentityArtifact | None = None
+        model: EmbeddingIdentityArtifact | None = None
 
         # Primary: explicit identity -> sequences mapping
         identities: dict[str, list[str]] | None = None
         # Convenience shortcut: treat each group as one identity
         group_as_identity: bool = False
 
-        # Backbone selection
-        model_name: str = "BVRA/MegaDescriptor-L-384"
-        image_size: tuple[int, int] = (384, 384)
+        # Backbone selection. Changing ``model_name`` is a licensing decision as
+        # well as an accuracy one -- see the class docstring.
+        model_name: str = DEFAULT_MODEL_NAME
+        # None means follow the backbone's declared input size.
+        image_size: tuple[int, int] | None = None
         channels: int = 3
 
         # Inference
@@ -169,14 +191,14 @@ class GlobalIdentityMegaDescriptor:
         max_images_per_identity: int = Field(default=2000, ge=1)
 
         # Export
-        weights_name: str = "megadescriptor_identity"
+        weights_name: str = "identity_embedding"
 
         # Path to EgocentricCrop output root.
         crop_root: str | None = None
 
     def __init__(
         self,
-        inputs: GlobalIdentityMegaDescriptor.Inputs,
+        inputs: GlobalIdentityEmbedding.Inputs,
         params: dict[str, object] | None = None,
     ) -> None:
         self.inputs = inputs
@@ -194,8 +216,8 @@ class GlobalIdentityMegaDescriptor:
         artifact_paths: dict[str, Path],
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
-        from mosaic.behavior.model_library.megadescriptor_identity import (
-            MegaDescriptorNetwork,
+        from mosaic.behavior.model_library.identity_embedding import (
+            EmbeddingIdentityNetwork,
         )
 
         self._network = None
@@ -205,7 +227,7 @@ class GlobalIdentityMegaDescriptor:
         # Branch 1: this run's own cached checkpoint.
         cached_path = run_root / f"{self.params.weights_name}.pth"
         if cached_path.exists():
-            self._network = MegaDescriptorNetwork.from_checkpoint(cached_path)
+            self._network = EmbeddingIdentityNetwork.from_checkpoint(cached_path)
             history_path = run_root / "training_history.joblib"
             if history_path.exists():
                 self._history = joblib.load(history_path)
@@ -220,7 +242,7 @@ class GlobalIdentityMegaDescriptor:
         if self.params.model is not None and "model" in artifact_paths:
             bundle_path = artifact_paths["model"]
             bundle = self.params.model.from_path(bundle_path)
-            self._network = MegaDescriptorNetwork.from_checkpoint(
+            self._network = EmbeddingIdentityNetwork.from_checkpoint(
                 bundle_path.parent / bundle["weights"]
             )
             self._identity_names = list(bundle["identity_names"])
@@ -233,8 +255,8 @@ class GlobalIdentityMegaDescriptor:
             build_label_mapping,
             load_crop_frames,
         )
-        from mosaic.behavior.model_library.megadescriptor_identity import (
-            MegaDescriptorNetwork,
+        from mosaic.behavior.model_library.identity_embedding import (
+            EmbeddingIdentityNetwork,
         )
 
         p = self.params
@@ -245,13 +267,13 @@ class GlobalIdentityMegaDescriptor:
 
         if num_classes < 2:
             msg = (
-                f"[megadescriptor] Need at least 2 identities, "
+                f"[identity-embedding] Need at least 2 identities, "
                 f"got {num_classes}: {identity_names}"
             )
             raise ValueError(msg)
 
         print(
-            f"[megadescriptor] training with {num_classes} identities: "
+            f"[identity-embedding] training with {num_classes} identities: "
             f"{identity_names}",
             file=sys.stderr,
         )
@@ -279,7 +301,7 @@ class GlobalIdentityMegaDescriptor:
             imgs = all_images[label_idx]
             if not imgs:
                 print(
-                    f"[megadescriptor] WARNING: no images for "
+                    f"[identity-embedding] WARNING: no images for "
                     f"{identity_names[label_idx]}",
                     file=sys.stderr,
                 )
@@ -291,7 +313,8 @@ class GlobalIdentityMegaDescriptor:
                 )
                 imgs = [imgs[i] for i in indices]
             print(
-                f"[megadescriptor]   {identity_names[label_idx]}: {len(imgs)} images",
+                f"[identity-embedding]   {identity_names[label_idx]}: "
+                f"{len(imgs)} images",
                 file=sys.stderr,
             )
             images_list.extend(imgs)
@@ -299,25 +322,17 @@ class GlobalIdentityMegaDescriptor:
 
         if not images_list:
             msg = (
-                "[megadescriptor] No images collected. Check sequence keys "
+                "[identity-embedding] No images collected. Check sequence keys "
                 "and crop output."
             )
             raise RuntimeError(msg)
 
+        # Crops go to the network at their stored size. The network resizes once,
+        # to whatever the backbone declares -- resizing here as well would
+        # resample twice, and with ``image_size`` free to follow the backbone
+        # this layer no longer knows the target.
         images_arr = np.stack(images_list, axis=0)
         labels_arr = np.array(labels_list, dtype=np.int64)
-
-        # Resize if needed (matches V200's behavior)
-        h, w = p.image_size
-        if images_arr.shape[1] != h or images_arr.shape[2] != w:
-            resized = np.empty(
-                (len(images_arr), h, w, images_arr.shape[3]), dtype=np.uint8
-            )
-            for i in range(len(images_arr)):
-                resized[i] = cv2.resize(
-                    images_arr[i], (w, h), interpolation=cv2.INTER_LINEAR
-                ).reshape(h, w, images_arr.shape[3])
-            images_arr = resized
 
         # Hold out a small validation slice for top-1 reporting
         val_images: np.ndarray | None = None
@@ -334,7 +349,7 @@ class GlobalIdentityMegaDescriptor:
             images_arr = images_arr[train_idx]
             labels_arr = labels_arr[train_idx]
 
-        self._network = MegaDescriptorNetwork(
+        self._network = EmbeddingIdentityNetwork(
             model_name=p.model_name,
             image_size=p.image_size,
         )
@@ -354,20 +369,20 @@ class GlobalIdentityMegaDescriptor:
         return df
 
     def save_state(self, run_root: Path) -> None:
-        from mosaic.behavior.model_library.megadescriptor_identity import (
-            MegaDescriptorNetwork,
+        from mosaic.behavior.model_library.identity_embedding import (
+            EmbeddingIdentityNetwork,
         )
 
         if self._network is None:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
-        if isinstance(self._network, MegaDescriptorNetwork):
+        if isinstance(self._network, EmbeddingIdentityNetwork):
             weights_name = f"{self.params.weights_name}.pth"
             self._network.export_checkpoint(run_root / weights_name)
             # The sidecar a later run references as ``model``. Written here so
             # this run's output is loadable as the next run's pre-fitted model.
-            bundle: MegaDescriptorIdentityBundle = {
+            bundle: EmbeddingIdentityBundle = {
                 "weights": weights_name,
                 "identity_names": list(self._identity_names or ()),
                 "version": self.version,

@@ -10,6 +10,12 @@ inference by cosine k-NN against per-identity prototypes.
 The pluggable temporal head is the "what did my colleague mean by 'DINOv2
 + GRU'?" answer in code: train all three on the same data and compare.
 
+Choosing between this and ``global-identity-embedding``: this one trains a
+small head on **clips**, so it can learn identity cues that only appear over
+time (gait, posture dynamics) and needs a training cycle. That one trains
+nothing and embeds **single frames**, so it is a zero-shot baseline that
+returns an answer in one pass. Run the cheap one first.
+
 Closest published reference: RoVF (Rogers et al., IJCV 2025), which uses
 a Perceiver recurrent head on DINOv2 frame embeddings for animal re-ID.
 """

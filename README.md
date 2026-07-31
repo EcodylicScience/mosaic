@@ -56,7 +56,7 @@ individually:
 | `pose`             | Ultralytics YOLO pose training and inference                                        |
 | `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
 | `localizer`        | PyTorch heatmap localizer training                                                  |
-| `identity`         | Foundation-model identity backbones (MegaDescriptor, DINOv2 + temporal); `torch` + `timm` |
+| `identity`         | Frozen image-backbone identity models (timm backbones, DINOv2 + temporal); `torch` + `timm` |
 | `lightning-action` | Lightning-Action temporal action classifier                                         |
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
@@ -101,11 +101,18 @@ Features are either:
 - **global** — fit-then-apply transforms trained on a collection of sequences
   (e.g. `global-scaler`, `global-tsne`, `global-kmeans`, `global-ward`,
   `xgboost`, `arhmm`, `kpms`\*, `lightning-action`, `feral`,
-  `global-identity-model`).
+  `global-identity-model`, `global-identity-embedding`,
+  `global-identity-dinov2-temporal`).
 
 \* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
 and academic use only. See [Licensing](docs/licensing.md); `arhmm` is the
 unrestricted alternative.
+
+`global-identity-embedding` loads whatever image backbone you name, and mosaic
+distributes no weights — each carries its own license. Its default is
+permissive; `BVRA/MegaDescriptor-L-384` is the strongest option for academic
+wildlife re-identification and is non-commercial. See
+[Licensing](docs/licensing.md).
 
 Visualization (`egocentric-crop`, `viz-timeline`, `viz-global-colored`,
 `interaction-crop-pipeline`) is exposed as features and shares the same caching

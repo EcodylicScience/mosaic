@@ -52,8 +52,10 @@ table, see [README.md](README.md). Notable points:
 - `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
   infer) from a git pin (`Skovorp/feral@main`). It runs in-process (not
   sandboxed like keypoint-MoSeq) and is deliberately excluded from `recommended`.
-- `identity` installs `torch` + `timm` for the foundation-model identity
-  backbones (MegaDescriptor, DINOv2 + temporal); also excluded from `recommended`.
+- `identity` installs `torch` + `timm` for the frozen image-backbone identity
+  models (`global-identity-embedding`, which loads any timm architecture tag or
+  Hugging Face hub id, and `global-identity-dinov2-temporal`); also excluded
+  from `recommended`. Mosaic ships no weights — see [docs/licensing.md](docs/licensing.md).
 
 ### Smoke import
 
@@ -239,7 +241,7 @@ src/mosaic/
 │   │   ├── movement/           # optional movement-library integration
 │   │   └── external/           # keypoint-moseq subprocess runner (own venv)
 │   ├── label_library/          # label converters (BORIS, CalMS21, MABe22)
-│   ├── model_library/          # identity-network backbones (TRex V200 CNNs, DINOv2 / MegaDescriptor)
+│   ├── model_library/          # identity-network backbones (TRex V200 / V118_3 CNNs, timm / DINOv2)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
     ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation

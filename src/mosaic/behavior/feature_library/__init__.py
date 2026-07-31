@@ -57,9 +57,9 @@ from . import (
     global_ward,
     helpers,
     id_tag_columns,
+    identity_embedding_model,
     identity_model,
     kpms,
-    megadescriptor_identity_model,
     nearestneighbor,
     nn_delta_bins,
     nn_delta_response,
@@ -92,9 +92,9 @@ from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
 from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
+from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
 from .kpms import KpmsFeature
-from .megadescriptor_identity_model import GlobalIdentityMegaDescriptor
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
@@ -165,7 +165,7 @@ __all__ = [
     "FFGroupsMetrics",
     "FrameAggregate",
     "GlobalIdentityDinoV2Temporal",
-    "GlobalIdentityMegaDescriptor",
+    "GlobalIdentityEmbedding",
     "GlobalIdentityModel",
     "GlobalKMeansClustering",
     "GlobalModelParams",
@@ -209,9 +209,9 @@ __all__ = [
     "global_tsne",
     "global_ward",
     "id_tag_columns",
+    "identity_embedding_model",
     "identity_model",
     "kpms",
-    "megadescriptor_identity_model",
     "nearestneighbor",
     "nn_delta_bins",
     "nn_delta_response",

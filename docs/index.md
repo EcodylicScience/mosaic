@@ -58,7 +58,8 @@ raw tracks/labels
          templates:    extract-templates, extract-labeled-templates
          global:       global-scaler, global-tsne, global-kmeans, global-ward
          trainable:    xgboost, arhmm, feral, kpms*, lightning-action,
-                       global-identity-model
+                       global-identity-model, global-identity-embedding,
+                       global-identity-dinov2-temporal
          visualization: egocentric-crop, viz-timeline, viz-global-colored,
                         interaction-crop-pipeline
 ```
@@ -98,7 +99,7 @@ Two flavors:
 | Reduction | pair-posedistance-pca |
 | Context | temporal-stack |
 | Templates | extract-templates, extract-labeled-templates |
-| **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model |
+| **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model, global-identity-embedding, global-identity-dinov2-temporal |
 | Visualization | egocentric-crop, viz-global-colored, viz-timeline, interaction-crop-pipeline |
 
 !!! warning "kpms is non-commercial only"
