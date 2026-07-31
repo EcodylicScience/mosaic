@@ -27,15 +27,23 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Final, Sequence
 
 from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    subprocess_env,
+    tool_invocation,
+)
 
 logger = logging.getLogger(__name__)
+
+_TREX: Final = "trex"
 
 
 # ---------------------------------------------------------------------------
@@ -43,40 +51,30 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class TRexNotFoundError(FileNotFoundError):
+class TRexNotFoundError(ToolNotFoundError):
     """Raised when the ``trex`` binary (or ``conda``) cannot be located."""
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(
-            message
-            or (
-                "The 'trex' binary was not found on $PATH.  "
-                "Install T-Rex and ensure it is accessible.  "
-                "See https://trex.run for installation instructions."
-            )
-        )
+    default_message = (
+        "The 'trex' binary was not found on $PATH.  "
+        "Install T-Rex and ensure it is accessible.  "
+        "See https://trex.run for installation instructions."
+    )
 
 
-class TRexError(RuntimeError):
+class TRexError(ToolExitError):
     """Raised when a T-Rex subprocess exits with a non-zero return code."""
 
-    def __init__(
-        self,
-        cmd: list[str],
-        returncode: int,
-        stdout: str,
-        stderr: str,
-    ) -> None:
-        self.cmd = cmd
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-        cmd_str = " ".join(cmd[:6]) + (" ..." if len(cmd) > 6 else "")
-        super().__init__(
-            f"T-Rex exited with code {returncode}.\n"
-            f"  Command: {cmd_str}\n"
-            f"  Stderr (last 500 chars): {stderr[-500:]}"
-        )
+    tool_name = "T-Rex"
+
+
+# TRex is a single binary, so an explicit MOSAIC_TREX_BIN names it directly.
+_TREX_ENV: Final = ToolEnv(
+    tool="T-Rex",
+    conda_env_var="MOSAIC_TREX_CONDA_ENV",
+    bin_var="MOSAIC_TREX_BIN",
+    bin_mode="direct",
+    not_found=TRexNotFoundError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -111,34 +109,6 @@ class TRexTrackResult:
 # ---------------------------------------------------------------------------
 
 
-def _ensure_trex() -> str:
-    """Return the absolute path to the ``trex`` binary, or raise."""
-    path = shutil.which("trex")
-    if path is None:
-        raise TRexNotFoundError()
-    return path
-
-
-def _conda_invocation(env_name: str) -> list[str]:
-    """Return an argv prefix that runs ``trex`` inside conda env *env_name*.
-
-    Uses ``conda run`` so the target env is fully activated — TRex's embedded
-    Python and shared libraries resolve against that env's ``CONDA_PREFIX``
-    (required when TRex lives in a different env than the caller, e.g. a
-    py3.11 ``track`` env driven from a py3.12 ``mosaic`` kernel). ``conda run``
-    puts the target env's ``bin`` first on ``PATH``, so any self-relaunch of
-    ``trex`` resolves to the real binary (no wrapper recursion).
-    """
-    conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
-    if conda is None:
-        raise TRexNotFoundError(
-            f"'conda' was not found on $PATH; cannot run trex in env "
-            f"'{env_name}'. Set MOSAIC_TREX_BIN to an explicit trex path "
-            f"instead, or make conda available."
-        )
-    return [conda, "run", "--no-capture-output", "-n", env_name, "trex"]
-
-
 def _trex_invocation(
     *,
     trex_conda_env: str | None = None,
@@ -146,28 +116,18 @@ def _trex_invocation(
 ) -> list[str]:
     """Resolve how to launch ``trex``, returned as an argv prefix.
 
-    Precedence (first match wins):
-
-    1. ``trex_conda_env`` argument → ``conda run -n <env> trex``
-    2. ``trex_bin`` argument → ``[<binary>]``
-    3. ``MOSAIC_TREX_CONDA_ENV`` env var → ``conda run -n <env> trex``
-    4. ``MOSAIC_TREX_BIN`` env var → ``[<binary>]``
-    5. ``shutil.which("trex")`` (default; raises :class:`TRexNotFoundError`)
-
-    The default (case 5) preserves the original single-env behaviour, so
-    existing callers are unaffected.
+    The shared five-step ladder (:func:`tool_invocation`) applied to
+    :data:`_TREX_ENV`. ``conda run`` puts the target environment's ``bin`` first
+    on ``PATH``, which matters more here than for the other tools: TRex
+    relaunches itself, and a self-relaunch has to find the real binary rather
+    than a wrapper.
     """
-    if trex_conda_env:
-        return _conda_invocation(trex_conda_env)
-    if trex_bin:
-        return [str(trex_bin)]
-    env_conda = os.environ.get("MOSAIC_TREX_CONDA_ENV")
-    if env_conda:
-        return _conda_invocation(env_conda)
-    env_bin = os.environ.get("MOSAIC_TREX_BIN")
-    if env_bin:
-        return [env_bin]
-    return [_ensure_trex()]
+    return tool_invocation(
+        _TREX_ENV,
+        executable=_TREX,
+        conda_env=trex_conda_env,
+        bin_path=trex_bin,
+    )
 
 
 def _resolve_display(display: str | None) -> dict[str, str] | None:
@@ -231,19 +191,9 @@ def _run_trex(
     cmd = [*(invocation or _trex_invocation()), *args]
     logger.info("Running: %s", " ".join(cmd))
 
-    run_env = {**os.environ, **(env or {})}
-    # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into
-    # the kernel environment; inherited by the trex subprocess it makes matplotlib
-    # (imported by ultralytics inside TRex) fail at import time, which TRex's
-    # pybind11 glue turns into ``terminate()`` -> SIGABRT (exit 134). TRex never
-    # needs an interactive backend, so neutralise an inherited IPython ``module://``
-    # backend with a headless-safe one (explicit non-module backends are kept).
-    if run_env.get("MPLBACKEND", "").startswith("module://"):
-        run_env["MPLBACKEND"] = "Agg"
-
     stdout, stderr, returncode = run_supervised(
         cmd,
-        env=run_env,
+        env=subprocess_env(env),
         cancel_check=cancel_check,
         timeout=max_runtime,
         idle_timeout=idle_timeout,

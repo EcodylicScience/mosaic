@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from mosaic.tracking.common import toolenv
+
 from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap.run import (
     SleapNotFoundError,
@@ -23,7 +25,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
     for var in ("MOSAIC_SLEAP_CONDA_ENV", "MOSAIC_SLEAP_BIN", "CONDA_EXE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
-        sleap_run.shutil,
+        toolenv.shutil,
         "which",
         lambda name: {
             "sleap-track": "/p/sleap-track",
@@ -95,19 +97,19 @@ def test_default_path_lookup():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(sleap_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(SleapNotFoundError):
         _sleap_invocation("sleap-track")
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(sleap_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(SleapNotFoundError):
         _sleap_invocation("sleap-track", sleap_conda_env="sleap")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(sleap_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     assert _sleap_invocation("sleap-track", sleap_conda_env="sleap")[0] == (
         "/opt/conda/bin/conda"

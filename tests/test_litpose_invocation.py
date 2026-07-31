@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from mosaic.tracking.common import toolenv
+
 from mosaic.tracking.litpose import run as litpose_run
 from mosaic.tracking.litpose.run import (
     LitposeNotFoundError,
@@ -24,7 +26,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
     for var in ("MOSAIC_LITPOSE_CONDA_ENV", "MOSAIC_LITPOSE_BIN", "CONDA_EXE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
-        litpose_run.shutil,
+        toolenv.shutil,
         "which",
         lambda name: {
             "litpose": "/p/bin/litpose",
@@ -89,19 +91,19 @@ def test_default_path_lookup():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(litpose_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(LitposeNotFoundError):
         _litpose_invocation()
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(litpose_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(LitposeNotFoundError):
         _litpose_invocation(litpose_conda_env="lp")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(litpose_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     assert _litpose_invocation(litpose_conda_env="lp")[0] == "/opt/conda/bin/conda"
 

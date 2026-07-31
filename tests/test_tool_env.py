@@ -1,0 +1,191 @@
+"""The shared tool-placement primitives, on their own terms.
+
+``tests/test_{trex,sleap,litpose}_invocation.py`` cover the five-step ladder once
+per tool, which is what proves each tool still resolves the way it did. This
+covers what those three cannot: the parts of the shared machinery that no single
+tool exercises fully -- the environment overlay, an explicitly chosen matplotlib
+backend, and the two exception shapes.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from mosaic.tracking.common import toolenv
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    subprocess_env,
+    tool_invocation,
+)
+
+
+class _FakeNotFound(ToolNotFoundError):
+    default_message = "install the fake tool"
+
+
+class _FakeExit(ToolExitError):
+    tool_name = "Fake"
+
+
+class _TerseExit(ToolExitError):
+    tool_name = "Terse"
+    head = 2
+
+
+_DIRECT = ToolEnv(
+    tool="Fake",
+    conda_env_var="MOSAIC_FAKE_CONDA_ENV",
+    bin_var="MOSAIC_FAKE_BIN",
+    bin_mode="direct",
+    not_found=_FakeNotFound,
+)
+_SIBLING = ToolEnv(
+    tool="Fake",
+    conda_env_var="MOSAIC_FAKE_CONDA_ENV",
+    bin_var="MOSAIC_FAKE_BIN",
+    bin_mode="sibling",
+    not_found=_FakeNotFound,
+)
+_LOCATED = ToolEnv(
+    tool="Fake",
+    conda_env_var="MOSAIC_FAKE_CONDA_ENV",
+    bin_var="MOSAIC_FAKE_BIN",
+    bin_mode="sibling",
+    not_found=_FakeNotFound,
+    locator="finder",
+)
+
+
+_ON_PATH: dict[str, str] = {
+    "runme": "/p/bin/runme",
+    "finder": "/p/bin/finder",
+    "conda": "/p/conda",
+}
+
+
+def _fake_which(name: str) -> str | None:
+    return _ON_PATH.get(name)
+
+
+def _nothing_on_path(_name: str) -> str | None:
+    return None
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("MOSAIC_FAKE_CONDA_ENV", "MOSAIC_FAKE_BIN", "CONDA_EXE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(toolenv.shutil, "which", _fake_which)
+
+
+# --- the two bin modes, which is the whole of what differs between tools ----
+
+
+def test_direct_mode_treats_an_explicit_bin_as_the_executable() -> None:
+    got = tool_invocation(_DIRECT, executable="runme", bin_path="/x/somewhere-else")
+
+    assert got == ["/x/somewhere-else"]
+
+
+def test_sibling_mode_resolves_the_executable_beside_an_explicit_bin() -> None:
+    got = tool_invocation(_SIBLING, executable="runme", bin_path="/x/bin/other")
+
+    assert got == ["/x/bin/runme"]
+
+
+def test_without_a_locator_the_executable_is_looked_up_directly() -> None:
+    assert tool_invocation(_SIBLING, executable="runme") == ["/p/bin/runme"]
+
+
+def test_a_locator_is_looked_up_and_the_executable_resolved_beside_it() -> None:
+    """Lightning Pose's case: find ``litpose`` in order to find its ``python``.
+
+    Looking up the executable itself would find the caller's own interpreter.
+    """
+    assert tool_invocation(_LOCATED, executable="python") == ["/p/bin/python"]
+
+
+# --- the environment ------------------------------------------------------
+
+
+def test_an_inherited_notebook_backend_is_neutralized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+
+    assert subprocess_env()["MPLBACKEND"] == "Agg"
+
+
+def test_an_explicitly_chosen_backend_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the ``module://`` form is a notebook artifact worth overriding."""
+    monkeypatch.setenv("MPLBACKEND", "TkAgg")
+
+    assert subprocess_env()["MPLBACKEND"] == "TkAgg"
+
+
+def test_no_backend_stays_no_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MPLBACKEND", raising=False)
+
+    assert "MPLBACKEND" not in subprocess_env()
+
+
+def test_the_overlay_wins_over_the_inherited_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TREx's DISPLAY: a per-call value must beat whatever the caller exported."""
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    assert subprocess_env({"DISPLAY": ":99"})["DISPLAY"] == ":99"
+
+
+# --- the exceptions -------------------------------------------------------
+
+
+def test_a_missing_tool_raises_its_own_subclass_with_its_own_hint() -> None:
+    with pytest.raises(_FakeNotFound, match="install the fake tool"):
+        tool_invocation(
+            ToolEnv(
+                tool="Fake",
+                conda_env_var="MOSAIC_FAKE_CONDA_ENV",
+                bin_var="MOSAIC_FAKE_BIN",
+                bin_mode="direct",
+                not_found=_FakeNotFound,
+            ),
+            executable="absent",
+        )
+
+
+def test_a_missing_conda_names_the_bin_variable_to_set_instead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The message has to name *this* tool's variable, not a generic one."""
+    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+
+    with pytest.raises(_FakeNotFound, match="MOSAIC_FAKE_BIN"):
+        tool_invocation(_DIRECT, executable="runme", conda_env="nope")
+
+
+def test_the_exit_error_carries_the_streams_and_elides_a_long_command() -> None:
+    error = _FakeExit(["a", "b", "c", "d", "e", "f", "g"], 3, "out", "boom")
+
+    assert error.returncode == 3
+    assert error.stdout == "out"
+    assert error.stderr == "boom"
+    assert "Fake exited with code 3" in str(error)
+    assert "a b c d e f ..." in str(error)
+
+
+def test_a_short_command_is_not_elided() -> None:
+    assert "..." not in str(_FakeExit(["a", "b"], 1, "", ""))
+
+
+def test_a_tool_may_shorten_how_much_of_its_command_is_echoed() -> None:
+    """Lightning Pose's argv is ``python -c <a whole program>``."""
+    error = _TerseExit(["python", "-c", "import sys; ..."], 1, "", "")
+
+    assert "python -c ..." in str(error)
+    assert "import sys" not in str(error)

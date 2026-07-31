@@ -30,13 +30,19 @@ Requires:
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    subprocess_env,
+    tool_invocation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,42 +86,37 @@ if str(_produced) != str(_out):
 # ---------------------------------------------------------------------------
 
 
-class LitposeNotFoundError(FileNotFoundError):
+class LitposeNotFoundError(ToolNotFoundError):
     """Raised when the ``litpose`` console script (or ``conda``) cannot be located."""
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(
-            message
-            or (
-                "The 'litpose' console script was not found on $PATH.  Install "
-                "Lightning Pose (e.g. 'pip install lightning-pose') in its own "
-                "environment and point MOSAIC_LITPOSE_CONDA_ENV / MOSAIC_LITPOSE_BIN "
-                "at it.  See https://lightning-pose.readthedocs.io for installation "
-                "instructions."
-            )
-        )
+    default_message = (
+        "The 'litpose' console script was not found on $PATH.  Install "
+        "Lightning Pose (e.g. 'pip install lightning-pose') in its own "
+        "environment and point MOSAIC_LITPOSE_CONDA_ENV / MOSAIC_LITPOSE_BIN "
+        "at it.  See https://lightning-pose.readthedocs.io for installation "
+        "instructions."
+    )
 
 
-class LitposeError(RuntimeError):
+class LitposeError(ToolExitError):
     """Raised when a Lightning Pose subprocess exits with a non-zero return code."""
 
-    def __init__(
-        self,
-        cmd: list[str],
-        returncode: int,
-        stdout: str,
-        stderr: str,
-    ) -> None:
-        self.cmd = cmd
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-        cmd_str = " ".join(cmd[:4]) + (" ..." if len(cmd) > 4 else "")
-        super().__init__(
-            f"Lightning Pose exited with code {returncode}.\n"
-            f"  Command: {cmd_str}\n"
-            f"  Stderr (last 500 chars): {stderr[-500:]}"
-        )
+    tool_name = "Lightning Pose"
+    # The argv is ``python -c <the whole predict program>``; echoing past the
+    # fourth token in an error message prints the program.
+    head = 4
+
+
+# Lightning Pose is driven through its environment's ``python`` rather than a
+# console verb, so the ``litpose`` script is what locates that interpreter.
+_LITPOSE_ENV: Final = ToolEnv(
+    tool="Lightning Pose",
+    conda_env_var="MOSAIC_LITPOSE_CONDA_ENV",
+    bin_var="MOSAIC_LITPOSE_BIN",
+    bin_mode="sibling",
+    not_found=LitposeNotFoundError,
+    locator=_LITPOSE_SCRIPT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -137,42 +138,6 @@ class LitposePredictResult:
 # ---------------------------------------------------------------------------
 
 
-def _ensure_litpose_python() -> str:
-    """Return the ``python`` sibling of the ``litpose`` script on ``$PATH``, or raise."""
-    script = shutil.which(_LITPOSE_SCRIPT)
-    if script is None:
-        raise LitposeNotFoundError()
-    return _sibling(script)
-
-
-def _conda_invocation(env_name: str) -> list[str]:
-    """Return an argv prefix that runs ``python`` inside conda env *env_name*.
-
-    Uses ``conda run`` so the target env is fully activated -- Lightning Pose's
-    Python and its native torch / DALI libraries resolve against that env's
-    ``CONDA_PREFIX`` (required when Lightning Pose lives in a different env than
-    the caller).
-    """
-    conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
-    if conda is None:
-        raise LitposeNotFoundError(
-            f"'conda' was not found on $PATH; cannot run python in env "
-            f"'{env_name}'. Set MOSAIC_LITPOSE_BIN to an explicit script path "
-            f"instead, or make conda available."
-        )
-    return [conda, "run", "--no-capture-output", "-n", env_name, _PYTHON]
-
-
-def _sibling(bin_path: str | Path) -> str:
-    """Resolve ``python`` as a sibling of *bin_path* in the same directory.
-
-    A Lightning Pose environment's ``bin`` holds both the ``litpose`` console
-    script and the ``python`` interpreter, so pointing ``MOSAIC_LITPOSE_BIN`` at
-    either one names the directory the interpreter lives in.
-    """
-    return str(Path(bin_path).parent / _PYTHON)
-
-
 def _litpose_invocation(
     *,
     litpose_conda_env: str | None = None,
@@ -180,26 +145,17 @@ def _litpose_invocation(
 ) -> list[str]:
     """Resolve how to launch the Lightning Pose ``python``, as an argv prefix.
 
-    Precedence (first match wins):
-
-    1. ``litpose_conda_env`` argument -> ``conda run -n <env> python``
-    2. ``litpose_bin`` argument -> the ``python`` sibling of that path
-    3. ``MOSAIC_LITPOSE_CONDA_ENV`` env var -> ``conda run -n <env> python``
-    4. ``MOSAIC_LITPOSE_BIN`` env var -> the ``python`` sibling of that path
-    5. ``python`` sibling of ``litpose`` on ``$PATH`` (raises
-       :class:`LitposeNotFoundError`)
+    The shared five-step ladder (:func:`tool_invocation`) applied to
+    :data:`_LITPOSE_ENV`. What is launched is the interpreter, not a console
+    verb, and what is *looked up* is the ``litpose`` script beside it -- a bare
+    ``python`` on ``$PATH`` would be the caller's own.
     """
-    if litpose_conda_env:
-        return _conda_invocation(litpose_conda_env)
-    if litpose_bin:
-        return [_sibling(litpose_bin)]
-    env_conda = os.environ.get("MOSAIC_LITPOSE_CONDA_ENV")
-    if env_conda:
-        return _conda_invocation(env_conda)
-    env_bin = os.environ.get("MOSAIC_LITPOSE_BIN")
-    if env_bin:
-        return [_sibling(env_bin)]
-    return [_ensure_litpose_python()]
+    return tool_invocation(
+        _LITPOSE_ENV,
+        executable=_PYTHON,
+        conda_env=litpose_conda_env,
+        bin_path=litpose_bin,
+    )
 
 
 def _override_args(overrides: Mapping[str, object] | None) -> list[str]:
@@ -233,17 +189,9 @@ def _run_litpose(
     cmd = [*invocation, *args]
     logger.info("Running: %s", " ".join(cmd[:4]) + (" ..." if len(cmd) > 4 else ""))
 
-    run_env = dict(os.environ)
-    # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into
-    # the kernel environment; inherited by the subprocess it makes matplotlib
-    # (imported transitively) fail at import time. Neutralise an inherited IPython
-    # ``module://`` backend with a headless-safe one (explicit backends kept).
-    if run_env.get("MPLBACKEND", "").startswith("module://"):
-        run_env["MPLBACKEND"] = "Agg"
-
     stdout, stderr, returncode = run_supervised(
         cmd,
-        env=run_env,
+        env=subprocess_env(),
         cancel_check=cancel_check,
         timeout=max_runtime,
         idle_timeout=idle_timeout,

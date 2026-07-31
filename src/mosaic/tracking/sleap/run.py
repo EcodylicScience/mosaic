@@ -24,13 +24,19 @@ Requires:
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    subprocess_env,
+    tool_invocation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,41 +49,32 @@ _SLEAP_CONVERT: str = "sleap-convert"
 # ---------------------------------------------------------------------------
 
 
-class SleapNotFoundError(FileNotFoundError):
+class SleapNotFoundError(ToolNotFoundError):
     """Raised when a SLEAP console script (or ``conda``) cannot be located."""
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(
-            message
-            or (
-                "The 'sleap-track' console script was not found on $PATH.  "
-                "Install SLEAP (e.g. 'uv tool install sleap[nn]') and ensure it "
-                "is accessible, or point MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN "
-                "at it.  See https://sleap.ai for installation instructions."
-            )
-        )
+    default_message = (
+        "The 'sleap-track' console script was not found on $PATH.  "
+        "Install SLEAP (e.g. 'uv tool install sleap[nn]') and ensure it "
+        "is accessible, or point MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN "
+        "at it.  See https://sleap.ai for installation instructions."
+    )
 
 
-class SleapError(RuntimeError):
+class SleapError(ToolExitError):
     """Raised when a SLEAP subprocess exits with a non-zero return code."""
 
-    def __init__(
-        self,
-        cmd: list[str],
-        returncode: int,
-        stdout: str,
-        stderr: str,
-    ) -> None:
-        self.cmd = cmd
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-        cmd_str = " ".join(cmd[:6]) + (" ..." if len(cmd) > 6 else "")
-        super().__init__(
-            f"SLEAP exited with code {returncode}.\n"
-            f"  Command: {cmd_str}\n"
-            f"  Stderr (last 500 chars): {stderr[-500:]}"
-        )
+    tool_name = "SLEAP"
+
+
+# SLEAP's console scripts are always installed together, so MOSAIC_SLEAP_BIN
+# pointing at any one of them names the directory the others live in.
+_SLEAP_ENV: Final = ToolEnv(
+    tool="SLEAP",
+    conda_env_var="MOSAIC_SLEAP_CONDA_ENV",
+    bin_var="MOSAIC_SLEAP_BIN",
+    bin_mode="sibling",
+    not_found=SleapNotFoundError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -108,41 +105,6 @@ class SleapConvertResult:
 # ---------------------------------------------------------------------------
 
 
-def _ensure_sleap(script: str) -> str:
-    """Return the absolute path to a SLEAP console *script*, or raise."""
-    path = shutil.which(script)
-    if path is None:
-        raise SleapNotFoundError()
-    return path
-
-
-def _conda_invocation(env_name: str, script: str) -> list[str]:
-    """Return an argv prefix that runs *script* inside conda env *env_name*.
-
-    Uses ``conda run`` so the target env is fully activated -- SLEAP's Python and
-    its native torch/Qt libraries resolve against that env's ``CONDA_PREFIX``
-    (required when SLEAP lives in a different env than the caller).
-    """
-    conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
-    if conda is None:
-        raise SleapNotFoundError(
-            f"'conda' was not found on $PATH; cannot run {script} in env "
-            f"'{env_name}'. Set MOSAIC_SLEAP_BIN to an explicit script path "
-            f"instead, or make conda available."
-        )
-    return [conda, "run", "--no-capture-output", "-n", env_name, script]
-
-
-def _sibling(bin_path: str | Path, script: str) -> str:
-    """Resolve *script* as a sibling of *bin_path* in the same directory.
-
-    SLEAP's console scripts (``sleap-track``, ``sleap-convert``, ...) are always
-    installed together, so pointing ``MOSAIC_SLEAP_BIN`` at any one of them names
-    the directory the others live in.
-    """
-    return str(Path(bin_path).parent / script)
-
-
 def _sleap_invocation(
     script: str,
     *,
@@ -151,25 +113,16 @@ def _sleap_invocation(
 ) -> list[str]:
     """Resolve how to launch a SLEAP console *script*, as an argv prefix.
 
-    Precedence (first match wins):
-
-    1. ``sleap_conda_env`` argument -> ``conda run -n <env> <script>``
-    2. ``sleap_bin`` argument -> the sibling of that path named *script*
-    3. ``MOSAIC_SLEAP_CONDA_ENV`` env var -> ``conda run -n <env> <script>``
-    4. ``MOSAIC_SLEAP_BIN`` env var -> the sibling of that path named *script*
-    5. ``shutil.which(script)`` (default; raises :class:`SleapNotFoundError`)
+    The shared five-step ladder (:func:`tool_invocation`) applied to
+    :data:`_SLEAP_ENV`, with the script as the executable -- so one SLEAP
+    environment serves both ``sleap-track`` and ``sleap-convert``.
     """
-    if sleap_conda_env:
-        return _conda_invocation(sleap_conda_env, script)
-    if sleap_bin:
-        return [_sibling(sleap_bin, script)]
-    env_conda = os.environ.get("MOSAIC_SLEAP_CONDA_ENV")
-    if env_conda:
-        return _conda_invocation(env_conda, script)
-    env_bin = os.environ.get("MOSAIC_SLEAP_BIN")
-    if env_bin:
-        return [_sibling(env_bin, script)]
-    return [_ensure_sleap(script)]
+    return tool_invocation(
+        _SLEAP_ENV,
+        executable=script,
+        conda_env=sleap_conda_env,
+        bin_path=sleap_bin,
+    )
 
 
 def _flatten_extra(extra: Mapping[str, object] | None) -> list[str]:
@@ -216,18 +169,9 @@ def _run_sleap(
     cmd = [*invocation, *args]
     logger.info("Running: %s", " ".join(cmd))
 
-    run_env = dict(os.environ)
-    # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline``
-    # into the kernel environment; inherited by the subprocess it makes
-    # matplotlib (imported by SLEAP via seaborn) fail at import time. SLEAP never
-    # needs an interactive backend, so neutralise an inherited IPython
-    # ``module://`` backend with a headless-safe one (explicit backends kept).
-    if run_env.get("MPLBACKEND", "").startswith("module://"):
-        run_env["MPLBACKEND"] = "Agg"
-
     stdout, stderr, returncode = run_supervised(
         cmd,
-        env=run_env,
+        env=subprocess_env(),
         cancel_check=cancel_check,
         timeout=max_runtime,
         idle_timeout=idle_timeout,

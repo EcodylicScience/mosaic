@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 
+from mosaic.tracking.common import toolenv
+
 from mosaic.tracking.trex import run as trex_run
 from mosaic.tracking.trex.run import (
     TRexNotFoundError,
@@ -28,7 +30,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
-        trex_run.shutil,
+        toolenv.shutil,
         "which",
         lambda name: {"trex": "/p/trex", "conda": "/p/conda"}.get(name),
     )
@@ -86,20 +88,20 @@ def test_default_path_lookup():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(trex_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(TRexNotFoundError):
         _trex_invocation()
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(trex_run.shutil, "which", lambda name: None)
+    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(TRexNotFoundError):
         _trex_invocation(trex_conda_env="track")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        trex_run.shutil,
+        toolenv.shutil,
         "which",
         lambda name: "/p/trex" if name == "trex" else None,
     )
