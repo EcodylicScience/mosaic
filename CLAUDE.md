@@ -248,9 +248,18 @@ src/mosaic/
     ├── pose_training/          # YOLO pose, POLO point, localizer training
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
-    ├── trex/                   # TREx CLI wrapper (separate conda env; MOSAIC_TREX_CONDA_ENV / MOSAIC_TREX_BIN)
-    ├── sleap/                  # SLEAP CLI wrapper (own env; MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN; sleap-track + analysis-h5 bridge)
-    └── litpose/                # Lightning Pose wrapper (own env; MOSAIC_LITPOSE_CONDA_ENV / MOSAIC_LITPOSE_BIN; single-animal, reuses the deeplabcut converter)
+    ├── common/                 # everything a tracker run does around the tool
+    │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
+    │   ├── mint.py             # root, run_id, tracks variant, run_params.json
+    │   ├── scope.py            # media scope -> work items (video/camera collapse)
+    │   ├── entry.py            # claim, marker reuse, cascade clearing, adoption
+    │   ├── bridge.py           # converted frame -> tracks/<variant>/*.parquet
+    │   ├── index.py            # TrackerRunRowBase + the typed run index
+    │   ├── params.py           # TrackerOpParams (scope + HASH_EXCLUDE knobs)
+    │   └── driver.py           # run_tracker(): the per-entry loop
+    ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
+    ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export
+    └── litpose/                # Lightning Pose: one gated phase, reuses the deeplabcut converter
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,
@@ -508,6 +517,11 @@ for path expectations before running.
 
 - [`docs/getting-started.md`](docs/getting-started.md) — installation and first run.
 - [`docs/guide-pipeline.md`](docs/guide-pipeline.md) — pipeline guide.
+- [`docs/adding-a-tracker.md`](docs/adding-a-tracker.md) — wiring a new
+  external tracker in. `tracking/common/` owns the run loop; a tracker supplies
+  its argv, its settings, its phases and its converter, plus one `TrackingRoot`
+  row. `tests/test_tracker_conformance.py` is parametrized over every tracker
+  root, so a half-implemented one fails by name.
 - [`docs/api/`](docs/api/) — auto-generated API reference (core, pipeline,
   behavior, media, tracking).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.

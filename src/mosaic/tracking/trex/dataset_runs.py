@@ -620,4 +620,4 @@ def list_trex_runs(ds: Dataset) -> pd.DataFrame:
 
 # Item 6.1: the reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
-register_reconcilable_index("trex", trex_index)
+register_reconcilable_index(TREX_KIND, trex_index)
