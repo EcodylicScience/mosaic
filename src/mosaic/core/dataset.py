@@ -207,8 +207,15 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # listed here: three hand-written tuples beside a table of three roots is the
 # arrangement where adding a fourth tracker means remembering a second place,
 # and the add-a-tracker recipe had a checklist item for exactly that.
+#
+# The ``models`` entry is a union across the two row types living under that
+# root -- a trained model and a converted dataset -- because the lookup is by
+# root key and both are ``models/<kind>/index.csv``. Naming a column a given
+# index does not have is harmless: both passes intersect against the frame's
+# real columns rather than creating what is missing.
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
+    "models": ("best_model_path", "metrics_path", "artifact_path", "data_yaml"),
     **{key: root.path_columns for key, root in TRACKING_ROOTS.items()},
 }
 

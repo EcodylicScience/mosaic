@@ -348,6 +348,63 @@ def test_train_pose_cancel(tmp_path, monkeypatch):
     assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
 
 
+def test_train_localizer_mints_and_registers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The localizer op reaches its minter, and records what it produced.
+
+    Nothing used to run this op. The registry tests assert the kind is
+    registered and the golden corpus calls ``train_run_id`` directly with fixed
+    arguments, so both stayed green while ``TrainLocalizerOp.run`` passed it one
+    argument too many -- a ``TypeError`` on every real localizer training run.
+    Only the type checker saw it. This is the test that would have.
+    """
+    import mosaic.tracking.pose_training.localizer_train as lt
+    from mosaic.core.pipeline.models import model_index_path
+    from mosaic.tracking.ops.train import trained_model_index
+
+    ds = _make_dataset(tmp_path)
+    dataset_dir = tmp_path / "patches"
+    (dataset_dir / "train").mkdir(parents=True)
+    _ = (dataset_dir / "train" / "patches.npy").write_bytes(b"patches")
+
+    def fake_train_localizer(
+        dataset_dir: str | Path,
+        *,
+        project: str | Path,
+        name: str,
+        epochs: int = 1,
+        **kw: object,
+    ) -> lt.TrainingResult:
+        run_dir = Path(project) / name
+        (run_dir / "weights").mkdir(parents=True, exist_ok=True)
+        weights = run_dir / "weights" / "best.pt"
+        _ = weights.write_bytes(b"localizer weights")
+        _ = (run_dir / "results.csv").write_text("epoch,loss\n0,0.1\n")
+        return lt.TrainingResult(
+            best_model_path=weights,
+            last_model_path=weights,
+            run_dir=run_dir,
+            best_epoch=0,
+            best_val_loss=0.1,
+        )
+
+    monkeypatch.setattr(lt, "train_localizer", fake_train_localizer)
+
+    run_id = run_op(
+        ds,
+        "train-localizer",
+        {"dataset_dir": str(dataset_dir), "epochs": 1, "device": "cpu"},
+    )
+    assert run_id.startswith("train-localizer.")
+
+    index = trained_model_index(model_index_path(ds, "train-localizer"))
+    row = index.read().iloc[0]
+    assert row["run_id"] == run_id
+    assert row["status"] == "finished"
+    assert str(row["best_model_path"]).endswith("best.pt")
+
+
 # --- infer-pose op -> tracks bridge (mocked model) -------------------------
 
 

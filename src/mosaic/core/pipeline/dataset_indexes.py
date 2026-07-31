@@ -65,7 +65,12 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     ("tracks_raw", "root"),
     ("media", "root"),
     ("tracks", "root"),
-    ("models", "root"),
+    # ``per_subdir``, not ``root``: every model index is ``models/<kind>/index.csv``
+    # -- one per training kind, plus ``models/convert-points/`` for a converted
+    # dataset -- and nothing has ever written ``models/index.csv``. Registered
+    # under the wrong shape, the whole root was invisible to ``make_portable``,
+    # ``rewrite_index_paths`` and ``reconcile``.
+    ("models", "per_subdir"),
     ("features", "root"),
     ("features", "per_subdir"),
     ("labels", "root"),

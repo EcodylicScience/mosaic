@@ -23,7 +23,7 @@ from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
-from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.model_refs import ModelShape, resolve_model
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 
 if TYPE_CHECKING:
@@ -88,6 +88,19 @@ class TrainedModelIndexRow(RunIndexRowBase):
     # so every existing construction site keeps working, and not path-bearing, so
     # no portability rewrite list.
     base_digest: str = ""
+    # What shape of artifact this run produced -- a ``ModelShape``. Empty means a
+    # single weights file, which is what every row written before a model could
+    # be a directory describes, so an old index keeps resolving unchanged.
+    artifact_shape: str = ""
+    # The artifact root, when it is not the weights file: a Lightning Pose model
+    # directory, or the ordered directory a SLEAP run leaves behind. Empty falls
+    # back to ``best_model_path``. Root-relative, and listed in the ``models``
+    # entry of ``_INDEX_PATH_COLUMNS`` so it survives a dataset move.
+    artifact_path: str = ""
+    # Which head or architecture the artifact carries, read from its config.
+    # Provenance, never identity -- the tracker rows already record this and the
+    # trained-model row had nowhere to put it.
+    model_type: str = ""
 
 
 TRAINED_MODEL_INDEX_COLUMNS: list[str] = [
@@ -138,7 +151,17 @@ def _finalize_training(
     best_model_path: Path,
     metrics_path: Path,
     n_epochs: int,
+    artifact_shape: ModelShape = "file",
+    artifact_path: Path | None = None,
+    model_type: str = "",
 ) -> None:
+    """Register a finished training run in ``models/<kind>/index.csv``.
+
+    *artifact_path* names the artifact when it is not the weights file -- a model
+    directory rather than one ``best.pt``. Left ``None`` for the single-file case,
+    where ``best_model_path`` already says everything and storing it twice would
+    be two things to keep agreeing.
+    """
     idx = trained_model_index(model_index_path(ds, kind))
     idx.ensure()
     idx.append(
@@ -155,6 +178,13 @@ def _finalize_training(
                 ),
                 n_epochs=int(n_epochs),
                 status="finished",
+                artifact_shape=artifact_shape,
+                artifact_path=(
+                    ds.relative_to_root(artifact_path)
+                    if artifact_path is not None
+                    else ""
+                ),
+                model_type=model_type,
                 abs_path=Path(ds.relative_to_root(run_root)),
             )
         ]
