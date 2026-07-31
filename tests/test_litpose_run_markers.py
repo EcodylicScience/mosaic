@@ -283,3 +283,54 @@ def test_a_different_config_is_a_different_run(
     a = dr.run_litpose(ds, model_path=str(m1))
     b = dr.run_litpose(ds, model_path=str(m2))
     assert a != b
+
+
+# --- the reuse comparison is uid-first, with the path as fallback ------------
+
+
+def test_a_video_replaced_in_place_forces_a_recompute(
+    ds: Dataset, model: Path, litpose: FakeLitpose
+) -> None:
+    """The case a path comparison cannot see at all.
+
+    Same sequence, same filename, different bytes. Lightning Pose recorded
+    ``source_uid`` on its marker and never read it back, so the second run
+    reused a prediction over content that no longer exists.
+    """
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    run_id = dr.run_litpose(ds, model_path=str(model))
+
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
+    second = dr.run_litpose(ds, model_path=str(model))
+
+    assert second == run_id, "settings did not change, so neither does the identity"
+    assert len(litpose.predicted) == 2, "the replaced video was not re-predicted"
+
+
+def test_the_same_video_under_a_new_name_is_not_a_recompute(
+    ds: Dataset, model: Path, litpose: FakeLitpose
+) -> None:
+    """The other direction, and the saving the uid comparison buys."""
+    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    run_id = dr.run_litpose(ds, model_path=str(model))
+
+    _write_media_index(
+        ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
+    )
+    second = dr.run_litpose(ds, model_path=str(model))
+
+    assert second == run_id
+    assert len(litpose.predicted) == 1, "the same bytes were predicted twice"
+
+
+def test_an_absent_uid_still_falls_back_to_the_path(
+    ds: Dataset, model: Path, litpose: FakeLitpose
+) -> None:
+    """Media indexed before the identity columns carries no uid."""
+    run_id = dr.run_litpose(ds, model_path=str(model))
+    _write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
+
+    second = dr.run_litpose(ds, model_path=str(model))
+
+    assert second == run_id
+    assert len(litpose.predicted) == 2, "a changed source with no uid must re-predict"
