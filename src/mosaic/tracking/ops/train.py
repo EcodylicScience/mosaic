@@ -139,7 +139,7 @@ def trained_model_index(path: Path) -> IndexCSV[TrainedModelIndexRow]:
 # --- Shared helpers ------------------------------------------------------
 
 
-def _finalize_training(
+def finalize_training(
     ds: Dataset,
     kind: str,
     run_id: str,
@@ -286,7 +286,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
             cancel_check=ctx.cancel_token.is_cancelled,
         )
         ctx.check_cancel()  # raise Cancelled if a between-epoch cancel fired
-        _finalize_training(
+        finalize_training(
             ds,
             self.kind,
             run_id,
@@ -356,7 +356,7 @@ class TrainPointsOp(Op[PointTrainParams]):
             cancel_check=ctx.cancel_token.is_cancelled,
         )
         ctx.check_cancel()
-        _finalize_training(
+        finalize_training(
             ds,
             self.kind,
             run_id,
@@ -426,7 +426,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             cancel_check=ctx.cancel_token.is_cancelled,
         )
         ctx.check_cancel()
-        _finalize_training(
+        finalize_training(
             ds,
             self.kind,
             run_id,

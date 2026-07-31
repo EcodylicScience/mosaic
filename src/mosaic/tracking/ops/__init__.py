@@ -7,6 +7,22 @@ each op's ``run()``. The ``extract-frames`` op registers via
 package registers the training, inference, and TREx ops.
 """
 
-from mosaic.tracking.ops import convert, infer, litpose, sleap, train, trex  # noqa: F401
+from mosaic.tracking.ops import (
+    convert,
+    infer,
+    litpose,
+    sleap,
+    train,
+    train_sleap,
+    trex,
+)
 
-__all__ = ["convert", "infer", "litpose", "sleap", "train", "trex"]
+__all__ = [
+    "convert",
+    "infer",
+    "litpose",
+    "sleap",
+    "train",
+    "train_sleap",
+    "trex",
+]
