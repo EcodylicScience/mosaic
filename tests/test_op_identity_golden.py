@@ -336,6 +336,54 @@ def _litpose_variant() -> str:
     )
 
 
+def _sleap_run_id_settings() -> str:
+    """The identifier ``sleap_settings``' *key set* mints, pinned.
+
+    The SLEAP counterpart of :func:`_trex_run_id_settings`, and it exists for the
+    same reason: the ``sleap/*`` op cases come from ``SleapParams``, and
+    ``_sleap_variant`` passes a hand-built three-key dict, so a rename inside
+    ``sleap_settings`` moves every SLEAP run root and tracks variant on disk with
+    a fully green suite.
+
+    ``tracking`` is True because the tracker knobs are dropped from identity when
+    it is False -- the True case is the one that carries every key.
+    """
+    from mosaic.tracking.sleap.dataset_runs import sleap_run_id, sleap_settings
+
+    return sleap_run_id(
+        sleap_settings(
+            model_id="0123456789abcdef",
+            tracking=True,
+            tracker="flow",
+            similarity="instance",
+            match="hungarian",
+            track_window=5,
+            max_instances=4,
+            max_tracking=4,
+            peak_threshold=0.2,
+            analysis_range=None,
+            sleap_extra_settings=None,
+        )
+    )
+
+
+def _litpose_run_id_settings() -> str:
+    """The identifier ``litpose_settings``' *key set* mints, pinned.
+
+    The Lightning Pose counterpart of :func:`_trex_run_id_settings`. Its settings
+    dict is the smallest of the three, which makes it the easiest to rename a key
+    in without noticing.
+    """
+    from mosaic.tracking.litpose.dataset_runs import litpose_run_id, litpose_settings
+
+    return litpose_run_id(
+        litpose_settings(
+            model_id="0123456789abcdef",
+            litpose_overrides=None,
+        )
+    )
+
+
 # The per-sequence composition hashes (item 4.4). Function cases for the same
 # reason the tracks variants above are: what has to be pinned is the payload
 # *wrapper*, because renaming a key inside one would move every stored
@@ -475,6 +523,8 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/infer-variant": _infer_variant,
     "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
+    "sleap/run-id-settings": _sleap_run_id_settings,
+    "litpose/run-id-settings": _litpose_run_id_settings,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
     "composition/media-two-cameras": _media_two_cameras,
