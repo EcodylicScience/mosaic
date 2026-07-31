@@ -197,3 +197,51 @@ def test_a_short_keypoint_list_is_padded_rather_than_misaligned(
     assert len(keypoints) == 3
     assert keypoints[0].is_placed
     assert not keypoints[1].is_placed and not keypoints[2].is_placed
+
+
+# --- round trip -------------------------------------------------------------
+
+
+def test_writing_then_reading_gives_back_the_same_set(tmp_path: Path) -> None:
+    """The contract that makes the pair usable as a boundary.
+
+    Anything lost here is lost when mosaic hands an annotation set to a tool
+    that speaks COCO -- which is how a ``.slp`` gets built, so this is load
+    bearing rather than tidy.
+    """
+    from mosaic.core.annotations.writers import write_coco_keypoints
+
+    original = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
+    path = write_coco_keypoints(original, tmp_path / "round" / "ann.json")
+    again = read_coco_keypoints(path, tmp_path / "images")
+
+    assert again.schema == original.schema
+    assert again.categories == original.categories
+    assert [f.image_path for f in again] == [f.image_path for f in original]
+    assert [f.width for f in again] == [f.width for f in original]
+    for before, after in zip(original.frames, again.frames, strict=True):
+        assert len(after.objects) == len(before.objects)
+        for a, b in zip(before.objects, after.objects, strict=True):
+            assert [k.visibility for k in a.keypoints] == [
+                k.visibility for k in b.keypoints
+            ]
+            assert [k.is_placed for k in a.keypoints] == [
+                k.is_placed for k in b.keypoints
+            ]
+            placed_before = [(k.x, k.y) for k in a.placed_keypoints]
+            placed_after = [(k.x, k.y) for k in b.placed_keypoints]
+            assert placed_before == placed_after
+
+
+def test_an_unplaced_keypoint_survives_the_round_trip_as_unplaced(
+    tmp_path: Path,
+) -> None:
+    """COCO has no NaN, so this is the one asymmetry, and it must be undone."""
+    from mosaic.core.annotations.writers import write_coco_keypoints
+
+    original = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
+    path = write_coco_keypoints(original, tmp_path / "round" / "ann.json")
+    tail = read_coco_keypoints(path, tmp_path).frames[0].objects[0].keypoints[2]
+
+    assert tail.visibility == 0
+    assert math.isnan(tail.x), "written as the origin, read back as absent"
