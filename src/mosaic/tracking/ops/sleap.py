@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
-from mosaic.core.helpers import parse_entry_tokens
 from mosaic.core.pipeline.ops import Op, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
+from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 
 if TYPE_CHECKING:
@@ -27,14 +27,9 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.job import JobContext
 
 
-class SleapParams(Params):
+class SleapParams(TrackerOpParams):
     """Parameters for the ``sleap`` tracking op (mirrors :func:`run_sleap`'s settings + scope)."""
 
-    # scope (empty -> all indexed media)
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
-    # "group:sequence" pairs (":seq" or "seq" == empty group)
-    entries: list[str] | None = None
     # model: one external model directory, or two for top-down (centroid, then
     # centered-instance). Part of the run_id identity -- via a content digest of
     # the weights, never the paths themselves.
@@ -58,13 +53,6 @@ class SleapParams(Params):
     batch_size: Annotated[int, HASH_EXCLUDE] = 4
     # cpu / cuda / a gpu index / None (auto). Where it ran, not what it produced.
     device: Annotated[str | None, HASH_EXCLUDE] = None
-    convert_to_tracks: Annotated[bool, HASH_EXCLUDE] = True
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    # Inactivity (hang) watchdog: kill a phase after this many seconds with no
-    # SLEAP output. max_runtime is an optional absolute ceiling (None -> the
-    # queue owns it).
-    idle_timeout: Annotated[float, HASH_EXCLUDE] = 900
-    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
 
 
 @register_op
@@ -87,7 +75,7 @@ class SleapOp(Op[SleapParams]):
         # Heavy SLEAP imports (subprocess/h5py) stay inside run() so registration is light.
         from mosaic.tracking.sleap.dataset_runs import run_sleap
 
-        entry_pairs = parse_entry_tokens(params.entries)
+        entry_pairs = params.entry_pairs()
         return run_sleap(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping

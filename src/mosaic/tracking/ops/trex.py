@@ -14,11 +14,11 @@ router then sends it to the GPU lane / k8s.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from mosaic.core.helpers import parse_entry_tokens
 from mosaic.core.pipeline.ops import Op, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
+from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.core.pipeline.types import JsonValue
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 if TYPE_CHECKING:
@@ -26,14 +26,9 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.job import JobContext
 
 
-class TrexParams(Params):
+class TrexParams(TrackerOpParams):
     """Parameters for the ``trex`` tracking op (mirrors :func:`run_trex`'s settings + scope)."""
 
-    # scope (empty -> all indexed media)
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
-    # "group:sequence" pairs (":seq" or "seq" == empty group)
-    entries: list[str] | None = None
     # detection / conversion (part of the run_id identity)
     detect_model: str | None = None
     detect_type: str = "yolo"
@@ -60,12 +55,6 @@ class TrexParams(Params):
     track_extra_settings: dict[str, JsonValue] | None = None
     # execution knobs -- throughput/behavior only, excluded from the run_id (and TREx's own
     # settings-dict hash already omits them, so this keeps params.json <-> run_id consistent).
-    convert_to_tracks: Annotated[bool, HASH_EXCLUDE] = True
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    # Inactivity (hang) watchdog: kill a phase after this many seconds with no TREx
-    # output. max_runtime is an optional absolute ceiling (None -> the queue owns it).
-    idle_timeout: Annotated[float, HASH_EXCLUDE] = 900
-    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
 
 
 @register_op
@@ -88,7 +77,7 @@ class TrexOp(Op[TrexParams]):
         # Heavy TREx imports (subprocess/opencv) stay inside run() so registration is light.
         from mosaic.tracking.trex.dataset_runs import run_trex
 
-        entry_pairs = parse_entry_tokens(params.entries)
+        entry_pairs = params.entry_pairs()
         return run_trex(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
