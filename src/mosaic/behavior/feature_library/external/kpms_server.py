@@ -11,6 +11,17 @@ with dtype and shape metadata.
 Usage::
 
     .venv/bin/python kpms_server.py /tmp/kpms.sock
+
+This is the only file in mosaic that imports keypoint-moseq, and it runs in the
+external environment rather than mosaic's own. keypoint-MoSeq is licensed by the
+Harvard University Office of Technology Development for non-commercial research
+and academic use only, and commercial use is expressly prohibited -- including
+fee-for-service work, core facilities serving for-profit third parties, and
+industry-sponsored projects granting commercial rights to the sponsor. Read the
+terms at https://github.com/dattalab/keypoint-moseq/blob/main/LICENSE.md before
+running this, by any route. mosaic's own entry point refuses to spawn this
+server until ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` says the terms are met; running
+the script directly, as above, bypasses nothing but that reminder.
 """
 
 # pyright: reportAny=false

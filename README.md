@@ -15,7 +15,8 @@ Given pose tracks (per-frame keypoints with identities), mosaic produces:
 - per-frame and per-sequence behavioral features — kinematic, social, spectral,
   and reduction;
 - unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,
-  [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/));
+  [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/) — non-commercial
+  license, see [Licensing](docs/licensing.md));
 - supervised classifiers (XGBoost, Lightning-Action, FERAL) trained from manual
   labels;
 - visual identification models from egocentric crops;
@@ -62,6 +63,13 @@ individually:
 | `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
 | `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
 
+There is deliberately no `kpms` extra. keypoint-MoSeq cannot share an
+environment with mosaic, so the `kpms` feature drives it in a separate one that
+you build yourself — and it is licensed for non-commercial research and academic
+use only. See [Licensing](docs/licensing.md) for the terms and
+[`external/README.md`](src/mosaic/behavior/feature_library/external/README.md)
+for the setup.
+
 ## Quick start
 
 The [CalMS21 template notebook](notebooks/calms21-template.ipynb) is the
@@ -92,8 +100,12 @@ Features are either:
   `pair-wavelet`, `temporal-stack`, `body-scale`);
 - **global** — fit-then-apply transforms trained on a collection of sequences
   (e.g. `global-scaler`, `global-tsne`, `global-kmeans`, `global-ward`,
-  `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
+  `xgboost`, `arhmm`, `kpms`\*, `lightning-action`, `feral`,
   `global-identity-model`).
+
+\* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
+and academic use only. See [Licensing](docs/licensing.md); `arhmm` is the
+unrestricted alternative.
 
 Visualization (`egocentric-crop`, `viz-timeline`, `viz-global-colored`,
 `interaction-crop-pipeline`) is exposed as features and shares the same caching
@@ -153,4 +165,9 @@ for repo orientation, development commands, and architectural conventions.
 
 GNU Affero General Public License v3 or later (AGPLv3+). See
 [LICENSE](LICENSE).
+
+Mosaic drives third-party tools whose terms differ from its own — keypoint-MoSeq
+prohibits commercial use outright, and TRex requires a paid license for company
+use. [Licensing](docs/licensing.md) states which components carry restrictions
+and what mosaic does about them.
 

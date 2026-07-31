@@ -14,8 +14,20 @@ parquet files.
 | Per-frame social | NearestNeighbor, FFGroups, FFGroupsMetrics, NNDeltaResponse, NNDeltaBins |
 | Per-frame context | TemporalStacking, PairWavelet |
 | Dimensionality reduction | PairPoseDistancePCA, GlobalScaler |
-| Embedding & clustering | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, WardAssign, ExtractTemplates, ExtractLabeledTemplates |
-| Classification | XgboostFeature, FeralFeature, KpmsFeature |
+| Embedding & clustering | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, ExtractTemplates, ExtractLabeledTemplates |
+| Sequence models | ArHmmFeature, KpmsFeature |
+| Classification | XgboostFeature, FeralFeature |
+
+!!! warning "KpmsFeature is non-commercial only"
+
+    keypoint-MoSeq is licensed by the Harvard University Office of Technology
+    Development for **non-commercial research and academic use only**, and
+    commercial use is prohibited. It runs in a separate environment you build
+    yourself, and mosaic will not start it until you confirm the terms apply to
+    your use. See [Licensing](../../licensing.md).
+
+    `ArHmmFeature` fits a comparable autoregressive model in mosaic's own code
+    and carries no such restriction.
 
 ## Registry
 

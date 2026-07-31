@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "Isolated environment for keypoint-moseq (CPU)"
 requires-python = ">=3.11"
 dependencies = [
+    # keypoint-moseq is licensed by the Harvard University Office of Technology
+    # Development for non-commercial research and academic use only, and mosaic
+    # is AGPL-3.0-or-later. The two cannot be combined in a distribution, so
+    # this must never be folded into mosaic's own dependencies and never
+    # bundled into a packaged mosaic installer. This file declares an
+    # environment the user builds; it does not ship one. See ../README.md and
+    # docs/licensing.md.
     "keypoint-moseq",
     "lark",
     "pydantic",

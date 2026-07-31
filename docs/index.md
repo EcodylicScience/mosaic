@@ -57,11 +57,14 @@ raw tracks/labels
          context:      temporal-stack
          templates:    extract-templates, extract-labeled-templates
          global:       global-scaler, global-tsne, global-kmeans, global-ward
-         trainable:    xgboost, arhmm, feral, kpms, lightning-action,
+         trainable:    xgboost, arhmm, feral, kpms*, lightning-action,
                        global-identity-model
          visualization: egocentric-crop, viz-timeline, viz-global-colored,
                         interaction-crop-pipeline
 ```
+
+\* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
+and academic use only. See [Licensing](licensing.md).
 
 ## Core concepts
 
@@ -97,6 +100,14 @@ Two flavors:
 | Templates | extract-templates, extract-labeled-templates |
 | **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model |
 | Visualization | egocentric-crop, viz-global-colored, viz-timeline, interaction-crop-pipeline |
+
+!!! warning "kpms is non-commercial only"
+
+    `kpms` drives keypoint-MoSeq, licensed by the Harvard University Office of
+    Technology Development for non-commercial research and academic use only.
+    Commercial use is prohibited, and mosaic will not run it until you confirm
+    the terms apply to your use. `arhmm` fits a comparable model in mosaic's own
+    code with no such restriction. See [Licensing](licensing.md).
 
 See the [Feature Library API](api/behavior/feature-library.md) for details.
 

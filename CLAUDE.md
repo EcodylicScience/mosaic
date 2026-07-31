@@ -178,7 +178,8 @@ Two flavors:
 - **global** (fit-then-apply) — trained on a collection of sequences, then
   applied (e.g. `global-scaler`, `global-tsne`, `global-kmeans`,
   `global-ward`, `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
-  `global-identity-model`).
+  `global-identity-model`). `kpms` is license-restricted — see
+  "`feature_library/external/` is sandboxed" below.
 
 Visualization features (`egocentric-crop`, `viz-timeline`,
 `viz-global-colored`, `interaction-crop-pipeline`) use the same protocol and
@@ -438,6 +439,26 @@ keypoint-MoSeq lives in its own venv and is invoked via subprocess. It has a
 separate basedpyright execution environment and is excluded from the uv
 workspace (`[tool.uv.workspace]` in `pyproject.toml`). Don't import it
 directly from the main mosaic package.
+
+**The subprocess boundary is a licensing requirement, not a packaging
+convenience.** keypoint-MoSeq is licensed by Harvard OTD for non-commercial
+research and academic use only; mosaic is AGPL-3.0-or-later, and AGPL section 7
+forbids adding a "non-commercial only" restriction to a covered work. Importing
+it would make a combined work that could not be distributed at all. So:
+keypoint-moseq must never be folded into mosaic's own dependencies, and never
+bundled into a packaged installer.
+
+The environment is not built by anything in the repo — the user builds it, and
+[`external/README.md`](src/mosaic/behavior/feature_library/external/README.md)
+is the documented bootstrap, with the license terms attached to that step.
+`KpmsFeature._start_server` refuses to spawn until
+`MOSAIC_KPMS_LICENSE_ACCEPTED=1`; `MOSAIC_KPMS_PYTHON` locates an interpreter,
+matching the `MOSAIC_TREX_BIN` / `MOSAIC_SLEAP_BIN` convention. The check sits
+at the spawn and deliberately not in `__init__`, because constructing a feature
+(as `mosaic reconcile` does for every run it re-addresses) is not use of
+keypoint-MoSeq. [`docs/licensing.md`](docs/licensing.md) is the user-facing
+page, and covers the other third-party terms too — notably TRex, which requires
+a paid license for company use.
 
 ## Working with Notebooks
 

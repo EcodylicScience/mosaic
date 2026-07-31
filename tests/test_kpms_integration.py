@@ -1,22 +1,52 @@
-"""Integration tests for KpmsFeature (requires external .venv with kpms)."""
+"""Integration tests for KpmsFeature (requires a real keypoint-moseq install).
+
+These skip unless both of its preconditions hold: an interpreter that has
+keypoint-moseq, and the license acceptance that ``KpmsFeature`` requires before
+it will spawn one. The acceptance is a skip condition rather than something the
+suite sets on the user's behalf -- a test run that accepted a non-commercial
+license for whoever happened to invoke it would be a hole in the very check
+these tests exercise.
+"""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-_KPMS_PYTHON = Path(__file__).resolve().parent.parent / (
-    "src/mosaic/behavior/feature_library/external/.venv/bin/python"
+from mosaic.behavior.feature_library.kpms import (
+    KPMS_LICENSE_ENV,
+    KPMS_PYTHON_ENV,
+    KpmsFeature,
+    KpmsNotFoundError,
+    resolve_kpms_python,
 )
+
+
+def _kpms_python_found() -> bool:
+    """Whether an interpreter resolves, by the same precedence the feature uses."""
+    try:
+        _ = resolve_kpms_python()
+    except KpmsNotFoundError:
+        return False
+    return True
+
 
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
-        not _KPMS_PYTHON.exists(),
-        reason=f"kpms .venv not found at {_KPMS_PYTHON}",
+        not _kpms_python_found(),
+        reason=(
+            f"no keypoint-moseq interpreter found; build the environment under "
+            f"feature_library/external or set {KPMS_PYTHON_ENV}"
+        ),
+    ),
+    pytest.mark.skipif(
+        os.environ.get(KPMS_LICENSE_ENV, "").strip() != "1",
+        reason=f"{KPMS_LICENSE_ENV}=1 not set; see docs/licensing.md",
     ),
 ]
 
@@ -64,9 +94,7 @@ def _make_synthetic_tracks() -> list[tuple[str, pd.DataFrame]]:
 
 def _make_feature(
     params: dict[str, object] | None = None,
-) -> "KpmsFeature":
-    from mosaic.behavior.feature_library.kpms import KpmsFeature
-
+) -> KpmsFeature:
     inputs = KpmsFeature.Inputs(("tracks",))
     return KpmsFeature(inputs=inputs, params=params)
 

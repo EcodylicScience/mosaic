@@ -2,25 +2,33 @@
 
 Fits an AR-HMM model and applies it to extract per-frame syllable labels,
 using a persistent subprocess server to avoid repeated JAX startup costs.
-The kpms package does NOT need to be installed in the mosaic environment --
-only in a separate .venv whose interpreter path is passed via ``kpms_python``.
+The kpms package does NOT need to be installed in the mosaic environment -- only
+in a separate one, located by :func:`resolve_kpms_python`.
+
+keypoint-MoSeq is licensed for non-commercial research and academic use only
+and is never bundled with mosaic; see :data:`LICENSE_NOTICE` and
+``docs/licensing.md``. Nothing in this module imports it -- the licensed code
+runs only in the separate interpreter spawned by
+:meth:`KpmsFeature._start_server`, which is where the terms are enforced.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Self, TypedDict, final
+from typing import IO, TYPE_CHECKING, Annotated, Self, TypedDict, final
 
 import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
+    HASH_EXCLUDE,
     DependencyLookup,
     InputStream,
     JoblibArtifact,
@@ -56,6 +64,94 @@ log = logging.getLogger(__name__)
 
 _KPMS_SERVER_SCRIPT = Path(__file__).parent / "external" / "kpms_server.py"
 _EXTERNAL_VENV_PYTHON = Path(__file__).parent / "external" / ".venv" / "bin" / "python"
+
+# Read at point of use with a bare ``os.environ.get``, the convention every
+# externally-installed tool follows (MOSAIC_TREX_BIN, MOSAIC_SLEAP_BIN,
+# MOSAIC_LITPOSE_BIN).
+KPMS_PYTHON_ENV = "MOSAIC_KPMS_PYTHON"
+KPMS_LICENSE_ENV = "MOSAIC_KPMS_LICENSE_ACCEPTED"
+
+LICENSE_NOTICE = (
+    "[kpms] keypoint-MoSeq is licensed by the Harvard University Office of "
+    "Technology Development for non-commercial research and academic use only, "
+    "and commercial use is expressly prohibited.  Harvard's definition of "
+    "commercial use reaches fee-for-service arrangements, core facilities "
+    "providing research services to (or with) for-profit third parties for a "
+    "fee, and industry-sponsored or collaborative research projects granting "
+    "commercial rights to the sponsor or collaborator.\n"
+    "Read the terms at "
+    "https://github.com/dattalab/keypoint-moseq/blob/main/LICENSE.md, then set "
+    f"{KPMS_LICENSE_ENV}=1 to confirm your use is permitted.\n"
+    "The `arhmm` feature fits a comparable autoregressive model in mosaic's own "
+    "code and carries no such restriction.  See docs/licensing.md."
+)
+
+_NOT_FOUND_HELP = (
+    "keypoint-moseq is not installed with mosaic and is never bundled in a "
+    "mosaic distribution: it lives in its own environment, which you build "
+    "yourself.  See docs/licensing.md for the setup command, or point "
+    f"{KPMS_PYTHON_ENV} at an interpreter that already has it."
+)
+
+
+class KpmsNotFoundError(FileNotFoundError):
+    """Raised when no Python interpreter with keypoint-moseq can be located."""
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or _NOT_FOUND_HELP)
+
+
+def check_license_accepted() -> None:
+    """Raise unless the keypoint-MoSeq license has been explicitly accepted.
+
+    Acceptance is ``MOSAIC_KPMS_LICENSE_ACCEPTED=1``. Surrounding whitespace is
+    ignored: a value carried in from a ``.env`` file or a YAML ``env:`` block
+    picks up a trailing space easily, and refusing on an invisible character is
+    the worst failure mode for a check whose whole job is to be explicable.
+
+    Exactly ``1`` is accepted and nothing else. Widening to ``true`` or ``yes``
+    would widen the ways to accept *accidentally* -- a job matrix that sets
+    every flag to ``true`` would assert an institution's entitlement on its
+    behalf.
+
+    Unlike ``_int_env`` in :mod:`mosaic.media_probe_config`, a malformed value
+    gets no error of its own. Unset, blank, ``0`` and ``maybe`` are one answer,
+    the fallback state is the safe one, and every non-accepting value already
+    produces a single message naming the variable and the value it wants; a
+    second failure mode with an identical remedy would only add noise.
+
+    Raises:
+        RuntimeError: with :data:`LICENSE_NOTICE` when acceptance is absent.
+    """
+    if os.environ.get(KPMS_LICENSE_ENV, "").strip() == "1":
+        return
+    raise RuntimeError(LICENSE_NOTICE)
+
+
+def resolve_kpms_python(kpms_python: str | None = None) -> Path:
+    """Resolve the interpreter that runs the keypoint-moseq server.
+
+    Precedence (first match wins):
+
+    1. *kpms_python* -- the feature's ``kpms_python`` param
+    2. ``MOSAIC_KPMS_PYTHON`` env var
+    3. the environment under ``feature_library/external/.venv``
+
+    Args:
+        kpms_python: Explicit interpreter path, or None to fall through.
+
+    Returns:
+        The resolved interpreter path, which exists.
+
+    Raises:
+        KpmsNotFoundError: if the resolved path does not exist.
+    """
+    candidate = kpms_python or os.environ.get(KPMS_PYTHON_ENV)
+    resolved = Path(candidate).expanduser() if candidate else _EXTERNAL_VENV_PYTHON
+    if not resolved.exists():
+        msg = f"[kpms] Python interpreter not found: {resolved}.  {_NOT_FOUND_HELP}"
+        raise KpmsNotFoundError(msg)
+    return resolved
 
 
 # --- Data conversion ---
@@ -152,11 +248,33 @@ class KpmsModelArtifact(JoblibArtifact[KpmsModelBundle]):
 class KpmsFeature:
     """Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
+    !!! warning "Non-commercial license"
+
+        keypoint-MoSeq is licensed by the Harvard University Office of
+        Technology Development for **non-commercial research and academic use
+        only**, and commercial use is expressly prohibited. Harvard's
+        definition reaches fee-for-service arrangements, core facilities
+        providing research services to (or with) for-profit third parties for a
+        fee, and industry-sponsored or collaborative projects granting
+        commercial rights to the sponsor. This is not a copyleft license, so no
+        paid exception cures it.
+
+        mosaic does not install, bundle, or import keypoint-moseq. It runs in a
+        separate environment you build yourself, reached over a socket, and
+        will not start until you set ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` to
+        confirm your use is permitted. See
+        [Licensing](../../licensing.md) for the terms and the setup command.
+
+        The `arhmm` feature fits a comparable autoregressive model in mosaic's
+        own code and carries no such restriction.
+
     Params:
         model: Pre-fitted KpmsModelArtifact to load (skip fit). Default:
             None (fit from scratch).
         kpms_python: Path to a Python interpreter with keypoint-moseq
-            installed. None uses the bundled external .venv. Default: None.
+            installed. None falls through to ``MOSAIC_KPMS_PYTHON``, then to
+            the environment under ``feature_library/external/.venv``.
+            Default: None.
         pose: Pose keypoint configuration (indices, column prefixes).
             Default: PoseConfig().
         anterior_bodyparts: List of bodypart names forming the anterior
@@ -208,7 +326,12 @@ class KpmsFeature:
 
     class Params(Params):
         model: KpmsModelArtifact | None = None
-        kpms_python: str | None = None
+        # Where the interpreter lives, not what it computes: the same model on
+        # two machines resolves through two different paths. Folding that into
+        # the identity would mint a second run_id for byte-identical output and
+        # recompute a full fit for nothing. HASH_EXCLUDE: dropped from the
+        # run_id hash, still recorded in params.json.
+        kpms_python: Annotated[str | None, HASH_EXCLUDE] = None
         pose: PoseConfig = Field(default_factory=PoseConfig)
         anterior_bodyparts: list[str] = Field(min_length=1)
         posterior_bodyparts: list[str] = Field(min_length=1)
@@ -258,14 +381,19 @@ class KpmsFeature:
         if self._conn is not None:
             return
 
-        kpms_python = self.params.kpms_python
-        if kpms_python is not None:
-            resolved = Path(kpms_python).expanduser()
-        else:
-            resolved = _EXTERNAL_VENV_PYTHON
-        if not resolved.exists():
-            msg = f"[kpms] Python interpreter not found: {resolved}"
-            raise FileNotFoundError(msg)
+        # The license check sits here, at the only spawn, and deliberately not
+        # in __init__: constructing a KpmsFeature is not use of keypoint-MoSeq.
+        # `mosaic reconcile` builds every feature it re-addresses, and
+        # ``reconcile_features._build`` catches only ValidationError /
+        # ValueError / TypeError -- a check in the constructor would abort that
+        # whole sweep for any dataset that has ever run kpms, over a question
+        # that recomputing an identifier never asks. Gating the spawn instead
+        # covers every caller (CLI, notebooks, mosaic-api) with one check.
+        #
+        # Before resolving the interpreter, so the answer does not depend on
+        # whether an environment happens to be present.
+        check_license_accepted()
+        resolved = resolve_kpms_python(self.params.kpms_python)
 
         self._tmpdir = tempfile.mkdtemp(prefix="kpms_")
         socket_path = str(Path(self._tmpdir) / "kpms.sock")
