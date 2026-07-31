@@ -26,7 +26,7 @@ from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
     tracks_variant_root,
-    trex_variant_payload,
+    tracker_variant_payload,
     write_tracks_variant,
 )
 from mosaic.core.track_converter import TrackConvertParams
@@ -226,7 +226,7 @@ def test_a_trex_variant_is_the_tracker_run_it_came_from() -> None:
     from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
     settings = {"track_max_individuals": 4, "cm_per_pixel": 0.5}
-    variant = tracks_run_id(TREX_KIND, TREX_VERSION, trex_variant_payload(settings))
+    variant = tracks_run_id(TREX_KIND, TREX_VERSION, tracker_variant_payload(settings))
 
     assert variant == trex_run_id(settings)
 
@@ -254,7 +254,7 @@ def test_the_convert_payload_wraps_params_under_one_named_key() -> None:
 def test_a_variant_is_scope_free_across_the_sequences_it_covers() -> None:
     """One recipe, one value -- however many sequences the run touched."""
     settings = {"track_max_individuals": 4}
-    assert trex_variant_payload(settings) == trex_variant_payload(dict(settings))
+    assert tracker_variant_payload(settings) == tracker_variant_payload(dict(settings))
     assert tracks_run_id(
-        "trex", "0.1", trex_variant_payload(settings)
-    ) == tracks_run_id("trex", "0.1", trex_variant_payload(settings))
+        "trex", "0.1", tracker_variant_payload(settings)
+    ) == tracks_run_id("trex", "0.1", tracker_variant_payload(settings))

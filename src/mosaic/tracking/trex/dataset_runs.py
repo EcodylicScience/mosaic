@@ -37,7 +37,6 @@ than bolting one on.
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import shutil
 import socket
@@ -53,22 +52,15 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params, json_ready
-from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.op_identity import (
-    OP_IDENTITY_SCHEME,
     op_run_id,
     parse_op_run_id,
 )
-from mosaic.core.pipeline.tracks_identity import (
-    tracks_run_id,
-    tracks_variant_root,
-    trex_variant_payload,
-    write_tracks_variant,
-)
+from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+from mosaic.tracking.common.mint import mint_tracker_run
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
@@ -550,9 +542,6 @@ def run_trex(
 
     Returns the content-addressed ``run_id``.
     """
-    if not ds.has_root(TREX_KIND):
-        ds.set_root(TREX_KIND, tracking_root_default(TREX_KIND))
-
     # Resolve the detection model *before* the settings that name it, because
     # what the settings must carry is the model's identity and not the string
     # that pointed at it. A bare weights path is a mutable key: swap best.pt and
@@ -615,36 +604,21 @@ def run_trex(
         auto_train=auto_train,
         track_extra_settings=track_extra_settings,
     )
-    params_hash = hash_params(settings)
+    minted = mint_tracker_run(
+        ds, kind=TREX_KIND, version=TREX_VERSION, settings=settings
+    )
+    params_hash = minted.params_hash
+    run_id = minted.run_id
+    run_root = minted.run_root
+    tracks_variant = minted.tracks_variant
+
+    # TREx alone gates two phases on different parameter subsets, so it projects
+    # its own per-phase digests. The whole-settings params_hash above is what the
+    # index row records; these are what each phase marker records, and what a
+    # later run compares against to decide the phase may be skipped.
     phase_hashes: dict[PhaseName, str] = {
         phase: hash_params(phase_settings(settings, phase)) for phase in PHASES
     }
-    run_id = trex_run_id(settings)
-    run_root = trex_run_root(ds, run_id)
-    run_root.mkdir(parents=True, exist_ok=True)
-    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
-
-    # What names the *tracks variant* this run's tables belong to, as distinct
-    # from the tracker run that produced them. Minted once here rather than per
-    # entry: the settings are scope-free, so one value covers every sequence the
-    # run touches -- which is the whole point of a variant identity. Recorded
-    # beside the tables, in the directory Stage 3.2 moves them into.
-    tracks_variant = tracks_run_id(
-        TREX_KIND, TREX_VERSION, trex_variant_payload(settings)
-    )
-    _ = write_tracks_variant(
-        ds.get_root("tracks"),
-        tracks_variant,
-        TREX_KIND,
-        TREX_VERSION,
-        settings,
-    )
-
-    params_path = run_root / "run_params.json"
-    try:
-        params_path.write_text(json.dumps(json_ready(settings), indent=2))
-    except Exception as exc:
-        print(f"[run_trex] failed to save run_params.json: {exc}", file=sys.stderr)
 
     # Route each scoped entry through the transcode verdict: a clean entry
     # resolves to its original, an analysis-required entry to its constant-rate

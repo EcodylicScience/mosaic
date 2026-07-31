@@ -44,10 +44,8 @@ __all__ = [
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
-    "litpose_variant_payload",
-    "sleap_variant_payload",
+    "tracker_variant_payload",
     "tracks_run_id",
-    "trex_variant_payload",
     "tracks_variant_root",
     "write_tracks_variant",
 ]
@@ -110,51 +108,28 @@ def convert_variant_payload(params_identity: Mapping[str, object]) -> dict[str, 
     return {"params": dict(params_identity)}
 
 
-def trex_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
-    """What determines a table bridged from a TREx run: the tracker settings.
+def tracker_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
+    """What determines a table bridged from an integrated tracker: its settings.
 
     Passed through unwrapped, so the value this mints is byte-identical to the
-    tracker's own ``trex_run_id(settings)``. That is deliberate rather than
-    incidental: at Stage 3.2 ``tracks/trex.<v>-<digest>/`` and
-    ``trex/trex.<v>-<digest>/`` then read as obviously the same run, and no
-    existing golden line moves. Wrapping it would mint a second digest for one
+    tracker's own ``<tool>_run_id(settings)``. That is deliberate rather than
+    incidental: ``tracks/sleap.<v>-<digest>/`` and
+    ``_tracking/sleap/sleap.<v>-<digest>/`` then read as obviously the same run,
+    and the op run identity and the tracks variant identity are one digest
+    rather than two. Wrapping the settings would mint a second digest for one
     recipe and produce two near-identical directory names.
 
-    The settings are scope-free -- knobs only, no video paths -- so one value
-    still names one variant across every sequence the run covered.
-    """
-    return dict(settings)
-
-
-def sleap_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
-    """What determines a table bridged from a SLEAP run: the tracker settings.
-
-    Passed through unwrapped, exactly like :func:`trex_variant_payload`, so the
-    value this mints is byte-identical to the integration's own
-    ``sleap_run_id(settings)``. ``tracks/sleap.<v>-<digest>/`` and
-    ``sleap/sleap.<v>-<digest>/`` then read as obviously the same run, and the op
-    run identity and the tracks variant identity are one digest rather than two.
-
-    The settings carry the model as a content digest (never a path) and the
-    tracking knobs only -- scope-free -- so one value still names one variant
+    Every tracker's settings are scope-free -- knobs only, and the model as a
+    content digest, never a path or a video -- so one value names one variant
     across every sequence the run covered.
-    """
-    return dict(settings)
 
-
-def litpose_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:
-    """What determines a table bridged from a Lightning Pose run: the settings.
-
-    Passed through unwrapped, exactly like :func:`sleap_variant_payload`, so the
-    value this mints is byte-identical to the integration's own
-    ``litpose_run_id(settings)``. ``tracks/litpose.<v>-<digest>/`` and
-    ``_tracking/litpose/litpose.<v>-<digest>/`` then read as obviously the same
-    run, and the op run identity and the tracks variant identity are one digest
-    rather than two.
-
-    Lightning Pose is pose-only, so the settings carry the model as a content
-    digest (never a path) and the Hydra overrides only -- scope-free -- so one
-    value still names one variant across every sequence the run covered.
+    This exists as a named function rather than a bare call to
+    :func:`tracks_run_id` so the golden corpus can pin the **wrapper**: were the
+    unwrapped passthrough ever to become a wrap, a corpus that only called
+    ``tracks_run_id`` with a hand-built payload would stay green through it while
+    every tracked variant on disk moved. One function rather than three, because
+    the three were the same body under three names, and a fourth tracker copying
+    one of them is how that stops being noticed.
     """
     return dict(settings)
 

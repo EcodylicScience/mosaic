@@ -80,10 +80,8 @@ from mosaic.core.pipeline.tracks_identity import (
     convert_variant_payload,
     converter_op,
     infer_variant_payload,
-    litpose_variant_payload,
-    sleap_variant_payload,
     tracks_run_id,
-    trex_variant_payload,
+    tracker_variant_payload,
 )
 from mosaic.core.pipeline.types import Params
 from mosaic.media_probe_config import media_thresholds
@@ -263,7 +261,7 @@ def _trex_variant() -> str:
     return tracks_run_id(
         TREX_KIND,
         TREX_VERSION,
-        trex_variant_payload({"track_max_individuals": 4, "cm_per_pixel": 0.5}),
+        tracker_variant_payload({"track_max_individuals": 4, "cm_per_pixel": 0.5}),
     )
 
 
@@ -317,7 +315,7 @@ def _sleap_variant() -> str:
     return tracks_run_id(
         SLEAP_KIND,
         SLEAP_VERSION,
-        sleap_variant_payload(
+        tracker_variant_payload(
             {"model": "0123456789abcdef", "tracker": "flow", "peak_threshold": 0.2}
         ),
     )
@@ -330,7 +328,7 @@ def _litpose_variant() -> str:
     return tracks_run_id(
         LITPOSE_KIND,
         LITPOSE_VERSION,
-        litpose_variant_payload(
+        tracker_variant_payload(
             {"model": "0123456789abcdef", "litpose_overrides": None}
         ),
     )

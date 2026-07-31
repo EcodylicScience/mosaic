@@ -27,7 +27,6 @@ no marker, so its partial CSV is discarded and cleared on the next attempt.
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import shutil
 import socket
@@ -42,9 +41,8 @@ from typing import TYPE_CHECKING, Final
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params, json_ready
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
-from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.markers import (
@@ -61,15 +59,10 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline.tracking_roots import tracking_root_default
-from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
-from mosaic.core.pipeline.tracks_identity import (
-    litpose_variant_payload,
-    tracks_run_id,
-    tracks_variant_root,
-    write_tracks_variant,
-)
+from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+from mosaic.tracking.common.mint import mint_tracker_run
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
@@ -474,9 +467,6 @@ def run_litpose(
 
     Returns the content-addressed ``run_id``.
     """
-    if not ds.has_root(LITPOSE_KIND):
-        ds.set_root(LITPOSE_KIND, tracking_root_default(LITPOSE_KIND))
-
     # Resolve the model *before* the settings that name it, because what the
     # settings carry is the weights' identity, not the path that pointed at them.
     # An unresolvable reference aborts here, before any run root or tracks variant
@@ -486,25 +476,11 @@ def run_litpose(
     settings = litpose_settings(
         model_id=resolved_model.model_id, litpose_overrides=litpose_overrides
     )
-    params_hash = hash_params(settings)
-    run_id = litpose_run_id(settings)
-    run_root = litpose_run_root(ds, run_id)
-    run_root.mkdir(parents=True, exist_ok=True)
-    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
-
-    # What names the *tracks variant* these tables belong to, as distinct from the
-    # tracker run that produced them. Minted once: the settings are scope-free, so
-    # one value covers every sequence the run touches. Passed unwrapped, so it is
-    # byte-identical to ``run_id``.
-    tracks_variant = tracks_run_id(
-        LITPOSE_KIND, LITPOSE_VERSION, litpose_variant_payload(settings)
-    )
-    _ = write_tracks_variant(
-        ds.get_root("tracks"),
-        tracks_variant,
-        LITPOSE_KIND,
-        LITPOSE_VERSION,
-        settings,
+    minted = mint_tracker_run(
+        ds,
+        kind=LITPOSE_KIND,
+        version=LITPOSE_VERSION,
+        settings=settings,
         # Provenance, never identity: the model digest (already the identity term)
         # and the model type, recorded so a variant is explicable from disk.
         observed={
@@ -512,12 +488,10 @@ def run_litpose(
             "model_type": resolved_model.model_type,
         },
     )
-
-    params_path = run_root / "run_params.json"
-    try:
-        params_path.write_text(json.dumps(json_ready(settings), indent=2))
-    except Exception as exc:
-        print(f"[run_litpose] failed to save run_params.json: {exc}", file=sys.stderr)
+    params_hash = minted.params_hash
+    run_id = minted.run_id
+    run_root = minted.run_root
+    tracks_variant = minted.tracks_variant
 
     scope = ds.resolve_media_scope(groups, sequences, entries)
     if not scope:
