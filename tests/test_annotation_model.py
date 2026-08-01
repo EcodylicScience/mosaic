@@ -185,3 +185,30 @@ def test_a_source_box_is_optional_and_distinguishable_from_a_derived_one() -> No
     assert AnnotationObject(keypoints=points).bbox is None
     supplied = AnnotationObject(keypoints=points, bbox=Bbox(1.0, 2.0, 3.0, 4.0))
     assert supplied.bbox is not None
+
+
+# --- the Lightning Pose default skeleton ------------------------------------
+
+
+def test_the_mouse_skeleton_survives_being_subset() -> None:
+    """The converter's default layout, checked where the goldens cannot reach.
+
+    The Lightning Pose converter tested ``keypoint_indices is None`` after the
+    branch above had already assigned it, so the condition was never true and
+    every schema it produced carried an empty skeleton. The characterization
+    fixture is a three-keypoint layout rather than this one, so the fix is
+    invisible there -- which is exactly why it needs asserting here.
+    """
+    from mosaic.tracking.pose_training.converters.lightning_pose import MOUSE_LP_27
+
+    assert MOUSE_LP_27.num_keypoints == 27
+    assert len(MOUSE_LP_27.skeleton) == 24, "the full layout has edges"
+
+    # nose -> neck -> mid_back -> mouse_center is a contiguous run of the spine.
+    spine = MOUSE_LP_27.subset([0, 7, 8, 9])
+    assert spine.names == ("nose", "neck", "mid_back", "mouse_center")
+    assert spine.skeleton == ((0, 1), (1, 2), (2, 3)), "renumbered to the subset"
+
+    # Every surviving edge names a position that exists.
+    for a, b in spine.skeleton:
+        assert a < len(spine.names) and b < len(spine.names)

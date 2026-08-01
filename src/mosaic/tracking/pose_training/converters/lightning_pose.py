@@ -250,10 +250,18 @@ def convert_lightning_pose(
         selected_bodyparts = all_bodyparts
         keypoint_indices = list(range(len(all_bodyparts)))
 
-    schema = KeypointSchema(
-        names=tuple(selected_bodyparts),
-        skeleton=MOUSE_LP_27.skeleton if keypoint_indices is None else (),
-    )
+    # The default skeleton describes one particular 27-keypoint mouse layout, so
+    # it is only meaningful when the CSV is that layout. Claiming it otherwise
+    # would draw edges between whatever keypoints happened to land at those
+    # indices.
+    #
+    # The condition used to be ``keypoint_indices is None``, tested after the
+    # branch above had already assigned it, so it was never true and every set
+    # this converter produced carried an empty skeleton.
+    if tuple(all_bodyparts) == MOUSE_LP_27.names:
+        schema = MOUSE_LP_27.subset(keypoint_indices)
+    else:
+        schema = KeypointSchema(names=tuple(selected_bodyparts))
 
     # Filter to frames present in both the extraction manifest and the CSV
     csv_frame_set = set(df.index.values)
