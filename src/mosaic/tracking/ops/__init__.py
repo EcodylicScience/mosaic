@@ -13,6 +13,7 @@ from mosaic.tracking.ops import (
     litpose,
     sleap,
     train,
+    train_litpose,
     train_sleap,
     trex,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "litpose",
     "sleap",
     "train",
+    "train_litpose",
     "train_sleap",
     "trex",
 ]
