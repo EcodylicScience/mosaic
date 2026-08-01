@@ -263,3 +263,84 @@ def test_the_written_skeleton_uses_cocos_one_based_endpoints(tmp_path: Path) -> 
     path = write_coco_keypoints(original, tmp_path / "out" / "ann.json")
     written = json.loads(path.read_text())
     assert written["categories"][0]["skeleton"] == [[1, 2], [2, 3]]
+
+
+# --- CVAT -------------------------------------------------------------------
+
+
+def _cvat(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "annotations.xml"
+    _ = path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<annotations>\n'
+        + body
+        + "\n</annotations>\n"
+    )
+    return path
+
+
+_TWO_CLASSES = """  <image id="0" name="a.png" width="160" height="120">
+    <points label="animal" points="40.0,50.0">
+      <attribute name="class">worker</attribute>
+    </points>
+    <points label="animal" points="60.0,70.0;80.0,90.0">
+      <attribute name="class">queen</attribute>
+    </points>
+  </image>
+  <image id="1" name="b.png" width="160" height="120"/>"""
+
+
+def test_each_clicked_point_is_its_own_instance(tmp_path: Path) -> None:
+    """A points element may hold several; each is a separate animal."""
+    from mosaic.core.annotations.readers import read_cvat_points
+
+    annotations = read_cvat_points(_cvat(tmp_path, _TWO_CLASSES), tmp_path)
+    assert [len(f.objects) for f in annotations.frames] == [3, 0]
+    assert annotations.schema.num_keypoints == 1
+
+
+def test_the_class_attribute_becomes_the_category(tmp_path: Path) -> None:
+    from mosaic.core.annotations.readers import read_cvat_points
+
+    annotations = read_cvat_points(_cvat(tmp_path, _TWO_CLASSES), tmp_path)
+    assert [o.category for o in annotations.frames[0].objects] == [
+        "worker",
+        "queen",
+        "queen",
+    ]
+    assert annotations.categories == ("worker", "queen"), "first-seen order"
+
+
+def test_the_class_order_can_be_fixed_by_the_caller(tmp_path: Path) -> None:
+    """First-seen order is stable within one file and not across two."""
+    from mosaic.core.annotations.readers import read_cvat_points
+
+    annotations = read_cvat_points(
+        _cvat(tmp_path, _TWO_CLASSES), tmp_path, class_names=("queen", "worker")
+    )
+    assert annotations.category_ids() == {"queen": 0, "worker": 1}
+
+
+def test_a_cvat_point_is_always_fully_visible(tmp_path: Path) -> None:
+    """The limitation, asserted so it is a decision rather than an oversight.
+
+    CVAT carries occluded and outside attributes, but the point converters never
+    read them, so every existing dataset means fully-visible. Starting to read
+    them would change what those datasets say.
+    """
+    from mosaic.core.annotations.readers import read_cvat_points
+
+    annotations = read_cvat_points(_cvat(tmp_path, _TWO_CLASSES), tmp_path)
+    assert all(
+        k.visibility == 2
+        for f in annotations.frames
+        for o in f.objects
+        for k in o.keypoints
+    )
+
+
+def test_an_image_with_no_points_is_still_a_frame(tmp_path: Path) -> None:
+    from mosaic.core.annotations.readers import read_cvat_points
+
+    annotations = read_cvat_points(_cvat(tmp_path, _TWO_CLASSES), tmp_path)
+    assert len(annotations.frames) == 2
+    assert len(annotations.annotated_frames) == 1

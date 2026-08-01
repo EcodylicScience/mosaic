@@ -11,6 +11,7 @@ lets its boxes be recomputed without relabelling.
 """
 
 from mosaic.core.annotations.readers.coco import read_coco_keypoints
+from mosaic.core.annotations.readers.cvat import read_cvat_points
 from mosaic.core.annotations.readers.yolo_pose import read_yolo_pose
 
-__all__ = ["read_coco_keypoints", "read_yolo_pose"]
+__all__ = ["read_coco_keypoints", "read_cvat_points", "read_yolo_pose"]
