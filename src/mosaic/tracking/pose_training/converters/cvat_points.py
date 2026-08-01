@@ -26,19 +26,23 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Mapping, Sequence
 
-import numpy as np
 
-from mosaic.core.annotations import KeypointSchema
+import dataclasses
+
+from mosaic.core.annotations import AnnotationFrame, Bbox, KeypointSchema
+from mosaic.core.annotations.readers import read_cvat_points
 from mosaic.core.annotations.split import (
     assign_splits,
     default_group_key,
     print_split_summary,
+    split_filenames,
 )
+
+from .emit import usable_frames, write_split_tree, yolo_pose_line
 
 from .base import (
     PointDetectionSchema,
     format_polo_label_line,
-    format_yolo_pose_line,
     normalize_coords,
     write_yolo_label,
 )
@@ -165,138 +169,93 @@ def convert_cvat_points(
     images_dir = Path(images_dir)
     output_dir = Path(output_dir)
 
-    # Parse XML
-    all_images, seen_classes = _parse_cvat_xml(cvat_xml_path, class_attribute)
+    annotations = read_cvat_points(
+        cvat_xml_path,
+        images_dir,
+        keypoint_name=keypoint_name,
+        class_attribute=class_attribute,
+        class_names=tuple(class_names) if class_names is not None else None,
+    )
+    schema = annotations.schema
+    # The reader already ordered the categories: the caller's list when it
+    # gave one, first-seen order otherwise. Numbering them here is the same
+    # rule the old resolver applied, read off the set instead of recomputed.
+    name_to_id = annotations.category_ids()
 
-    # Resolve class name → class ID mapping
-    if class_names is not None:
-        name_to_id = {name: idx for idx, name in enumerate(class_names)}
-    elif seen_classes:
-        name_to_id = {name: idx for idx, name in enumerate(seen_classes)}
-    else:
-        name_to_id = {}
-
-    resolved_names = list(name_to_id.keys()) if name_to_id else []
-    schema = KeypointSchema(names=(keypoint_name,), skeleton=())
-
-    # Filter to annotated images that exist on disk
-    usable: list[tuple[dict, Path]] = []
-    for img_rec in all_images:
-        if not img_rec["annotations"]:
-            continue
-        img_path = images_dir / img_rec["name"]
-        if not img_path.exists():
-            continue
-        usable.append((img_rec, img_path))
-
+    usable = usable_frames(annotations)
     if not usable:
-        n_annotated = sum(1 for r in all_images if r["annotations"])
         print(
             f"[cvat_points] WARNING: no usable images found. "
-            f"{len(all_images)} images in XML, {n_annotated} annotated. "
+            f"{len(annotations.frames)} images in XML, "
+            f"{len(annotations.annotated_frames)} annotated. "
             f"Check that images_dir contains matching filenames."
         )
         return schema
 
-    # Assign to splits
-    split_assignment, n_train, n_valid = assign_splits(
-        usable,
+    split_assignment, n_train, n_valid = split_filenames(
+        [frame.image_path.name for frame, _ in usable],
         split,
         seed,
         split_by=split_by,
         group_key=group_key,
     )
-    n = len(usable)
-
-    # Create output directories
-    for subset in ("train", "valid", "test"):
-        (output_dir / subset / "images").mkdir(parents=True, exist_ok=True)
-        (output_dir / subset / "labels").mkdir(parents=True, exist_ok=True)
 
     half = bbox_size / 2.0
-    written = 0
-    skipped = 0
     class_counts: dict[str, int] = {}
 
-    for img_rec, img_path in usable:
-        img_w = img_rec["width"]
-        img_h = img_rec["height"]
-        filename = img_rec["name"]
+    def lines_for(frame: AnnotationFrame) -> list[str]:
+        rows: list[str] = []
+        for obj in frame.objects:
+            if name_to_id and obj.category not in name_to_id:
+                continue  # a class the caller did not ask for
+            class_id = name_to_id.get(obj.category, 0)
+            class_counts[obj.category] = class_counts.get(obj.category, 0) + 1
 
-        lines: list[str] = []
-        for x, y, class_name in img_rec["annotations"]:
-            # Determine class ID
-            if name_to_id:
-                if class_name not in name_to_id:
-                    continue  # skip unknown classes
-                class_id = name_to_id[class_name]
-            else:
-                class_id = 0
+            # A fixed square centred on the click, clamped into the image. The
+            # clamp is asymmetric on purpose: a point near an edge keeps its
+            # full box on the far side rather than being shrunk on both.
+            point = obj.keypoints[0]
+            x0 = max(0.0, point.x - half)
+            y0 = max(0.0, point.y - half)
+            box = Bbox(
+                x=x0,
+                y=y0,
+                width=min(float(bbox_size), frame.width - x0),
+                height=min(float(bbox_size), frame.height - y0),
+            )
+            row = yolo_pose_line(
+                dataclasses.replace(obj, bbox=box),
+                frame.width,
+                frame.height,
+                class_id=class_id,
+            )
+            if row is not None:
+                rows.append(row)
+        return rows
 
-            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+    written, skipped = write_split_tree(
+        usable,
+        output_dir,
+        split_assignment,
+        lines_for,
+        symlink_images=symlink_images,
+    )
 
-            # Bbox centred on point, clamped to image bounds
-            bx = max(0.0, x - half)
-            by = max(0.0, y - half)
-            bw = min(bbox_size, img_w - bx)
-            bh = min(bbox_size, img_h - by)
-            cx = float(np.clip((bx + bw / 2.0) / img_w, 0, 1))
-            cy = float(np.clip((by + bh / 2.0) / img_h, 0, 1))
-            nw = float(np.clip(bw / img_w, 0, 1))
-            nh = float(np.clip(bh / img_h, 0, 1))
-
-            # Single keypoint (visibility = 2 = labeled and visible)
-            kp_x, kp_y = normalize_coords(x, y, img_w, img_h)
-            line = format_yolo_pose_line(class_id, (cx, cy, nw, nh), [(kp_x, kp_y, 2)])
-            lines.append(line)
-
-        if not lines:
-            skipped += 1
-            continue
-
-        subset = split_assignment.get(filename, "train")
-        basename = Path(filename).name
-        stem = Path(filename).stem
-
-        write_yolo_label(output_dir / subset / "labels" / f"{stem}.txt", lines)
-
-        dest_image = output_dir / subset / "images" / basename
-        if dest_image.exists() or dest_image.is_symlink():
-            dest_image.unlink()
-        if symlink_images:
-            dest_image.symlink_to(img_path.resolve())
-        else:
-            shutil.copy2(img_path, dest_image)
-
-        written += 1
-
-    # Remove empty test split
-    test_imgs = output_dir / "test" / "images"
-    if test_imgs.exists() and not any(test_imgs.iterdir()):
-        shutil.rmtree(output_dir / "test")
-
-    print(f"[cvat_points] Wrote {written} labels to {output_dir}")
-    if skipped:
-        print(f"  Skipped {skipped} images with no valid annotations")
-    if resolved_names:
-        print(f"  Classes: {resolved_names}")
-    if class_counts:
-        print(f"  Counts: {class_counts}")
+    print(
+        f"[cvat_points] Wrote {written} labels to {output_dir}"
+        + (f"  (skipped {skipped} with no usable points)" if skipped else "")
+    )
+    print(f"  Keypoint: '{keypoint_name}', classes: {dict(class_counts)}")
     print_split_summary(
         split_assignment,
         n_train,
         n_valid,
-        n,
+        len(usable),
         split_by,
         group_key or default_group_key,
     )
 
     return schema
-
-
-# ----------------------------------------------------------------------- #
-# Shared helpers
-# ----------------------------------------------------------------------- #
 
 
 def _resolve_classes(
