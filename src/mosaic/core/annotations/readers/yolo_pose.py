@@ -87,9 +87,7 @@ def read_yolo_pose(
         ValueError: A label row does not match *schema*.
     """
     dataset_dir = Path(dataset_dir)
-    present: list[Split] = [
-        s for s in _SPLITS if (dataset_dir / s / "labels").is_dir()
-    ]
+    present: list[Split] = [s for s in _SPLITS if (dataset_dir / s / "labels").is_dir()]
     if not present:
         raise FileNotFoundError(
             f"{dataset_dir} holds no <split>/labels directory; expected any of "
