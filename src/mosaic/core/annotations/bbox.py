@@ -52,10 +52,17 @@ class BboxPolicy(Params):
     different padding are different training data, and a hash over the emitter's
     params is what says so.
 
-    Its existence is also what retires the round trip through emitted label
-    text. ``bbox_rewrite`` parses YOLO lines back into arrays purely to recompute
-    boxes a converter hardcoded, because the policy was not expressible at the
-    point the choice was made.
+    Its existence is what retired the bespoke rewriter. Recomputing boxes on an
+    already-emitted dataset used to mean parsing YOLO rows back into arrays and
+    editing four columns, because the padding choice was not expressible at the
+    point the dataset was built. Now it is, so re-padding is reading the dataset
+    and emitting it again under a different policy -- see
+    :func:`mosaic.tracking.pose_training.repad.repad_yolo_pose`.
+
+    **Padding is not a nicety.** A tight box around a midline-only schema on an
+    axis-aligned animal has zero height, and an instance with no height cannot
+    be trained on. ``isotropic`` pads by a fraction of body length with a pixel
+    floor; ``oriented`` pads along and across the head-tail axis separately.
 
     The defaults reproduce what the converters hardcode today, so declaring a
     policy changes nothing until someone changes the policy.

@@ -31,7 +31,7 @@ from .converters.base import (
     PointDetectionSchema,
     LocalizerSchema,
 )
-from .bbox_rewrite import rewrite_dataset_bboxes
+from .repad import repad_yolo_pose
 from .prep import (
     prepare_yolo_dataset,
     make_data_yaml,
@@ -110,7 +110,7 @@ __all__ = [
     "prepare_yolo_dataset",
     "resolve_augmentation",
     "resolve_localizer_augment",
-    "rewrite_dataset_bboxes",
+    "repad_yolo_pose",
     "run_inference",
     "run_inference_opencv",
     "run_localizer_inference",

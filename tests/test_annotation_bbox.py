@@ -1,21 +1,22 @@
-"""Tests for keypoint-derived bbox methods and dataset rewriting."""
+"""The three ways a box is derived from the keypoints it must contain.
+
+A tight box around a midline-only schema on an axis-aligned animal has zero
+height, and an instance with no height cannot be trained on. These pin that,
+and pin the two strategies that exist because of it -- which is why padding is
+not a nicety: it is what makes a whole class of labelling usable at all.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-pytest.importorskip("PIL")
-from PIL import Image
 
 from mosaic.core.annotations.bbox import (
     keypoints_to_bbox,
     keypoints_to_bbox_isotropic,
     keypoints_to_bbox_oriented,
 )
-from mosaic.tracking.pose_training.bbox_rewrite import rewrite_dataset_bboxes
 
 IMG_W, IMG_H = 1000, 1000
 HEAD_IDX, TAIL_IDX = 0, 5
@@ -147,107 +148,3 @@ def test_isotropic_enforces_min_pad() -> None:
     # pad = 20 px, so bbox is 40x40 = 0.04 x 0.04
     assert w == pytest.approx(0.04, abs=0.005)
     assert h == pytest.approx(0.04, abs=0.005)
-
-
-# -----------------------------------------------------------------------------
-# dataset rewriter
-# -----------------------------------------------------------------------------
-
-
-def _write_tiny_dataset(root: Path, *, num_kpts: int = 6) -> None:
-    """Write a minimal train split with one horizontal-mouse image+label."""
-    img_dir = root / "train" / "images"
-    lbl_dir = root / "train" / "labels"
-    img_dir.mkdir(parents=True)
-    lbl_dir.mkdir(parents=True)
-
-    img_path = img_dir / "frame000.png"
-    Image.new("RGB", (IMG_W, IMG_H), color=(128, 128, 128)).save(img_path)
-
-    # Horizontal mouse label in normalized coords, all v=2
-    kps = _horizontal_mouse_kps()
-    parts = ["0", "0.5", "0.5", "0.4", "0.001"]  # tight degenerate bbox
-    for x, y in kps:
-        parts += [f"{x / IMG_W:.6f}", f"{y / IMG_H:.6f}", "2"]
-    (lbl_dir / "frame000.txt").write_text(" ".join(parts) + "\n")
-
-
-def test_rewrite_isotropic_fixes_degenerate_bbox(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    dst = tmp_path / "dst_iso"
-    _write_tiny_dataset(src)
-
-    summary = rewrite_dataset_bboxes(
-        src,
-        dst,
-        method="isotropic",
-        num_kpts=6,
-        head_idx=HEAD_IDX,
-        tail_idx=TAIL_IDX,
-        pad_frac_of_body=0.3,
-        min_pad_px=20.0,
-    )
-
-    assert summary["train"]["rows"] == 1
-    assert summary["train"]["images_copied"] == 1
-
-    out = (dst / "train" / "labels" / "frame000.txt").read_text().split()
-    new_h = float(out[4])
-    assert new_h > 0.2  # was ~0.001 before
-
-
-def test_rewrite_handles_v0_as_invalid(tmp_path: Path) -> None:
-    """Keypoints with v=0 should be ignored in bbox computation."""
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src_img = src / "train" / "images"
-    src_lbl = src / "train" / "labels"
-    src_img.mkdir(parents=True)
-    src_lbl.mkdir(parents=True)
-    Image.new("RGB", (IMG_W, IMG_H), color=(0, 0, 0)).save(src_img / "f.png")
-
-    # head kp has v=0, others v=2. Oriented should fall back to isotropic.
-    kps = _horizontal_mouse_kps()
-    parts = ["0", "0.5", "0.5", "0.4", "0.001"]
-    for i, (x, y) in enumerate(kps):
-        v = 0 if i == HEAD_IDX else 2
-        parts += [f"{x / IMG_W:.6f}", f"{y / IMG_H:.6f}", str(v)]
-    (src_lbl / "f.txt").write_text(" ".join(parts) + "\n")
-
-    summary = rewrite_dataset_bboxes(
-        src,
-        dst,
-        method="oriented",
-        num_kpts=6,
-        head_idx=HEAD_IDX,
-        tail_idx=TAIL_IDX,
-        length_pad_frac=0.25,
-        side_pad_frac=0.35,
-        pad_frac_of_body=0.3,
-        min_pad_px=20.0,
-    )
-    assert summary["train"]["rows_fallback_to_isotropic"] == 1
-
-
-def test_rewrite_preserves_keypoints(tmp_path: Path) -> None:
-    """Bbox changes but keypoint columns are byte-identical."""
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    _write_tiny_dataset(src)
-
-    src_parts = (src / "train" / "labels" / "frame000.txt").read_text().split()
-
-    rewrite_dataset_bboxes(
-        src,
-        dst,
-        method="oriented",
-        num_kpts=6,
-        head_idx=HEAD_IDX,
-        tail_idx=TAIL_IDX,
-    )
-    dst_parts = (dst / "train" / "labels" / "frame000.txt").read_text().split()
-
-    # All keypoint fields (tokens 5 onwards) should match
-    assert dst_parts[5:] == src_parts[5:]
-    # Bbox fields should differ
-    assert dst_parts[1:5] != src_parts[1:5]
