@@ -129,10 +129,14 @@ def test_build_manifest_track_result_ok(tmp_path):
     """A Result from a track-producing feature (output keeps X/Y) is a valid track input."""
     ds = _MockDataset(tmp_path)
     run_id = _setup_feature(
-        ds, "trajectory-smooth__from__tracks", [("g1", "s1"), ("g1", "s2")],
+        ds,
+        "trajectory-smooth__from__tracks",
+        [("g1", "s1"), ("g1", "s2")],
         track_shaped=True,
     )
-    inputs = TrackInputs((Result(feature="trajectory-smooth__from__tracks", run_id=run_id),))
+    inputs = TrackInputs(
+        (Result(feature="trajectory-smooth__from__tracks", run_id=run_id),)
+    )
     manifest, scope = build_manifest(ds, inputs)
     assert scope.entries == {("g1", "s1"), ("g1", "s2")}
     assert len(manifest) == 2
@@ -147,7 +151,10 @@ def test_build_manifest_derived_result_rejected(tmp_path):
     """
     ds = _MockDataset(tmp_path)
     run_id = _setup_feature(
-        ds, "speed-angvel__from__tracks", [("g1", "s1")], track_shaped=False,
+        ds,
+        "speed-angvel__from__tracks",
+        [("g1", "s1")],
+        track_shaped=False,
     )
     inputs = TrackInputs((Result(feature="speed-angvel__from__tracks", run_id=run_id),))
     with pytest.raises(ValueError, match="track-shaped|track-producing"):
@@ -206,9 +213,7 @@ def test_build_manifest_entries_filter(tmp_path):
     _write_tracks_index(ds, entries)
 
     inputs = Inputs(("tracks",))
-    manifest, scope = build_manifest(
-        ds, inputs, entries={("g1", "s1"), ("g2", "s1")}
-    )
+    manifest, scope = build_manifest(ds, inputs, entries={("g1", "s1"), ("g2", "s1")})
     assert scope.entries == {("g1", "s1"), ("g2", "s1")}
     assert set(manifest.keys()) == {"g1__s1", "g2__s1"}
 
@@ -239,9 +244,7 @@ def test_build_manifest_entries_feature_input(tmp_path):
     )
     inputs = Inputs((Result(feature="speed-angvel", run_id=run_id),))
 
-    manifest, scope = build_manifest(
-        ds, inputs, entries={("g1", "s2"), ("g2", "s1")}
-    )
+    manifest, scope = build_manifest(ds, inputs, entries={("g1", "s2"), ("g2", "s1")})
     assert scope.entries == {("g1", "s2"), ("g2", "s1")}
     assert set(manifest.keys()) == {"g1__s2", "g2__s1"}
 
@@ -545,3 +548,66 @@ def test_iter_manifest_filter_factory_empty_skips(tmp_path):
 
     results = list(iter_manifest(manifest, filter_factory=factory))
     assert len(results) == 0
+
+
+# --------------------------------------------------------------------------- #
+# Feature-chaining contract for the social/interaction features
+# --------------------------------------------------------------------------- #
+
+_CHAINED_FEATURES = [
+    "ffgroups-metrics",
+    "social-motion-summary",
+    "nn-delta-response",
+    "nn-delta-bins",
+]
+
+
+@pytest.mark.parametrize("feature_name", _CHAINED_FEATURES)
+def test_social_features_accept_derived_results(tmp_path, feature_name):
+    """These four are wired downstream of nearest-neighbor / speed-angvel / ffgroups.
+
+    Those producers join back only ``meta_set()`` and so drop X/Y, which the
+    track-input contract refuses. The features therefore declare the permissive
+    ``Inputs[TrackInput | Result]`` rather than ``TrackInputs``: they take their
+    positions from a track-shaped input (trajectory-smooth) and merely *merge*
+    the derived columns. Reverting any of them to ``TrackInputs`` breaks the
+    whole downstream half of a realistic pipeline, and it breaks it at manifest
+    time with an error naming only one of the inputs -- hence this test.
+    """
+    from mosaic.behavior.feature_library import FEATURES
+
+    cls = next(c for c in FEATURES.values() if getattr(c, "name", None) == feature_name)
+    assert getattr(cls.Inputs, "_track_input", False) is False, (
+        f"{feature_name} declares TrackInputs; it cannot be fed a derived Result"
+    )
+
+    ds = _MockDataset(tmp_path)
+    smooth_run = _setup_feature(
+        ds, "trajectory-smooth__from__tracks", [("g1", "s1")], track_shaped=True
+    )
+    derived_run = _setup_feature(
+        ds, "speed-angvel__from__tracks", [("g1", "s1")], track_shaped=False
+    )
+    inputs = cls.Inputs(
+        (
+            Result(feature="trajectory-smooth__from__tracks", run_id=smooth_run),
+            Result(feature="speed-angvel__from__tracks", run_id=derived_run),
+        )
+    )
+    manifest, scope = build_manifest(ds, inputs)
+    assert scope.entries == {("g1", "s1")}
+    assert len(manifest) == 1
+
+
+@pytest.mark.parametrize("feature_name", _CHAINED_FEATURES)
+def test_widening_inputs_did_not_move_the_identifier(feature_name):
+    """The permissive form is a *class* change, so the hashed payload is untouched.
+
+    ``run_id`` hashes ``feature.inputs.model_dump()``, and ``Inputs`` is a
+    RootModel -- the dump is the tuple of items, not the class. If this ever
+    stops holding, every cached run of these features silently orphans.
+    """
+    from mosaic.behavior.feature_library import FEATURES
+
+    cls = next(c for c in FEATURES.values() if getattr(c, "name", None) == feature_name)
+    assert cls.Inputs(("tracks",)).model_dump() == ("tracks",)

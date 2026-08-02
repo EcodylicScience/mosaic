@@ -13,9 +13,11 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
     Params,
-    TrackInputs,
+    Result,
+    TrackInput,
     resolve_order_col,
 )
 
@@ -61,7 +63,7 @@ class FFGroupsMetrics:
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
 
-    class Inputs(TrackInputs):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

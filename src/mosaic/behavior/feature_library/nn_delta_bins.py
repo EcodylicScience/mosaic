@@ -11,9 +11,11 @@ from pydantic import Field
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
     Params,
-    TrackInputs,
+    Result,
+    TrackInput,
 )
 
 from .helpers import apply_exclude_cols
@@ -140,7 +142,7 @@ class NearestNeighborDeltaBins:
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
 
-    class Inputs(TrackInputs):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

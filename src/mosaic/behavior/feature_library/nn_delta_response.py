@@ -12,15 +12,61 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
     Params,
-    TrackInputs,
+    Result,
+    TrackInput,
     resolve_order_col,
 )
 
 from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature
 from .types import SamplingConfig
+
+
+def _row_lags(g: pd.DataFrame, lag_col: str | None, default_lag: int) -> np.ndarray:
+    """Per-row lag in frames for one individual's rows.
+
+    ``default_lag`` everywhere unless ``lag_col`` names a column, in which case
+    each finite value >= 1 wins (rounded to whole frames, since the lag indexes
+    rows). Non-finite or sub-frame entries fall back rather than raising: a lag
+    derived from a per-fish median speed is undefined for a fish with no valid
+    speed, and that is a reason to use the nominal delay, not to drop the fish.
+    """
+    if lag_col is None:
+        return np.full(len(g), default_lag, dtype=np.int64)
+    raw = g[lag_col].to_numpy(dtype=float)
+    lags = np.rint(raw)
+    usable = np.isfinite(lags) & (lags >= 1)
+    return np.where(usable, lags, default_lag).astype(np.int64)
+
+
+def _windowed_delta(
+    vals: np.ndarray, lags: np.ndarray, frame_idx: int, *, forward: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """Difference across a per-row window, plus which rows have a valid one.
+
+    ``vals`` is one individual's rows, already sorted, as ``(n, k)`` floats;
+    ``lags`` is the per-row window in frames. Returns ``(delta, ok)`` where
+    ``delta[i]`` is ``vals[i + lag] - vals[i]`` looking forward, or
+    ``vals[i] - vals[i - lag]`` looking back.
+
+    The gather is *positional* and then checked against the frame column, which
+    is what makes a gap in the track fail: rows are contiguous in position but
+    not necessarily in frame number, and a window that silently straddles a gap
+    would report a displacement over the wrong elapsed time. With a uniform lag
+    this reproduces ``shift(-lag)`` exactly, including its treatment of the
+    ``lag`` rows at the boundary, which have no partner and are never valid.
+    """
+    n = len(vals)
+    pos = np.arange(n)
+    target = pos + lags if forward else pos - lags
+    ok = (target >= 0) & (target < n)
+    gathered = vals[np.where(ok, target, 0)]
+    delta = gathered - vals if forward else vals - gathered
+    # The frame column must advance by exactly the lag, or the window spans a gap.
+    return delta, ok & (delta[:, frame_idx] == lags)
 
 
 @final
@@ -39,7 +85,9 @@ class NearestNeighborDelta:
     Outputs per focal row (filtered to frames with a valid future sample `diff_numframes` ahead):
       frame, id, group, sequence, nn_id, neighbor_x/y (ego), neighbor_focal (if available),
       dx, dy, dt, dangle (wrapped; optionally scaled by fps), dspeed, plus passthrough columns
-      like group_size/event/Focal_fish when present.
+      like group_size/event/Focal_fish when present. With `emit_backward`, also dx_back/dy_back
+      (the same window run backwards, NaN where there is no valid past); with
+      `diff_numframes_col`, also dt_frames (the per-row lag actually used).
 
     Params:
         sampling: Frame rate and smoothing settings. Default: SamplingConfig().
@@ -59,6 +107,18 @@ class NearestNeighborDelta:
             Default: "Focal_fish".
         diff_numframes: Number of frames ahead to compute the future
             response delta. Default: 4.
+        diff_numframes_col: Column holding a *per-row* lag in frames, used
+            instead of `diff_numframes` wherever it is finite and >= 1. This
+            is what expresses a speed-adjusted delay (`tau_i = tau_ref *
+            S_ref / S_group`), which a single scalar cannot, because one
+            feature run carries one parameter set across every entry. The
+            column is built upstream, where the per-condition or per-fish
+            mapping lives. Default: None (uniform lag, the fast path).
+        emit_backward: If True, also emit the *backward* window
+            (`dx_back`, `dy_back` = position at t minus position at t-tau).
+            Rows whose backward window is invalid get NaN rather than being
+            dropped, so a forward-only analysis keeps every row it had.
+            Default: False.
         wrap_angle: If True, wrap heading differences to [-pi, pi].
             Default: True.
         divide_dangle_by_frames: If True, divide the heading change by
@@ -71,12 +131,12 @@ class NearestNeighborDelta:
 
     category = "per-frame"
     name = "nn-delta-response"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
 
-    class Inputs(TrackInputs):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
@@ -89,6 +149,8 @@ class NearestNeighborDelta:
         nn_dy_world_col: str = "nn_delta_y"
         focal_col: str = "Focal_fish"
         diff_numframes: int = Field(default=4, ge=1)
+        diff_numframes_col: str | None = None
+        emit_backward: bool = False
         wrap_angle: bool = True
         divide_dangle_by_frames: bool = True
         scale_dangle_by_fps: bool = True
@@ -157,34 +219,51 @@ class NearestNeighborDelta:
                 columns={C.id_col: "_nid", p.focal_col: "neighbor_focal"}
             )
 
+        lag_col = (
+            p.diff_numframes_col
+            if p.diff_numframes_col and p.diff_numframes_col in df.columns
+            else None
+        )
+        delta_cols = [C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]
+        i_x, i_y, i_ang, i_spd, i_frm = range(5)
+
         outputs: list[pd.DataFrame] = []
         for focal_id, g in df.groupby(C.id_col, sort=False):
             g = g.sort_values(order_col)
-            future = g[
-                [C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]
-            ].shift(-diff_n)
-            delta = (
-                future
-                - g[[C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]]
-            )
+            vals = g[delta_cols].to_numpy(dtype=float)
+            lags = _row_lags(g, lag_col, diff_n)
 
-            valid_mask = delta[C.frame_col].notna() & (delta[C.frame_col] == diff_n)
-            if not valid_mask.any():
+            fwd, ok_fwd = _windowed_delta(vals, lags, i_frm, forward=True)
+            valid_mask = pd.Series(ok_fwd, index=g.index)
+            if not ok_fwd.any():
                 continue
 
             rows = g.loc[valid_mask].copy()
-            rows["dx"] = delta.loc[valid_mask, C.x_col].to_numpy()
-            rows["dy"] = delta.loc[valid_mask, C.y_col].to_numpy()
-            rows["dt"] = delta.loc[valid_mask, C.frame_col].to_numpy()
-            dangle = delta.loc[valid_mask, C.orientation_col].to_numpy()
+            sel_lags = lags[ok_fwd]
+            rows["dx"] = fwd[ok_fwd, i_x]
+            rows["dy"] = fwd[ok_fwd, i_y]
+            rows["dt"] = fwd[ok_fwd, i_frm]
+            dangle = fwd[ok_fwd, i_ang]
             if p.wrap_angle:
                 dangle = wrap_angle(dangle)
             if p.divide_dangle_by_frames:
-                dangle = dangle / diff_n
+                dangle = dangle / sel_lags
             if p.scale_dangle_by_fps:
                 dangle = dangle * fps
             rows["dangle"] = dangle
-            rows["dspeed"] = delta.loc[valid_mask, speed_col].to_numpy()
+            rows["dspeed"] = fwd[ok_fwd, i_spd]
+            if lag_col is not None:
+                rows["dt_frames"] = sel_lags
+
+            # Backward window: the same gather run the other way. Model B's target
+            # is |r(t+tau) - r(t)| - |r(t) - r(t-tau)|, so it needs both arms; rows
+            # with no valid past (the first tau of a track, or across a frame gap)
+            # get NaN so they drop out of Model B alone, not out of Model A too.
+            if p.emit_backward:
+                back, ok_back = _windowed_delta(vals, lags, i_frm, forward=False)
+                back = np.where(ok_back[:, None], back, np.nan)
+                rows["dx_back"] = back[ok_fwd, i_x]
+                rows["dy_back"] = back[ok_fwd, i_y]
 
             # Neighbor position in ego frame: prefer existing ego offsets, else rotate world offsets
             if p.nn_dx_ego_col in g.columns and p.nn_dy_ego_col in g.columns:
@@ -261,7 +340,18 @@ class NearestNeighborDelta:
             if c in out_df.columns
         ]
         col_order += [
-            c for c in ("dx", "dy", "dt", "dangle", "dspeed") if c in out_df.columns
+            c
+            for c in (
+                "dx",
+                "dy",
+                "dt",
+                "dangle",
+                "dspeed",
+                "dx_back",
+                "dy_back",
+                "dt_frames",
+            )
+            if c in out_df.columns
         ]
         for c in ("group_size", "event", p.focal_col):
             if c in out_df.columns and c not in col_order:
