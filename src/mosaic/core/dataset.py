@@ -3521,6 +3521,7 @@ class Dataset:
         multi_sequences_per_file: bool = False,
         group_from: Optional[str] = None,
         group_pattern: Optional[str] = None,
+        group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
     ) -> Path:
@@ -3550,6 +3551,26 @@ class Dataset:
                 r'^(hex|OCI|OLE)_' -> extracts 'hex', 'OCI', or 'OLE' as group
                 r'^([A-Za-z]+)_'   -> extracts letters before first underscore as group
             Applied AFTER sequence is determined (e.g., after stripping a TREx ID suffix like _id0).
+        group_from_path : Callable[[Path], str] | None
+            Derive the group from the raw file's path, for a grouping that is a
+            *rule* rather than a substring -- "day 1 is baseline, anything else
+            is treatment", a lookup table, a parent directory two levels up.
+            ``group_pattern`` can only lift text that is already there, and a
+            dataset whose grouping needs a conditional was previously forced to
+            patch ``index.csv`` after the fact, which conversion then could not
+            see and the next re-index silently undid.
+
+            Called once per discovered file with its :class:`~pathlib.Path`, and
+            its return value is used verbatim (an entry name, so it may not
+            contain ``/``, ``\\`` or NUL -- ``build_tracks_raw_row`` enforces
+            that). Applies in both ``multi_sequences_per_file`` modes and
+            supersedes ``group_from`` there. Must be **deterministic**: it feeds
+            the entry key, so an unstable answer moves every downstream
+            identifier. An exception it raises propagates -- a file the rule
+            cannot classify is an error worth seeing, not a silent ``""``.
+
+            Mutually exclusive with ``group_pattern``: two ways to spell one
+            answer, silently picking one, is how the two drift apart.
         exclude_patterns : Iterable[str] | None
             Glob patterns to exclude
         compute_md5 : bool
@@ -3574,6 +3595,7 @@ class Dataset:
             multi_sequences_per_file=multi_sequences_per_file,
             group_from=group_from,
             group_pattern=group_pattern,
+            group_from_path=group_from_path,
             exclude_patterns=exclude_patterns,
             compute_md5=compute_md5,
         )
@@ -3591,6 +3613,7 @@ class Dataset:
         multi_sequences_per_file: bool = False,
         group_from: Optional[str] = None,
         group_pattern: Optional[str] = None,
+        group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
     ) -> Path:
@@ -3617,6 +3640,12 @@ class Dataset:
 
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
+        if group_pattern and group_from_path is not None:
+            raise ValueError(
+                "pass group_pattern or group_from_path, not both -- they are two "
+                "spellings of one answer, and silently preferring one is how the "
+                "two drift apart. A rule that needs the regex can call it itself."
+            )
         group_re = re.compile(group_pattern) if group_pattern else None
 
         for p, st in iter_track_files(
@@ -3646,6 +3675,11 @@ class Dataset:
                     grp = m.group(1) if m else ""
                 else:
                     grp = ""
+
+            # Last, so it supersedes both branches above: a caller that supplies a
+            # rule has said the derivations here do not express their grouping.
+            if group_from_path is not None:
+                grp = str(group_from_path(p))
 
             rows.append(
                 build_tracks_raw_row(
@@ -3681,6 +3715,7 @@ class Dataset:
         multi_sequences_per_file: bool = False,
         group_from: Optional[str] = None,
         group_pattern: Optional[str] = None,
+        group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
     ) -> Path:
@@ -3698,6 +3733,9 @@ class Dataset:
         ``compute_md5`` defaults True for the same reason it does on
         :meth:`index_tracks_raw`: the ``labels_raw`` composition is over these
         checksums, and an empty column leaves it unestablishable.
+
+        ``group_from_path`` is the same seam it is there -- a grouping that is a
+        rule rather than a substring -- and carries the same contract.
         """
         return self._index_raw(
             target_root="labels_raw",
@@ -3710,6 +3748,7 @@ class Dataset:
             multi_sequences_per_file=multi_sequences_per_file,
             group_from=group_from,
             group_pattern=group_pattern,
+            group_from_path=group_from_path,
             exclude_patterns=exclude_patterns,
             compute_md5=compute_md5,
         )

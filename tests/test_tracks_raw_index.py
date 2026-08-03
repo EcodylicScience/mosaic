@@ -9,6 +9,7 @@ unchanged), and the propagation of that relative form into the merged
 """
 
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -539,3 +540,144 @@ def test_index_tracks_raw_skips_resource_forks_and_sorts(tmp_path: Path) -> None
     names = [Path(r["abs_path"]).name for r in rows]
     assert "._a.npy" not in names  # resource fork skipped
     assert names == ["a.npy", "b.npy"]  # deterministically sorted
+
+
+# --- group_from_path: a grouping that is a rule, not a substring -------------
+
+
+def _guppy_group(path: Path) -> str:
+    """The guppies rule: condition from the name, phase from the day number."""
+    day = int(re.findall(r"_d(\d+)_", path.stem)[0])
+    condition = "control" if "_control_" in path.stem else "exp"
+    return f"{condition}_{'baseline' if day == 1 else 'treatment'}"
+
+
+def test_group_from_path_expresses_a_rule_a_regex_cannot(tmp_path: Path) -> None:
+    # `day == 1 -> baseline, else treatment` is a conditional over a captured
+    # value, which `group_pattern` (one capturing group, lifted verbatim) cannot
+    # express. Before this seam such a dataset had to patch index.csv after the
+    # fact -- which conversion could not see and the next re-index undid.
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    for name in (
+        "guppy_8_t10_d10_control_20191002_115117_fish0.npz",
+        "guppy_8_t10_d10_control_20191002_115117_fish1.npz",
+        "guppy_8_t13_d1_20190929_111944_fish0.npz",
+        "guppy_8_t2_d1_control_20190923_104858_fish0.npz",
+        "guppy_8_t5_d10_20191003_092208_fish0.npz",
+    ):
+        (src / name).write_bytes(b"x")
+
+    ds.index_tracks_raw(
+        [src],
+        patterns=["*.npz"],
+        src_format="trex_npz",
+        group_from_path=_guppy_group,
+    )
+
+    rows = read_tracks_raw_index(ds.get_root("tracks_raw") / "index.csv")
+    by_sequence = {r["sequence"]: r["group"] for r in rows}
+    assert by_sequence == {
+        "guppy_8_t10_d10_control_20191002_115117": "control_treatment",
+        "guppy_8_t13_d1_20190929_111944": "exp_baseline",
+        "guppy_8_t2_d1_control_20190923_104858": "control_baseline",
+        "guppy_8_t5_d10_20191003_092208": "exp_treatment",
+    }
+    # The per-id files still collapse to one sequence: the rule sets the group
+    # and leaves the sequence derivation alone.
+    assert len(rows) == 5
+
+
+def test_group_from_path_reaches_the_composition_projection(tmp_path: Path) -> None:
+    # The reason patching index.csv by hand was never enough: sequences.csv is
+    # keyed by (group, sequence), and it is what the composition hash reads.
+    from mosaic.core.pipeline.sequence_index import read_sequence_index
+
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    (src / "guppy_1_t1_d1_control_20190101_000000_fish0.npz").write_bytes(b"x")
+
+    ds.index_tracks_raw(
+        [src], patterns=["*.npz"], src_format="trex_npz", group_from_path=_guppy_group
+    )
+
+    compositions = read_sequence_index(ds, "tracks_raw")
+    assert set(compositions["group"]) == {"control_baseline"}
+
+
+def test_group_from_path_supersedes_group_from(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    bundle = base / "raw_src" / "sessionX"
+    bundle.mkdir(parents=True)
+    (bundle / "bundle.npy").write_bytes(b"x")
+
+    ds.index_tracks_raw(
+        [base / "raw_src"],
+        patterns=["*.npy"],
+        src_format="calms21_npy",
+        multi_sequences_per_file=True,
+        group_from="parent",
+        group_from_path=lambda p: f"cohort_{p.parent.name}",
+    )
+
+    rows = read_tracks_raw_index(ds.get_root("tracks_raw") / "index.csv")
+    assert [r["group"] for r in rows] == ["cohort_sessionX"]
+    assert [r["sequence"] for r in rows] == [""]
+
+
+def test_group_from_path_and_group_pattern_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    (src / "hex_7_fish0.npz").write_bytes(b"x")
+
+    with pytest.raises(ValueError, match="not both"):
+        ds.index_tracks_raw(
+            [src],
+            patterns=["*.npz"],
+            src_format="trex_npz",
+            group_pattern=r"^(hex)_",
+            group_from_path=lambda p: "hex",
+        )
+
+
+def test_group_from_path_error_propagates(tmp_path: Path) -> None:
+    # A file the rule cannot classify is an error worth seeing, not a silent "".
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    (src / "unparseable.npz").write_bytes(b"x")
+
+    def strict(path: Path) -> str:
+        raise ValueError(f"cannot classify {path.name}")
+
+    with pytest.raises(ValueError, match="cannot classify unparseable.npz"):
+        ds.index_tracks_raw(
+            [src], patterns=["*.npz"], src_format="trex_npz", group_from_path=strict
+        )
+
+
+def test_group_from_path_rejects_a_group_with_a_separator(tmp_path: Path) -> None:
+    # An entry name is one path component; the write boundary still enforces it.
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    src.mkdir(parents=True)
+    (src / "a_fish0.npz").write_bytes(b"x")
+
+    with pytest.raises(ValueError):
+        ds.index_tracks_raw(
+            [src],
+            patterns=["*.npz"],
+            src_format="trex_npz",
+            group_from_path=lambda p: "control/baseline",
+        )
