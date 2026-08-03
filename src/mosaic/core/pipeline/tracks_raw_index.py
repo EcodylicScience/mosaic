@@ -143,21 +143,33 @@ def read_tracks_raw_index(index_path: Path) -> list[dict[str, str]]:
 
 
 def load_tracks_raw_index_frame(index_path: Path) -> pd.DataFrame:
-    """Read a raw-tracks index CSV into the full schema, text cells as object ``""``.
+    """Read a raw-tracks index CSV into the full schema, text cells as ``str``.
 
-    Missing columns are added, and text columns (everything non-numeric) are
-    coerced to an object dtype with NaN replaced by ``""`` so later cell writes
-    do not trip pandas' incompatible-dtype warning on all-empty float columns.
+    The frame-shaped reader every consumer of this index goes through, so that a
+    blank ``group`` is structurally an empty string rather than a float NaN that
+    ``str()`` spells ``"nan"`` and hands to an entry key. ``keep_default_na=False``
+    plus pinned string dtypes is how the other index readers state that, and
+    pinning the dtype is the half a post-hoc repair cannot do: a sequence named
+    ``001`` has to read back as ``"001"``, not as the integer it looks like.
+
+    Read as strings wholesale and the one numeric column put back afterwards,
+    rather than by a per-column dtype mapping: the mapping is what says this, but
+    pandas types it as a dict whose value type it will not accept, and one
+    coercion is cheaper than the alternatives. A blank stays blank -- ``NaN``
+    here is a size the index never recorded, not a size of zero.
+
+    Missing columns are added, so an index written before a column existed still
+    reads.
     """
     if index_path.exists():
-        df = pd.read_csv(index_path)
+        df = pd.read_csv(index_path, keep_default_na=False, dtype=str)
     else:
         df = pd.DataFrame(columns=TRACKS_RAW_INDEX_COLUMNS)
     for column in TRACKS_RAW_INDEX_COLUMNS:
         if column not in df.columns:
             df[column] = ""
-        if column not in TRACKS_RAW_NUMERIC_COLUMNS:
-            df[column] = df[column].astype("object").where(df[column].notna(), "")
+        elif column in TRACKS_RAW_NUMERIC_COLUMNS:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
 
 

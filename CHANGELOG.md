@@ -8,6 +8,34 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — a blank group stops being the word "nan"
+
+**A dataset with no group converted its tables under one.** `convert_all_tracks`
+read `tracks_raw/index.csv` with a bare `pd.read_csv`, so an empty `group` cell
+arrived as a float NaN, and each `str()` of it downstream spelled the word:
+`nan__seq.parquet` on disk, `group=nan` in `tracks/index.csv`, and a composition
+lookup under a key nothing had recorded. `group` is empty on every dataset the
+control plane creates, so this was the common path rather than an edge; only the
+per-sequence merge normalized, and only TRex reached it.
+
+**What to do about a dataset already holding one.** Re-converting writes the
+correct `seq.parquet` beside the stale `nan__seq.parquet` and leaves the old
+index row in place, because `("nan", seq)` and `("", seq)` are different
+entries. `convert_all_tracks` already reports that: it names the entries this
+conversion did not rewrite and gives the remedy, `ds.drop_entries([...],
+delete_files=True)`. Nothing is repaired automatically — after the fact a group
+spelled `nan` is indistinguishable from one a user genuinely named that, and
+deleting tables a call did not write is what the migration rule forbids.
+
+**`tracks_raw/index.csv` now reads like every other index.** Its frame reader
+pins its text columns as strings, so a sequence named `001` reads back as
+`"001"` rather than as the integer `1` — the failure `IndexCSV` describes, and
+the numeric names are the CalMS21 and MABe convention. An index written before a
+column existed still reads.
+
+**`source_md5` carried the same word.** With `compute_md5=False` the empty
+column reached `tracks/index.csv` as the literal `nan`; it is now empty.
+
 ## 0.10.0 — one tracker driver, and a model that may be a directory
 
 **`mosaic trex` is gone; `mosaic track <kind>` replaces it.** It was 211

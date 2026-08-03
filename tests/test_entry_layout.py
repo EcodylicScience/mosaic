@@ -88,6 +88,19 @@ def test_a_group_is_joined_not_nested(tmp_path: Path) -> None:
     assert entry_directory(tmp_path, "a", "b") == tmp_path / "a__b"
 
 
+def test_a_blank_group_leaves_no_leading_separator() -> None:
+    """The separator is written only when there is a group to separate.
+
+    Stated as its own test because it is the other half of the answer to a group
+    that is absent: not ``nan__seq``, and not ``__seq`` either. Whitespace lands
+    here too -- ``to_safe_name`` trims before encoding, so a padded group is
+    empty by the time the join asks.
+    """
+    for blank in ("", " ", "   "):
+        assert make_entry_key(blank, "seq") == "seq"
+    assert make_entry_key("", "") == ""
+
+
 def test_the_layout_has_no_collision_a_two_level_one_would(tmp_path: Path) -> None:
     """Why one level rather than ``<group>/<sequence>``, stated as a test.
 

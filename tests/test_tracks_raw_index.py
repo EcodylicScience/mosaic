@@ -135,9 +135,41 @@ def test_load_frame_coerces_missing_and_nan_text_cells_to_empty(tmp_path: Path) 
 
     frame = load_tracks_raw_index_frame(index_path)
     assert list(frame.columns) == TRACKS_RAW_INDEX_COLUMNS  # missing columns added
-    # Text cells are object "" (not float NaN), so later cell writes are clean.
+    # Text cells are "" (not float NaN), whose str() is the word "nan" -- which
+    # every consumer of this frame would otherwise carry into an entry name.
     assert frame.loc[0, "md5"] == ""
     assert frame.loc[0, "group"] == ""
+
+
+def test_a_numeric_sequence_name_keeps_its_spelling(tmp_path: Path) -> None:
+    """Pinning the dtype, not just repairing the blank.
+
+    Inference reads ``001`` as the integer ``1``, and then ``== "001"`` is
+    always False -- the failure ``IndexCSV._read_frame`` describes and every
+    other index reader avoids. The numeric names are the CalMS21 and MABe
+    convention, so this is reachable rather than theoretical.
+    """
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "group": "007",
+                "sequence": "001",
+                "abs_path": "raw/001.npy",
+                "src_format": "calms21_npy",
+                "size_bytes": 12,
+                "mtime_iso": "",
+                "md5": "",
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    frame = load_tracks_raw_index_frame(index_path)
+
+    assert frame.loc[0, "sequence"] == "001"
+    assert frame.loc[0, "group"] == "007"
+    # The one numeric column stays numeric.
+    assert int(frame.loc[0, "size_bytes"]) == 12
 
 
 def test_write_is_atomic_leaves_no_temp_orphans_and_overwrites(tmp_path: Path) -> None:

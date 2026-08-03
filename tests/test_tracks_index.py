@@ -688,6 +688,60 @@ def test_the_index_writer_refuses_a_path_separator(tmp_path: Path) -> None:
         )
 
 
+def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
+    """The writer takes ``object`` because one caller reads off a pandas Series.
+
+    A blank cell arrives there as a float NaN, which ``str()`` spells as the
+    word -- and the ``is not None`` guard this used to carry never saw it. The
+    table beside this row is named ``s.parquet``, so a row saying ``nan`` would
+    be the index contradicting the layout it indexes.
+    """
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group=float("nan"),
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+    )
+    row = read_tracks_index(ds).iloc[0]
+    assert str(row["group"]) == ""
+    assert str(row["sequence"]) == "s"
+
+
+def test_an_absent_group_still_finds_its_composition(tmp_path: Path) -> None:
+    """Why the spelling matters beyond the filename.
+
+    The row's composition is looked up by the same key the row is written
+    under, and ``index_tracks_raw`` records it under ``("", sequence)``. A group
+    spelled ``nan`` misses that entry and records nothing -- silently, because
+    an unestablished composition is a legitimate state.
+    """
+    from mosaic.core.pipeline.composition import SourceMember, tracks_raw_composition
+    from mosaic.core.pipeline.sequence_index import write_sequence_compositions
+
+    ds = _dataset(tmp_path)
+    comp = tracks_raw_composition([SourceMember(name="s.npz", digest="d", algo="md5")])
+    _ = write_sequence_compositions(ds, "tracks_raw", compositions={("", "s"): comp})
+
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group=float("nan"),
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        consumed_source_roots=("tracks_raw",),
+    )
+    row = read_tracks_index(ds).iloc[0]
+    assert row["consumed_composition"] == comp.digest != ""
+
+
 def test_an_index_that_already_holds_a_slash_name_still_reads(tmp_path: Path) -> None:
     """Validation is on write only -- this is what keeps the change additive.
 

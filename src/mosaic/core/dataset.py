@@ -157,6 +157,7 @@ from .pipeline.tracks_raw_index import (
     build_tracks_raw_row,
     frame_from_rows as _tracks_frame_from_rows,
     iter_track_files,
+    load_tracks_raw_index_frame,
     read_tracks_raw_index as _read_tracks_raw_index,
     source_members_from_rows,
     write_tracks_raw_index_rows,
@@ -874,7 +875,7 @@ class Dataset:
         """
         if self.has_root("media_raw"):
             return "media_raw"
-        raise KeyError("BLASTRADIUS: no media_raw root")
+        return "media"
 
     def set_root(self, key: str, path: str | Path) -> None:
         """Set a named dataset root and create the directory if needed.
@@ -3612,8 +3613,8 @@ class Dataset:
             search_dirs=search_dirs,
             patterns=patterns,
             src_format=src_format,
-            # Resolved here, so a src_format naming no converter is a KeyError
-            # listing the registered ones rather than an index nothing can
+            # Resolved here, so a src_format naming no converter is refused with
+            # the registered ones listed rather than writing an index nothing can
             # convert. Which files come several per sequence, and what names the
             # individual within one, are the converter's to declare -- neither is
             # anything this method knows.
@@ -3931,18 +3932,22 @@ class Dataset:
         # collide, which is what the exists()/overwrite skips below used to hide.
         variant_root = tracks_variant_root(self.get_root("tracks"), variant)
 
+        # Both identities read once, here, and used by every branch below. The
+        # row comes off a bare pandas ``Series``, so a blank cell is a float NaN
+        # and each ``str()`` of it would mint the word "nan" -- once into a
+        # filename, once into an index row, and the two need not even agree.
+        seq_value = text_cell(raw_row.get("sequence", ""))
+        group_value = text_cell(raw_row.get("group", ""))
+        source_md5 = text_cell(raw_row.get("md5", ""))
+
         # If sequence missing/blank and the format can hold several, expand this
         # file into multiple per-sequence outputs
-        seq_value = text_cell(raw_row.get("sequence", ""))
         if (not seq_value) and converter.enumerable:
             # policy: 'infile' (default), 'filename', 'both'
             policy = str(params.get("group_from", "infile")).lower()
             if policy not in {"infile", "filename", "both"}:
                 policy = "infile"
 
-            raw_collection = (
-                str(raw_row.get("group", "")) if raw_row is not None else ""
-            )
             pairs = converter.enumerate_sequences(src_path)
             if not pairs:
                 raise ValueError(
@@ -3956,8 +3961,8 @@ class Dataset:
                 # decide output group by policy
                 canon_group_infile = g or ""
                 out_group_canon = canon_group_infile
-                if policy in {"filename", "both"} and raw_collection:
-                    out_group_canon = raw_collection
+                if policy in {"filename", "both"} and group_value:
+                    out_group_canon = group_value
 
                 # output path -- make_entry_key does the safe-name encoding
                 stem = make_entry_key(out_group_canon, canon_seq)
@@ -4003,7 +4008,7 @@ class Dataset:
                     std_format=std_fmt,
                     n_rows=int(len(df_std)),
                     source=src_path,
-                    source_md5=str(raw_row.get("md5", "")),
+                    source_md5=source_md5,
                     consumed_source_roots=("tracks_raw",),
                 )
                 produced.append(out_path)
@@ -4013,7 +4018,6 @@ class Dataset:
         # Normal single-sequence path (default). The safe names are not
         # computed here any more: make_entry_key derives them for the filename,
         # and the index stores the raw identity plus nothing derivable from it.
-        group_value = str(raw_row.get("group", "")) or ""
         rel_name = f"{make_entry_key(group_value, seq_value)}.parquet"
         out_path = variant_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4029,10 +4033,7 @@ class Dataset:
         df_std = converter.convert(
             src_path,
             conv_params,
-            EntryHints(
-                group=str(raw_row.get("group", "")),
-                sequence=str(raw_row.get("sequence", "")),
-            ),
+            EntryHints(group=group_value, sequence=seq_value),
         )
 
         # Validate/coerce against the declared standard format schema (if any)
@@ -4042,14 +4043,14 @@ class Dataset:
 
         df_std.to_parquet(out_path, index=False)
 
-        # group/sequence come straight off a pandas Series here, so they can be
-        # numpy scalars; write_tracks_row stringifies them, which is what keeps
-        # the dedup that holds this index to one row per entry working.
+        # The same two values the filename above was built from. Reading the row
+        # a second time here is what let the table and its index row disagree:
+        # a blank group reached one as "" and the other as "nan".
         write_tracks_row(
             self,
             run_id=variant,
-            group=raw_row.get("group", ""),
-            sequence=raw_row["sequence"],
+            group=group_value,
+            sequence=seq_value,
             out_path=out_path,
             producer=producer,
             std_format=std_fmt,
@@ -4213,7 +4214,10 @@ class Dataset:
                 "tracks_raw/index.csv not found; run index_tracks_raw first."
             )
         try:
-            df = pd.read_csv(raw_idx)
+            # Through the typed reader, not a bare read: a blank ``group`` cell
+            # has to arrive as "" rather than as the float NaN whose ``str()``
+            # is the word "nan", which is truthy and would reach a filename.
+            df = load_tracks_raw_index_frame(raw_idx)
         except pd.errors.EmptyDataError:
             raise ValueError(
                 f"tracks_raw/index.csv is empty or malformed: {raw_idx}\n"
@@ -4229,8 +4233,13 @@ class Dataset:
         # per-individual files it then converted one at a time all named the same
         # (group, sequence) output, so the first landed and the rest were skipped
         # as already written.
+        # A blank src_format names no converter, so it is not a format that could
+        # merge. Dropped here rather than left to fall out of `dropna`, which no
+        # longer sees it now that the reader spells a blank cell "".
         present: set[str] = {
-            str(fmt).strip() for fmt in df["src_format"].dropna().unique()
+            name
+            for name in (text_cell(fmt) for fmt in df["src_format"].unique())
+            if name
         }
         merging: set[str]
         if merge_per_sequence is None:
@@ -4260,19 +4269,18 @@ class Dataset:
         # different std_format values for one dataset is the drift that costs.
         std_fmt = self.meta.get("tracks", {}).get("standard_format", "trex_v1")
 
-        # Merge per (group, sequence, src_format)
+        # Merge per (group, sequence, src_format). The same rule the single-file
+        # path applies per cell, applied here per column: these three both key
+        # the groupby and name the merged table, so an untrimmed group would
+        # split one sequence's files into two half-merges, and an untrimmed one
+        # reaching make_entry_key below would name a file the index row for it
+        # does not.
         groupby_cols = ["group", "sequence", "src_format"]
         df = df.copy()
         for col in groupby_cols:
             if col not in df.columns:
                 df[col] = ""
-            df[col] = (
-                df[col]
-                .astype("string")
-                .fillna("")
-                .replace({"nan": "", "None": ""}, regex=False)
-                .str.strip()
-            )
+            df[col] = [text_cell(value) for value in df[col]]
 
         for keys, group_df in df.groupby(groupby_cols):
             group, sequence, src_format = keys
@@ -4300,7 +4308,7 @@ class Dataset:
             conv_params = self._converter_params(converter, params, src_format)
             variant = self._tracks_variant(converter, conv_params)
 
-            raw_group_hint = str(first_row.get("group", "")) or ""
+            raw_group_hint = text_cell(first_row.get("group", ""))
             out_group = group  # default: infile (already what we grouped by)
             if group_from in {"filename", "both"} and raw_group_hint:
                 out_group = raw_group_hint
@@ -4355,7 +4363,7 @@ class Dataset:
                 std_format=std_fmt,
                 n_rows=int(len(merged_df)),
                 source=self.resolve_path(first_row["abs_path"]),
-                source_md5=str(first_row.get("md5", "")),
+                source_md5=text_cell(first_row.get("md5", "")),
                 consumed_source_roots=("tracks_raw",),
             )
 
@@ -5320,10 +5328,11 @@ class Dataset:
             raise FileNotFoundError(
                 "tracks_raw/index.csv not found; run index_tracks_raw first."
             )
-        df_raw = pd.read_csv(raw_idx)
-        hit = df_raw[
-            (df_raw["group"].fillna("") == group) & (df_raw["sequence"] == sequence)
-        ]
+        # Through the typed reader for the same reason convert_all_tracks is:
+        # the mask below tolerated a NaN group, but the row it selects is handed
+        # straight to convert_one_track, which would spell it "nan".
+        df_raw = load_tracks_raw_index_frame(raw_idx)
+        hit = df_raw[(df_raw["group"] == group) & (df_raw["sequence"] == sequence)]
         if len(hit) == 0:
             raise FileNotFoundError(
                 f"No raw track for ({group}, {sequence}) found in tracks_raw/index.csv"

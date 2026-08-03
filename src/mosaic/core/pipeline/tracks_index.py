@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Final, get_args
 
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name, validate_entry_name
+from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
@@ -454,11 +454,14 @@ def write_tracks_row(
     Keyword-only throughout: five call sites in three files pass ``group`` and
     ``sequence`` adjacently, and transposing them would be silent.
 
-    ``group``/``sequence`` are typed ``object`` and stringified here because one
-    caller reads them straight off a pandas ``Series``, where they arrive as
-    ``numpy`` scalars; a frozen dataclass does no coercion, so an ``np.int64``
-    would land as an integer CSV column and defeat the dedup that holds this
-    index to one row per entry.
+    ``group``/``sequence`` are typed ``object`` and read through
+    :func:`~mosaic.core.helpers.text_cell` here because one caller reads them
+    straight off a pandas ``Series``, where they arrive as ``numpy`` scalars; a
+    frozen dataclass does no coercion, so an ``np.int64`` would land as an
+    integer CSV column and defeat the dedup that holds this index to one row per
+    entry. ``str()`` alone was not enough: it spells a blank group -- a float
+    NaN off a CSV -- as the word "nan", which then names an entry that has no
+    composition recorded under it.
 
     Paths are stored root-relative via ``Dataset.relative_to_root`` so the index
     survives a move or a sync between machines. Call this *after* writing the
@@ -468,10 +471,8 @@ def write_tracks_row(
     # Validated first, because the composition is looked up by the same key the
     # row is written under: a lookup on the raw value would miss for the caller
     # that reads its group off a pandas Series as a numpy scalar.
-    entry_group = validate_entry_name(str(group) if group is not None else "", "group")
-    entry_sequence = validate_entry_name(
-        str(sequence) if sequence is not None else "", "sequence"
-    )
+    entry_group = validate_entry_name(text_cell(group), "group")
+    entry_sequence = validate_entry_name(text_cell(sequence), "sequence")
     row = TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=run_id,
