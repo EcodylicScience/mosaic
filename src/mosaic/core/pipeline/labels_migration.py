@@ -80,9 +80,12 @@ def migrate_labels_raw(ds: Dataset) -> dict[str, int]:
     Idempotent. Returns ``{"rows": n}`` for the number of label source rows
     projected. Files are referenced where they lie and never copied or moved.
     """
-    from mosaic.core.label_converter import LABEL_CONVERTERS
+    from mosaic.core.label_converter import registered_label_formats
 
-    label_formats = {src_format for src_format, _kind in LABEL_CONVERTERS}
+    # Through the accessor, which fills the registry if nothing has: read raw,
+    # an empty registry matches no row, and this returns zero rows migrated --
+    # the right-looking answer to a question it never got to ask.
+    label_formats = registered_label_formats()
     tracks_raw_index = ds.get_root("tracks_raw") / "index.csv"
     rows = [
         row

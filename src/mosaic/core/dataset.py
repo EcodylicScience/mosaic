@@ -70,10 +70,10 @@ from .track_converter import (
     merge_on_column_union,
 )
 from .label_converter import (
-    LABEL_CONVERTERS,
     LabelConverter,
     LabelConvertParams,
     get_label_converter,
+    validate_label_format,
 )
 from .media.prune import (
     PruneReport,
@@ -3761,10 +3761,17 @@ class Dataset:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
         The label sibling of :meth:`index_tracks_raw`, and the source side item
-        9.3 gives converted labels. ``src_format`` names a registered *label*
+        9.3 gives converted labels. ``src_format`` must name a registered *label*
         converter (e.g. ``boris_aggregated_csv``), the column a later
-        :meth:`convert_all_labels` filters on. Files are indexed where they lie
-        and never moved, so a format registered as both a track and a label
+        :meth:`convert_all_labels` filters on; it is checked here, because a
+        format nothing claims writes an index whose rows that filter then skips
+        in silence -- forever, and without ever saying which rows. Only the
+        format half of the ``(src_format, label_kind)`` key is checked: the pair
+        is what a conversion resolves, and which kind is wanted is not a question
+        indexing a source has been asked.
+
+        Files are indexed where they lie and never moved, so a format
+        registered as both a track and a label
         converter -- ``calms21_npy`` -- can be indexed into both roots without
         copying; membership is by row, and the two compositions stay independent
         (see :class:`~mosaic.core.pipeline.composition.SourceMember`).
@@ -3781,12 +3788,14 @@ class Dataset:
             composition_writer=self._write_labels_raw_compositions,
             search_dirs=search_dirs,
             patterns=patterns,
-            src_format=src_format,
+            # Checked against the *label* registry, which is keyed on
+            # ``(src_format, label_kind)`` -- a track-registry lookup would be
+            # wrong even where it happened to hit, as it does for
+            # ``calms21_npy``.
+            src_format=validate_label_format(src_format),
             # A label file is one sequence, and no label converter says
-            # otherwise. Not resolved from a registry: ``src_format`` here names
-            # a *label* converter, registered under the pair ``(src_format,
-            # label_kind)`` -- a track-registry lookup would be wrong even where
-            # it happened to hit, as it does for ``calms21_npy``.
+            # otherwise, so there is no rule to resolve from the converter the
+            # way the tracks side does.
             sequence_from_stem=_stem_as_sequence,
             index_filename=index_filename,
             recursive=recursive,
@@ -4427,17 +4436,11 @@ class Dataset:
         kind = str(kind or "").lower()
         src_format = source_format or params.get("source_format", "calms21_npy")
 
-        # Look up the converter. A missing pair is a caller error (a typo or an
-        # unimported converter module), so raise with the registered pairs listed
-        # rather than proceeding with nothing to do.
-        if (src_format, kind) not in LABEL_CONVERTERS:
-            available = sorted(LABEL_CONVERTERS)
-            raise ValueError(
-                f"No label converter registered for (src_format='{src_format}', "
-                f"kind='{kind}'). Available: {available}. To add a format, write a "
-                f"converter in label_library/ and import it in "
-                f"label_library/__init__.py."
-            )
+        # A missing pair is a caller error -- a typo, or a converter module
+        # nothing imported -- and the resolver says so with the registered pairs
+        # listed. Asked here rather than checked against the registry first: a
+        # membership test read the registry before anything had filled it, and
+        # then reported that no format exists.
         converter = get_label_converter(src_format, kind)
         conv_params = self._label_converter_params(
             converter, {**params, **kwargs}, src_format=src_format

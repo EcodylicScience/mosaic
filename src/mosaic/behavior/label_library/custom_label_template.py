@@ -24,6 +24,8 @@ Steps to create a custom converter:
 4. Implement ``_build_label_map()`` for your behavior names.
 5. Implement ``_extract_annotations()`` for your data structure.
 6. Register it in ``label_library/__init__.py`` (see the bottom of this file).
+   Before indexing, not after: ``index_labels_raw`` refuses a ``src_format`` no
+   registered converter claims.
 
 ``convert()`` returns one :class:`~mosaic.core.label_converter.LabelEntry` per
 sequence -- data, not files. The ``Dataset`` writes each entry's payload into

@@ -10,7 +10,10 @@ To create a new label converter:
    never touches the filesystem; the ``Dataset`` writes the ``.npz`` files and the
    typed index row.
 5. Register it in ``label_library/__init__.py`` with
-   :func:`~mosaic.core.label_converter.register_label_converter`.
+   :func:`~mosaic.core.label_converter.register_label_converter`. Before
+   indexing, not after: ``index_labels_raw`` refuses a ``src_format`` no
+   registered converter claims, because an index written under one is an index
+   whose rows every later conversion skips without saying so.
 
 Usage from a ``Dataset`` (unchanged by the new contract):
 

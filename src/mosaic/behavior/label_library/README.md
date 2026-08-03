@@ -39,6 +39,11 @@ computes an output path, writes an `.npz`, or handles overwrite.
    dataset.convert_all_labels(kind="behavior", source_format="my_custom_format")
    ```
 
+   Step 3 has to happen before this: `index_labels_raw` refuses a `src_format`
+   no registered converter claims, and names the ones that exist. An index
+   written under a format nothing can convert is one whose rows every later
+   conversion silently skips.
+
 ## What is a Label Converter?
 
 A label converter transforms annotation files into the standardized behavior
@@ -607,6 +612,16 @@ dataset.index_labels_raw(
 )
 ```
 
+`src_format` is checked against the registered label converters here, so a typo
+or a converter you have not registered yet is refused with the known formats
+listed. Only the format half of the `(src_format, label_kind)` key: which kind
+you want is a question `convert_all_labels` asks, not this one.
+
+The registry fills itself from the in-tree library when nothing else has, so
+`index_labels_raw` and `convert_all_labels` work from a bare `mosaic.core`
+import. A converter of your own still has to be registered -- by importing the
+module that registers it -- before you index under its format.
+
 ### 3. Convert Labels
 
 `convert_all_labels` reads `labels_raw`, dispatches to your converter, and
@@ -732,11 +747,19 @@ print("FPS:", data["fps"])
 
 ### Error: "No label converter registered"
 
+Raised by `index_labels_raw` for a format nothing claims, and by
+`convert_all_labels` for a `(format, kind)` pair nothing claims. Both list what
+is registered, so compare that list against the format you passed.
+
 Make sure you:
 1. Imported your module in `__init__.py`
 2. Called `register_label_converter()` on your class (imported from
    `mosaic.core.label_converter`)
 3. Restarted Python (to reload the module)
+
+If the list is empty, the converters were not registered at all -- the in-tree
+ones load on demand, so an empty list means an import of `__init__.py` failed
+rather than that none exist.
 
 ### Error: "KeyError: 'behavior_name'"
 
@@ -814,7 +837,8 @@ from mosaic.core.label_converter import register_label_converter
 from . import my_converter
 my_converter.MyConverter = register_label_converter(my_converter.MyConverter)
 
-# 3. Index, then convert
+# 3. Index, then convert. Step 2 first: indexing refuses a format no
+#    registered converter claims.
 dataset.index_labels_raw(["/path/to/annotations"], patterns="*.csv",
                          src_format="my_format")
 dataset.convert_all_labels(source_format="my_format")

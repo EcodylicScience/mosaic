@@ -266,7 +266,21 @@ src/mosaic/
 and low-level **media I/O** (`core/media/` — read/decode/encode frames). `behavior`
 and `tracking` are domain packages: they import `core` (including `core.media`)
 but **never each other**, and they exchange data only through on-disk artifacts
-(parquet tracks, feature/model files, index CSVs). `core.media` takes no import
+(parquet tracks, feature/model files, index CSVs).
+
+`core` reaches *upward* into `behavior` in exactly two places, both **deferred
+into a call** so the two packages are not a cycle, and both for the same reason:
+a registry fills only as a side effect of importing the modules that populate
+it, and `core` is where the lookup happens. `core/__init__.py`'s module
+`__getattr__` re-exports `register_feature`, and
+`label_converter.ensure_label_converters_registered()` imports
+`behavior.label_library` when `LABEL_CONVERTERS` is still empty (guarded on
+emptiness, so a caller with its own converters pays nothing). `track_library`
+needs neither — it lives in `core` and `core/__init__.py` imports it directly.
+Anything else pointing from `core` at `behavior` or `tracking` is a layering
+break.
+
+`core.media` takes no import
 from `behavior` or `tracking`. It is not a dependency-free leaf: it reads verdict
 thresholds from the root-level `media_probe_config`, and `reprobe.py`
 additionally reaches `core.helpers`, `core.stored_paths` and

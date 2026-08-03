@@ -36,6 +36,24 @@ column existed still reads.
 **`source_md5` carried the same word.** With `compute_md5=False` the empty
 column reached `tracks/index.csv` as the literal `nan`; it is now empty.
 
+**`index_labels_raw` refuses a format no converter claims.** It wrote any string
+verbatim, and `convert_all_labels` then skipped those rows forever without ever
+naming them. It now checks the format half of the label registry and lists what
+exists. Register a custom converter before indexing under its format — the
+order every doc already gives.
+
+**The label converters load on demand.** `LABEL_CONVERTERS` filled only as a
+side effect of `import mosaic.behavior.label_library`, which nothing in `core`
+does — so a caller who reached a Dataset through `mosaic.core` alone was told
+`Available: []`, and `migrate_labels_raw` matched no row and reported zero
+migrated. The registry now fills itself when it is empty. A caller who
+registered converters of their own keeps exactly those.
+
+**One exception type for a format no converter claims.** `get_track_converter`
+raised `KeyError`, whose repr adds quotes when the CLI interpolates it into a
+message; both resolvers now raise `ValueError`, which `convert_all_labels`
+already did.
+
 ## 0.10.0 — one tracker driver, and a model that may be a directory
 
 **`mosaic trex` is gone; `mosaic track <kind>` replaces it.** It was 211

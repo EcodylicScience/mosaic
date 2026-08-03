@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Annotated, ClassVar, Generic
 
@@ -41,8 +42,11 @@ __all__ = [
     "LabelConvertParams",
     "LabelConverter",
     "LabelEntry",
+    "ensure_label_converters_registered",
     "get_label_converter",
     "register_label_converter",
+    "registered_label_formats",
+    "validate_label_format",
 ]
 
 
@@ -155,6 +159,64 @@ def register_label_converter(
     return cls
 
 
+def ensure_label_converters_registered() -> None:
+    """Fill :data:`LABEL_CONVERTERS` from the in-tree library when nothing has.
+
+    A converter registers only as a side effect of importing the module that
+    defines it, and the track registry gets that for free -- ``mosaic.core``
+    imports ``track_library``. Nothing imports the label library, so a caller who
+    reached a Dataset through ``mosaic.core`` alone held an empty registry and
+    was told the format they named does not exist, when what was missing was an
+    import they had no reason to know about.
+
+    Guarded on emptiness, so a caller who registered converters of their own
+    keeps exactly those and pays none of ``mosaic.behavior``'s import cost --
+    which is real, because importing any part of it imports all of it.
+
+    The import is deferred into the call rather than written at module scope:
+    ``core`` is the layer ``behavior`` is built on, and the two would otherwise
+    be a cycle. This is the same shape ``mosaic.core``'s own ``__getattr__``
+    uses to reach the feature registry.
+    """
+    if LABEL_CONVERTERS:
+        return
+    _ = import_module("mosaic.behavior.label_library")
+
+
+def registered_label_formats() -> frozenset[str]:
+    """Every ``src_format`` some registered label converter claims.
+
+    The format half of the registry's ``(src_format, label_kind)`` key, which is
+    all a caller naming a *source* can be asked about -- one format may serve
+    several kinds, and which kind is wanted is a question conversion asks, not
+    indexing.
+    """
+    ensure_label_converters_registered()
+    return frozenset(src_format for src_format, _kind in LABEL_CONVERTERS)
+
+
+def validate_label_format(src_format: str) -> str:
+    """Reject a ``src_format`` no registered label converter claims.
+
+    Returns *src_format* unchanged, so it can wrap an assignment.
+
+    Raises:
+        ValueError: naming the formats that do exist. Checking only the format
+            half is deliberate rather than a limitation: the pair is what a
+            conversion resolves, and refusing at indexing on a kind nobody has
+            named yet would reject a source that is going to convert fine.
+    """
+    known = registered_label_formats()
+    if src_format not in known:
+        listed = ", ".join(sorted(known)) or "(none registered)"
+        raise ValueError(
+            f"No label converter registered for src_format={src_format!r}. "
+            f"Known: {listed}. Write one in label_library/ and register it "
+            f"before indexing, or import the module that registers yours."
+        )
+    return src_format
+
+
 def get_label_converter(
     src_format: str, label_kind: str
 ) -> LabelConverter[LabelConvertParams]:
@@ -167,6 +229,7 @@ def get_label_converter(
             raises, so that one kind of mistake has one kind of answer wherever
             a format is named.
     """
+    ensure_label_converters_registered()
     cls = LABEL_CONVERTERS.get((src_format, label_kind))
     if cls is None:
         known = (
@@ -175,6 +238,8 @@ def get_label_converter(
         )
         raise ValueError(
             f"No label converter registered for src_format={src_format!r}, "
-            f"label_kind={label_kind!r}. Known: {known}"
+            f"label_kind={label_kind!r}. Known: {known}. Write one in "
+            f"label_library/ and register it, or import the module that "
+            f"registers yours."
         )
     return cls()

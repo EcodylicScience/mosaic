@@ -19,9 +19,6 @@ from mosaic.core.pipeline.labels_index import (
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 
-# Registers the label converters.
-import mosaic.behavior.label_library  # noqa: F401
-
 
 def _dataset(tmp_path: Path) -> Dataset:
     return Dataset(new_dataset_manifest("t", tmp_path / "ds")).load()
@@ -209,3 +206,87 @@ def test_load_labels_resolves_and_reads(tmp_path: Path) -> None:
     data = ds.load_labels("g", "s1", "behavior")
     assert data["labels"].tolist() == [0, 1, 2, 3, 0]
     assert ds.get_label_map("behavior")[0] == "attack"
+
+
+# --- the registry a caller has no reason to know they must fill ---------------
+
+
+def test_an_unregistered_label_format_names_the_ones_that_exist(
+    tmp_path: Path,
+) -> None:
+    """Refused at indexing, where the format is chosen.
+
+    Allowed through, the row lands in the index and ``convert_all_labels``'
+    ``src_format`` filter skips it -- forever, and without a report naming the
+    rows no converter can reach.
+    """
+    ds = _dataset(tmp_path)
+    src = tmp_path / "uploads"
+    src.mkdir()
+    (src / "f1.csv").write_text("a,b\n1,2\n")
+
+    with pytest.raises(ValueError, match="boris_aggregated_csv"):
+        _ = ds.index_labels_raw([src], patterns=["*.csv"], src_format="typo_format")
+
+    assert not (ds.get_root("labels_raw") / "index.csv").exists()
+
+
+def test_a_track_only_format_is_not_a_label_format(tmp_path: Path) -> None:
+    """The registries are separate, and the check reads the right one.
+
+    ``deeplabcut`` is a registered *track* converter and no label converter at
+    all, so it is exactly the case a track-registry lookup would wave through.
+    """
+    ds = _dataset(tmp_path)
+    src = tmp_path / "uploads"
+    src.mkdir()
+    (src / "f1.csv").write_text("a,b\n1,2\n")
+
+    with pytest.raises(ValueError, match="deeplabcut"):
+        _ = ds.index_labels_raw([src], patterns=["*.csv"], src_format="deeplabcut")
+
+
+def test_a_registered_label_format_still_indexes(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    src = tmp_path / "uploads"
+    src.mkdir()
+    np.save(src / "f1.npy", {"g": {"s1": {"annotations": [0]}}}, allow_pickle=True)
+
+    out = ds.index_labels_raw([src], patterns=["*.npy"], src_format="calms21_npy")
+
+    assert out.exists()
+    assert list(pd.read_csv(out)["src_format"]) == ["calms21_npy"]
+
+
+_FILL_FROM_CORE_ALONE = """
+import sys
+from mosaic.core.label_converter import registered_label_formats
+
+assert "mosaic.behavior" not in sys.modules, "the label library was already imported"
+formats = registered_label_formats()
+assert "calms21_npy" in formats, formats
+assert "boris_aggregated_csv" in formats, formats
+print("OK")
+"""
+
+
+def test_the_label_registry_fills_without_an_explicit_import() -> None:
+    """A subprocess, because in this one the registry is already full.
+
+    Every other test here reaches a converter through a Dataset, and any sibling
+    module importing ``mosaic.behavior`` fills the registry for the whole
+    session -- so an in-process assertion would pass without the loading it
+    claims to test. The property is about a *fresh* interpreter that has only
+    ever imported ``mosaic.core``, which is what the control plane does.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", _FILL_FROM_CORE_ALONE],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    assert "OK" in proc.stdout

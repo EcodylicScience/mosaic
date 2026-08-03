@@ -11,9 +11,6 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.labels_migration import migrate_labels_raw, revert_labels
 
-# Registers the label converters.
-import mosaic.behavior.label_library  # noqa: F401
-
 _LEGACY_LABEL_COLUMNS = [
     "kind",
     "label_format",

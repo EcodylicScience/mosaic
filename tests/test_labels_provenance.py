@@ -12,9 +12,6 @@ from mosaic.core.pipeline.labels_index import write_labels_row
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 
-# Registers converters.
-import mosaic.behavior.label_library  # noqa: F401
-
 
 def _dataset(tmp_path: Path) -> Dataset:
     return Dataset(new_dataset_manifest("t", tmp_path / "ds")).load()
