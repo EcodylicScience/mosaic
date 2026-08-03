@@ -140,11 +140,11 @@ Each feature run is tagged with a `run_id` of the form
 
 ```
 video files
-   ├─ index_media()                    → media/index.csv   (probed via mosaic_media/ffprobe)
+   ├─ scan_media()                     → media_raw/index.csv  (probed via mosaic_media/ffprobe)
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
-   ├─ index_tracks_raw()     → tracks_raw/index.csv
+   ├─ scan_tracks_raw()      → tracks_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 

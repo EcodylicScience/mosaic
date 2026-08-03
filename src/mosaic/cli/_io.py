@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import NoReturn
 
 import typer
+from pydantic import ValidationError
 
 from mosaic.core.helpers import parse_entry_tokens
 
@@ -36,6 +37,25 @@ def fail(message: str, code: int = 1) -> NoReturn:
     """Print *message* to stderr and exit with *code* (default 1)."""
     typer.echo(message, err=True)
     raise typer.Exit(code=code)
+
+
+def terse(exc: Exception) -> str:
+    """The part of *exc* a person needs, without the validator's scaffolding.
+
+    A pydantic ``ValidationError`` renders as several lines carrying the input
+    that failed, its type, and a documentation URL. Those help someone debugging
+    a model; someone who mistyped a tag value wants the one sentence saying so.
+    Non-pydantic exceptions are returned as they are.
+    """
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    messages = [
+        # Pydantic prefixes a raised ValueError with "Value error, ". The rest
+        # is the message the model's own validator wrote.
+        str(entry["msg"]).removeprefix("Value error, ")
+        for entry in exc.errors()
+    ]
+    return "; ".join(m for m in messages if m) or str(exc)
 
 
 def log(message: str) -> None:

@@ -423,7 +423,7 @@ class Pipeline:
             # Resolve frame range from merged kwargs
             kwargs = {**self.default_run_kwargs, **step.run_kwargs}
             frame_start, frame_end = resolve_frame_range(
-                dataset.meta.get("fps_default"),
+                dataset.meta_float("fps_default"),
                 kwargs.get("filter_start_frame"),
                 kwargs.get("filter_end_frame"),
                 kwargs.get("filter_start_time"),

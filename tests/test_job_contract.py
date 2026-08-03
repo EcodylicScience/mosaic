@@ -30,40 +30,13 @@ from mosaic.core.pipeline.run_log import (
     run_log_path,
 )
 from mosaic.core.pipeline.types import Inputs, InputStream, Params, Result, TrackInput
+from tests.mock_dataset import MockDataset
 
 
 # --- Minimal mock dataset + feature (mirrors tests/test_run_feature.py) ---
 
 
-class _MockDataset:
-    def __init__(self, root: Path):
-        self._root = root
-        for directory in ("tracks", "features"):
-            (root / directory).mkdir(parents=True, exist_ok=True)
-
-    @property
-    def base_dir(self) -> Path:
-        return self._root
-
-    def get_root(self, key: str) -> Path:
-        return self._root / key
-
-    def resolve_path(self, stored_path: object, anchor: object = None) -> Path:
-        path = Path(str(stored_path))
-        return path if path.is_absolute() else self._root / path
-
-    def relative_to_root(self, path: object) -> str:
-        try:
-            return str(Path(str(path)).resolve().relative_to(self._root.resolve()))
-        except ValueError:
-            return str(path)
-
-    @property
-    def meta(self) -> dict[str, object]:
-        return {"fps_default": 30.0}
-
-
-def _setup_tracks(ds: _MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10):
+def _setup_tracks(ds: MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10):
     entries = []
     for group, sequence in pairs:
         path = ds.get_root("tracks") / f"{group}__{sequence}.parquet"
@@ -124,7 +97,7 @@ class _Stateless:
         return pd.DataFrame({"frame": df["frame"], "value": df["feat_a"] * 2})
 
 
-def _run_dir(ds: _MockDataset) -> Path:
+def _run_dir(ds: MockDataset) -> Path:
     return run_log_dir(ds.base_dir)
 
 
@@ -150,7 +123,7 @@ def test_execution_id_is_sortable_ulid():
 
 
 def test_lifecycle_finished(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     result = run_feature(ds, _Stateless())
@@ -168,7 +141,7 @@ def test_lifecycle_finished(tmp_path: Path):
 
 
 def test_progress_entries_recorded(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3")])
 
     result = run_feature(ds, _Stateless())
@@ -184,7 +157,7 @@ def test_progress_entries_recorded(tmp_path: Path):
 
 
 def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     r1 = run_feature(ds, _Stateless())
@@ -205,7 +178,7 @@ def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
 
 
 def test_cancel_midrun_marks_cancelled_with_partial(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3"), ("g", "s4")])
 
     token = CancelToken()
@@ -243,7 +216,7 @@ def test_cancel_midrun_marks_cancelled_with_partial(tmp_path: Path):
 
 
 def test_inert_token_does_not_cancel(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
     # default token never fires
     result = run_feature(ds, _Stateless())
@@ -254,7 +227,7 @@ def test_inert_token_does_not_cancel(tmp_path: Path):
 
 
 def test_failure_marks_failed_with_error(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     with pytest.raises(RuntimeError, match="kaboom"):
@@ -273,7 +246,7 @@ def test_failure_marks_failed_with_error(tmp_path: Path):
 
 
 def test_track_false_writes_no_log(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
     result = run_feature(ds, _Stateless(), track=False)
     assert result.execution_id is not None  # still minted
@@ -299,7 +272,7 @@ def test_attempt_fields_do_not_perturb_downstream_run_id():
 
 
 def test_standalone_readers(tmp_path: Path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
     result = run_feature(ds, _Stateless())
 
@@ -377,7 +350,7 @@ def test_completeness_gate_marks_index_finished_only_when_all_outputs_present(
     ``out_path.exists()`` check (``run.py``). A full run finishes; a partial run
     (see ``test_cancel_midrun_...``) stays unfinished and is resumable.
     """
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     result = run_feature(ds, _Stateless())

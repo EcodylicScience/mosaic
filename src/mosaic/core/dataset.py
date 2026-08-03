@@ -7,11 +7,10 @@ import json
 import os
 import re
 import sys
-import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,16 +18,15 @@ from typing import (
     Dict,
     Final,
     Iterable,
-    Literal,
     Mapping,
     Optional,
     Tuple,
+    overload,
 )
 
 
 import numpy as np
 import pandas as pd
-import yaml  # pip install pyyaml
 from mosaic_media import (
     MediaFacts,
     MediaProbeError,
@@ -85,11 +83,35 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
+from .json_value import JsonValue
+from .manifest import (
+    AnyScanSource,
+    DatasetManifest,
+    DatasetTag,
+    MediaLayout,
+    MediaScanSource,
+    RawScanSource,
+    ScanSource,
+    ScanSources,
+    SourceKind,
+    default_roots,
+    empty_root_template,
+    legacy_tracking_roots,
+    new_manifest,
+    now_stamp,
+    overlapping_sources,
+    read_manifest,
+    resolve_manifest_path,
+    validate_root_inside,
+    write_manifest,
+)
+from .typed_attribute import TypedAttributeValue
 from .pipeline._utils import (
     atomic_write,
     coerce_np as _coerce_np,
     now_iso as _now_iso,
 )
+from .pipeline.scan_claim import ScanClaim
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
@@ -285,14 +307,6 @@ def _stem_as_sequence(stem: str) -> str:
     return stem
 
 
-try:
-    import yaml
-
-    _YAML_OK = True
-except Exception:
-    _YAML_OK = False
-
-
 def _dataset_base_dir(ds) -> Path:
     """
     Resolve the directory that holds dataset-level config (sibling to dataset manifest).
@@ -309,253 +323,79 @@ def _dataset_base_dir(ds) -> Path:
 
 ############# DATASET
 
-default_roots = {
-    # ── raw (external, immutable) ──
-    "media_raw": "media_raw",  # original uploaded videos — don't touch, may be on NAS
-    "tracks_raw": "tracks_raw",  # original tracking files from external tools
-    "labels_raw": "labels_raw",  # raw label files a kind is converted from (uploaded / projected)
-    "labels": "labels",  # GT annotations: behavior labels, keypoints, individual IDs
-    # ── derived (computed by mosaic, regenerable) ──
-    "media": "media",  # derived media: low-res copies, re-encoded, thumbnails
-    "tracks": "tracks",  # standardised parquet tracks (converted from tracks_raw)
-    # Raw tracker output lives under _tracking/ (not tracks_raw/), so tracks_raw
-    # holds only user-uploaded content. The per-tool roots come from the registry
-    # rather than being spelled here: item 8.1 asked for one literal, and a dict
-    # literal per tool is how it became six.
-    TRACKING_ROOT: TRACKING_ROOT,  # parent of the per-tracker raw-output roots
-    **{key: root.default_path for key, root in TRACKING_ROOTS.items()},
-    "features": "features",  # per-sequence feature parquets (wavelets, projections, embeddings)
-    "models": "models",  # trained models, reports, plots
-    "frames": "media/frames",  # extracted video frames (PNGs), can be very large
+_RAW_ROOT_FOR_KIND: Final[Mapping[str, str]] = {
+    "media": "media_raw",
+    "tracks": "tracks_raw",
+    "labels": "labels_raw",
 }
+"""Which root a declared source of each kind feeds."""
 
 
-def _backfill_tracking_roots(roots: Dict[str, str]) -> Dict[str, str]:
-    """Add the tracking roots a manifest predating item 8.1 does not declare.
-
-    ``load`` replaces ``roots`` wholesale, so a manifest written before the
-    ``_tracking`` root existed carries neither it nor the per-tool keys beneath
-    it. Left alone that is not a cosmetic gap: ``get_root("_tracking")`` raises,
-    so the sweeper crashes on exactly the datasets that most need sweeping.
-
-    **Absent keys are filled; present ones are never repointed.** A dataset whose
-    ``trex`` root still reads ``tracks_raw/trex`` keeps it. Silently moving it
-    would orphan every run already on disk *and* strand the index that names
-    them -- and the legacy location is a state the sweeper must be able to
-    recognize and decline, which it cannot do if loading has quietly erased the
-    evidence. This is item 7.1's precedent applied to roots rather than to files:
-    name the legacy class, refuse to act on it, leave it visible.
-
-    In-place on the mapping ``load`` was handed, and returned for the caller to
-    assign, so a manifest that needs no backfill is untouched and ``save`` round-
-    trips it byte-identically.
-    """
-    for key in (TRACKING_ROOT, *TRACKING_ROOTS):
-        _ = roots.setdefault(key, default_roots[key])
-    return roots
-
-
-def _backfill_source_roots(roots: Dict[str, str]) -> Dict[str, str]:
-    """Add the source roots a manifest predating them does not declare.
-
-    ``labels_raw`` (item 9.3) is new: no manifest written before it carries the
-    key, so ``get_root("labels_raw")`` would raise on every existing dataset and
-    the label converters -- which must resolve it to read what a kind was made
-    from -- would crash rather than fall back. Filled, never repointed, exactly
-    as :func:`_backfill_tracking_roots` handles its own; the readers already
-    tolerate an absent root, but the writers do not.
-    """
-    _ = roots.setdefault("labels_raw", default_roots["labels_raw"])
-    return roots
-
-
-def validate_root_inside(base_dir: Path, path: str | Path, key: str) -> Path:
-    """Return *path* unchanged, or raise because it leaves the dataset.
-
-    Item 9.1, implementing rule P7: roots always live inside the dataset tree,
-    and external storage is expressed as *search directories* whose files are
-    referenced by absolute ``abs_path`` from an index that lives inside. An
-    outside root puts that root's own ``index.csv`` outside too, and then the
-    dataset is no longer the thing you can copy, archive or sync.
-
-    Absolute is fine when it lands inside. The rule is about where a root is, not
-    how it is written -- and ``rewrite_index_paths`` relativizes an
-    inside-absolute root on its next run anyway.
-
-    The comparison resolves both sides. An unnormalized ``..`` or a symlink would
-    otherwise let a root leave the dataset while reading as though it stayed.
-    """
-    candidate = Path(path)
-    absolute = candidate if candidate.is_absolute() else base_dir / candidate
-    resolved = absolute.resolve()
-    root = base_dir.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise ValueError(
-            f"root {key!r} would resolve outside the dataset: {resolved} is not "
-            f"under {root}. Roots live inside the dataset (item 9.1); to use "
-            "storage elsewhere, index those files by absolute abs_path from a "
-            "root that is inside."
-        )
-    return candidate
-
-
-MediaLayout = Literal["stem", "per_sequence"]
-"""How ``index_media`` derives identity for a file no track table names.
-
-``stem`` is the historical heuristic: the filename stem is the sequence, so a
-multi-clip sequence re-derives as one sequence per clip. ``per_sequence`` reads
-item 9.2's declared layout -- ``<media_raw>/<entry key>/`` -- which is what the
-control plane already writes and what nothing in mosaic could read back.
-
-``stem`` remains the default deliberately: ``sequence_match_mode="prefix"``
-exists to serve split recordings under the flat layout, and flipping the default
-would silently re-identify every dataset relying on it.
-"""
-
-
-_SOURCE_ROOT_KEYS: Final[tuple[str, ...]] = ("tracks_raw", "media_raw", "labels")
-
-
-def legacy_tracking_roots(roots: Mapping[str, str]) -> dict[str, str]:
-    """Tracker roots still nested inside a *source* root -- the pre-8.1 layout.
-
-    ``{root key: declared path}``, in practice ``{"trex": "tracks_raw/trex"}`` on
-    a dataset converted before the relocation. Empty on a current one.
-
-    Two callers need this and want opposite things from it. A raw-tracks scan
-    wants to know that tracker output is sitting inside a source root, where its
-    exclusion cannot reach; a sweeper wants to know that a root it is about to
-    delete under holds user content, and to decline. Both questions are "is this
-    root somewhere uploads live", so they are answered once here.
-
-    **Nested-in-a-source-root, not merely absent-from-``_tracking``.** The first
-    spelling was the latter, and it reported a root pointing *outside the
-    dataset* as legacy -- which is a different fault with a different repair, and
-    telling someone their root is inside ``tracks_raw`` when it is on another
-    volume sends them to fix the wrong thing. Both still decline the sweep, so
-    the cost was a misleading message rather than a deletion.
-    """
-    return {
-        key: declared
-        for key, declared in roots.items()
-        if key in TRACKING_ROOTS
-        and declared
-        and PurePosixPath(str(declared).replace("\\", "/")).parts[:1]
-        in {(source,) for source in _SOURCE_ROOT_KEYS}
-    }
+# The manifest format -- the root table, its backfills, the
+# inside-the-dataset rule and the legacy-layout query -- lives in
+# ``core.manifest``, which knows nothing about ``Dataset``. They are
+# re-exported here because every caller already imports them from this
+# module, and because what a root *is* stays a property of the dataset that
+# declares it.
 
 
 def new_dataset_manifest(
     name: str,
     base_dir: str | Path,
-    roots: dict[str, str | Path] = default_roots,
+    roots: Mapping[str, str | Path] = default_roots,
     version: str = "0.1.0",
-    index_format: str = "group/sequence",
     outfile: str | Path | None = None,
-    # Continuous dataset support
-    dataset_type: str = "discrete",  # "discrete" or "continuous"
-    segment_duration: str | None = None,  # e.g., "1H", "30min", "1D"
-    time_column: str | None = None,  # column name for timestamps, e.g., "timestamp"
+    *,
+    notes: str = "",
+    tags: Sequence[DatasetTag] = (),
+    sources: ScanSources | None = None,
 ) -> Path:
-    """
-    Create a minimal, extensible dataset manifest (YAML) with only a few required fields.
-    - name: dataset name (e.g., "CALMS21")
-    - base_dir: absolute or relative base directory for the dataset
-    - roots: dict of subpaths you actually use NOW (e.g., {"media": "videos", "features": "features", "labels": "labels"})
-    - index_format: how you think about addressing items ("group/sequence" is recommended)
-    Returns the path to the created YAML.
+    """Create a dataset manifest and the root directories it declares.
+
+    Every root is normalized to a path relative to *base_dir*, which is the
+    portable form, and created. A root resolving outside the dataset raises:
+    that root's own ``index.csv`` would land outside too, and then the dataset
+    stops being the thing you can copy, archive or sync. Storage elsewhere is
+    reached by declaring a :class:`~mosaic.core.manifest.ScanSources` entry for
+    it, whose files are indexed by absolute ``abs_path`` into an index that stays
+    inside.
+
+    Args:
+        name: What the dataset is called.
+        base_dir: The dataset directory. Created if absent.
+        roots: Root declarations. Defaults to every root mosaic knows.
+        version: The dataset's own version string.
+        outfile: Where to write. Defaults to ``<base_dir>/dataset.yaml``; the
+            suffix chooses YAML or JSON.
+        notes: Free text for the dataset.
+        tags: Typed attributes describing the dataset.
+        sources: Declared scan recipes. Unlike roots, these may point anywhere.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If a root resolves outside *base_dir*.
     """
     base_dir = Path(base_dir).resolve()
-    # Roots are normalized to relative paths, which is the portable form. An
-    # outside root now *raises* rather than being kept absolute (item 9.1): the
-    # old fallback was the one mechanism letting a root -- and therefore that
-    # root's own index.csv -- live outside the dataset it belongs to.
-    #
-    # Files elsewhere are still reachable, by the mechanism rule P7 names: index
-    # them by absolute `abs_path` from a root that is inside. That is what a
-    # second dataset does to reference a video living inside a first one.
-    norm_roots = {}
-    for k, v in roots.items():
-        _ = validate_root_inside(base_dir, v, k)
-        full = (base_dir / Path(v)).resolve()
+    normalized: dict[str, str] = {}
+    for key, declared in roots.items():
+        _ = validate_root_inside(base_dir, declared, key)
+        full = (base_dir / Path(declared)).resolve()
         full.mkdir(parents=True, exist_ok=True)
-        norm_roots[k] = str(full.relative_to(base_dir))
+        normalized[key] = str(full.relative_to(base_dir))
 
-    manifest = {
-        "name": name,
-        "version": version,
-        "uuid": str(uuid.uuid4()),
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "index_format": index_format,  # recommended: "group/sequence"
-        "roots": norm_roots,  # required minimal roots you actually use now
-        "dataset_type": dataset_type,  # "discrete" (default) or "continuous"
-        # You can append optional fields later without placeholders
-    }
-
-    # Add continuous-specific fields if applicable
-    if dataset_type == "continuous":
-        if segment_duration:
-            manifest["segment_duration"] = segment_duration
-        if time_column:
-            manifest["time_column"] = time_column
-
-    header_comment = """# ==========================================================
-# DATASET MANIFEST (extensible YAML)
-# Minimal required fields above; append optional fields below
-#
-# DIRECTORY STRUCTURE (roots):
-#   Raw (external, immutable — do not modify):
-#     media_raw/    Original uploaded videos (may live on NAS)
-#     tracks_raw/   Original tracking files from external tools
-#     labels/       Ground truth: behavior labels, keypoints, individual IDs
-#   Derived (computed by mosaic, regenerable):
-#     media/        Derived media: low-res copies, re-encoded, thumbnails
-#       frames/     Extracted video frames (PNGs), organised by method/run_id
-#     tracks/       Standardised parquet tracks (converted from tracks_raw)
-#     features/     Per-sequence feature parquets (wavelets, projections, embeddings)
-#     models/       Trained models, reports, plots
-#
-# DATASET TYPES:
-#   dataset_type: "discrete"     # Default: distinct recordings (trials, sessions)
-#   dataset_type: "continuous"   # Long continuous recordings (days/months)
-#     segment_duration: "1H"     # Segment size for continuous (e.g., "1H", "30min", "1D")
-#     time_column: "timestamp"   # Column name for time-based operations
-#
-# Common OPTIONAL fields you may add later:
-#   fps_default: 30.0
-#   resolution_default: [1920, 1080]
-#   n_animals_default: 2
-#   species: ""
-#   groups:                      # [{id, notes, condition, date, ...}]
-#   sequences:                   # [{id, group, media_path, pose_path, fps, n_frames, n_animals, ...}]
-#   splits:                      # {task1_train: [...], task1_test: [...], ...}
-#   labels_map:                  # {0: attack, 1: investigation, ...}
-#   skeleton:                    # [[p1, p2], ...]
-#   bodyparts:                   # ["snout","neck",...]
-#   processing:                  # [{step, time, params_hash, code_commit, ...}]
-#   pose_model:                  # {name, engine, checkpoint, config}
-#   behavior_model:              # {name, checkpoint, config}
-#   provenance:                  # {repo, commit, env}
-#   quality:                     # {missing_rate, drift, ...}
-#   modalities:                  # ["video","pose","audio",...]
-#   cameras:                     # {cam0: {intrinsics:..., extrinsics:...}, ...}
-#   notes: |
-#     Free-form notes about the dataset.
-# ==========================================================
-"""
-
-    text = header_comment + yaml.safe_dump(
-        manifest, sort_keys=False, default_flow_style=False
+    manifest = new_manifest(
+        name,
+        version=version,
+        roots=normalized,
+        notes=notes,
+        tags=tags,
+        sources=sources,
     )
-
-    if outfile is None:
-        outfile = base_dir / "dataset.yaml"
-    else:
-        outfile = Path(outfile)
-
-    outfile.write_text(text, encoding="utf-8")
-    print(f"Wrote dataset manifest -> {outfile}")
-    return outfile
+    target = Path(outfile) if outfile is not None else base_dir / "dataset.yaml"
+    write_manifest(target, manifest)
+    return target
 
 
 # --------------------------
@@ -690,145 +530,713 @@ class MediaIndexResult:
     drift: list[MediaDrift] = field(default_factory=list)
 
 
-@dataclass
 class Dataset:
-    manifest_path: Path
-    name: str = "unnamed"
-    version: str = "0.1"
-    format: str = "yaml"
-    # One empty-valued key per declared root, derived from ``default_roots`` so
-    # the two lists cannot drift: a root added to ``default_roots`` (as
-    # ``labels_raw`` was for item 9.3) is a key here too, without a second edit.
-    # Values stay empty -- this is the "no manifest loaded yet" template, and
-    # ``get_root`` treats an empty root as unset.
-    roots: Dict[str, str] = field(
-        default_factory=lambda: {key: "" for key in default_roots}
-    )
-    meta: Dict[str, Any] = field(default_factory=dict)
-    _path_map: list[tuple[Path, Path]] = field(
-        default_factory=list, init=False, repr=False
-    )
+    """A mosaic dataset: a manifest, the roots it declares, and the work over them.
 
-    # Continuous dataset support
-    dataset_type: str = "discrete"  # "discrete" or "continuous"
-    segment_duration: str | None = None  # e.g., "1H", "30min", "1D"
-    time_column: str | None = None  # column name for timestamps
+    Constructed around a manifest *path*, not around loaded content -- ``load()``
+    is a separate step, so a caller can point at a dataset that does not exist
+    yet and create it.
 
-    # Manifest identity: written once by new_dataset_manifest and preserved
-    # across a load -> save round-trip (save() dropping these is why callers
-    # that need them stable had to avoid save() entirely).
-    uuid: str | None = None
-    created_at: str | None = None
-    index_format: str | None = None
+    The manifest's own fields are reached through properties rather than copied
+    onto this object, so there is one representation of what the file says.
+    ``roots`` and ``meta`` hand back the live mappings, because callers across
+    the toolkit mutate them in place and a copy would silently discard the edit.
+    """
 
-    def __post_init__(self) -> None:
-        # Normalize manifest_path: callers may pass a str (e.g. from
-        # os.path.join). Coercing to Path keeps methods like save() — which
-        # call self.manifest_path.write_text(...) — working regardless of
-        # whether a str or Path was supplied.
-        self.manifest_path = Path(self.manifest_path)
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        *,
+        name: str = "unnamed",
+        version: str = "0.1",
+        roots: Mapping[str, str] | None = None,
+        meta: Mapping[str, JsonValue] | None = None,
+        manifest: DatasetManifest | None = None,
+    ) -> None:
+        """Build a dataset around *manifest_path*.
+
+        Args:
+            manifest_path: The manifest file, or the directory holding it.
+            name: Dataset name, when constructing without loading.
+            version: Dataset version, when constructing without loading.
+            roots: Root declarations. Defaults to one empty value per known
+                root, which reads as "declared nothing yet" -- ``get_root``
+                treats an empty root as unset.
+            meta: Structured metadata, when constructing without loading.
+            manifest: A manifest to adopt wholesale. Overrides the other fields.
+        """
+        self.manifest_path: Path = Path(manifest_path)
+        if manifest is not None:
+            self.manifest: DatasetManifest = manifest
+        else:
+            self.manifest = DatasetManifest(
+                name=name,
+                version=version,
+                roots=dict(roots) if roots is not None else empty_root_template(),
+                meta=dict(meta) if meta is not None else {},
+            )
+        self._path_map: list[tuple[Path, Path]] = []
+
+    def __repr__(self) -> str:
+        return f"Dataset(manifest_path={self.manifest_path!r}, name={self.name!r})"
+
+    # ---- Manifest fields ----
 
     @property
-    def is_continuous(self) -> bool:
-        """Check if this is a continuous recording dataset."""
-        return self.dataset_type == "continuous"
+    def name(self) -> str:
+        """What the dataset is called."""
+        return self.manifest.name
 
-    # ---- Instance load method ----
-    def load(self, ensure_roots: bool = True) -> "Dataset":
-        """Load dataset metadata from self.manifest_path."""
-        mp = Path(self.manifest_path)
+    @name.setter
+    def name(self, value: str) -> None:
+        self.manifest.name = value
 
-        if mp.is_dir():
-            # allow passing a dataset directory instead of a file
-            for cand in ("dataset.yaml", "dataset.yml", "dataset.json"):
-                candp = mp / cand
-                if candp.exists():
-                    mp = candp
-                    break
-            else:
-                raise FileNotFoundError(f"No manifest found in directory: {mp}")
+    @property
+    def version(self) -> str:
+        """The dataset's own version string, for whoever curates it."""
+        return self.manifest.version
 
-        if not mp.exists():
-            raise FileNotFoundError(mp)
+    @version.setter
+    def version(self, value: str) -> None:
+        self.manifest.version = value
 
-        if mp.suffix.lower() in (".yaml", ".yml"):
-            if not _YAML_OK:
-                raise RuntimeError("pyyaml not installed but manifest is YAML.")
-            data = yaml.safe_load(mp.read_text())
-            fmt = "yaml"
-        elif mp.suffix.lower() == ".json":
-            data = json.loads(mp.read_text())
-            fmt = "json"
-        else:
-            # fallback: try yaml then json
-            if _YAML_OK:
-                try:
-                    data = yaml.safe_load(mp.read_text())
-                    fmt = "yaml"
-                except Exception:
-                    data = json.loads(mp.read_text())
-                    fmt = "json"
-            else:
-                data = json.loads(mp.read_text())
-                fmt = "json"
+    @property
+    def uuid(self) -> str | None:
+        """Minted once at creation and never rewritten."""
+        return self.manifest.uuid
 
-        # overwrite instance fields
-        self.name = data.get("name", self.name)
-        self.version = str(data.get("version", self.version))
-        self.format = data.get("format", fmt)
-        self.roots = _backfill_source_roots(
-            _backfill_tracking_roots(data.get("roots", self.roots))
+    @property
+    def created_at(self) -> str | None:
+        """When the manifest was first written, ISO-8601 UTC."""
+        return self.manifest.created_at
+
+    @property
+    def roots(self) -> dict[str, str]:
+        """The declared roots, live.
+
+        Mutating the returned mapping edits the manifest, which is deliberate:
+        callers across the toolkit assign into ``ds.roots[key]`` directly, and
+        handing back a copy would swallow the edit rather than report it.
+        Persisting the change is still :meth:`save`'s job.
+        """
+        return self.manifest.roots
+
+    @roots.setter
+    def roots(self, value: dict[str, str]) -> None:
+        self.manifest.roots = value
+
+    @property
+    def meta(self) -> dict[str, JsonValue]:
+        """Structured per-subsystem metadata, live. See :attr:`roots`."""
+        return self.manifest.meta
+
+    @meta.setter
+    def meta(self, value: dict[str, JsonValue]) -> None:
+        self.manifest.meta = value
+
+    def meta_section(self, key: str) -> dict[str, JsonValue]:
+        """The nested mapping ``meta[key]``, creating it if absent.
+
+        ``meta`` is deliberately open-ended, so a value read out of it is
+        anything JSON can hold. The two shapes mosaic actually stores there are a
+        nested section and a number, and these two accessors are where that gets
+        checked -- once, rather than at each of the call sites that would
+        otherwise index into an unknown.
+
+        A key holding something that is *not* a mapping is replaced by an empty
+        one. The alternative is raising deep inside a converter over a manifest
+        somebody hand-edited, which helps nobody: the section is metadata about
+        derived files, and the converter is about to rewrite it anyway.
+        """
+        section = self.meta.get(key)
+        if not isinstance(section, dict):
+            section = {}
+            self.meta[key] = section
+        return section
+
+    @overload
+    def meta_float(self, key: str) -> float | None: ...
+
+    @overload
+    def meta_float(self, key: str, default: float) -> float: ...
+
+    def meta_float(self, key: str, default: float | None = None) -> float | None:
+        """``meta[key]`` as a number, or *default* when it is absent or is not one.
+
+        Overloaded so a caller supplying a fallback gets a ``float`` rather than
+        an optional one, and does not have to re-handle a ``None`` it already
+        ruled out.
+
+        ``bool`` is excluded: ``isinstance(True, int)`` is true, and a stray
+        ``fps_default: true`` becoming 1.0 frames per second is worse than
+        falling back to the default.
+        """
+        value = self.meta.get(key)
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        return default
+
+    @property
+    def sources(self) -> ScanSources:
+        """The declared scan sources. Change them through the scan-source methods."""
+        return self.manifest.sources
+
+    # ---- Notes and typed tags ----
+
+    @property
+    def notes(self) -> str:
+        """Free text that travels with the dataset."""
+        return self.manifest.notes
+
+    def set_notes(self, text: str, *, save: bool = True) -> None:
+        """Replace the dataset's notes.
+
+        Raises:
+            ValueError: If *text* is longer than the manifest allows. Long prose
+                belongs in a file the dataset references, not in the manifest
+                every reader parses.
+        """
+        self.manifest = self.manifest.model_copy(update={"notes": text})
+        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        if save:
+            self.save()
+
+    @property
+    def tags(self) -> tuple[DatasetTag, ...]:
+        """The dataset's typed tags, ordered as they are written.
+
+        These describe the *dataset*. The per-sequence tags that group sequences
+        for analysis are a different thing, owned by mosaic-api.
+        """
+        return self.manifest.ordered_tags()
+
+    def tag(self, name: str) -> DatasetTag | None:
+        """The tag called *name*, matched case-insensitively, or ``None``."""
+        return self.manifest.tag(name)
+
+    def has_tag(self, name: str) -> bool:
+        """Whether *name* is attached. The question a ``label`` tag answers."""
+        return self.manifest.tag(name) is not None
+
+    def tag_value(self, name: str) -> TypedAttributeValue:
+        """The value of tag *name*, or ``None`` if it is absent or is a label."""
+        found = self.manifest.tag(name)
+        return None if found is None else found.value
+
+    def define_tag(self, tag: DatasetTag, *, save: bool = True) -> None:
+        """Declare *tag*, replacing any existing one of the same name.
+
+        Redefining re-validates the value against the new constraints and raises
+        if it no longer fits. That is the whole of what mosaic-api's narrowing
+        machinery does, one row wide: here there is exactly one holder, so there
+        are no other assignments for a constraint change to invalidate.
+        """
+        others = [
+            existing
+            for existing in self.manifest.tags
+            if existing.name.casefold() != tag.name.casefold()
+        ]
+        self.manifest = self.manifest.model_copy(update={"tags": (*others, tag)})
+        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        if save:
+            self.save()
+
+    def set_tag_value(
+        self, name: str, value: TypedAttributeValue, *, save: bool = True
+    ) -> None:
+        """Set the value of an already-defined tag, keeping its declared type.
+
+        Raises:
+            KeyError: If no tag of that name is defined. Defining and valuing are
+                separate because a value alone cannot say what type it is, and
+                guessing one would let ``"12"`` and ``12`` mean different things
+                on different days.
+            ValueError: If *value* does not satisfy the tag's constraints.
+        """
+        found = self.manifest.tag(name)
+        if found is None:
+            declared = sorted(existing.name for existing in self.manifest.tags)
+            msg = f"no tag named {name!r}; defined: {declared or 'none'}"
+            raise KeyError(msg)
+        # Rebuilt rather than copied with an update: ``model_copy`` does not run
+        # validators, so an off-vocabulary value would only be caught later by
+        # the whole-manifest check, which reports it by list position instead of
+        # by name.
+        replacement = DatasetTag(
+            name=found.name,
+            type=found.type,
+            type_constraints=dict(found.type_constraints),
+            value=value,
+            description=found.description,
+            display_order=found.display_order,
         )
-        self.meta = data.get("meta", self.meta)
+        self.define_tag(replacement, save=save)
 
-        # Continuous dataset fields
-        self.dataset_type = data.get("dataset_type", "discrete")
-        self.segment_duration = data.get("segment_duration", None)
-        self.time_column = data.get("time_column", None)
+    def remove_tag(self, name: str, *, save: bool = True) -> bool:
+        """Drop the tag called *name*. Returns whether one was there."""
+        remaining = [
+            existing
+            for existing in self.manifest.tags
+            if existing.name.casefold() != name.casefold()
+        ]
+        if len(remaining) == len(self.manifest.tags):
+            return False
+        self.manifest = self.manifest.model_copy(update={"tags": tuple(remaining)})
+        if save:
+            self.save()
+        return True
 
-        # Manifest identity (preserved across the round-trip; absent in older
-        # manifests, in which case the attribute stays None and save() omits it).
-        self.uuid = data.get("uuid", self.uuid)
-        self.created_at = data.get("created_at", self.created_at)
-        self.index_format = data.get("index_format", self.index_format)
+    def mutate_manifest(self, change: Callable[[DatasetManifest], None]) -> None:
+        """Re-read the manifest, apply *change*, and write it back under a lock.
 
+        The read-modify-write seam, for anything editing a manifest another
+        process may also be editing -- mosaic-api setting notes while a CLI
+        declares a source, say. :meth:`save` writes the file whole and
+        atomically, so without the lock the loser of a race is not a merged file
+        but a silently discarded one.
+
+        *change* is handed the freshly read manifest and mutates it in place.
+        Whatever this dataset held is replaced by the result, so the in-memory
+        copy and the file agree afterwards.
+        """
+        with index_lock(self.manifest_path):
+            current = (
+                read_manifest(self.manifest_path)
+                if self.manifest_path.exists()
+                else self.manifest
+            )
+            change(current)
+            self.manifest = current
+            self._ensure_roots()
+            write_manifest(self.manifest_path, current)
+
+    # ---- Declared scan sources ----
+
+    def scan_sources(
+        self, kind: SourceKind, *, only: Sequence[str] = ()
+    ) -> tuple[AnyScanSource, ...]:
+        """The declared sources feeding *kind*, or just those *only* names.
+
+        Args:
+            kind: Which raw root's sources to return.
+            only: Source ids to restrict to. Empty means all of them.
+
+        Returns:
+            The selected sources, in declaration order.
+
+        Raises:
+            KeyError: If *only* names an id this kind does not declare.
+        """
+        return self.manifest.sources.select(kind, only)
+
+    def add_scan_source(self, source: AnyScanSource, *, save: bool = True) -> None:
+        """Declare *source* and persist the manifest.
+
+        **Not validated inside the dataset**, unlike :meth:`set_root`. A source
+        exists to name storage elsewhere; its files are recorded by absolute
+        ``abs_path`` into an index that stays inside, which is the arrangement
+        that replaced an outside root. Its directory is never created either --
+        a scan discovers whether it is there.
+
+        Args:
+            source: The source to declare. Its ``kind`` picks the list.
+            save: Write the manifest. Pass ``False`` to batch several changes.
+
+        Raises:
+            ValueError: If the id is already taken for this kind, or the source
+                would claim files another source of the same kind already claims.
+        """
+        kind: SourceKind = source.kind
+        existing = list(self.manifest.sources.of_kind(kind))
+        if any(candidate.id == source.id for candidate in existing):
+            msg = f"a {kind} source named {source.id!r} is already declared"
+            raise ValueError(msg)
+        stamped = source.model_copy(update={"added_at": source.added_at or now_stamp()})
+        proposed = [*existing, stamped]
+        overlap = overlapping_sources(proposed, self._resolve_declared_path)
+        if overlap is not None:
+            left, right = overlap
+            msg = (
+                f"{kind} sources {left!r} and {right!r} would claim the same "
+                "files, which makes it ambiguous which recipe identifies them. "
+                "Narrow one of the paths, or list files explicitly so the two "
+                "claims are disjoint."
+            )
+            raise ValueError(msg)
+        self.manifest.sources = self.manifest.sources.with_kind(kind, proposed)
+        if save:
+            self.save()
+
+    def remove_scan_source(
+        self, kind: SourceKind, source_id: str, *, save: bool = True
+    ) -> int:
+        """Undeclare a source. Returns how many index rows it was claiming.
+
+        The rows stay. Undeclaring is a statement about future scans; dropping
+        rows would delete composition membership and move downstream identity
+        hashes, which is a repair worth asking for explicitly (``mosaic reindex``
+        and ``mosaic prune-media`` both exist and both default to a dry run).
+
+        Raises:
+            KeyError: If *kind* declares no source with that id.
+        """
+        existing = list(self.manifest.sources.of_kind(kind))
+        match = next((s for s in existing if s.id == source_id), None)
+        if match is None:
+            declared = sorted(s.id for s in existing)
+            msg = (
+                f"no {kind} source named {source_id!r}; declared: {declared or 'none'}"
+            )
+            raise KeyError(msg)
+        orphaned = self._rows_claimed_by(kind, self.source_claim(match))
+        remaining = [s for s in existing if s.id != source_id]
+        self.manifest.sources = self.manifest.sources.with_kind(kind, remaining)
+        if save:
+            self.save()
+        return orphaned
+
+    def add_source_files(
+        self, kind: SourceKind, source_id: str, files: Sequence[str]
+    ) -> int:
+        """Add *files* to a file-mode source. Returns how many were new.
+
+        The durable form of an import that selects some of a folder's contents:
+        a second selection extends the source that already describes that folder
+        rather than minting one per gesture.
+
+        Raises:
+            KeyError: If no such source is declared.
+            ValueError: If the source is a directory source, which claims its
+                files by glob and has no list to extend.
+        """
+        return self._edit_source_files(kind, source_id, files, adding=True)
+
+    def remove_source_files(
+        self, kind: SourceKind, source_id: str, files: Sequence[str]
+    ) -> int:
+        """Drop *files* from a file-mode source. Returns how many were removed.
+
+        **Their index rows go too**, unlike :meth:`remove_scan_source`, which
+        keeps them. The difference is how specific the gesture is: undeclaring a
+        whole source says nothing about which of its rows are still wanted, while
+        naming individual files is the un-import of exactly those. Leaving them
+        behind would make the index describe files the dataset no longer claims
+        from anywhere, with nothing left to rescan and clean them up.
+        """
+        removed = self._edit_source_files(kind, source_id, files, adding=False)
+        if removed:
+            source = next(
+                s for s in self.manifest.sources.of_kind(kind) if s.id == source_id
+            )
+            base = self.resolve_source_path(source)
+            self.drop_claimed_rows(
+                kind, ScanClaim.over_files(base / entry for entry in files)
+            )
+        return removed
+
+    def drop_claimed_rows(self, kind: SourceKind, claim: ScanClaim) -> int:
+        """Remove every row of *kind*'s index inside *claim*. Returns the count.
+
+        Public because ``mosaic sources remove --drop-rows`` is the gesture that
+        wants it: undeclaring keeps rows by default, and this is the opt-in.
+        """
+        if kind == "media":
+            index_path = self.get_root(self.resolve_media_root()) / "index.csv"
+            with index_lock(index_path):
+                committed = _read_media_index(index_path)
+                kept: list[dict[str, object]] = [
+                    dict(row) for row in committed if not self._row_claimed(row, claim)
+                ]
+                if len(kept) == len(committed):
+                    return 0
+                write_media_index_rows(index_path, frame_from_rows(kept))
+            self._write_media_compositions(kept)
+            return len(committed) - len(kept)
+
+        index_path = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / "index.csv"
+        with index_lock(index_path):
+            committed = _read_tracks_raw_index(index_path)
+            raw_kept: list[dict[str, object]] = [
+                dict(row) for row in committed if not self._row_claimed(row, claim)
+            ]
+            if len(raw_kept) == len(committed):
+                return 0
+            write_tracks_raw_index_rows(index_path, _tracks_frame_from_rows(raw_kept))
+        if kind == "labels":
+            self._write_labels_raw_compositions(raw_kept)
+        else:
+            self._write_tracks_raw_compositions(raw_kept)
+        return len(committed) - len(raw_kept)
+
+    def _edit_source_files(
+        self, kind: SourceKind, source_id: str, files: Sequence[str], *, adding: bool
+    ) -> int:
+        existing = list(self.manifest.sources.of_kind(kind))
+        match = next((s for s in existing if s.id == source_id), None)
+        if match is None:
+            declared = sorted(s.id for s in existing)
+            msg = (
+                f"no {kind} source named {source_id!r}; declared: {declared or 'none'}"
+            )
+            raise KeyError(msg)
+        if match.mode != "files":
+            msg = (
+                f"{kind} source {source_id!r} is a directory source: it claims "
+                "whatever its globs match, so there is no file list to edit"
+            )
+            raise ValueError(msg)
+        current = list(match.files)
+        if adding:
+            additions = [entry for entry in files if entry not in current]
+            updated = [*current, *additions]
+            changed = len(additions)
+        else:
+            removals = {entry for entry in files if entry in current}
+            updated = [entry for entry in current if entry not in removals]
+            changed = len(removals)
+        if not changed:
+            return 0
+        replacement = match.model_copy(update={"files": tuple(updated)})
+        self.manifest.sources = self.manifest.sources.with_kind(
+            kind, [replacement if s.id == source_id else s for s in existing]
+        )
+        self.save()
+        return changed
+
+    def scan_media(
+        self,
+        *,
+        only: Sequence[str] = (),
+        reassign: bool = False,
+        prune_unsourced: bool = False,
+        index_filename: str = "index.csv",
+    ) -> Path:
+        """Rescan every declared media source and rewrite the media index.
+
+        Each source is scanned with its own recipe -- its extensions, its layout,
+        its match mode -- so one dataset can draw from a NAS folder of ``.mp4``
+        under one layout and an explicit import selection under another. The
+        replace scope is the union of what those sources claim, so a row under
+        none of them survives untouched.
+
+        Args:
+            only: Restrict to these source ids. The declaration is not changed.
+            reassign: Let the scan re-derive identity for rows a caller assigned.
+            prune_unsourced: Also drop rows no scanned source claims. Off by
+                default: those rows are usually an assignment or an external
+                reference, not garbage.
+            index_filename: Output filename within the media root.
+
+        Returns:
+            The index path written.
+
+        Raises:
+            KeyError: If *only* names a source that is not declared.
+            ValueError: If no media source is declared at all.
+        """
+        selected = self.scan_sources("media", only=only)
+        if not selected:
+            msg = (
+                "no media scan sources are declared, so there is nothing to "
+                "rescan. Declare one with add_scan_source(), or call "
+                "index_media(search_dirs=...) for a one-off pass."
+            )
+            raise ValueError(msg)
+
+        claim = ScanClaim()
+        rows: list[dict[str, object]] = []
+        for source in selected:
+            if not isinstance(source, MediaScanSource):
+                continue
+            claim = claim | self.source_claim(source)
+            rows.extend(self._scan_media_dirs(self._search_paths(source), source))
+        # One dedupe across every source, not one per source: two sources may
+        # legitimately reach the same file through different paths, and the first
+        # recipe that named it wins, deterministically in declaration order.
+        return self._write_scanned_media(
+            self._dedupe_scope_rows(rows),
+            claim=claim,
+            index_filename=index_filename,
+            reassign=reassign,
+            prune_unsourced=prune_unsourced,
+        )
+
+    def scan_tracks_raw(
+        self,
+        *,
+        only: Sequence[str] = (),
+        prune_unsourced: bool = False,
+        index_filename: str = "index.csv",
+    ) -> Path:
+        """Rescan every declared tracks source and rewrite ``tracks_raw/index.csv``.
+
+        Each source carries its own ``src_format``, patterns and grouping rule,
+        so one dataset can hold TREx output beside CalMS21 arrays. Scanning them
+        one at a time through :meth:`index_tracks_raw` could not: each write
+        replaced the one before it.
+        """
+        return self._scan_raw_sources(
+            "tracks",
+            only=only,
+            prune_unsourced=prune_unsourced,
+            index_filename=index_filename,
+        )
+
+    def scan_labels_raw(
+        self,
+        *,
+        only: Sequence[str] = (),
+        prune_unsourced: bool = False,
+        index_filename: str = "index.csv",
+    ) -> Path:
+        """Rescan every declared labels source and rewrite ``labels_raw/index.csv``."""
+        return self._scan_raw_sources(
+            "labels",
+            only=only,
+            prune_unsourced=prune_unsourced,
+            index_filename=index_filename,
+        )
+
+    def _scan_raw_sources(
+        self,
+        kind: SourceKind,
+        *,
+        only: Sequence[str],
+        prune_unsourced: bool,
+        index_filename: str,
+    ) -> Path:
+        """Drive the raw scan for *kind*, one declared source at a time.
+
+        Each source is a separate ``_index_raw`` pass carrying that source's own
+        recipe. That is safe here where it was not before, because each pass now
+        replaces only what its own claim covers -- so the second source's write
+        preserves the first source's rows instead of erasing them.
+
+        Raises:
+            KeyError: If *only* names a source that is not declared.
+            ValueError: If no source of this kind is declared.
+        """
+        selected = self.scan_sources(kind, only=only)
+        if not selected:
+            msg = (
+                f"no {kind} scan sources are declared, so there is nothing to "
+                f"rescan. Declare one with add_scan_source()."
+            )
+            raise ValueError(msg)
+        scan = self.index_tracks_raw if kind == "tracks" else self.index_labels_raw
+        written = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / index_filename
+        for position, source in enumerate(selected):
+            if not isinstance(source, RawScanSource):
+                continue
+            written = scan(
+                self._search_paths(source),
+                patterns=list(source.patterns),
+                src_format=source.src_format,
+                index_filename=index_filename,
+                recursive=source.recursive,
+                multi_sequences_per_file=source.multi_sequences_per_file,
+                group_from=source.group_from,
+                group_pattern=source.group_pattern,
+                exclude_patterns=list(source.exclude_patterns),
+                compute_md5=source.md5,
+                claim=self.source_claim(source),
+                # Only the first pass may prune: a later one would see the
+                # earlier sources' rows as unclaimed and delete what this same
+                # scan had just written.
+                prune_unsourced=prune_unsourced and position == 0,
+            )
+        return written
+
+    def _search_paths(self, source: ScanSource) -> list[str | Path]:
+        """What to walk for *source*: its directory, or each listed file.
+
+        A file-mode source hands the walker its individual files. The prober
+        accepts a file as readily as a directory, which is what lets one scan
+        path serve both modes rather than branching all the way down.
+        """
+        if source.mode == "files":
+            return list(self._source_files(source))
+        return [self.resolve_source_path(source)]
+
+    def _source_files(self, source: ScanSource) -> list[Path]:
+        """The listed files of a file-mode source that are actually on disk.
+
+        A listed file that has gone is reported and skipped: its row leaves the
+        index because the file did, while the declaration stays, because a share
+        being unmounted is not a decision to un-import.
+        """
+        base = self.resolve_source_path(source)
+        present: list[Path] = []
+        for entry in source.files:
+            candidate = base / entry
+            if candidate.exists():
+                present.append(candidate)
+            else:
+                print(
+                    f"[scan] source {source.id!r}: {candidate} is listed but "
+                    "missing; its row will leave the index",
+                    file=sys.stderr,
+                )
+        return present
+
+    def _rows_claimed_by(self, kind: SourceKind, claim: ScanClaim) -> int:
+        """How many rows of *kind*'s index fall inside *claim*."""
+        try:
+            rows = (
+                self.read_media_index()
+                if kind == "media"
+                else _read_tracks_raw_index(
+                    self.get_root(_RAW_ROOT_FOR_KIND[kind]) / "index.csv"
+                )
+            )
+        except KeyError:
+            return 0
+        return sum(1 for row in rows if self._row_claimed(row, claim))
+
+    # ---- Load and save ----
+
+    def load(self, ensure_roots: bool = True) -> Dataset:
+        """Read the manifest at :attr:`manifest_path` into this dataset.
+
+        **Reading never writes.** A manifest older than the current format is
+        migrated in memory and stays as it is on disk until something saves, so a
+        read-only mount works and looking at a legacy dataset does not rewrite
+        it.
+
+        Args:
+            ensure_roots: Create the declared root directories. Sources are never
+                created, whatever this says -- a source names storage that may be
+                unmounted, and a scan is what discovers whether it is there.
+
+        Returns:
+            This dataset, so the call chains off the constructor.
+
+        Raises:
+            FileNotFoundError: If no manifest is at *manifest_path*.
+            ManifestVersionError: If the manifest is newer than this mosaic.
+        """
+        resolved = resolve_manifest_path(self.manifest_path)
+        self.manifest_path = resolved
+        self.manifest = read_manifest(resolved)
         if ensure_roots:
             self._ensure_roots()
         return self
 
     def save(self) -> None:
-        """Persist manifest."""
-        self._ensure_roots()
-        payload: dict[str, object] = {
-            "name": self.name,
-            "version": self.version,
-            "format": self.format,
-            "roots": self.roots,
-            "meta": self.meta,
-            "dataset_type": self.dataset_type,
-        }
-        # Preserve manifest identity when present (a load->save round-trip must
-        # not drop the uuid / created_at / index_format seeded at creation).
-        if self.uuid:
-            payload["uuid"] = self.uuid
-        if self.created_at:
-            payload["created_at"] = self.created_at
-        if self.index_format:
-            payload["index_format"] = self.index_format
-        # Only include continuous-specific fields if set
-        if self.segment_duration:
-            payload["segment_duration"] = self.segment_duration
-        if self.time_column:
-            payload["time_column"] = self.time_column
+        """Write the manifest back, atomically.
 
-        if self.format == "json":
-            self.manifest_path.write_text(json.dumps(payload, indent=2))
-        else:
-            if not _YAML_OK:
-                raise RuntimeError(
-                    "pyyaml not installed; set format='json' or install pyyaml."
-                )
-            self.manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False))
+        Rewrites the whole file, so it goes out through ``atomic_write``: a
+        reader must never see half a manifest, and an interrupted write must not
+        leave a dataset without one at all.
+
+        Unknown top-level keys read from disk are written back unchanged. That is
+        what lets a field this version stopped modeling survive a load-and-save
+        round trip rather than being annihilated by it.
+        """
+        self._ensure_roots()
+        write_manifest(self.manifest_path, self.manifest)
 
     # ---- Helpers ----
     @property
@@ -1723,7 +2131,11 @@ class Dataset:
             if not d.exists():
                 print(f"[WARN] search dir missing: {d}", file=sys.stderr)
                 continue
-            it = d.rglob("*") if recursive else d.glob("*")
+            # A file-mode source hands over its individual files rather than a
+            # directory to walk. Globbing a file yields nothing, so it would
+            # silently probe zero entries -- accept it as its own candidate and
+            # let the same filters below decide.
+            it = [d] if d.is_file() else (d.rglob("*") if recursive else d.glob("*"))
             for p in it:
                 if not p.is_file():
                     continue
@@ -1839,10 +2251,19 @@ class Dataset:
         recursive: bool = True,
         sequence_match_mode: str = "exact",
         media_layout: MediaLayout | str = "stem",
+        *,
+        claim: ScanClaim | None = None,
+        reassign: bool = False,
+        prune_unsourced: bool = False,
     ) -> Path:
         """
         Scan search_dirs for media files with given extensions and write an index CSV into media root.
         - No symlinks created; absolute paths recorded.
+        - **Replaces what the scan claims and preserves everything else.** A row
+          under none of the scanned directories survives: an assignment-written
+          row for a sequence this pass was not given, and a row whose
+          ``abs_path`` points outside the dataset -- the mechanism one dataset
+          uses to reference another's video without copying it.
         - imgstore directories (Motif / Loopbio) are discovered natively: each
           store becomes one entry (``media_type="imgstore"``). The cameras of one
           synchronized recording (a shared Motif ``synchronizationuuid``) collapse
@@ -1886,9 +2307,53 @@ class Dataset:
                 f"sequence_match_mode must be 'exact' or 'prefix', got '{sequence_match_mode}'"
             )
 
-        media_root = self.get_root(self.resolve_media_root())
-        out_csv = media_root / index_filename
-        exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
+        # The recipe this ad-hoc pass runs under, as the same object a declared
+        # source would be -- so the walk has one code path whether its knobs came
+        # from the manifest or from these arguments. Built through
+        # ``model_validate`` because ``media_layout`` and ``sequence_match_mode``
+        # arrive as open strings for backwards compatibility, and the model is
+        # what narrows them to their closed sets.
+        recipe = MediaScanSource.model_validate(
+            {
+                "id": "ad-hoc",
+                "path": ".",
+                "extensions": tuple(
+                    e if e.startswith(".") else f".{e}" for e in extensions
+                ),
+                "recursive": recursive,
+                "layout": media_layout,
+                "match_mode": sequence_match_mode,
+            }
+        )
+        rows = self._scan_media_dirs(list(search_dirs), recipe)
+        if claim is None:
+            claim = ScanClaim.over_directories(Path(d) for d in search_dirs)
+        return self._write_scanned_media(
+            rows,
+            claim=claim,
+            index_filename=index_filename,
+            reassign=reassign,
+            prune_unsourced=prune_unsourced,
+        )
+
+    def _scan_media_dirs(
+        self, search_dirs: list[str | Path], source: MediaScanSource
+    ) -> list[dict[str, object]]:
+        """Probe *search_dirs* into media index rows, using *source*'s recipe.
+
+        The identity half of a media scan: walk, probe, and decide each row's
+        ``(group, sequence)``. Split from the write so a pass over several
+        declared sources can accumulate rows under several different recipes and
+        commit them together -- writing the index once per source would make each
+        source's write replace the one before it.
+        """
+        exts = {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in source.extensions
+        }
+        recursive = source.recursive
+        media_layout = source.layout
+        sequence_match_mode = source.match_mode
         seq_key_map = self._build_media_sequence_keymap()
 
         # Probe every file + imgstore under the search dirs (identity-free), then
@@ -1963,34 +2428,78 @@ class Dataset:
             seen.add(k)
             dedup.append(r)
 
-        # Carry transcode-written derivative links forward across the reindex,
-        # then densify video_order per (group, sequence, camera) -- the same
-        # ranking write_media_index uses, so a scan and an assignment-driven
-        # write number identically.
-        #
-        # A rescan is not a session, so there are no session positions; but the
-        # prior order is read, not discarded. Passing an empty prior map made
-        # every row an unknown-order prior, which sorts by *name* -- so scanning
-        # a corpus whose order came from an arranged write silently permuted it,
-        # and the media composition hash (item 4.4) computed from that order
-        # moved with no content change. The lookup key is
-        # (group, sequence, basename) and a rescan re-derives the same
-        # (group, sequence) for the same file, so the keys match. They miss
-        # legitimately when the tracks keymap changed between scans and a file's
-        # sequence name moved with it: the prior order genuinely no longer
-        # describes that sequence, and falling back to name is correct there.
-        #
+        return dedup
+
+    def _write_scanned_media(
+        self,
+        dedup: list[dict[str, object]],
+        *,
+        claim: ScanClaim,
+        index_filename: str = "index.csv",
+        reassign: bool = False,
+        prune_unsourced: bool = False,
+    ) -> Path:
+        """Commit scanned media rows, replacing only what *claim* covers.
+
+        The write half of a media scan, shared by the ad-hoc search-dir pass and
+        the declared-source pass so the preserve rule cannot be right in one and
+        wrong in the other.
+        """
+        media_root = self.get_root(self.resolve_media_root())
+        out_csv = media_root / index_filename
         # Scanning and probing above is the expensive, read-only phase and is
         # deliberately unlocked; from here it is in-memory work plus one terminal
         # ``atomic_write``, which is the shape ``index_lock`` requires.
+        #
+        # **This is a replace over what the scan claims, not over the file.** A
+        # row the scan does not claim survives: rows written by an assignment
+        # scope this scan was not given, and rows whose ``abs_path`` points
+        # outside the dataset entirely -- the mechanism that lets one dataset
+        # reference another's video without copying it. Replacing the whole file
+        # deleted both, so scanning dir A and then dir B kept only B.
+        #
+        # ``prior_order`` is read, not discarded. Passing an empty prior map made
+        # every row an unknown-order prior, which sorts by *name* -- so scanning
+        # a corpus whose order came from an arranged write silently permuted it,
+        # and the media composition hash computed from that order moved with no
+        # content change. The lookup key is (group, sequence, basename) and a
+        # rescan re-derives the same (group, sequence) for the same file, so the
+        # keys match. They miss legitimately when the tracks keymap changed
+        # between scans and a file's sequence name moved with it: the prior order
+        # genuinely no longer describes that sequence, and falling back to name
+        # is correct there.
         out_csv.parent.mkdir(parents=True, exist_ok=True)
+        touched = {
+            (str(row.get("group", "")), str(row.get("sequence", ""))) for row in dedup
+        }
         with index_lock(out_csv):
-            prior_order = build_prior_order(_read_media_index(out_csv))
+            committed = _read_media_index(out_csv)
+            prior_order = build_prior_order(committed)
+            preserved: list[dict[str, object]] = [
+                dict(row) for row in committed if not self._row_claimed(row, claim)
+            ]
+            if not reassign:
+                self._keep_assigned_identity(dedup, committed)
+            if prune_unsourced:
+                preserved = []
             self._carry_forward_derivative_links(dedup, out_csv)
-            densify_video_order(dedup, session_positions={}, prior_order=prior_order)
-            df_out = frame_from_rows(dedup)
+            merged: list[dict[str, object]] = [*preserved, *dedup]
+            # Densified over the sequences this scan touched, not over the whole
+            # file: ``densify_video_order`` renumbers every row it is handed, so
+            # passing all of them re-numbers untouched sequences and moves their
+            # composition hashes for no reason.
+            in_scope = [
+                row
+                for row in merged
+                if (str(row.get("group", "")), str(row.get("sequence", ""))) in touched
+            ]
+            densify_video_order(in_scope, session_positions={}, prior_order=prior_order)
+            df_out = frame_from_rows(merged)
             write_media_index_rows(out_csv, df_out)
-        self._write_media_compositions(dedup)
+        # ``merged``, not ``dedup``: ``write_sequence_compositions`` *replaces*
+        # the per-sequence index, so projecting only the scanned rows would
+        # delete the composition row of every sequence this pass preserved.
+        self._write_media_compositions(merged)
 
         multi_count = 0
         if not df_out.empty:
@@ -2954,24 +3463,114 @@ class Dataset:
             include_stray=include_stray,
         )
 
-    def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
-        """True if *row*'s resolved ``abs_path`` lives under any of *dirs*.
+    # Identity cells: what a row says it *is*, as opposed to what was measured
+    # about the file. A scan re-measures freely and must not re-decide these.
+    _IDENTITY_COLUMNS: Final[tuple[str, ...]] = (
+        "group",
+        "sequence",
+        "group_safe",
+        "sequence_safe",
+        "camera",
+        "sync_uuid",
+        "video_order",
+        "assignment_source",
+    )
 
-        Resolve the stored path first (it may be root-relative), then test
-        containment -- the resolver decoupling that keeps the check correct
-        whether ``abs_path`` is stored relative or absolute.
+    def _keep_assigned_identity(
+        self,
+        fresh: list[dict[str, object]],
+        committed: Sequence[Mapping[str, object]],
+    ) -> int:
+        """Restore assigned identity onto freshly scanned rows. In place.
+
+        A scan derives ``(group, sequence)`` from a filename stem, a directory
+        name or a track keymap -- all guesses, and all recorded as such in
+        ``assignment_source``. ``"assigned"`` means a caller said so through a
+        :class:`MediaIndexScope`, which is the one cycle-free source of identity
+        in the index.
+
+        **A guess must not overwrite a fact.** Without this, declaring
+        ``media_raw`` as a scan source would silently repartition every project
+        the control plane manages and move every media composition digest with
+        it. The measured cells -- size, mtime, probe, facts -- are still taken
+        from this scan, because those genuinely are what the scan just observed.
+
+        Returns:
+            How many rows kept an assigned identity.
+        """
+        assigned: dict[Path, Mapping[str, object]] = {}
+        for row in committed:
+            if read_link_cell(row, "assignment_source") != "assigned":
+                continue
+            stored = str(row.get("abs_path", "") or "").strip()
+            if stored:
+                assigned[self.resolve_path(stored).resolve()] = row
+        if not assigned:
+            return 0
+        kept = 0
+        for row in fresh:
+            stored = str(row.get("abs_path", "") or "").strip()
+            if not stored:
+                continue
+            prior = assigned.get(self.resolve_path(stored).resolve())
+            if prior is None:
+                continue
+            for column in self._IDENTITY_COLUMNS:
+                if column in prior:
+                    row[column] = prior[column]
+            kept += 1
+        return kept
+
+    def _row_claimed(self, row: Mapping[str, object], claim: ScanClaim) -> bool:
+        """True if *row*'s ``abs_path`` falls inside *claim*.
+
+        Resolve the stored path first (it may be root-relative), then ask the
+        claim -- the resolver decoupling that keeps the check correct whether
+        ``abs_path`` is stored relative or absolute.
+
+        A row with no ``abs_path`` is claimed by nobody, so it survives every
+        scan. That is the conservative answer: a row a scan cannot locate is not
+        a row a scan may delete.
         """
         abs_cell = str(row.get("abs_path", "") or "").strip()
         if not abs_cell:
             return False
-        resolved = self.resolve_path(abs_cell).resolve()
-        for directory in dirs:
-            try:
-                _ = resolved.relative_to(directory)
-                return True
-            except ValueError:
-                continue
-        return False
+        return claim.claims(self.resolve_path(abs_cell).resolve())
+
+    def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
+        """True if *row*'s resolved ``abs_path`` lives under any of *dirs*.
+
+        The directory case of :meth:`_row_claimed`, kept for the assignment-driven
+        writers, which are always given scope directories rather than a claim.
+        """
+        return self._row_claimed(row, ScanClaim.over_directories(dirs))
+
+    def _resolve_declared_path(self, path: str) -> Path:
+        """A declared source path as an absolute one, creating and checking nothing."""
+        declared = Path(path).expanduser()
+        return declared if declared.is_absolute() else self.base_dir / declared
+
+    def resolve_source_path(self, source: ScanSource) -> Path:
+        """Where a declared source's *path* actually is.
+
+        Relative resolves against the dataset, absolute is taken as written.
+        Nothing is created and nothing is checked: a source names storage that
+        may be on an unmounted share, and finding out is a scan's job, not a
+        load's.
+
+        Note the deliberate asymmetry with :meth:`get_root`. A root is validated
+        to lie inside the dataset, because that root holds an ``index.csv`` that
+        has to travel with it. A source is expected to lie outside, because that
+        is the whole reason it exists.
+        """
+        return self._resolve_declared_path(source.path)
+
+    def source_claim(self, source: ScanSource) -> ScanClaim:
+        """What *source* is responsible for, and so what a scan of it replaces."""
+        base = self.resolve_source_path(source)
+        if source.mode == "files":
+            return ScanClaim.over_files(base / entry for entry in source.files)
+        return ScanClaim.over_directories([base])
 
     def _carry_forward_derivative_links(
         self, rows: list[dict[str, object]], index_path: Path
@@ -3543,6 +4142,9 @@ class Dataset:
         group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
+        *,
+        claim: ScanClaim | None = None,
+        prune_unsourced: bool = False,
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
@@ -3627,6 +4229,8 @@ class Dataset:
             group_from_path=group_from_path,
             exclude_patterns=exclude_patterns,
             compute_md5=compute_md5,
+            claim=claim,
+            prune_unsourced=prune_unsourced,
         )
 
     def _index_raw(
@@ -3646,6 +4250,8 @@ class Dataset:
         group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
+        claim: ScanClaim | None = None,
+        prune_unsourced: bool = False,
     ) -> Path:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
@@ -3734,12 +4340,32 @@ class Dataset:
 
         # iter_track_files already deduped by resolved path and sorted. The scan
         # above is the expensive, read-only phase; the lock covers the write
-        # alone, which is what makes this whole-file rewrite safe against a
-        # concurrent one.
+        # alone, which is what makes the rewrite safe against a concurrent one.
+        #
+        # **A replace over what the scan claims, not over the file** -- the same
+        # rule the media scan follows, and for the same reasons. It is also what
+        # lets one dataset hold two source formats: scanning a trex directory and
+        # then a CalMS21 one used to leave only the second.
+        if claim is None:
+            claim = ScanClaim.over_directories(Path(d) for d in search_dirs)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
-        df = _tracks_frame_from_rows(rows)
         with index_lock(out_csv):
+            committed = _read_tracks_raw_index(out_csv)
+            preserved: list[dict[str, object]] = (
+                []
+                if prune_unsourced
+                else [
+                    dict(row) for row in committed if not self._row_claimed(row, claim)
+                ]
+            )
+            # Preserved rows come back from the reader as plain mappings, while
+            # this pass built typed rows; the frame builder takes either.
+            merged: list[dict[str, object] | TracksRawIndexRow] = [*preserved, *rows]
+            df = _tracks_frame_from_rows(merged)
             write_tracks_raw_index_rows(out_csv, df)
+        # The merged rows, not the scanned ones: the composition writer replaces
+        # the per-sequence index, so projecting only what this pass walked would
+        # delete the composition row of every sequence it preserved.
         composition_writer(df.to_dict("records"))
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
@@ -3757,6 +4383,9 @@ class Dataset:
         group_from_path: Optional[Callable[[Path], str]] = None,
         exclude_patterns: Optional[Iterable[str]] = None,
         compute_md5: bool = True,
+        *,
+        claim: ScanClaim | None = None,
+        prune_unsourced: bool = False,
     ) -> Path:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
@@ -3805,6 +4434,8 @@ class Dataset:
             group_from_path=group_from_path,
             exclude_patterns=exclude_patterns,
             compute_md5=compute_md5,
+            claim=claim,
+            prune_unsourced=prune_unsourced,
         )
 
     def write_tracks_raw_index(
@@ -3924,7 +4555,7 @@ class Dataset:
         Returns path to standardized file, updates tracks/index.csv.
         """
         params = params or {}
-        std_fmt = self.meta.get("tracks", {}).get("standard_format", "trex_v1")
+        std_fmt = str(self.meta_section("tracks").get("standard_format", "trex_v1"))
         src_format = str(raw_row["src_format"])
         src_path = self.resolve_path(raw_row["abs_path"])
 
@@ -4135,7 +4766,7 @@ class Dataset:
 
         params_cls = type(converter).Params
         if "fps" in params_cls.model_fields and "fps" not in merged:
-            fps_default = self.meta.get("fps_default")
+            fps_default = self.meta_float("fps_default")
             if fps_default is not None:
                 merged["fps"] = float(fps_default)
         # The old dict spelled the same thing two ways; accept the legacy key
@@ -4276,7 +4907,7 @@ class Dataset:
         # Read once, and from the manifest rather than spelled "trex_v1" here:
         # convert_one_track already asks the manifest, and the two paths writing
         # different std_format values for one dataset is the drift that costs.
-        std_fmt = self.meta.get("tracks", {}).get("standard_format", "trex_v1")
+        std_fmt = str(self.meta_section("tracks").get("standard_format", "trex_v1"))
 
         # Merge per (group, sequence, src_format). The same rule the single-file
         # path applies per cell, applied here per column: these three both key
@@ -4504,17 +5135,28 @@ class Dataset:
                 )
                 written += 1
 
-        labels_meta = self.meta.setdefault("labels", {})
+        labels_meta = self.meta_section("labels")
         labels_meta[kind] = {
             "run_id": variant,
             "label_format": converter.label_format,
             "updated_at": _now_iso(),
             **converter.get_metadata(),
         }
+        # The save IS the registration. These NPZ files have no other record
+        # than ``meta['labels'][kind]``, so a save that quietly did not happen
+        # reports success and leaves a conversion nothing can find. This used to
+        # swallow every exception, defending against ``save()`` destroying the
+        # manifest's other keys -- a hazard the current format removed.
         try:
             self.save()
-        except Exception:
-            pass
+        except OSError as exc:
+            msg = (
+                f"converted {written} sequences for label kind {kind!r}, but "
+                f"could not record them in {self.manifest_path}: {exc}. The "
+                "files are on disk and nothing indexes them; fix the manifest "
+                "and re-run the conversion."
+            )
+            raise RuntimeError(msg) from exc
 
         print(
             f"[convert_all_labels] kind={kind} wrote {written} sequences as "
@@ -4580,7 +5222,7 @@ class Dataset:
 
         params_cls = type(converter).Params
         if "fps" in params_cls.model_fields and "fps" not in merged:
-            fps_default = self.meta.get("fps_default")
+            fps_default = self.meta_float("fps_default")
             if fps_default is not None:
                 merged["fps"] = float(fps_default)
         if "fps_default" in merged:
@@ -4738,16 +5380,24 @@ class Dataset:
             )
 
         if new_rows:
-            labels_meta = self.meta.setdefault("labels", {})
+            labels_meta = self.meta_section("labels")
             labels_meta[kind] = {
                 "run_id": "",
                 "label_format": label_format,
                 "updated_at": _now_iso(),
             }
+            # As in convert_all_labels: the save is what makes the written
+            # files findable, so a failure has to be heard rather than passed.
             try:
                 self.save()
-            except Exception:
-                pass
+            except OSError as exc:
+                msg = (
+                    f"wrote {len(new_rows)} sequences for label kind {kind!r}, "
+                    f"but could not record them in {self.manifest_path}: {exc}. "
+                    "The files are on disk and nothing indexes them; fix the "
+                    "manifest and re-run the conversion."
+                )
+                raise RuntimeError(msg) from exc
 
         print(
             f"[convert_labels_custom] kind={kind} wrote {len(new_rows or [])} "

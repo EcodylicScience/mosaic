@@ -41,12 +41,12 @@ Data flows through the `Dataset` orchestrator (everything is versioned by `run_i
 ```
 video files
    │
-   ├─ index_media()                       → media/index.csv  (probed via mosaic_media/ffprobe)
+   ├─ scan_media()                        → media_raw/index.csv  (probed via mosaic_media/ffprobe)
    ├─ tracking.extract_frames(ds, …)      → media/frames/    (uniform or k-means sampled PNGs)
    │
 raw tracks/labels
    │
-   ├─ index_tracks_raw()     → tracks_raw/index.csv
+   ├─ scan_tracks_raw()      → tracks_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet  (standardized)
    ├─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
    │

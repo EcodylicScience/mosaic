@@ -236,10 +236,9 @@ def test_a_current_dataset_reports_no_legacy_tracker_root(tmp_path: Path) -> Non
 def test_the_backfill_adds_only_what_is_absent(tmp_path: Path) -> None:
     """A manifest already declaring every root comes back unchanged.
 
-    Asserted on the roots mapping rather than on the manifest bytes: ``save``
-    does not reproduce ``new_dataset_manifest``'s comment header, which is
-    pre-existing and has nothing to do with the backfill. Comparing files would
-    fail for a reason this test is not about.
+    Asserted on the roots mapping rather than on the manifest bytes. The header
+    comment is regenerated on every write and key order is the model's, not the
+    file's, so comparing bytes would fail for reasons this test is not about.
     """
     manifest = new_dataset_manifest(name="current", base_dir=tmp_path / "current")
     declared = dict(yaml.safe_load(manifest.read_text())["roots"])

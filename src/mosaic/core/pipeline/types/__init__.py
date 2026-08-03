@@ -1,3 +1,4 @@
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._loaders import (
     JoblibLoadSpec,
     LoadSpec,
@@ -36,7 +37,6 @@ from mosaic.core.pipeline.types.labels import (
 from mosaic.core.pipeline.types.params import (
     HASH_EXCLUDE,
     GlobalModelParams,
-    JsonValue,
     Params,
 )
 from mosaic.core.pipeline.types.results import (

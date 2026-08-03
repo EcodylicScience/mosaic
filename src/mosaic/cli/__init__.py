@@ -16,8 +16,10 @@ from mosaic.cli.cancel import cancel_command
 from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
 from mosaic.cli.features import features_app
-from mosaic.cli.index_media import index_media_command
-from mosaic.cli.index_tracks import index_tracks_command
+from mosaic.cli.init import init_command
+from mosaic.cli.scan import scan_command
+from mosaic.cli.sources import sources_app
+from mosaic.cli.tags import notes_app, tags_app
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reconcile import reconcile_command
 from mosaic.cli.reindex import reindex_command
@@ -52,8 +54,11 @@ app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
 
 # Dataset prep.
-_ = app.command(name="index-media")(index_media_command)
-_ = app.command(name="index-tracks")(index_tracks_command)
+_ = app.command(name="init")(init_command)
+app.add_typer(sources_app, name="sources")
+_ = app.command(name="scan")(scan_command)
+app.add_typer(notes_app, name="notes")
+app.add_typer(tags_app, name="tags")
 _ = app.command(name="reindex")(reindex_command)
 _ = app.command(name="reconcile")(reconcile_command)
 _ = app.command(name="reprobe-media")(reprobe_media_command)

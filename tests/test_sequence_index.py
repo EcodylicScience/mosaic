@@ -149,16 +149,38 @@ def test_a_sequence_that_goes_away_leaves_the_index(tmp_path: Path) -> None:
     """A projection, not an accumulation -- which is why ``replace`` is used."""
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
+    scanned = tmp_path / "media_raw" / "scanned"
+    _cfr_mp4(scanned / "a.mp4")
+    _cfr_mp4(scanned / "b.mp4")
+    ds.index_media([scanned], extensions=(".mp4",))
+    assert set(_compositions(ds, "media_raw")) == {"a", "b"}
+
+    # Rescan the same directory with one file gone. It is claimed by the scan,
+    # so its row goes -- and the projection has to follow it out.
+    (scanned / "b.mp4").unlink()
+    ds.index_media([scanned], extensions=(".mp4",))
+
+    assert set(_compositions(ds, "media_raw")) == {"a"}
+
+
+def test_a_sequence_outside_the_scan_keeps_its_composition(tmp_path: Path) -> None:
+    """The other half: a projection must not drop what the scan never claimed.
+
+    ``write_sequence_compositions`` replaces the per-sequence index wholesale, so
+    a scan that projected only the rows *it* walked would delete the composition
+    of every sequence it had just carefully preserved -- silently, and only
+    visible later as a moved identity hash.
+    """
+    tmp_path = tmp_path.resolve()
+    ds = _make_dataset(tmp_path)
     _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
     _arrange(ds, "seqA", {"a.mp4": 0})
     assert set(_compositions(ds, "media_raw")) == {"seqA"}
 
-    # Re-index a directory holding a different sequence entirely: the media index
-    # is rewritten to just that one, and the projection has to follow.
     _cfr_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4")
     ds.index_media([tmp_path / "media_raw" / "seqB"], extensions=(".mp4",))
 
-    assert set(_compositions(ds, "media_raw")) == {"b"}
+    assert set(_compositions(ds, "media_raw")) == {"seqA", "b"}
 
 
 # --- tracks_raw -------------------------------------------------------------

@@ -12,23 +12,11 @@ from mosaic.core.pipeline.types.artifacts import (
     ParquetArtifact,
 )
 
-
-type JsonValue = (
-    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
-)
-"""Anything JSON can represent exactly.
-
-The annotation for a params field that is deliberately open-ended -- a
-pass-through settings dictionary handed to an external tool, a list of
-user-supplied specs. Prefer a concrete model wherever the shape is actually
-known; this is for the cases where it genuinely is not.
-
-It accepts every value that survives ``identity_ready`` intact and rejects
-exactly those that would not, so an unrepresentable value fails at params
-construction with pydantic naming the field, rather than deep inside
-``hash_params`` with only a type name to go on. Recursive, so nested lists and
-dictionaries validate.
-"""
+# ``JsonValue`` used to live here. It moved to ``mosaic.core.json_value`` -- a
+# module with no imports at all -- because the dataset manifest needs the same
+# type and importing this one drags the loader and artifact machinery, and
+# through them pandas, into a manifest read. The package ``__init__`` re-exports
+# it from its new home, so every existing import path is unchanged.
 
 
 class _HashExclude:

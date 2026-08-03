@@ -8,6 +8,50 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — the manifest says where the data comes from
+
+**`dataset.yaml` is at version 2, and declares its scan sources.** Roots were
+pinned inside the dataset so that every `index.csv` travels with it; the
+replacement for an outside root -- a *search directory* whose files are recorded
+by absolute `abs_path` -- was an argument typed at the command line and
+remembered nowhere. It is now `sources:` in the manifest, one entry per place the
+dataset draws from, each carrying its whole recipe. `mosaic scan` with no
+arguments rescans exactly that set, across media, tracks and labels.
+
+A source may claim a directory to glob or an explicit list of files. The second
+is what an import that selects some of a folder's contents needs, and no glob
+expresses it.
+
+**A scan now replaces what it claims and preserves everything else.** It used to
+rewrite the index from whatever it had just walked, which meant scanning
+directory A and then directory B kept only B, any scan destroyed rows pointing at
+files outside the dataset, and one dataset could not hold two source formats at
+once. All three are fixed by the same change. `--prune-unsourced` asks for the
+old whole-file rebuild. A scan also no longer overwrites an identity a caller
+*assigned*: it refreshes the measured cells and keeps the identity ones, so
+declaring `media_raw` as a source cannot silently repartition a project the
+control plane manages.
+
+**Observable from another repository.** Newly created manifests are version 2.
+Existing ones stay version 1 on disk until something saves; reading never writes.
+`format`, `index_format`, `dataset_type`, `segment_duration` and `time_column`
+are no longer written -- nothing read them -- but they are not deleted either:
+unknown top-level keys are now preserved through a load-and-save round trip,
+where `save()` previously wrote a fixed key list and annihilated everything else.
+A manifest declaring a *newer* version raises rather than being read under the
+wrong rules.
+
+`mosaic index-media` and `mosaic index-tracks` are replaced by `mosaic scan`,
+with `mosaic sources` to declare what it reads. New alongside them: `mosaic init`
+(no command could create a dataset before), and `mosaic notes` / `mosaic tags`
+for the dataset's own description. Tags are typed, carrying the same
+`type` / `type_constraints` / `value` shape as mosaic-api's sequence and
+individual tags. The library entry points `index_media`, `index_tracks_raw` and
+`index_labels_raw` keep their signatures.
+
+mosaic-api and mosaic-queue need no change: the whole `Dataset` surface either
+uses is methods, and all of them are unchanged.
+
 ## Unreleased — a blank group stops being the word "nan"
 
 **A dataset with no group converted its tables under one.** `convert_all_tracks`

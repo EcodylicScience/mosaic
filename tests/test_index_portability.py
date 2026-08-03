@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from mosaic.behavior.feature_library import SpeedAngvel
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -226,20 +227,46 @@ def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
 
 
 def test_manifest_identity_survives_load_save(tmp_path: Path) -> None:
-    """uuid / created_at / index_format survive a load -> save round-trip.
+    """uuid and created_at survive a load -> save round-trip.
 
-    new_dataset_manifest seeds these identity fields; save() used to drop them
-    (its payload omitted them), which is why callers that needed them stable had
-    to avoid save() entirely. Reloading after save() proves they persist.
+    They identify the dataset, not its most recent edit, so a save must carry
+    them through. ``save()`` once wrote a fixed key list that omitted them, which
+    is why callers needing them stable had to avoid ``save()`` entirely.
     """
     manifest = new_dataset_manifest(name="ds", base_dir=tmp_path)
     ds = Dataset(manifest_path=manifest).load()
-    seeded = (ds.uuid, ds.created_at, ds.index_format)
+    seeded = (ds.uuid, ds.created_at)
     assert all(seeded), f"manifest identity not loaded: {seeded}"
 
     ds.save()
     reloaded = Dataset(manifest_path=manifest).load()
-    assert (reloaded.uuid, reloaded.created_at, reloaded.index_format) == seeded
+    assert (reloaded.uuid, reloaded.created_at) == seeded
+
+
+def test_a_key_the_current_format_does_not_model_survives_a_save(
+    tmp_path: Path,
+) -> None:
+    """Retiring a field must not delete it from anybody's file.
+
+    ``index_format``, ``dataset_type`` and three others stopped being modeled
+    when the manifest reached version 2. They are not deleted: an unmodeled
+    top-level key is carried through the load-and-save round trip untouched, so a
+    dataset written by an older mosaic keeps everything it held.
+    """
+    manifest = new_dataset_manifest(name="ds", base_dir=tmp_path)
+    text = manifest.read_text(encoding="utf-8")
+    manifest.write_text(
+        text + "index_format: group/sequence\ndataset_type: continuous\n",
+        encoding="utf-8",
+    )
+
+    ds = Dataset(manifest_path=manifest).load()
+    assert ds.manifest.preserved["dataset_type"] == "continuous"
+
+    ds.save()
+    written = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert written["index_format"] == "group/sequence"
+    assert written["dataset_type"] == "continuous"
 
 
 # --- the tracks index's source pointer --------------------------------------

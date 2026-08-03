@@ -74,7 +74,7 @@ def build_work_items(
             the dataset's ``fps_default``.
     """
     fallback_fps = (
-        float(ds.meta.get("fps_default", 30.0)) if fps_default is None else fps_default
+        ds.meta_float("fps_default", 30.0) if fps_default is None else fps_default
     )
     items: list[TrackerWorkItem] = []
     claimed: set[str] = set()

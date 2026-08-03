@@ -21,45 +21,79 @@ for finer-grained options.
 
 ## Create a dataset
 
-A mosaic dataset is a directory with a YAML or JSON manifest pointing to
-named roots for media, tracks, labels, features, and models.
+A mosaic dataset is a directory with a `dataset.yaml` manifest naming the roots
+that hold media, tracks, labels, features and models.
+
+```bash
+mosaic init my_project --name "Cage A 2026"
+```
+
+Every root lives **inside** the dataset, so its `index.csv` travels with it when
+the dataset is copied, archived or synced. Video that lives elsewhere is not a
+root pointing outward -- it is a *scan source*, below, whose files are recorded
+by absolute path into an index that stays inside.
+
+## Declare where the data is
+
+```bash
+# A directory to walk. It may be anywhere -- a NAS, another volume.
+mosaic sources add -m my_project/dataset.yaml --kind media \
+    --path /Volumes/behavior-nas/cage_a --extensions .mp4,.h264
+
+# Raw tracking output, with the format that reads it.
+mosaic sources add -m my_project/dataset.yaml --kind tracks \
+    --path /Volumes/behavior-nas/trex_out --patterns '*.npz' --src-format trex_npz
+```
+
+A source can also claim an explicit list of files rather than everything a glob
+matches, which is what importing some of a folder's contents needs:
+
+```bash
+mosaic sources add -m my_project/dataset.yaml --kind media --id pilot \
+    --path /Volumes/behavior-nas/pilot --file trial_03/cam0.mp4 --file trial_07/cam0.mp4
+```
+
+## Scan
+
+```bash
+mosaic scan -m my_project/dataset.yaml
+```
+
+With no arguments this rescans **everything the manifest declares** -- media,
+tracks and labels -- writing each root's `index.csv`. Each source is read with
+its own recipe, so one dataset can draw from a folder of `.mp4` and a folder of
+CalMS21 arrays at once.
+
+A scan replaces what its sources claim and preserves everything else, so
+scanning one source never deletes another's rows. `mosaic sources list` shows
+what is declared and whether it is currently reachable.
+
+The same passes are available from Python (`ds.scan_media()`,
+`ds.scan_tracks_raw()`, `ds.scan_labels_raw()`), as is a one-off scan of
+directories you do not want to declare (`ds.index_media(search_dirs=[...])`).
+
+## Describe the dataset
+
+Notes and tags live in the manifest, so they travel with the data:
+
+```bash
+mosaic notes set -m my_project/dataset.yaml "Cage A pilot, Feb-Apr 2026."
+mosaic tags define -m my_project/dataset.yaml cohort --type categorical \
+    --options 2026-spring,2026-fall
+mosaic tags set -m my_project/dataset.yaml cohort 2026-spring
+```
+
+Tags are typed: `label`, `text`, `int`, `float`, `bool` and `categorical`, with
+the constraints each type allows. A value outside them is refused when you set
+it, not discovered later.
+
+## Convert tracks
 
 ```python
 from mosaic.core.dataset import Dataset
 
-ds = Dataset(manifest_path="my_project/dataset.yaml")
-ds.set_root("media_raw", "my_project/videos")
-ds.set_root("tracks_raw", "my_project/tracking_output")
-ds.save()
-```
-
-## Index media
-
-Scan directories for video files and collect metadata via `mosaic_media.probe_media`
-(which shells out to system `ffprobe`):
-
-```python
-ds.index_media(
-    search_dirs=["my_project/videos"],
-    extensions=(".mp4", ".avi", ".h264"),
-)
-```
-
-This writes `media/index.csv` with columns for group, sequence, path,
-width, height, fps, and codec.
-
-
-## Index and convert tracks
-
-```python
-# Index raw tracking files
-ds.index_tracks_raw(
-    search_dirs=["my_project/tracking_output"],
-    src_format="calms21_npy",
-)
-
-# Convert to standardized parquet format
-ds.convert_all_tracks()
+ds = Dataset(manifest_path="my_project/dataset.yaml").load()
+ds.convert_all_tracks()   # -> tracks/<variant>/<group>__<seq>.parquet
 ```
 
 ### Tracking videos with TRex (optional)

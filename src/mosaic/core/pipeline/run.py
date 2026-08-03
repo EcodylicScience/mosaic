@@ -786,7 +786,7 @@ def _run_feature_impl(
     """
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
-        ds.meta.get("fps_default"),
+        ds.meta_float("fps_default"),
         filter_start_frame,
         filter_end_frame,
         filter_start_time,
@@ -1492,7 +1492,7 @@ def load_values(
 
     # Frame range
     frame_start, frame_end = resolve_frame_range(
-        ds.meta.get("fps_default"),
+        ds.meta_float("fps_default"),
         filter_start_frame,
         filter_end_frame,
         filter_start_time,

@@ -154,8 +154,62 @@ named roots:
 - `models/<name>/<run_id>/`   — trained model artifacts
 - `inputsets/`    — input-set definitions for grouped runs
 
-`dataset_type` is `"discrete"` (default) or `"continuous"` (with
-`segment_duration` and `time_column`).
+### The dataset manifest
+
+`dataset.yaml` is what makes a directory a mosaic dataset. Its format lives in
+[`core/manifest.py`](src/mosaic/core/manifest.py) as pydantic models that take no
+import from `Dataset`; `Dataset` holds one and exposes its fields as properties.
+
+- `manifest_version: 2` is current. An older manifest is migrated **in memory**
+  on read and stays as it is on disk until something saves, so a read-only mount
+  works. A *newer* one raises rather than being read under the wrong rules.
+- **Unknown top-level keys are preserved**, which is what made retiring
+  `format`, `index_format`, `dataset_type`, `segment_duration` and `time_column`
+  cost nothing: they are no longer modeled, and a file that holds them keeps
+  them through a load-and-save round trip.
+- `save()` is atomic. `Dataset.mutate_manifest()` is the read-modify-write seam
+  for a writer that may be racing another one.
+- **Roots live inside the dataset; sources deliberately do not.** See below.
+
+### Scan sources: where a dataset draws its raw files from
+
+`sources:` declares, per raw root, the directories and files a scan reads. A
+source may point anywhere -- that is the mechanism that replaced an external
+`media_raw`, with the files recorded by absolute `abs_path` into an index that
+stays inside. A source directory is never created and never walked at load time.
+
+Two modes. A **directory** source globs (`extensions` / `patterns`,
+`recursive`); a **files** source claims exactly the paths it lists and nothing
+beside them, which is what an import selecting some of a folder's contents
+needs -- no glob expresses an arbitrary subset. Each source carries its whole
+recipe, so one dataset can hold TREx output beside CalMS21 arrays.
+
+**A scan replaces what it claims and preserves everything else**
+([`core/pipeline/scan_claim.py`](src/mosaic/core/pipeline/scan_claim.py)). A row
+under no scanned source survives: one written by an assignment scope, or one
+pointing at a file outside the dataset. A file removed from a claimed directory
+does leave. Two sources of one kind may not claim the same file, so the claimed
+sets partition; two file sources sharing a directory with disjoint lists are
+legal and expected. `--prune-unsourced` opts into dropping unclaimed rows.
+
+A scan never overwrites an identity a caller **assigned** through a
+`MediaIndexScope`; it refreshes the measured cells and keeps the identity ones.
+Without that, declaring `media_raw` as a source would silently repartition every
+project the control plane manages.
+
+### Dataset notes and tags
+
+`notes:` is free text. `tags:` are typed attributes carrying the same
+`type` / `type_constraints` / `value` shape as mosaic-api's sequence and
+individual tags, validated by the shared grammar in
+[`core/typed_attribute.py`](src/mosaic/core/typed_attribute.py) (`label`, `text`,
+`int`, `float`, `bool`, `categorical`). Definition and value collapse into one
+entry because a dataset-level tag has exactly one holder, so there is nothing
+for a constraint change to narrow against. A `None` value means declared but not
+yet set.
+
+These describe the **dataset**. The per-sequence tags that categorize sequences
+for analysis are a different thing, owned by mosaic-api.
 
 ### Plugin registries (everything is a plugin)
 
@@ -292,12 +346,15 @@ is a tracking-domain concern — it reads `media/frames` via `ds.get_root("frame
 ## Data Flow Pipeline
 
 ```
+dataset.yaml  (mosaic init)
+   └─ sources:                         → what every scan below reads
+
 video files
-   ├─ index_media()                    → media/index.csv   (ffprobe metadata)
+   ├─ scan_media()  / index_media()    → media_raw/index.csv  (ffprobe metadata)
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
-   ├─ index_tracks_raw()     → tracks_raw/index.csv
+   ├─ scan_tracks_raw() / scan_labels_raw()  → <root>/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 

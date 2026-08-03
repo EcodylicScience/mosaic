@@ -22,38 +22,12 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
-
-# --- Mock dataset ---
-
-
-class _MockDataset:
-    def __init__(self, root: Path):
-        self._root = root
-        for directory in ("tracks", "features"):
-            (root / directory).mkdir(parents=True, exist_ok=True)
-
-    def get_root(self, key: str) -> Path:
-        return self._root / key
-
-    def resolve_path(self, stored_path: object, anchor: object = None) -> Path:
-        path = Path(str(stored_path))
-        return path if path.is_absolute() else self._root / path
-
-    def relative_to_root(self, path: object) -> str:
-        try:
-            return str(Path(str(path)).resolve().relative_to(self._root.resolve()))
-        except ValueError:
-            return str(path)
-
-    @property
-    def meta(self) -> dict[str, object]:
-        return {"fps_default": 30.0}
-
+from tests.mock_dataset import MockDataset
 
 # --- Helpers ---
 
 
-def _write_tracks_index(ds: _MockDataset, entries: list[tuple[str, str, Path]]) -> None:
+def _write_tracks_index(ds: MockDataset, entries: list[tuple[str, str, Path]]) -> None:
     idx_path = ds.get_root("tracks") / "index.csv"
     rows = [{"group": g, "sequence": s, "abs_path": str(p)} for g, s, p in entries]
     pd.DataFrame(rows).to_csv(idx_path, index=False)
@@ -73,7 +47,7 @@ def _make_parquet(path: Path, n_rows: int = 10, start_frame: int = 0) -> None:
 
 
 def _setup_tracks(
-    ds: _MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10
+    ds: MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10
 ) -> list[tuple[str, str, Path]]:
     """Create track parquets and write the tracks index. Returns entries."""
     entries: list[tuple[str, str, Path]] = []
@@ -248,7 +222,7 @@ class _EmptyInputFeature:
 
 
 def test_stateless_basic(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     feature = _StatelessFeature()
@@ -279,7 +253,7 @@ def test_entries_selects_arbitrary_subset(tmp_path: Path) -> None:
     filter would be ambiguous; entries= selects (g1, s1) and (g2, s1) while
     excluding (g1, s2) -- the arbitrary, tag-resolvable subset case.
     """
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g1", "s1"), ("g1", "s2"), ("g2", "s1")])
 
     feature = _StatelessFeature()
@@ -298,7 +272,7 @@ def test_entries_selects_arbitrary_subset(tmp_path: Path) -> None:
 
 
 def test_stateful_fit_and_apply(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     feature = _StatefulFeature()
@@ -337,7 +311,7 @@ def test_stateful_fit_and_apply(tmp_path: Path) -> None:
 
 
 def test_overwrite_false_skips(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     feature = _StatelessFeature()
@@ -361,7 +335,7 @@ def test_overwrite_false_skips(tmp_path: Path) -> None:
 
 
 def test_global_marker(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     # Tracks exist but feature has empty inputs
     _setup_tracks(ds, [("g", "s1")])
 
@@ -386,7 +360,7 @@ def test_global_marker(tmp_path: Path) -> None:
 
 
 def test_frame_filter(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")], n_rows=20)
 
     feature = _StatelessFeature()
@@ -403,7 +377,7 @@ def test_frame_filter(tmp_path: Path) -> None:
 
 
 def test_scope_dependent_hashing(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3")])
 
     feature1 = _StatefulFeature()
@@ -416,7 +390,7 @@ def test_scope_dependent_hashing(tmp_path: Path) -> None:
 
 
 def test_overlap_frame_filter_mutual_exclusion(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     feature = _StatelessFeature()
@@ -425,7 +399,7 @@ def test_overlap_frame_filter_mutual_exclusion(tmp_path: Path) -> None:
 
 
 def test_result_type(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     feature = _StatelessFeature()
@@ -500,7 +474,7 @@ class _NonCallableCheckFeature(_CountingStateless):
 
 
 def test_cache_hit_skips_without_loading_input(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
 
     f1 = _CountingStateless()
@@ -521,7 +495,7 @@ def test_cache_hit_skips_without_loading_input(tmp_path: Path) -> None:
 
 
 def test_check_output_recomputes_corrupt_parquet(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
     from mosaic.core.pipeline.index import feature_run_root
 
@@ -547,7 +521,7 @@ def test_check_output_recomputes_corrupt_parquet(tmp_path: Path) -> None:
 def test_corrupt_output_recomputes_on_default_path(tmp_path: Path) -> None:
     # check_output=False (the default) must not crash on an unreadable cached
     # output: a truncated/corrupt footer falls through to recompute that entry.
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
     from mosaic.core.pipeline.index import feature_run_root
 
@@ -571,7 +545,7 @@ def test_corrupt_output_recomputes_on_default_path(tmp_path: Path) -> None:
 
 
 def test_custom_check_output_triggers_recompute(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
     from mosaic.core.pipeline.index import feature_run_root
 
@@ -591,7 +565,7 @@ def test_custom_check_output_triggers_recompute(tmp_path: Path) -> None:
 
 
 def test_raising_custom_check_recomputes_instead_of_crashing(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     f1 = _RaisingCheckFeature()
@@ -605,7 +579,7 @@ def test_raising_custom_check_recomputes_instead_of_crashing(tmp_path: Path) -> 
 
 
 def test_noncallable_check_output_falls_back_to_default(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     f1 = _NonCallableCheckFeature()
@@ -635,7 +609,7 @@ class _ThroughputFeature(_StatelessFeature):
 def test_hash_excluded_param_reuses_cache(tmp_path: Path) -> None:
     from mosaic.core.pipeline.index import feature_run_root
 
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     # First run at batch_size=4.
@@ -651,7 +625,7 @@ def test_hash_excluded_param_reuses_cache(tmp_path: Path) -> None:
 
 
 def test_real_param_change_busts_cache(tmp_path: Path) -> None:
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])
 
     r1 = run_feature(ds, _ThroughputFeature(params={"real": 0}))

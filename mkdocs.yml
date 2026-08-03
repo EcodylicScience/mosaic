@@ -61,6 +61,8 @@ nav:
   - API Reference:
       - Core:
           - Dataset: api/core/dataset.md
+          - Manifest: api/core/manifest.md
+          - Typed attributes: api/core/typed-attribute.md
           - Schema: api/core/schema.md
           - Helpers: api/core/helpers.md
       - Pipeline:
