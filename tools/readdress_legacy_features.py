@@ -38,10 +38,21 @@ What it refuses
 * Any run whose feature ``version`` differs from the version recorded in its
   ``run_id``. A version bump is a *declared* recipe change, and the whole point
   of a declared version is that nothing re-addresses across one.
+* Any run with an **unpinned upstream** (``"run_id": null`` in ``_inputs`` or
+  ``_params``). That records "whichever run was latest at the time", which is not
+  re-derivable; pinning it to today's latest would move the artifact under a
+  lineage it never had, and a live run would resolve the same wrong way, so even
+  the ``cache_hit`` check below would confirm it. Legacy runs are precisely the
+  population that carries these.
 * Anything downstream of a run it refused, because that downstream's identity
   pins an upstream id that is about to move under it.
 * Any ``scope_dependent`` feature. Those hash the set of sequences in scope,
   which legacy ``params.json`` does not record, so the address would be a guess.
+
+The dependency graph is keyed on ``(storage_name, run_id)``, never the digest
+alone: ``compute_run_id``'s payload carries no feature-name term, so two features
+can mint the same identifier, and a graph keyed on it would order a downstream
+before its real upstream.
 
 Everything it does is a directory rename plus a metadata rewrite: ``params.json``,
 the identity-scheme marker, and the run's index rows, with each index backed up
@@ -112,7 +123,9 @@ class Run:
     run_id: str
     run_root: Path
     doc: dict[str, object]
-    upstream: tuple[tuple[str, str], ...]  # (feature_name, run_id) pairs
+    # (feature_name, run_id) pairs; run_id is None for an unpinned reference,
+    # which is recorded rather than dropped -- see _upstream_refs.
+    upstream: tuple[tuple[str, str | None], ...]
     # filled in during processing
     verdict: str = "pending"
     new_run_id: str = ""
@@ -173,16 +186,26 @@ def read_runs(ds: Dataset) -> list[Run]:
     return runs
 
 
-def _upstream_refs(doc: dict[str, object]) -> list[tuple[str, str]]:
-    """Every pinned ``(feature, run_id)`` reachable from _inputs and _params."""
-    found: list[tuple[str, str]] = []
+def _upstream_refs(doc: dict[str, object]) -> list[tuple[str, str | None]]:
+    """Every ``(feature, run_id)`` reference reachable from _inputs and _params.
+
+    An **unpinned** reference -- ``"run_id": null`` -- is recorded with ``None``
+    rather than dropped, and that is the whole point. Dropping it made the run
+    look dependency-free: the upstream gate could not fire, ``_substitute`` had
+    nothing to rewrite, and ``resolve_references`` then silently re-pinned it to
+    today's ``latest_run_id()``, moving the artifact under a lineage it never
+    had. Legacy runs are exactly the population that carries these, because they
+    predate the scheme that made ``_inputs`` record a concrete upstream id.
+    """
+    found: list[tuple[str, str | None]] = []
 
     def walk(node: object) -> None:
         if isinstance(node, dict):
             mapping = cast("dict[str, object]", node)
-            feature, run_id = mapping.get("feature"), mapping.get("run_id")
-            if isinstance(feature, str) and isinstance(run_id, str) and feature:
-                found.append((feature, run_id))
+            feature = mapping.get("feature")
+            if isinstance(feature, str) and feature and "run_id" in mapping:
+                run_id = mapping.get("run_id")
+                found.append((feature, run_id if isinstance(run_id, str) else None))
             for value in mapping.values():
                 walk(value)
         elif isinstance(node, list):
@@ -212,26 +235,60 @@ def _substitute(node: object, remap: dict[tuple[str, str], str]) -> object:
     return node
 
 
+def _node(run: "Run") -> tuple[str, str]:
+    """This run's graph key: ``(storage_name, run_id)``.
+
+    Not the bare ``run_id``. ``compute_run_id``'s payload carries no feature-name
+    term, so two different features can and do mint the same identifier -- and a
+    graph keyed on the digest alone then places a downstream before its real
+    upstream and hashes it against an empty remap.
+    """
+    return (run.storage_name, run.run_id)
+
+
+def _resolve_ref(
+    feature: str, run_id: str, index: dict[tuple[str, str], "Run"]
+) -> tuple[str, str] | None:
+    """The graph key a recorded reference names, or ``None`` if it names nothing here.
+
+    A ``Result``'s ``feature`` is the *storage* name (``speed-angvel__from__tracks``),
+    which is the key directly. A reference written with the bare slug is matched by
+    slug as a fallback, and an ambiguous slug match is treated as unresolved rather
+    than guessed at.
+    """
+    if (feature, run_id) in index:
+        return (feature, run_id)
+    by_slug = [
+        key
+        for key in index
+        if key[1] == run_id and key[0].split(_FROM, 1)[0] == feature
+    ]
+    return by_slug[0] if len(by_slug) == 1 else None
+
+
 def _topo_order(runs: list[Run]) -> list[Run]:
     """Upstream before downstream. Ties and cycles keep their read order."""
-    by_id = {run.run_id: run for run in runs}
+    index = {_node(run): run for run in runs}
     ordered: list[Run] = []
-    placed: set[str] = set()
+    placed: set[tuple[str, str]] = set()
     remaining = list(runs)
     while remaining:
         progressed = False
         deferred: list[Run] = []
         for run in remaining:
             pending = [
-                up_id
-                for _, up_id in run.upstream
-                if up_id in by_id and up_id not in placed and up_id != run.run_id
+                key
+                for feature, up_id in run.upstream
+                if up_id
+                and (key := _resolve_ref(feature, up_id, index)) is not None
+                and key not in placed
+                and key != _node(run)
             ]
             if pending:
                 deferred.append(run)
                 continue
             ordered.append(run)
-            placed.add(run.run_id)
+            placed.add(_node(run))
             progressed = True
         if not progressed:  # a cycle: emit the rest in read order
             ordered.extend(deferred)
@@ -285,25 +342,49 @@ def _resolutions_payload(feature: "Feature") -> list[dict[str, str | None]]:
 
 
 def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
-    runs = _topo_order(read_runs(ds))
+    all_runs = read_runs(ds)
+    index = {_node(r): r for r in all_runs}
+    runs = _topo_order(all_runs)
     remap: dict[tuple[str, str], str] = {}
-    blocked: set[str] = set()
+    blocked: set[tuple[str, str]] = set()
     backed_up: dict[Path, Path] = {}
 
     for run in runs:
+        # -- pin gate: recorded provenance must actually name its upstreams ----
+        # An unpinned reference means "whichever run was latest when this ran",
+        # which is not re-derivable. resolve_references would happily pin it to
+        # today's latest and the move would look clean -- including under the
+        # usual cache_hit check, since a live run resolves the same wrong way.
+        unpinned = sorted({f for f, up_id in run.upstream if up_id is None})
+        if unpinned:
+            run.verdict, run.new_run_id = "unpinned-upstream", run.run_id
+            run.reason = (
+                f"recorded reference(s) {unpinned} carry no run_id; the provenance "
+                f"does not say which upstream produced this. Recompute."
+            )
+            blocked.add(_node(run))
+            continue
+
         # -- upstream gate: never move on top of an upstream that did not move --
-        upstream_blocked = [up_id for _, up_id in run.upstream if up_id in blocked]
+        upstream_blocked = [
+            key
+            for feature, up_id in run.upstream
+            if up_id
+            and (key := _resolve_ref(feature, up_id, index)) is not None
+            and key in blocked
+        ]
         if upstream_blocked:
             run.verdict, run.new_run_id = "blocked", run.run_id
-            run.reason = f"upstream {upstream_blocked[0]} must be recomputed"
-            blocked.add(run.run_id)
+            _st, _rid = upstream_blocked[0]
+            run.reason = f"upstream {_st}/{_rid} must be recomputed"
+            blocked.add(_node(run))
             continue
 
         cls = _feature_class(run.slug)
         if cls is None:
             run.verdict, run.new_run_id = "skipped", run.run_id
             run.reason = f"feature {run.slug!r} is not in the registry"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         # -- version gate: a declared recipe change is never a re-address --
@@ -313,14 +394,14 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
                 f"recorded version {run.recorded_version!r} != "
                 f"current {getattr(cls, 'version', '')!r}; recompute"
             )
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         # -- scope gate: a scope-dependent hash needs provenance legacy lacks --
         if getattr(cls, "scope_dependent", False):
             run.verdict, run.new_run_id = "scope-dependent", run.run_id
             run.reason = "hashes the sequence set, which legacy params.json omits"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         # -- rebuild the feature with upstreams substituted ------------------
@@ -330,7 +411,7 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         if not (isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel)):
             run.verdict, run.new_run_id = "skipped", run.run_id
             run.reason = f"feature {run.slug!r} has no Inputs model"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
         try:
             inputs = inputs_cls.model_validate(doc_inputs)
@@ -338,7 +419,7 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         except Exception as exc:  # noqa: BLE001 - a bad run is skipped, not fatal
             run.verdict, run.new_run_id = "skipped", run.run_id
             run.reason = f"could not rebuild: {exc}"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         # -- derive the address a live run_feature() would use ---------------
@@ -360,7 +441,7 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         except Exception as exc:  # noqa: BLE001
             run.verdict, run.new_run_id = "skipped", run.run_id
             run.reason = f"could not derive new address: {exc}"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         run.new_run_id = new_run_id
@@ -375,13 +456,24 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         if new_root.exists():
             run.verdict = "skipped"
             run.reason = f"target {new_run_id} already exists"
-            blocked.add(run.run_id)
+            blocked.add(_node(run))
             continue
 
         run.verdict = "readdress"
         run.reason = f"{run.run_id} -> {new_run_id}"
-        remap[(run.slug, run.run_id)] = new_run_id
         remap[(run.storage_name, run.run_id)] = new_run_id
+        # A reference written with the bare slug resolves too, but only when that
+        # slug is unambiguous at this digest -- otherwise the collision R2 guards
+        # against would come back through the substitution instead of the graph.
+        if (
+            sum(
+                1
+                for st, rid in index
+                if rid == run.run_id and st.split(_FROM, 1)[0] == run.slug
+            )
+            == 1
+        ):
+            remap[(run.slug, run.run_id)] = new_run_id
 
         if apply:
             index_path = feature_index_path(ds, run.storage_name)
@@ -390,6 +482,7 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
             # script encodes turns out to be wrong.
             if index_path not in backed_up:
                 backed_up[index_path] = backup_index(index_path)
+            old_root = run.run_root
             shutil.move(str(run.run_root), str(new_root))
             write_identity_scheme(new_root, FEATURE_IDENTITY_SCHEME)
             payload = build_run_params_payload(
@@ -401,12 +494,33 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
                     json.dumps(_payload, indent=2)
                 ),
             )
+
+            def _rewrite(
+                stored: str, _old: Path = old_root, _new: Path = new_root
+            ) -> str:
+                """Re-anchor *stored* under the new run root, preserving its shape.
+
+                Not ``_new / Path(stored).name``: a row may record the run
+                *directory* itself rather than a file inside it -- ``run_feature``
+                writes that for an Inputs-empty feature, whose single row is keyed
+                ``__global__`` -- and keeping the basename would turn it into
+                ``<new_root>/<old_run_id>``, a path that exists nowhere. Nothing
+                catches that afterwards, because index reads do not validate paths.
+                """
+                try:
+                    absolute = ds.resolve_path(stored)
+                except Exception:  # noqa: BLE001 - a bad cell keeps the legacy shape
+                    absolute = Path(stored)
+                try:
+                    rel = absolute.relative_to(_old)
+                except ValueError:
+                    rel = Path(absolute.name)
+                if str(rel) in (".", ""):
+                    return ds.relative_to_root(_new)
+                return ds.relative_to_root(_new / rel)
+
             feature_index(index_path).remap_run_id(
-                run.run_id,
-                new_run_id,
-                path_rewrite=lambda stored: ds.relative_to_root(
-                    new_root / Path(stored).name
-                ),
+                run.run_id, new_run_id, path_rewrite=_rewrite
             )
             run.run_root = new_root
 
@@ -430,6 +544,7 @@ def main() -> int:
         "readdress",
         "current",
         "version-bump",
+        "unpinned-upstream",
         "scope-dependent",
         "blocked",
         "skipped",
@@ -449,7 +564,14 @@ def main() -> int:
     recompute = sum(
         1
         for run in runs
-        if run.verdict in {"version-bump", "scope-dependent", "blocked", "skipped"}
+        if run.verdict
+        in {
+            "version-bump",
+            "unpinned-upstream",
+            "scope-dependent",
+            "blocked",
+            "skipped",
+        }
     )
     for original, backup in backed_up.items():
         print(f"index backed up: {original}  ->  {backup}")
