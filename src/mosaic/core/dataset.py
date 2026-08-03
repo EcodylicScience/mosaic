@@ -66,6 +66,7 @@ from .track_converter import (
     TrackConverter,
     TrackConvertParams,
     get_track_converter,
+    merge_on_column_union,
 )
 from .label_converter import (
     LABEL_CONVERTERS,
@@ -4254,6 +4255,11 @@ class Dataset:
             self._warn_superseded_entries(before)
             return
 
+        # Read once, and from the manifest rather than spelled "trex_v1" here:
+        # convert_one_track already asks the manifest, and the two paths writing
+        # different std_format values for one dataset is the drift that costs.
+        std_fmt = self.meta.get("tracks", {}).get("standard_format", "trex_v1")
+
         # Merge per (group, sequence, src_format)
         groupby_cols = ["group", "sequence", "src_format"]
         df = df.copy()
@@ -4323,19 +4329,10 @@ class Dataset:
             if _merge_failed or not dfs:
                 continue
 
-            # Align columns across IDs
-            all_cols = sorted(set().union(*[set(d.columns) for d in dfs]))
-            aligned = []
-            for d in dfs:
-                missing = [c for c in all_cols if c not in d.columns]
-                if missing:
-                    for mc in missing:
-                        d[mc] = np.nan
-                aligned.append(d[all_cols])
-            merged_df = pd.concat(aligned, ignore_index=True)
+            merged_df = merge_on_column_union(dfs)
             ensure_track_schema(
                 merged_df,
-                "trex_v1",
+                std_fmt,
                 strict=False,
                 source=f"{group}/{sequence} (merged)",
             )
@@ -4355,7 +4352,7 @@ class Dataset:
                 sequence=sequence,
                 out_path=out_path,
                 producer=converter_op(src_format),
-                std_format="trex_v1",
+                std_format=std_fmt,
                 n_rows=int(len(merged_df)),
                 source=self.resolve_path(first_row["abs_path"]),
                 source_md5=str(first_row.get("md5", "")),

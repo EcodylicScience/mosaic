@@ -42,7 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-import numpy as np
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
@@ -237,14 +236,18 @@ def _bridge_npz_to_tracks(
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     TREx is the one tracker whose output is several files per entry: one NPZ per
-    individual, which are concatenated on the union of their columns so a field
-    present for one individual and absent for another survives as NaN rather than
-    dropping the column. That merge is why the conversion stays here rather than
-    in the shared publisher.
+    individual, which ``merge_on_column_union`` concatenates so a field present
+    for one individual and absent for another survives as NaN rather than
+    dropping the column. The conversion stays here rather than in the shared
+    publisher because the publisher takes one frame, not a set of them.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
-    from mosaic.core.track_converter import EntryHints, get_track_converter
+    from mosaic.core.track_converter import (
+        EntryHints,
+        get_track_converter,
+        merge_on_column_union,
+    )
 
     if not npz_paths:
         return None
@@ -273,16 +276,9 @@ def _bridge_npz_to_tracks(
     if not frames:
         return None
 
-    all_columns = sorted(set().union(*[set(f.columns) for f in frames]))
-    aligned: list[pd.DataFrame] = []
-    for frame in frames:
-        for missing in [c for c in all_columns if c not in frame.columns]:
-            frame[missing] = np.nan
-        aligned.append(frame[all_columns])
-
     return publish_tracks_table(
         ds,
-        pd.concat(aligned, ignore_index=True),
+        merge_on_column_union(frames),
         kind=TREX_KIND,
         group=group,
         sequence=sequence,

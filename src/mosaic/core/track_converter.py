@@ -31,6 +31,7 @@ here: this module imports nothing from ``mosaic.core.dataset``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, ClassVar, Generic
@@ -47,6 +48,7 @@ __all__ = [
     "TrackConvertParams",
     "TrackConverter",
     "get_track_converter",
+    "merge_on_column_union",
     "register_track_converter",
 ]
 
@@ -196,3 +198,30 @@ def get_track_converter(src_format: str) -> TrackConverter[TrackConvertParams]:
             f"No converter registered for src_format={src_format!r}. Known: {known}"
         )
     return cls()
+
+
+def merge_on_column_union(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate the several files of one sequence, aligned on every column.
+
+    What ``merges_per_sequence`` means, as an operation. The files are one per
+    individual and need not agree on their columns -- TRex exports the fields
+    its ``output_fields`` asked for, per individual -- so a column present for
+    one and absent for another survives as NaN rather than dropping for the
+    whole sequence.
+
+    Two callers reach it: ``convert_all_tracks``, for files a user uploaded, and
+    the TRex bridge, for files the tracker has just written. They had a copy
+    each, which is the drift a declared capability exists to avoid.
+
+    Reindexing rather than assigning the absent columns in, as both copies did:
+    that assignment mutated the frames the converter had just returned, so a
+    caller holding one saw columns it never produced appear in it.
+    """
+    seen: set[str] = set()
+    for frame in frames:
+        seen.update(map(str, frame.columns))
+    all_columns = sorted(seen)
+    return pd.concat(
+        [frame.reindex(columns=all_columns) for frame in frames],
+        ignore_index=True,
+    )
