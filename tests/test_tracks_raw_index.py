@@ -10,6 +10,7 @@ unchanged), and the propagation of that relative form into the merged
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -46,8 +47,19 @@ def _make_dataset(base: Path) -> Dataset:
     return ds
 
 
-def _trex_npz(path: Path, *, n: int, seed: int) -> None:
-    """A minimal per-id TRex NPZ: a time axis plus one pose keypoint."""
+def _trex_npz(
+    path: Path,
+    *,
+    n: int,
+    seed: int,
+    extra: Mapping[str, np.ndarray] | None = None,
+) -> None:
+    """A minimal per-id TRex NPZ: a time axis plus one pose keypoint.
+
+    *extra* adds fields this individual carries and another need not. TRex writes
+    what its ``output_fields`` asked for, per individual, so the several files of
+    one sequence are not obliged to agree on their columns.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     np.savez(
@@ -55,6 +67,7 @@ def _trex_npz(path: Path, *, n: int, seed: int) -> None:
         time=np.arange(n, dtype=float),
         poseX0=rng.random(n),
         poseY0=rng.random(n),
+        **dict(extra or {}),
     )
 
 
@@ -264,6 +277,60 @@ def test_convert_all_tracks_merge_source_abs_path_is_relative(tmp_path: Path) ->
     assert not Path(source_abs_path).is_absolute()
     assert source_abs_path.startswith("raw_src/")
     assert ds.resolve_path(source_abs_path).exists()
+
+
+def test_a_merge_takes_the_union_of_the_columns_its_files_carry(
+    tmp_path: Path,
+) -> None:
+    """Per-individual files need not agree on their columns.
+
+    TRex exports the fields its ``output_fields`` asked for, per individual, so
+    one ``.npz`` of a sequence can carry a field another does not. The merge
+    aligns on the union and leaves the absent cells NaN, rather than dropping
+    the column or refusing the sequence.
+
+    Characterization: this records what the merge does today, so that a change
+    to the branch reaching it is either intended and re-blessed here, or a
+    defect. The other two merge tests write identical column sets, so nothing
+    covered the alignment before.
+    """
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    _trex_npz(
+        src / "myseq_fish0.npz",
+        n=5,
+        seed=0,
+        extra={"tracklet_id": np.arange(5, dtype=float)},
+    )
+    _trex_npz(
+        src / "myseq_fish1.npz",
+        n=5,
+        seed=1,
+        extra={"blobid": np.arange(100.0, 105.0)},
+    )
+
+    ds.index_tracks_raw([src], patterns=["*.npz"], src_format="trex_npz")
+    ds.convert_all_tracks()
+
+    tracks_index = pd.read_csv(ds.get_root("tracks") / "index.csv")
+    assert len(tracks_index) == 1, "two per-id files are one sequence, one table"
+    merged = pd.read_parquet(ds.resolve_path(str(tracks_index.loc[0, "abs_path"])))
+
+    # Every row of both files, under one entry, with both fields present.
+    assert len(merged) == 10
+    assert {"tracklet_id", "blobid"} <= set(merged.columns)
+    assert set(merged["sequence"]) == {"myseq"}
+    assert set(merged["id"]) == {0, 1}
+
+    # And NaN exactly where the individual's own file did not carry the field:
+    # the field each one exported is filled for it and empty for the other.
+    carried = {
+        individual: set(rows.dropna(axis="columns", how="all").columns)
+        for individual, rows in merged.groupby("id")
+    }
+    assert "tracklet_id" in carried[0] and "blobid" not in carried[0]
+    assert "blobid" in carried[1] and "tracklet_id" not in carried[1]
 
 
 # --- iter_track_files: the shared deterministic scanner --------------------
