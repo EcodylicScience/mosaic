@@ -135,8 +135,28 @@ def test_registering_a_converter_without_a_format_raises() -> None:
 
 
 def test_an_unregistered_format_names_the_ones_that_exist() -> None:
-    with pytest.raises(KeyError, match="trex_npz"):
+    with pytest.raises(ValueError, match="trex_npz"):
         _ = get_track_converter("no_such_format")
+
+
+def test_indexing_refuses_a_format_no_converter_claims(tmp_path: Path) -> None:
+    """The refusal is at indexing, not at the conversion that comes later.
+
+    A typo written into the index is an index nothing can convert, and the row
+    then sits there being skipped rather than reported. Resolving the converter
+    at the point the format is *chosen* is what makes the typo say so.
+    """
+    from mosaic.core.dataset import Dataset, new_dataset_manifest
+
+    ds = Dataset(new_dataset_manifest("t", tmp_path / "ds")).load(ensure_roots=True)
+    src = tmp_path / "raw"
+    src.mkdir()
+    (src / "s.csv").write_text("frame,x,y\n0,1,2\n")
+
+    with pytest.raises(ValueError, match="trex_npz"):
+        _ = ds.index_tracks_raw([src], patterns=["*.csv"], src_format="no_such_format")
+
+    assert not (ds.get_root("tracks_raw") / "index.csv").exists()
 
 
 # --- The converters themselves ------------------------------------------------

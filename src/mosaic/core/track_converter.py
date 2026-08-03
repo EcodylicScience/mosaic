@@ -187,14 +187,17 @@ def get_track_converter(src_format: str) -> TrackConverter[TrackConvertParams]:
     """Instantiate the converter registered for *src_format*.
 
     Raises:
-        KeyError: with the registered formats listed, because "no converter for
+        ValueError: with the registered formats listed, because "no converter for
             X" is almost always a typo or a missing import of the module that
-            would have registered it.
+            would have registered it. A ``ValueError`` rather than the
+            ``KeyError`` a registry lookup suggests: the argument is a caller's
+            choice, not a key they were handed, and the CLI interpolates the
+            exception into a message where ``KeyError`` renders its own quotes.
     """
     cls = TRACK_CONVERTERS.get(src_format)
     if cls is None:
         known = ", ".join(sorted(TRACK_CONVERTERS)) or "(none registered)"
-        raise KeyError(
+        raise ValueError(
             f"No converter registered for src_format={src_format!r}. Known: {known}"
         )
     return cls()

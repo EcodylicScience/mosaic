@@ -161,9 +161,11 @@ def get_label_converter(
     """Instantiate the converter registered for *(src_format, label_kind)*.
 
     Raises:
-        KeyError: with the registered pairs listed, because "no converter for X"
-            is almost always a typo or a missing import of the module that would
-            have registered it.
+        ValueError: with the registered pairs listed, because "no converter for
+            X" is almost always a typo or a missing import of the module that
+            would have registered it. The same exception the track resolver
+            raises, so that one kind of mistake has one kind of answer wherever
+            a format is named.
     """
     cls = LABEL_CONVERTERS.get((src_format, label_kind))
     if cls is None:
@@ -171,7 +173,7 @@ def get_label_converter(
             ", ".join(f"{s}/{k}" for s, k in sorted(LABEL_CONVERTERS))
             or "(none registered)"
         )
-        raise KeyError(
+        raise ValueError(
             f"No label converter registered for src_format={src_format!r}, "
             f"label_kind={label_kind!r}. Known: {known}"
         )
