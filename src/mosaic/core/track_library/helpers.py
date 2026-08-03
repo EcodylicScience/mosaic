@@ -1,11 +1,10 @@
 """Shared utilities for track format converters."""
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Any
-import math
 import json
 import numpy as np
-import pandas as pd
+
+from mosaic.core.helpers import text_cell
 
 
 def load_calms21(path: Path | str):
@@ -73,21 +72,12 @@ def angle_from_pca(XY: np.ndarray) -> np.ndarray:
     return np.arctan2(vy, vx)
 
 
-def norm_hint(x: Optional[Any]) -> Optional[str]:
-    """Normalize a group/sequence hint: treat None, NaN, '', 'nan', 'none' as None."""
-    if x is None:
-        return None
-    if isinstance(x, float) and math.isnan(x):
-        return None
-    if isinstance(x, str):
-        s = x.strip()
-        if s == "" or s.lower() in ("nan", "none"):
-            return None
-        return s
-    # Pandas NA/NaT, etc.
-    try:
-        if pd.isna(x):
-            return None
-    except Exception:
-        pass
-    return str(x)
+def norm_hint(x: object) -> str | None:
+    """A group/sequence hint, absent spellings collapsed to ``None``.
+
+    One delegation rather than a second implementation of what counts as absent:
+    a converter reading a hint and the index writer recording what it produced
+    have to agree, and two copies of that rule are free to drift. ``None`` here
+    rather than ``""`` because the callers spell their fallback as ``or``.
+    """
+    return text_cell(x) or None

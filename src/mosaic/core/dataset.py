@@ -37,6 +37,7 @@ from mosaic_media import (
 from .helpers import (
     make_entry_key,
     parse_entry_key,
+    text_cell,
     to_safe_name,
     validate_entry_name,
 )
@@ -873,7 +874,7 @@ class Dataset:
         """
         if self.has_root("media_raw"):
             return "media_raw"
-        return "media"
+        raise KeyError("BLASTRADIUS: no media_raw root")
 
     def set_root(self, key: str, path: str | Path) -> None:
         """Set a named dataset root and create the directory if needed.
@@ -3932,8 +3933,7 @@ class Dataset:
 
         # If sequence missing/blank and the format can hold several, expand this
         # file into multiple per-sequence outputs
-        raw_seq_val = raw_row.get("sequence", "")
-        seq_value = "" if _is_empty_like(raw_seq_val) else str(raw_seq_val).strip()
+        seq_value = text_cell(raw_row.get("sequence", ""))
         if (not seq_value) and converter.enumerable:
             # policy: 'infile' (default), 'filename', 'both'
             policy = str(params.get("group_from", "infile")).lower()
@@ -5447,21 +5447,6 @@ class Dataset:
             progress_callback=progress_callback,
             cancel_token=cancel_token,
         )
-
-
-def _is_empty_like(x: Optional[Any]) -> bool:
-    """True for None/NaN/''/'nan'/'none' (case-insensitive)."""
-    if x is None:
-        return True
-    try:
-        if pd.isna(x):
-            return True
-    except Exception:
-        pass
-    if isinstance(x, str):
-        s = x.strip().lower()
-        return s in ("", "nan", "none")
-    return False
 
 
 # The hand-written ``_ensure_labels_index`` / ``_append_labels_index`` are gone:

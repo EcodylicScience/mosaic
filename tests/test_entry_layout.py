@@ -17,7 +17,12 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.helpers import entry_directory, make_entry_key, parse_entry_key
+from mosaic.core.helpers import (
+    entry_directory,
+    make_entry_key,
+    parse_entry_key,
+    text_cell,
+)
 
 
 def _write_mp4(path: Path, nframes: int = 4) -> None:
@@ -31,6 +36,43 @@ def _write_mp4(path: Path, nframes: int = 4) -> None:
 def _dataset(tmp_path: Path) -> Dataset:
     manifest = new_dataset_manifest(name="layout", base_dir=tmp_path / "ds")
     return Dataset(manifest_path=manifest).load(ensure_roots=True)
+
+
+# --- What a cell means before it is a name ------------------------------------
+
+
+def test_every_absent_spelling_reads_as_empty() -> None:
+    """The spellings a blank travels under, between a CSV and an entry key.
+
+    ``None`` and float NaN are what pandas hands back for an empty cell; the
+    words are what a value that has already been through ``str()`` reads as.
+    Missing one of them puts it in a filename.
+    """
+    for absent in (
+        None,
+        float("nan"),
+        np.float64("nan"),
+        np.nan,
+        pd.NA,
+        pd.NaT,
+        "",
+        "   ",
+        "nan",
+        "NaN",
+        "none",
+        "None",
+        "  NAN  ",
+    ):
+        assert text_cell(absent) == "", f"{absent!r} should read as absent"
+
+
+def test_a_present_cell_keeps_its_spelling() -> None:
+    """Trimmed, never reinterpreted -- including the numeric names CalMS21 uses."""
+    assert text_cell("  cohortA  ") == "cohortA"
+    assert text_cell(np.str_("seq")) == "seq"
+    assert text_cell(np.int64(3)) == "3"
+    assert text_cell("nan_cohort") == "nan_cohort"
+    assert text_cell(0) == "0"
 
 
 # --- One level, and why -------------------------------------------------------

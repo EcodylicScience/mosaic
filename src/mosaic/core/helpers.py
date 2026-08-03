@@ -1,3 +1,4 @@
+import math
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional, Tuple
@@ -5,6 +6,40 @@ from urllib.parse import quote, unquote
 
 import numpy as np
 import pandas as pd
+
+
+# The spellings a table cell uses for "nothing here". A blank CSV cell reads
+# back as a float NaN, and a value that has already been through ``str()`` reads
+# back as the word -- so both have to mean absent, or a repaired index and a
+# freshly written one disagree about the same entry.
+_ABSENT_SPELLINGS: frozenset[str] = frozenset({"", "nan", "none"})
+
+
+def text_cell(value: object) -> str:
+    """One table cell as the text it means, absent spellings collapsed to ``""``.
+
+    Typed ``object`` because the callers read cells off a pandas ``Series``,
+    where a blank arrives as ``np.float64('nan')`` and a number as ``np.int64``.
+    ``str()`` alone is not enough and is the trap this exists to close: it turns
+    a missing group into the word ``nan``, which is truthy, survives
+    :func:`validate_entry_name`, and round-trips through
+    :func:`parse_entry_key` -- so nothing downstream can tell the corruption
+    from a group genuinely named ``nan``.
+
+    The pandas missing sentinels are tested by identity and float NaN by
+    ``math.isnan`` rather than by ``pd.isna``, which returns an *array* for an
+    array cell and would need a bare ``except`` around every call to stay total.
+
+    Returns:
+        The trimmed text, or ``""`` when the cell means absent.
+    """
+    if value is None or value is pd.NA or value is pd.NaT:
+        return ""
+    # np.float64 subclasses float, which is what an empty CSV cell reads as.
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in _ABSENT_SPELLINGS else text
 
 
 # Characters that turn an entry name into more than one path component. NUL is
