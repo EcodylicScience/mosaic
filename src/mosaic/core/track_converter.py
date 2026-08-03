@@ -111,6 +111,16 @@ class TrackConverter(Generic[P]):
             i.e. whether ``enumerate_sequences`` is implemented. A flag rather
             than a second registry keyed on the same string -- two dicts
             populated by one module is how they drift apart.
+        merges_per_sequence: The mirror of ``enumerable``: whether several files
+            of this format make up one sequence, as TRex's one ``.npz`` per
+            individual does, so ``convert_all_tracks`` concatenates them on the
+            union of their columns instead of writing a table each. Declared
+            here for the reason ``enumerable`` is declared here -- the
+            alternative was ``core`` comparing ``src_format`` to a literal,
+            which is that second registry spelled as an ``if``, and it drifts
+            from this one the first time a format is added. Not compatible with
+            ``enumerable``: they are opposite claims about the same
+            file/sequence relationship, and the machinery can act on only one.
         Params: The parameter model. Everything in it determines the output
             except fields marked ``HASH_EXCLUDE``.
     """
@@ -118,6 +128,7 @@ class TrackConverter(Generic[P]):
     src_format: ClassVar[str]
     version: ClassVar[str] = "0.1"
     enumerable: ClassVar[bool] = False
+    merges_per_sequence: ClassVar[bool] = False
     Params: ClassVar[type[TrackConvertParams]] = TrackConvertParams
 
     def convert(self, path: Path, params: P, hints: EntryHints) -> pd.DataFrame:
@@ -138,6 +149,22 @@ class TrackConverter(Generic[P]):
         multi-sequence file into one output per sequence.
         """
         raise NotImplementedError
+
+    def sequence_from_stem(self, stem: str) -> str:
+        """Which sequence a file with this stem belongs to.
+
+        The default is the stem itself: one file is one sequence. A format that
+        declares ``merges_per_sequence`` overrides this to drop whatever names
+        the *individual* rather than the entry, so that its several files are
+        recognized as one sequence.
+
+        Asked of a stem rather than of a file because ``index_tracks_raw`` has
+        to group the files it found into entries before it opens any of them.
+        It describes the format's own naming rather than a knob, so it is not a
+        ``Params`` field and cannot reach a digest: two datasets whose files are
+        named differently must not be two recipes.
+        """
+        return stem
 
 
 TRACK_CONVERTERS: dict[str, type[TrackConverter[TrackConvertParams]]] = {}

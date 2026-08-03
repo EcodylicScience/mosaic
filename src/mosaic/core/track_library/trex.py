@@ -20,23 +20,10 @@ from mosaic.core.track_converter import (
 
 
 # --- TRex per-id NPZ support ---
-# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc.
+# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc. Read for two different
+# questions -- which individual a file holds (below) and which sequence it
+# belongs to (TrexNpzConverter.sequence_from_stem) -- so it stays module-level.
 _TREX_ID_SUFFIX = re.compile(r"_(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
-
-
-def strip_trex_seq(stem: str) -> str:
-    """Return filename stem with trailing individual ID suffix removed, if present.
-
-    Handles patterns like: _id0, _fish2, _bee1, _animal3, _ind0
-    Examples:
-        hex_7_fish2 -> hex_7
-        OCI_1_fish0 -> OCI_1
-        video1_id3 -> video1
-    """
-    m = _TREX_ID_SUFFIX.search(stem)
-    if m:
-        return stem[: m.start()]
-    return stem
 
 
 def _load_npz_to_df(filepath: Path) -> pd.DataFrame:
@@ -142,18 +129,35 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
     """Per-id TRex NPZ -> the standard T-Rex-like table.
 
     Carries no parameters of its own: the conversion is fully determined by the
-    file. The sequence falls back to the stem with a trailing ``_id<N>``
-    stripped, which is a property of TRex's own naming, not a knob.
+    file. What it declares instead is the shape of TRex's output -- one file per
+    individual, so several files make one sequence. ``merges_per_sequence`` is
+    how ``core`` learns that without comparing ``src_format`` to a literal, and
+    ``sequence_from_stem`` is the rule that recognizes those files as one entry.
+    Both describe TRex's own naming, so neither is a knob and neither is a
+    parameter.
     """
 
     src_format = "trex_npz"
+    merges_per_sequence = True
     Params = TrackConvertParams
+
+    def sequence_from_stem(self, stem: str) -> str:
+        """The stem with its trailing individual-id suffix removed, if present.
+
+        Handles ``_id0``, ``_fish2``, ``_bee1``, ``_animal3``, ``_ind0``.
+
+        Examples:
+            ``hex_7_fish2`` -> ``hex_7``, ``OCI_1_fish0`` -> ``OCI_1``,
+            ``video1_id3`` -> ``video1``.
+        """
+        match = _TREX_ID_SUFFIX.search(stem)
+        return stem[: match.start()] if match else stem
 
     def convert(
         self, path: Path, params: TrackConvertParams, hints: EntryHints
     ) -> pd.DataFrame:
         df = _load_npz_to_df(path)
         df["group"] = hints.group
-        df["sequence"] = hints.sequence or strip_trex_seq(path.stem)
+        df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)
         ensure_track_schema(df, "trex_v1", strict=False, source=str(path))
         return df

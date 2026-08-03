@@ -69,6 +69,9 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     version = "0.1"
     # Set True and implement enumerate_sequences if one file holds several.
     enumerable = False
+    # Set True and override sequence_from_stem if several files make one
+    # sequence -- one file per individual, named <sequence>_<individual>.
+    merges_per_sequence = False
     Params = MyFormatParams
 
     def convert(

@@ -28,6 +28,7 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.track_converter import (
     TRACK_CONVERTERS,
     EntryHints,
+    TrackConverter,
     TrackConvertParams,
     get_track_converter,
     register_track_converter,
@@ -69,6 +70,45 @@ def test_every_converter_declares_a_version(src_format: str) -> None:
 def test_the_registry_key_is_the_declared_format(src_format: str) -> None:
     """One class per format, so a variant identity names exactly one producer."""
     assert TRACK_CONVERTERS[src_format].src_format == src_format
+
+
+@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
+def test_a_merging_format_declares_how_a_stem_names_its_sequence(
+    src_format: str,
+) -> None:
+    """Several files are one sequence only if they agree on the name.
+
+    Left at the base's answer the stem *is* the sequence, so every per-individual
+    file would be its own entry and the merge would find one file per group.
+    """
+    converter_cls = TRACK_CONVERTERS[src_format]
+    declares_a_rule = (
+        converter_cls.sequence_from_stem is not TrackConverter.sequence_from_stem
+    )
+
+    assert declares_a_rule or not converter_cls.merges_per_sequence, (
+        f"{src_format} declares merges_per_sequence without overriding "
+        "sequence_from_stem, so each of its files would be its own sequence"
+    )
+
+
+@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
+def test_no_format_claims_both_directions_of_one_relationship(
+    src_format: str,
+) -> None:
+    """``enumerable`` and ``merges_per_sequence`` are opposite claims.
+
+    One says a single file holds several sequences, the other that several files
+    hold one. A format claiming both would have ``convert_one_track`` expand it
+    into per-sequence tables and ``convert_all_tracks`` concatenate those same
+    rows under a blank sequence.
+    """
+    converter_cls = TRACK_CONVERTERS[src_format]
+
+    assert not (converter_cls.enumerable and converter_cls.merges_per_sequence), (
+        f"{src_format} claims both that one file holds many sequences and that "
+        "many files hold one"
+    )
 
 
 def test_validation_strictness_is_not_part_of_the_recipe() -> None:
@@ -137,6 +177,17 @@ def test_trex_npz_falls_back_to_the_stem_without_its_id_suffix(
     df = TrexNpzConverter().convert(npz, TrackConvertParams(), EntryHints())
 
     assert set(df["sequence"]) == {"vid"}
+
+
+def test_trex_npz_declares_that_several_files_are_one_sequence() -> None:
+    """The declaration ``core`` reads, in place of comparing to a literal.
+
+    The rule is asked of a *stem* rather than of a file, because indexing has to
+    group what it found into entries before it opens any of them.
+    """
+    assert TrexNpzConverter.merges_per_sequence
+    assert TrexNpzConverter().sequence_from_stem("hex_7_fish2") == "hex_7"
+    assert TrexNpzConverter().sequence_from_stem("no_suffix") == "no_suffix"
 
 
 def _write_mabe22(path: Path, sequences: dict[str, int]) -> None:
@@ -435,9 +486,7 @@ def _write_sleap_analysis_h5(
     if preset == "matlab":
         arr = np.transpose(tracks_ftn2, (1, 3, 2, 0))  # (track, xy, node, frame)
         dims = ["track", "xy", "node", "frame"]
-        sarr = (
-            np.transpose(scores_ftn, (1, 2, 0)) if scores_ftn is not None else None
-        )
+        sarr = np.transpose(scores_ftn, (1, 2, 0)) if scores_ftn is not None else None
         sdims = ["track", "node", "frame"]
     else:  # standard / python-native
         arr = tracks_ftn2
@@ -484,14 +533,25 @@ def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
     _write_sleap_analysis_h5(h5, tracks, scores, preset="matlab")
 
     conv = SleapAnalysisH5Converter()
-    df = conv.convert(h5, SleapConvertParams(fps=25.0), EntryHints(group="g", sequence="s"))
+    df = conv.convert(
+        h5, SleapConvertParams(fps=25.0), EntryHints(group="g", sequence="s")
+    )
 
     # one id per track, present-frame rows only
     assert set(df["id"]) == {0, 1}
     assert len(df[df["id"] == 0]) == 4
     assert len(df[df["id"] == 1]) == 2
     # required trex_v1 columns + pose prefixes + confidence
-    for col in ("frame", "time", "id", "group", "sequence", "poseX0", "poseY1", "poseP0"):
+    for col in (
+        "frame",
+        "time",
+        "id",
+        "group",
+        "sequence",
+        "poseX0",
+        "poseY1",
+        "poseP0",
+    ):
         assert col in df.columns
     # hints and fps drive group / sequence / time
     assert set(df["group"]) == {"g"} and set(df["sequence"]) == {"s"}
@@ -502,7 +562,9 @@ def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
     assert sorted(df[df["id"] == 1]["frame"]) == [1, 2]
 
 
-def test_sleap_converter_reorders_by_dims_matlab_equals_standard(tmp_path: Path) -> None:
+def test_sleap_converter_reorders_by_dims_matlab_equals_standard(
+    tmp_path: Path,
+) -> None:
     pytest.importorskip("h5py")
     from mosaic.core.track_library.sleap import (
         SleapAnalysisH5Converter,

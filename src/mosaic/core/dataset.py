@@ -73,15 +73,6 @@ from .label_converter import (
     LabelConvertParams,
     get_label_converter,
 )
-
-# This import used to sit at the foot of the file behind the one `noqa: E402`
-# that could not be hoisted: `track_library.trex` imported
-# `register_track_converter` from here, so the two formed a cycle and importing
-# at the top ran the converter module before the decorator existed. The comment
-# there said closing it needed the registry moved out of dataset.py rather than
-# a reordering. Item 1.3 moved it to `core.track_converter`, so the cycle is
-# gone and this is an ordinary import.
-from .track_library.trex import strip_trex_seq
 from .media.prune import (
     PruneReport,
     declined_report,
@@ -264,6 +255,17 @@ def _md5(path: Path, chunk=1 << 20) -> str:
                 break
             h.update(b)
     return h.hexdigest()
+
+
+def _stem_as_sequence(stem: str) -> str:
+    """One file is one sequence, and the stem names it.
+
+    The naming rule for a source that has no rule of its own -- every label
+    source, and every track format whose converter does not declare otherwise.
+    Named rather than inlined so that both callers of ``_index_raw`` state their
+    rule the same way and neither carries a branch about which one it is.
+    """
+    return stem
 
 
 try:
@@ -3536,7 +3538,11 @@ class Dataset:
         patterns : Iterable[str] | str
             Glob patterns to match files
         src_format : str
-            Source format identifier (e.g., "trex_npz", "calms21_npy")
+            Source format identifier (e.g., "trex_npz", "calms21_npy"). Must
+            name a registered converter: it is resolved here, both so that a
+            typo fails with the known formats listed rather than writing an
+            index nothing can convert, and because the converter is what says
+            how a filename stem names its sequence.
         index_filename : str
             Name of output index file
         recursive : bool
@@ -3590,6 +3596,12 @@ class Dataset:
             search_dirs=search_dirs,
             patterns=patterns,
             src_format=src_format,
+            # Resolved here, so a src_format naming no converter is a KeyError
+            # listing the registered ones rather than an index nothing can
+            # convert. Which files come several per sequence, and what names the
+            # individual within one, are the converter's to declare -- neither is
+            # anything this method knows.
+            sequence_from_stem=get_track_converter(src_format).sequence_from_stem,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
@@ -3608,6 +3620,7 @@ class Dataset:
         search_dirs: Iterable[str | Path],
         patterns: Iterable[str] | str,
         src_format: str,
+        sequence_from_stem: Callable[[str], str],
         index_filename: str = "index.csv",
         recursive: bool = True,
         multi_sequences_per_file: bool = False,
@@ -3625,6 +3638,18 @@ class Dataset:
         md5``), and the scan, row build and md5 carry-forward are identity-free,
         so only *target_root* and *composition_writer* -- which sequence-index to
         project into -- distinguish a tracks source from a label source.
+
+        *sequence_from_stem* is the one thing that varies with the source's
+        format, and it arrives as a rule rather than being decided here. A format
+        whose files come several per sequence -- TRex writes one ``.npz`` per
+        individual -- has to drop what names the individual before the rest can
+        be recognized as one entry, and this body cannot ask which format it is
+        holding: ``src_format`` names a *track* converter on one path and a
+        *label* converter on the other, and the label registry is not even keyed
+        the same way. So each caller resolves the rule and passes it, the same
+        seam ``group_from_path`` is on the branch below. Required rather than
+        defaulted, because a default is where a third caller would silently get
+        the wrong answer.
         """
         out_csv = self.get_root(target_root) / index_filename
         rows: list[TracksRawIndexRow] = []
@@ -3664,10 +3689,7 @@ class Dataset:
                     grp = ""
                 seq = ""
             else:
-                if src_format == "trex_npz":
-                    seq = strip_trex_seq(p.stem)
-                else:
-                    seq = p.stem  # 1 file ~= 1 sequence default
+                seq = sequence_from_stem(p.stem)
 
                 # Extract group from sequence using pattern
                 if group_re:
@@ -3743,6 +3765,12 @@ class Dataset:
             search_dirs=search_dirs,
             patterns=patterns,
             src_format=src_format,
+            # A label file is one sequence, and no label converter says
+            # otherwise. Not resolved from a registry: ``src_format`` here names
+            # a *label* converter, registered under the pair ``(src_format,
+            # label_kind)`` -- a track-registry lookup would be wrong even where
+            # it happened to hit, as it does for ``calms21_npy``.
+            sequence_from_stem=_stem_as_sequence,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
