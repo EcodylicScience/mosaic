@@ -520,6 +520,7 @@ def test_h4_a_promoted_correction_lands_in_a_source_root_with_lineage(
         "",
         "seq_a",
         correction,
+        src_format="trex_npz",
         derived_from="trex.1.0-abcdef0123",
         apply=True,
     )

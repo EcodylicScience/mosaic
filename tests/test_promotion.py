@@ -49,7 +49,9 @@ def test_a_first_promotion_lands_as_revision_one(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     correction = _corrected(tmp_path)
 
-    report = promote_correction(ds, "", "vid1", correction, apply=True)
+    report = promote_correction(
+        ds, "", "vid1", correction, src_format="trex_npz", apply=True
+    )
 
     assert report.applied
     assert report.revision == 1
@@ -67,9 +69,16 @@ def test_a_second_correction_is_a_revision_not_a_conflict(tmp_path: Path) -> Non
     """
     ds = _dataset(tmp_path)
 
-    first = promote_correction(ds, "", "vid1", _corrected(tmp_path), apply=True)
+    first = promote_correction(
+        ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
+    )
     second = promote_correction(
-        ds, "", "vid1", _corrected(tmp_path / "b", value=2.0), apply=True
+        ds,
+        "",
+        "vid1",
+        _corrected(tmp_path / "b", value=2.0),
+        src_format="trex_npz",
+        apply=True,
     )
 
     assert (first.revision, second.revision) == (1, 2)
@@ -99,11 +108,18 @@ def test_a_promotion_moves_the_sequence_composition(tmp_path: Path) -> None:
     rather than a new kind of thing.
     """
     ds = _dataset(tmp_path)
-    _ = promote_correction(ds, "", "vid1", _corrected(tmp_path), apply=True)
+    _ = promote_correction(
+        ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
+    )
     before = read_sequence_index(ds, "tracks_raw")
 
     _ = promote_correction(
-        ds, "", "vid1", _corrected(tmp_path / "b", value=2.0), apply=True
+        ds,
+        "",
+        "vid1",
+        _corrected(tmp_path / "b", value=2.0),
+        src_format="trex_npz",
+        apply=True,
     )
     after = read_sequence_index(ds, "tracks_raw")
 
@@ -113,16 +129,44 @@ def test_a_promotion_moves_the_sequence_composition(tmp_path: Path) -> None:
 
 
 def test_the_promoted_file_is_indexed_and_checksummed(tmp_path: Path) -> None:
-    """It is source now, so it is scanned and hashed like any other source."""
+    """It is source now, so it is scanned and hashed like any other source.
+
+    And the format column is what the caller named, not what promotion assumed.
+    """
     ds = _dataset(tmp_path)
 
-    _ = promote_correction(ds, "", "vid1", _corrected(tmp_path), apply=True)
+    _ = promote_correction(
+        ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
+    )
 
     rows = read_tracks_raw_index(ds.get_root("tracks_raw") / "index.csv")
     assert len(rows) == 1
     assert rows[0]["sequence"] == "vid1"
     assert rows[0]["src_format"] == "trex_npz"
     assert rows[0]["md5"], "a promoted correction must be checksummed"
+
+
+def test_the_promoted_format_is_the_callers_to_name(tmp_path: Path) -> None:
+    """A correction from a SLEAP run is not a TREx one.
+
+    ``_tracking`` holds three trackers' working directories and promotion serves
+    all of them, so the format travels from the caller into the index rather
+    than being assumed. Only the column is under test here -- the promoted bytes
+    are copied unread, so they need not be a real SLEAP export.
+    """
+    ds = _dataset(tmp_path)
+
+    _ = promote_correction(
+        ds,
+        "",
+        "vid1",
+        _corrected(tmp_path),
+        src_format="sleap_analysis_h5",
+        apply=True,
+    )
+
+    rows = read_tracks_raw_index(ds.get_root("tracks_raw") / "index.csv")
+    assert rows[0]["src_format"] == "sleap_analysis_h5"
 
 
 def test_the_lineage_is_recorded_without_touching_the_label(tmp_path: Path) -> None:
@@ -140,6 +184,7 @@ def test_the_lineage_is_recorded_without_touching_the_label(tmp_path: Path) -> N
         "",
         "vid1",
         _corrected(tmp_path),
+        src_format="trex_npz",
         derived_from="trex.1.0-abcdef0123",
         apply=True,
     )
@@ -157,7 +202,9 @@ def test_a_dry_run_promotes_nothing(tmp_path: Path) -> None:
     """Preview is the default, and it must not be one in name only."""
     ds = _dataset(tmp_path)
 
-    report = promote_correction(ds, "", "vid1", _corrected(tmp_path))
+    report = promote_correction(
+        ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz"
+    )
 
     assert not report.applied
     assert report.promoted == ()
@@ -173,7 +220,9 @@ def test_existing_derivatives_block_the_promotion(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     _prior_derivative(ds)
 
-    report = promote_correction(ds, "", "vid1", _corrected(tmp_path), apply=True)
+    report = promote_correction(
+        ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
+    )
 
     assert report.blocked
     assert not report.would_proceed
@@ -192,7 +241,13 @@ def test_forcing_promotes_but_deletes_nothing(tmp_path: Path) -> None:
     derivative = _prior_derivative(ds)
 
     report = promote_correction(
-        ds, "", "vid1", _corrected(tmp_path), apply=True, force=True
+        ds,
+        "",
+        "vid1",
+        _corrected(tmp_path),
+        src_format="trex_npz",
+        apply=True,
+        force=True,
     )
 
     assert report.applied
@@ -205,7 +260,9 @@ def test_a_missing_source_raises_rather_than_reporting_success(tmp_path: Path) -
     ds = _dataset(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="nothing to promote"):
-        _ = promote_correction(ds, "", "vid1", tmp_path / "absent.npz", apply=True)
+        _ = promote_correction(
+            ds, "", "vid1", tmp_path / "absent.npz", src_format="trex_npz", apply=True
+        )
 
 
 def _prior_derivative(ds: Dataset) -> Path:

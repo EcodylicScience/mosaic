@@ -105,7 +105,7 @@ def promote_correction(
     sequence: str,
     source: Path | Iterable[Path],
     *,
-    src_format: str = "trex_npz",
+    src_format: str,
     derived_from: str = "",
     apply: bool = False,
     force: bool = False,
@@ -122,7 +122,14 @@ def promote_correction(
         sequence: Entry sequence.
         source: The corrected file, or files, to promote. Typically the contents
             of a tracker working directory under ``_tracking``.
-        src_format: The converter that reads the promoted files.
+        src_format: The converter that reads the promoted files. Required, with
+            no default: this lands in ``tracks_raw/index.csv`` and is the only
+            thing that says how the file converts, while ``_tracking`` holds
+            three trackers' working directories -- a default would quietly index
+            a SLEAP or Lightning Pose correction as TRex, and the error would
+            surface at conversion rather than here. It matches
+            ``TracksRawIndexScope.src_format``, which the scope below is built
+            from and which has never had a default either.
         derived_from: The producer run this was corrected from, recorded on the
             dataset-level ``sequences.csv`` so the correction's lineage survives
             the working directory being swept.

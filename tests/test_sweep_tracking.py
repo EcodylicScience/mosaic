@@ -330,6 +330,7 @@ def test_a_promoted_run_is_reclaimable_before_its_window(tmp_path: Path) -> None
         "",
         "seq_a",
         correction,
+        src_format="trex_npz",
         derived_from="trex.1.0-aaaa",
         apply=True,
         force=True,
