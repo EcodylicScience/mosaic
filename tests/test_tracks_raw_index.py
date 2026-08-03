@@ -333,6 +333,43 @@ def test_a_merge_takes_the_union_of_the_columns_its_files_carry(
     assert "blobid" in carried[1] and "tracklet_id" not in carried[1]
 
 
+def test_one_row_of_another_format_does_not_turn_merging_off(
+    tmp_path: Path,
+) -> None:
+    """Merging is each format's own answer, not a property of the whole index.
+
+    It used to be ``(src_format == "trex_npz").all()``, so a single row of any
+    other format switched merging off for the TRex rows too -- and the per-id
+    files it then converted one at a time all named the same (group, sequence)
+    output, so the first landed and the rest were skipped as already written.
+    Two individuals silently became one.
+    """
+    base = (tmp_path / "ds").resolve()
+    ds = _make_dataset(base)
+    src = base / "raw_src"
+    _trex_npz(src / "myseq_fish0.npz", n=5, seed=0)
+    _trex_npz(src / "myseq_fish1.npz", n=5, seed=1)
+    ds.index_tracks_raw([src], patterns=["*.npz"], src_format="trex_npz")
+
+    # A row of a non-merging format, as a second index of another source would
+    # leave it. Its own conversion is not what is under test -- its presence is.
+    index_csv = ds.get_root("tracks_raw") / "index.csv"
+    rows = pd.read_csv(index_csv)
+    intruder = rows.iloc[[0]].copy()
+    intruder["src_format"] = "deeplabcut"
+    intruder["sequence"] = "elsewhere"
+    pd.concat([rows, intruder], ignore_index=True).to_csv(index_csv, index=False)
+
+    ds.convert_all_tracks()
+
+    tracks_index = pd.read_csv(ds.get_root("tracks") / "index.csv")
+    merged_row = tracks_index[tracks_index["sequence"] == "myseq"]
+    assert len(merged_row) == 1
+    merged = pd.read_parquet(ds.resolve_path(str(merged_row.iloc[0]["abs_path"])))
+    assert len(merged) == 10, "both individuals, not just whichever landed first"
+    assert set(merged["id"]) == {0, 1}
+
+
 # --- iter_track_files: the shared deterministic scanner --------------------
 
 

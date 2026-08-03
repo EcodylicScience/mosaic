@@ -30,7 +30,11 @@ def convert_tracks_command(
         bool | None,
         typer.Option(
             "--merge-per-sequence/--no-merge-per-sequence",
-            help="Merge rows per (group, sequence).",
+            help=(
+                "Merge rows per (group, sequence). Default: each format's "
+                "converter decides. --merge-per-sequence forces it for every "
+                "format, --no-merge-per-sequence for none."
+            ),
         ),
     ] = None,
     group_from: Annotated[

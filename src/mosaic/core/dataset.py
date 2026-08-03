@@ -257,6 +257,20 @@ def _md5(path: Path, chunk=1 << 20) -> str:
     return h.hexdigest()
 
 
+def _format_merges_per_sequence(src_format: str) -> bool:
+    """Does this format's converter declare that several files are one sequence?
+
+    Tolerant where :func:`get_track_converter` is strict, and deliberately so.
+    ``index_tracks_raw`` resolves a format the caller has just *chosen*, where a
+    typo is worth refusing; this reads one back out of an index it did not
+    necessarily write, for a bulk gesture that warns per row and keeps going. An
+    unregistered format is one warning per file, not an aborted run over the
+    rest of the dataset.
+    """
+    converter_cls = TRACK_CONVERTERS.get(src_format)
+    return converter_cls is not None and converter_cls.merges_per_sequence
+
+
 def _stem_as_sequence(stem: str) -> str:
     """One file is one sequence, and the stem names it.
 
@@ -4128,6 +4142,28 @@ class Dataset:
     # ----------------------------
     # Bulk convert
     # ----------------------------
+    def _convert_rows_individually(
+        self,
+        rows: pd.DataFrame,
+        params: dict[str, object] | None,
+        group_from: str,
+        overwrite: bool,
+    ) -> None:
+        """Convert each raw row into a table of its own, warning per failure.
+
+        The fallback both of :meth:`convert_all_tracks`' branches take when a set
+        of rows has nothing to merge -- an index with no merging format at all,
+        and a single group inside one that has. One copy, because two copies of
+        "warn and keep going" are two chances for one of them to start raising.
+        """
+        for _, row in rows.iterrows():
+            try:
+                call_params = dict(params) if params else {}
+                call_params["group_from"] = group_from
+                self.convert_one_track(row, params=call_params, overwrite=overwrite)
+            except Exception as e:
+                print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+
     def convert_all_tracks(
         self,
         params: Optional[dict] = None,
@@ -4138,9 +4174,13 @@ class Dataset:
         """
         Convert all raw track files (from tracks_raw/index.csv) to standard T-Rex-like parquet files.
 
-        By default, for src_format == 'trex_npz', files are merged per (group, sequence) into a single
-        parquet file (one per unique (group, sequence)). For other formats, or if merge_per_sequence=False,
-        each row is converted individually.
+        A format whose files come several per sequence -- TRex writes one .npz per
+        individual -- declares ``merges_per_sequence`` on its converter, and those
+        files are concatenated on the union of their columns into one parquet per
+        (group, sequence). Every other format gets one table per file. The
+        declaration is the converter's, so a format added later does not need this
+        method edited, and a mixed-format index merges what merges without the
+        rest turning it off.
 
         Parameters
         ----------
@@ -4149,8 +4189,14 @@ class Dataset:
         overwrite : bool
             If True, overwrite existing output files.
         merge_per_sequence : bool | None
-            If True, merge per (group, sequence) for formats that support it (currently trex_npz).
-            If None, defaults to True if all rows are trex_npz, else False.
+            If None (the default), ask each format's converter: merge the groups
+            whose format declares ``merges_per_sequence`` and convert the rest one
+            file at a time. If True, merge every group whatever its converter
+            declares -- the merge reads nothing about the format, so this is how a
+            dataset whose files happen to come several per sequence says so
+            without the converter claiming it everywhere. If False, merge nothing.
+            A group with a blank sequence is never merged: it names no entry to
+            merge into, and its file holds several sequences instead.
         group_from : {'infile','filename','both'} | None
             Controls which *group* ends up in the standardized output & index:
             - 'infile' (default): use the group from inside the source file (e.g., 'annotator-id_0').
@@ -4174,9 +4220,24 @@ class Dataset:
                 "Check your search_dirs and patterns parameters."
             )
 
-        # Decide merging default for trex
+        # Which formats merge per (group, sequence), asked of each converter
+        # rather than of the index as a whole.
+        #
+        # The old default was "every row in the index is trex_npz", so one row of
+        # any other format turned merging off for the trex ones too -- and the
+        # per-individual files it then converted one at a time all named the same
+        # (group, sequence) output, so the first landed and the rest were skipped
+        # as already written.
+        present: set[str] = {
+            str(fmt).strip() for fmt in df["src_format"].dropna().unique()
+        }
+        merging: set[str]
         if merge_per_sequence is None:
-            merge_per_sequence = len(df) > 0 and (df["src_format"] == "trex_npz").all()
+            merging = {fmt for fmt in present if _format_merges_per_sequence(fmt)}
+        elif merge_per_sequence:
+            merging = present
+        else:
+            merging = set()
 
         # normalize group_from
         group_from = (group_from or "infile").lower()
@@ -4187,15 +4248,9 @@ class Dataset:
 
         before = self._entry_stamps()
 
-        if not merge_per_sequence:
-            # Convert each row individually
-            for _, row in df.iterrows():
-                try:
-                    call_params = dict(params) if params else {}
-                    call_params["group_from"] = group_from
-                    self.convert_one_track(row, params=call_params, overwrite=overwrite)
-                except Exception as e:
-                    print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+        if not merging:
+            # Nothing in this index merges: one table per raw file.
+            self._convert_rows_individually(df, params, group_from, overwrite)
             self._warn_superseded_entries(before)
             return
 
@@ -4216,20 +4271,15 @@ class Dataset:
         for keys, group_df in df.groupby(groupby_cols):
             group, sequence, src_format = keys
 
-            # Non-mergeable formats -> fall back to individual conversion
-            if src_format != "trex_npz":
-                for _, row in group_df.iterrows():
-                    try:
-                        call_params = dict(params) if params else {}
-                        call_params["group_from"] = group_from
-                        self.convert_one_track(
-                            row, params=call_params, overwrite=overwrite
-                        )
-                    except Exception as e:
-                        print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+            # Nothing to merge here: either this format's files come one per
+            # sequence, or these rows name no sequence to merge them into -- a
+            # blank sequence means the file holds several, which is
+            # convert_one_track's expansion rather than this loop's concat.
+            if src_format not in merging or not sequence:
+                self._convert_rows_individually(group_df, params, group_from, overwrite)
                 continue
 
-            # Merge TRex NPZ per (group, sequence)
+            # Merge this sequence's several files into one table
             first_row = group_df.iloc[0]
 
             # Determine output path early so we can honor overwrite=False
