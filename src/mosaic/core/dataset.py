@@ -3343,7 +3343,14 @@ class Dataset:
             return set()
         if "derived_from" not in frame.columns:
             return set()
-        return {str(value) for value in frame["derived_from"] if str(value)}
+        # One cell can name several: a sequence corrected twice supersedes both
+        # producer runs, and the label row that records them is one per sequence.
+        return {
+            run
+            for value in frame["derived_from"]
+            for run in str(value).split(",")
+            if run
+        }
 
     def _rowed_entries(self, root_key: str) -> set[tuple[str, str]]:
         """``(run_id, entry key)`` pairs this root's index names.

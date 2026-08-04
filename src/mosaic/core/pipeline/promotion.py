@@ -272,9 +272,20 @@ def _record_lineage(ds: Dataset, group: str, sequence: str, derived_from: str) -
 
     The column was declared in M3 and left unused for exactly this.
 
+    **Accumulated, not replaced.** There is one label row per sequence and a
+    sequence can be corrected more than once, so writing only the newest dropped
+    every earlier revision's producer. The one reader is
+    ``Dataset._promoted_from``, which feeds ``sweep-tracking``'s
+    primary eviction signal -- so a second promotion silently un-superseded the
+    first correction's tracker output and left it waiting on its age window
+    instead. Comma-joined and sorted, the spelling ``consumed_source_roots``
+    already uses for a set in a cell.
     """
     path = sequence_label_path(ds)
     labels = sequence_labels(path)
+    prior = _prior_cell(ds, group, sequence, "derived_from")
+    runs = {run for run in prior.split(",") if run}
+    runs.add(derived_from)
     labels.append(
         [
             SequenceLabelRow(
@@ -284,7 +295,7 @@ def _record_lineage(ds: Dataset, group: str, sequence: str, derived_from: str) -
                 # sequence somebody labelled.
                 display_group=_prior_cell(ds, group, sequence, "display_group"),
                 display_name=_prior_cell(ds, group, sequence, "display_name"),
-                derived_from=derived_from,
+                derived_from=",".join(sorted(runs)),
             )
         ]
     )

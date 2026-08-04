@@ -419,3 +419,32 @@ def test_a_correction_revision_is_read_from_the_name() -> None:
     assert correction_revision(Path("corrected.rev12.vidA_fish0.npz")) == 12
     assert correction_revision(Path("vidA_fish0.npz")) == 0
     assert correction_revision(Path("corrected.notarev.npz")) == 0
+
+
+def test_a_second_promotion_keeps_the_first_correction_s_lineage(
+    tmp_path: Path,
+) -> None:
+    """Every superseded producer run stays named, not just the newest.
+
+    ``derived_from`` is read by ``sweep_tracking`` as its *primary* eviction
+    signal: a tracker's working directory whose output has been corrected has
+    served its purpose and need not wait out its retention window. There is one
+    label row per sequence, so writing only the newest un-superseded the first
+    correction's tracker output and quietly put it back on age-based retention.
+    """
+    ds = _dataset(tmp_path)
+    correction = _corrected(tmp_path)
+
+    for producer in ("trex.1.0-aaaaaaaaaa", "trex.1.0-bbbbbbbbbb"):
+        _ = promote_correction(
+            ds,
+            "",
+            "vid1",
+            correction,
+            src_format="trex_npz",
+            derived_from=producer,
+            apply=True,
+            force=True,
+        )
+
+    assert ds._promoted_from() == {"trex.1.0-aaaaaaaaaa", "trex.1.0-bbbbbbbbbb"}
