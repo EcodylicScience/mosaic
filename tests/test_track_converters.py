@@ -35,6 +35,7 @@ from mosaic.core.track_converter import (
 )
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
 from mosaic.core.track_library.mabe22 import Mabe22Converter, Mabe22Params
+from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 # What entry identity is spelled as. A converter may accept these as hints; none
@@ -622,3 +623,107 @@ def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -
     )
     assert set(df["id"]) == {0, 1}
     assert len(df[df["id"] == 0]) == 4
+
+
+# --- reconversion after a source change -------------------------------------
+
+
+def _trex_dataset(tmp_path: Path) -> Dataset:
+    """A dataset whose ``tracks_raw`` holds one TRex sequence of two individuals."""
+    from mosaic.core.dataset import new_dataset_manifest
+
+    manifest = new_dataset_manifest(name="reconv", base_dir=tmp_path / "ds")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    raw = dataset.get_root("tracks_raw")
+    raw.mkdir(parents=True, exist_ok=True)
+    for individual in (0, 1):
+        _write_trex_npz(raw / f"vid_id{individual}.npz", ind=individual)
+    _ = dataset.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    return dataset
+
+
+def test_a_changed_source_is_reconverted_without_overwrite(tmp_path: Path) -> None:
+    """Existence says a recipe has *a* table, never that it matches the source.
+
+    A scan updates the raw checksums and the per-sequence composition; without a
+    currency check the conversion that follows skips on existence alone, leaving
+    a table -- and an index row claiming a composition -- that disagree with the
+    files they name, under a command that reported success.
+    """
+    dataset = _trex_dataset(tmp_path)
+    dataset.convert_all_tracks()
+    table = next(dataset.get_root("tracks").glob("*/vid.parquet"))
+    before = table.read_bytes()
+
+    # Change the individual the ``source_md5`` column does *not* name, so only
+    # the composition over all of them can notice.
+    _write_trex_npz(dataset.get_root("tracks_raw") / "vid_id1.npz", n=20, ind=1)
+    _ = dataset.index_tracks_raw(
+        [dataset.get_root("tracks_raw")], patterns="*.npz", src_format="trex_npz"
+    )
+    dataset.convert_all_tracks()
+
+    assert table.read_bytes() != before, "the changed source was not reconverted"
+
+
+def test_an_unchanged_source_is_not_reconverted(tmp_path: Path) -> None:
+    """The currency check must not turn every call into a full recompute."""
+    dataset = _trex_dataset(tmp_path)
+    dataset.convert_all_tracks()
+    table = next(dataset.get_root("tracks").glob("*/vid.parquet"))
+    stamp = table.stat().st_mtime_ns
+
+    dataset.convert_all_tracks()
+
+    assert table.stat().st_mtime_ns == stamp
+
+
+def test_a_cached_reconversion_reports_no_superseded_entries(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A conversion that correctly writes nothing has superseded nothing.
+
+    The warning names entries to delete, so a false positive on the idempotent
+    path is an invitation to destroy the dataset's tracks.
+    """
+    dataset = _trex_dataset(tmp_path)
+    dataset.convert_all_tracks()
+    _ = capsys.readouterr()
+
+    dataset.convert_all_tracks()
+
+    assert "drop_entries" not in capsys.readouterr().err
+
+
+def test_a_superseded_spelling_is_reported_with_the_safe_remedy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An entry the current recipes do not produce is the true positive.
+
+    The remedy has to name ``run_id=""``: the default drops *every* variant of
+    those entries, which with ``delete_files=True`` deletes the conversion that
+    was just made.
+    """
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    dataset = _trex_dataset(tmp_path)
+    dataset.convert_all_tracks()
+    stale = dataset.get_root("tracks") / "old__spelling.parquet"
+    _ = stale.write_bytes(b"")
+    write_tracks_row(
+        dataset,
+        run_id="",
+        group="old",
+        sequence="spelling",
+        out_path=stale,
+        producer="",
+        std_format="trex_v1",
+        n_rows=0,
+    )
+    _ = capsys.readouterr()
+
+    dataset.convert_all_tracks()
+
+    reported = capsys.readouterr().err
+    assert "('old', 'spelling')" in reported
+    assert 'run_id=""' in reported

@@ -591,9 +591,12 @@ def test_an_entry_left_behind_by_a_conversion_is_reported(
     ds.convert_all_tracks()
 
     err = capsys.readouterr().err
-    assert "were not rewritten" in err
+    assert "claimed by no current raw source" in err
     assert "old_name" in err
     assert "drop_entries" in err
+    # The remedy has to name run_id="": the default drops every variant of the
+    # entry, which with delete_files=True deletes the conversion just made.
+    assert 'run_id=""' in err
     # Both resolve until the user acts -- which is the problem being reported.
     assert len(read_tracks_index(ds)) == 2
 

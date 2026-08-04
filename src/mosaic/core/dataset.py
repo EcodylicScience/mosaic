@@ -162,6 +162,7 @@ from .pipeline.tracking_roots import (
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
+    consumed_composition_for,
     legacy_view,
     read_tracks_index,
     select_variant_rows,
@@ -1642,36 +1643,80 @@ class Dataset:
                 stamps[entry] = stamp
         return stamps
 
-    def _warn_superseded_entries(self, before: dict[tuple[str, str], str]) -> None:
-        """Say when a conversion left older rows for the same tables behind.
+    def _conversion_is_current(self, run_id: str, group: str, sequence: str) -> bool:
+        """Whether an existing table was made from what its sources hold *now*.
+
+        The existence of the output says only that *this recipe* has *a* table for
+        this entry; it says nothing about which bytes went into it. A scan updates
+        ``tracks_raw/index.csv`` and the per-sequence composition, and without this
+        the conversion that follows skips on existence alone -- leaving a table,
+        and an index row claiming a composition, that disagree with the files they
+        name, under a command that reported success.
+
+        Answers **True when it cannot tell**, so the recorded composition is used
+        as evidence of staleness and never as evidence of currency: a legacy row
+        that predates the projection, or a dataset whose ``sequences.csv`` has not
+        been written, keeps skipping exactly as before rather than recomputing
+        every entry on every call.
+        """
+        current = consumed_composition_for(self, group, sequence, ("tracks_raw",))
+        if not current:
+            return True
+        index = read_tracks_index(self)
+        if index.empty:
+            return True
+        rows = index[
+            (index["run_id"] == run_id)
+            & (index["group"] == group)
+            & (index["sequence"] == sequence)
+        ]
+        if rows.empty:
+            return True
+        recorded = text_cell(rows.iloc[-1].get("consumed_composition", ""))
+        return not recorded or recorded == current
+
+    def _warn_superseded_entries(self, covered: set[tuple[str, str]]) -> None:
+        """Say when the index holds entries no current raw source claims.
 
         A converter that changes how it spells an entry writes rows under the new
         names without touching the old ones, so both resolve and every feature
         runs over each sequence twice. That is the visible consequence of
         ``calms21_npy`` 0.2, which stopped spelling its ids as slash paths.
 
-        Detected as "an entry that was here before this call and that this call
-        did not rewrite" -- so a normal re-conversion, which rewrites the same
-        names, says nothing. Reported rather than repaired: deleting tables this
-        call did not write is exactly the rename M1's migration rule forbids.
+        *covered* is every entry this conversion reached -- written, or skipped
+        because it was already current -- collected as the branches walked them
+        rather than predicted, since an enumerable format expands one file into
+        many sequences that its raw row does not name. Anything indexed and not
+        in it is a spelling no source produces any more.
+
+        The previous test was "an entry this call did not rewrite", which named
+        **every** entry on a cached re-run: a conversion that correctly writes
+        nothing has rewritten nothing. It then printed a deletion remedy for
+        tables that were perfectly good.
+
+        Reported rather than repaired: deleting tables this call did not write is
+        exactly the rename M1's migration rule forbids.
         """
-        after = self._entry_stamps()
-        gone = sorted(
-            entry
-            for entry, stamp in before.items()
-            if after.get(entry) == stamp  # unchanged => this call did not touch it
-        )
+        if not covered:
+            return
+        indexed = set(self._entry_stamps())
+        gone = sorted(indexed - covered)
         if not gone:
             return
         listing = ", ".join(f"({g!r}, {s!r})" for g, s in gone[:5])
         more = f" and {len(gone) - 5} more" if len(gone) > 5 else ""
+        remedy = ", ".join(f"({g!r}, {s!r})" for g, s in gone[:5])
         print(
             f"[convert_all_tracks] {len(gone)} entr"
-            f"{'y' if len(gone) == 1 else 'ies'} in tracks/index.csv were not "
-            f"rewritten by this conversion: {listing}{more}.\n"
+            f"{'y' if len(gone) == 1 else 'ies'} in tracks/index.csv "
+            f"{'is' if len(gone) == 1 else 'are'} claimed by no current raw "
+            f"source: {listing}{more}.\n"
             "  If a converter changed how it spells its entries, these are the "
             "old spellings and both will resolve until you remove them:\n"
-            "    ds.drop_entries([...], delete_files=True)",
+            f'    ds.drop_entries([{remedy}], delete_files=True, run_id="")\n'
+            '  The run_id="" names the unlabelled tables explicitly. Omitting it '
+            "means every\n  variant of those entries, which would delete the "
+            "conversions you just made.",
             file=sys.stderr,
         )
 
@@ -4586,7 +4631,11 @@ class Dataset:
     # Convert one original -> standard (T-Rex-like)
     # ----------------------------
     def convert_one_track(
-        self, raw_row: pd.Series, params: Optional[dict] = None, overwrite: bool = False
+        self,
+        raw_row: pd.Series,
+        params: Optional[dict] = None,
+        overwrite: bool = False,
+        covered: set[tuple[str, str]] | None = None,
     ) -> Path:
         """
         Convert a single raw track file (row from tracks_raw/index.csv) to standard trex_v1 parquet.
@@ -4643,12 +4692,19 @@ class Dataset:
                     out_group_canon = group_value
 
                 # output path -- make_entry_key does the safe-name encoding
+                if covered is not None:
+                    covered.add((out_group_canon, canon_seq))
                 stem = make_entry_key(out_group_canon, canon_seq)
                 out_path = variant_root / f"{stem}.parquet"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Respect overwrite flag when outputs already exist
-                if out_path.exists() and not overwrite:
+                # Respect overwrite flag when outputs already exist, unless the
+                # sources moved under them -- see ``_conversion_is_current``.
+                if (
+                    out_path.exists()
+                    and not overwrite
+                    and self._conversion_is_current(variant, out_group_canon, canon_seq)
+                ):
                     produced.append(out_path)
                     continue
 
@@ -4696,11 +4752,17 @@ class Dataset:
         # Normal single-sequence path (default). The safe names are not
         # computed here any more: make_entry_key derives them for the filename,
         # and the index stores the raw identity plus nothing derivable from it.
+        if covered is not None:
+            covered.add((group_value, seq_value))
         rel_name = f"{make_entry_key(group_value, seq_value)}.parquet"
         out_path = variant_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if out_path.exists() and not overwrite:
+        if (
+            out_path.exists()
+            and not overwrite
+            and self._conversion_is_current(variant, group_value, seq_value)
+        ):
             return out_path
 
         # Which entry to produce. The hints always win: the caller knows the
@@ -4828,21 +4890,32 @@ class Dataset:
         params: dict[str, object] | None,
         group_from: str,
         overwrite: bool,
-    ) -> None:
+    ) -> set[tuple[str, str]]:
         """Convert each raw row into a table of its own, warning per failure.
 
         The fallback both of :meth:`convert_all_tracks`' branches take when a set
         of rows has nothing to merge -- an index with no merging format at all,
         and a single group inside one that has. One copy, because two copies of
         "warn and keep going" are two chances for one of them to start raising.
+
+        Returns:
+            The ``(group, sequence)`` entries these rows cover -- written or
+            skipped as already current. Filled by ``convert_one_track`` rather
+            than predicted from the raw row, because an enumerable format expands
+            one file into many sequences and the row's own ``sequence`` is blank.
+            See :meth:`_warn_superseded_entries`.
         """
+        covered: set[tuple[str, str]] = set()
         for _, row in rows.iterrows():
             try:
                 call_params = dict(params) if params else {}
                 call_params["group_from"] = group_from
-                self.convert_one_track(row, params=call_params, overwrite=overwrite)
+                _ = self.convert_one_track(
+                    row, params=call_params, overwrite=overwrite, covered=covered
+                )
             except Exception as e:
                 print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+        return covered
 
     def convert_all_tracks(
         self,
@@ -4934,12 +5007,17 @@ class Dataset:
                 f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}"
             )
 
-        before = self._entry_stamps()
+        # Every entry the raw sources name, filled as the branches below walk
+        # them. What is indexed but absent from this is an old spelling -- see
+        # ``_warn_superseded_entries``.
+        covered: set[tuple[str, str]] = set()
 
         if not merging:
             # Nothing in this index merges: one table per raw file.
-            self._convert_rows_individually(df, params, group_from, overwrite)
-            self._warn_superseded_entries(before)
+            covered |= self._convert_rows_individually(
+                df, params, group_from, overwrite
+            )
+            self._warn_superseded_entries(covered)
             return
 
         # Read once, and from the manifest rather than spelled "trex_v1" here:
@@ -4968,7 +5046,9 @@ class Dataset:
             # blank sequence means the file holds several, which is
             # convert_one_track's expansion rather than this loop's concat.
             if src_format not in merging or not sequence:
-                self._convert_rows_individually(group_df, params, group_from, overwrite)
+                covered |= self._convert_rows_individually(
+                    group_df, params, group_from, overwrite
+                )
                 continue
 
             # Merge this sequence's several files into one table
@@ -4990,10 +5070,15 @@ class Dataset:
             out_group = group  # default: infile (already what we grouped by)
             if group_from in {"filename", "both"} and raw_group_hint:
                 out_group = raw_group_hint
+            covered.add((text_cell(out_group), text_cell(sequence)))
             variant_root = tracks_variant_root(self.get_root("tracks"), variant)
             rel_name = f"{make_entry_key(out_group, sequence)}.parquet"
             out_path = variant_root / rel_name
-            if out_path.exists() and not overwrite:
+            if (
+                out_path.exists()
+                and not overwrite
+                and self._conversion_is_current(variant, out_group, sequence)
+            ):
                 continue
 
             hints = EntryHints(group=group or "", sequence=sequence or "")
@@ -5045,7 +5130,7 @@ class Dataset:
                 consumed_source_roots=("tracks_raw",),
             )
 
-        self._warn_superseded_entries(before)
+        self._warn_superseded_entries(covered)
 
     # ----------------------------
     # Labels: conversion + indexing
