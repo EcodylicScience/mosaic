@@ -28,6 +28,17 @@ def _dataset(tmp_path: Path) -> Dataset:
     return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
+def _base_config(tmp_path: Path) -> Path:
+    """Stand in for Lightning Pose's own ``config_default.yaml``.
+
+    Supplied by the caller rather than generated, because Lightning Pose merges
+    no defaults of its own and ships no template.
+    """
+    base = tmp_path / "litpose_default.yaml"
+    _ = base.write_text("training:\n  num_gpus: 0\n")
+    return base
+
+
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     project.mkdir()
@@ -43,7 +54,7 @@ def _fake_trainer(
 
     def run(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
         seen.append(list(argv))
-        out = Path(argv[argv.index("-c") + 3])
+        out = Path(argv[argv.index("-c") + 4])
         checkpoints = out / "tb_logs" / "run" / "version_0" / "checkpoints"
         checkpoints.mkdir(parents=True, exist_ok=True)
         _ = (out / "config.yaml").write_text(f"model:\n  model_type: {model_type}\n")
@@ -69,7 +80,13 @@ def test_it_registers_a_directory_artifact(
     _ = _fake_trainer(monkeypatch)
 
     run_id = run_op(
-        ds, "train-litpose", {"project": str(_project(tmp_path)), "max_epochs": 2}
+        ds,
+        "train-litpose",
+        {
+            "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
+            "max_epochs": 2,
+        },
     )
     assert run_id.startswith("train-litpose.")
 
@@ -90,7 +107,11 @@ def test_the_recorded_model_type_comes_from_the_artifact(
     _ = run_op(
         ds,
         "train-litpose",
-        {"project": str(_project(tmp_path)), "model_type": "regression"},
+        {
+            "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
+            "model_type": "regression",
+        },
     )
     row = trained_model_index(model_index_path(ds, "train-litpose")).read().iloc[0]
     assert row["model_type"] == "heatmap_mhcrnn", "read back, not echoed"
@@ -109,6 +130,7 @@ def test_the_head_and_backbone_reach_the_trainer_as_overrides(
         "train-litpose",
         {
             "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
             "model_type": "heatmap_mhcrnn",
             "backbone": "vitb_sam",
             "max_epochs": 5,
@@ -129,7 +151,14 @@ def test_the_trained_model_resolves_back_as_a_litpose_model(
     _point_at_litpose(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
 
-    run_id = run_op(ds, "train-litpose", {"project": str(_project(tmp_path))})
+    run_id = run_op(
+        ds,
+        "train-litpose",
+        {
+            "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
+        },
+    )
     resolved = resolve_model(ds, run_id, "train-litpose")
 
     assert resolved.model_id == run_id
@@ -148,4 +177,8 @@ def test_a_directory_that_is_not_a_project_is_refused(
     bare.mkdir()
 
     with pytest.raises(FileNotFoundError, match="no config.yaml"):
-        _ = run_op(ds, "train-litpose", {"project": str(bare)})
+        _ = run_op(
+            ds,
+            "train-litpose",
+            {"project": str(bare), "base_config": str(_base_config(tmp_path))},
+        )

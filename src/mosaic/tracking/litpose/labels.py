@@ -19,12 +19,13 @@ from __future__ import annotations
 import csv
 from io import StringIO
 from pathlib import Path
+from typing import Final
 
 import yaml
 
 from mosaic.core.annotations.model import AnnotationSet
 
-__all__ = ["write_litpose_dataset"]
+__all__ = ["DEFAULT_RESIZE", "RESIZE_MULTIPLE", "write_litpose_dataset"]
 
 _COLLECTED = "CollectedData.csv"
 
@@ -35,6 +36,25 @@ def _video_of(annotations: AnnotationSet, index: int) -> str:
     return video or "images"
 
 
+RESIZE_MULTIPLE: Final[int] = 128
+"""What Lightning Pose requires ``image_resize_dims`` to be a multiple of.
+
+Asserted in its own ``ModelConfig._validate_data``, because the backbone's
+downsampling stages need the input to divide evenly.
+"""
+
+DEFAULT_RESIZE: Final[int] = 256
+"""The network input size written when the caller names none.
+
+Lightning Pose resizes every image to ``data.image_resize_dims`` before the
+backbone sees it, so this is a real training decision rather than bookkeeping --
+it sets what the model learns from and what inference reproduces. 256 is the
+smallest square Lightning Pose's own examples use and a multiple of
+:data:`RESIZE_MULTIPLE`; a project whose subjects are small in frame will want a
+larger one, which is what the parameter is for.
+"""
+
+
 def write_litpose_dataset(
     annotations: AnnotationSet,
     out_dir: str | Path,
@@ -42,6 +62,8 @@ def write_litpose_dataset(
     scorer: str = "mosaic",
     train_prob: float = 0.8,
     copy_images: bool = True,
+    resize_height: int = DEFAULT_RESIZE,
+    resize_width: int = DEFAULT_RESIZE,
 ) -> Path:
     """Write *annotations* as a Lightning Pose project directory.
 
@@ -54,6 +76,8 @@ def write_litpose_dataset(
         train_prob: Written into the config as the training fraction.
         copy_images: Copy the images in. Off leaves them where they are, which
             only works when *out_dir* already sees them.
+        resize_height: Network input height. See :data:`DEFAULT_RESIZE`.
+        resize_width: Network input width. See :data:`DEFAULT_RESIZE`.
 
     Returns:
         The project root.
@@ -123,6 +147,14 @@ def write_litpose_dataset(
                 "height": annotations.frames[0].height,
                 "width": annotations.frames[0].width,
             },
+            # Required, not optional. Lightning Pose reads
+            # ``data.image_resize_dims`` in struct mode -- its own
+            # ``ModelConfig._validate_data`` indexes the key before checking
+            # whether the values are set -- so a config that omits it fails
+            # validation before training starts. The values are then handed
+            # straight to ``cv2.resize`` on every frame, at training and at
+            # inference alike, so they have to be real numbers rather than nulls.
+            "image_resize_dims": {"height": resize_height, "width": resize_width},
             "data_dir": str(out_dir),
             "video_dir": str(out_dir / "videos"),
             "csv_file": _COLLECTED,
@@ -131,5 +163,11 @@ def write_litpose_dataset(
         },
         "training": {"train_prob": train_prob, "val_prob": round(1.0 - train_prob, 6)},
     }
+    # Created, not merely named. Lightning Pose asserts ``video_dir`` is a
+    # directory before training begins, whether or not the run uses unlabelled
+    # video, so a project that names one it did not make fails on a bare
+    # ``AssertionError`` with no message. Empty is a legitimate state -- it means
+    # supervised-only training.
+    (out_dir / "videos").mkdir(parents=True, exist_ok=True)
     _ = (out_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     return out_dir

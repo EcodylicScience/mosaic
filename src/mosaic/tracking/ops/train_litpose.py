@@ -42,6 +42,13 @@ class TrainLitposeParams(Params):
 
     # A Lightning Pose project directory, or a prior run to fine-tune from.
     project: str
+    # A complete Lightning Pose config to train from, dataset-relative or
+    # absolute. Required, and the caller's: Lightning Pose merges no defaults of
+    # its own and ships no template, so generating one would mean mosaic
+    # inventing the training hyperparameters it has no opinion about. Reaches the
+    # identity, because a model trained under a different base config is a
+    # different model. See ``train_litpose``.
+    base_config: str
     base_model: str = ""
     model_type: LitposeModelType = "heatmap"
     backbone: str = "resnet50_animal_ap10k"
@@ -99,6 +106,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
         produced = train_litpose(
             project,
             run_root,
+            base_config=ds.resolve_path(params.base_config),
             model_type=params.model_type,
             backbone=params.backbone,
             max_epochs=params.max_epochs,

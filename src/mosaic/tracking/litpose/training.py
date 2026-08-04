@@ -40,11 +40,17 @@ import sys
 from lightning_pose.train import train
 from omegaconf import OmegaConf
 
-_project, _out = sys.argv[1], sys.argv[2]
-_overrides = sys.argv[3:]
+_base, _project, _out = sys.argv[1], sys.argv[2], sys.argv[3]
+_overrides = sys.argv[4:]
 
-_cfg = OmegaConf.load(f"{_project}/config.yaml")
-_cfg = OmegaConf.merge(_cfg, OmegaConf.from_dotlist(_overrides))
+# The base config carries everything Lightning Pose needs and mosaic does not
+# choose; the project's own config carries the data half mosaic wrote. The
+# project wins, because it describes the labels actually being trained on.
+_cfg = OmegaConf.merge(
+    OmegaConf.load(_base),
+    OmegaConf.load(f"{_project}/config.yaml"),
+    OmegaConf.from_dotlist(_overrides),
+)
 OmegaConf.update(_cfg, "data.data_dir", _project, force_add=True)
 OmegaConf.update(_cfg, "hydra.run.dir", _out, force_add=True)
 _model = train(_cfg)
@@ -56,6 +62,7 @@ def train_litpose(
     project_dir: str | Path,
     run_root: str | Path,
     *,
+    base_config: str | Path,
     model_type: str = "heatmap",
     backbone: str = "resnet50_animal_ap10k",
     max_epochs: int = 300,
@@ -82,6 +89,17 @@ def train_litpose(
         max_epochs: Training length.
         overrides: Further Hydra assignments, applied last.
         litpose_conda_env: Run in this conda env, overriding the environment.
+        base_config: A complete Lightning Pose config to train from. **Required,
+            and supplied by the caller rather than generated.** Lightning Pose
+            composes its config with Hydra from the file it is given and merges
+            no defaults of its own; the package ships no template and exposes no
+            defaults factory, so the only complete config in existence is
+            ``scripts/configs/config_default.yaml`` in the Lightning Pose
+            repository. A generated one would mean mosaic inventing scheduler
+            milestones, loss weights and augmentation settings it has no opinion
+            about, and pinning them into every model trained here. The project
+            written by ``write_litpose_dataset`` supplies the ``data`` half and
+            is merged over this.
         litpose_bin: A Lightning Pose script naming the install, overriding the
             environment.
         idle_timeout: Kill the subprocess after this long with no output.
@@ -92,8 +110,8 @@ def train_litpose(
         a ``config.yaml`` beside a checkpoint under ``tb_logs``.
 
     Raises:
-        FileNotFoundError: *project_dir* holds no ``config.yaml``, or training
-            exited zero without producing a model directory.
+        FileNotFoundError: *base_config* or *project_dir*'s ``config.yaml`` is
+            missing, or training exited zero without producing a model directory.
         LitposeNotFoundError: No Lightning Pose install could be located.
         LitposeError: Training exited non-zero.
     """
@@ -101,6 +119,17 @@ def train_litpose(
     if not (project_dir / "config.yaml").exists():
         raise FileNotFoundError(
             f"not a Lightning Pose project -- no config.yaml in {project_dir}"
+        )
+    base_config = Path(base_config)
+    if not base_config.is_file():
+        raise FileNotFoundError(
+            f"no Lightning Pose base config at {base_config}. Lightning Pose "
+            f"merges no defaults of its own and ships no template, so training "
+            f"needs a complete config: take "
+            f"'scripts/configs/config_default.yaml' from the Lightning Pose "
+            f"repository, keep the version you used beside it, and pass it as "
+            f"'base_config'. The project's own config.yaml supplies the data "
+            f"half and is merged over it."
         )
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
@@ -122,6 +151,7 @@ def train_litpose(
         *invocation,
         "-c",
         _TRAIN_SNIPPET,
+        str(base_config),
         str(project_dir),
         str(run_root),
         *(f"{key}={value}" for key, value in assignments.items()),

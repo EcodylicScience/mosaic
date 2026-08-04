@@ -26,7 +26,7 @@
   "tracks/litpose-variant": "litpose.2.3-0bef161dde",
   "tracks/sleap-variant": "sleap.1.6-a953a9148c",
   "tracks/trex-variant": "trex.0.1-0be68648ea",
-  "train-litpose/project": "51296ae481",
+  "train-litpose/project": "1ecffb880f",
   "train-localizer/dataset-dir": "bfbc8b03c0",
   "train-points/data": "f46e808c29",
   "train-pose/data": "94107abc0f",

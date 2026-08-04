@@ -212,6 +212,7 @@ OP_CASES: tuple[OpCase, ...] = (
         params=_op_params(
             "train-litpose",
             project="projects/mice",
+            base_config="configs/litpose_default.yaml",
             model_type="heatmap",
             backbone="resnet50_animal_ap10k",
             max_epochs=10,
