@@ -161,10 +161,18 @@ def load_tracks_raw_index_frame(index_path: Path) -> pd.DataFrame:
     Missing columns are added, so an index written before a column existed still
     reads.
     """
+    df = pd.DataFrame(columns=TRACKS_RAW_INDEX_COLUMNS)
     if index_path.exists():
-        df = pd.read_csv(index_path, keep_default_na=False, dtype=str)
-    else:
-        df = pd.DataFrame(columns=TRACKS_RAW_INDEX_COLUMNS)
+        try:
+            df = pd.read_csv(index_path, keep_default_na=False, dtype=str)
+        except pd.errors.EmptyDataError:
+            # A file holding no header at all -- a truncated write, an
+            # interrupted scan, a sync that landed the inode and not the bytes.
+            # Read as the empty index a missing file reads as, rather than
+            # raising a pandas message that names no path: this reader sits
+            # under `reindex` and `make_portable`, where one such file took down
+            # the whole pass over every other root.
+            pass
     for column in TRACKS_RAW_INDEX_COLUMNS:
         if column not in df.columns:
             df[column] = ""

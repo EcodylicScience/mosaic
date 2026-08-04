@@ -211,8 +211,19 @@ class IndexCSV(Generic[RowT]):
         the ``!= ""`` masks in :meth:`list_runs` stop working. Columns absent from
         the file are ignored by pandas rather than raising, so an index written
         before a defaulted column existed still reads.
+
+        A file holding no header at all reads as the empty frame a *missing* one
+        reads as. "Absent is empty" is this index's contract, and a truncated
+        write, an interrupted scan or a sync that landed the inode without the
+        bytes leaves a file that is present and says nothing -- the same amount
+        of information, and not a reason for a different answer. Raising here
+        took down a whole ``reconcile`` pass over every other root, with a pandas
+        message that named no path.
         """
-        return pd.read_csv(self.path, keep_default_na=False, dtype=self._str_dtypes)
+        try:
+            return pd.read_csv(self.path, keep_default_na=False, dtype=self._str_dtypes)
+        except pd.errors.EmptyDataError:
+            return self._empty_frame()
 
     def ensure(self) -> None:
         """Create the CSV with column headers if it doesn't exist."""
