@@ -52,8 +52,13 @@ _cfg = OmegaConf.merge(
     OmegaConf.from_dotlist(_overrides),
 )
 OmegaConf.update(_cfg, "data.data_dir", _project, force_add=True)
-OmegaConf.update(_cfg, "hydra.run.dir", _out, force_add=True)
-_model = train(_cfg)
+# Where the model lands is an argument, not a config key. `train` does
+# `model_dir = Path(model_dir or os.getcwd())` and never reads `hydra.run.dir`
+# -- that key is applied by Hydra's `@hydra.main` decorator, which calling
+# `train(cfg)` directly bypasses. Setting it and passing nothing trained
+# successfully into the *caller's working directory*, left the run root empty,
+# and surfaced as "exited cleanly but wrote no model".
+_model = train(_cfg, model_dir=_out)
 print(f"trained into {_out}")
 """
 
