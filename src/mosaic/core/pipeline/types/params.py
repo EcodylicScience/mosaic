@@ -108,8 +108,24 @@ class GlobalModelParams(Params, Generic[M]):
 
     @model_validator(mode="after")
     def _exclusive_source(self) -> Self:
-        has_templates = "templates" in self.model_fields_set
-        has_model = "model" in self.model_fields_set
+        """Exactly one source, counted by what was *given* rather than named.
+
+        Presence in ``model_fields_set`` alone is not the question, because this
+        model's own ``model_dump`` writes both keys -- the one that was not
+        provided as an explicit ``null``. Reading that dump back therefore set
+        both, and every params file any global model feature ever wrote was
+        rejected on reload. ``reconcile`` rebuilds a run's feature from exactly
+        that file, so it could not confirm a single such run and reported them
+        all unresolvable; the reader is `run_feature`'s own output.
+
+        ``model_fields_set`` still has to be consulted, because ``templates``
+        carries a non-``None`` default: a caller who passed only ``model`` would
+        otherwise look like it had passed both.
+        """
+        has_templates = (
+            "templates" in self.model_fields_set and self.templates is not None
+        )
+        has_model = "model" in self.model_fields_set and self.model is not None
         if has_templates == has_model:
             msg = "Exactly one of 'templates' or 'model' must be provided"
             raise ValueError(msg)
