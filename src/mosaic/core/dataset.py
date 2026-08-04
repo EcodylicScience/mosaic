@@ -170,6 +170,7 @@ from .pipeline.tracks_index import (
     write_tracks_row,
 )
 from .pipeline.labels_index import (
+    LABELS_INDEX_PATH_COLUMNS,
     read_labels_index,
     select_label_variant_rows,
     write_labels_row,
@@ -232,6 +233,12 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # real columns rather than creating what is missing.
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
+    # ``labels`` belongs here for the same reason ``tracks`` does: its rows carry
+    # a ``source_abs_path`` naming the upload they were converted from. Left out,
+    # every portability pass walked the labels index and rewrote only
+    # ``abs_path``, so a dataset moved between machines kept a labels row
+    # pointing at the old one's filesystem -- and reported itself portable.
+    "labels": LABELS_INDEX_PATH_COLUMNS,
     "models": ("best_model_path", "metrics_path", "artifact_path", "data_yaml"),
     **{key: root.path_columns for key, root in TRACKING_ROOTS.items()},
 }
@@ -1457,7 +1464,9 @@ class Dataset:
             """
             if not idx_path.exists():
                 return 0
-            df = pd.read_csv(idx_path)
+            df = self._read_index_frame_or_none(idx_path)
+            if df is None:
+                return 0
             columns = [c for c in ("abs_path", *extra_columns) if c in df.columns]
             if not columns:
                 return 0
@@ -1546,7 +1555,9 @@ class Dataset:
             """Convert abs_path, plus any *extra_columns* holding a path, to relative."""
             if not idx_path.exists():
                 return 0
-            df = pd.read_csv(idx_path)
+            df = self._read_index_frame_or_none(idx_path)
+            if df is None:
+                return 0
             total_changed = 0
             for col in ("abs_path", *extra_columns):
                 if col not in df.columns:
@@ -1642,6 +1653,22 @@ class Dataset:
             if stamp > stamps.get(entry, ""):
                 stamps[entry] = stamp
         return stamps
+
+    @staticmethod
+    def _read_index_frame_or_none(path: Path) -> pd.DataFrame | None:
+        """An index CSV as a frame, or ``None`` when it holds no header at all.
+
+        The raw-CSV counterpart of the "absent is empty" rule the typed indexes
+        follow. A truncated write, an interrupted scan, or a sync that landed the
+        inode without the bytes leaves a present file saying nothing; reading it
+        raised ``EmptyDataError`` out of the whole-dataset hygiene passes, so one
+        such file stopped ``reindex`` and ``make_portable`` over every other root
+        with a message that named no path.
+        """
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return None
 
     def _conversion_is_current(self, run_id: str, group: str, sequence: str) -> bool:
         """Whether an existing table was made from what its sources hold *now*.
@@ -1927,17 +1954,65 @@ class Dataset:
         reconcilers = identity_reconcilers(self, only)
         report = run_reconcile(reconcilers, apply=apply, force=force)
 
-        # Compose the cheap, always-safe index-hygiene passes so one command brings
-        # a dataset fully current. Only on a full run -- a narrowed ``only`` is
-        # asking about one artifact kind, not the whole tree. The heavier
-        # media/tracking passes (``reprobe-media``, ``prune-media``,
-        # ``sweep-tracking``) stay separate commands: they probe or delete, and have
-        # their own reports and abort semantics.
+        # Compose the cheap index-hygiene passes so one command brings a dataset
+        # fully current. Only on a full run -- a narrowed ``only`` is asking about
+        # one artifact kind, not the whole tree. The heavier media/tracking passes
+        # (``reprobe-media``, ``prune-media``, ``sweep-tracking``) stay separate
+        # commands: they probe or delete, and have their own reports and abort
+        # semantics.
         if only:
             return report
-        pruned = self.reindex(dry_run=not apply)
+        # ``reindex`` deletes a row whose file it cannot resolve, and a dataset
+        # copied from another machine holds rows naming that machine's absolute
+        # paths -- present files, unresolvable cells. Pruning those would destroy
+        # the index this pass exists to bring forward, and neither pass here can
+        # repair them: ``make_portable`` relativizes against *this* root, which a
+        # foreign prefix does not sit under. Only ``rewrite_index_paths``, with a
+        # prefix map the caller supplies, can. So skip the pruning and say so.
+        stale = self._foreign_path_indexes()
+        pruned: dict[str, int] = {}
+        if stale:
+            listing = ", ".join(sorted(stale)[:3])
+            more = f" and {len(stale) - 3} more" if len(stale) > 3 else ""
+            print(
+                f"[reconcile] skipped dropping dangling rows: {len(stale)} index"
+                f"{'' if len(stale) == 1 else 'es'} hold paths from another "
+                f"machine ({listing}{more}).\n"
+                "  Those rows name files that exist here under different paths, "
+                "and pruning them would\n  delete the index rather than repair "
+                "it. Repair them first, then re-run:\n"
+                "    ds.rewrite_index_paths({'<their prefix>': '<this dataset>'})"
+                "; ds.make_portable()",
+                file=sys.stderr,
+            )
+        else:
+            pruned = self.reindex(dry_run=not apply)
         repathed = self.make_portable(dry_run=not apply)
         return dataclasses.replace(report, pruned=pruned, repathed=repathed)
+
+    def _foreign_path_indexes(self) -> set[str]:
+        """Indexes holding an absolute path that resolves to nothing here.
+
+        The signature of a dataset copied or synced from another machine. Such a
+        cell is not a dangling row -- the file is usually present, under this
+        dataset, at a path the cell does not name -- so it must not be pruned.
+        """
+        stale: set[str] = set()
+        for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
+            if not index.path.exists():
+                continue
+            frame = self._read_index_frame_or_none(index.path)
+            if frame is None:
+                continue
+            for column in ("abs_path", *index.path_columns):
+                if column not in frame.columns:
+                    continue
+                for cell in frame[column]:
+                    text = "" if pd.isna(cell) else str(cell)
+                    if text and Path(text).is_absolute() and not Path(text).exists():
+                        stale.add(str(index.path))
+                        break
+        return stale
 
     def list_groups(self) -> list[str]:
         """The group names in ``tracks/index.csv``, sorted. Empty when there are none.
