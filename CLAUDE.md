@@ -36,6 +36,14 @@ raw H.264 frame counting.
 
 Python `>=3.12` is required (`pyproject.toml`).
 
+`mosaic-media` is a sibling package by the same authors, and it resolves from
+PyPI like any other dependency — no second clone is needed. To work against its
+unreleased `main`, install it editable *over* the released wheel:
+`pip install -e "../mosaic-media[io,cli]"`. Do not reintroduce it as a
+`[tool.uv.sources]` path: that table is a uv extension pip does not read, so a
+path source there makes `pip install -e .` fail outright on a machine without
+the sibling. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Optional extras
 
 `[recommended]` bundles `wavelets` + `pose` + `localizer`. For the full extras

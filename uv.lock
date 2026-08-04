@@ -1489,7 +1489,7 @@ wheels = [
 
 [[package]]
 name = "mosaic-behavior"
-version = "0.1.0"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "imbalanced-learn" },
@@ -1548,6 +1548,9 @@ recommended = [
     { name = "torch" },
     { name = "ultralytics" },
 ]
+sleap = [
+    { name = "h5py" },
+]
 wavelets = [
     { name = "pywavelets" },
 ]
@@ -1575,12 +1578,13 @@ requires-dist = [
     { name = "feral", marker = "extra == 'feral'", git = "https://github.com/Skovorp/feral.git?rev=main" },
     { name = "h5py", marker = "extra == 'localizer'", specifier = ">=3.0" },
     { name = "h5py", marker = "extra == 'recommended'", specifier = ">=3.0" },
+    { name = "h5py", marker = "extra == 'sleap'", specifier = ">=3.0" },
     { name = "imbalanced-learn", specifier = ">=0.11" },
     { name = "imgstore", marker = "extra == 'imgstore'", specifier = ">=0.4" },
     { name = "joblib", specifier = ">=1.3" },
     { name = "lightning-action", marker = "extra == 'lightning-action'", specifier = ">=1.0" },
     { name = "matplotlib", specifier = ">=3.7" },
-    { name = "mosaic-media", extras = ["io", "cli"], editable = "../mosaic_media" },
+    { name = "mosaic-media", extras = ["io", "cli"], specifier = ">=0.2.0,<0.3.0" },
     { name = "networkx", specifier = ">=3.2.1" },
     { name = "numba", specifier = ">=0.58" },
     { name = "numpy", specifier = ">=1.22" },
@@ -1605,7 +1609,7 @@ requires-dist = [
     { name = "ultralytics", marker = "extra == 'recommended'", specifier = ">=8.0" },
     { name = "xgboost", specifier = ">=1.7" },
 ]
-provides-extras = ["wavelets", "pose", "polo", "lightning-action", "localizer", "identity", "gpu", "imgstore", "feral", "recommended"]
+provides-extras = ["wavelets", "pose", "polo", "lightning-action", "localizer", "sleap", "identity", "gpu", "imgstore", "feral", "recommended"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1623,8 +1627,12 @@ dev = [
 
 [[package]]
 name = "mosaic-media"
-version = "0.2.0"
-source = { editable = "../mosaic_media" }
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/79/a44599412325686a34230cd64ddd02d78c9a718a3fda2f94af00a5bcbf54/mosaic_media-0.2.1.tar.gz", hash = "sha256:7b421c6a95406c9136bb6cf9e7b73e1485ce4add43c74c5c372c317c5e737d44", size = 67478, upload-time = "2026-08-04T12:25:04.78Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/2a/84fc65ec72bb5149be3ba495f2e43159df7da8a815235c2dfa332bca6aa2/mosaic_media-0.2.1-py3-none-any.whl", hash = "sha256:1380c289f13abfb5019895748980370ac1ecc92a1e6640edd680a92b9c6bd510", size = 76889, upload-time = "2026-08-04T12:25:03.714Z" },
+]
 
 [package.optional-dependencies]
 cli = [
@@ -1633,26 +1641,6 @@ cli = [
 io = [
     { name = "av" },
     { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "av", marker = "extra == 'io'", specifier = ">=18,<19" },
-    { name = "numpy", marker = "extra == 'io'", specifier = ">=1.22" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
-]
-provides-extras = ["io", "cli"]
-
-[package.metadata.requires-dev]
-bench = [
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "opencv-python", specifier = ">=4.7" },
-]
-dev = [
-    { name = "basedpyright", specifier = ">=1.38.2" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "ruff", specifier = ">=0.15.4" },
 ]
 
 [[package]]

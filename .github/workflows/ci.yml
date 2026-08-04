@@ -23,8 +23,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # mosaic depends on its sibling via a path source, so both are checked
-      # out. The directory name must match `[tool.uv.sources]` in pyproject.toml.
+      # mosaic-media resolves from PyPI, so nothing here needs the sibling to
+      # install. It is checked out and installed editable anyway, over the
+      # released wheel, so the suite runs against unreleased mosaic-media and a
+      # regression there surfaces before it reaches a tag rather than after.
       - uses: actions/checkout@v4
         with:
           path: mosaic
@@ -37,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: EcodylicScience/mosaic-media
-          path: mosaic_media
+          path: mosaic-media
 
       # ffprobe is a hard runtime dependency of media indexing and raw-H.264
       # frame counting, and it is not on the runner image. Without it, indexing
@@ -57,8 +59,11 @@ jobs:
         run: |
           uv venv
           # `uv pip install`, not `uv sync`: the lock cannot resolve on every
-          # platform (see the environment notes in CONTRIBUTING).
-          uv pip install -e '../mosaic_media[io,cli]'
+          # platform, because `lightning-action` pulls `nvidia-dali-cuda110`,
+          # which publishes nothing for macOS. `uv sync` would also install
+          # without extras and prune what it considers extraneous, undoing the
+          # two installs below.
+          uv pip install -e '../mosaic-media[io,cli]'
           uv pip install -e '.[wavelets,imgstore,sleap]'
           uv pip install pytest ruff
 
@@ -93,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: EcodylicScience/mosaic-media
-          path: mosaic_media
+          path: mosaic-media
 
       # conftest's CI guard covers the whole suite's required modules and
       # binaries, so this job matches `test`'s environment and adds to it.
@@ -109,7 +114,7 @@ jobs:
         working-directory: mosaic
         run: |
           uv venv
-          uv pip install -e '../mosaic_media[io,cli]'
+          uv pip install -e '../mosaic-media[io,cli]'
           uv pip install -e '.[wavelets,imgstore,sleap,identity]'
           uv pip install pytest
 

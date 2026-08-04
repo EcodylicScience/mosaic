@@ -18,6 +18,28 @@ This repository contains backend tooling for behavioral analysis pipelines. Plea
    - motivation and design notes
    - testing evidence (commands run and outcomes)
 
+## Environment Notes
+
+`pip install -e .` is enough: every dependency, `mosaic-media` included,
+resolves from PyPI.
+
+To work against an unreleased `mosaic-media`, clone it as a sibling and install
+it editable *over* the released wheel:
+
+```bash
+pip install -e "../mosaic-media[io,cli]"
+```
+
+Order matters only in that the editable install wins whenever it is the later
+one. CI does exactly this, so the suite runs against that repository's `main`
+rather than its last release.
+
+Prefer `uv pip install` over `uv sync`. The lock cannot resolve on every
+platform — `lightning-action` depends on `nvidia-dali-cuda110`, which publishes
+no macOS distribution — and `uv sync` installs the project without extras and
+prunes anything it considers extraneous, silently undoing an extras install.
+Regenerating `uv.lock` therefore has to happen on Linux.
+
 ## Code and Review Expectations
 
 - Keep changes minimal and scoped to one concern per PR.

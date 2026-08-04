@@ -167,14 +167,6 @@ OVERRIDES: Final[dict[str, Override]] = {
         obligation="permissive",
         note="Development-only type stubs; not distributed with mosaic.",
     ),
-    "../mosaic_media": Override(
-        expression="Apache-2.0",
-        obligation="permissive",
-        note=(
-            "Sibling package by the same authors, resolved from a path source "
-            "during development and from PyPI otherwise."
-        ),
-    ),
 }
 
 # Keyed by distribution name, and consulted only for registry sources, where the

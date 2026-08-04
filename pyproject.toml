@@ -128,9 +128,14 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# No entry for mosaic-media. It resolves from PyPI like any other dependency,
+# which is the only way plain `pip install -e .` can find it: this table is a
+# uv extension that pip does not read, so a path source here left the
+# requirement above pointing at a package that, to pip, did not exist. To work
+# against a local checkout, install it editable over the released wheel --
+# `pip install -e ../mosaic-media[io,cli]` -- as CI does.
 [tool.uv.sources]
 microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-stubs" }
-mosaic-media = { path = "../mosaic_media", editable = true }
 
 [tool.uv.workspace]
 exclude = [
