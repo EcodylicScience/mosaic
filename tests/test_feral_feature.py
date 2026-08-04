@@ -8,6 +8,7 @@ the parts that need the ``feral`` package are skipped when it isn't installed.
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -15,8 +16,10 @@ from mosaic.behavior.feature_library.feral_feature import (
     FeralFeature,
     _check_feral,
     _load_checkpoint_state_dict,
+    _resolve_dataset_path,
 )
 from mosaic.behavior.feature_library.registry import FEATURES
+from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.types import Result
 
 _HAS_FERAL = importlib.util.find_spec("feral") is not None
@@ -92,6 +95,105 @@ class TestImportGuard:
                 FeralFeature.Inputs((Result(feature="upstream"),)),
                 {"model_dir": "/tmp/does-not-matter"},
             )
+
+
+class TestPathResolution:
+    """A dataset-relative ``model_dir`` resolves against the dataset, not the CWD.
+
+    Exercised through the module-level helper rather than the class on purpose:
+    ``FeralFeature.__init__`` raises without the optional ``feral`` package, which
+    CI does not install, so a class-routed test would be permanently skipped there
+    -- and this is a correctness fix that needs coverage everywhere.
+    """
+
+    @staticmethod
+    def _dataset(tmp_path: Path) -> Dataset:
+        manifest = new_dataset_manifest("f", base_dir=tmp_path)
+        return Dataset(manifest_path=manifest).load(ensure_roots=True)
+
+    def test_relative_path_resolves_under_the_dataset_root(
+        self, tmp_path: Path
+    ) -> None:
+        ds = self._dataset(tmp_path)
+
+        resolved = _resolve_dataset_path(ds, "models/feral/0.1-abc")
+
+        assert resolved == ds.get_root("models") / "feral" / "0.1-abc"
+        assert resolved is not None and resolved.is_absolute()
+
+    def test_absolute_existing_path_is_returned_unchanged(self, tmp_path: Path) -> None:
+        """The hash-neutrality argument, as code: an existing absolute is untouched."""
+        ds = self._dataset(tmp_path)
+        model_dir = tmp_path / "elsewhere" / "0.1-abc"
+        model_dir.mkdir(parents=True)
+
+        assert _resolve_dataset_path(ds, str(model_dir)) == model_dir
+
+    def test_absolute_missing_path_is_returned_unchanged(self, tmp_path: Path) -> None:
+        """Never raises -- load_state's branch 3 is what reports the miss."""
+        ds = self._dataset(tmp_path)
+        missing = Path("/media/otherbox/T9/models/feral/0.1-abc")
+
+        assert _resolve_dataset_path(ds, missing) == missing
+
+    def test_no_bound_dataset_falls_back_to_plain_path(self) -> None:
+        """A direct load_state call, with no bind_dataset, behaves as it always did."""
+        assert _resolve_dataset_path(None, "/abs/model") == Path("/abs/model")
+        assert _resolve_dataset_path(None, "relative/model") == Path("relative/model")
+
+    def test_a_path_is_accepted_as_well_as_a_string(self, tmp_path: Path) -> None:
+        """``params.model_dir`` is a pydantic ``Path``; the config copies are ``str``."""
+        ds = self._dataset(tmp_path)
+
+        assert _resolve_dataset_path(ds, Path("models/feral/0.1-abc")) == (
+            _resolve_dataset_path(ds, "models/feral/0.1-abc")
+        )
+
+
+@pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
+class TestLoadStateResolvesModelDir:
+    """``load_state`` reaches the resolved directory, not a CWD-relative one."""
+
+    def test_relative_model_dir_without_a_checkpoint_falls_through_to_fit(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = new_dataset_manifest("f", base_dir=tmp_path)
+        ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+        (ds.get_root("models") / "feral" / "0.1-abc").mkdir(parents=True)
+
+        feature = FeralFeature(
+            FeralFeature.Inputs((Result(feature="upstream"),)),
+            {"model_dir": "models/feral/0.1-abc"},
+        )
+        feature.bind_dataset(ds)
+
+        run_root = tmp_path / "run"
+        run_root.mkdir()
+        # Branch 2 finds the resolved directory but no model_best.pt in it, so it
+        # falls through to branch 3 -- reached without loading torch.
+        assert feature.load_state(run_root, {}, {}) is False
+
+    def test_relative_video_dir_is_resolved_against_the_dataset(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = new_dataset_manifest("f", base_dir=tmp_path)
+        ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+        clips = ds.get_root("features") / "clips"
+        clips.mkdir(parents=True)
+        labels = tmp_path / "labels.json"
+        _ = labels.write_text("{}")
+
+        feature = FeralFeature(
+            FeralFeature.Inputs((Result(feature="upstream"),)),
+            {"video_dir": "features/clips", "label_json": str(labels)},
+        )
+        feature.bind_dataset(ds)
+
+        run_root = tmp_path / "run"
+        run_root.mkdir()
+        _ = feature.load_state(run_root, {}, {})
+
+        assert feature._video_dir == clips
 
 
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")

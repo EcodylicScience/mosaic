@@ -60,7 +60,13 @@ def convert_points_run_id(
 
 @dataclass(frozen=True, slots=True)
 class ConvertedDatasetIndexRow(RunIndexRowBase):
-    """Typed row for a converted-dataset index CSV (``models/convert-points/index.csv``)."""
+    """Typed row for a converted-dataset index CSV (``models/convert-points/index.csv``).
+
+    ``data_yaml`` is stored dataset-root-relative so the index survives a move. A
+    new path column here must also be added to ``_INDEX_PATH_COLUMNS["models"]``
+    in ``core/dataset.py``, or the two path-repair passes will not see it and it
+    silently stops being portable.
+    """
 
     kind: str
     source_format: str

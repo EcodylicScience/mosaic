@@ -39,6 +39,15 @@ appending must do it **in memory** on the frame rather than as a separate write
 -- which is why ``IndexCSV`` takes an ``adopt`` callable over a ``DataFrame``
 rather than a function that rewrites the path.
 
+**Cross-platform.** POSIX locks the index inode directly with an advisory
+``fcntl.flock`` -- it survives the atomic rename and adds nothing to the
+dataset. Windows locks are *mandatory* (they would block index readers) and an
+open handle blocks the ``os.replace`` that ``atomic_write`` performs, so there
+the index inode cannot be the lock. Windows instead locks a dedicated file in
+the OS temp directory, keyed by the resolved index path so every caller and
+process on the host agrees on it -- outside the dataset, so it blocks neither
+readers nor the rename and the "exactly ``index.csv``" invariant still holds.
+
 Per file rather than per root, which is finer than P7's wording and never less
 safe. Feature indexes are per feature (``features/<name>/index.csv``), so a
 root-wide lock would serialize every feature worker in a dataset against every
@@ -47,13 +56,60 @@ other -- worse than the problem it solves.
 
 from __future__ import annotations
 
-import fcntl
 import os
+import sys
 import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+
+# Platform lock backend. ``_open_lock_fd`` returns the fd whose byte 0 is locked
+# for the index at *resolved*; ``_lock_exclusive_nb`` / ``_release`` take and
+# drop the lock. Both backends raise ``OSError`` when the lock is already held
+# (what the poll loop in ``_acquire`` expects) and are released by the OS on
+# process death, so there is never a stale lock to clean up.
+#
+# POSIX locks the index inode itself: an advisory ``flock`` survives the atomic
+# rename and leaves nothing on disk. Windows locks are mandatory and an open
+# handle blocks ``os.replace``, so the index inode cannot be the lock there --
+# it would block readers and the rename. Windows locks a dedicated file in the
+# OS temp directory keyed by the resolved index path (outside the dataset, so
+# ``test_tracks_raw_index``'s "exactly index.csv" still holds), and still creates
+# the empty index so the POSIX side effect callers rely on is preserved.
+if sys.platform == "win32":
+    import tempfile
+    from hashlib import sha1
+
+    import msvcrt
+
+    _WIN_LOCK_DIR = Path(tempfile.gettempdir()) / "mosaic-index-locks"
+
+    def _open_lock_fd(resolved: Path) -> int:
+        resolved.touch(exist_ok=True)
+        _WIN_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+        digest = sha1(str(resolved).encode("utf-8"), usedforsecurity=False).hexdigest()
+        return os.open(_WIN_LOCK_DIR / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o666)
+
+    def _lock_exclusive_nb(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _release(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _open_lock_fd(resolved: Path) -> int:
+        return os.open(resolved, os.O_RDWR | os.O_CREAT, 0o666)
+
+    def _lock_exclusive_nb(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _release(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
 
 # Default ceiling on how long a writer waits for its turn. Generous, because the
 # operation being serialized is a CSV rewrite measured in milliseconds: reaching
@@ -72,9 +128,9 @@ class IndexLockTimeout(RuntimeError):
     """
 
 
-# Thread-level serialization, keyed by resolved path. `flock` is held per open
-# file description, so two threads in one process would each open their own fd
-# and neither would block on the other -- the file lock alone is not
+# Thread-level serialization, keyed by resolved path. The OS file lock is held
+# per open file handle, so two threads in one process would each open their own
+# fd and neither would block on the other -- the file lock alone is not
 # thread-safe. RLock also makes nesting safe: `IndexCSV.append` calls `ensure`,
 # and both take the lock.
 _thread_locks: dict[Path, threading.RLock] = {}
@@ -129,7 +185,7 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
             return
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+        fd = _open_lock_fd(resolved)
         try:
             _acquire(fd, path, timeout)
             _depth[key] = 1
@@ -137,7 +193,7 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
                 yield
             finally:
                 _depth.pop(key, None)
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _release(fd)
         finally:
             os.close(fd)
 
@@ -157,7 +213,7 @@ def _acquire(fd: int, path: Path, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_exclusive_nb(fd)
             return
         except OSError:
             if time.monotonic() >= deadline:

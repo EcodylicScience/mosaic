@@ -33,7 +33,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, ClassVar, Self, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,9 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.progress import CSVProgressCallback
 
 from .registry import register_feature
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +185,37 @@ def _check_feral(feral_code_dir: str | Path | None = None) -> None:
             "https://github.com/Skovorp/feral), or set feral_code_dir to a "
             "local checkout of the package."
         ) from None
+
+
+def _resolve_dataset_path(ds: Dataset | None, value: str | Path) -> Path:
+    """Resolve a stored path through the bound dataset, or leave it alone.
+
+    A dataset-relative ``model_dir`` is the portable spelling: it survives a move
+    between machines, which an absolute one does not, and it is exactly what
+    ``Dataset.resolve_path`` exists to reverse. Bare ``Path(value)`` would resolve
+    it against the process CWD instead -- for a notebook, wherever the kernel
+    happened to start.
+
+    Behavior-preserving for every absolute value: ``resolve_path`` returns an
+    absolute path that exists byte-for-byte unchanged, and one that does not exist
+    unchanged too (after trying the dataset's path map), never raising. So this
+    cannot move a run's identity -- identity hashes ``params.model_dir``, the
+    stored value, which this never touches.
+
+    Falls back to ``Path(value)`` when no dataset is bound, so a direct
+    ``load_state`` call outside ``run_feature`` keeps working as it does today.
+
+    Module-level rather than only a method because ``FeralFeature.__init__``
+    raises without the optional ``feral`` package, which CI does not install --
+    a test routed through the class would be permanently skipped there, while
+    this one always runs.
+    """
+    if ds is None:
+        return Path(value)
+    resolved = ds.resolve_path(value)
+    if str(resolved) != str(value):
+        log.info("[feral] resolved %s -> %s via the bound dataset", value, resolved)
+    return resolved
 
 
 def _chunked(seq, k):
@@ -341,7 +375,18 @@ class FeralFeature:
         chunk_shift: int = 32
         chunk_step: int = 1
         resize_to: int = 256
-        device: str = "cuda"
+        # Which hardware runs the model, not what the model computes. apply()
+        # takes its device off the loaded model rather than off this field, and
+        # nothing reads it back from disk -- fit() writes cfg["device"] and reads
+        # it once from the same in-memory dict. Precision is governed by
+        # `inference_autocast`, which IS hashed.
+        # HASH_EXCLUDE, on the standard this repo already applied twice
+        # (infer_batch_size below, arhmm's `backend`): equivalent up to
+        # floating-point associativity, not bit-identity -- cpu and cuda float32
+        # kernels reassociate differently. Pinning a run's identity to the card it
+        # happened to land on costs a full recompute for nothing, and blocks
+        # reloading finished results on a machine without a GPU.
+        device: Annotated[str, HASH_EXCLUDE] = "cuda"
         # Chunks per forward pass during apply(). Pure throughput knob:
         # batching is numerically equivalent to the per-chunk path
         # (eval() freezes BatchNorm1d + disables dropout; all attention is
@@ -392,15 +437,24 @@ class FeralFeature:
         self._config: dict = {}
         self._classes: list[int] = []
         self._class_names: dict[int, str] = {}
-        self._ds = None
+        self._ds: Dataset | None = None
         self._video_dir: Path | None = None
         self._run_root: Path | None = None
         self._metrics: dict | None = None
         self.progress_callback = None  # optional TrainingProgressCallback
 
-    def bind_dataset(self, ds):
+    def bind_dataset(self, ds: Dataset) -> None:
         """Store dataset reference for resolving media paths."""
         self._ds = ds
+
+    def _resolve(self, value: str | Path) -> Path:
+        """``_resolve_dataset_path`` against the dataset ``bind_dataset`` supplied.
+
+        Every call site has already established that *value* is set -- either by
+        a ``is not None`` guard on the param or by a truthiness check on the
+        config key -- so this takes a non-optional value and returns one.
+        """
+        return _resolve_dataset_path(self._ds, value)
 
     # --- State management ---
 
@@ -426,7 +480,7 @@ class FeralFeature:
 
         # Fallback: use params.video_dir if set (training mode)
         if self._video_dir is None and self.params.video_dir is not None:
-            self._video_dir = Path(self.params.video_dir)
+            self._video_dir = self._resolve(self.params.video_dir)
 
         # Branch 1: cached model in run_root (from prior fit+save_state)
         cached_model = run_root / "feral_model.pt"
@@ -434,12 +488,12 @@ class FeralFeature:
         if cached_model.exists() and cached_config.exists():
             self._load_model(cached_model, cached_config)
             if self._video_dir is None and self._config.get("video_dir"):
-                self._video_dir = Path(self._config["video_dir"])
+                self._video_dir = self._resolve(self._config["video_dir"])
             return True
 
         # Branch 2: pre-trained model from params.model_dir
         if self.params.model_dir is not None:
-            model_dir = Path(self.params.model_dir)
+            model_dir = self._resolve(self.params.model_dir)
             checkpoint = model_dir / "model_best.pt"
             config_path = model_dir / "config.json"
             if checkpoint.exists():
@@ -448,7 +502,7 @@ class FeralFeature:
                     config_path if config_path.exists() else None,
                 )
                 if self._video_dir is None and self._config.get("video_dir"):
-                    self._video_dir = Path(self._config["video_dir"])
+                    self._video_dir = self._resolve(self._config["video_dir"])
                 return True
 
         # Branch 3: training mode -- return False to trigger fit()
@@ -480,7 +534,7 @@ class FeralFeature:
 
         # Try to get class info from config -> label_json
         if "label_json" in self._config:
-            label_json_path = Path(self._config["label_json"])
+            label_json_path = self._resolve(self._config["label_json"])
             if label_json_path.exists():
                 with open(label_json_path) as f:
                     labels_json = json.load(f)
@@ -614,7 +668,7 @@ class FeralFeature:
                 json.dump(cfg, f, indent=2, default=str)
 
         # Load labels
-        with open(str(p.label_json)) as f:
+        with open(self._resolve(p.label_json)) as f:
             labels_json = json.load(f)
         class_names = {int(k): v for k, v in labels_json["class_names"].items()}
         num_classes = len(class_names)
@@ -631,7 +685,7 @@ class FeralFeature:
         # (label_json_dict), not a path.
         data_kwargs = {
             "label_json_dict": labels_json,
-            "prefix": str(p.video_dir),
+            "prefix": str(self._resolve(p.video_dir)),
             "chunk_shift": cfg["chunk_shift"],
             "chunk_length": cfg["chunk_length"],
             "chunk_step": cfg["chunk_step"],
@@ -994,6 +1048,8 @@ class FeralFeature:
             labels_json,
             num_classes,
             partition,
+            # Same resolution the training loader got, so both read one directory.
+            prefix=str(self._resolve(cfg["video_dir"])),
         )
         # Post-training test eval runs full float32 (no autocast). This is
         # the canonical test_metrics number that lands in reports.json --
@@ -1028,6 +1084,7 @@ class FeralFeature:
         num_classes: int,
         partition: str,
         *,
+        prefix: str | None = None,
         batch_size: int | None = None,
         num_workers: int | None = None,
     ):
@@ -1036,6 +1093,13 @@ class FeralFeature:
         Caller supplies the merged config dict (`cfg["label_json"]`,
         `cfg["video_dir"]`, chunking params, etc.). Returns ``None`` if the
         partition is absent or empty.
+
+        *prefix* is the directory the clips are read from. It is a parameter
+        rather than `cfg["video_dir"]` read directly because resolving a stored
+        path needs the bound dataset, which a ``staticmethod`` has no access to:
+        an instance caller passes the resolved directory, and the classmethod
+        entry point, which binds no dataset, falls back to the stored value --
+        exactly what ``_resolve_dataset_path`` does with no dataset.
         """
         import torch
         from feral.dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
@@ -1052,7 +1116,7 @@ class FeralFeature:
             do_aa=False,
             predict_per_item=cfg.get("predict_per_item", 64),
             num_classes=num_classes,
-            prefix=str(cfg["video_dir"]),
+            prefix=prefix if prefix is not None else str(cfg["video_dir"]),
             resize_to=cfg.get("resize_to", 256),
             chunk_shift=cfg.get("chunk_shift", 16),
             chunk_length=cfg.get("chunk_length", 64),
@@ -1271,9 +1335,9 @@ class FeralFeature:
         # Resolve video directory (fallback chain: cached → config → params)
         video_dir = self._video_dir
         if video_dir is None and self._config.get("video_dir"):
-            video_dir = Path(self._config["video_dir"])
+            video_dir = self._resolve(self._config["video_dir"])
         if video_dir is None and self.params.video_dir is not None:
-            video_dir = Path(self.params.video_dir)
+            video_dir = self._resolve(self.params.video_dir)
         if video_dir is None:
             raise RuntimeError(
                 "Could not resolve crop video directory. "
