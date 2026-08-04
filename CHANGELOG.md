@@ -98,6 +98,21 @@ raised `KeyError`, whose repr adds quotes when the CLI interpolates it into a
 message; both resolvers now raise `ValueError`, which `convert_all_labels`
 already did.
 
+**`convert_id_tags_from_csv` wrote nothing for a sequence with no group.** Its
+`"category"` and `"multi"` branches group the CSV by `(group, sequence)`, and
+`groupby` drops a row whose key is missing — so with `group` blank, which is
+what most datasets have, every row was removed before the loop body ran. The
+only symptom was a lower `Created N id_tags files` count. Nothing was written,
+so re-running the conversion is the whole remedy. The same read now keeps a
+sequence named `001` from arriving as the integer `1`; the rest of the CSV is
+deliberately still inferred, because `id` keys the `.npz` that a tracks table's
+integer `id` column is looked up in. A row naming no sequence is refused rather
+than silently dropped.
+
+**`write_labels_row` spelled a blank group `nan`.** The labels index writer
+carried the same `str(group) if group is not None else ""` the tracks one did,
+and the `is not None` guard does not catch a float NaN either.
+
 ## 0.10.0 — one tracker driver, and a model that may be a directory
 
 **`mosaic trex` is gone; `mosaic track <kind>` replaces it.** It was 211

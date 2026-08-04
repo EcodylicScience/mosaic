@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import to_safe_name, validate_entry_name
+from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
@@ -299,20 +299,21 @@ def write_labels_row(
 ) -> None:
     """Record one converted-labels table. The only way to write this index.
 
-    Keyword-only, and ``group``/``sequence`` are stringified for the same reason
-    the tracks writer does it: a caller reading them off a pandas ``Series`` gets
-    ``numpy`` scalars, which would defeat the dedup that holds this index to one
-    row per entry. ``consumed_composition`` is computed here from the declared
+    Keyword-only, and ``group``/``sequence`` are read through
+    :func:`~mosaic.core.helpers.text_cell` for the same reason the tracks writer
+    does it: a caller reading them off a pandas ``Series`` gets ``numpy``
+    scalars, which would defeat the dedup that holds this index to one row per
+    entry, and a blank cell arrives there as a float NaN that ``str()`` spells
+    as the word ``nan`` -- a group no composition was ever recorded under.
+    ``consumed_composition`` is computed here from the declared
     ``consumed_source_roots`` via the shared :func:`consumed_composition_for`,
     which now covers ``labels_raw`` too.
 
     Call this *after* writing the ``.npz``: ``IndexRowBase`` existence-checks an
     absolute ``abs_path``.
     """
-    entry_group = validate_entry_name(str(group) if group is not None else "", "group")
-    entry_sequence = validate_entry_name(
-        str(sequence) if sequence is not None else "", "sequence"
-    )
+    entry_group = validate_entry_name(text_cell(group), "group")
+    entry_sequence = validate_entry_name(text_cell(sequence), "sequence")
     row = LabelsIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=run_id,

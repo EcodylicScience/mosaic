@@ -5594,11 +5594,33 @@ class Dataset:
         if not csv_path.exists():
             raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
-        df = pd.read_csv(csv_path)
+        # Only the two identity columns are pinned as text. They name a file, so
+        # a sequence "001" must not read back as the integer 1 and then name an
+        # entry no tracks table has. The rest stay inferred on purpose: ``id``
+        # keys the .npz that a tracks table's integer ``id`` column is looked up
+        # in, and a blank ``focal_id`` has to stay NaN to be skipped rather than
+        # become "" and reach ``int()``.
+        df = pd.read_csv(csv_path, dtype={"group": str, "sequence": str})
 
         # Validate required columns
         if "group" not in df.columns or "sequence" not in df.columns:
             raise ValueError("CSV must have 'group' and 'sequence' columns")
+
+        # Settled once, for all three branches below. These two key the groupby
+        # the branches use and name the file it writes, and a blank cell is a
+        # float NaN even under a pinned dtype. Left raw, ``groupby`` drops every
+        # blank-group row before the loop body runs -- silently, and ``group`` is
+        # empty on every dataset the control plane creates, so that is the common
+        # case rather than an edge.
+        for column in ("group", "sequence"):
+            df[column] = [text_cell(value) for value in df[column]]
+        unnamed = [int(i) + 2 for i in df.index[df["sequence"] == ""]]
+        if unnamed:
+            raise ValueError(
+                f"{csv_path}: no sequence named on line(s) "
+                f"{', '.join(str(line) for line in unnamed)}. A row naming no "
+                "sequence names no entry, and would write a file with no name."
+            )
 
         created: list[Path] = []
 
@@ -5612,7 +5634,7 @@ class Dataset:
                 )
 
             for _, row in df.iterrows():
-                group = str(row["group"]) if pd.notna(row["group"]) else ""
+                group = str(row["group"])
                 seq = str(row["sequence"])
                 focal_id = row[focal_id_column]
 
@@ -5646,9 +5668,9 @@ class Dataset:
                     f"CSV must have '{category_column}' column for csv_type='category'"
                 )
 
-            # Group by (group, sequence)
+            # Group by (group, sequence), both already settled above
             for (group, seq), group_df in df.groupby(["group", "sequence"]):
-                group = str(group) if pd.notna(group) else ""
+                group = str(group)
                 seq = str(seq)
 
                 per_id_labels = {}
@@ -5688,9 +5710,9 @@ class Dataset:
             if not field_columns:
                 raise ValueError("No field columns found for csv_type='multi'")
 
-            # Group by (group, sequence)
+            # Group by (group, sequence), both already settled above
             for (group, seq), group_df in df.groupby(["group", "sequence"]):
-                group = str(group) if pd.notna(group) else ""
+                group = str(group)
                 seq = str(seq)
 
                 per_id_labels = {}

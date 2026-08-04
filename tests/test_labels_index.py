@@ -151,6 +151,35 @@ def test_authored_row_records_no_source_root(tmp_path: Path) -> None:
     assert row["run_id"] == ""
 
 
+def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
+    """The labels writer takes ``object`` for the same reason the tracks one does.
+
+    A caller reading a cell off a pandas ``Series`` gets a float NaN for a blank,
+    and ``str()`` of that is the word -- which passes ``validate_entry_name`` and
+    then names an entry nothing else knows about.
+    """
+    ds = _dataset(tmp_path)
+    out_path = ds.get_root("labels") / "behavior" / "v1" / "s.npz"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, labels=np.array([0]))
+
+    write_labels_row(
+        ds,
+        run_id="v1",
+        group=float("nan"),
+        sequence="s",
+        out_path=out_path,
+        producer="convert-labels-x",
+        label_kind="behavior",
+        label_format="individual_pair_v1",
+        n_frames=1,
+    )
+
+    row = read_labels_index(ds, "behavior").iloc[0]
+    assert str(row["group"]) == ""
+    assert str(row["sequence"]) == "s"
+
+
 # --- convert_all_labels end to end --------------------------------------------
 
 
