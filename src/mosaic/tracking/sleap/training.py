@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Final, Literal, TypedDict
 
 import yaml
 
@@ -67,11 +67,42 @@ SleapBackbone = Literal["unet", "convnext", "swint"]
 """The feature extractor. Orthogonal to the head, which is why it is its own
 field rather than folded into a single model name."""
 
+_HEAD_SECTIONS: Final[Mapping[SleapHead, tuple[str, ...]]] = {
+    "single_instance": ("confmaps",),
+    "centroid": ("confmaps",),
+    "centered_instance": ("confmaps",),
+    "bottomup": ("confmaps", "pafs"),
+    "multi_class_bottomup": ("confmaps", "class_maps"),
+    "multi_class_topdown": ("confmaps", "class_vectors"),
+}
+"""The output sections each head owns, which must be present for sleap-nn to fill.
+
+An empty head block is **not** the same as a defaulted one. sleap-nn merges what
+is written here over its own structured config, where every section defaults to
+``None``; it then walks the head's sections looking for ``part_names`` and
+``edges`` to fill in from the labels file, and a section left at ``None`` has no
+keys to walk. Writing ``{head: {}}`` therefore reaches
+``AttributeError: 'NoneType' object has no attribute 'keys'`` inside
+``model_trainer._setup_head_config`` before training starts. Naming each section
+as an empty mapping instantiates it at its own defaults, which is what leaves
+``part_names`` and ``edges`` present-and-``None`` for sleap-nn to complete.
+
+Listed here rather than derived from sleap-nn's classes because mosaic never
+imports it: the tool lives in its own environment, and this file is the record of
+what mosaic asks of it.
+"""
+
+
+class _PreprocessingConfig(TypedDict):
+    ensure_rgb: bool
+    ensure_grayscale: bool
+
 
 class _DataConfig(TypedDict):
     train_labels_path: list[str]
     validation_fraction: float
     provider: str
+    preprocessing: _PreprocessingConfig
 
 
 class _ModelConfig(TypedDict):
@@ -121,10 +152,24 @@ def sleap_train_config(
             "train_labels_path": [str(labels_path)],
             "validation_fraction": validation_fraction,
             "provider": "LabelsReader",
+            # Written at sleap-nn's own defaults, and only because sleap-nn reads
+            # these two off the *unmerged* document. ``run_training`` completes the
+            # config through ``verify_training_cfg`` and keeps the result on
+            # ``trainer.config``, but its post-training evaluation reaches back to
+            # the raw ``config`` for ``ensure_rgb`` / ``ensure_grayscale`` -- so a
+            # config that omits them trains to completion, writes its checkpoint,
+            # and then dies on the evaluation pass with
+            # ``ConfigAttributeError: Key 'preprocessing' is not in struct``.
+            # Stating them changes no behaviour and keeps the run from ending on an
+            # error after the model is already on disk.
+            "preprocessing": {"ensure_rgb": False, "ensure_grayscale": False},
         },
         "model_config": {
+            # The backbone takes an empty block: its fields carry real defaults,
+            # so merging one over sleap-nn's structured config yields those. A
+            # head does not -- see ``_HEAD_SECTIONS``.
             "backbone_config": {backbone: {}},
-            "head_configs": {head: {}},
+            "head_configs": {head: {section: {} for section in _HEAD_SECTIONS[head]}},
         },
         "trainer_config": {
             "max_epochs": max_epochs,

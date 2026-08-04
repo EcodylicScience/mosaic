@@ -75,10 +75,74 @@ def test_the_config_says_what_the_parameters_said() -> None:
     assert config["data_config"]["train_labels_path"] == ["session.slp"]
     assert config["data_config"]["validation_fraction"] == 0.25
     assert config["model_config"]["backbone_config"] == {"convnext": {}}
-    assert config["model_config"]["head_configs"] == {"centroid": {}}
+    assert config["model_config"]["head_configs"] == {"centroid": {"confmaps": {}}}
     assert config["trainer_config"]["max_epochs"] == 30
     assert config["trainer_config"]["seed"] == 7
     assert config["trainer_config"]["save_ckpt"] is True, "otherwise nothing is written"
+
+
+def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
+    """sleap-nn completes the config, then reads two keys off the version it did not.
+
+    ``run_training`` passes the document through ``verify_training_cfg`` and keeps
+    the completed result on ``trainer.config``, but its post-training evaluation
+    reads ``ensure_rgb`` / ``ensure_grayscale`` from the raw ``config`` it was
+    handed. Omitting them trains to completion, writes the checkpoint, and then
+    fails the evaluation pass with ``Key 'preprocessing' is not in struct`` -- an
+    error after the model is already on disk. Stated here at sleap-nn's own
+    defaults, so nothing about the run changes.
+    """
+    config = sleap_train_config(
+        Path("session.slp"),
+        Path("/runs/r1"),
+        head="centered_instance",
+        backbone="unet",
+        max_epochs=1,
+        seed=1,
+        validation_fraction=0.1,
+        run_name="model",
+    )
+    assert config["data_config"]["preprocessing"] == {
+        "ensure_rgb": False,
+        "ensure_grayscale": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("head", "sections"),
+    [
+        ("single_instance", {"confmaps"}),
+        ("centroid", {"confmaps"}),
+        ("centered_instance", {"confmaps"}),
+        ("bottomup", {"confmaps", "pafs"}),
+        ("multi_class_bottomup", {"confmaps", "class_maps"}),
+        ("multi_class_topdown", {"confmaps", "class_vectors"}),
+    ],
+)
+def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> None:
+    """An empty head block is not a defaulted one, and sleap-nn cannot start from it.
+
+    sleap-nn merges this config over its own structured one, where each section
+    defaults to ``None``, then walks the head's sections filling ``part_names``
+    and ``edges`` from the labels. A section left ``None`` has no keys to walk, so
+    ``{head: {}}`` raises ``AttributeError: 'NoneType' object has no attribute
+    'keys'`` in ``model_trainer._setup_head_config`` before the first epoch.
+    Naming each section instantiates it at its own defaults.
+    """
+    config = sleap_train_config(
+        Path("session.slp"),
+        Path("/runs/r1"),
+        head=head,  # pyright: ignore[reportArgumentType]
+        backbone="unet",
+        max_epochs=1,
+        seed=1,
+        validation_fraction=0.1,
+        run_name="model",
+    )
+    written = config["model_config"]["head_configs"]
+    assert set(written) == {head}
+    assert set(written[head]) == sections
+    assert all(value == {} for value in written[head].values())  # pyright: ignore[reportAttributeAccessIssue]
 
 
 # --- the op -----------------------------------------------------------------
