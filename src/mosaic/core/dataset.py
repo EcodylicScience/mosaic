@@ -154,6 +154,7 @@ from .pipeline.sequence_index import (
     write_sequence_compositions,
 )
 from .pipeline.dataset_indexes import iter_dataset_indexes
+from .pipeline.promotion import correction_revision
 from .pipeline.tracking_roots import (
     TRACKING_ROOT,
     TRACKING_ROOTS,
@@ -231,6 +232,14 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
 # root key and both are ``models/<kind>/index.csv``. Naming a column a given
 # index does not have is harmless: both passes intersect against the frame's
 # real columns rather than creating what is missing.
+_CORRECTION_COL: Final = "_correction_revision"
+"""Groupby key naming which promoted revision a raw row is, 0 for an upload.
+
+Derived per call rather than stored: it is a property of the filename promotion
+chose, and a column in ``tracks_raw/index.csv`` would be a second place for it to
+disagree from.
+"""
+
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
     # ``labels`` belongs here for the same reason ``tracks`` does: its rows carry
@@ -4885,6 +4894,7 @@ class Dataset:
         converter: TrackConverter[TrackConvertParams],
         params: TrackConvertParams,
         observed: Optional[dict] = None,
+        correction: int = 0,
     ) -> str:
         """Mint this conversion's tracks-variant identity and record it.
 
@@ -4892,10 +4902,14 @@ class Dataset:
         sequences it covers. Recorded beside the tables in
         ``tracks/<run_id>/params.json``, which Stage 3.2 turns into the
         directory the parquets themselves live in.
+
+        *correction* names the revision when what is being converted is a
+        promoted correction, which makes it a variant of its own rather than
+        more rows in the uncorrected one.
         """
         cls = type(converter)
         op = converter_op(cls.src_format)
-        payload = convert_variant_payload(params.identity_dump())
+        payload = convert_variant_payload(params.identity_dump(), correction)
         run_id = tracks_run_id(op, cls.version, payload)
         _ = write_tracks_variant(
             self.get_root("tracks"),
@@ -5113,8 +5127,24 @@ class Dataset:
                 df[col] = ""
             df[col] = [text_cell(value) for value in df[col]]
 
+        # A promoted correction and the upload it corrects are the same format
+        # for the same entry, so the three keys above put them in one group and
+        # the merge below concatenated them -- one table holding both readings of
+        # every frame, under one identifier. The revision joins the key so each
+        # side converts separately, and reaches the variant identity so the two
+        # tables are distinguishable rather than in conflict.
+        df[_CORRECTION_COL] = [
+            correction_revision(str(value)) for value in df["abs_path"]
+        ]
+        # Only the newest correction converts. The series is append-only history;
+        # re-converting every revision would mint a variant per revision forever,
+        # and the older ones are already on disk under their own.
+        newest = df.groupby(groupby_cols)[_CORRECTION_COL].transform("max")
+        df = df[(df[_CORRECTION_COL] == 0) | (df[_CORRECTION_COL] == newest)]
+        groupby_cols = [*groupby_cols, _CORRECTION_COL]
+
         for keys, group_df in df.groupby(groupby_cols):
-            group, sequence, src_format = keys
+            group, sequence, src_format, correction = keys
 
             # Nothing to merge here: either this format's files come one per
             # sequence, or these rows name no sequence to merge them into -- a
@@ -5139,7 +5169,9 @@ class Dataset:
             # both of its skips, so this only makes the two branches agree.
             converter = get_track_converter(src_format)
             conv_params = self._converter_params(converter, params, src_format)
-            variant = self._tracks_variant(converter, conv_params)
+            variant = self._tracks_variant(
+                converter, conv_params, correction=int(correction)
+            )
 
             raw_group_hint = text_cell(first_row.get("group", ""))
             out_group = group  # default: infile (already what we grouped by)

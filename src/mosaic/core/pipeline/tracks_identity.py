@@ -96,7 +96,9 @@ def tracks_run_id(
     return op_run_id(op, version, terms)
 
 
-def convert_variant_payload(params_identity: Mapping[str, object]) -> dict[str, object]:
+def convert_variant_payload(
+    params_identity: Mapping[str, object], correction: int = 0
+) -> dict[str, object]:
     """What determines a table produced by converting an upload.
 
     The three payload builders exist as named functions rather than dict literals
@@ -104,8 +106,19 @@ def convert_variant_payload(params_identity: Mapping[str, object]) -> dict[str, 
     ``tracks_run_id``. Renaming this ``"params"`` key would move every tracks
     variant on disk, and a corpus that only called ``tracks_run_id`` with a
     hand-built payload would stay green through it.
+
+    *correction* is the revision of a promoted correction, and 0 when the upload
+    is not one. It reaches the identity so a corrected table is a **different
+    variant** from the uncorrected one rather than the same table with different
+    contents: both are legitimate, comparable and selectable side by side, which
+    is what ``tracks/`` being a contract root means. Omitted from the payload
+    entirely when it is 0, so every variant minted before corrections existed
+    keeps the identifier it has.
     """
-    return {"params": dict(params_identity)}
+    payload: dict[str, object] = {"params": dict(params_identity)}
+    if correction:
+        payload["correction"] = correction
+    return payload
 
 
 def tracker_variant_payload(settings: Mapping[str, object]) -> dict[str, object]:

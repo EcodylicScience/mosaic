@@ -15,6 +15,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.promotion import (
+    correction_revision,
     next_revision,
     promote_correction,
 )
@@ -315,3 +316,106 @@ def test_a_multi_file_promotion_keeps_every_file(tmp_path: Path) -> None:
     # Still one revision: the members belong to the same correction.
     assert report.revision == 1
     assert all(".rev1" in landed.name for landed in report.promoted)
+
+
+# --- a correction converts as its own variant ---------------------------------
+
+
+def _trex_npz(path: Path, value: float) -> None:
+    np.savez(
+        path,
+        frame=np.arange(5),
+        time=np.arange(5) / 30.0,
+        id=np.array([0]),
+        X=np.full(5, value),
+        Y=np.full(5, value),
+        poseX=np.stack([np.full(5, value)] * 2, axis=1),
+        poseY=np.stack([np.full(5, value)] * 2, axis=1),
+    )
+
+
+def test_a_correction_converts_as_its_own_variant(tmp_path: Path) -> None:
+    """Both readings survive, distinguishable, rather than merging into one table.
+
+    A promoted correction and the upload it corrects are the same format for the
+    same entry, so the conversion's merge key put them in one group: the table
+    then held *both* readings of every frame under one identifier, and every
+    per-frame feature saw each frame twice with contradictory coordinates.
+
+    They are two variants, which is what ``tracks/`` being a contract root means
+    -- both legitimate, comparable, and selectable side by side.
+    """
+    import mosaic.core.track_library  # noqa: F401  -- registers trex_npz
+
+    ds = _dataset(tmp_path)
+    raw = ds.get_root("tracks_raw")
+    _trex_npz(raw / "vidA_fish0.npz", 1.0)
+    _ = ds.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    ds.convert_all_tracks()
+    uncorrected = sorted(p.name for p in ds.get_root("tracks").iterdir() if p.is_dir())
+    assert len(uncorrected) == 1
+
+    corrections = tmp_path / "corr"
+    corrections.mkdir()
+    _trex_npz(corrections / "vidA_fish0.npz", 99.0)
+    _ = promote_correction(
+        ds,
+        "",
+        "vidA",
+        corrections / "vidA_fish0.npz",
+        src_format="trex_npz",
+        apply=True,
+        force=True,
+    )
+    ds.convert_all_tracks(overwrite=True)
+
+    variants = sorted(p.name for p in ds.get_root("tracks").iterdir() if p.is_dir())
+    assert len(variants) == 2, variants
+    # The uncorrected variant keeps the identifier it already had.
+    assert uncorrected[0] in variants
+    tables = {
+        name: pd.read_parquet(ds.get_root("tracks") / name / "vidA.parquet")
+        for name in variants
+    }
+    for name, table in tables.items():
+        assert len(table) == 5, f"{name} holds both readings"
+    assert {float(t["X"].iloc[0]) for t in tables.values()} == {1.0, 99.0}
+
+
+def test_only_the_newest_correction_converts(tmp_path: Path) -> None:
+    """The series is append-only history, not one variant per revision."""
+    import mosaic.core.track_library  # noqa: F401
+
+    ds = _dataset(tmp_path)
+    raw = ds.get_root("tracks_raw")
+    _trex_npz(raw / "vidA_fish0.npz", 1.0)
+    _ = ds.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    corrections = tmp_path / "corr"
+    corrections.mkdir()
+    for revision, value in ((1, 50.0), (2, 99.0)):
+        _trex_npz(corrections / f"r{revision}.npz", value)
+        _ = promote_correction(
+            ds,
+            "",
+            "vidA",
+            corrections / f"r{revision}.npz",
+            src_format="trex_npz",
+            apply=True,
+            force=True,
+        )
+    ds.convert_all_tracks(overwrite=True)
+
+    tables = {
+        p.name: pd.read_parquet(p / "vidA.parquet")
+        for p in ds.get_root("tracks").iterdir()
+        if p.is_dir() and (p / "vidA.parquet").exists()
+    }
+    values = {float(t["X"].iloc[0]) for t in tables.values()}
+    assert values == {1.0, 99.0}, "rev1 should not have converted; rev2 should"
+
+
+def test_a_correction_revision_is_read_from_the_name() -> None:
+    assert correction_revision(Path("corrected.rev1.npz")) == 1
+    assert correction_revision(Path("corrected.rev12.vidA_fish0.npz")) == 12
+    assert correction_revision(Path("vidA_fish0.npz")) == 0
+    assert correction_revision(Path("corrected.notarev.npz")) == 0

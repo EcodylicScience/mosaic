@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PromotionReport",
+    "correction_revision",
     "next_revision",
     "promote_correction",
 ]
@@ -81,6 +82,29 @@ class PromotionReport:
         return not self.blocked
 
 
+def correction_revision(path: Path | str) -> int:
+    """Which revision of a promoted correction *path* is, or 0 if it is not one.
+
+    Read from the name, which is where promotion puts it: a promoted file is
+    ``corrected.rev<N>`` plus, for a multi-file correction, a member token and
+    the original suffixes. Conversion asks this to tell a correction from the
+    upload it corrects, because the two are the same format and would otherwise
+    merge into one table holding both.
+    """
+    name = Path(path).name
+    fields = name.split(".")
+    if len(fields) < 2 or fields[0] != REVISION_STEM:
+        return 0
+    marker = fields[1]
+    if not marker.startswith("rev"):
+        return 0
+    try:
+        revision = int(marker[3:])
+    except ValueError:
+        return 0
+    return revision if revision > 0 else 0
+
+
 def next_revision(destination: Path) -> int:
     """The next revision number for *destination*, counting from 1.
 
@@ -89,13 +113,7 @@ def next_revision(destination: Path) -> int:
     """
     highest = 0
     for existing in destination.glob(f"{REVISION_STEM}.rev*"):
-        marker = existing.name.split(".")[1]
-        if not marker.startswith("rev"):
-            continue
-        try:
-            highest = max(highest, int(marker[3:]))
-        except ValueError:
-            continue
+        highest = max(highest, correction_revision(existing))
     return highest + 1
 
 
@@ -253,6 +271,7 @@ def _record_lineage(ds: Dataset, group: str, sequence: str, derived_from: str) -
     lineage.
 
     The column was declared in M3 and left unused for exactly this.
+
     """
     path = sequence_label_path(ds)
     labels = sequence_labels(path)
