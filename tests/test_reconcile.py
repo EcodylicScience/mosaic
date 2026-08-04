@@ -442,6 +442,48 @@ def test_tracks_move_cascades_into_features(
     assert not ds.reconcile(only=("features", "tracks")).changed
 
 
+def test_pre_tracks_term_run_is_not_declared_current(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """An equal digest is not evidence of sameness when a term was never recorded.
+
+    A run minted before ``_resolved`` existed records no tracks variant, so
+    ``_resolved_variants`` yields nothing and the recompute omits the ``_tracks``
+    term -- reproducing the recorded digest by construction. The equality is an
+    artifact of the missing term, not a confirmation of the recipe: a live run
+    resolves the tracks index, finds the labelled variant, and mints a different
+    identifier.
+
+    Declaring such a run ``scheme_stale`` and refreshing its marker asserts it is
+    current under a scheme whose identity for those inputs is a different digest,
+    stranding it at an address nothing will address again while claiming the
+    opposite. So the verdict must not be ``ok`` or ``scheme_stale``.
+    """
+    del registered_feature
+    ds = scenario_dataset
+
+    # The legacy shape: run against unlabelled tracks, then strip the provenance
+    # block a run of that vintage never wrote and stamp the scheme it was minted
+    # under.
+    legacy_run_id = _run(ds)
+    run_root = _run_root(ds, legacy_run_id)
+    params_path = run_root / "params.json"
+    recorded = json.loads(params_path.read_text())
+    _ = recorded.pop("_resolved", None)
+    params_path.write_text(json.dumps(recorded))
+    write_identity_scheme(run_root, "1")
+
+    # The migration that gives those entries a labelled variant.
+    _ = _make_tracks_variant(ds)
+
+    report = ds.reconcile(only=("features",))
+    verdict = report.findings[0].verdict
+    assert verdict not in {"ok", "scheme_stale"}, (
+        f"reconcile declared a pre-_tracks-term run {verdict!r}; a live run mints "
+        f"{run_feature(ds, _ReconcileFeature()).run_id!r}, not {legacy_run_id!r}"
+    )
+
+
 # --- Composition of the index-hygiene passes ------------------------------
 
 

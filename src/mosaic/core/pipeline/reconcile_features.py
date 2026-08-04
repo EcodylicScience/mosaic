@@ -159,6 +159,17 @@ class _ParamsFile(BaseModel):
     scope: _ScopeBlock = Field(default_factory=_ScopeBlock, alias="_scope")
     resolved: list[_ResolvedRef] = Field(default_factory=list, alias="_resolved")
 
+    @property
+    def records_resolutions(self) -> bool:
+        """Whether the file carried a ``_resolved`` block at all.
+
+        ``run_feature`` writes the key unconditionally, empty list included, so an
+        absent one dates the file to before the block existed rather than saying
+        the run resolved nothing. The distinction is load-bearing and the default
+        erases it: both spellings arrive here as ``[]``.
+        """
+        return "resolved" in self.model_fields_set
+
 
 def _frame_range(params: _ParamsFile | None) -> tuple[int | None, int | None]:
     if params is None or len(params.frame_range) != 2:
@@ -230,6 +241,7 @@ class _RunRead:
     compositions: dict[tuple[str, str], dict[str, str]]
     tracks_old: tuple[str, ...]
     labels_old: tuple[str, ...]
+    records_resolutions: bool
     upstream_feature_runs: tuple[str, ...]
     # The scope rebuilt with upstreams substituted, filled by ``_classify`` and
     # read by ``_relocate`` to rewrite the run's recorded provenance so the next
@@ -298,6 +310,7 @@ class FeatureReconciler:
             compositions=compositions,
             tracks_old=tracks_old,
             labels_old=labels_old,
+            records_resolutions=params is not None and params.records_resolutions,
             upstream_feature_runs=upstream,
         )
 
@@ -451,6 +464,24 @@ class FeatureReconciler:
         if new_hash == recorded_hash:
             if scheme_current:
                 return "ok", read.run_id, "identifier and scheme current"
+            if not read.records_resolutions:
+                # An equal digest is not evidence of sameness here. The recompute
+                # reads the run's upstream variants out of ``_resolved``, and a
+                # file predating that block yields none -- so the payload omits
+                # the ``_tracks``/``_labels`` terms exactly as the original mint
+                # did, and the digests agree by construction. A live run resolves
+                # the indexes instead, finds whatever variant they now name, and
+                # mints a different identifier. Refreshing the marker on that
+                # would assert the run is current under a scheme whose identity
+                # for its inputs is a different digest, stranding it at an address
+                # nothing will address again while claiming the opposite.
+                return (
+                    "identity_shift_recompute",
+                    read.run_id,
+                    "run predates the recorded-resolution block, so its upstream "
+                    "variants are unknown and an unchanged digest cannot confirm "
+                    "the recipe; recompute rather than refresh",
+                )
             return (
                 "scheme_stale",
                 read.run_id,
@@ -506,13 +537,19 @@ class FeatureReconciler:
 
         The confirmation predicate: every upstream reference must be pinned to a
         concrete run (an unpinned ``run_id`` means "latest, whichever that was",
-        which cannot be re-derived), and a run written before the scheme marker
-        predates the provenance a re-address relies on.
+        which cannot be re-derived), and a run written before either the scheme
+        marker or the recorded-resolution block predates the provenance a
+        re-address relies on.
         """
         if read.feature is None:
             return "feature could not be rebuilt"
         if read.scheme == "":
             return "run predates the identity-scheme marker; recompute rather than move"
+        if not read.records_resolutions:
+            return (
+                "run predates the recorded-resolution block, so its upstream "
+                "variants are unknown; recompute rather than move"
+            )
         for item in read.feature.inputs.root:
             if isinstance(item, Result) and item.run_id is None:
                 return f"upstream {item.feature!r} was never pinned to a run"
