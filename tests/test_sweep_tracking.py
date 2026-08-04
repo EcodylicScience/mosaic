@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.markers import (
     PhaseMarker,
     new_inflight,
@@ -43,6 +44,7 @@ def _entry(
     root_key: str = "trex",
     run_id: str = "trex.1.0-aaaa",
     sequence: str = "seq_a",
+    group: str = "",
     finished_days_ago: float | None = None,
     rowed: bool = True,
     claim_expires_in: float | None = None,
@@ -52,7 +54,7 @@ def _entry(
     Built through the real marker writers rather than by hand: a fixture that
     writes its own JSON would keep passing after the marker schema moved.
     """
-    seq_dir = ds.get_root(root_key) / run_id / sequence
+    seq_dir = ds.get_root(root_key) / run_id / make_entry_key(group, sequence)
     seq_dir.mkdir(parents=True, exist_ok=True)
     (seq_dir / "out.pv").write_bytes(b"x" * 16)
 
@@ -75,11 +77,19 @@ def _entry(
         )
         write_inflight(seq_dir, claim)
     if rowed:
-        _row(ds, root_key, run_id, sequence, seq_dir)
+        _row(ds, root_key, run_id, sequence, seq_dir, group=group)
     return seq_dir
 
 
-def _row(ds: Dataset, root_key: str, run_id: str, sequence: str, path: Path) -> None:
+def _row(
+    ds: Dataset,
+    root_key: str,
+    run_id: str,
+    sequence: str,
+    path: Path,
+    *,
+    group: str = "",
+) -> None:
     from mosaic.tracking.trex.dataset_runs import (
         TRexIndexRow,
         trex_index,
@@ -93,7 +103,7 @@ def _row(ds: Dataset, root_key: str, run_id: str, sequence: str, path: Path) -> 
         [
             TRexIndexRow(
                 run_id=run_id,
-                group="",
+                group=group,
                 sequence=sequence,
                 abs_path=Path(ds.relative_to_root(path)),
                 video_abs_path="",
@@ -231,7 +241,7 @@ def test_a_half_finished_trex_run_is_not_complete(tmp_path: Path) -> None:
 def test_an_expired_claim_is_reclaimable(tmp_path: Path) -> None:
     """The only cross-host authority is the expiry the claim carries itself."""
     ds = _dataset(tmp_path)
-    abandoned = _entry(ds, finished_days_ago=None, claim_expires_in=1.0)
+    _ = _entry(ds, finished_days_ago=None, claim_expires_in=1.0)
 
     report = ds.sweep_tracking(apply=False, now=_NOW + datetime.timedelta(days=365))
 
@@ -340,3 +350,31 @@ def test_a_promoted_run_is_reclaimable_before_its_window(tmp_path: Path) -> None
 
     assert [e.verdict for e in report.entries] == ["promoted"]
     assert recent.exists(), "a dry run must not delete"
+
+
+def test_an_applied_sweep_drops_the_row_of_a_grouped_entry(tmp_path: Path) -> None:
+    """The row goes with the directory, whatever the entry's group.
+
+    A working directory is named by the composite entry *key*
+    (``make_entry_key(group, sequence)``), while the index matches a
+    ``(group, sequence)`` pair. Passing the key as a bare sequence matched no
+    row whenever the group was non-empty, so the sweep deleted the directory and
+    left the row naming it -- the state "rows before files" exists to prevent,
+    reached without any interruption.
+
+    It agreed for an empty group, where the key *is* the sequence. That is every
+    dataset the control plane creates, and it was every dataset in this file,
+    which is why a green suite said nothing.
+    """
+    from mosaic.tracking.trex.dataset_runs import trex_index, trex_index_path
+
+    ds = _dataset(tmp_path)
+    aged = _entry(ds, group="hex", sequence="hex_3", finished_days_ago=90.0)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"tracker": 0.0}, now=_NOW
+    )
+
+    assert not aged.exists(), "the aged directory was not reclaimed"
+    assert report.rows_dropped == 1, "the directory went but its row stayed"
+    assert len(trex_index(trex_index_path(ds)).read()) == 0

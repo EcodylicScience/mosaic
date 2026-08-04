@@ -40,6 +40,7 @@ from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    missing_output_error,
     subprocess_env,
     tool_invocation,
 )
@@ -281,8 +282,6 @@ def run_litpose_predict(
     )
 
     if not out_csv.exists():
-        raise FileNotFoundError(
-            f"Expected predictions CSV not found after inference: {out_csv}"
-        )
+        raise missing_output_error("Lightning Pose", out_csv, stdout, stderr)
 
     return LitposePredictResult(csv_path=out_csv, stdout=stdout, stderr=stderr)

@@ -34,6 +34,7 @@ from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    missing_output_error,
     subprocess_env,
     tool_invocation,
 )
@@ -340,9 +341,7 @@ def run_sleap_track(
     )
 
     if not output_slp.exists():
-        raise FileNotFoundError(
-            f"Expected .slp file not found after inference: {output_slp}"
-        )
+        raise missing_output_error("SLEAP", output_slp, stdout, stderr)
 
     return SleapTrackResult(slp_path=output_slp, stdout=stdout, stderr=stderr)
 

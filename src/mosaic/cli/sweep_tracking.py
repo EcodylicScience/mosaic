@@ -59,6 +59,15 @@ def sweep_tracking_command(
 
     Dry-run by default; pass ``--apply`` to delete.
     """
+    # A tracker root's index is opened through the reconcilable-index registry,
+    # which each tracker fills as a side effect of being imported -- ``core``
+    # does not import ``tracking``, so nothing else fills it. Without this the
+    # registry is empty here, every working directory reads as ``unrowed``, and
+    # unrowed is refused: the sweep reclaims nothing at all, while reporting a
+    # well-formed result that blames the index.
+    from mosaic.tracking import register_ops
+
+    register_ops()
     ds = load_dataset(manifest)
     try:
         with stdout_to_stderr():

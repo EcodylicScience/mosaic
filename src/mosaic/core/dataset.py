@@ -3408,7 +3408,16 @@ class Dataset:
                 continue
             index = factory(index_path)
             for run_id, entry in pairs:
-                dropped = index.drop_entries([("", entry)], run_id=run_id)
+                # A working directory is named by the composite entry *key*,
+                # ``make_entry_key(group, sequence)``, while ``drop_entries``
+                # matches a ``(group, sequence)`` pair. Passing the key as a bare
+                # sequence matched nothing whenever the group was non-empty, so
+                # the sweep removed the directory and left its row behind --
+                # exactly the state this method's "rows before files" ordering
+                # exists to avoid. It agreed only for an empty group, where the
+                # key *is* the sequence, which is every dataset the control plane
+                # creates and so every dataset the tests covered.
+                dropped = index.drop_entries([parse_entry_key(entry)], run_id=run_id)
                 rows_dropped += len(dropped)
 
         removed: list[Path] = []

@@ -38,6 +38,7 @@ from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    missing_output_error,
     subprocess_env,
     tool_invocation,
 )
@@ -355,9 +356,7 @@ def run_trex_convert(
         if pv_alt.exists():
             pv_path = pv_alt
         else:
-            raise FileNotFoundError(
-                f"Expected .pv file not found after conversion: {pv_path}"
-            )
+            raise missing_output_error("T-Rex", pv_path, stdout, stderr)
 
     settings_path = output_dir / f"{stem}.settings"
     if not settings_path.exists():

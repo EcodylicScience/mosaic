@@ -18,6 +18,7 @@ from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    missing_output_error,
     subprocess_env,
     tool_invocation,
 )
@@ -263,3 +264,61 @@ def test_a_tool_may_shorten_how_much_of_its_command_is_echoed() -> None:
 
     assert "python -c ..." in str(error)
     assert "import sys" not in str(error)
+
+
+# --- what the tool said, when the tool said it went fine ---------------------
+
+
+def test_a_missing_output_names_what_was_expected_and_quotes_both_streams() -> None:
+    """The exit code already said "fine", so this message is the whole diagnosis.
+
+    Both streams, because which one carries the reason is the tool's choice:
+    Lightning Pose writes its traceback to stdout and leaves stderr holding the
+    launcher's "See above for error".
+    """
+    error = missing_output_error(
+        "SLEAP", Path("/w/vid.predictions.slp"), "sleap-nn is not installed", "quiet"
+    )
+
+    text = str(error)
+    assert isinstance(error, FileNotFoundError)
+    assert "/w/vid.predictions.slp" in text
+    assert "sleap-nn is not installed" in text, "the reason the tool gave was dropped"
+    assert "quiet" in text
+
+
+def test_a_silent_tool_says_so_rather_than_printing_empty_labels() -> None:
+    """Two empty labelled sections read as a formatting bug, not as a fact."""
+    text = str(missing_output_error("T-Rex", Path("/w/v.pv"), "", "   \n "))
+
+    assert "The tool printed nothing." in text
+    assert "Stdout" not in text
+    assert "Stderr" not in text
+
+
+def test_the_exit_error_also_quotes_stdout() -> None:
+    """The case that motivated this: the traceback was on stdout all along."""
+    text = str(_FakeExit(["tool"], 1, "Traceback: the real reason", "See above"))
+
+    assert "Traceback: the real reason" in text
+    assert "See above" in text
+
+
+def test_the_launchers_own_epilogue_does_not_crowd_out_the_tools_error() -> None:
+    """``conda run`` appends its report, echoing the whole command, after the child.
+
+    Tailing the raw stream lands inside that echo and never reaches the
+    traceback, which is how a real "nvidia-dali is required for video inference"
+    was delivered as a screenful of the snippet mosaic had just sent.
+    """
+    stderr = (
+        "ImportError: nvidia-dali is required for video inference\n"
+        "ERROR conda.cli.main_run:execute(125): `conda run python -c\n"
+        + "from lightning_pose.api import Model\n" * 40
+        + "` failed. (See above for error)"
+    )
+
+    text = str(_FakeExit(["tool"], 1, "", stderr))
+
+    assert "nvidia-dali is required" in text
+    assert "lightning_pose.api" not in text

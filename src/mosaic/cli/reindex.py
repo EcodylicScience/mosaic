@@ -58,6 +58,14 @@ def reindex_command(
         fail(
             "--feature restricts the features root; it cannot be combined with --root."
         )
+    # Each tracker root's index is opened through the reconcilable-index
+    # registry, which each tracker fills as a side effect of being imported --
+    # ``core`` does not import ``tracking``, so nothing else fills it. Without
+    # this the registry is empty here and every ``_tracking`` root is skipped in
+    # silence, which is exactly the coverage this command's docstring promises.
+    from mosaic.tracking import register_ops
+
+    register_ops()
     ds = load_dataset(manifest)
     try:
         with stdout_to_stderr():

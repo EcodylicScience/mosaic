@@ -94,17 +94,15 @@ def train_litpose(
         max_epochs: Training length.
         overrides: Further Hydra assignments, applied last.
         litpose_conda_env: Run in this conda env, overriding the environment.
-        base_config: A complete Lightning Pose config to train from. **Required,
-            and supplied by the caller rather than generated.** Lightning Pose
-            composes its config with Hydra from the file it is given and merges
-            no defaults of its own; the package ships no template and exposes no
-            defaults factory, so the only complete config in existence is
-            ``scripts/configs/config_default.yaml`` in the Lightning Pose
-            repository. A generated one would mean mosaic inventing scheduler
-            milestones, loss weights and augmentation settings it has no opinion
-            about, and pinning them into every model trained here. The project
-            written by ``write_litpose_dataset`` supplies the ``data`` half and
-            is merged over this.
+        base_config: A complete Lightning Pose config to train from. Lightning
+            Pose composes its config with Hydra from the file it is given and
+            merges no defaults of its own, so this has to be complete rather than
+            partial. Callers who have no opinion pass
+            :func:`mosaic.tracking.litpose.templates.default_config_path`, which
+            is what the ``train-litpose`` op does when its ``base_config`` names
+            nothing. The project written by ``write_litpose_dataset`` supplies the
+            ``data`` half and is merged over this, and per-call overrides over
+            both.
         litpose_bin: A Lightning Pose script naming the install, overriding the
             environment.
         idle_timeout: Kill the subprocess after this long with no output.
@@ -129,12 +127,10 @@ def train_litpose(
     if not base_config.is_file():
         raise FileNotFoundError(
             f"no Lightning Pose base config at {base_config}. Lightning Pose "
-            f"merges no defaults of its own and ships no template, so training "
-            f"needs a complete config: take "
-            f"'scripts/configs/config_default.yaml' from the Lightning Pose "
-            f"repository, keep the version you used beside it, and pass it as "
-            f"'base_config'. The project's own config.yaml supplies the data "
-            f"half and is merged over it."
+            f"merges no defaults of its own, so training needs a complete "
+            f"config: leave 'base_config' unset to use the one mosaic carries, "
+            f"or point it at a config of your own. The project's own config.yaml "
+            f"supplies the data half and is merged over it."
         )
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)

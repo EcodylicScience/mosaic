@@ -12,6 +12,20 @@ from typing import Final
 
 SLEAP_KIND: Final = "sleap"
 
+TRAIN_SLEAP_KIND: str = "train-sleap"
+"""The op kind that *produces* the models this integration tracks with.
+
+Here rather than beside ``TrainSleapOp`` because both halves of "train here,
+track with it there" need it, and the tracker cannot reach the op module without
+dragging the whole op-registration machinery into its import path.
+
+A model reference resolves against ``models/<kind>/index.csv``, and the kind that
+names that index is the one that *wrote* the row -- the training op's, never the
+tracker's. ``MODEL_KINDS`` already declares ``train-sleap``, so passing it still
+selects SLEAP's artifact shape; the two names answer different questions, which
+is exactly what ``spec_for`` is written to keep apart.
+"""
+
 SLEAP_VERSION: Final = "1.6"
 """The declared compatibility version of the SLEAP integration.
 

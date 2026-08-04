@@ -334,3 +334,59 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 
     assert second == run_id
     assert len(litpose.predicted) == 2, "a changed source with no uid must re-predict"
+
+
+# --- train here, track with it there ---------------------------------------
+
+
+def _register_training_run(ds: Dataset, model: Path, run_id: str) -> None:
+    """Record *model* in ``models/train-litpose/index.csv`` as a finished run.
+
+    Through the registrar a real ``train-litpose`` uses, not a hand-built CSV:
+    the claim under test is that the tracker reads back what training wrote, and
+    a row assembled here could agree with the reader while disagreeing with the
+    writer.
+    """
+    from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
+    from mosaic.tracking.ops.train import finalize_training
+    from mosaic.tracking.ops.train_litpose import TrainLitposeParams
+
+    checkpoint = model / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
+    finalize_training(
+        ds,
+        TRAIN_LITPOSE_KIND,
+        run_id,
+        model,
+        TrainLitposeParams(project="project", base_config="config_default.yaml"),
+        base_model="",
+        base_run_id="",
+        base_digest="",
+        best_model_path=checkpoint,
+        metrics_path=model / "config.yaml",
+        n_epochs=2,
+        artifact_shape="directory",
+        artifact_path=model,
+    )
+
+
+def test_a_training_run_id_reaches_the_weights_that_run_produced(
+    ds: Dataset, model: Path, litpose: FakeLitpose
+) -> None:
+    """The closing claim of the model-reference design: train here, track there.
+
+    A reference is a path *or* a registered training ``run_id``, and a run_id
+    resolves against ``models/<kind>/index.csv``. The kind that names that index
+    is the one that *wrote* the row -- ``train-litpose`` -- so resolving under
+    this tracker's own kind sent every run_id to a ``models/litpose/`` index
+    nothing writes. Only a path ever resolved, and the handoff could not be
+    spelled by name at all.
+    """
+    training_run_id = "train-litpose.0.1-81dcc883b6"
+    _register_training_run(ds, model, training_run_id)
+
+    run_id = dr.run_litpose(ds, model_path=training_run_id)
+
+    assert run_id.startswith("litpose.2.3-")
+    assert litpose.predicted, "the run resolved its model but never predicted"
+    lidx = pd.read_csv(litpose_index_path(ds))
+    assert str(lidx.iloc[0]["model_id"]) == training_run_id

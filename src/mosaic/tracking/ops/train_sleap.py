@@ -26,12 +26,12 @@ from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 from mosaic.tracking.ops.train import finalize_training, train_run_id
 from mosaic.tracking.sleap.training import SleapBackbone, SleapHead
+from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.job import JobContext
 
-TRAIN_SLEAP_KIND: str = "train-sleap"
 TRAIN_SLEAP_VERSION: str = "0.1"
 
 

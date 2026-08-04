@@ -36,9 +36,59 @@ __all__ = [
     "ToolExitError",
     "ToolNotFoundError",
     "conda_invocation",
+    "missing_output_error",
     "subprocess_env",
     "tool_invocation",
 ]
+
+_TAIL: Final = 500
+"""How much of each captured stream a failure message echoes."""
+
+_CONDA_EPILOGUE: Final = "ERROR conda.cli.main_run:"
+"""Where ``conda run``'s own report of the failure begins.
+
+``conda run`` appends this *after* the child's output, and it echoes the entire
+command -- for Lightning Pose, an inline program of a dozen lines. Tailing the
+raw stream therefore lands squarely inside conda's echo and never reaches the
+child's traceback, which is how a real ``nvidia-dali is required for video
+inference`` arrived as a screenful of the snippet mosaic had just sent.
+"""
+
+
+def captured_output(stdout: str, stderr: str) -> str:
+    """The tail of both streams, labelled, for a message about a failed run.
+
+    **Both** streams, because which one carries the reason is the tool's choice
+    and not a stable one, and the tail is taken from the child's own output
+    rather than from the launcher's epilogue after it.
+    """
+    parts: list[str] = []
+    for name, stream in (("Stdout", stdout), ("Stderr", stderr)):
+        own, _, _ = stream.partition(_CONDA_EPILOGUE)
+        tail = own.strip()[-_TAIL:]
+        if tail:
+            parts.append(f"  {name} (last {_TAIL} chars): {tail}")
+    return "\n".join(parts) if parts else "  The tool printed nothing."
+
+
+def missing_output_error(
+    tool: str, expected: Path, stdout: str, stderr: str
+) -> FileNotFoundError:
+    """The tool exited *successfully* and its expected output is not there.
+
+    Worth its own helper because the exit code has already said "fine" and this
+    check is the only thing left that disagrees -- so its message is the whole
+    diagnosis the operator gets. A tool that exits 0 having produced nothing has
+    usually explained itself on one of its streams first: SLEAP 1.6 prints
+    ``sleap-nn is not installed`` and returns 0, which read, without the streams,
+    as the unactionable ``Expected .slp file not found after inference``.
+    """
+    return FileNotFoundError(
+        f"{tool} exited successfully but did not write its expected output:\n"
+        f"  Expected: {expected}\n"
+        f"{captured_output(stdout, stderr)}"
+    )
+
 
 BinMode = Literal["direct", "sibling"]
 """How an explicit ``MOSAIC_<TOOL>_BIN`` names the executable to run.
@@ -94,7 +144,7 @@ class ToolExitError(RuntimeError):
         super().__init__(
             f"{type(self).tool_name} exited with code {returncode}.\n"
             f"  Command: {cmd_str}\n"
-            f"  Stderr (last 500 chars): {stderr[-500:]}"
+            f"{captured_output(stdout, stderr)}"
         )
 
 

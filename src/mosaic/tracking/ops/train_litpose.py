@@ -24,12 +24,12 @@ from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 from mosaic.tracking.ops.train import finalize_training, train_run_id
 from mosaic.tracking.litpose.templates import default_config_path
+from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.job import JobContext
 
-TRAIN_LITPOSE_KIND: str = "train-litpose"
 TRAIN_LITPOSE_VERSION: str = "0.1"
 
 LitposeModelType = Literal[

@@ -335,3 +335,90 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 
     assert second == run_id
     assert len(sleap.tracked) == 2, "a changed source with no uid must re-infer"
+
+
+# --- train here, track with it there ---------------------------------------
+
+
+def _register_training_run(ds: Dataset, model: Path, run_id: str) -> None:
+    """Record *model* in ``models/train-sleap/index.csv`` as a finished run.
+
+    Through the registrar a real ``train-sleap`` uses, not a hand-built CSV: the
+    claim under test is that the tracker reads back what training wrote, and a
+    row assembled here could agree with the reader while disagreeing with the
+    writer.
+    """
+    from mosaic.tracking.ops.train import finalize_training
+    from mosaic.tracking.ops.train_sleap import TrainSleapParams
+    from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
+
+    finalize_training(
+        ds,
+        TRAIN_SLEAP_KIND,
+        run_id,
+        model,
+        TrainSleapParams(labels="labels.slp"),
+        base_model="",
+        base_run_id="",
+        base_digest="",
+        best_model_path=model / "best.ckpt",
+        metrics_path=model / "training_log.csv",
+        n_epochs=2,
+        artifact_shape="directory",
+        artifact_path=model,
+    )
+
+
+def test_a_training_run_id_reaches_the_weights_that_run_produced(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """The closing claim of the model-reference design: train here, track there.
+
+    A reference is a path *or* a registered training ``run_id``, and a run_id
+    resolves against ``models/<kind>/index.csv``. The kind that names that index
+    is the one that *wrote* the row -- ``train-sleap`` -- so resolving under this
+    tracker's own kind sent every run_id to a ``models/sleap/`` index nothing
+    writes. Only a path ever resolved, and the handoff could not be spelled by
+    name at all.
+    """
+    training_run_id = "train-sleap.0.1-4b57beb256"
+    _register_training_run(ds, model, training_run_id)
+
+    run_id = dr.run_sleap(ds, model_paths=[training_run_id])
+
+    assert run_id.startswith("sleap.1.6-")
+    assert sleap.tracked, "the run resolved its model but never inferred"
+    sidx = pd.read_csv(sleap_index_path(ds))
+    assert str(sidx.iloc[0]["model_id"]) == training_run_id
+
+
+def test_naming_the_training_run_records_lineage_a_path_cannot(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """The two spellings reach one model and are deliberately not one identity.
+
+    ``model_id`` is the training run when there is one and the weights digest
+    otherwise, so the same checkpoint tracked by name and by path mints two
+    tracker runs. That is the design rather than a collision to fix: a registered
+    run names lineage a bare path has none of, and flattening the two would
+    either discard the lineage or claim it for weights that carry none.
+
+    Pinned because it is surprising, and because the tempting "both references
+    are the same run" reading would be satisfied by dropping exactly the lineage
+    the reference exists to carry.
+    """
+    training_run_id = "train-sleap.0.1-4b57beb256"
+    _register_training_run(ds, model, training_run_id)
+
+    by_directory = dr.run_sleap(ds, model_paths=[str(model)])
+    by_run_id = dr.run_sleap(ds, model_paths=[training_run_id])
+
+    assert by_run_id != by_directory
+    sidx = pd.read_csv(sleap_index_path(ds))
+    recorded = {str(row["model_id"]) for _, row in sidx.iterrows()}
+    assert training_run_id in recorded, "the run_id spelling recorded no lineage"
+    assert len(recorded) == 2, "one spelling recorded the other's model identity"
+
+    # One model, reached two ways: both runs inferred from the same checkpoint.
+    slp_paths = {path.name for path in sleap.tracked}
+    assert slp_paths == {"vid1.mp4"}

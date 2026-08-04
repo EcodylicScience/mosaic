@@ -70,7 +70,11 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.model_refs import resolve_model_set
-from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
+from mosaic.tracking.sleap.version import (
+    SLEAP_KIND,
+    SLEAP_VERSION,
+    TRAIN_SLEAP_KIND,
+)
 
 from .run import run_sleap_convert, run_sleap_track
 
@@ -266,7 +270,18 @@ def run_sleap(
     # them. An unresolvable reference aborts here, before any run root or tracks
     # variant is recorded -- a recorded variant naming weights that could not be
     # found describes a run that never happened.
-    resolved_models = resolve_model_set(ds, [str(m) for m in model_paths], SLEAP_KIND)
+    #
+    # Resolved under the *training* kind, not this tracker's. A reference may be
+    # a path or a registered training ``run_id``, and a run_id resolves against
+    # ``models/<kind>/index.csv`` -- the index the row was written into, which
+    # ``train-sleap`` owns. Passing ``SLEAP_KIND`` here sent every run_id to a
+    # ``models/sleap/`` index nothing writes, so only a path ever resolved and
+    # "train here, track with it there" could not be spelled by name. The
+    # artifact shape is unaffected: ``MODEL_KINDS`` declares ``train-sleap`` as
+    # SLEAP's own spec for exactly this.
+    resolved_models = resolve_model_set(
+        ds, [str(m) for m in model_paths], TRAIN_SLEAP_KIND
+    )
 
     settings = sleap_settings(
         model_id=resolved_models.model_id,

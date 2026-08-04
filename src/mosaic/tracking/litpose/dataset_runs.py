@@ -65,7 +65,11 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
+from mosaic.tracking.litpose.version import (
+    LITPOSE_KIND,
+    LITPOSE_VERSION,
+    TRAIN_LITPOSE_KIND,
+)
 from mosaic.tracking.model_refs import resolve_model_set
 
 from .run import run_litpose_predict
@@ -237,7 +241,16 @@ def run_litpose(
     # settings carry is the weights' identity, not the path that pointed at them.
     # An unresolvable reference aborts here, before any run root or tracks variant
     # is recorded.
-    resolved_model = resolve_model_set(ds, [str(model_path)], LITPOSE_KIND)
+    #
+    # Resolved under the *training* kind, not this tracker's. A reference may be
+    # a path or a registered training ``run_id``, and a run_id resolves against
+    # ``models/<kind>/index.csv`` -- the index the row was written into, which
+    # ``train-litpose`` owns. Passing ``LITPOSE_KIND`` here sent every run_id to a
+    # ``models/litpose/`` index nothing writes, so only a path ever resolved and
+    # "train here, track with it there" could not be spelled by name. The artifact
+    # shape is unaffected: ``MODEL_KINDS`` declares ``train-litpose`` as Lightning
+    # Pose's own spec for exactly this.
+    resolved_model = resolve_model_set(ds, [str(model_path)], TRAIN_LITPOSE_KIND)
 
     settings = litpose_settings(
         model_id=resolved_model.model_id, litpose_overrides=litpose_overrides
