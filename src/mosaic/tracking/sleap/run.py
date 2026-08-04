@@ -410,9 +410,7 @@ def run_sleap_convert(
         if not candidates:
             candidates = sorted(output_h5.parent.glob("*.h5"))
         if not candidates:
-            raise FileNotFoundError(
-                f"No analysis HDF5 found after conversion near: {output_h5}"
-            )
+            raise missing_output_error("sleap-convert", output_h5, stdout, stderr)
         produced = candidates[0]
 
     return SleapConvertResult(analysis_h5_path=produced, stdout=stdout, stderr=stderr)
