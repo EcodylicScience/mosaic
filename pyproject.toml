@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 wavelets = ["PyWavelets>=1.4"]
+pose = ["ultralytics>=8.0", "albumentations>=1.3"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
