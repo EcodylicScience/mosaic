@@ -67,13 +67,30 @@ class SleapError(ToolExitError):
 
 
 # SLEAP's console scripts are always installed together, so MOSAIC_SLEAP_BIN
-# pointing at any one of them names the directory the others live in.
-_SLEAP_ENV: Final = ToolEnv(
+# pointing at any one of them names the directory the others live in. Plainly
+# named because the training and label-export modules resolve through it too:
+# one environment serves sleap-track, sleap-convert and sleap-nn-train alike,
+# and declaring it twice is how the three drift apart.
+SLEAP_ENV: Final = ToolEnv(
     tool="SLEAP",
     conda_env_var="MOSAIC_SLEAP_CONDA_ENV",
     bin_var="MOSAIC_SLEAP_BIN",
     bin_mode="sibling",
     not_found=SleapNotFoundError,
+)
+
+
+# The same environment addressed as an interpreter, for work that needs a SLEAP
+# library rather than one of its verbs. ``locator`` is what makes that possible:
+# looking up ``python`` on PATH would find the caller's, so the ladder looks up
+# a script it knows SLEAP installs and takes the interpreter beside it.
+SLEAP_PYTHON_ENV: Final = ToolEnv(
+    tool="SLEAP",
+    conda_env_var="MOSAIC_SLEAP_CONDA_ENV",
+    bin_var="MOSAIC_SLEAP_BIN",
+    bin_mode="sibling",
+    not_found=SleapNotFoundError,
+    locator=_SLEAP_TRACK,
 )
 
 
@@ -114,11 +131,11 @@ def _sleap_invocation(
     """Resolve how to launch a SLEAP console *script*, as an argv prefix.
 
     The shared five-step ladder (:func:`tool_invocation`) applied to
-    :data:`_SLEAP_ENV`, with the script as the executable -- so one SLEAP
+    :data:`SLEAP_ENV`, with the script as the executable -- so one SLEAP
     environment serves both ``sleap-track`` and ``sleap-convert``.
     """
     return tool_invocation(
-        _SLEAP_ENV,
+        SLEAP_ENV,
         executable=script,
         conda_env=sleap_conda_env,
         bin_path=sleap_bin,

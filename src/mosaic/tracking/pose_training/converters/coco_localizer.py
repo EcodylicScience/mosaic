@@ -6,6 +6,7 @@ heatmap model.
 
 Supports COCO keypoints (1-node skeleton from CVAT) or bbox centers.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,11 @@ import cv2
 import numpy as np
 
 from .base import LocalizerSchema
-from .cvat_points import _default_group_key, _print_split_summary, split_filenames
+from mosaic.core.annotations.split import (
+    default_group_key,
+    print_split_summary,
+    split_filenames,
+)
 
 
 def _load_coco(
@@ -40,9 +45,7 @@ def _load_coco(
             matches = [c for c in all_categories if c["name"] == name]
             if not matches:
                 available = [c["name"] for c in all_categories]
-                raise ValueError(
-                    f"Category '{name}' not found. Available: {available}"
-                )
+                raise ValueError(f"Category '{name}' not found. Available: {available}")
             selected.append(matches[0])
     else:
         selected = list(all_categories)
@@ -212,7 +215,9 @@ def convert_coco_localizer(
     if thresholds:
         for cat in categories:
             if cat["name"] in thresholds:
-                thresholds_by_id[cat_id_to_class_id[cat["id"]]] = thresholds[cat["name"]]
+                thresholds_by_id[cat_id_to_class_id[cat["id"]]] = thresholds[
+                    cat["name"]
+                ]
 
     schema = LocalizerSchema(names=class_names, thresholds=thresholds_by_id)
 
@@ -239,20 +244,28 @@ def convert_coco_localizer(
     # Assign images to splits
     filenames = [img_rec["file_name"] for img_rec, _, _ in usable]
     split_map, n_train, n_valid = split_filenames(
-        filenames, split, seed, split_by=split_by, group_key=group_key,
+        filenames,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
 
     # Collect patches per split
     half = patch_size // 2
     split_patches: dict[str, list[np.ndarray]] = {
-        "train": [], "valid": [], "test": [],
+        "train": [],
+        "valid": [],
+        "test": [],
     }
     split_labels: dict[str, list[np.ndarray]] = {
-        "train": [], "valid": [], "test": [],
+        "train": [],
+        "valid": [],
+        "test": [],
     }
     np_rng = np.random.RandomState(seed)
 
-    for img_record, img_path, annotations in usable:
+    for img_record, img_path, image_annotations in usable:
         subset = split_map[img_record["file_name"]]
         img_w = int(img_record["width"])
         img_h = int(img_record["height"])
@@ -263,7 +276,7 @@ def convert_coco_localizer(
 
         # ---- positive patches ----
         ann_points: list[tuple[float, float, int]] = []
-        for ann in annotations:
+        for ann in image_annotations:
             coco_cat_id = ann.get("category_id")
             if coco_cat_id not in cat_id_to_class_id:
                 continue
@@ -355,14 +368,16 @@ def convert_coco_localizer(
     print(f"[coco_localizer] Saved {total_saved} patches to {output_dir}")
     print(f"  Classes: {class_names}")
     print(
-        f"  Patches: "
-        + ", ".join(
-            f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test")
-        )
+        "  Patches: "
+        + ", ".join(f"{s}={len(split_patches[s])}" for s in ("train", "valid", "test"))
     )
-    _print_split_summary(
-        split_map, n_train, n_valid, len(usable), split_by,
-        group_key or _default_group_key,
+    print_split_summary(
+        split_map,
+        n_train,
+        n_valid,
+        len(usable),
+        split_by,
+        group_key or default_group_key,
     )
 
     return schema

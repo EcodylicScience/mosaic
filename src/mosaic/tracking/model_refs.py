@@ -187,34 +187,45 @@ _LITPOSE_MODEL_TYPES: Final[tuple[str, ...]] = (
     "heatmap",
 )
 
-MODEL_KINDS: Final[Mapping[str, ModelKindSpec]] = {
-    "sleap": ModelKindSpec(
-        shape="directory",
-        arity="ordered",
-        roles=(RoleSpec(role="weights", names=_SLEAP_CHECKPOINTS, glob="*.ckpt"),),
-        payload_prefix="sleap",
-        config_names=("training_config.yaml", "training_config.json"),
-        model_types=_SLEAP_HEADS,
-        label="SLEAP model",
-    ),
-    "litpose": ModelKindSpec(
-        shape="directory",
-        # Config first, so a directory missing ``config.yaml`` reports that
-        # rather than reporting the checkpoint it also does not have.
-        roles=(
-            RoleSpec(role="config", names=("config.yaml",)),
-            RoleSpec(
-                role="weights",
-                glob="tb_logs/*/version_*/checkpoints/*.ckpt",
-                fallback_glob="**/*.ckpt",
-                prefer="best",
-            ),
+_SLEAP_SPEC: Final = ModelKindSpec(
+    shape="directory",
+    arity="ordered",
+    roles=(RoleSpec(role="weights", names=_SLEAP_CHECKPOINTS, glob="*.ckpt"),),
+    payload_prefix="sleap",
+    config_names=("training_config.yaml", "training_config.json"),
+    model_types=_SLEAP_HEADS,
+    label="SLEAP model",
+)
+
+_LITPOSE_SPEC: Final = ModelKindSpec(
+    shape="directory",
+    # Config first, so a directory missing ``config.yaml`` reports that
+    # rather than reporting the checkpoint it also does not have.
+    roles=(
+        RoleSpec(role="config", names=("config.yaml",)),
+        RoleSpec(
+            role="weights",
+            glob="tb_logs/*/version_*/checkpoints/*.ckpt",
+            fallback_glob="**/*.ckpt",
+            prefer="best",
         ),
-        payload_prefix="litpose",
-        config_names=("config.yaml",),
-        model_types=_LITPOSE_MODEL_TYPES,
-        label="Lightning Pose model",
     ),
+    payload_prefix="litpose",
+    config_names=("config.yaml",),
+    model_types=_LITPOSE_MODEL_TYPES,
+    label="Lightning Pose model",
+)
+
+MODEL_KINDS: Final[Mapping[str, ModelKindSpec]] = {
+    "sleap": _SLEAP_SPEC,
+    "litpose": _LITPOSE_SPEC,
+    # A training op produces its framework's shape, so it names the same spec.
+    # Declared rather than left to the ``train-`` fallback: the fallback is a
+    # rule about names, and a rule about names cannot tell an intended
+    # inheritance from a collision. Saying it here makes the intent checkable,
+    # and keeps the fallback for kinds nobody has thought about yet.
+    "train-sleap": _SLEAP_SPEC,
+    "train-litpose": _LITPOSE_SPEC,
     # TREx's visual-identification weights. The file is ``identity_model.pth``
     # and the path TREx is handed is the extensionless stem beside it, so the
     # reference cannot be probed for -- it has to be declared.

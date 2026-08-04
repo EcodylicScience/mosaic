@@ -31,10 +31,7 @@ if TYPE_CHECKING:
 
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.frame_extraction import get_frame_manifests
-from mosaic.tracking.pose_training.converters.cvat_points import (
-    _default_group_key,
-    split_filenames,
-)
+from mosaic.core.annotations.split import default_group_key, split_filenames
 
 
 # --------------------------------------------------------------------------- #
@@ -365,7 +362,7 @@ def prepare_yolo_dataset(
         if split_[2] > 0:
             _copy(test_pairs, "test")
 
-        key_fn = group_key_ or _default_group_key
+        key_fn = group_key_ or default_group_key
         if split_by_ == "group":
             groups_t = len({key_fn(f) for f, s in assignment.items() if s == "train"})
             groups_v = len({key_fn(f) for f, s in assignment.items() if s == "valid"})

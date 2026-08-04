@@ -195,6 +195,41 @@ OP_CASES: tuple[OpCase, ...] = (
         case_id="train-localizer/dataset-dir",
         params=_op_params("train-localizer", dataset_dir="datasets/localizer"),
     ),
+    OpCase(
+        case_id="train-sleap/labels",
+        params=_op_params(
+            "train-sleap",
+            labels="labels/session.slp",
+            head="centered_instance",
+            backbone="unet",
+            max_epochs=10,
+            seed=7,
+            validation_fraction=0.2,
+        ),
+    ),
+    OpCase(
+        case_id="train-litpose/project",
+        params=_op_params(
+            "train-litpose",
+            project="projects/mice",
+            model_type="heatmap",
+            backbone="resnet50_animal_ap10k",
+            max_epochs=10,
+        ),
+    ),
+    OpCase(
+        case_id="train-sleap/with-overrides",
+        params=_op_params(
+            "train-sleap",
+            labels="labels/session.slp",
+            head="centroid",
+            backbone="convnext",
+            max_epochs=10,
+            seed=7,
+            validation_fraction=0.2,
+            sleap_overrides={"trainer_config.optimizer.lr": 0.0005},
+        ),
+    ),
     # --- convert --------------------------------------------------------------
     OpCase(
         case_id="convert-points/cvat",
@@ -576,6 +611,8 @@ def test_every_family_is_covered() -> None:
         "train-pose",
         "train-points",
         "train-localizer",
+        "train-sleap",
+        "train-litpose",
         "convert-points",
         "infer-pose",
         "infer-points",

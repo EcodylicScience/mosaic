@@ -9,6 +9,7 @@ POLO label format (per line):
 
 All coordinates normalized to [0, 1].  Radius is in pixels.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,11 @@ from .base import (
     normalize_coords,
     write_yolo_label,
 )
-from .cvat_points import _default_group_key, _print_split_summary, split_filenames
+from mosaic.core.annotations.split import (
+    default_group_key,
+    print_split_summary,
+    split_filenames,
+)
 
 
 def _load_coco_multi(
@@ -58,9 +63,7 @@ def _load_coco_multi(
             matches = [c for c in all_categories if c["name"] == name]
             if not matches:
                 available = [c["name"] for c in all_categories]
-                raise ValueError(
-                    f"Category '{name}' not found. Available: {available}"
-                )
+                raise ValueError(f"Category '{name}' not found. Available: {available}")
             selected.append(matches[0])
     else:
         selected = list(all_categories)
@@ -178,8 +181,8 @@ def convert_coco_points(
     output_dir = Path(output_dir)
 
     # Load COCO JSON
-    images_by_id, anns_by_image_id, categories, cat_id_to_class_id = (
-        _load_coco_multi(coco_json_path, category_names)
+    images_by_id, anns_by_image_id, categories, cat_id_to_class_id = _load_coco_multi(
+        coco_json_path, category_names
     )
 
     # Build class name list and per-class-id radii
@@ -189,8 +192,7 @@ def convert_coco_points(
         name = cat["name"]
         if name not in radii:
             raise ValueError(
-                f"Missing radius for category '{name}'. "
-                f"Provide it in the radii dict."
+                f"Missing radius for category '{name}'. Provide it in the radii dict."
             )
         class_id = cat_id_to_class_id[cat["id"]]
         radii_by_id[class_id] = radii[name]
@@ -220,7 +222,11 @@ def convert_coco_points(
     # Assign to splits
     filenames = [img_rec["file_name"] for img_rec, _, _ in usable]
     split_assignment, n_train, n_valid = split_filenames(
-        filenames, split, seed, split_by=split_by, group_key=group_key,
+        filenames,
+        split,
+        seed,
+        split_by=split_by,
+        group_key=group_key,
     )
     n = len(usable)
 
@@ -232,13 +238,13 @@ def convert_coco_points(
     # Process each image
     written = 0
     skipped = 0
-    for img_record, img_path, annotations in usable:
+    for img_record, img_path, image_annotations in usable:
         img_w = int(img_record["width"])
         img_h = int(img_record["height"])
         filename = img_record["file_name"]
 
         lines = []
-        for ann in annotations:
+        for ann in image_annotations:
             coco_cat_id = ann.get("category_id")
             if coco_cat_id not in cat_id_to_class_id:
                 continue
@@ -283,9 +289,13 @@ def convert_coco_points(
         + (f"  (skipped {skipped} with no valid points)" if skipped else "")
     )
     print(f"  Categories: {class_names}, radii: {radii_by_id}")
-    _print_split_summary(
-        split_assignment, n_train, n_valid, n, split_by,
-        group_key or _default_group_key,
+    print_split_summary(
+        split_assignment,
+        n_train,
+        n_valid,
+        n,
+        split_by,
+        group_key or default_group_key,
     )
 
     return schema

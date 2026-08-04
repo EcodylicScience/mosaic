@@ -109,7 +109,10 @@ class LitposeError(ToolExitError):
 
 # Lightning Pose is driven through its environment's ``python`` rather than a
 # console verb, so the ``litpose`` script is what locates that interpreter.
-_LITPOSE_ENV: Final = ToolEnv(
+# Plainly named because training resolves through it too: one environment
+# serves prediction and training alike, and declaring it twice is how two
+# copies drift.
+LITPOSE_ENV: Final = ToolEnv(
     tool="Lightning Pose",
     conda_env_var="MOSAIC_LITPOSE_CONDA_ENV",
     bin_var="MOSAIC_LITPOSE_BIN",
@@ -146,12 +149,12 @@ def _litpose_invocation(
     """Resolve how to launch the Lightning Pose ``python``, as an argv prefix.
 
     The shared five-step ladder (:func:`tool_invocation`) applied to
-    :data:`_LITPOSE_ENV`. What is launched is the interpreter, not a console
+    :data:`LITPOSE_ENV`. What is launched is the interpreter, not a console
     verb, and what is *looked up* is the ``litpose`` script beside it -- a bare
     ``python`` on ``$PATH`` would be the caller's own.
     """
     return tool_invocation(
-        _LITPOSE_ENV,
+        LITPOSE_ENV,
         executable=_PYTHON,
         conda_env=litpose_conda_env,
         bin_path=litpose_bin,
