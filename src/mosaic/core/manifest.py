@@ -221,6 +221,16 @@ def backfill_roots(roots: dict[str, str]) -> dict[str, str]:
     recognize and decline, which it cannot do if loading has quietly erased the
     evidence.
 
+    **``media_raw`` is deliberately not in the list, and cannot be.** Filling
+    ``labels_raw`` adds an empty directory to a dataset that had no labels, which
+    costs nothing. Filling ``media_raw`` on a dataset whose videos are in
+    ``media/`` would point it at an empty directory and make its media vanish.
+    So it is the one source root that may legitimately be absent -- which is why
+    the media accessors resolve their root through
+    :meth:`~mosaic.core.dataset.Dataset.resolve_media_root` while the tracks and
+    labels accessors can pin theirs, and why the media names do not carry a
+    ``_raw`` a caller could rely on.
+
     In place on the mapping it is handed, and returned for the caller to assign,
     so a manifest that needs no backfill round-trips unchanged.
     """

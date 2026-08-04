@@ -114,15 +114,27 @@ mkdocs build     # static site into ./site/
 API pages under `docs/api/` are auto-generated, so updating a docstring
 updates the published docs.
 
-### No CI / pre-commit
+### CI
 
-There is currently no GitHub Actions workflow and no `.pre-commit-config.yaml`.
-Before reporting work done, manually run:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs three jobs on push
+and pull request. There is no `.pre-commit-config.yaml`.
+
+- **`test`** — `uv run --no-sync pytest -q`. It inherits `addopts = "-m 'not slow'"`,
+  so **slow-marked tests never run in CI**. A change that only breaks a slow test
+  goes green; run them locally.
+- **`identity`** — four named test files under a torch-bearing environment, so
+  `pytest.importorskip("torch")` cannot silently skip them.
+- **`lint-changed`** — `uvx ruff check` **and** `uvx ruff format --check` over
+  every changed `.py` file. Formatting is a merge gate, not a suggestion.
+
+Not gated: project-wide `ruff check` / `ruff format --check` and `basedpyright`,
+all three of which carry a pre-existing backlog. So before reporting work done,
+run what CI will not:
 
 ```bash
-ruff check
-basedpyright
-pytest
+ruff check && ruff format --check   # gated for changed files only
+basedpyright                        # not gated at all
+pytest -m "slow or not slow"        # CI skips the slow ones
 ```
 
 ## High-Level Architecture
@@ -141,9 +153,12 @@ named roots:
                   conversion. Kept out of `tracks_raw/` so that root holds only
                   user-uploaded content, and **excluded by name from every scan
                   that walks the dataset for user content** — the exclusion is a
-                  path-component check in `iter_track_files` and `index_media`,
-                  because `exclude_patterns` matches basenames and cannot express
-                  a directory. Locations come from the registry in
+                  path-component check — `is_under_tracking_root` in
+                  `core/pipeline/tracking_roots.py`, called from `iter_track_files`
+                  and from `_probe_dir_rows` (the prober behind both `scan_media`
+                  and `index_media`) — because `exclude_patterns` matches
+                  basenames and cannot express a directory. Locations come from
+                  the registry in
                   [`core/pipeline/tracking_roots.py`](src/mosaic/core/pipeline/tracking_roots.py),
                   never spelled inline; `mosaic sweep-tracking` reclaims what is
                   finished and past its retention window
@@ -196,6 +211,29 @@ A scan never overwrites an identity a caller **assigned** through a
 `MediaIndexScope`; it refreshes the measured cells and keeps the identity ones.
 Without that, declaring `media_raw` as a source would silently repartition every
 project the control plane manages.
+
+**Kinds are bare; roots carry `_raw`.** A source *kind* is `media` / `tracks` /
+`labels` (`SourceKind`), the root it feeds is `media_raw` / `tracks_raw` /
+`labels_raw`, and `_RAW_ROOT_FOR_KIND` joins them. So the scan verbs are
+`scan_media` / `scan_tracks` / `scan_labels` — named for the kind, matching
+`mosaic scan --kind`.
+
+`_raw` is a **disambiguator, not a decoration**: it marks a name only where two
+indexes would otherwise answer to one, because "picking the wrong one is a silent
+wrong answer rather than an import error"
+([`tracks_raw_index.py`](src/mosaic/core/pipeline/tracks_raw_index.py)). Hence
+`read_tracks_raw_index` beside a real `read_tracks_index`, but no
+`labels_raw_index` module at all — nothing collides with it. Nothing scans the
+converted `tracks/`, so no scan verb needs the suffix either.
+
+The media accessors (`index_media`, `write_media_index`, `read_media_index`)
+carry no `_raw` for a different reason: `media_raw` is the one source root
+`backfill_roots` cannot fill — an empty `media_raw/` on a dataset whose videos
+sit in `media/` would make its media vanish — so it may legitimately be absent,
+and those methods resolve through `resolve_media_root()` rather than pinning a
+root a `_raw` name would promise. They read and write the **originals** index;
+the derivative index (`media/index.csv`, one row per transcode) is reached
+through `media_routing_context`.
 
 ### Dataset notes and tags
 
@@ -354,7 +392,7 @@ video files
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
-   ├─ scan_tracks_raw() / scan_labels_raw()  → <root>/index.csv
+   ├─ scan_tracks() / scan_labels()   → <root>_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 
@@ -464,9 +502,9 @@ softening `group` elsewhere.
 
 imgstore (Motif / Loopbio) recordings are *directories* (a `metadata.yaml` plus
 chunk files), not single video files. mosaic treats a store as a normal media
-entry — `index_media()` discovers stores natively (one entry per store,
-`media_type="imgstore"`, internal chunks excluded), and reading dispatches
-transparently:
+entry — `scan_media()` (and the one-off `index_media()`) discovers stores
+natively (one entry per store, `media_type="imgstore"`, internal chunks
+excluded), and reading dispatches transparently:
 
 - All frame-consuming features route through `MultiVideoReader`, which opens a
   store via `ImgStoreCapture` (a seek/read capture adapter) — so `egocentric-crop`,
@@ -571,8 +609,8 @@ for path expectations before running.
    `VideoReader` decodes sequentially with those facts injected. Don't open a raw
    stream directly.
 3. **`ffmpeg` / `ffprobe` must be on `PATH`** — install via
-   `conda install -c conda-forge ffmpeg`. Many failures in `index_media()`
-   trace back to a missing `ffprobe`.
+   `conda install -c conda-forge ffmpeg`. Many failures in `scan_media()` /
+   `index_media()` trace back to a missing `ffprobe`.
 4. **Don't bypass `run_feature()`** to write feature outputs directly. The
    pipeline owns indexing, `run_id` registration, and output layout. Side-loaded
    files break reproducibility and downstream features.

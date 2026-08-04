@@ -69,7 +69,7 @@ scanning one source never deletes another's rows. `mosaic sources list` shows
 what is declared and whether it is currently reachable.
 
 The same passes are available from Python (`ds.scan_media()`,
-`ds.scan_tracks_raw()`, `ds.scan_labels_raw()`), as is a one-off scan of
+`ds.scan_tracks()`, `ds.scan_labels()`), as is a one-off scan of
 directories you do not want to declare (`ds.index_media(search_dirs=[...])`).
 
 ## Describe the dataset

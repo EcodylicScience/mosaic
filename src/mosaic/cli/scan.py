@@ -108,11 +108,11 @@ def scan_command(
                         prune_unsourced=prune_unsourced,
                     )
                 elif one == "tracks":
-                    path = dataset.scan_tracks_raw(
+                    path = dataset.scan_tracks(
                         only=restrict, prune_unsourced=prune_unsourced
                     )
                 else:
-                    path = dataset.scan_labels_raw(
+                    path = dataset.scan_labels(
                         only=restrict, prune_unsourced=prune_unsourced
                     )
         except KeyError as exc:

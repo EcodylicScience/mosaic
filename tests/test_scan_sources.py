@@ -399,7 +399,7 @@ class TestTracksSources:
                 src_format="calms21_npy",
             )
         )
-        _ = dataset.scan_tracks_raw()
+        _ = dataset.scan_tracks()
 
         rows = dataset.read_tracks_raw_index()
         by_name = {Path(str(r["abs_path"])).name: str(r["src_format"]) for r in rows}

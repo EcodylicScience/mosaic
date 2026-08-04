@@ -144,7 +144,7 @@ video files
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
 
 raw tracks/labels
-   ├─ scan_tracks_raw()      → tracks_raw/index.csv
+   ├─ scan_tracks()          → tracks_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 

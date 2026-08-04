@@ -1013,13 +1013,19 @@ class Dataset:
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
     ) -> Path:
-        """Rescan every declared media source and rewrite the media index.
+        """Rescan every declared media source and rewrite ``media_raw/index.csv``.
 
         Each source is scanned with its own recipe -- its extensions, its layout,
         its match mode -- so one dataset can draw from a NAS folder of ``.mp4``
         under one layout and an explicit import selection under another. The
         replace scope is the union of what those sources claim, so a row under
         none of them survives untouched.
+
+        The originals index, never the derivative one: the destination is
+        :meth:`resolve_media_root`, which is ``media_raw`` for any dataset that
+        declares it and ``media`` only on one predating the split. Transcode
+        derivatives are written to ``media/index.csv`` by the transcode op and
+        are never touched here.
 
         Args:
             only: Restrict to these source ids. The declaration is not changed.
@@ -1063,7 +1069,7 @@ class Dataset:
             prune_unsourced=prune_unsourced,
         )
 
-    def scan_tracks_raw(
+    def scan_tracks(
         self,
         *,
         only: Sequence[str] = (),
@@ -1076,6 +1082,15 @@ class Dataset:
         so one dataset can hold TREx output beside CalMS21 arrays. Scanning them
         one at a time through :meth:`index_tracks_raw` could not: each write
         replaced the one before it.
+
+        Named for the source *kind* it scans, not the root it writes: the kind is
+        ``tracks`` (:data:`~mosaic.core.manifest.SourceKind`, the same word the
+        manifest and ``mosaic scan --kind`` use) and the root it feeds is
+        ``tracks_raw``, joined by ``_RAW_ROOT_FOR_KIND``. A ``_raw`` suffix marks
+        a name only where two indexes would otherwise answer to one -- which is
+        why the readers carry it (:meth:`read_tracks_raw_index` beside
+        ``read_tracks_index``) and the scanners do not. Nothing scans the
+        converted tables under ``tracks/``; they are computed, not found.
         """
         return self._scan_raw_sources(
             "tracks",
@@ -1084,14 +1099,18 @@ class Dataset:
             index_filename=index_filename,
         )
 
-    def scan_labels_raw(
+    def scan_labels(
         self,
         *,
         only: Sequence[str] = (),
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
     ) -> Path:
-        """Rescan every declared labels source and rewrite ``labels_raw/index.csv``."""
+        """Rescan every declared labels source and rewrite ``labels_raw/index.csv``.
+
+        Named for the ``labels`` source kind rather than the ``labels_raw`` root,
+        for the reason given on :meth:`scan_tracks`.
+        """
         return self._scan_raw_sources(
             "labels",
             only=only,
@@ -2257,7 +2276,15 @@ class Dataset:
         prune_unsourced: bool = False,
     ) -> Path:
         """
-        Scan search_dirs for media files with given extensions and write an index CSV into media root.
+        Scan search_dirs for media files with given extensions and write ``media_raw/index.csv``.
+
+        The one-off counterpart to :meth:`scan_media`, for directories the
+        manifest does not declare as sources. Both write the **originals** index:
+        :meth:`resolve_media_root`, which answers ``media_raw`` for any dataset
+        declaring that root and ``media`` only on one predating the split.
+        Transcode derivatives live in a second index, ``media/index.csv``, and
+        nothing here writes it.
+
         - No symlinks created; absolute paths recorded.
         - **Replaces what the scan claims and preserves everything else.** A row
           under none of the scanned directories survives: an assignment-written
@@ -3050,7 +3077,18 @@ class Dataset:
     def read_media_index(
         self, index_filename: str = "index.csv"
     ) -> list[dict[str, str]]:
-        """Read the media index as string-cell records (empty list if absent)."""
+        """Read the **originals** index as string-cell records (empty if absent).
+
+        A dataset has two media indexes, and this reads one of them: the
+        originals under :meth:`resolve_media_root` -- ``media_raw/index.csv``
+        wherever that root is declared, ``media/index.csv`` only on a dataset
+        predating the split. The other, ``media/index.csv`` holding one row per
+        transcode derivative, is reached through :meth:`media_routing_context`.
+
+        The bare name is deliberate: it cannot address the derivative index, so
+        there is nothing here to disambiguate. What varies is which *root* holds
+        the originals, which is why this resolves rather than naming one.
+        """
         media_root = self.get_root(self.resolve_media_root())
         return _read_media_index(media_root / index_filename)
 
