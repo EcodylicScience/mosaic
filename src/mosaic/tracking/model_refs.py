@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import pandas as pd
+import yaml
 
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
@@ -146,11 +147,13 @@ class ModelKindSpec:
             changing it would move every registered model.
         config_names: Candidate files to read ``model_type`` from. The first that
             exists is the one consulted.
-        model_types: Recognised ``model_type`` tokens, longest-first, matched
-            against the config text. A token scan rather than a structured parse:
-            it reads YAML and JSON alike without a YAML dependency, and this is
-            provenance recorded on a row, not identity, so an empty answer is
-            acceptable.
+        model_types: Recognised ``model_type`` tokens, in preference order,
+            matched against what the parsed config *selects* -- a key with a
+            non-null value, or a scalar value. Not a text scan: a framework that
+            writes its merged config names every head it knows, all but one of
+            them null, and a scan cannot tell the configured one from the
+            candidates. This is provenance recorded on a row, not identity, so an
+            unreadable config gives an empty answer rather than raising.
         label: How the kind is named in an error a human reads.
     """
 
@@ -382,14 +385,45 @@ def _resolve_role(directory: Path, role: RoleSpec, spec: ModelKindSpec) -> Path 
     )
 
 
-def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
-    """Best-effort ``model_type`` token from the config text, for provenance.
+def _selected_tokens(node: object, into: set[str]) -> None:
+    """Collect every token the document *selects*, as opposed to merely mentions.
 
-    A token scan over the config *text* rather than a structured parse: it works
-    for YAML and JSON alike without a YAML dependency, and this is provenance
-    recorded on a row, not identity, so an empty string when it cannot be read is
-    acceptable. The first config that exists is the one consulted -- a second
-    candidate is a different serialisation of the same thing, not a fallback.
+    A token is selected when it is a mapping key with a non-null value -- the
+    shape a framework uses to say "this head, configured so" -- or when it is a
+    scalar value, the shape used to say ``model_type: heatmap``. A key whose
+    value is null is the opposite of a selection: it is the framework listing a
+    candidate it did *not* pick.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():  # pyright: ignore[reportUnknownVariableType]
+            if isinstance(key, str) and value is not None:
+                into.add(key)
+            _selected_tokens(value, into)
+    elif isinstance(node, list):
+        for value in node:  # pyright: ignore[reportUnknownVariableType]
+            _selected_tokens(value, into)
+    elif isinstance(node, str):
+        into.add(node)
+
+
+def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
+    """Best-effort ``model_type`` token from the config, for provenance.
+
+    Parsed rather than scanned as text. A text scan cannot tell
+    ``centered_instance: {...}`` from ``multi_class_topdown: null``, and a
+    framework that writes its *merged* config names every head it knows -- eight
+    of them null and one configured. Every SLEAP model was then recorded as
+    whichever token came first in :data:`ModelKindSpec.model_types`, regardless
+    of what was trained.
+
+    YAML covers JSON, so one parse serves both ``config_names`` spellings. This
+    is provenance recorded on a row, not identity, so an unreadable or
+    unparseable config gives an empty string rather than raising -- and a
+    document that parses to nothing recognisable falls back to the text scan,
+    which is still right for a config that names only what it selected.
+
+    The first config that exists is the one consulted -- a second candidate is a
+    different serialisation of the same thing, not a fallback.
     """
     for name in spec.config_names:
         config = directory / name
@@ -399,6 +433,14 @@ def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
             text = config.read_text()
         except OSError:
             return ""
+        selected: set[str] = set()
+        try:
+            _selected_tokens(yaml.safe_load(text), selected)
+        except yaml.YAMLError:
+            selected = set()
+        for token in spec.model_types:
+            if token in selected:
+                return token
         for token in spec.model_types:
             if token in text:
                 return token
