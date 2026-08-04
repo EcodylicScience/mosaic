@@ -9,6 +9,8 @@ backend, and the two exception shapes.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.tracking.common import toolenv
@@ -140,6 +142,78 @@ def test_the_overlay_wins_over_the_inherited_environment(
     monkeypatch.setenv("DISPLAY", ":0")
 
     assert subprocess_env({"DISPLAY": ":99"})["DISPLAY"] == ":99"
+
+
+# --- which install a named conda env actually runs -------------------------
+
+
+def _conda_env_with(tmp_path: Path, env_name: str, executable: str) -> str:
+    """A conda layout under *tmp_path*: ``<root>/bin/conda`` and one env holding
+    *executable*. Returns the path to the fake ``conda``."""
+    conda = tmp_path / "root" / "bin" / "conda"
+    conda.parent.mkdir(parents=True)
+    conda.touch()
+    env_bin = tmp_path / "root" / "envs" / env_name / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / executable).touch()
+    return str(conda)
+
+
+def test_a_named_conda_env_runs_its_own_executable_not_one_earlier_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``conda run`` resolves a bare name against ``$PATH``, and does not put the
+    environment's ``bin`` first. A same-named script inherited from somewhere
+    earlier -- a ``uv tool install`` in ``~/.local/bin`` is the common one --
+    would answer instead, so the pinned environment would silently not be the one
+    that ran. Naming the file settles it.
+    """
+    conda = _conda_env_with(tmp_path, "toolenv", "runme")
+    monkeypatch.setattr(
+        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
+    )
+
+    got = tool_invocation(_DIRECT, executable="runme", conda_env="toolenv")
+
+    assert got == [
+        conda,
+        "run",
+        "--no-capture-output",
+        "-n",
+        "toolenv",
+        str(tmp_path / "root" / "envs" / "toolenv" / "bin" / "runme"),
+    ]
+
+
+def test_an_executable_absent_from_the_env_falls_back_to_the_bare_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No candidate holds it, so there is nothing to name and conda resolves it."""
+    conda = _conda_env_with(tmp_path, "toolenv", "runme")
+    monkeypatch.setattr(
+        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
+    )
+
+    got = tool_invocation(_DIRECT, executable="absent-here", conda_env="toolenv")
+
+    assert got[-1] == "absent-here"
+
+
+def test_conda_envs_dirs_locates_an_env_outside_the_base_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conda = _conda_env_with(tmp_path, "unused", "runme")
+    elsewhere = tmp_path / "elsewhere" / "toolenv" / "bin"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "runme").touch()
+    monkeypatch.setattr(
+        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
+    )
+    monkeypatch.setenv("CONDA_ENVS_DIRS", str(tmp_path / "elsewhere"))
+
+    got = tool_invocation(_DIRECT, executable="runme", conda_env="toolenv")
+
+    assert got[-1] == str(elsewhere / "runme")
 
 
 # --- the exceptions -------------------------------------------------------

@@ -124,14 +124,51 @@ class ToolEnv:
     locator: str = ""
 
 
+def _conda_env_executable(conda: str, env_name: str, executable: str) -> Path | None:
+    """``<prefix>/bin/<executable>`` for env *env_name*, when it is there.
+
+    Derived from the ``conda`` executable's own location rather than by asking
+    conda, which would cost a subprocess on every launch. Both layouts a conda
+    installation uses are tried -- ``<root>/envs/<name>`` for a named env under
+    the base installation, and ``<root>`` itself for the base env -- plus every
+    directory ``CONDA_ENVS_DIRS`` names, which is how an env outside the base
+    installation is found. ``None`` when no candidate holds the executable, which
+    leaves the caller with the bare name and today's behaviour.
+    """
+    roots: list[Path] = []
+    for entry in os.environ.get("CONDA_ENVS_DIRS", "").split(os.pathsep):
+        if entry:
+            roots.append(Path(entry) / env_name)
+    base = Path(conda).resolve().parent.parent
+    roots.append(base / "envs" / env_name)
+    roots.append(base)
+    for prefix in roots:
+        candidate = prefix / "bin" / executable
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
     """An argv prefix running *executable* inside conda env *env_name*.
 
-    ``conda run`` rather than a path into the environment's ``bin``, so the
+    ``conda run`` rather than a bare path into the environment's ``bin``, so the
     target environment is fully activated: each of these tools resolves native
     libraries against its own ``CONDA_PREFIX``, which a bare path does not set.
     ``--no-capture-output`` leaves the child's streams attached, which is what
     the inactivity watchdog and the progress callback read.
+
+    **The executable is passed by absolute path when one can be found.** ``conda
+    run`` resolves a bare name against ``$PATH``, and it does not place the
+    environment's ``bin`` first: an entry the caller inherited -- ``~/.local/bin``
+    is the common one, holding a ``uv tool install`` of the same tool -- can sit
+    ahead of it and answer instead. The named environment is then not the one
+    that runs, silently, so the version recorded as provenance describes a
+    different install and two machines configured identically execute different
+    code. Naming the file directly settles it while keeping the activation that
+    made ``conda run`` the right wrapper: ``CONDA_PREFIX`` is still set, because
+    ``conda run`` sets it for the environment it was asked for, not for the path
+    it ends up executing.
     """
     conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
     if conda is None:
@@ -140,7 +177,9 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
             f"'{env_name}'. Set {env.bin_var} to an explicit path instead, or "
             f"make conda available."
         )
-    return [conda, "run", "--no-capture-output", "-n", env_name, executable]
+    resolved = _conda_env_executable(conda, env_name, executable)
+    target = str(resolved) if resolved is not None else executable
+    return [conda, "run", "--no-capture-output", "-n", env_name, target]
 
 
 def tool_invocation(
