@@ -120,3 +120,27 @@ def test_images_land_under_their_video(tmp_path: Path) -> None:
 def test_an_empty_set_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="no frames"):
         _ = write_litpose_dataset(AnnotationSet(schema=SCHEMA), tmp_path / "project")
+
+
+def test_the_project_turns_off_post_training_video_prediction(tmp_path: Path) -> None:
+    """This project is labelled frames, and its ``videos/`` is always empty.
+
+    Lightning Pose's default is to predict on ``eval.test_videos_directory``
+    after training, which resolves to ``data.video_dir`` -- the directory this
+    writer creates only to satisfy an assertion. Left at its default, every
+    exported project ends in ``Did not find any valid video files`` *after* the
+    model has been trained and written.
+    """
+    images = tmp_path / "images"
+    images.mkdir()
+    _ = (images / "a.png").write_bytes(b"png")
+    placed = _one(*[Keypoint(1.0, 1.0, 2)] * 3)
+
+    out = write_litpose_dataset(
+        _set(tmp_path, _frame("a.png", placed)), tmp_path / "project"
+    )
+
+    config = yaml.safe_load((out / "config.yaml").read_text())
+    assert config["eval"]["predict_vids_after_training"] is False
+    # The directory is still made, because Lightning Pose asserts it exists.
+    assert (out / "videos").is_dir()

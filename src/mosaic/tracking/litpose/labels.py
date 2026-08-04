@@ -79,6 +79,12 @@ def write_litpose_dataset(
         resize_height: Network input height. See :data:`DEFAULT_RESIZE`.
         resize_width: Network input width. See :data:`DEFAULT_RESIZE`.
 
+    The config written here is the *data* half of a Lightning Pose
+    configuration, plus the two settings that follow from this being an export of
+    labelled frames: the network input size, and post-training video prediction
+    turned off. Training merges it over a complete Lightning Pose config the
+    caller supplies -- see :func:`mosaic.tracking.litpose.training.train_litpose`.
+
     Returns:
         The project root.
 
@@ -162,6 +168,15 @@ def write_litpose_dataset(
             "keypoint_names": list(names),
         },
         "training": {"train_prob": train_prob, "val_prob": round(1.0 - train_prob, 6)},
+        # This project is labelled frames. Lightning Pose's own default is to
+        # predict on ``eval.test_videos_directory`` once training finishes, and
+        # that resolves to ``data.video_dir`` -- the directory below, which is
+        # created only to satisfy an assertion and is always empty. Left true,
+        # every run mosaic exports ends in ``Did not find any valid video files``
+        # after the model is already trained and written. Said here rather than
+        # left to each caller's overrides, because it follows from what this
+        # writer produces; a project that later gains videos can turn it back on.
+        "eval": {"predict_vids_after_training": False},
     }
     # Created, not merely named. Lightning Pose asserts ``video_dir`` is a
     # directory before training begins, whether or not the run uses unlabelled
