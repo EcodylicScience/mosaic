@@ -286,3 +286,32 @@ def _prior_derivative(ds: Dataset) -> Path:
         n_rows=2,
     )
     return table
+
+
+def test_a_multi_file_promotion_keeps_every_file(tmp_path: Path) -> None:
+    """One revision, several members -- the shape TRex produces.
+
+    The revision is one event: a correction of a sequence whose tracker wrote a
+    file per individual. Naming every member ``corrected.rev<N>`` gave them all
+    one destination, so each copy overwrote the last and only the final file
+    survived -- with the index then recording that survivor's checksum, so
+    nothing downstream could tell the others were gone.
+    """
+    ds = _dataset(tmp_path)
+    first = _corrected(tmp_path, name="vid1_fish0.npz", value=1.0)
+    second = _corrected(tmp_path, name="vid1_fish1.npz", value=2.0)
+
+    report = promote_correction(
+        ds, "", "vid1", [first, second], src_format="trex_npz", apply=True
+    )
+
+    assert report.applied
+    assert len(set(report.promoted)) == 2, report.promoted
+    for landed in report.promoted:
+        assert landed.exists()
+    # Both individuals survive, distinguishably.
+    values = sorted(float(np.load(landed)["X"][0]) for landed in set(report.promoted))
+    assert values == [1.0, 2.0]
+    # Still one revision: the members belong to the same correction.
+    assert report.revision == 1
+    assert all(".rev1" in landed.name for landed in report.promoted)

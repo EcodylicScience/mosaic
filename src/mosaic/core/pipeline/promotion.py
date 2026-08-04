@@ -182,8 +182,20 @@ def promote_correction(
 
     destination.mkdir(parents=True, exist_ok=True)
     promoted: list[Path] = []
-    for original in sorted(sources):
-        landed = destination / f"{REVISION_STEM}.rev{revision}{_suffixes(original)}"
+    ordered = sorted(sources)
+    for original in ordered:
+        # One revision, one file per member. A correction of a sequence whose
+        # tracker wrote a file per individual is still *one* event, so the
+        # revision number is shared -- but the members need distinct names or
+        # each copy lands on the last one's path and only the final file
+        # survives, with the index recording that survivor's checksum so nothing
+        # downstream can tell the rest are gone. The token sits after the
+        # revision marker, which the series reader takes as the second
+        # dot-separated field, so it stays readable.
+        member = f".{_member_token(original)}" if len(ordered) > 1 else ""
+        landed = (
+            destination / f"{REVISION_STEM}.rev{revision}{member}{_suffixes(original)}"
+        )
         _ = shutil.copy2(original, landed)
         promoted.append(landed)
 
@@ -218,6 +230,17 @@ def promote_correction(
 def _suffixes(path: Path) -> str:
     """``.npz``, or ``.tar.gz`` -- every suffix, so a double extension survives."""
     return "".join(path.suffixes)
+
+
+def _member_token(path: Path) -> str:
+    """What distinguishes one file of a multi-file correction from its siblings.
+
+    The original name without its suffixes, which for a tracker writing one file
+    per individual is what names the individual. Dots become hyphens so the
+    revision series stays readable as dot-separated fields.
+    """
+    stem = path.name[: len(path.name) - len(_suffixes(path))] or path.stem
+    return stem.replace(".", "-")
 
 
 def _record_lineage(ds: Dataset, group: str, sequence: str, derived_from: str) -> None:
