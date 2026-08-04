@@ -128,6 +128,13 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The vendored Lightning Pose configuration. A data file rather than a module, so
+# it is not picked up by `packages.find` and has to be named: without this it is
+# present in a checkout and absent from a wheel, which is exactly the deployment
+# -- an API or app install -- that needs it most.
+[tool.setuptools.package-data]
+"mosaic.tracking.litpose.templates" = ["*.yaml"]
+
 # No entry for mosaic-media. It resolves from PyPI like any other dependency,
 # which is the only way plain `pip install -e .` can find it: this table is a
 # uv extension that pip does not read, so a path source here left the

@@ -230,6 +230,18 @@ obligation.
 Lightning Pose. MIT License. https://github.com/paninski-lab/lightning-pose
 An external pose estimator in its own environment, driven the same way.
 
+  Mosaic additionally redistributes one file from that project verbatim:
+  scripts/configs/config_default.yaml, carried at
+  src/mosaic/tracking/litpose/templates/config_default.yaml and taken from
+  release 2.3.1. Lightning Pose merges no configuration defaults of its own
+  and ships no template in its distribution, so training needs a complete
+  config that mosaic cannot generate without inventing training settings it
+  has no opinion about. The copy is used when a caller names no config.
+
+  Copyright (c) 2021 Dan Biderman, Matthew Whiteway, Liam Paninski.
+  Redistributed under the MIT License, whose terms are reproduced in that
+  project's LICENSE and permit this use with the notice above.
+
 lightning-action. Paninski lab. MIT License.
 Installed by the [lightning-action] extra and wrapped by
 src/mosaic/behavior/feature_library/lightning_action_feature.py.

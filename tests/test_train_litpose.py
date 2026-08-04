@@ -182,3 +182,81 @@ def test_a_directory_that_is_not_a_project_is_refused(
             "train-litpose",
             {"project": str(bare), "base_config": str(_base_config(tmp_path))},
         )
+
+
+# --- what identifies a run's configuration ----------------------------------
+
+
+def test_two_configs_at_one_path_are_two_runs(tmp_path: Path) -> None:
+    """The config is identified by content, because a path is a location.
+
+    Held as a path, two different Lightning Pose configurations sitting at one
+    filename minted one identifier, and one configuration reachable by two paths
+    minted two. `train_run_id` already says this about `base_model` -- "never the
+    path itself" -- and a config carries training settings mosaic has no field
+    for, so it is the same argument.
+    """
+    from mosaic.tracking.ops.train_litpose import TrainLitposeParams
+    from mosaic.tracking.ops.train import train_run_id
+    from mosaic.core.pipeline.file_digest import file_digest
+
+    first = tmp_path / "cfg.yaml"
+    _ = first.write_text("training:\n  num_gpus: 0\n")
+    params = TrainLitposeParams(project="p", base_config=str(first))
+    before = train_run_id(
+        "train-litpose", "0.1", params, "data", "", extra={"config": file_digest(first)}
+    )
+
+    _ = first.write_text("training:\n  num_gpus: 1\n")  # same path, other config
+    after = train_run_id(
+        "train-litpose", "0.1", params, "data", "", extra={"config": file_digest(first)}
+    )
+
+    assert before != after
+
+
+def test_the_same_config_at_two_paths_is_one_run(tmp_path: Path) -> None:
+    """The mirror: moving a config, or vendoring it, does not fork the identity."""
+    from mosaic.tracking.ops.train_litpose import TrainLitposeParams
+    from mosaic.tracking.ops.train import train_run_id
+    from mosaic.core.pipeline.file_digest import file_digest
+
+    body = "training:\n  num_gpus: 0\n"
+    here, there = tmp_path / "a.yaml", tmp_path / "b.yaml"
+    _ = here.write_text(body)
+    _ = there.write_text(body)
+
+    ids = {
+        train_run_id(
+            "train-litpose",
+            "0.1",
+            TrainLitposeParams(project="p", base_config=str(path)),
+            "data",
+            "",
+            extra={"config": file_digest(path)},
+        )
+        for path in (here, there)
+    }
+
+    assert len(ids) == 1
+
+
+def test_an_unset_base_config_uses_the_vendored_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An API or app caller has no filesystem to point at, so there is a default.
+
+    Lightning Pose ships no template, so without one carried here every caller
+    would have to fetch `config_default.yaml` from its repository first.
+    """
+    from mosaic.tracking.litpose.templates import default_config_path
+
+    assert default_config_path().is_file(), "the template must ship, not just exist"
+
+    ds = _dataset(tmp_path)
+    _point_at_litpose(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+    _ = run_op(ds, "train-litpose", {"project": str(_project(tmp_path))})
+
+    handed = Path(seen[0][seen[0].index("-c") + 2])
+    assert handed == default_config_path()

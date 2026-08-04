@@ -14,6 +14,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 import pandas as pd
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated
 
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
@@ -34,7 +35,12 @@ if TYPE_CHECKING:
 
 
 def train_run_id(
-    kind: str, version: str, params: Params, data_fingerprint: str, base_run_id: str
+    kind: str,
+    version: str,
+    params: Params,
+    data_fingerprint: str,
+    base_run_id: str,
+    extra: Mapping[str, object] | None = None,
 ) -> str:
     """Mint a training run identifier.
 
@@ -59,16 +65,21 @@ def train_run_id(
             data matched. The parameter keeps its name because the payload key
             ``"base"`` does, and renaming that would move every registered-lineage
             training identifier for no reason.
+        extra: Further payload terms for an op with an input the three above do
+            not describe -- Lightning Pose's configuration file is one, since it
+            carries training settings mosaic has no field for. Merged in only
+            when given, so an op that passes nothing keeps the identifier it
+            already mints. Pass **content**, never a path: a path is a location,
+            for the reason spelled out for *base_run_id*.
     """
-    return op_run_id(
-        kind,
-        version,
-        {
-            "params": params.identity_dump(),
-            "data": data_fingerprint,
-            "base": base_run_id,
-        },
-    )
+    payload: dict[str, object] = {
+        "params": params.identity_dump(),
+        "data": data_fingerprint,
+        "base": base_run_id,
+    }
+    if extra:
+        payload.update(extra)
+    return op_run_id(kind, version, payload)
 
 
 @dataclass(frozen=True, slots=True)

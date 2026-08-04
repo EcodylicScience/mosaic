@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 
+from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
@@ -22,6 +23,7 @@ from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
 from mosaic.tracking.ops.train import finalize_training, train_run_id
+from mosaic.tracking.litpose.templates import default_config_path
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -42,13 +44,12 @@ class TrainLitposeParams(Params):
 
     # A Lightning Pose project directory, or a prior run to fine-tune from.
     project: str
-    # A complete Lightning Pose config to train from, dataset-relative or
-    # absolute. Required, and the caller's: Lightning Pose merges no defaults of
-    # its own and ships no template, so generating one would mean mosaic
-    # inventing the training hyperparameters it has no opinion about. Reaches the
-    # identity, because a model trained under a different base config is a
-    # different model. See ``train_litpose``.
-    base_config: str
+    # Where the complete Lightning Pose config is, dataset-relative or absolute.
+    # A **location**, so it is excluded from the hash and the file's content
+    # digest enters the payload instead -- otherwise two different configs at one
+    # path mint one identifier, and one config at two paths mints two. See the
+    # ``extra`` argument of ``train_run_id``.
+    base_config: Annotated[str, HASH_EXCLUDE] = ""
     base_model: str = ""
     model_type: LitposeModelType = "heatmap"
     backbone: str = "resnet50_animal_ap10k"
@@ -78,6 +79,13 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
 
         ensure_models_root(ds)
         project = Path(ds.resolve_path(params.project))
+        # Named or vendored, resolved once: the digest below and the trainer must
+        # read the same file, and the identity is over its contents.
+        base_config = (
+            Path(ds.resolve_path(params.base_config))
+            if params.base_config
+            else default_config_path()
+        )
 
         base_run_id = ""
         base_digest = ""
@@ -96,6 +104,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             params,
             fingerprint_dataset(project),
             base_run_id,
+            extra={"config": file_digest(base_config)},
         )
         ctx.set_run_id(run_id)
         ctx.set_total(params.max_epochs)
@@ -106,7 +115,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
         produced = train_litpose(
             project,
             run_root,
-            base_config=ds.resolve_path(params.base_config),
+            base_config=base_config,
             model_type=params.model_type,
             backbone=params.backbone,
             max_epochs=params.max_epochs,
