@@ -2,7 +2,7 @@
 
 Sibling of
 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
-(V200) that uses a frozen DINOv2 backbone with a small trainable temporal
+that uses a frozen DINOv2 backbone with a small trainable temporal
 head (GRU / Perceiver / pool, selectable via Params) and an ArcFace loss
 to learn identity-discriminative clip embeddings. Identity is decided at
 inference by cosine k-NN against per-identity prototypes.

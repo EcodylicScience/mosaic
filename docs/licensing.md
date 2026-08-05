@@ -245,9 +245,7 @@ these components, cite them as their authors ask.
 
 TRex in particular asks to be cited as Walter, T. and Couzin, I. D. (2021),
 "TRex, a fast multi-animal tracking system with markerless identification, and
-2D estimation of posture and visual fields", *eLife* 10:e64000. Mosaic's
-identity networks reimplement two of TRex's published architectures so
-checkpoints can be exchanged in both directions; they contain no TRex source.
+2D estimation of posture and visual fields", *eLife* 10:e64000.
 
 ## Regenerating the dependency inventory
 

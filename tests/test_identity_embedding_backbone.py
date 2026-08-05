@@ -13,7 +13,7 @@ import pytest
 from mosaic.behavior.feature_library.identity_embedding_model import (
     GlobalIdentityEmbedding,
 )
-from mosaic.behavior.model_library.identity_embedding import (
+from mosaic.behavior.model_library.timm_backbone import (
     DEFAULT_MODEL_NAME,
     FALLBACK_DATA_CONFIG,
     IMAGENET_MEAN,

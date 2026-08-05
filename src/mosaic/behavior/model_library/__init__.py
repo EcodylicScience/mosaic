@@ -1,29 +1,31 @@
-"""
-Model library for behavior datasets.
+"""Model library for behavior datasets.
 
-This module provides machine learning models for behavioral analysis.
+Networks for visual individual identification, each reached by importing its own
+module rather than from here. That is deliberate: ``mosaic.behavior`` imports
+this package eagerly, and every network needs PyTorch, so exporting them would
+make the optional ``identity`` extra a hard requirement for importing mosaic at
+all. Each module imports torch lazily inside its methods, and
+``tests/test_behavior_import_is_torch_free.py`` holds that line.
+
+Available modules:
+
+* :mod:`~mosaic.behavior.model_library.identity_classifier` --
+  ``ClassifierIdentityNetwork``, a pretrained image backbone with a trained
+  linear head over a closed set of animals.
+* :mod:`~mosaic.behavior.model_library.identity_embedding` --
+  ``EmbeddingIdentityNetwork``, the same family of backbones frozen, with
+  identity decided by k-NN against per-identity prototypes. Trains nothing.
+* :mod:`~mosaic.behavior.model_library.dinov2_temporal_identity` --
+  ``DinoV2TemporalNetwork``, frozen DINOv2 per frame plus a trained temporal
+  head over clips. The only one that sees time.
+* :mod:`~mosaic.behavior.model_library.timm_backbone` -- backbone resolution,
+  preprocessing, and device selection shared by the three.
+* :mod:`~mosaic.behavior.model_library.identity_common` -- label mapping, crop
+  loading, and the prototype/k-NN helpers shared by the two embedding models.
 
 Usage
 -----
->>> from mosaic.behavior.model_library.trex_identity_network import TRexIdentityNetwork
+>>> from mosaic.behavior.model_library.identity_classifier import (
+...     ClassifierIdentityNetwork,
+... )
 """
-
-# Shared architectures + checkpoint machinery for the T-Rex identity networks
-from . import trex_identity_architectures
-
-# T-Rex-compatible V200 CNN identity classifier (requires PyTorch)
-from . import trex_identity_network
-from .trex_identity_network import TRexIdentityNetwork
-
-# T-Rex V118_3 — the compact 3-conv variant most real T-Rex checkpoints use.
-# Called `TRexNativeIdentityNetwork` before 0.8, when it was mislabelled "V200".
-from . import trex_v118_3_identity
-from .trex_v118_3_identity import TRexV118_3IdentityNetwork
-
-__all__ = [
-    "trex_identity_architectures",
-    "trex_identity_network",
-    "TRexIdentityNetwork",
-    "trex_v118_3_identity",
-    "TRexV118_3IdentityNetwork",
-]

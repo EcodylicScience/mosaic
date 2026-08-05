@@ -16,9 +16,11 @@ Three temporal heads are selectable via ``temporal_head``:
   earning its keep on this dataset.
 
 Sibling implementation to
-:class:`~mosaic.behavior.model_library.trex_identity_network.TRexIdentityNetwork`
-(V200) and
-:class:`~mosaic.behavior.model_library.identity_embedding.EmbeddingIdentityNetwork`.
+:class:`~mosaic.behavior.model_library.identity_classifier.ClassifierIdentityNetwork`
+and
+:class:`~mosaic.behavior.model_library.identity_embedding.EmbeddingIdentityNetwork`,
+both of which read single frames. This one is the only identity network that sees
+time.
 """
 
 from __future__ import annotations
@@ -33,24 +35,22 @@ from mosaic.behavior.model_library.identity_common import (
     compute_prototypes,
     knn_predict,
 )
+from mosaic.behavior.model_library.timm_backbone import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    BackboneDataConfig,
+    import_torch,
+    normalization_tensors,
+    preprocess_batch,
+    resolve_device,
+)
 
 TemporalHead = Literal["gru", "perceiver", "pool"]
 
 
-def _import_torch() -> Any:
-    try:
-        import torch
-    except ImportError:
-        raise ImportError(
-            "PyTorch is required for DinoV2TemporalNetwork. "
-            "Install it with: pip install torch torchvision"
-        ) from None
-    return torch
-
-
 def _load_dinov2_backbone(name: str, device: Any) -> Any:
     """Load a DINOv2 ViT via torch.hub, cached locally on first use."""
-    torch = _import_torch()
+    torch = import_torch()
     backbone = torch.hub.load("facebookresearch/dinov2", name, trust_repo=True)
     backbone.eval()
     for p in backbone.parameters():
@@ -58,13 +58,12 @@ def _load_dinov2_backbone(name: str, device: Any) -> Any:
     return backbone.to(device)
 
 
-def _build_temporal_head(
-    head_type: TemporalHead, *, in_dim: int, out_dim: int
-) -> Any:
-    torch = _import_torch()
+def _build_temporal_head(head_type: TemporalHead, *, in_dim: int, out_dim: int) -> Any:
+    torch = import_torch()
     nn = torch.nn
 
     if head_type == "gru":
+
         class GRUHead(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -77,6 +76,7 @@ def _build_temporal_head(
         return GRUHead()
 
     if head_type == "perceiver":
+
         class PerceiverHead(nn.Module):
             """Single-block Perceiver-IO-lite: one learned latent attends
             to all frames, followed by an MLP."""
@@ -108,6 +108,7 @@ def _build_temporal_head(
         return PerceiverHead()
 
     if head_type == "pool":
+
         class PoolHead(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -123,7 +124,7 @@ def _build_temporal_head(
 
 
 def _build_arcface_head(embedding_dim: int, num_classes: int) -> Any:
-    torch = _import_torch()
+    torch = import_torch()
     nn = torch.nn
 
     class ArcFaceHead(nn.Module):
@@ -134,8 +135,13 @@ def _build_arcface_head(embedding_dim: int, num_classes: int) -> Any:
         scales, and returns logits ready for CrossEntropyLoss.
         """
 
-        def __init__(self, embedding_dim: int, num_classes: int,
-                     margin: float = 0.3, scale: float = 30.0) -> None:
+        def __init__(
+            self,
+            embedding_dim: int,
+            num_classes: int,
+            margin: float = 0.3,
+            scale: float = 30.0,
+        ) -> None:
             super().__init__()
             self.weight = nn.Parameter(torch.randn(num_classes, embedding_dim))
             nn.init.xavier_uniform_(self.weight)
@@ -174,9 +180,6 @@ class DinoV2TemporalNetwork:
         device: ``"auto"``, ``"cuda"``, ``"mps"``, or ``"cpu"``.
     """
 
-    IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
-    IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
-
     def __init__(
         self,
         backbone: str = "dinov2_vits14",
@@ -191,7 +194,7 @@ class DinoV2TemporalNetwork:
         self.embedding_dim = embedding_dim
         self.clip_len = clip_len
         self.image_size = image_size
-        self._device: Any = self._resolve_device(device)
+        self._device: Any = resolve_device(device)
 
         if image_size[0] % 14 != 0 or image_size[1] % 14 != 0:
             msg = (
@@ -200,19 +203,17 @@ class DinoV2TemporalNetwork:
             )
             raise ValueError(msg)
 
-        torch = _import_torch()
+        torch = import_torch()
         self._backbone = _load_dinov2_backbone(backbone, self._device)
-        self._mean = torch.tensor(self.IMAGENET_MEAN, dtype=torch.float32).reshape(
-            1, 3, 1, 1
-        ).to(self._device)
-        self._std = torch.tensor(self.IMAGENET_STD, dtype=torch.float32).reshape(
-            1, 3, 1, 1
-        ).to(self._device)
+        # DINOv2 declares no timm ``pretrained_cfg``, so its recipe is stated
+        # here rather than resolved: ImageNet statistics at the requested size.
+        self._data_config = BackboneDataConfig(
+            image_size=image_size, mean=IMAGENET_MEAN, std=IMAGENET_STD
+        )
+        self._mean, self._std = normalization_tensors(self._data_config)
 
         with torch.no_grad():
-            probe = torch.zeros(
-                1, 3, image_size[0], image_size[1], device=self._device
-            )
+            probe = torch.zeros(1, 3, image_size[0], image_size[1], device=self._device)
             feat = self._backbone(probe)
         self.frame_dim: int = int(feat.shape[-1])
 
@@ -262,9 +263,9 @@ class DinoV2TemporalNetwork:
             batch_size: Training batch size. Default 32.
 
         Returns:
-            Per-epoch history dict matching V200's keys.
+            Per-epoch history dict matching the other identity networks' keys.
         """
-        torch = _import_torch()
+        torch = import_torch()
 
         if clips.ndim != 5 or clips.shape[1] != self.clip_len:
             msg = (
@@ -276,13 +277,12 @@ class DinoV2TemporalNetwork:
         if num_classes is None:
             num_classes = int(labels.max()) + 1
 
-        self._arcface = _build_arcface_head(
-            self.embedding_dim, num_classes
-        ).to(self._device)
+        self._arcface = _build_arcface_head(self.embedding_dim, num_classes).to(
+            self._device
+        )
 
         print(
-            f"[dinov2-temporal] caching frame features for "
-            f"{len(clips)} train clips...",
+            f"[dinov2-temporal] caching frame features for {len(clips)} train clips...",
             file=sys.stderr,
         )
         train_feats = self._embed_frames_batched(clips, batch_size=batch_size)
@@ -291,7 +291,9 @@ class DinoV2TemporalNetwork:
 
         val_feats_t: Any = None
         val_labels_t: Any = None
-        has_val = val_clips is not None and val_labels is not None and len(val_clips) > 0
+        has_val = (
+            val_clips is not None and val_labels is not None and len(val_clips) > 0
+        )
         if has_val:
             print(
                 f"[dinov2-temporal] caching frame features for "
@@ -402,7 +404,7 @@ class DinoV2TemporalNetwork:
 
     def embed(self, clips: np.ndarray, *, batch_size: int = 32) -> np.ndarray:
         """Return clip-level embeddings ``(N, embedding_dim)``."""
-        torch = _import_torch()
+        torch = import_torch()
 
         feats = self._embed_frames_batched(clips, batch_size=batch_size)
         feats_t = torch.from_numpy(feats).to(self._device)
@@ -415,7 +417,7 @@ class DinoV2TemporalNetwork:
         return np.concatenate(out, axis=0).astype(np.float32)
 
     def export_checkpoint(self, path: Path) -> Path:
-        torch = _import_torch()
+        torch = import_torch()
         if self._prototypes is None:
             msg = "[dinov2-temporal] No prototypes to export; call fit() first."
             raise RuntimeError(msg)
@@ -455,7 +457,7 @@ class DinoV2TemporalNetwork:
 
     @classmethod
     def from_checkpoint(cls, path: Path) -> DinoV2TemporalNetwork:
-        torch = _import_torch()
+        torch = import_torch()
         path = Path(path)
         if not path.suffix:
             path = path.with_suffix(".pth")
@@ -475,6 +477,7 @@ class DinoV2TemporalNetwork:
             from mosaic.behavior.model_library.dinov2_temporal_identity import (
                 _build_arcface_head,
             )
+
             net._arcface = _build_arcface_head(
                 meta["embedding_dim"], meta["num_classes"]
             ).to(net._device)
@@ -498,7 +501,7 @@ class DinoV2TemporalNetwork:
         Returns:
             ``(N, T, frame_dim)`` float32.
         """
-        torch = _import_torch()
+        torch = import_torch()
 
         n, t, h, w, c = clips.shape
         flat = clips.reshape(n * t, h, w, c)
@@ -516,33 +519,5 @@ class DinoV2TemporalNetwork:
         return all_feats.reshape(n, t, all_feats.shape[-1]).astype(np.float32)
 
     def _preprocess(self, images: np.ndarray) -> Any:
-        torch = _import_torch()
-
-        if images.shape[-1] == 1:
-            images = np.repeat(images, 3, axis=-1)
-        elif images.shape[-1] != 3:
-            msg = (
-                f"[dinov2-temporal] expected 1 or 3 channels, "
-                f"got {images.shape[-1]}"
-            )
-            raise ValueError(msg)
-
-        x = torch.from_numpy(images).permute(0, 3, 1, 2).float() / 255.0
-        target_h, target_w = self.image_size
-        if x.shape[-2] != target_h or x.shape[-1] != target_w:
-            x = torch.nn.functional.interpolate(
-                x, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
-        x = (x - self._mean.cpu()) / self._std.cpu()
-        return x
-
-    @staticmethod
-    def _resolve_device(device: str) -> Any:
-        torch = _import_torch()
-        if device != "auto":
-            return torch.device(device)
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
+        """Convert ``(N, H, W, C)`` uint8 to a normalized ``(N, 3, H', W')`` tensor."""
+        return preprocess_batch(images, self.image_size, self._mean, self._std)

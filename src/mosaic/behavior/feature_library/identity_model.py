@@ -1,43 +1,83 @@
 """GlobalIdentityModel feature.
 
-Trains a T-Rex-compatible visual identification model from egocentric crop
-images of individual animals. Uses the V200 CNN architecture to produce
-weights loadable via T-Rex's ``visual_identification_model_path`` setting.
+Trains a visual identification model from egocentric crop images of individual
+animals: a pretrained image backbone with a linear classification head on top,
+fitted with cross-entropy against a closed set of known individuals.
 
-T-Rex builds the network from its own ``visual_identification_version``
-setting, so consuming these weights means setting **both**::
+Each identity is named by the sequences that contain that individual alone, so
+the training labels come from the dataset's own structure rather than from
+per-frame annotation.
 
-    visual_identification_version    = v200
-    visual_identification_model_path = <run_root>/identity_model
+Choosing among the three identity features: this one *trains* a head and wants
+enough crops per animal to fit one. ``global-identity-embedding`` trains nothing
+and answers in a single pass over the same backbone family, which makes it the
+right first attempt. ``global-identity-dinov2-temporal`` reads clips rather than
+single frames, so it can use cues that only exist over time.
 
-Mismatch that pair, or feed a build whose input preprocessing differs from
-``input_normalization``, and T-Rex logs a warning rather than failing --
-see :mod:`mosaic.behavior.model_library.trex_identity_network`.
+Mosaic distributes no model weights. Whatever ``model_name`` names is fetched at
+run time under its own license -- see
+:mod:`mosaic.behavior.model_library.timm_backbone`.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, Literal, final
+from typing import ClassVar, TypedDict, final
 
-import cv2
 import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.helpers import make_entry_key
+from mosaic.behavior.model_library.timm_backbone import DEFAULT_MODEL_NAME
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputRequire,
     Inputs,
     InputStream,
+    JoblibArtifact,
+    JoblibLoadSpec,
     Result,
 )
 from mosaic.core.pipeline.types.params import Params
 
 from .registry import register_feature
+
+# --- Model artifact ---
+
+# The exported weights are a torch ``.pth``, and an ArtifactSpec can only load
+# npz / parquet / joblib -- so the referencable artifact is this joblib sidecar,
+# written beside the checkpoint and naming it. Same shape as
+# ``identity_embedding_model``. The name is fixed rather than derived from
+# ``weights_name`` because dependency resolution globs it, and the run root also
+# holds ``identity_names.joblib`` and ``training_history.joblib``.
+_BUNDLE_NAME = "identity_classifier_model.joblib"
+
+
+class ClassifierIdentityBundle(TypedDict):
+    """Sidecar naming the exported identity-classifier checkpoint.
+
+    Attributes:
+        weights: Checkpoint filename, relative to the bundle's directory.
+        identity_names: Class order the checkpoint was exported with.
+        version: Feature version that wrote the bundle.
+    """
+
+    weights: str
+    identity_names: list[str]
+    version: str
+
+
+class ClassifierIdentityArtifact(JoblibArtifact[ClassifierIdentityBundle]):
+    """Fitted identity-classifier bundle (identity_classifier_model.joblib)."""
+
+    feature: str = "global-identity-model"
+    pattern: str = _BUNDLE_NAME
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
+
+
+# --- Feature class ---
 
 
 @final
@@ -47,8 +87,8 @@ class GlobalIdentityModel:
 
     Takes EgocentricCrop output as input. Each identity is specified as a
     mapping of identity names to lists of sequences containing that
-    individual alone. Trains a V200 CNN classifier (T-Rex-compatible)
-    and exports weights loadable via ``visual_identification_model_path``.
+    individual alone. Trains a classification head over a pretrained image
+    backbone and exports the fitted weights.
 
     Example::
 
@@ -63,46 +103,64 @@ class GlobalIdentityModel:
                     "mouse_C": ["cage1/day2_mouseC_alone"],
                     "mouse_D": ["cage1/day1_mouseD_alone"],
                 },
-                "image_size": (128, 128),
-                "channels": 1,
             },
         )
         result = dataset.run_feature(identity_model)
 
     Params:
+        model: Pre-fitted ClassifierIdentityArtifact to load, skipping the
+            fit. Default None (fit from scratch). Pinning one makes an
+            inference run's identity carry its training run by reference, so
+            the run needs no scope of its own.
         identities: Explicit identity -> sequences mapping. Keys are
             identity names, values are lists of "group/sequence" strings.
         group_as_identity: Convenience shortcut -- treat each group name
             as one identity. Default False.
-        image_size: Crop resize target (height, width). Default (128, 128).
-        channels: Number of image channels (1=grayscale, 3=color).
-            Default 1.
-        epochs: Training epochs. Default 150.
-        learning_rate: Adam learning rate. Default 0.0001.
-        batch_size: Training batch size. Default 64.
+        model_name: A bare timm architecture tag or a Hugging Face hub id for
+            the backbone. Default
+            ``"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"`` (MIT).
+            Mosaic ships no weights; whatever is named here is downloaded at
+            run time under its own license.
+        image_size: Crop resize target ``(height, width)``. Default None,
+            meaning follow the backbone's declared input size -- which is
+            almost always what you want, and is the only value correct for
+            every backbone.
+        channels: Number of channels read from disk (1 = grayscale,
+            3 = RGB). Grayscale inputs are replicated to 3 channels for
+            the backbone. Default 3.
+        freeze_backbone: Train the classification head alone, leaving the
+            pretrained backbone untouched. Default True. Set False to
+            fine-tune end to end, which needs considerably more data.
+        epochs: Training epochs. Default 30.
+        learning_rate: Adam learning rate. Default 0.001.
+        batch_size: Training batch size. Default 32.
         val_split: Fraction of data reserved for validation. Default 0.2.
         max_images_per_identity: Cap on images per identity to balance
             classes. Default 2000.
-        export_trex_weights: Save a T-Rex-loadable .pth file. Default True.
-        trex_weights_name: Stem of the exported .pth file. Default
-            "identity_model".
+        weights_name: Stem of the exported ``.pth`` checkpoint. Default
+            ``"identity_classifier"``.
+        crop_root: Optional EgocentricCrop output root override.
     """
 
     category = "global"
     name: str = "global-identity-model"
-    # 0.2: the exported checkpoint changed shape (named `model.*` keys mirroring
-    # T-Rex's module tree, optional `normalize.*` buffers, richer metadata).
-    # Network numerics are not part of the run_id payload, so only this version
-    # string can express "the recipe changed" and stop `load_state` adopting a
-    # checkpoint the previous code wrote.
-    version: str = "0.2"
+    # 0.3: the network changed outright -- a trained head over a pretrained
+    # image backbone, where 0.2 was a CNN trained from scratch. Network numerics
+    # are not part of the run_id payload, so only this version string can
+    # express "the recipe changed" and stop `load_state` adopting a checkpoint
+    # the previous code wrote, which this network cannot read at all.
+    version: str = "0.3"
     parallelizable = False
-    # The trained model depends on which sequences are in scope: fit() collects
-    # training images from the scoped entries and (under group_as_identity)
-    # discovers the label set from them. Fold the scope into the run_id so two
-    # training subsets with identical params+inputs don't collide on one run.
+    # fit() reads the ambient stream -- both to discover the label set under
+    # group_as_identity and to collect the training crops -- so the scope IS the
+    # training set and belongs in the identifier (P2f). An inference run pins
+    # ``model`` instead and carries its training set by reference, so fit and
+    # apply are two runs with two identifiers rather than one that silently
+    # reuses a network fitted on a narrower scope.
     scope_dependent = True
     consumed_roots: tuple[str, ...] = ()
+
+    ModelArtifact = ClassifierIdentityArtifact
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "any"
@@ -110,30 +168,33 @@ class GlobalIdentityModel:
     class Params(Params):
         """Global identity model parameters."""
 
+        # Pre-fitted model reference: when set (and resolvable), fit is skipped.
+        model: ClassifierIdentityArtifact | None = None
+
         # Primary: explicit identity -> sequences mapping
         identities: dict[str, list[str]] | None = None
         # Convenience shortcut: treat each group as one identity
         group_as_identity: bool = False
 
-        # Network params
-        image_size: tuple[int, int] = (128, 128)
-        channels: int = 1
-        # Preprocessing contract the exported weights expect. Must match the
-        # T-Rex build they will be used with: some scale and standardize,
-        # others feed the network raw [0, 255]. See
-        # `model_library.trex_identity_architectures.detect_input_normalization`.
-        input_normalization: Literal["imagenet_scaled", "raw255"] = "imagenet_scaled"
-        epochs: int = 150
-        learning_rate: float = 0.0001
-        batch_size: int = 64
+        # Backbone selection. Changing ``model_name`` is a licensing decision as
+        # well as an accuracy one -- see the module docstring.
+        model_name: str = DEFAULT_MODEL_NAME
+        # None means follow the backbone's declared input size.
+        image_size: tuple[int, int] | None = None
+        channels: int = 3
+        freeze_backbone: bool = True
+
+        # Training
+        epochs: int = 30
+        learning_rate: float = 0.001
+        batch_size: int = 32
         val_split: float = Field(default=0.2, ge=0.0, lt=1.0)
 
         # Sampling
         max_images_per_identity: int = Field(default=2000, ge=1)
 
         # Export
-        export_trex_weights: bool = True
-        trex_weights_name: str = "identity_model"
+        weights_name: str = "identity_classifier"
 
         # Path to EgocentricCrop output root (contains group__sequence/ subdirs).
         # If None, the feature tries to resolve it from the input Result.
@@ -159,39 +220,52 @@ class GlobalIdentityModel:
         artifact_paths: dict[str, Path],
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
+        from mosaic.behavior.model_library.identity_classifier import (
+            ClassifierIdentityNetwork,
+        )
+
         self._network = None
         self._history = None
         self._identity_names = None
 
-        from mosaic.behavior.model_library.trex_identity_network import (
-            TRexIdentityNetwork,
-        )
-
-        # Check for cached checkpoint
-        cached_path = run_root / f"{self.params.trex_weights_name}.pth"
+        # Branch 1: this run's own cached checkpoint.
+        cached_path = run_root / f"{self.params.weights_name}.pth"
         if cached_path.exists():
-            self._network = TRexIdentityNetwork.from_trex_checkpoint(cached_path)
-            # Load history if available
+            self._network = ClassifierIdentityNetwork.from_checkpoint(cached_path)
             history_path = run_root / "training_history.joblib"
             if history_path.exists():
                 self._history = joblib.load(history_path)
-            # Load identity names if available
             names_path = run_root / "identity_names.joblib"
             if names_path.exists():
                 self._identity_names = joblib.load(names_path)
             return True
 
+        # Branch 2: a pre-fitted model pinned in params. The checkpoint name
+        # comes from the bundle, never from self.params -- an inference run's
+        # weights_name need not match the training run's.
+        if self.params.model is not None and "model" in artifact_paths:
+            bundle_path = artifact_paths["model"]
+            bundle = self.params.model.from_path(bundle_path)
+            self._network = ClassifierIdentityNetwork.from_checkpoint(
+                bundle_path.parent / bundle["weights"]
+            )
+            self._identity_names = list(bundle["identity_names"])
+            return True
+
         return False
 
     def fit(self, inputs: InputStream) -> None:
-        from mosaic.behavior.model_library.trex_identity_network import (
-            TRexIdentityNetwork,
+        from mosaic.behavior.model_library.identity_classifier import (
+            ClassifierIdentityNetwork,
+        )
+        from mosaic.behavior.model_library.identity_common import (
+            build_label_mapping,
+            load_crop_frames,
         )
 
         p = self.params
 
-        # Build sequence -> label mapping
-        seq_to_label, identity_names = self._build_label_mapping(inputs)
+        seq_to_label, identity_names = build_label_mapping(p, inputs)
         self._identity_names = identity_names
         num_classes = len(identity_names)
 
@@ -210,14 +284,17 @@ class GlobalIdentityModel:
 
         # Collect images and labels from input sequences
         all_images: dict[int, list[np.ndarray]] = {i: [] for i in range(num_classes)}
-
         for entry_key, df in inputs():
             label = seq_to_label.get(entry_key)
             if label is None:
                 continue
-
-            # Load crop frames from egocentric crop output
-            frames = self._load_crop_frames(entry_key, df)
+            frames = load_crop_frames(
+                entry_key,
+                df,
+                crop_root=p.crop_root,
+                channels=p.channels,
+                max_frames=p.max_images_per_identity,
+            )
             if frames:
                 all_images[label].extend(frames)
 
@@ -247,27 +324,22 @@ class GlobalIdentityModel:
             labels_list.extend([label_idx] * len(imgs))
 
         if not images_list:
-            msg = "[identity-model] No images collected. Check sequence keys and crop output."
+            msg = (
+                "[identity-model] No images collected. Check sequence keys "
+                "and crop output."
+            )
             raise RuntimeError(msg)
 
+        # Crops go to the network at their stored size. The network resizes
+        # once, to whatever the backbone declares -- resizing here as well would
+        # resample twice, and with ``image_size`` free to follow the backbone
+        # this layer no longer knows the target.
         images_arr = np.stack(images_list, axis=0)
         labels_arr = np.array(labels_list, dtype=np.int64)
 
-        # Resize if needed
-        h, w = p.image_size
-        if images_arr.shape[1] != h or images_arr.shape[2] != w:
-            resized = np.empty(
-                (len(images_arr), h, w, images_arr.shape[3]), dtype=np.uint8
-            )
-            for i in range(len(images_arr)):
-                resized[i] = cv2.resize(
-                    images_arr[i], (w, h), interpolation=cv2.INTER_LINEAR
-                ).reshape(h, w, images_arr.shape[3])
-            images_arr = resized
-
         # Train/val split
-        val_images = None
-        val_labels = None
+        val_images: np.ndarray | None = None
+        val_labels: np.ndarray | None = None
         if p.val_split > 0:
             rng = np.random.default_rng(42)
             n = len(images_arr)
@@ -281,12 +353,11 @@ class GlobalIdentityModel:
             images_arr = images_arr[train_idx]
             labels_arr = labels_arr[train_idx]
 
-        # Train
-        self._network = TRexIdentityNetwork(
+        self._network = ClassifierIdentityNetwork(
             num_classes=num_classes,
-            channels=p.channels,
+            model_name=p.model_name,
             image_size=p.image_size,
-            input_normalization=p.input_normalization,
+            freeze_backbone=p.freeze_backbone,
         )
         self._history = self._network.fit(
             images_arr,
@@ -299,207 +370,38 @@ class GlobalIdentityModel:
         )
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Passthrough -- identity predictions are applied by T-Rex, not Mosaic."""
+        """Passthrough -- identity predictions are consumed downstream."""
         return df
 
     def save_state(self, run_root: Path) -> None:
+        from mosaic.behavior.model_library.identity_classifier import (
+            ClassifierIdentityNetwork,
+        )
+
         if self._network is None:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
-        from mosaic.behavior.model_library.trex_identity_network import (
-            TRexIdentityNetwork,
-        )
-
-        # Export T-Rex checkpoint
-        if self.params.export_trex_weights and isinstance(
-            self._network, TRexIdentityNetwork
-        ):
-            # T-Rex assigns identities by softmax index and does not preserve
-            # labels, so the class order is the only link back to the animals.
-            self._network.export_trex_checkpoint(
-                run_root / f"{self.params.trex_weights_name}.pth",
+        if isinstance(self._network, ClassifierIdentityNetwork):
+            weights_name = f"{self.params.weights_name}.pth"
+            # The head scores identities by index and nothing in the weights
+            # records what animal an index means, so the class order is the
+            # only link back to the animals.
+            self._network.export_checkpoint(
+                run_root / weights_name,
                 class_labels=self._identity_names,
             )
+            # The sidecar a later run references as ``model``. Written here so
+            # this run's output is loadable as the next run's pre-fitted model.
+            bundle: ClassifierIdentityBundle = {
+                "weights": weights_name,
+                "identity_names": list(self._identity_names or ()),
+                "version": self.version,
+            }
+            joblib.dump(bundle, run_root / _BUNDLE_NAME)
 
-        # Save training history
         if self._history is not None:
             joblib.dump(self._history, run_root / "training_history.joblib")
 
-        # Save identity names for reference
         if self._identity_names is not None:
             joblib.dump(self._identity_names, run_root / "identity_names.joblib")
-
-    # --- Private helpers ---
-
-    def _build_label_mapping(
-        self, inputs: InputStream
-    ) -> tuple[dict[str, int], list[str]]:
-        """Build a mapping from pipeline ``entry_key`` to integer label.
-
-        The InputStream yields ``entry_key = make_entry_key(group, sequence)``
-        (i.e. ``"safe_group__safe_seq"`` with URL-encoded names).  Users
-        specify ``identities`` with the more readable ``"group/sequence"``
-        form, so we translate every key into the canonical entry-key form
-        before storing.
-
-        Returns:
-            Tuple of (entry_key -> label, sorted identity names).
-        """
-        p = self.params
-        seq_to_label: dict[str, int] = {}
-
-        def _normalize(seq_key: str) -> str:
-            if "/" in seq_key:
-                group, sequence = seq_key.split("/", 1)
-                return make_entry_key(group, sequence)
-            return seq_key
-
-        if p.identities is not None:
-            identity_names = sorted(p.identities.keys())
-            name_to_label = {name: i for i, name in enumerate(identity_names)}
-            for name, seqs in p.identities.items():
-                label = name_to_label[name]
-                for seq_key in seqs:
-                    seq_to_label[_normalize(seq_key)] = label
-        elif p.group_as_identity:
-            # Discover groups from input stream entry keys.
-            # entry_key is "safe_group__safe_seq"; split on "__" once.
-            group_set: set[str] = set()
-            entry_keys = self._iter_entry_keys(inputs)
-            for entry_key in entry_keys:
-                group = entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
-                group_set.add(group)
-            identity_names = sorted(group_set)
-            name_to_label = {name: i for i, name in enumerate(identity_names)}
-            for entry_key in entry_keys:
-                group = entry_key.split("__", 1)[0] if "__" in entry_key else entry_key
-                if group in name_to_label:
-                    seq_to_label[entry_key] = name_to_label[group]
-        else:
-            msg = (
-                "[identity-model] Either 'identities' dict or "
-                "'group_as_identity=True' must be provided."
-            )
-            raise ValueError(msg)
-
-        return seq_to_label, identity_names
-
-    @staticmethod
-    def _iter_entry_keys(inputs: InputStream) -> list[str]:
-        """Collect all entry keys from the input stream."""
-        keys: list[str] = []
-        for entry_key, _df in inputs():
-            keys.append(entry_key)
-        return keys
-
-    def _load_crop_frames(self, entry_key: str, df: pd.DataFrame) -> list[np.ndarray]:
-        """Load egocentric crop frame images for a sequence.
-
-        Resolves the EgocentricCrop output directory and reads every PNG
-        under ``<crop_root>/<group>__<sequence>/frames_id*/frame_*.png``.
-
-        Resolution order for the crop root:
-        1. ``params.crop_root`` (explicit override -- recommended).
-        2. ``df._source_dir`` if set by the pipeline runner.
-        3. Skip if neither is available.
-
-        Args:
-            entry_key: ``"group/sequence"`` identifier.
-            df: DataFrame from the input stream (may contain crop metadata).
-
-        Returns:
-            List of (H, W, C) uint8 arrays, capped at
-            ``max_images_per_identity``.
-        """
-        p = self.params
-        frames: list[np.ndarray] = []
-
-        # Resolve the per-sequence directory containing frames_id*/ subdirs.
-        # EgocentricCrop writes dirs as f"{group}__{sequence}" using RAW
-        # names (not URL-encoded); the df from the InputStream carries those
-        # raw names in its "group" / "sequence" columns.
-        seq_dir: Path | None = None
-
-        if p.crop_root is not None:
-            crop_root = Path(p.crop_root)
-            if (
-                df is not None
-                and not df.empty
-                and "group" in df.columns
-                and "sequence" in df.columns
-            ):
-                group = str(df["group"].iloc[0])
-                sequence = str(df["sequence"].iloc[0])
-                seq_dir = crop_root / f"{group}__{sequence}"
-            else:
-                # Fallback to entry_key (already in safe_group__safe_seq form;
-                # works when raw names contain no special chars).
-                seq_dir = crop_root / entry_key
-
-        # Fallback: pipeline-provided _source_dir attribute on the df.
-        if seq_dir is None or not seq_dir.is_dir():
-            source_dir = getattr(df, "_source_dir", None)
-            if source_dir is not None and Path(source_dir).is_dir():
-                seq_dir = Path(source_dir)
-
-        if seq_dir is None or not seq_dir.is_dir():
-            return frames
-
-        # Scan all frames_id* subdirectories in deterministic order.
-        cap = self.params.max_images_per_identity
-        for frames_subdir in sorted(seq_dir.glob("frames_id*")):
-            if not frames_subdir.is_dir():
-                continue
-            for img_path in sorted(frames_subdir.glob("frame_*.png")):
-                img = self._load_image(img_path)
-                if img is not None:
-                    frames.append(img)
-                    if len(frames) >= cap:
-                        return frames
-        return frames
-
-    def _scan_frames_from_df(self, df: pd.DataFrame) -> list[np.ndarray]:
-        """Fallback: scan for frame images from metadata in the DataFrame.
-
-        When the egocentric-crop output saved frames to disk, the run_root
-        path is typically stored as a ``_source_dir`` attribute on the df
-        or can be inferred from the pipeline.
-        """
-        frames: list[np.ndarray] = []
-
-        # Check for source directory attribute (set by the pipeline runner)
-        source_dir: Path | None = getattr(df, "_source_dir", None)
-        if source_dir is None:
-            # Try to infer from frame_path columns if present
-            return frames
-
-        if not source_dir.is_dir():
-            return frames
-
-        # Scan all frames_id* subdirectories
-        for frames_dir in sorted(source_dir.glob("frames_id*")):
-            if not frames_dir.is_dir():
-                continue
-            for img_path in sorted(frames_dir.glob("frame_*.png")):
-                img = self._load_image(img_path)
-                if img is not None:
-                    frames.append(img)
-                    if len(frames) >= self.params.max_images_per_identity:
-                        return frames
-
-        return frames
-
-    def _load_image(self, path: Path) -> np.ndarray | None:
-        """Load a single image and return as (H, W, C) uint8.
-
-        Handles grayscale and color based on ``channels`` param.
-        """
-        p = self.params
-        if p.channels == 1:
-            img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                return img[:, :, np.newaxis]
-        else:
-            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        return img

@@ -1,14 +1,19 @@
 """``import mosaic.behavior`` must not pull in PyTorch.
 
-``model_library/__init__.py`` imports both T-Rex identity modules eagerly, and
-``behavior/__init__.py`` imports ``model_library``. torch is an optional extra,
-so a top-level ``import torch`` anywhere under ``model_library`` would break
-every mosaic import -- not just the identity path -- for anyone without the
-``[identity]`` extra, and take the whole test suite with it.
+``behavior/__init__.py`` imports ``model_library``, and every network under it
+needs torch. torch is an optional extra, so a top-level ``import torch`` anywhere
+under ``model_library`` would break every mosaic import -- not just the identity
+path -- for anyone without the ``[identity]`` extra, and take the whole test
+suite with it.
 
-The modules keep torch behind a lazy ``_import_torch()`` and define their
-``nn.Module`` subclasses inside factory functions. That is easy to undo by
-accident while editing, and nothing else checks it, so this does.
+Two habits hold that line: torch stays behind a lazy ``import_torch()``, and
+every ``nn.Module`` subclass is defined inside a factory function. Both are easy
+to undo by accident while editing, and nothing else checks them, so this does.
+
+Each network module is imported by name rather than relying on
+``model_library/__init__.py`` to reach them, because it deliberately imports
+none of them -- so a module that started importing torch eagerly would go
+unnoticed here until something else imported it.
 """
 
 from __future__ import annotations
@@ -32,10 +37,11 @@ sys.meta_path.insert(0, NoTorch())
 
 import mosaic.behavior  # noqa: F401
 import mosaic.behavior.model_library  # noqa: F401
-from mosaic.behavior.model_library import (  # noqa: F401
-    TRexIdentityNetwork,
-    TRexV118_3IdentityNetwork,
-)
+import mosaic.behavior.model_library.dinov2_temporal_identity  # noqa: F401
+import mosaic.behavior.model_library.identity_classifier  # noqa: F401
+import mosaic.behavior.model_library.identity_common  # noqa: F401
+import mosaic.behavior.model_library.identity_embedding  # noqa: F401
+import mosaic.behavior.model_library.timm_backbone  # noqa: F401
 
 assert "torch" not in sys.modules, "torch was imported despite the block"
 print("OK")

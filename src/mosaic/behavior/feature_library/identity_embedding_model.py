@@ -2,7 +2,7 @@
 
 Sibling of
 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
-(V200) that uses any timm-resolvable image backbone as a frozen embedding
+that uses any timm-resolvable image backbone as a frozen embedding
 extractor and predicts identities by cosine-similarity k-NN against
 per-identity prototypes computed at fit time. Nothing is trained, so there is
 no per-animal training cycle -- ``fit()`` only computes prototypes.

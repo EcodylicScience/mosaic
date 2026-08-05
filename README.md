@@ -56,7 +56,7 @@ individually:
 | `pose`             | Ultralytics YOLO pose training and inference                                        |
 | `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
 | `localizer`        | PyTorch heatmap localizer training                                                  |
-| `identity`         | Frozen image-backbone identity models (timm backbones, DINOv2 + temporal); `torch` + `timm` |
+| `identity`         | Image-backbone identity models (trained classifier, frozen timm backbones, DINOv2 + temporal); `torch` + `timm` |
 | `lightning-action` | Lightning-Action temporal action classifier                                         |
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |

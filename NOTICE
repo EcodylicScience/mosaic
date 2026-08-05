@@ -38,18 +38,13 @@ what that user owes:
                  nothing is redistributed here, and the terms are the ones
                  the hub entry states at the moment of download.
 
-  reimplemented  An architecture or file format that mosaic implements from
-                 the upstream project's published description or source, so
-                 mosaic can read or write what that project reads and writes.
-                 No upstream code is copied. The attribution is owed anyway.
-
 Two components carry restrictions that the AGPL does not, and both are called
 out below: keypoint-MoSeq prohibits commercial use outright, and TRex requires
 a paid license for company use.
 
 
-TREX -- REIMPLEMENTED ARCHITECTURES, INVOKED PROGRAM, EXCHANGED FORMAT
-=====================================================================
+TREX -- INVOKED PROGRAM, EXCHANGED FORMAT
+========================================
 
 TRex. Copyright (C) Tristan Walter and contributors.
 https://trex.run/ -- https://github.com/mooch443/trex
@@ -62,26 +57,16 @@ Public License v3.
     project. Free use is available under AGPL v3 or later. Enquiries:
     a@trex.run
 
-Reimplemented. src/mosaic/behavior/model_library/ implements the layer
-layouts of TRex's visual identification networks -- the V200 and V118_3
-families of TRex's visual_identification_version setting -- so that mosaic
-can train weights TRex can load and load weights TRex has saved. These are
-independent PyTorch implementations of a published architecture, written
-against TRex's own Python sources under Application/src/tracker/python/,
-which are in the AGPL-licensed main tree rather than the GPL-3.0 commons
-subtree. Mosaic contains no TRex source code, and the modules import and run
-with TRex absent.
-
 Invoked. src/mosaic/tracking/trex/ drives the TRex binary in its own
 environment. Mosaic never links or bundles it.
 
 Format. src/mosaic/core/track_library/ reads TRex track exports. Reading a
 file format creates no license obligation.
 
-Obligation. A user who runs TRex -- to produce the tracks or the checkpoints
-these modules exchange -- obtains TRex from the TRex project and is bound by
-TRex's license, the commercial-use clause included. Nothing in mosaic's
-license grants or substitutes for that.
+Obligation. A user who runs TRex -- to produce the tracks these modules
+read -- obtains TRex from the TRex project and is bound by TRex's license,
+the commercial-use clause included. Nothing in mosaic's license grants or
+substitutes for that.
 
 Citation, owed as scholarly credit:
 

@@ -2,10 +2,9 @@
 
 Item 1.4: a feature whose ``fit()`` reads its input stream has the scope as its
 training set, so the scope must be in its identifier (P2f). Flipping the flag
-alone would make every new apply scope retrain a network, so the two features
-first gain a params-level pre-fitted ``model`` reference -- after which fit and
-apply are two runs with two identifiers, and only the training run carries a
-scope.
+alone would make every new apply scope retrain a network, so each feature first
+gains a params-level pre-fitted ``model`` reference -- after which fit and apply
+are two runs with two identifiers, and only the training run carries a scope.
 
 The exported weights are a torch ``.pth`` and an ``ArtifactSpec`` loads only
 npz / parquet / joblib, so the referencable artifact is a joblib sidecar naming
@@ -13,7 +12,7 @@ the checkpoint beside it. These tests pin that indirection, which is the part
 that can silently load the wrong file.
 
 ``torch`` is an optional extra and is not installed in CI, so the network
-classes are replaced with a recording stand-in. Both features import theirs
+classes are replaced with a recording stand-in. Every feature imports its own
 lazily inside ``load_state`` / ``save_state``, so patching the module attribute
 is enough.
 """
@@ -34,6 +33,9 @@ from mosaic.behavior.feature_library.dinov2_temporal_identity_model import (
 )
 from mosaic.behavior.feature_library.identity_embedding_model import (
     EmbeddingIdentityArtifact,
+)
+from mosaic.behavior.feature_library.identity_model import (
+    ClassifierIdentityArtifact,
 )
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import Scope
@@ -60,7 +62,7 @@ class ArtifactCase:
         bundle_name: Fixed filename of the joblib sidecar.
         weights_stem: Default ``weights_name`` param.
         pattern_of: Reads the artifact class's declared glob pattern. A
-            callable rather than the class itself, because the two artifact
+            callable rather than the class itself, because the artifact
             classes have no common annotation that survives strict variance
             checking.
     """
@@ -74,6 +76,14 @@ class ArtifactCase:
 
 
 ARTIFACT_CASES = (
+    ArtifactCase(
+        slug="global-identity-model",
+        module="mosaic.behavior.model_library.identity_classifier",
+        network_attr="ClassifierIdentityNetwork",
+        bundle_name="identity_classifier_model.joblib",
+        weights_stem="identity_classifier",
+        pattern_of=lambda: ClassifierIdentityArtifact().pattern,
+    ),
     ArtifactCase(
         slug="global-identity-embedding",
         module="mosaic.behavior.model_library.identity_embedding",
@@ -98,6 +108,11 @@ class RecordingNetwork:
 
     Records every checkpoint path it is asked to load, so a test can assert
     *which* file the sidecar resolved to without importing torch.
+
+    ``export_checkpoint`` takes ``class_labels`` because the classifier passes
+    it -- the head scores identities by index, so class order is the only link
+    back to the animals. The embedding models carry their names in the sidecar
+    instead and pass nothing, which is why it is optional here.
     """
 
     loaded: ClassVar[list[Path]] = []
@@ -107,7 +122,10 @@ class RecordingNetwork:
         cls.loaded.append(path)
         return cls()
 
-    def export_checkpoint(self, path: Path) -> Path:
+    def export_checkpoint(
+        self, path: Path, *, class_labels: list[str] | None = None
+    ) -> Path:
+        _ = class_labels
         path.parent.mkdir(parents=True, exist_ok=True)
         _ = path.write_bytes(b"fake-checkpoint")
         return path
@@ -164,10 +182,6 @@ def test_pre_fitted_model_defaults_to_none(case: ArtifactCase) -> None:
     ``GlobalModelParams`` enforces exactly-one-of ``templates``/``model`` and so
     raises on default construction. These features use plain ``Params`` for that
     reason, and the golden corpus builds every case with defaults.
-
-    ``global-identity-model`` is deliberately absent: it already declared
-    ``scope_dependent``, so giving it the same field would move a third
-    identifier for a reason unrelated to item 1.4. It is owed in M1.
     """
     assert build_feature(case.slug, CROP_INPUTS, None).params.model is None
 

@@ -8,6 +8,62 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — the identity model trains on a pretrained backbone
+
+**`global-identity-model` no longer builds a CNN from scratch.** It trained one
+from raw crops with no prior, and individual animal identity is exactly the
+regime where that loses: a few thousand egocentric crops per animal is far too
+little to learn general visual features from nothing, and the features it needs —
+markings, shape, texture — are ones an ImageNet-scale backbone already has. It
+now puts a linear classification head on a pretrained timm backbone and trains
+that instead, defaulting to the MIT-licensed
+`timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k` — the same starting point
+`global-identity-embedding` was already using to good effect without training at
+all.
+
+The backbone is frozen by default, so a fit is fast and cannot damage the
+pretrained representation. `freeze_backbone=False` fine-tunes end to end for
+datasets large enough to earn it. That choice also decides what a checkpoint
+holds: a frozen run stores the head alone and refetches the backbone by name, so
+the file is kilobytes rather than hundreds of megabytes.
+
+**The `V200` and `V118_3` architectures are deleted, and with them the ability to
+exchange identity checkpoints with T-Rex in either direction.** Mosaic can no
+longer export weights for `visual_identification_model_path`, nor read a
+checkpoint T-Rex saved. That interop was never safe to rely on: T-Rex picks its
+architecture from its own `visual_identification_version` setting rather than
+from the checkpoint, and loads with `strict=False` and merely warns, so every way
+of getting it wrong produced a randomly-initialised network and a log line
+instead of an error. Nothing else about the T-Rex integration changes —
+`mosaic track trex` still drives the binary, and the track converters still read
+its exports.
+
+**`global-identity-model` keeps its slug and is at `0.3`.** `predict()` still
+returns `(N, num_classes)` probabilities and the training history keeps its four
+keys, so anything reading either is unaffected. Gone from its params:
+`input_normalization`, `export_trex_weights` and `trex_weights_name`. New:
+`model_name`, `freeze_backbone`, and a pre-fitted `model` reference, which this
+was the only identity feature to lack — pinning one lets an inference run carry
+its training set by reference instead of retraining. `image_size` now defaults to
+`None`, following whatever the backbone declares, and `channels` to 3.
+
+**Existing `global-identity-model` runs do not carry forward.** The network
+changed outright, so a checkpoint written by `0.2` cannot be read by `0.3` at
+all; the version bump moves the `run_id` so a stale one is never adopted in
+place of a refit. Refit. The exported checkpoint is also deliberately no longer
+named `identity_model.pth`: that filename resolves against the `train-identity`
+model reference a T-Rex run reads, so under the old name a file this feature
+wrote could still be handed to T-Rex and fail the silent way described above. It
+is `identity_classifier.pth` now, which that reference cannot match.
+
+Shared backbone plumbing — model-id resolution, preprocessing, device selection —
+moved to `model_library/timm_backbone.py`, where the classifier, the embedding
+model and the DINOv2 temporal model all read it from one place, replacing three
+copies. The classification head's weights are now drawn from a seeded generator:
+`nn.Linear` initializes from torch's global RNG, which is unseeded, so two runs
+with identical params started from different weights and ended at different
+predictions while the `run_id` matched and the cache hit.
+
 ## Unreleased — the manifest says where the data comes from
 
 **`dataset.yaml` is at version 2, and declares its scan sources.** Roots were

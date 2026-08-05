@@ -13,13 +13,14 @@ backbone brings its own recipe with it rather than inheriting this module's
 assumptions.
 
 This is a sibling implementation to
-:class:`~mosaic.behavior.model_library.trex_identity_network.TRexIdentityNetwork`
-(V200), with two structural differences:
+:class:`~mosaic.behavior.model_library.identity_classifier.ClassifierIdentityNetwork`,
+with two structural differences:
 
 * Embedding-based: ``predict()`` returns k-NN probabilities over identities
   rather than classifier logits.
 * No training loop: ``fit()`` computes prototype embeddings; the backbone
-  itself is frozen and never updated.
+  itself is frozen and never updated. Reach for the classifier instead when
+  there are enough crops per animal to train a head on.
 
 Weights and licensing
 ---------------------
@@ -43,10 +44,9 @@ your license to comply with.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any, Final, TypeGuard
+from typing import Any, Final
 
 import numpy as np
 
@@ -54,45 +54,18 @@ from mosaic.behavior.model_library.identity_common import (
     compute_prototypes,
     knn_predict,
 )
-
-DEFAULT_MODEL_NAME: Final = "timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"
-"""The backbone loaded when ``model_name`` is not set.
-
-MIT-licensed, and the same Swin architecture MegaDescriptor fine-tuned, so
-naming ``BVRA/MegaDescriptor-L-384`` instead is a weights swap and nothing
-else. Changing this line is a licensing decision, not a tuning decision -- see
-the module docstring.
-"""
-
-IMAGENET_MEAN: Final[tuple[float, float, float]] = (0.485, 0.456, 0.406)
-IMAGENET_STD: Final[tuple[float, float, float]] = (0.229, 0.224, 0.225)
-
-
-@dataclass(frozen=True)
-class BackboneDataConfig:
-    """The input recipe a backbone declares for itself.
-
-    Attributes:
-        image_size: ``(height, width)`` the backbone expects.
-        mean: Per-channel normalization mean, in ``[0, 1]`` units.
-        std: Per-channel normalization standard deviation.
-    """
-
-    image_size: tuple[int, int]
-    mean: tuple[float, float, float]
-    std: tuple[float, float, float]
-
-
-FALLBACK_DATA_CONFIG: Final = BackboneDataConfig(
-    image_size=(384, 384), mean=IMAGENET_MEAN, std=IMAGENET_STD
+from mosaic.behavior.model_library.timm_backbone import (
+    DEFAULT_MODEL_NAME,
+    BackboneDataConfig,
+    data_config_from_metadata,
+    import_timm,
+    import_torch,
+    normalization_tensors,
+    preprocess_batch,
+    resolve_backbone_data_config,
+    resolve_device,
+    resolve_timm_model_id,
 )
-"""What to use when the backbone declares nothing.
-
-Deliberately identical to what this class hardcoded before resolution existed,
-so the no-information path is the previous behavior rather than a third one.
-"""
-
-_TIMM_SOURCE_PREFIXES: Final = ("hf-hub:", "hf_hub:", "local-dir:")
 
 CHECKPOINT_FORMAT_VERSION: Final = 2
 """Layout of the exported ``.pth``.
@@ -101,184 +74,6 @@ v2 records the resolved :class:`BackboneDataConfig` alongside the prototypes.
 v1 was written by ``global-identity-megadescriptor``, which asserted its
 preprocessing instead of recording it, so a v1 file cannot be replayed.
 """
-
-
-def _import_torch() -> Any:
-    """Lazily import torch with a helpful error message."""
-    try:
-        import torch
-    except ImportError:
-        raise ImportError(
-            "PyTorch is required for EmbeddingIdentityNetwork. "
-            "Install it with: pip install torch torchvision"
-        ) from None
-    return torch
-
-
-def _import_timm() -> Any:
-    """Lazily import timm with a helpful error message."""
-    try:
-        import timm
-    except ImportError:
-        raise ImportError(
-            "timm is required for EmbeddingIdentityNetwork. "
-            "Install it with: pip install timm"
-        ) from None
-    return timm
-
-
-def resolve_timm_model_id(model_name: str) -> str:
-    """The string ``timm.create_model`` should be handed for *model_name*.
-
-    Three spellings must all work, because all three are what a user copies:
-
-    * a bare timm architecture tag --
-      ``swin_large_patch4_window12_384.ms_in22k_ft_in1k`` -- resolved through
-      timm's own registry;
-    * a Hugging Face hub id -- ``BVRA/MegaDescriptor-L-384``, ``timm/swin_...``
-      -- which timm loads only under an explicit ``hf-hub:`` prefix;
-    * either of the above already carrying its prefix.
-
-    A hub id is exactly a name with an owner, so the ``/`` is the whole test.
-    ``timm/<tag>`` carries one and is a real hub repository, so it takes the
-    hub path and resolves to the same weights the bare tag does.
-
-    Args:
-        model_name: Architecture tag, hub id, or already-prefixed source.
-
-    Returns:
-        The identifier to hand ``timm.create_model``.
-    """
-    if model_name.startswith(_TIMM_SOURCE_PREFIXES):
-        return model_name
-    if "/" in model_name:
-        return f"hf-hub:{model_name}"
-    return model_name
-
-
-def _is_object_sequence(value: object) -> TypeGuard[Sequence[object]]:
-    """Whether *value* is a sequence whose items may be read as objects.
-
-    Strings and bytes are sequences and would iterate into characters, so they
-    are excluded. Every other ``Sequence`` yields items that are at least
-    ``object``, which is all any caller here needs.
-    """
-    return not isinstance(value, (str, bytes)) and isinstance(value, Sequence)
-
-
-def _is_string_keyed_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
-    """Whether *value* may be read as a mapping from string keys to objects.
-
-    The key type is asserted rather than checked: every caller reads through
-    ``.get()`` with a string literal, which returns the default on a mapping
-    keyed some other way rather than failing.
-    """
-    return isinstance(value, Mapping)
-
-
-def _as_sequence(value: object) -> Sequence[object] | None:
-    """*value* as a non-string sequence, or None if it is not one."""
-    return value if _is_object_sequence(value) else None
-
-
-def _triple(value: object) -> tuple[float, float, float] | None:
-    """The three floats in *value*, or None if it does not hold exactly three."""
-    items = _as_sequence(value)
-    if items is None or len(items) != 3:
-        return None
-    numbers: list[float] = []
-    for item in items:
-        if isinstance(item, bool) or not isinstance(item, (int, float)):
-            return None
-        numbers.append(float(item))
-    return (numbers[0], numbers[1], numbers[2])
-
-
-def _pair_of_ints(value: object) -> tuple[int, int] | None:
-    """The two ints in *value*, or None if it does not hold exactly two."""
-    items = _as_sequence(value)
-    if items is None or len(items) != 2:
-        return None
-    sizes: list[int] = []
-    for item in items:
-        if isinstance(item, bool) or not isinstance(item, int):
-            return None
-        sizes.append(item)
-    return (sizes[0], sizes[1])
-
-
-def _hw_from_input_size(value: object) -> tuple[int, int] | None:
-    """``(height, width)`` from a timm ``input_size``, or None if malformed.
-
-    timm spells it ``(channels, height, width)``, so the leading channel count
-    is dropped.
-    """
-    items = _as_sequence(value)
-    if items is None or len(items) != 3:
-        return None
-    return _pair_of_ints(items[1:])
-
-
-def data_config_from_mapping(raw: Mapping[str, object]) -> BackboneDataConfig:
-    """Read a timm data config, falling back per key rather than wholesale.
-
-    A partial ``pretrained_cfg`` is a real shape -- a repository may declare
-    ``mean`` and ``std`` and omit ``input_size`` -- so a missing or malformed
-    key takes the fallback for that key alone and leaves the rest resolved.
-
-    Args:
-        raw: A ``timm.data.resolve_model_data_config`` result, or any mapping
-            spelled the same way.
-
-    Returns:
-        The resolved config, with :data:`FALLBACK_DATA_CONFIG` supplying every
-        key *raw* did not answer.
-    """
-    image_size = _hw_from_input_size(raw.get("input_size"))
-    mean = _triple(raw.get("mean"))
-    std = _triple(raw.get("std"))
-    return BackboneDataConfig(
-        image_size=image_size or FALLBACK_DATA_CONFIG.image_size,
-        mean=mean or FALLBACK_DATA_CONFIG.mean,
-        std=std or FALLBACK_DATA_CONFIG.std,
-    )
-
-
-def resolve_backbone_data_config(backbone: object) -> BackboneDataConfig:
-    """The config *backbone* declares, or the fallback if it declares none.
-
-    ``timm.data.resolve_model_data_config`` reads ``model.pretrained_cfg``,
-    which timm's hub loader populates from the repository's ``config.json``. A
-    model carrying no such config -- a locally defined architecture, say -- has
-    nothing to read, and that check happens before timm is imported, so the
-    fallback path costs no import.
-
-    Args:
-        backbone: A constructed timm model.
-
-    Returns:
-        The backbone's declared input size and normalization statistics.
-    """
-    declared: object = getattr(backbone, "pretrained_cfg", None)
-    if not _is_string_keyed_mapping(declared) or not declared:
-        return FALLBACK_DATA_CONFIG
-    timm = _import_timm()
-    resolved: object = timm.data.resolve_model_data_config(backbone)
-    if not _is_string_keyed_mapping(resolved):
-        return FALLBACK_DATA_CONFIG
-    return data_config_from_mapping(resolved)
-
-
-def data_config_from_metadata(stored: object) -> BackboneDataConfig | None:
-    """A checkpoint's recorded recipe, or None if it recorded none usable."""
-    if not _is_string_keyed_mapping(stored):
-        return None
-    image_size = _pair_of_ints(stored.get("image_size"))
-    mean = _triple(stored.get("mean"))
-    std = _triple(stored.get("std"))
-    if image_size is None or mean is None or std is None:
-        return None
-    return BackboneDataConfig(image_size=image_size, mean=mean, std=std)
 
 
 class EmbeddingIdentityNetwork:
@@ -307,10 +102,10 @@ class EmbeddingIdentityNetwork:
         data_config: BackboneDataConfig | None = None,
     ) -> None:
         self.model_name = model_name
-        self._device: Any = self._resolve_device(device)
+        self._device: Any = resolve_device(device)
 
-        timm = _import_timm()
-        torch = _import_torch()
+        timm = import_timm()
+        torch = import_torch()
 
         backbone = timm.create_model(
             resolve_timm_model_id(model_name),
@@ -328,13 +123,7 @@ class EmbeddingIdentityNetwork:
         self._data_config: BackboneDataConfig = resolved
         self.image_size: tuple[int, int] = resolved.image_size
 
-        # CPU, not device: _preprocess runs entirely on CPU tensors and embed()
-        # moves each batch afterwards. Building these on the device meant every
-        # call pulled them back, a host round-trip per batch.
-        self._mean = torch.tensor(resolved.mean, dtype=torch.float32).reshape(
-            1, 3, 1, 1
-        )
-        self._std = torch.tensor(resolved.std, dtype=torch.float32).reshape(1, 3, 1, 1)
+        self._mean, self._std = normalization_tensors(resolved)
 
         # A real self-check, not incidental: a backbone declaring
         # ``fixed_input_size`` raises here rather than at the first real batch
@@ -368,7 +157,7 @@ class EmbeddingIdentityNetwork:
         Returns:
             ``(N, embedding_dim)`` float32 array.
         """
-        torch = _import_torch()
+        torch = import_torch()
 
         x = self._preprocess(images)
         out: list[np.ndarray] = []
@@ -392,9 +181,9 @@ class EmbeddingIdentityNetwork:
     ) -> dict[str, list[float]]:
         """Compute per-identity prototype embeddings.
 
-        Mirrors the V200 ``fit()`` signature so the feature plugin can
-        delegate to either model identically. There is no training loop --
-        this is a one-pass embedding + mean-pool.
+        Mirrors the trained classifier's ``fit()`` signature so the feature
+        plugin can delegate to either model identically. There is no
+        training loop -- this is a one-pass embedding + mean-pool.
 
         Args:
             images: ``(N, H, W, C)`` uint8 training crops.
@@ -406,7 +195,8 @@ class EmbeddingIdentityNetwork:
             batch_size: Embedding batch size.
 
         Returns:
-            History dict matching V200's keys (single-entry lists since
+            History dict matching the trained classifier's keys (single-entry
+            lists since
             there's no epoch loop).
         """
         if num_classes is None:
@@ -465,9 +255,9 @@ class EmbeddingIdentityNetwork:
     def export_checkpoint(self, path: Path) -> Path:
         """Save prototypes + config to a ``.pth`` file.
 
-        Unlike :meth:`TRexIdentityNetwork.export_trex_checkpoint`, this is
-        not a T-Rex-loadable checkpoint -- it stores the prototype matrix
-        and minimal config needed to reconstruct the network and predict.
+        Stores the prototype matrix and the minimal config needed to
+        reconstruct the network and predict; the backbone itself is refetched
+        by name, never written here.
 
         The resolved preprocessing recipe travels with it, so a reload
         reproduces the numbers this fit produced even if the backbone's
@@ -479,7 +269,7 @@ class EmbeddingIdentityNetwork:
         Returns:
             The resolved path the checkpoint was saved to.
         """
-        torch = _import_torch()
+        torch = import_torch()
         if self._prototypes is None:
             msg = "[identity-embedding] No prototypes to export; call fit() first."
             raise RuntimeError(msg)
@@ -522,7 +312,7 @@ class EmbeddingIdentityNetwork:
             ValueError: If the file is not
                 :data:`CHECKPOINT_FORMAT_VERSION`.
         """
-        torch = _import_torch()
+        torch = import_torch()
         path = Path(path)
         if not path.suffix:
             path = path.with_suffix(".pth")
@@ -553,45 +343,5 @@ class EmbeddingIdentityNetwork:
     # --- Internal ---
 
     def _preprocess(self, images: np.ndarray) -> Any:
-        """Convert ``(N, H, W, C)`` uint8 to normalized ``(N, 3, H', W')`` tensor.
-
-        The backbone's declared ``interpolation`` and ``crop_pct`` are
-        deliberately not honored. Those describe timm's evaluation transform
-        for a *full image* being center-cropped; the input here is already a
-        tight egocentric crop, so a 0.9 crop ratio would discard the border a
-        discriminative marking may sit in. Only the input size and the
-        normalization statistics follow the backbone.
-        """
-        torch = _import_torch()
-
-        if images.ndim != 4:
-            msg = f"[identity-embedding] expected (N, H, W, C), got {images.shape}"
-            raise ValueError(msg)
-        if images.shape[-1] == 1:
-            images = np.repeat(images, 3, axis=-1)
-        elif images.shape[-1] != 3:
-            msg = (
-                f"[identity-embedding] expected 1 or 3 channels, got {images.shape[-1]}"
-            )
-            raise ValueError(msg)
-
-        x = torch.from_numpy(images).permute(0, 3, 1, 2).float() / 255.0
-
-        target_h, target_w = self.image_size
-        if x.shape[-2] != target_h or x.shape[-1] != target_w:
-            x = torch.nn.functional.interpolate(
-                x, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
-
-        return (x - self._mean) / self._std
-
-    @staticmethod
-    def _resolve_device(device: str) -> Any:
-        torch = _import_torch()
-        if device != "auto":
-            return torch.device(device)
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
+        """Convert ``(N, H, W, C)`` uint8 to a normalized ``(N, 3, H', W')`` tensor."""
+        return preprocess_batch(images, self.image_size, self._mean, self._std)

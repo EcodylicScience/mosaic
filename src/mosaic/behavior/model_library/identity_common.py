@@ -1,20 +1,18 @@
-"""Shared helpers for embedding-based identity models.
+"""Shared helpers for the identity models.
 
-The V200 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
-keeps its crop-loading and label-mapping logic as private methods. The
-embedding-based identity plugins (a frozen image backbone, DINOv2 + temporal) reuse
-the same pattern, so the relevant logic is lifted here and shared.
+Every identity feature reads the same inputs -- egocentric crops on disk,
+grouped into identities by which sequences hold which animal alone -- so the
+label mapping and the crop loading live here rather than in each of them.
 
-Two extra utilities are provided that V200 doesn't need:
+Two further utilities serve only the models that decide identity by nearest
+neighbor rather than by a trained classifier:
 
 * :func:`compute_prototypes` -- mean-pool L2-normalized embeddings per
   identity to produce a per-class prototype matrix.
-* :func:`knn_predict` -- cosine-similarity k-NN against prototypes,
-  returned as a softmax over identities so the output shape matches V200's
-  ``(N, num_classes)`` probability convention.
-
-V200 itself is intentionally left untouched; these helpers are only used by
-the new plugins.
+* :func:`knn_predict` -- cosine-similarity k-NN against prototypes, returned as
+  a softmax over identities so the output shape matches the trained
+  classifier's ``(N, num_classes)`` probability convention. That shared shape is
+  what lets a caller swap one identity model for another.
 """
 
 from __future__ import annotations
@@ -43,11 +41,10 @@ def build_label_mapping(
 ) -> tuple[dict[str, int], list[str]]:
     """Build a mapping from pipeline ``entry_key`` to integer label.
 
-    Mirrors ``GlobalIdentityModel._build_label_mapping``: users specify
-    ``identities`` as ``{"name": ["group/sequence", ...]}`` (readable form),
-    but the InputStream yields canonical ``entry_key = make_entry_key(group,
-    sequence)``. We translate every key into the canonical form before
-    storing.
+    Users specify ``identities`` as ``{"name": ["group/sequence", ...]}``
+    (readable form), but the InputStream yields canonical
+    ``entry_key = make_entry_key(group, sequence)``. Every key is translated
+    into the canonical form before storing.
 
     Args:
         params: Feature params object exposing ``identities`` and
@@ -282,7 +279,7 @@ def knn_predict(
     L2-normalizes ``embeddings`` (prototypes are assumed already unit-norm),
     computes cosine similarity, and softmaxes with the given temperature
     so the result is a proper probability distribution over identities --
-    matching V200's ``predict()`` output shape.
+    matching the trained classifier's ``predict()`` output shape.
 
     Args:
         embeddings: ``(N, D)`` query embeddings.

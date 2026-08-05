@@ -82,12 +82,13 @@ jobs:
         # reports green while running less than this workflow installs for.
         run: uv run --no-sync pytest -q
 
-  # The T-Rex checkpoint tests need torch, a ~200 MB wheel that nothing else in
-  # the suite requires. Its own job keeps `test` fast while still making those
-  # tests real evidence: `pytest.importorskip("torch")` would otherwise skip
-  # them green, and they are the only guard on mosaic's identity checkpoints
-  # staying loadable by T-Rex -- which loads `strict=False` and merely warns, so
-  # a mismatch there is a randomly-initialised network, not an error.
+  # The identity tests need torch and timm, ~200 MB of wheels that nothing else
+  # in the suite requires. Their own job keeps `test` fast while still making
+  # them real evidence: `pytest.importorskip` would otherwise skip them green,
+  # and they are the only guard on a checkpoint still loading into the network
+  # that wrote it. A frozen-backbone checkpoint stores the head alone, so a
+  # reload that tolerated missing weights would yield a random backbone --
+  # which predicts happily and is wrong.
   identity:
     runs-on: ubuntu-latest
     steps:
@@ -124,9 +125,12 @@ jobs:
           PYTHONHASHSEED: random
           # Promotes a missing torch from "skip" to "broken environment".
           MOSAIC_CI_IDENTITY: "1"
+        # `-m "slow or not slow"` because the tests that construct a real
+        # backbone are slow-marked, and those are the ones this job exists for.
         run: |
-          uv run --no-sync pytest -q \
-            tests/test_trex_checkpoint_interop.py \
+          uv run --no-sync pytest -q -m "slow or not slow" \
+            tests/test_identity_classifier.py \
+            tests/test_identity_embedding_backbone.py \
             tests/test_behavior_import_is_torch_free.py \
             tests/test_identity_model_artifact.py \
             tests/test_identity_golden.py
