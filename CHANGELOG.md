@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased — the identity model trains on a pretrained backbone
+### 0.11.0
 
 **`global-identity-model` no longer builds a CNN from scratch.** It trained one
 from raw crops with no prior, and individual animal identity is exactly the
@@ -64,7 +64,7 @@ copies. The classification head's weights are now drawn from a seeded generator:
 with identical params started from different weights and ended at different
 predictions while the `run_id` matched and the cache hit.
 
-## Unreleased — the manifest says where the data comes from
+###  The manifest says where the data comes from
 
 **`dataset.yaml` is at version 2, and declares its scan sources.** Roots were
 pinned inside the dataset so that every `index.csv` travels with it; the
@@ -108,7 +108,7 @@ individual tags. The library entry points `index_media`, `index_tracks_raw` and
 mosaic-api and mosaic-queue need no change: the whole `Dataset` surface either
 uses is methods, and all of them are unchanged.
 
-## Unreleased — a blank group stops being the word "nan"
+### A blank group stops being the word "nan"
 
 **A dataset with no group converted its tables under one.** `convert_all_tracks`
 read `tracks_raw/index.csv` with a bare `pd.read_csv`, so an empty `group` cell
