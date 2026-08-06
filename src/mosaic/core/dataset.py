@@ -28,6 +28,7 @@ from typing import (
 import numpy as np
 import pandas as pd
 from mosaic_media import (
+    VIDEO_EXTENSIONS,
     MediaFacts,
     MediaProbeError,
 )
@@ -3842,7 +3843,8 @@ class Dataset:
 
         Matches on direct ``(group, sequence)``, then safe-name, then a
         case-insensitive comparison against each row's own ``sequence`` cell,
-        which also accepts the request carrying a trailing extension. That last
+        which also accepts the request carrying a media extension the entry's
+        own name lacks (``VIDEO_EXTENSIONS``, and no other suffix). That last
         tier reads identity cells like the two above it and never a row's
         filename, so an entry is matched whole -- every file of a multi-file
         recording -- and never through a file that happens to be named for a
@@ -3888,7 +3890,7 @@ class Dataset:
             # unrelated sequence, and would answer with the single chunk whose
             # name fits rather than the whole of a multi-file recording. What is
             # bridged here is the request differing from an entry's own name by
-            # case or by a trailing extension, which is all the exact and
+            # case or by a media extension, which is all the exact and
             # safe-name tiers above miss. Every comparison is a string equality,
             # so a request holding regex metacharacters is matched literally
             # rather than compiled as a pattern.
@@ -3897,15 +3899,26 @@ class Dataset:
                 # An empty sequence names no entry; left to compare it would
                 # answer for every row that shares its emptiness.
                 return None
-            stem = Path(wanted).stem
+            # Only a media extension is stripped, never whatever follows the
+            # last dot: entry names carry dots routinely ("cam1.left",
+            # "session.v2"), so stripping any suffix would let "trial.1" answer
+            # with entry "trial"'s media -- the same wrong-entry fault one suffix
+            # further in. VIDEO_EXTENSIONS is the set the probe itself reads, so
+            # a raw elementary stream is bridged like any container; ".264" and
+            # ".265" belong to it, and a request ending in one is read as such a
+            # stream rather than as a numbered name. The suffix is sliced off
+            # rather than taken as Path.stem, which would also discard leading
+            # directories and let "sub/trial.mp4" answer with entry "trial".
+            suffix = Path(wanted).suffix
+            bare = wanted[: -len(suffix)] if suffix in VIDEO_EXTENSIONS else wanted
             row_sequences = [str(value).casefold() for value in df["sequence"]]
             candidates = df[
                 pd.Series(
-                    [value in (wanted, stem) for value in row_sequences],
+                    [value in (wanted, bare) for value in row_sequences],
                     index=df.index,
                 )
             ]
-            # A request naming a group keeps the fallback inside it: what this
+            # A request naming a group keeps this tier inside it: what it
             # tier bridges are differences within an entry, never across two. An
             # empty group asks for no particular namespace and matches any. The
             # comparison is case-insensitive like the one above, so the tier
@@ -3936,10 +3949,10 @@ class Dataset:
                     for entry_group, entry_sequence in sorted(entries)
                 )
                 raise AmbiguousMediaMatchError(
-                    f"sequence {sequence!r} has no media-index row of its own, "
-                    f"and matches {len(entries)} entries {spelled}; give it a "
-                    f"row of its own, or resolve one of those entries by its "
-                    f"own (group, sequence)"
+                    f"({group!r}, {sequence!r}) has no media-index row of its "
+                    f"own, and matches {len(entries)} entries {spelled}; give "
+                    f"the pair a row of its own, or resolve one of those "
+                    f"entries by its own (group, sequence)"
                 )
             matched = candidates
 

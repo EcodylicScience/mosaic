@@ -151,10 +151,15 @@ regex-enabled -- `clip.a` matched `clipXa.mp4`, and an unbalanced bracket raised
 `re.PatternError`.
 
 That tier now compares the request against each row's own `sequence` cell,
-case-insensitively and tolerating a trailing extension. Matching identity rather
-than filenames matches an entry whole: a request landing on a multi-file
-recording resolves every file in `video_order` rather than the one chunk whose
-name fitted, and naming a chunk's filename resolves nothing.
+case-insensitively, and tolerates the request carrying a media extension the
+entry's own name lacks. Only a real one is stripped, from `VIDEO_EXTENSIONS`, so
+`trial.1` no longer answers with entry `trial` -- entry names carry dots
+routinely, and `cam1.left` names a recording rather than a suffixed `cam1`. A
+dataset holding files outside that set no longer bridges a request written as
+such a filename; it reports no match instead of the wrong entry. Matching
+identity rather than filenames also matches an entry whole: a request landing on
+a multi-file recording resolves every file in `video_order` rather than the one
+chunk whose name fitted, and naming a chunk's filename resolves nothing.
 
 **Where it used to guess, it now raises `AmbiguousMediaMatchError`.** Two groups
 holding a sequence of the same name, asked for without a group, previously

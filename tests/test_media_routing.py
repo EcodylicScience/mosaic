@@ -301,9 +301,72 @@ def test_a_sequence_name_holding_a_regex_metacharacter_reports_no_match(
         ds.match_media_rows("", "clip(1")
 
 
+@pytest.mark.parametrize(
+    ("requested", "resolves"),
+    [
+        ("trial", True),
+        ("TRIAL", True),
+        ("trial.mp4", True),
+        ("trial.avi", True),
+        ("trial.1", False),
+        ("trial.v2", False),
+        ("trial_a", False),
+        ("trial.mp4.mp4", False),
+        ("trial.", False),
+        ("sub/trial.mp4", False),
+    ],
+)
+def test_only_a_media_extension_is_stripped_from_a_request(
+    tmp_path: Path, requested: str, resolves: bool
+):
+    """The tier bridges a request that carries a media extension the entry's own
+    name lacks. A dotted suffix that is not one -- ``trial.1`` beside an entry
+    ``trial`` -- names a different recording, and entry names carrying dots are
+    ordinary: ``cam1.left`` and ``session.v2`` are real.
+
+    Exactly one extension goes, and only from the end of the whole request: a
+    second one, a bare trailing dot, and a leading directory all leave a name
+    that is not the entry's. Which extension it is is deliberately not checked
+    against the row's own file, so a caller naming a derivative's ``.mp4`` still
+    reaches an entry whose original is raw ``.h264``.
+    """
+    ds = _make_dataset(tmp_path)
+    original = tmp_path / "media_raw" / "trial.mp4"
+    _write_mp4(original, nframes=6)
+    _write_index(
+        tmp_path / "media_raw" / "index.csv",
+        [_row(group="", sequence="trial", abs_path=original)],
+    )
+
+    if resolves:
+        assert list(ds.match_media_rows("", requested)["sequence"]) == ["trial"]
+    else:
+        with pytest.raises(FileNotFoundError):
+            _ = ds.match_media_rows("", requested)
+
+
+def test_an_entry_whose_own_name_ends_in_an_extension_matches_it_whole(
+    tmp_path: Path,
+):
+    """An entry may be named ``trial.MP4``. Nothing above this tier reaches it
+    from ``trial.mp4`` -- the exact tier is case-sensitive and so are safe
+    names -- and stripping the extension leaves ``trial``, which is a different
+    entry. Only comparing the request whole, alongside the stripped form,
+    resolves it."""
+    ds = _make_dataset(tmp_path)
+    original = tmp_path / "media_raw" / "recording.mp4"
+    _write_mp4(original, nframes=6)
+    _write_index(
+        tmp_path / "media_raw" / "index.csv",
+        [_row(group="", sequence="trial.MP4", abs_path=original)],
+    )
+
+    assert list(ds.match_media_rows("", "trial.mp4")["sequence"]) == ["trial.MP4"]
+
+
 def test_a_sequence_named_for_its_file_still_matches_that_row(tmp_path: Path):
-    """The shape the filename fallback exists for: a request carrying the file
-    name where the row records the stem. Narrowing the fallback must keep it."""
+    """A request carrying a file name where the row records the bare entry name.
+    Narrowing this tier must keep it."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     _write_mp4(original, nframes=6)
