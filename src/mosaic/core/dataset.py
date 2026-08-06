@@ -485,6 +485,22 @@ class ProbedEntry:
     origin: MeasurementOrigin = "probed"
 
 
+class AmbiguousMediaMatchError(MediaProbeError):
+    """A sequence with no index row of its own matched several entries.
+
+    Raised by the last matching tier in :meth:`Dataset._match_media_rows` when the
+    rows it matches belong to more than one ``(group, sequence)`` -- two groups
+    holding a sequence of the same name, asked for without a group. Returning
+    either would bind the request to one group's media on no evidence, and
+    returning both would concatenate unrelated recordings into one timeline.
+
+    A subclass of :class:`~mosaic_media.MediaProbeError` so a caller resolving
+    many entries -- a migration reporting faults per entry rather than aborting --
+    can vent it per entry and keep going, alongside the transcode and measurement
+    faults that resolution already raises as that type.
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedMedia:
     """Resolved media file paths for one (group, sequence), plus stored facts.
@@ -3824,12 +3840,24 @@ class Dataset:
     ) -> "pd.DataFrame | None":
         """Return the media-index rows for (group, sequence), video_order-sorted.
 
-        Matches in the same order as the historical resolver: direct
-        (group, sequence), then safe-name, then a filename-stem substring
-        fallback. When *camera* is given, the matched rows are further filtered
-        to that camera (``""`` selects the blank-camera rows), and an empty
-        result after that filter returns ``None``. Returns ``None`` when nothing
-        matches.
+        Matches on direct ``(group, sequence)``, then safe-name, then a
+        case-insensitive comparison against each row's own ``sequence`` cell,
+        which also accepts the request carrying a trailing extension. That last
+        tier reads identity cells like the two above it and never a row's
+        filename, so an entry is matched whole -- every file of a multi-file
+        recording -- and never through a file that happens to be named for a
+        different sequence. A non-empty *group* narrows it to that group,
+        case-insensitively; an empty *group* names no namespace and admits any.
+        With more than one entry still standing after that narrowing, the tier
+        refuses rather than choosing. An empty *sequence* matches nothing there.
+
+        When *camera* is given, the matched rows are further filtered to that
+        camera (``""`` selects the blank-camera rows), and an empty result after
+        that filter returns ``None``. Returns ``None`` when nothing matches.
+
+        Raises:
+            AmbiguousMediaMatchError: If the sequence-cell tier leaves rows of
+                more than one ``(group, sequence)`` standing.
         """
         # Untyped so the pandas ``df[mask]`` (Series | DataFrame in the stubs)
         # widens by inference rather than tripping a declared-type mismatch, as
@@ -3854,19 +3882,75 @@ class Dataset:
                 matched = df_match
 
         if matched is None:
-            stem = Path(sequence).name.lower()
-            df = df.copy()
-            df["name_lower"] = df["name"].astype(str).str.lower()
-            candidates = df[df["name_lower"].str.contains(stem, na=False)]
+            # Compared against the row's own ``sequence`` cell, never its
+            # ``name``: a filename is not an identity -- entry "session1" may
+            # hold "trial.mp4" -- so matching the file would answer for an
+            # unrelated sequence, and would answer with the single chunk whose
+            # name fits rather than the whole of a multi-file recording. What is
+            # bridged here is the request differing from an entry's own name by
+            # case or by a trailing extension, which is all the exact and
+            # safe-name tiers above miss. Every comparison is a string equality,
+            # so a request holding regex metacharacters is matched literally
+            # rather than compiled as a pattern.
+            wanted = sequence.casefold()
+            if not wanted:
+                # An empty sequence names no entry; left to compare it would
+                # answer for every row that shares its emptiness.
+                return None
+            stem = Path(wanted).stem
+            row_sequences = [str(value).casefold() for value in df["sequence"]]
+            candidates = df[
+                pd.Series(
+                    [value in (wanted, stem) for value in row_sequences],
+                    index=df.index,
+                )
+            ]
+            # A request naming a group keeps the fallback inside it: what this
+            # tier bridges are differences within an entry, never across two. An
+            # empty group asks for no particular namespace and matches any. The
+            # comparison is case-insensitive like the one above, so the tier
+            # bridges case on both axes rather than only one.
+            if group:
+                wanted_group = str(group).casefold()
+                candidates = candidates[
+                    pd.Series(
+                        [
+                            str(value).casefold() == wanted_group
+                            for value in candidates["group"]
+                        ],
+                        index=candidates.index,
+                    )
+                ]
             if candidates.empty:
                 return None
+            entries = {
+                (str(row_group), str(row_sequence))
+                for row_group, row_sequence in zip(
+                    candidates["group"].fillna(""),
+                    candidates["sequence"].fillna(""),
+                )
+            }
+            if len(entries) > 1:
+                spelled = ", ".join(
+                    f"({entry_group!r}, {entry_sequence!r})"
+                    for entry_group, entry_sequence in sorted(entries)
+                )
+                raise AmbiguousMediaMatchError(
+                    f"sequence {sequence!r} has no media-index row of its own, "
+                    f"and matches {len(entries)} entries {spelled}; give it a "
+                    f"row of its own, or resolve one of those entries by its "
+                    f"own (group, sequence)"
+                )
             matched = candidates
 
         if camera is not None:
             matched = matched[matched["camera"].fillna("") == camera]
             if matched.empty:
                 return None
-        return matched.sort_values("video_order")
+        # Stable, so rows tied on video_order -- every row of an index that
+        # predates the column, which reads back as all-zero -- keep the index's
+        # order instead of pandas' default quicksort permuting them per run.
+        return matched.sort_values("video_order", kind="stable")
 
     def _load_media_index(self, index_filename: str = "index.csv") -> "pd.DataFrame":
         """Read and normalize the originals media index for scoped resolution.
@@ -3919,14 +4003,16 @@ class Dataset:
         """Return the originals-index rows for (group, sequence), video_order-sorted.
 
         Reads the originals index (:meth:`resolve_media_root`) and matches by
-        direct ``(group, sequence)``, then safe-name, then filename-stem
-        substring -- **without** applying transcode-verdict routing (unlike
-        :meth:`resolve_media`). *camera*, when given, further restricts the match
-        to one camera of a multi-camera recording. The transcode job needs the
-        originals, not their derivatives.
+        direct ``(group, sequence)``, then safe-name, then the row's own
+        ``sequence`` cell case-insensitively -- **without** applying
+        transcode-verdict routing (unlike :meth:`resolve_media`). *camera*, when
+        given, further restricts the match to one camera of a multi-camera
+        recording. The transcode job needs the originals, not their derivatives.
 
         Raises:
             FileNotFoundError: If the index is missing/empty or no row matches.
+            AmbiguousMediaMatchError: If the last tier leaves rows of more than
+                one ``(group, sequence)`` standing.
         """
         df = self._load_media_index(index_filename)
         if df.empty:
@@ -4123,6 +4209,8 @@ class Dataset:
                 a derivative's file/facts cannot be found, a matched row's
                 stored measurement cannot be reconstructed, or *camera* is
                 ``None`` while the sequence spans more than one camera.
+            AmbiguousMediaMatchError: If the last matching tier leaves rows of
+                more than one ``(group, sequence)`` standing.
         """
         matched = self.match_media_rows(group, sequence, camera, index_filename)
         if camera is None:

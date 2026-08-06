@@ -140,6 +140,29 @@ individual tags. The library entry points `index_media`, `index_tracks_raw` and
 mosaic-api and mosaic-queue need no change: the whole `Dataset` surface either
 uses is methods, and all of them are unchanged.
 
+### A sequence stops resolving another sequence's media
+
+**`resolve_media` matched a request against the media index's *filenames*, so a
+sequence with no row of its own answered with another entry's video.** The last
+matching tier tested containment against a row's `name` cell: an index holding
+one row named `clip_a.mp4` resolved the sequence `clip` to it, registering one
+sequence's extracted frames against another's recording. The test was also
+regex-enabled -- `clip.a` matched `clipXa.mp4`, and an unbalanced bracket raised
+`re.PatternError`.
+
+That tier now compares the request against each row's own `sequence` cell,
+case-insensitively and tolerating a trailing extension. Matching identity rather
+than filenames matches an entry whole: a request landing on a multi-file
+recording resolves every file in `video_order` rather than the one chunk whose
+name fitted, and naming a chunk's filename resolves nothing.
+
+**Where it used to guess, it now raises `AmbiguousMediaMatchError`.** Two groups
+holding a sequence of the same name, asked for without a group, previously
+concatenated both groups' media into one timeline; passing the group resolves it
+as before. The exception subclasses `MediaProbeError`, so a caller that already
+reports resolution faults per entry keeps going; one that re-resolves inside its
+own handler must catch it there.
+
 ### A blank group stops being the word "nan"
 
 **A dataset with no group converted its tables under one.** `convert_all_tracks`

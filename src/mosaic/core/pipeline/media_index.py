@@ -358,8 +358,9 @@ def media_members_from_rows(
 
     Grouped on the exact ``(group, sequence)`` cells, the way
     ``resolve_media_scope`` groups, and never through ``_match_media_rows``,
-    whose third fallback is a lowercased substring match on ``name``: a substring
-    match would put one sequence's video into another's composition.
+    whose last tier answers case-insensitively for a sequence carrying no row of
+    its own: a composition is built from the rows an entry actually has, so a
+    match reached by that tier has nothing to contribute here.
 
     ``video_uuid`` is read through :func:`media_row_uuid`, which collapses ``""``,
     the string ``"nan"`` and a float NaN to one absent form. A raw cell read would
