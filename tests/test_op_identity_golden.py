@@ -91,6 +91,10 @@ from mosaic.tracking.ops.infer import infer_run_id
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+from mosaic.tracking.ultralytics_track.version import (
+    ULTRALYTICS_KIND,
+    ULTRALYTICS_VERSION,
+)
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "op_identity_golden.json"
 UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
@@ -545,6 +549,77 @@ def _frames_run_id_revised() -> str:
     return frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
 
 
+def _ultralytics_settings_case() -> dict[str, object]:
+    """The one settings dict both Ultralytics golden cases are built from.
+
+    Shared rather than spelled twice, so the run-identifier case and the tracks
+    variant case are provably one payload -- which is the property the two are
+    there to pin.
+    """
+    from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_settings
+    from mosaic.tracking.ultralytics_track.tracker_defaults import (
+        resolve_tracker_config,
+    )
+
+    return ultralytics_settings(
+        model_id="0123456789abcdef",
+        task="pose",
+        tracker="botsort",
+        # Built rather than spelled as a literal, so this pins the merge and the
+        # declared defaults as well as the key set.
+        tracker_config=resolve_tracker_config("botsort", {"track_buffer": 90}),
+        conf=0.1,
+        iou=0.7,
+        imgsz=640,
+        max_det=300,
+        classes=None,
+        agnostic_nms=False,
+        start_frame=0,
+        end_frame=None,
+        frame_step=1,
+    )
+
+
+def _ultralytics_run_id_settings() -> str:
+    """The identifier ``ultralytics_settings``' *key set* mints, pinned.
+
+    Every argument is explicit rather than left to a default, so a changed
+    default moves nothing here for a reason unrelated to the key set this case
+    exists to guard.
+    """
+    from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_run_id
+
+    return ultralytics_run_id(_ultralytics_settings_case())
+
+
+def _ultralytics_variant() -> str:
+    # Passed through unwrapped, so this is byte-identical to
+    # ultralytics_run_id(settings) for the same settings.
+    return tracks_run_id(
+        ULTRALYTICS_KIND,
+        ULTRALYTICS_VERSION,
+        tracker_variant_payload(_ultralytics_settings_case()),
+    )
+
+
+def _ultralytics_tracker_defaults() -> str:
+    """All six declared default tables in one digest.
+
+    ``run-id-settings`` pins the merge for one backend only, so a transcription
+    slip in the other five would be invisible to the corpus. This is what makes
+    the whole table a deliberate edit.
+    """
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.tracking.ultralytics_track.tracker_defaults import (
+        TRACKER_NAMES,
+        resolve_tracker_config,
+    )
+
+    return hash_params(
+        {name: resolve_tracker_config(name, None) for name in TRACKER_NAMES}
+    )
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
@@ -554,11 +629,14 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/trex-variant": _trex_variant,
     "tracks/sleap-variant": _sleap_variant,
     "tracks/litpose-variant": _litpose_variant,
+    "tracks/ultralytics-variant": _ultralytics_variant,
     "tracks/infer-variant": _infer_variant,
     "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
     "sleap/run-id-settings": _sleap_run_id_settings,
     "litpose/run-id-settings": _litpose_run_id_settings,
+    "ultralytics/run-id-settings": _ultralytics_run_id_settings,
+    "ultralytics/tracker-defaults": _ultralytics_tracker_defaults,
     "composition/media-single-camera": _media_single_camera,
     "composition/media-reordered": _media_reordered,
     "composition/media-two-cameras": _media_two_cameras,
@@ -608,6 +686,7 @@ def test_every_family_is_covered() -> None:
         "trex",
         "sleap",
         "litpose",
+        "ultralytics",
         "transcode",
         "train-pose",
         "train-points",

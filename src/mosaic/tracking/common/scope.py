@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from mosaic.core.helpers import make_entry_key
 
 if TYPE_CHECKING:
+    from mosaic_media import MediaFacts
+
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
 
 __all__ = ["TrackerWorkItem", "build_work_items"]
@@ -53,6 +55,14 @@ class TrackerWorkItem:
     video_path: Path
     video_uid: str
     fps: float
+    facts: MediaFacts | None = None
+    """The media index's probed facts, for a tracker that decodes in process.
+
+    ``open_frame_reader`` takes them so that a raw stream is read with measured
+    values rather than trusted header ones -- a raw ``.h264`` reports a garbage
+    frame count and cannot be seeked. Defaulted, because the three subprocess
+    trackers hand a path to their tool and never open the file themselves.
+    """
 
 
 def build_work_items(
@@ -110,6 +120,7 @@ def build_work_items(
                 video_path=paths[0],
                 video_uid=facts[0].video_uuid if facts else "",
                 fps=facts[0].fps if facts and facts[0].fps > 0 else fallback_fps,
+                facts=facts[0] if facts else None,
             )
         )
 

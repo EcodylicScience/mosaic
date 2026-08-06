@@ -26,6 +26,7 @@
   "tracks/litpose-variant": "litpose.2.3-0bef161dde",
   "tracks/sleap-variant": "sleap.1.6-a953a9148c",
   "tracks/trex-variant": "trex.0.1-0be68648ea",
+  "tracks/ultralytics-variant": "ultralytics.8.4-7175d735b7",
   "train-litpose/project": "51296ae481",
   "train-localizer/dataset-dir": "bfbc8b03c0",
   "train-points/data": "f46e808c29",
@@ -39,5 +40,7 @@
   "transcode/run-id": "transcode-c385da723b",
   "trex/defaults": "d8a5094e59",
   "trex/max-individuals": "da40ef26e3",
-  "trex/run-id-settings": "trex.0.1-5a5da77582"
+  "trex/run-id-settings": "trex.0.1-5a5da77582",
+  "ultralytics/run-id-settings": "ultralytics.8.4-7175d735b7",
+  "ultralytics/tracker-defaults": "b85743c3e7"
 }

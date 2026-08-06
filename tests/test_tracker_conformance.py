@@ -42,6 +42,7 @@ from mosaic.tracking.model_refs import (
 from mosaic.tracking.litpose.dataset_runs import LitposeIndexRow
 from mosaic.tracking.sleap.dataset_runs import SleapIndexRow
 from mosaic.tracking.trex.dataset_runs import TRexIndexRow
+from mosaic.tracking.ultralytics_track.dataset_runs import UltralyticsIndexRow
 
 register_ops()
 
@@ -58,6 +59,7 @@ ROW_CLASSES: dict[str, type[TrackerRunRowBase]] = {
     "trex": TRexIndexRow,
     "sleap": SleapIndexRow,
     "litpose": LitposeIndexRow,
+    "ultralytics": UltralyticsIndexRow,
 }
 
 GOLDEN = json.loads(

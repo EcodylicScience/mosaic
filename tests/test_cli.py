@@ -296,6 +296,7 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "trex",
         "sleap",
         "litpose",
+        "ultralytics",
         "convert-points",
         "train-sleap",
         "train-litpose",

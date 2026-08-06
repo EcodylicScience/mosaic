@@ -175,6 +175,17 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
         ),
+        # The tracker configuration this run used lives at the *run* root, beside
+        # run_params.json, rather than in an entry directory -- it is one value
+        # for the whole run -- so it is neither evidence of a tracked entry nor
+        # something re-running one must clear.
+        TrackingRoot(
+            key="ultralytics",
+            retention="tracker",
+            outputs=("*.predictions.parquet",),
+            phase_outputs=(TrackingPhase("track", ("*.predictions.parquet",)),),
+            path_columns=("video_abs_path", "predictions_path"),
+        ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
         # emitted *before* schema coercion, which is what you want when debugging
         # a bad model -- and nothing reads it back, so it is a byproduct on a

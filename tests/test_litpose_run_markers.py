@@ -9,7 +9,6 @@ index writers -- with no models and no GPU.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,77 +16,20 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 import mosaic.tracking.litpose.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run_root
 from mosaic.tracking.litpose.run import LitposePredictResult
 
+from .conftest import write_media_index
+
 _BODYPARTS = ("nose", "tail")
 
 
 # --- fixtures --------------------------------------------------------------
-
-
-def _clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
-    facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
-        codec="h264",
-        duration=100 / 30.0,
-        video_uuid=video_uuid,
-        identity_scheme="video/1" if video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def _write_media_index(
-    ds: Dataset,
-    sequences: list[str],
-    *,
-    filenames: dict[str, str] | None = None,
-    uids: dict[str, str] | None = None,
-) -> None:
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for seq in sequences:
-        filename = (filenames or {}).get(seq, f"{seq}.mp4")
-        video = media_root / filename
-        if not video.exists():
-            video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": filename,
-                "group": "",
-                "sequence": seq,
-                "group_safe": "",
-                "sequence_safe": seq,
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **_clean_facts_cells((uids or {}).get(seq, "")),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
 
 
 def _write_dlc_csv(path: Path, *, n: int = 6) -> None:
@@ -116,7 +58,7 @@ def _write_dlc_csv(path: Path, *, n: int = 6) -> None:
 def ds(tmp_path: Path) -> Dataset:
     manifest = new_dataset_manifest("t", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    _write_media_index(dataset, ["vid1"])
+    write_media_index(dataset, ["vid1"])
     return dataset
 
 
@@ -297,10 +239,10 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     ``source_uid`` on its marker and never read it back, so the second run
     reused a prediction over content that no longer exists.
     """
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
     run_id = dr.run_litpose(ds, model_path=str(model))
 
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
     second = dr.run_litpose(ds, model_path=str(model))
 
     assert second == run_id, "settings did not change, so neither does the identity"
@@ -311,10 +253,10 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     ds: Dataset, model: Path, litpose: FakeLitpose
 ) -> None:
     """The other direction, and the saving the uid comparison buys."""
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
     run_id = dr.run_litpose(ds, model_path=str(model))
 
-    _write_media_index(
+    write_media_index(
         ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
     )
     second = dr.run_litpose(ds, model_path=str(model))
@@ -328,7 +270,7 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 ) -> None:
     """Media indexed before the identity columns carries no uid."""
     run_id = dr.run_litpose(ds, model_path=str(model))
-    _write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
+    write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
 
     second = dr.run_litpose(ds, model_path=str(model))
 

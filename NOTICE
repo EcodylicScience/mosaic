@@ -145,6 +145,57 @@ are to comply, to buy an Enterprise License from Ultralytics for the [pose]
 and [recommended] paths, or to install neither extra.
 
 
+THE ULTRALYTICS TRACKER DEFAULTS, AND THE METHODS THEY CONFIGURE
+===============================================================
+
+`mosaic track ultralytics` selects one of six tracker backends Ultralytics
+ships. Mosaic records each backend's default settings in
+src/mosaic/tracking/ultralytics_track/tracker_defaults.py, so that a run
+identifier names the exact settings a run used and an upstream retune cannot
+silently re-mint identifiers already on disk.
+
+Those defaults are transcribed -- the setting names and their values, in
+mosaic's own structure with mosaic's own commentary -- from the six files
+ultralytics/cfg/trackers/{botsort,bytetrack,ocsort,deepocsort,fasttrack,
+tracktrack}.yaml as of Ultralytics 8.4.63. The YAML files themselves are not
+copied and no AGPL-licensed source is vendored into src/. A test compares the
+transcription against the installed Ultralytics, so drift fails by name.
+
+The backends implement published methods. Results produced with one should
+cite it:
+
+  ByteTrack. Zhang, Y. et al. (2021). ByteTrack: Multi-Object Tracking by
+  Associating Every Detection Box. arXiv:2110.06864.
+
+  BoT-SORT. Aharon, N., Orfaig, R., Bobrovsky, B.-Z. (2022). BoT-SORT: Robust
+  Associations Multi-Pedestrian Tracking. arXiv:2206.14651.
+
+  OC-SORT. Cao, J. et al. (2022). Observation-Centric SORT: Rethinking SORT
+  for Robust Multi-Object Tracking. arXiv:2203.14360.
+
+  Deep OC-SORT. Maggiolino, G. et al. (2023). Deep OC-SORT: Multi-Pedestrian
+  Tracking by Adaptive Re-Identification. arXiv:2302.11813.
+
+  FastTracker. Hashempoor, H., Hwang, Y. D. (2025). FastTracker: Real-Time and
+  Accurate Visual Tracking. arXiv:2508.14370.
+
+  TrackTrack. Shim et al. (2025). Focusing on Tracks for Online Multi-Object
+  Tracking. CVPR 2025.
+
+
+LAP -- OPTIONAL
+===============
+
+lap. Copyright (c) 2012-2017 Tomas Kazmar and contributors.
+https://github.com/gatagat/lap
+
+BSD 2-Clause License. Installed by the [pose], [polo] and [recommended]
+extras. It is the linear-assignment solver Ultralytics' tracker matching
+imports at module scope, and it appears in no Ultralytics extra: mosaic
+declares it so that it arrives at install time rather than being fetched by
+Ultralytics during a run.
+
+
 FERAL, AND THE BACKBONE WEIGHTS IT DOWNLOADS
 ============================================
 

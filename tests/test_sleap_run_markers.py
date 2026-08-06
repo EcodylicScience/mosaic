@@ -9,7 +9,6 @@ the analysis-h5 -> tracks bridge, and the two index writers -- with no models.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -18,14 +17,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 import mosaic.tracking.sleap.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
+
+from .conftest import write_media_index
 
 # The bridge reads the analysis HDF5 with h5py (a [recommended] extra); skip the
 # whole module when it is absent rather than fail a minimal install.
@@ -35,68 +34,11 @@ pytest.importorskip("h5py")
 # --- fixtures --------------------------------------------------------------
 
 
-def _clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
-    facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
-        codec="h264",
-        duration=100 / 30.0,
-        video_uuid=video_uuid,
-        identity_scheme="video/1" if video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def _write_media_index(
-    ds: Dataset,
-    sequences: list[str],
-    *,
-    filenames: dict[str, str] | None = None,
-    uids: dict[str, str] | None = None,
-) -> None:
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for seq in sequences:
-        filename = (filenames or {}).get(seq, f"{seq}.mp4")
-        video = media_root / filename
-        if not video.exists():
-            video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": filename,
-                "group": "",
-                "sequence": seq,
-                "group_safe": "",
-                "sequence_safe": seq,
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **_clean_facts_cells((uids or {}).get(seq, "")),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
-
-
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
     manifest = new_dataset_manifest("t", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    _write_media_index(dataset, ["vid1"])
+    write_media_index(dataset, ["vid1"])
     return dataset
 
 
@@ -289,10 +231,10 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     no longer exists. TREx has compared the uid first since item 8.5; SLEAP
     recorded ``source_uid`` on its markers and never read it back.
     """
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
     run_id = dr.run_sleap(ds, model_paths=[str(model)])
 
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
     second = dr.run_sleap(ds, model_paths=[str(model)])
 
     assert second == run_id, "settings did not change, so neither does the identity"
@@ -308,10 +250,10 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     the bytes. The path comparison calls that a source change and throws away
     the inference; the uid says it is the same video.
     """
-    _write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
     run_id = dr.run_sleap(ds, model_paths=[str(model)])
 
-    _write_media_index(
+    write_media_index(
         ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
     )
     second = dr.run_sleap(ds, model_paths=[str(model)])
@@ -329,7 +271,7 @@ def test_an_absent_uid_still_falls_back_to_the_path(
     datasets that cannot supply a uid.
     """
     run_id = dr.run_sleap(ds, model_paths=[str(model)])
-    _write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
+    write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
 
     second = dr.run_sleap(ds, model_paths=[str(model)])
 

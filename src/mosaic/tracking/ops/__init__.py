@@ -16,6 +16,7 @@ from mosaic.tracking.ops import (
     train_litpose,
     train_sleap,
     trex,
+    ultralytics,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "train_litpose",
     "train_sleap",
     "trex",
+    "ultralytics",
 ]

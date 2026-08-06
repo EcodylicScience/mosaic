@@ -28,6 +28,7 @@ from . import deeplabcut
 from . import mabe22
 from . import sleap
 from . import trex
+from . import ultralytics_tracks
 
 __all__ = [
     "calms21",
@@ -35,4 +36,5 @@ __all__ = [
     "mabe22",
     "sleap",
     "trex",
+    "ultralytics_tracks",
 ]

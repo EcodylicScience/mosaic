@@ -53,7 +53,7 @@ individually:
 | ------------------ | ----------------------------------------------------------------------------------- |
 | `recommended`      | `wavelets` + `pose` + `localizer`                                                   |
 | `wavelets`         | PyWavelets for spectral features                                                    |
-| `pose`             | Ultralytics YOLO pose training and inference                                        |
+| `pose`             | Ultralytics YOLO pose training and inference, and `mosaic track ultralytics` (six multi-object trackers, in process) |
 | `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
 | `localizer`        | PyTorch heatmap localizer training                                                  |
 | `identity`         | Image-backbone identity models (trained classifier, frozen timm backbones, DINOv2 + temporal); `torch` + `timm` |
