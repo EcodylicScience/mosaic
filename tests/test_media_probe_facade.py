@@ -18,11 +18,24 @@ def _write_cfr_mp4(path: Path, n: int = 12, w: int = 64, h: int = 48) -> None:
 def _write_raw_h264(path: Path, n_frames: int = 15) -> None:
     subprocess.run(
         [
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=30",
-            "-frames:v", str(n_frames), "-c:v", "libx264", "-bsf:v", "h264_mp4toannexb",
-            "-f", "h264", str(path),
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=30",
+            "-frames:v",
+            str(n_frames),
+            "-c:v",
+            "libx264",
+            "-bsf:v",
+            "h264_mp4toannexb",
+            "-f",
+            "h264",
+            str(path),
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
 
 
@@ -38,10 +51,10 @@ def test_get_video_metadata_constant_rate(tmp_path: Path) -> None:
 
 def test_open_frame_reader_reads_raw_h264(tmp_path: Path) -> None:
     """A bare ``.h264`` elementary stream has no container to declare frame
-    timing, so its measured facts carry ``timing_measured=False`` and an
-    analysis-required verdict. This is exactly the deliberate look at a
-    containerless stream the raw target exists for: it warns and proceeds
-    rather than raising."""
+    timing, so its measured facts carry a ``timing_source`` the file did not
+    supply and an analysis-required verdict. This is exactly the deliberate
+    look at a containerless stream the raw target exists for: it warns and
+    proceeds rather than raising."""
     raw = tmp_path / "raw.h264"
     _write_raw_h264(raw)
     with pytest.warns(UserWarning, match="raw read of"):

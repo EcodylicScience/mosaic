@@ -326,7 +326,13 @@ class TranscodeOp(Op[TranscodeParams]):
     kind = "transcode"
     domain = "media"
     category = "transcode"
-    version = "0.1"
+    # 0.2: mosaic-media 0.3.0 changed what the command builder emits. A stream
+    # copy that would drop frames now selects a re-encode, the new
+    # presentation_timing_requires_decode reason takes a re-encode on both
+    # targets, and a source stating no frame rate raises instead of leaving the
+    # muxer to invent one. That is exactly the upstream change
+    # transcode_recipe_hash's docstring says this segment is bumped by hand for.
+    version = "0.2"
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams) -> str:

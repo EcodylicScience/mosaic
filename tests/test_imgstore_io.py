@@ -245,18 +245,18 @@ def test_frame_reader_resize(make_imgstore):
     assert ok and frame.shape == (24, 32, 3)
 
 
-def test_open_frame_reader_dispatch(make_imgstore, tmp_path):
+def test_open_frame_reader_dispatch(make_imgstore, tmp_path, write_cfr_mp4):
     store_dir, _ = make_imgstore(nframes=4)
     reader = open_frame_reader(store_dir, target="analysis")
     assert isinstance(reader, ImgStoreFrameReader)
     reader.close()
 
     # A plain mp4 -> mosaic_media VideoReader (in-process decode; no ffmpeg gate).
+    # The shared fixture rather than a local OpenCV writer: this read declares
+    # the "analysis" target, and an mp4v clip encodes MPEG-4, which the analysis
+    # gate rejects as outside the measured frame-exact set.
     mp4 = tmp_path / "v.mp4"
-    writer = cv2.VideoWriter(str(mp4), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(4):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
+    write_cfr_mp4(mp4, frames=4)
     reader2 = open_frame_reader(mp4, target="analysis")
     assert isinstance(reader2, VideoReader)
     reader2.close()

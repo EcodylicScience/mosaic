@@ -96,7 +96,7 @@ def test_store_facts_carries_a_mint_and_never_a_content_digest() -> None:
     assert facts.video_uuid == "store-uuid-abc123"
     assert facts.identity_scheme == "imgstore/1"
     assert facts.content_digest == ""
-    assert facts.timing_measured is True
+    assert facts.timing_source == "presentation"
     assert facts.prober_version == ""
 
 

@@ -34,11 +34,11 @@ import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic_media.io.writer import FFmpegVideoWriter
 from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -138,18 +138,29 @@ def read_index_header() -> Callable[[Path], list[str]]:
 def write_cfr_mp4() -> Callable[..., None]:
     """Factory writing a small constant-frame-rate mp4 (parent dirs created).
 
-    The shape every media test needs: a real file ffprobe can measure, cheap
-    enough to write per test. Returns a callable ``(path, frames=, size=)``.
+    The shape every media test needs: a real file ffprobe can measure, and
+    cheap enough to write per test at roughly 14 ms a clip. Returns a callable
+    ``(path, frames=, size=)``.
+
+    Written through the toolkit's own writer, so the fixture encodes AV1. The
+    codec is load-bearing rather than incidental: the read-target gate refuses
+    an ``"analysis"`` read whose verdict carries
+    ``unverified_frame_correspondence``, which every codec outside the measured
+    frame-exact set does, and AV1 is in that set. The writer is also the one
+    mosaic already ships and the codec its analysis transcode targets, so a
+    fixture and a real derivative are the same kind of file.
+
+    An OpenCV ``VideoWriter`` is not used, but not because it could not be: its
+    ``mp4v`` fourcc encodes MPEG-4, which is not frame exact, though its ``VP80``
+    and ``VP90`` fourccs are. Those write WebM rather than the mp4 this
+    fixture's name and its callers' ``.mp4`` paths promise.
     """
 
     def _write(path: Path, frames: int = 6, size: tuple[int, int] = (64, 48)) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # VideoWriter.fourcc rather than the module-level VideoWriter_fourcc
-        # alias: the two return the same code, but only the classmethod is typed.
-        writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, size)
-        for _ in range(frames):
-            writer.write(np.zeros((size[1], size[0], 3), np.uint8))
-        writer.release()
+        with FFmpegVideoWriter(path, width=size[0], height=size[1], fps=30.0) as writer:
+            for _ in range(frames):
+                writer.write(np.zeros((size[1], size[0], 3), np.uint8))
 
     return _write
 
@@ -390,12 +401,11 @@ def add_media_sequence(
     directory.mkdir(parents=True, exist_ok=True)
     for name in videos:
         shade = sum(name.encode()) % 200 + 20
-        writer = cv2.VideoWriter(
-            str(directory / name), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, (64, 48)
-        )
-        for _ in range(frames):
-            writer.write(np.full((48, 64, 3), shade, np.uint8))
-        writer.release()
+        with FFmpegVideoWriter(
+            directory / name, width=64, height=48, fps=30.0
+        ) as writer:
+            for _ in range(frames):
+                writer.write(np.full((48, 64, 3), shade, np.uint8))
 
     _ = dataset.write_media_index(
         [

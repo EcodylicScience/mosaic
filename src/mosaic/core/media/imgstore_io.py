@@ -112,11 +112,13 @@ STORE_IDENTITY_SCHEME: Final = "imgstore/1"
 """The regime a store's ``video_uuid`` is produced under (open item O5).
 
 Namespaced rather than a bare counter, and that is the whole point: a plain
-video's ``identity_scheme`` is ``mosaic-media``'s ``"1"``, meaning a value
+video's ``identity_scheme`` is ``mosaic-media``'s own counter, meaning a value
 *derived* from a packet scan, and this one means a value *declared* by whoever
 wrote the store. One column can hold both because the value says which it is; a
 reader that cannot tell a mint from a measurement would draw a conclusion neither
-supports.
+supports. The upstream counter is deliberately not quoted here -- it advances
+whenever a measured digest moves, so naming a digit would date this paragraph
+on the next bump.
 
 **What the namespace advertises is a weakness, so state it.** A store's uuid is
 minted once at creation and written into ``metadata.yaml``. It cannot be

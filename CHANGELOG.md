@@ -8,6 +8,38 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — mosaic-media 0.3.0 moves every media identifier
+
+**Every `video_uuid` and `content_digest` re-mints.** `mosaic-media` advances its
+identity scheme to 2, and the scheme is the first element hashed into both, so a
+value stored under 0.2.x will not match what a re-probe now mints for the same
+unchanged file. Run `mosaic reprobe-media --apply` once per dataset. It rewrites
+the identity columns and re-points each derivative's `source_video_uuid` at its
+source's new value, resolving the link from `source_path` rather than carrying
+the old uuid, so derivative links survive. A derivative whose source no longer
+resolves is reported under `derivative_links_unresolved` rather than silently
+mislinked.
+
+**Every transcode derivative is renamed.** The release changes what the command
+builder emits — a stream copy that would drop frames now re-encodes, and a source
+stating no frame rate raises rather than letting the muxer invent one — so
+`TranscodeOp.version` moves to 0.2 and `recipe_hash` and the transcode run
+identifier move with it. No dataset holds a transcode derivative, so nothing on
+disk is orphaned.
+
+**A `media_facts` cell written before this release no longer reconstructs.**
+`MediaFacts` drops `timing_measured` and gains `timing_source`,
+`coded_reordering_depth`, `discard_flagged_packets`,
+`leading_non_keyframe_frames` and `max_timestamp_gap_frame_periods`. The same
+re-probe rewrites the cells. The media-index header does not move: none of the
+new fields is a flat column.
+
+**An analysis read refuses a codec outside the measured frame-exact set**
+(`h264`, `hevc`, `av1`, `vp9`, `vp8`), reporting
+`unverified_frame_correspondence`. Such a source needs an analysis transcode
+before tracking or frame extraction can read it, and that transcode emits AV1,
+which satisfies the gate. A raw read still warns and proceeds.
+
 ### 0.11.0
 
 **`global-identity-model` no longer builds a CNN from scratch.** It trained one

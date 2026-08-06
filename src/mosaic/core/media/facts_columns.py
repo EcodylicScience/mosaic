@@ -272,8 +272,20 @@ def store_facts(
 
     An imgstore is a directory of chunks with no elementary stream to hash, so
     it has no ``content_digest`` and -- since no ffprobe runs over it -- no
-    prober version. Its frame rate is constant by construction, so
-    timing_measured is True despite no prober having run.
+    prober version.
+
+    The store supplies its own per-frame timestamps, so ``timing_source`` is
+    ``"presentation"``. Stating the timing as supplied is also what keeps the
+    ``variable_frame_rate`` verdict reachable: it fires only on a source whose
+    timing the file supplied, so an ``"absent"`` store could never report uneven
+    spacing however uneven it became.
+
+    ``coded_reordering_depth`` and both delivery counts are zero on the
+    reasoning that already zeroes ``max_keyframe_interval_frames`` and
+    ``max_gop_bytes`` -- a store is a directory of chunks rather than one coded
+    stream, so at store level there is no demultiplexer to flag a packet, no
+    keyframe order for anything to precede, and no single reorder depth to
+    state. A chunk read measures its own chunk and does not consult these.
 
     *video_uuid* and *identity_scheme* are **required** rather than defaulted,
     following this module's rule that every field is a claim the caller states
@@ -309,7 +321,16 @@ def store_facts(
         moov_at_start=None,
         max_keyframe_interval_frames=0,
         max_gop_bytes=0,
-        timing_measured=True,
+        discard_flagged_packets=0,
+        leading_non_keyframe_frames=0,
+        coded_reordering_depth=0,
+        # One period, paired with the constant_frame_rate above: both take the
+        # store's frame spacing as even. That is what the format intends rather
+        # than what it guarantees -- a store's timestamps are wall-clock capture
+        # times and can jitter -- so these two are the values to revisit when
+        # store timing is measured rather than assumed.
+        max_timestamp_gap_frame_periods=1.0,
+        timing_source="presentation",
         video_uuid=video_uuid,
         content_digest="",
         identity_scheme=identity_scheme,

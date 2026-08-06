@@ -30,9 +30,18 @@ def _playable(clip: Path) -> MediaFacts:
 
 
 def _stream_only_defect(clip: Path) -> MediaFacts:
-    """Facts that add a hard stream reason (``unsupported_codec``) while the
-    analysis axis stays clean."""
-    return dataclasses.replace(_playable(clip), codec_name="mpeg4")
+    """Facts that add a hard stream reason (``unsupported_container``) while the
+    analysis axis stays clean.
+
+    The reason is a container rather than a codec because no codec can express
+    this any more: ``FRAME_EXACT_CODECS`` and ``CHROME_149.codecs`` hold the
+    same members today, so a codec outside the playback profile is also outside
+    the frame-exact set and raises ``unverified_frame_correspondence`` on the
+    analysis axis. The two sets are independent by design and may diverge, at
+    which point a codec would serve again -- but a container keeps this fixture
+    honest either way.
+    """
+    return dataclasses.replace(_playable(clip), container="avi")
 
 
 def _analysis_only_defect(clip: Path) -> MediaFacts:
@@ -74,10 +83,9 @@ def test_absent_facts_are_probed(
 
     monkeypatch.setattr(read_target, "probe_media", _counting)
 
-    # The target must be "analysis": this probes the real clip, and
-    # write_cfr_mp4 writes mp4v, whose facts carry a hard stream reason. A
-    # "playback" target would raise here for a reason unrelated to what this
-    # test asserts.
+    # The target is "analysis" because that is the axis this module's gate is
+    # written around; the fixture's own clip is clean on it, so the probe count
+    # is what the assertions below see rather than a raise.
     result = read_target.verified_read_facts(clip, None, "analysis")
 
     assert calls == [clip.resolve()]
@@ -111,7 +119,7 @@ def test_playback_target_raises_on_a_hard_stream_reason(
 
     with pytest.raises(MediaProbeError, match="not fit for a playback read") as excinfo:
         read_target.verified_read_facts(clip, facts, "playback")
-    assert "unsupported_codec" in str(excinfo.value)
+    assert "unsupported_container" in str(excinfo.value)
 
 
 def test_playback_target_accepts_a_recommended_stream_transcode(

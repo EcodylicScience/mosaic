@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
 from mosaic_media import probe_media
+from mosaic_media.io.writer import FFmpegVideoWriter
 
 import mosaic.core.media.read_target as read_target
 import mosaic.core.media.video_io as video_io
@@ -15,12 +15,16 @@ from mosaic.tracking.frame_extraction import extract_frames_single
 
 
 def _write_mp4(path: Path, nframes: int = 6) -> None:
-    writer = cv2.VideoWriter(
-        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48)
-    )
-    for _ in range(nframes):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
+    """Write a clip these tests can take an *analysis* read of.
+
+    AV1 through the toolkit's own writer rather than an OpenCV ``mp4v``, which
+    encodes MPEG-4: that is outside the measured frame-exact set, so the
+    analysis gate raises ``unverified_frame_correspondence`` before any of these
+    tests reaches the injection behavior it exists to check.
+    """
+    with FFmpegVideoWriter(path, width=64, height=48, fps=30.0) as writer:
+        for _ in range(nframes):
+            writer.write(np.zeros((48, 64, 3), np.uint8))
 
 
 class _ProbeCalled(RuntimeError):

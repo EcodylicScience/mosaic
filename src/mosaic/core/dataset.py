@@ -437,18 +437,24 @@ def _facts_or_stale_probe_error(
 ) -> MediaFacts:
     """Reconstruct a derivative row's :class:`MediaFacts`, or raise on stale facts.
 
-    A ``media_facts`` cell written before the current identity fields raises
-    ``TypeError`` from :func:`row_to_facts`; convert it to the
+    A ``media_facts`` cell that no longer reconstructs raises ``TypeError`` from
+    :func:`row_to_facts`; convert it to the
     :class:`~mosaic_media.MediaProbeError` callers catch, naming the entry and
     the remedy. The ``try`` wraps only the reconstruction call, so an unrelated
     ``TypeError`` is never masked.
+
+    The cause is stated as a stored measurement rather than as the identity
+    fields specifically. Reconstruction fails the same way whichever key is
+    missing -- a measurement added upstream is as much a reason as an identity
+    value -- so naming one of them would send an operator looking for the wrong
+    thing on every other cause.
     """
     try:
         return row_to_facts(row_mapping(drow))
     except TypeError as exc:
         message = (
             f"entry {group}/{sequence} has a derivative row whose stored facts "
-            "predate the current identity fields; re-probe the media index"
+            "no longer reconstruct; re-probe the media index"
         )
         raise MediaProbeError(message) from exc
 
