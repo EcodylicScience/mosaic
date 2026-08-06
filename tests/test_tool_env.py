@@ -64,7 +64,7 @@ _LOCATED = ToolEnv(
 _ON_PATH: dict[str, str] = {
     "runme": "/p/bin/runme",
     "finder": "/p/bin/finder",
-    "conda": "/p/conda",
+    "conda": "/p/bin/conda",
 }
 
 
@@ -78,7 +78,12 @@ def _nothing_on_path(_name: str) -> str | None:
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("MOSAIC_FAKE_CONDA_ENV", "MOSAIC_FAKE_BIN", "CONDA_EXE"):
+    for var in (
+        "MOSAIC_FAKE_CONDA_ENV",
+        "MOSAIC_FAKE_BIN",
+        "CONDA_EXE",
+        "CONDA_ENVS_DIRS",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(toolenv.shutil, "which", _fake_which)
 

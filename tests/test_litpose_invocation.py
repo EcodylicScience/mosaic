@@ -22,15 +22,29 @@ from mosaic.tracking.litpose.run import (
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
-    """Remove Lightning Pose env vars and make ``which`` resolve fake script paths."""
-    for var in ("MOSAIC_LITPOSE_CONDA_ENV", "MOSAIC_LITPOSE_BIN", "CONDA_EXE"):
+    """Remove Lightning Pose env vars and make ``which`` resolve fake script paths.
+
+    The fake conda sits two levels deep for a reason. ``conda_invocation``
+    resolves the environment's own executable by climbing ``parent.parent`` from
+    the conda binary and probing ``<base>/bin/<executable>`` on the real
+    filesystem. A one-level fake such as ``/p/conda`` makes that base ``/``, so
+    the probe finds ``/bin/python`` wherever the host happens to have one and
+    the test's result depends on the machine rather than on the code. ``/p``
+    exists nowhere, so every candidate misses and the bare name is used.
+    """
+    for var in (
+        "MOSAIC_LITPOSE_CONDA_ENV",
+        "MOSAIC_LITPOSE_BIN",
+        "CONDA_EXE",
+        "CONDA_ENVS_DIRS",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         toolenv.shutil,
         "which",
         lambda name: {
             "litpose": "/p/bin/litpose",
-            "conda": "/p/conda",
+            "conda": "/p/bin/conda",
         }.get(name),
     )
 
@@ -40,7 +54,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_conda_env_wins():
     assert _litpose_invocation(litpose_conda_env="lp") == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -57,13 +71,13 @@ def test_param_bin_resolves_python_as_a_sibling():
 
 def test_param_conda_beats_param_bin():
     got = _litpose_invocation(litpose_conda_env="lp", litpose_bin="/x/bin/litpose")
-    assert got[0] == "/p/conda"
+    assert got[0] == "/p/bin/conda"
 
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_LITPOSE_CONDA_ENV", "envc")
     assert _litpose_invocation() == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -125,11 +139,11 @@ def test_run_litpose_threads_invocation_and_neutralizes_mpl(
     monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
     out, err = _run_litpose(
-        ["/p/conda", "run", "-n", "lp", "python"],
+        ["/p/bin/conda", "run", "-n", "lp", "python"],
         ["-c", "code", "model", "video.mp4", "out.csv", "fp32"],
         idle_timeout=5,
     )
-    assert captured["cmd"][:5] == ["/p/conda", "run", "-n", "lp", "python"]
+    assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "lp", "python"]
     assert captured["cmd"][5:] == [
         "-c",
         "code",

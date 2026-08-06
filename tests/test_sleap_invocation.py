@@ -22,7 +22,12 @@ from mosaic.tracking.sleap.run import (
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
     """Remove SLEAP env vars and make ``which`` resolve fake script/conda paths."""
-    for var in ("MOSAIC_SLEAP_CONDA_ENV", "MOSAIC_SLEAP_BIN", "CONDA_EXE"):
+    for var in (
+        "MOSAIC_SLEAP_CONDA_ENV",
+        "MOSAIC_SLEAP_BIN",
+        "CONDA_EXE",
+        "CONDA_ENVS_DIRS",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         toolenv.shutil,
@@ -30,7 +35,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
         lambda name: {
             "sleap-track": "/p/sleap-track",
             "sleap-convert": "/p/sleap-convert",
-            "conda": "/p/conda",
+            "conda": "/p/bin/conda",
         }.get(name),
     )
 
@@ -40,7 +45,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_conda_env_wins():
     assert _sleap_invocation("sleap-track", sleap_conda_env="sleap") == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -61,13 +66,13 @@ def test_param_conda_beats_param_bin():
     got = _sleap_invocation(
         "sleap-track", sleap_conda_env="sleap", sleap_bin="/x/sleap-track"
     )
-    assert got[0] == "/p/conda"
+    assert got[0] == "/p/bin/conda"
 
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_CONDA_ENV", "envc")
     assert _sleap_invocation("sleap-track") == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -133,11 +138,11 @@ def test_run_sleap_threads_invocation_and_neutralizes_mpl(
     monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
     out, err = _run_sleap(
-        ["/p/conda", "run", "-n", "sleap", "sleap-track"],
+        ["/p/bin/conda", "run", "-n", "sleap", "sleap-track"],
         ["video.mp4", "-o", "out.slp"],
         idle_timeout=5,
     )
-    assert captured["cmd"][:5] == ["/p/conda", "run", "-n", "sleap", "sleap-track"]
+    assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "sleap", "sleap-track"]
     assert captured["cmd"][-3:] == ["video.mp4", "-o", "out.slp"]
     # an inherited Jupyter module:// backend is neutralised for the subprocess
     assert captured["env"]["MPLBACKEND"] == "Agg"

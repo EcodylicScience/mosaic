@@ -27,12 +27,13 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
         "MOSAIC_TREX_BIN",
         "MOSAIC_TREX_DISPLAY",
         "CONDA_EXE",
+        "CONDA_ENVS_DIRS",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         toolenv.shutil,
         "which",
-        lambda name: {"trex": "/p/trex", "conda": "/p/conda"}.get(name),
+        lambda name: {"trex": "/p/trex", "conda": "/p/bin/conda"}.get(name),
     )
 
 
@@ -41,7 +42,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_conda_env_wins():
     assert _trex_invocation(trex_conda_env="track") == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -55,13 +56,16 @@ def test_param_bin():
 
 
 def test_param_conda_beats_param_bin():
-    assert _trex_invocation(trex_conda_env="track", trex_bin="/x/trex")[0] == "/p/conda"
+    assert (
+        _trex_invocation(trex_conda_env="track", trex_bin="/x/trex")[0]
+        == "/p/bin/conda"
+    )
 
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_TREX_CONDA_ENV", "envc")
     assert _trex_invocation() == [
-        "/p/conda",
+        "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
@@ -143,10 +147,10 @@ def test_run_trex_passes_invocation_and_env(monkeypatch: pytest.MonkeyPatch):
     out, err = trex_run._run_trex(
         ["-task", "convert"],
         idle_timeout=5,
-        invocation=["/p/conda", "run", "-n", "track", "trex"],
+        invocation=["/p/bin/conda", "run", "-n", "track", "trex"],
         env={"DISPLAY": ":99"},
     )
-    assert captured["cmd"][:5] == ["/p/conda", "run", "-n", "track", "trex"]
+    assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "track", "trex"]
     assert captured["cmd"][-2:] == ["-task", "convert"]
     assert captured["env"]["DISPLAY"] == ":99"
     assert out == "ok"
