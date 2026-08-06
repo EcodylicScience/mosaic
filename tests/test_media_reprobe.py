@@ -1471,7 +1471,7 @@ def test_a_column_dropped_from_the_derivative_index_is_reported(
     assert CURATED_COLUMN not in read_index_header(derivative_index)
 
 
-# --- unresolved back-links and drift in the derivative index ---------------
+# --- back-link faults and drift in the derivative index --------------------
 
 
 def test_a_back_link_to_no_indexed_original_is_reported_unresolved(
@@ -1512,6 +1512,54 @@ def test_a_back_link_to_no_indexed_original_is_reported_unresolved(
     )
     derivative = _rows_by_name(derivative_index)["seq.analysis.mp4"]
     assert derivative["source_path"] == "seq/vanished.mp4"
+    assert derivative["source_video_uuid"] == ""
+
+
+def test_a_derivative_row_carrying_no_source_path_is_reported(
+    dataset: Dataset, write_cfr_mp4: WriteVideo
+) -> None:
+    # A derivative row records no origin at all, so there is nothing to look up.
+    base = dataset.base_dir
+    write_cfr_mp4(base / "media_raw" / "seq" / "a.mp4")
+    write_cfr_mp4(base / "media" / "seq.analysis.mp4", frames=4)
+    _ = _seed(
+        dataset,
+        [_row(name="a.mp4", group="", sequence="seq", abs_path="media_raw/seq/a.mp4")],
+    )
+    derivative_index = _derivative_index_path(dataset)
+    # No source_path override: _row leaves every column it is not given empty.
+    write_media_index_rows(
+        derivative_index,
+        frame_from_rows(
+            [
+                _row(
+                    name="seq.analysis.mp4",
+                    group="",
+                    sequence="seq",
+                    abs_path="media/seq.analysis.mp4",
+                )
+            ]
+        ),
+    )
+
+    report = dataset.reprobe_media(apply=True)
+
+    assert len(report.derivative.back_link_absent) == 1
+    assert "media/seq.analysis.mp4" in report.derivative.back_link_absent[0]
+    # Reported as its own condition, never folded into the resolvable-link one.
+    assert report.derivative.unresolved == []
+    assert report.derivative.relinked == 0
+    assert (
+        report.payload()["derivative_links_absent"]
+        == report.derivative.back_link_absent
+    )
+    # Reported, not blocked: the run still applied, and the violating row was
+    # minted along with every other. Without this the whole derivative pass
+    # could bail on seeing such a row and both assertions above would still hold.
+    assert report.applied is True
+    derivative = _rows_by_name(derivative_index)["seq.analysis.mp4"]
+    assert derivative["video_uuid"] != ""
+    assert derivative["source_path"] == ""
     assert derivative["source_video_uuid"] == ""
 
 

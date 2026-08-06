@@ -3955,9 +3955,16 @@ class Dataset:
         restricted to a row whose ``abs_path`` basename equals the requested
         derivative's, so a per-target sibling -- which shares its
         ``source_video_uuid`` -- can never cross into the wrong target's facts.
-        An original carrying no uuid resolves through pass 1 or raises. Raises
-        :class:`~mosaic_media.MediaProbeError` when the derivative file, its row,
-        or its stored facts cannot be found.
+        An original carrying no uuid resolves through pass 1 or raises.
+
+        **Nothing mosaic writes reaches pass 2.** A derivative row is minted
+        only by ``_set_back_link``, whose ``abs_path`` and whose original's
+        forward link are both derived from the transcode's ``output_path``, so
+        the two reverse to one file and pass 1 always matches. The fallback
+        covers an index edited outside mosaic, and is kept for that alone.
+
+        Raises :class:`~mosaic_media.MediaProbeError` when the derivative file,
+        its row, or its stored facts cannot be found.
         """
         if not derivative_path.exists():
             message = (

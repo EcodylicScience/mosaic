@@ -497,6 +497,85 @@ def test_reprobe_media_names_the_facts_cell_it_rebuilds(
     assert payload["facts_rebuilt"] == 0
 
 
+def _seed_origin_less_derivative_index(
+    ds: Dataset, write_video: Callable[..., None]
+) -> Path:
+    """A derivative row recording no origin, and the path of the file it names.
+
+    The shape nothing that mints a derivative row produces, so it can only be
+    written here directly.
+    """
+    media_root = ds.get_root("media")
+    derivative = media_root / "seq.analysis.mp4"
+    write_video(derivative, frames=4)
+    row = {column: "" for column in MEDIA_INDEX_COLUMNS}
+    row.update(
+        {
+            "name": "seq.analysis.mp4",
+            "sequence": "seq",
+            "sequence_safe": "seq",
+            "abs_path": str(derivative),
+            "media_type": "video",
+            "video_order": "0",
+        }
+    )
+    index_path = media_root / "index.csv"
+    with index_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MEDIA_INDEX_COLUMNS)
+        writer.writeheader()
+        _ = writer.writerows([row])
+    return derivative
+
+
+def test_reprobe_media_names_a_derivative_row_recording_no_origin(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    write_cfr_mp4: Callable[..., None],
+) -> None:
+    # The condition is an invariant violation, so it is reported loudly -- but it
+    # is not this command's to repair, so it gates neither the write nor the
+    # exit code.
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    _ = _seed_legacy_media_index(ds, write_cfr_mp4, extra=[])
+    derivative = _seed_origin_less_derivative_index(ds, write_cfr_mp4)
+
+    result = runner.invoke(
+        app, ["reprobe-media", "-m", str(ds.manifest_path), "--apply"]
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "1 row(s) record no source_path" in result.stdout
+    # The indented detail line the group exists to produce, not the basename
+    # loose anywhere in the output.
+    assert f"  media index row 0: {derivative}" in result.stdout
+
+
+def test_reprobe_media_still_names_an_origin_less_row_once_nothing_changes(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    write_cfr_mp4: Callable[..., None],
+) -> None:
+    # The violation outlives the run reporting it, because nothing this command
+    # does repairs it. So the steady state is the state an operator sees for as
+    # long as the row survives, and a report that fires only on the run that
+    # happens to change something else is silent exactly when it matters.
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    _ = _seed_legacy_media_index(ds, write_cfr_mp4, extra=[])
+    _ = _seed_origin_less_derivative_index(ds, write_cfr_mp4)
+
+    first = runner.invoke(
+        app, ["reprobe-media", "-m", str(ds.manifest_path), "--apply"]
+    )
+    second = runner.invoke(
+        app, ["reprobe-media", "-m", str(ds.manifest_path), "--apply"]
+    )
+
+    assert first.exit_code == 0, first.stderr
+    assert second.exit_code == 0, second.stderr
+    assert "already fully probed" in second.stdout
+    assert "record no source_path" in second.stdout
+
+
 def test_reprobe_media_dry_run_is_the_default_and_writes_nothing(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],

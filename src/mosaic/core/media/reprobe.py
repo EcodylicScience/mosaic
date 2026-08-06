@@ -182,7 +182,15 @@ class DerivativePlan:
     content_digest_changed: list[str] = field(default_factory=list)
     video_uuid_changed: list[str] = field(default_factory=list)
     patches: Mapping[int, dict[str, object]] = field(default_factory=_empty_patches)
+    # The two ways a back-link fails to lead anywhere, kept apart because they
+    # are not the same kind of fact. ``unresolved`` names an original the index
+    # no longer lists, which an aging corpus reaches honestly.
+    # ``back_link_absent`` is a row recording no origin at all -- a shape nothing
+    # that mints a derivative row can produce, since every such row carries the
+    # source path it was made from. Merged, an invariant violation would read as
+    # ordinary decay.
     unresolved: list[str] = field(default_factory=list)
+    back_link_absent: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     unprobeable: list[str] = field(default_factory=list)
 
@@ -253,6 +261,7 @@ class ReprobeReport:
             "derivative_unknown_columns_dropped": self.derivative.unknown_columns,
             "derivative_links_rekeyed": self.derivative.relinked,
             "derivative_links_unresolved": self.derivative.unresolved,
+            "derivative_links_absent": self.derivative.back_link_absent,
             "derivative_media_missing_count": len(self.derivative.missing),
             "derivative_media_missing": self.derivative.missing,
             "derivative_media_unprobeable_count": len(self.derivative.unprobeable),
@@ -506,6 +515,7 @@ def _plan_derivatives(
 
     relinked = 0
     unresolved: list[str] = []
+    back_link_absent: list[str] = []
     # Only rows that were actually probed: a row left untouched because its own
     # media is missing or unprobeable stays verbatim, back-link included. Writing
     # one would break that promise for no gain, since a derivative whose file is
@@ -514,6 +524,14 @@ def _plan_derivatives(
         row = media_index.rows[probed.row_number]
         source_cell = read_link_cell(row, "source_path")
         if not source_cell:
+            # The derivative's own stored path identifies it, because the cell
+            # that would name its origin is the one that is missing. Scoped to
+            # the probed rows like the resolution below it, so a row whose media
+            # is unreadable is named for that first and reaches this only once
+            # the file is back.
+            back_link_absent.append(
+                f"{label} row {probed.row_number}: {probed.stored_path}"
+            )
             continue
         source = resolve_stored_path(source_cell, media_raw_root).resolve()
         source_uuid = uuid_by_path.get(source)
@@ -547,6 +565,7 @@ def _plan_derivatives(
         ],
         patches=patches,
         unresolved=unresolved,
+        back_link_absent=back_link_absent,
         missing=outcome.missing,
         unprobeable=outcome.unprobeable,
     )

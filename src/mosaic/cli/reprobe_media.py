@@ -17,10 +17,10 @@ def _echo_group(
 ) -> None:
     """Emit one group of rows under a counted header, or nothing.
 
-    The two unreadable conditions get their own group each, wherever they are
-    printed: an archived file and a corrupt one call for different responses, and
-    one merged list would hide which is which. *emit* is the sink, so the abort
-    can report to stderr while the human report goes to stdout.
+    Each reported condition gets its own group, wherever it is printed: an
+    archived file and a corrupt one call for different responses, and one merged
+    list would hide which is which. *emit* is the sink, so the abort can report
+    to stderr while the human report goes to stdout.
     """
     if not details:
         return
@@ -102,6 +102,21 @@ def reprobe_media_command(
         return
 
     typer.echo(f"index: {report.index_path}")
+    # Above the no-changes return, because neither fault is repaired by this
+    # command: both outlive the run that reports them, so the run that changes
+    # nothing is the one an operator sees for as long as the row survives.
+    # Reporting them only alongside other work would leave the steady state
+    # silent, and would disagree with --json, which reports them either way.
+    for unresolved in report.derivative.unresolved:
+        message = "derivative back-link resolves to no indexed original"
+        typer.echo(f"{message}: {unresolved}")
+    # Counted as a group rather than listed line by line: the count is what
+    # tells an operator whether one row or the whole file is affected.
+    absent_header = (
+        "record no source_path and were left untouched -- nothing that mints a "
+        "derivative row produces this shape"
+    )
+    _echo_group(typer.echo, absent_header, report.derivative.back_link_absent)
     if not report.changed:
         typer.echo("reprobe-media: already fully probed; no changes.")
         return
@@ -163,8 +178,5 @@ def reprobe_media_command(
             f"{report.derivative.relinked} back-link(s) re-keyed."
         )
         typer.echo(derivative_summary)
-    for unresolved in report.derivative.unresolved:
-        message = "derivative back-link resolves to no indexed original"
-        typer.echo(f"{message}: {unresolved}")
     for backup in report.backups:
         typer.echo(f"backup: {backup}")

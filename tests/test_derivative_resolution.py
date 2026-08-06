@@ -59,17 +59,24 @@ def _facts_cell(frame_count: int) -> str:
     return json.dumps(dataclasses.asdict(facts))
 
 
-def test_pass_two_matches_source_uuid_never_the_sibling(
+def test_the_uuid_fallback_never_crosses_into_the_sibling_target(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
-    """Routing resolves the derivative by the source's ``video_uuid``.
+    """The uuid fallback's basename guard, pinned on a hand-edited index.
 
-    Both siblings share ``source_video_uuid = "U"``; only the basename guard
-    keeps the playback row (ordered first) from crossing into the analysis
-    lookup. Their abs_path cells resolve away from the routed file, so the exact
-    pass misses and the uuid form is what returns the row; empty ``source_path``
-    cells make the path form unable to match, so the result can only come from
-    the uuid form.
+    **A synthetic guard, not a production path.** No writer produces a
+    derivative row whose ``abs_path`` fails to resolve to the routed file:
+    ``_set_back_link`` builds every row through ``_derivative_row``, which
+    writes ``abs_path`` from ``output_path``, and the forward link the router
+    resolves through is written from that same path -- so the exact pass always
+    matches what mosaic wrote, and nothing of its making reaches the fallback.
+    The rows below are seeded into the shape only an index edited outside mosaic
+    could hold: ``abs_path`` cells resolving away from the routed file.
+
+    What the guard is for: both siblings share ``source_video_uuid = "U"``, so
+    the uuid match alone cannot tell the analysis derivative from the playback
+    one, and only the basename comparison keeps the playback row -- ordered
+    first, so an absent guard would return it -- out of the analysis lookup.
 
     Driven through :meth:`Dataset.route_media_row`, the public entry point that
     performs the lookup: a row marked ``analysis_transcode="required"`` resolves
