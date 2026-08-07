@@ -33,7 +33,10 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
-from mosaic.core.pipeline.tracking_roots import tracking_root_default
+from mosaic.core.pipeline.tracking_roots import (
+    tracking_output_schema,
+    tracking_root_default,
+)
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
@@ -175,7 +178,9 @@ def _bridge_df_to_tracks(
         df["id"] = 0
     if "time" not in df.columns:
         df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
-    ensure_track_schema(df, "trex_v1", strict=False, source=f"{group}/{sequence}")
+    # Declared by the producing root, like every other tracks write path.
+    std_format = tracking_output_schema(kind)
+    ensure_track_schema(df, std_format, strict=False, source=f"{group}/{sequence}")
     _ = write_parquet_atomic(df, out_path)
     # source_abs_path was empty here, because the frame is built in memory and
     # there is no raw file. It now points at the prediction directory this run
@@ -188,7 +193,7 @@ def _bridge_df_to_tracks(
         sequence=sequence,
         out_path=out_path,
         producer=kind,
-        std_format="trex_v1",
+        std_format=std_format,
         n_rows=int(len(df)),
         producer_run_id=producer_run_id,
         source=seq_dir,

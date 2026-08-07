@@ -15,6 +15,13 @@ recipe, so asking whether the table exists asks whether *these settings* already
 produced it, not whether any settings did. Before variants, two tracker runs with
 different settings targeted one path behind an ``exists()`` check and the second
 was discarded with a success return.
+
+**Which schema is the producer's to declare.** It is read per tracker from its
+``TrackingRoot.output_schema``, not spelled once here for all of them. As a
+module constant it left a tracker whose columns genuinely differ nowhere to say
+so, and it silently outranked every other spelling of the same question: because
+all four trackers publish through this module, ``meta.tracks.standard_format``
+had no effect on any tracked table at all.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
+from mosaic.core.pipeline.tracking_roots import tracking_output_schema
 from mosaic.core.schema import ensure_track_schema
 
 if TYPE_CHECKING:
@@ -42,11 +50,6 @@ __all__ = [
     "publish_tracks_table",
     "tracks_table_path",
 ]
-
-# Every tracker bridges into the one generic standardized schema. A tracker whose
-# columns genuinely differ would register its own; none does, and registering a
-# near-copy would fragment what downstream features read.
-STANDARD_FORMAT = "trex_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +137,8 @@ def publish_tracks_table(
             correct, because its identity is already in the run identifier.
     """
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
-    ensure_track_schema(df, STANDARD_FORMAT, strict=False, source=f"{group}/{sequence}")
+    std_format = tracking_output_schema(kind)
+    ensure_track_schema(df, std_format, strict=False, source=f"{group}/{sequence}")
 
     _ = write_parquet_atomic(df, out_path)
 
@@ -146,7 +150,7 @@ def publish_tracks_table(
         sequence=sequence,
         out_path=out_path,
         producer=kind,
-        std_format=STANDARD_FORMAT,
+        std_format=std_format,
         n_rows=counts.n_rows,
         producer_run_id=producer_run_id,
         source=source,

@@ -461,6 +461,9 @@ class _FakeTrex:
             {
                 "frame": np.arange(6),
                 "time": np.arange(6) / 30.0,
+                # TREx records the factor it scaled positions by in every
+                # export; the conversion refuses a file that does not say.
+                "cm_per_pixel": np.array([1.0]),
                 "X#wcentroid": np.arange(6, dtype=float),
                 "Y#wcentroid": np.arange(6, dtype=float),
                 "poseX0": np.arange(6, dtype=float),
@@ -606,6 +609,9 @@ def test_an_extra_trex_column_survives_into_the_tracks_table(
             {
                 "frame": np.arange(6),
                 "time": np.arange(6) / 30.0,
+                # TREx records the factor it scaled positions by in every
+                # export; the conversion refuses a file that does not say.
+                "cm_per_pixel": np.array([1.0]),
                 "X#wcentroid": np.arange(6, dtype=float),
                 "Y#wcentroid": np.arange(6, dtype=float),
                 "poseX0": np.arange(6, dtype=float),

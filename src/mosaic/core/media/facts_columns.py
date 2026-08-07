@@ -75,6 +75,17 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     # (item 4.4) refuse to compute a value for a guessed partition rather than
     # record a confident wrong one.
     "assignment_source",
+    # Centimetres per pixel for this recording: how far apart two adjacent pixels
+    # are in the world. A property of the camera and the rig, which is why it
+    # lives beside the video rather than on a tracks table derived from it -- a
+    # dataset may mix rigs, and a reconversion must not have to be told again.
+    #
+    # Deliberately NOT in MEDIA_NUMERIC_COLUMNS. It is text so that empty can
+    # mean *uncalibrated*: as a number the empty cell would read as 0.0 or NaN,
+    # and the first of those is a scale factor rather than an absence. Nothing
+    # measures it -- no probe can -- so facts_to_row leaves it alone, exactly as
+    # it does for source_video_uuid and recipe_hash.
+    "cm_per_pixel",
 ]
 
 AssignmentSource = Literal[

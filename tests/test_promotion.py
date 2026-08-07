@@ -26,6 +26,8 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
+from .conftest import write_trex_npz
+
 
 def _dataset(tmp_path: Path) -> Dataset:
     manifest = new_dataset_manifest(name="promote", base_dir=tmp_path / "ds")
@@ -322,13 +324,12 @@ def test_a_multi_file_promotion_keeps_every_file(tmp_path: Path) -> None:
 
 
 def _trex_npz(path: Path, value: float) -> None:
-    np.savez(
+    write_trex_npz(
         path,
-        frame=np.arange(5),
-        time=np.arange(5) / 30.0,
-        id=np.array([0]),
+        n=5,
         X=np.full(5, value),
         Y=np.full(5, value),
+        **{"X#wcentroid": np.full(5, value), "Y#wcentroid": np.full(5, value)},
         poseX=np.stack([np.full(5, value)] * 2, axis=1),
         poseY=np.stack([np.full(5, value)] * 2, axis=1),
     )

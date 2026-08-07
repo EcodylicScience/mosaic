@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Literal, overload
 import pandas as pd
 import pyarrow as pa
 
-from ...core.helpers import make_entry_key
+from ...core.helpers import make_entry_key, text_cell
+from ...core.schema import schema_family
 from .sequence_index import read_entry_compositions
 from ._utils import Scope
 from .index import (
@@ -337,19 +338,30 @@ def _resolve_tracks(
     all_entries: list[tuple[str, str]] = []
     missing: list[Path] = []
     resolved_variants: set[str] = set()
-    for _, row in df.iterrows():
+    schema_by_entry: dict[tuple[str, str], str] = {}
+    for _, series in df.iterrows():
+        # Materialized as a string-keyed mapping once per row. A pandas ``Series``
+        # is keyed by an untyped index, so every cell read off it is untyped too
+        # -- and the columns here are all read as text. Cheap beside the ``Series``
+        # ``iterrows`` already builds.
+        row: dict[str, object] = {str(key): value for key, value in series.items()}
         g, s = str(row["group"]), str(row["sequence"])
         entry = (g, s)
-        p = ds.resolve_path(row["abs_path"])
+        p = ds.resolve_path(str(row["abs_path"]))
         if not p.exists():
             missing.append(p)
             continue
         path_map_all[entry] = (p, ParquetLoadSpec())
         all_entries.append(entry)
+        # Read straight off the row rather than through ``.get``: the reader
+        # projects onto the typed schema, so the column is always present and
+        # an index predating it carries "" rather than being absent.
+        schema_by_entry[entry] = text_cell(row["std_format"])
         # Collected here, off the *unscoped* rows, and deliberately not below
         # in the narrowing loop -- see the note in the docstring.
-        if str(row["run_id"]):
-            resolved_variants.add(str(row["run_id"]))
+        variant = str(row["run_id"])
+        if variant:
+            resolved_variants.add(variant)
 
     if missing and not all_entries:
         print(
@@ -376,8 +388,78 @@ def _resolve_tracks(
         scoped.add(entry)
         path_map[entry] = spec
 
+    _refuse_mixed_schemas(scoped, schema_by_entry)
+
     return ResolvedInput(
         scoped, path_map, full_order, path_map_all, tuple(sorted(resolved_variants))
+    )
+
+
+_LEGACY_SCHEMA = "trex_v1"
+"""What a tracks row with no recorded schema is.
+
+The column was added after ``trex_v1`` was the only schema there was, so a blank
+cell is not an unknown -- it is that one, stated by omission.
+"""
+
+
+def _refuse_mixed_schemas(
+    scoped: set[tuple[str, str]],
+    schema_by_entry: dict[tuple[str, str], str],
+) -> None:
+    """Refuse a scope whose tables answer to incompatible schemas.
+
+    ``select_variant_rows`` refuses two variants for **one entry**, and blesses
+    different entries carrying different variants -- which is right, because a
+    mixed dataset of converted and tracked entries is ordinary. What it cannot
+    see is that those variants may mean different *things*: a ``trex_v1`` table
+    is centimetres with ``X`` at the head, a ``mosaic_v1`` table is pixels with
+    ``X`` at the body centre. Reading both into one feature run silently
+    compares the two, and every number that comes out is wrong by a factor
+    nobody recorded.
+
+    Scoped rather than dataset-wide on purpose. A migration converts entries a
+    batch at a time, and refusing on the whole index would make the dataset
+    unusable from the first reconverted entry until the last. What must not
+    happen is one *run* spanning both, and that is exactly what this asks.
+
+    The check is on the schema *family* -- the root of the ``extends`` chain --
+    so ``mosaic_v1`` and ``trex_v2`` mix freely: a feature reading what
+    ``mosaic_v1`` guarantees gets the same meaning from either.
+
+    **An unrecorded schema is read as the legacy one, never as a family of its
+    own.** Every row with an empty cell was written before the column existed,
+    and the only schema that existed then was ``trex_v1`` -- so it *is* that,
+    and pairing the two is not a mixture. Counting blank as its own family
+    instead would fire on every dataset converted before this column, which is
+    the trap ``select_variant_rows`` documents for an unlabelled ``run_id``:
+    the ambiguity is with the historical default, not between two recipes. A
+    blank beside a ``mosaic_v1`` row still refuses, which is the case that
+    matters -- one is centimetres and the other pixels.
+    """
+    families: dict[str, list[tuple[str, str]]] = {}
+    for entry in scoped:
+        recorded = schema_by_entry.get(entry, "") or _LEGACY_SCHEMA
+        families.setdefault(schema_family(recorded), []).append(entry)
+    if len(families) < 2:
+        return
+
+    def describe(family: str) -> str:
+        entries = sorted(families[family])
+        shown = ", ".join(make_entry_key(g, s) for g, s in entries[:3])
+        more = f" (+{len(entries) - 3} more)" if len(entries) > 3 else ""
+        name = family or "<unrecorded>"
+        return f"  {name}: {shown}{more}"
+
+    listing = "\n".join(describe(family) for family in sorted(families))
+    raise ValueError(
+        "This scope resolves tracks tables of incompatible schemas, which do not "
+        "mean the same thing and must not be read together:\n"
+        f"{listing}\n"
+        f"A row with no recorded schema is read as {_LEGACY_SCHEMA!r}, the only one "
+        "there was before the column existed. Reconvert the odd entries out, or "
+        "narrow the scope with groups=/sequences=/entries= so one run reads one "
+        "schema."
     )
 
 

@@ -27,6 +27,21 @@ def trim_feature_output(
     return df_feat.iloc[core_start:core_end].reset_index(drop=True)
 
 
+# --- Parquet reading ---
+
+
+def read_parquet_table(path: Path) -> pd.DataFrame:
+    """Read a whole parquet as a frame.
+
+    A one-line delegation, and the reason is the type checker rather than the
+    behavior: ``pandas.read_parquet`` carries an unknown return through its
+    ``**kwargs`` overload, so every direct call leaves its result partially
+    unknown and the unknown spreads into whatever reads the frame. Confining it
+    to one annotated function keeps that at one site rather than at each caller.
+    """
+    return pd.read_parquet(path)
+
+
 # --- Parquet writing ---
 
 

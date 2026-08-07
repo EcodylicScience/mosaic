@@ -26,7 +26,6 @@ from typing import Final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConvertParams,
@@ -251,6 +250,7 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
     """
 
     src_format = "ultralytics_tracks"
+    output_schema = "trex_v1"
     Params = UltralyticsTracksParams
 
     def convert(
@@ -285,5 +285,4 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
         out = pd.concat(frames, ignore_index=True).sort_values(
             ["frame", "id"], kind="stable", ignore_index=True
         )
-        _ = ensure_track_schema(out, "trex_v1", strict=False, source=str(path))
         return out

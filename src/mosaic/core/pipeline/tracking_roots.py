@@ -41,6 +41,7 @@ __all__ = [
     "TrackingPhase",
     "TrackingRoot",
     "is_under_tracking_root",
+    "tracking_output_schema",
     "tracking_root_default",
 ]
 
@@ -112,6 +113,13 @@ class TrackingRoot:
     per-phase globs are here for the same reason the phase names are -- "what
     does this tool leave, and when" is producer knowledge, and this is where the
     machinery is allowed to have it without importing the producer.
+
+    ``output_schema`` is the track schema this producer's bridged tables answer
+    to -- the tracker-side counterpart of ``TrackConverter.output_schema``, and
+    for the same reason. The bridge used to spell one module-level constant for
+    every tracker, so ``meta.tracks.standard_format`` had no effect on any
+    tracked table and a tracker whose columns genuinely differed had nowhere to
+    say so. One row per producer, and the bridge reads it.
     """
 
     key: str
@@ -119,6 +127,7 @@ class TrackingRoot:
     outputs: tuple[str, ...]
     phase_outputs: tuple[TrackingPhase, ...]
     path_columns: tuple[str, ...] = ()
+    output_schema: str = "trex_v1"
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -229,6 +238,20 @@ def tracking_root_default(key: str) -> str:
         known = ", ".join(sorted(TRACKING_ROOTS))
         raise KeyError(f"unknown tracking root {key!r}; registered roots are {known}")
     return TRACKING_ROOTS[key].default_path
+
+
+def tracking_output_schema(key: str) -> str:
+    """The track schema producer *key* writes, for the caller that validates it.
+
+    Raises on an unregistered key for the same reason
+    :func:`tracking_root_default` does: guessing a schema for a producer that
+    never joined the table would validate its tables against a contract nobody
+    declared for them, and record that guess on every row.
+    """
+    if key not in TRACKING_ROOTS:
+        known = ", ".join(sorted(TRACKING_ROOTS))
+        raise KeyError(f"unknown tracking root {key!r}; registered roots are {known}")
+    return TRACKING_ROOTS[key].output_schema
 
 
 def is_under_tracking_root(parts: tuple[str, ...]) -> bool:

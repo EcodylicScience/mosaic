@@ -25,6 +25,8 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 
+from .conftest import write_trex_npz
+
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 
 
@@ -62,14 +64,10 @@ def _dlc_csv(path: Path, n_frames: int = 6) -> None:
 
 
 def _trex_npz(path: Path, *, individual: int, n: int = 5) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
+    write_trex_npz(
         path,
-        frame=np.arange(n, dtype=np.int64),
-        time=np.arange(n, dtype=float) / 30.0,
-        id=np.array([individual]),
-        X=np.linspace(0.0, 1.0, n),
-        Y=np.linspace(1.0, 0.0, n),
+        individual=individual,
+        n=n,
         poseX=np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
         poseY=np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
     )

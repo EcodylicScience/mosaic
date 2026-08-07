@@ -23,6 +23,8 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
 
+from .conftest import write_trex_npz
+
 
 def _dataset(base: Path) -> Dataset:
     base.mkdir(parents=True, exist_ok=True)
@@ -47,8 +49,9 @@ def _dataset(base: Path) -> Dataset:
 def _trex_npz(path: Path, *, n: int = 8, seed: int = 0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    np.savez(
+    write_trex_npz(
         path,
+        n=n,
         time=np.arange(n, dtype=float),
         poseX0=rng.random(n),
         poseY0=rng.random(n),

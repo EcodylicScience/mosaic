@@ -123,6 +123,23 @@ class TrackConverter(Generic[P]):
             from this one the first time a format is added. Not compatible with
             ``enumerable``: they are opposite claims about the same
             file/sequence relationship, and the machinery can act on only one.
+        output_schema: The track schema this converter's tables answer to, and
+            the single place that answer is spelled. It used to live in two
+            places at once: each ``convert`` hard-coded a name while
+            ``Dataset`` validated the very same frame against
+            ``meta.tracks.standard_format``, so one table was checked twice
+            under two independently chosen names and the index row recorded
+            only the second. A dataset could carry two labels for one schema
+            and no test asserted what any converter wrote.
+
+            A ClassVar rather than a ``Params`` field on purpose: ClassVars
+            never enter ``identity_dump()``, so declaring one moves no tracks
+            variant. Declaring a *different* schema is a change of output
+            semantics and takes a ``version`` bump like any other.
+
+            The default names ``trex_v1`` because that is what a converter
+            written before this existed emits -- describing it, rather than
+            asking every out-of-tree converter to restate it.
         Params: The parameter model. Everything in it determines the output
             except fields marked ``HASH_EXCLUDE``.
     """
@@ -131,6 +148,7 @@ class TrackConverter(Generic[P]):
     version: ClassVar[str] = "0.1"
     enumerable: ClassVar[bool] = False
     merges_per_sequence: ClassVar[bool] = False
+    output_schema: ClassVar[str] = "trex_v1"
     Params: ClassVar[type[TrackConvertParams]] = TrackConvertParams
 
     def convert(self, path: Path, params: P, hints: EntryHints) -> pd.DataFrame:

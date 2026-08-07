@@ -91,7 +91,7 @@ class NearestNeighborDelta:
 
     Params:
         sampling: Frame rate and smoothing settings. Default: SamplingConfig().
-        speed_col: Column name for speed. Default: "SPEED#wcentroid".
+        speed_col: Column name for speed. Default: "SPEED".
         nn_id_col: Column name for the nearest-neighbor ID.
             Default: "nn_id".
         nn_dx_ego_col: Column for neighbor delta-x in ego frame.
@@ -131,7 +131,7 @@ class NearestNeighborDelta:
 
     category = "per-frame"
     name = "nn-delta-response"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
@@ -141,7 +141,7 @@ class NearestNeighborDelta:
 
     class Params(Params):
         sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        speed_col: str = "SPEED#wcentroid"
+        speed_col: str = "SPEED"
         nn_id_col: str = "nn_id"
         nn_dx_ego_col: str = "nn_delta_x_ego"
         nn_dy_ego_col: str = "nn_delta_y_ego"
@@ -195,18 +195,30 @@ class NearestNeighborDelta:
             if p.nn_id_col in df.columns
             else ("nn_fishID" if "nn_fishID" in df.columns else None)
         )
-        if (
-            speed_col is None
-            or nn_id_col is None
-            or C.frame_col not in df
-            or C.id_col not in df
-        ):
-            return pd.DataFrame()
+        missing: list[str] = []
+        if speed_col is None:
+            missing.append(
+                f"a speed column ({p.speed_col!r}, or 'speed'). Tracks tables carry "
+                "no speed of their own -- it is derived, so it belongs to a "
+                "feature: run 'speed-angvel' first, or point speed_col= at a "
+                "column this table actually has"
+            )
+        if nn_id_col is None:
+            missing.append(f"a neighbor id column ({p.nn_id_col!r}, or 'nn_fishID')")
+        if C.frame_col not in df:
+            missing.append(repr(C.frame_col))
+        if C.id_col not in df:
+            missing.append(repr(C.id_col))
+        if missing:
+            raise ValueError(
+                f"{self.name} cannot run on this table: it needs "
+                + "; ".join(missing)
+                + ". This used to return an empty frame instead, so a run over a "
+                "table missing one of these reported success having computed "
+                "nothing."
+            )
 
-        try:
-            order_col = resolve_order_col(df)
-        except ValueError:
-            return pd.DataFrame()
+        order_col = resolve_order_col(df)
         df = df.sort_values([order_col, C.id_col]).reset_index(drop=True)
 
         diff_n = p.diff_numframes

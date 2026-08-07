@@ -268,6 +268,7 @@ class Calms21Converter(TrackConverter[Calms21Params]):
     # what it emits, and this changed the entry keys and therefore the filenames.
     version = "0.2"
     enumerable = True
+    output_schema = "trex_v1"
     Params = Calms21Params
 
     def convert(

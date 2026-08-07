@@ -2680,6 +2680,12 @@ class Dataset:
             ]
             if not reassign:
                 self._keep_assigned_identity(dedup, committed)
+            # Unconditional, and deliberately outside the ``reassign`` guard: a
+            # calibration is not identity. ``reassign`` says the scan may
+            # re-derive which sequence a file belongs to, which no more licenses
+            # discarding how many centimetres its pixels are than it licenses
+            # discarding the file.
+            self._keep_calibration(dedup, committed)
             if prune_unsourced:
                 preserved = []
             self._carry_forward_derivative_links(dedup, out_csv)
@@ -3745,6 +3751,127 @@ class Dataset:
             for column in self._IDENTITY_COLUMNS:
                 if column in prior:
                     row[column] = prior[column]
+            kept += 1
+        return kept
+
+    def set_media_calibration(
+        self,
+        cm_per_pixel: float | None,
+        *,
+        group: str | None = None,
+        sequence: str | None = None,
+        index_filename: str = "index.csv",
+    ) -> int:
+        """Record how many centimetres one pixel spans, per media row.
+
+        The scale a physical unit is computed from. It lives here, on the video,
+        because that is what it is a property of: the camera and the rig it was
+        mounted on. A dataset that mixes rigs, zoom levels or cameras carries a
+        different value per row and nothing has to be told twice; a tracks table
+        derived from the video inherits the answer rather than restating it, and
+        a reconversion does not lose it.
+
+        Not applied to any table. Positions in ``tracks/`` are pixels, and
+        converting them is a feature's job, where the choice is recorded in a
+        run identifier. This records the input that feature reads.
+
+        Args:
+            cm_per_pixel: Centimetres per pixel, or ``None`` to clear the value
+                back to uncalibrated. Must be positive when given.
+            group: Restrict to this group. ``None`` means every group.
+            sequence: Restrict to this sequence. ``None`` means every sequence.
+            index_filename: Output filename within the media root.
+
+        Returns:
+            How many rows were updated.
+
+        Raises:
+            ValueError: If *cm_per_pixel* is not positive.
+        """
+        if cm_per_pixel is not None and not cm_per_pixel > 0.0:
+            raise ValueError(
+                f"cm_per_pixel={cm_per_pixel} is not a usable scale. Pass None to "
+                "clear it back to uncalibrated."
+            )
+        cell = "" if cm_per_pixel is None else repr(float(cm_per_pixel))
+
+        out_csv = self.get_root(self.resolve_media_root()) / index_filename
+        updated = 0
+        with index_lock(out_csv):
+            rows = [dict(row) for row in _read_media_index(out_csv)]
+            for row in rows:
+                if group is not None and read_link_cell(row, "group") != group:
+                    continue
+                if sequence is not None and read_link_cell(row, "sequence") != sequence:
+                    continue
+                row["cm_per_pixel"] = cell
+                updated += 1
+            write_media_index_rows(out_csv, frame_from_rows(rows))
+        return updated
+
+    def media_calibration(self, group: str, sequence: str) -> float | None:
+        """The ``cm_per_pixel`` recorded for *(group, sequence)*, or ``None``.
+
+        ``None`` means uncalibrated -- no row says -- which a caller needing a
+        physical unit must treat as a refusal rather than as ``1.0``.
+
+        Raises:
+            ValueError: If the sequence's rows disagree. One sequence is one
+                recording; two scales for it is a contradiction, and averaging
+                or taking the first would silently pick one.
+        """
+        values = {
+            text
+            for row in self.read_media_index()
+            if read_link_cell(row, "group") == group
+            and read_link_cell(row, "sequence") == sequence
+            and (text := read_link_cell(row, "cm_per_pixel"))
+        }
+        if not values:
+            return None
+        if len(values) > 1:
+            raise ValueError(
+                f"Sequence ({group!r}, {sequence!r}) records {len(values)} different "
+                f"cm_per_pixel values ({sorted(values)}). One sequence is one "
+                "recording, so it has one scale."
+            )
+        return float(next(iter(values)))
+
+    def _keep_calibration(
+        self,
+        fresh: list[dict[str, object]],
+        committed: Sequence[Mapping[str, object]],
+    ) -> int:
+        """Carry a recorded ``cm_per_pixel`` onto freshly scanned rows. In place.
+
+        Separate from :meth:`_keep_assigned_identity`, and keyed on the value
+        being present rather than on ``assignment_source``. The two answer
+        different questions: that one protects a *fact* about which sequence a
+        file belongs to from being overwritten by a *guess*, and only an
+        assigned identity is a fact. A calibration has no guessed counterpart --
+        no probe measures it, so a scan never proposes one -- and it is equally
+        real whether the row's identity came from a caller or from a filename.
+
+        Returns:
+            How many rows kept a calibration.
+        """
+        calibrated: dict[Path, str] = {}
+        for row in committed:
+            value = read_link_cell(row, "cm_per_pixel")
+            stored = str(row.get("abs_path", "") or "").strip()
+            if value and stored:
+                calibrated[self.resolve_path(stored).resolve()] = value
+        if not calibrated:
+            return 0
+        kept = 0
+        for row in fresh:
+            stored = str(row.get("abs_path", "") or "").strip()
+            if not stored:
+                continue
+            prior = calibrated.get(self.resolve_path(stored).resolve())
+            if prior is None:
+                continue
+            row["cm_per_pixel"] = prior
             kept += 1
         return kept
 
@@ -4873,16 +5000,22 @@ class Dataset:
         covered: set[tuple[str, str]] | None = None,
     ) -> Path:
         """
-        Convert a single raw track file (row from tracks_raw/index.csv) to standard trex_v1 parquet.
+        Convert a single raw track file (row from tracks_raw/index.csv) to a
+        standardized parquet in whatever schema the converter declares.
         Returns path to standardized file, updates tracks/index.csv.
         """
         params = params or {}
-        std_fmt = str(self.meta_section("tracks").get("standard_format", "trex_v1"))
         src_format = str(raw_row["src_format"])
         src_path = self.resolve_path(raw_row["abs_path"])
 
         converter = get_track_converter(src_format)
         conv_params = self._converter_params(converter, params)
+        # Asked of the converter rather than of the manifest. A dataset-level
+        # ``standard_format`` was the wrong altitude: one dataset legitimately
+        # holds tables from several converters, and only the converter knows
+        # what shape it emits. It also let the name the table was *validated*
+        # against differ from the one its index row *recorded*.
+        std_fmt = converter.output_schema
         # Minted and recorded once per recipe, not per entry, and carried onto
         # every row this call writes. Also names the directory the tables live in
         # and described in its params.json, so a variant is explicable from disk.
@@ -5273,10 +5406,10 @@ class Dataset:
             self._warn_superseded_entries(covered)
             return ConversionOutcome(converted=len(covered), failed=len(failures))
 
-        # Read once, and from the manifest rather than spelled "trex_v1" here:
-        # convert_one_track already asks the manifest, and the two paths writing
-        # different std_format values for one dataset is the drift that costs.
-        std_fmt = str(self.meta_section("tracks").get("standard_format", "trex_v1"))
+        # The schema is *not* read here. This loop groups by ``src_format``, so
+        # one call can span converters, and a single value chosen up front would
+        # label one converter's tables with another's schema. It is read from
+        # each group's own converter below, beside the variant it mints.
 
         # Merge per (group, sequence, src_format). The same rule the single-file
         # path applies per cell, applied here per column: these three both key
@@ -5381,7 +5514,7 @@ class Dataset:
             merged_df = merge_on_column_union(dfs)
             _, _schema_report = ensure_track_schema(
                 merged_df,
-                std_fmt,
+                converter.output_schema,
                 strict=conv_params.strict_schema,
                 source=f"{group}/{sequence} (merged)",
             )
@@ -5400,7 +5533,7 @@ class Dataset:
                 sequence=sequence,
                 out_path=out_path,
                 producer=converter_op(src_format),
-                std_format=std_fmt,
+                std_format=converter.output_schema,
                 n_rows=int(len(merged_df)),
                 source=self.resolve_path(first_row["abs_path"]),
                 source_md5=text_cell(first_row.get("md5", "")),

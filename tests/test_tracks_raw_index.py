@@ -30,6 +30,8 @@ from mosaic.core.pipeline.tracks_raw_index import (
     write_tracks_raw_index_rows,
 )
 
+from .conftest import write_trex_npz
+
 
 def _make_dataset(base: Path) -> Dataset:
     base.mkdir(parents=True, exist_ok=True)
@@ -62,8 +64,9 @@ def _trex_npz(
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    np.savez(
+    write_trex_npz(
         path,
+        n=n,
         time=np.arange(n, dtype=float),
         poseX0=rng.random(n),
         poseY0=rng.random(n),

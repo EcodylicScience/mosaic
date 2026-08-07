@@ -41,6 +41,8 @@ from mosaic.core.track_library.sleap import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
+from .conftest import write_trex_npz
+
 # What entry identity is spelled as. A converter may accept these as hints; none
 # may accept them as parameters.
 ENTRY_KEYS = frozenset({"group", "sequence", "group_from"})
@@ -167,13 +169,10 @@ def test_indexing_refuses_a_format_no_converter_claims(tmp_path: Path) -> None:
 
 
 def _write_trex_npz(path: Path, n: int = 12, ind: int = 0) -> None:
-    np.savez(
+    write_trex_npz(
         path,
-        frame=np.arange(n, dtype=np.int64),
-        time=np.arange(n, dtype=float) / 30.0,
-        id=np.array([ind]),
-        X=np.linspace(0.0, 1.0, n),
-        Y=np.linspace(1.0, 0.0, n),
+        n=n,
+        individual=ind,
         poseX=np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
         poseY=np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
     )

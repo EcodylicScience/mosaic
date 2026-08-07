@@ -34,7 +34,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -254,6 +253,7 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
     """SLEAP analysis ``.h5`` -> a ``trex_v1`` table."""
 
     src_format = "sleap_analysis_h5"
+    output_schema = "trex_v1"
     Params = SleapConvertParams
 
     def convert(
@@ -284,5 +284,4 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
             if frames
             else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
         )
-        ensure_track_schema(out, "trex_v1", strict=False, source=str(path))
         return out

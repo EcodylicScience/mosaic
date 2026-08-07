@@ -32,7 +32,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -252,6 +251,7 @@ class DlcConverter(TrackConverter[DlcParams]):
     """DeepLabCut ``.csv`` / ``.h5`` -> a ``trex_v1`` table."""
 
     src_format = "deeplabcut"
+    output_schema = "trex_v1"
     Params = DlcParams
 
     def convert(self, path: Path, params: DlcParams, hints: EntryHints) -> pd.DataFrame:
@@ -270,5 +270,4 @@ class DlcConverter(TrackConverter[DlcParams]):
             if frames
             else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
         )
-        ensure_track_schema(out, "trex_v1", strict=False, source=str(path))
         return out

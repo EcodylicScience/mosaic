@@ -37,7 +37,6 @@ from typing import Annotated
 import pandas as pd
 
 from mosaic.core.pipeline.types import HASH_EXCLUDE
-from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -72,6 +71,10 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     # Set True and override sequence_from_stem if several files make one
     # sequence -- one file per individual, named <sequence>_<individual>.
     merges_per_sequence = False
+    # Which schema the tables answer to. Declared here and nowhere else: the
+    # caller validates against this, so a converter cannot claim one schema
+    # while its rows are recorded under another.
+    output_schema = "trex_v1"
     Params = MyFormatParams
 
     def convert(
@@ -79,14 +82,13 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     ) -> pd.DataFrame:
         # 1. Load data from path
         # 2. Extract per-animal trajectories
-        # 3. Compute centroid, velocity, heading angle
-        # 4. Build a DataFrame with the standard columns, taking group and
+        # 3. Build a DataFrame with the standard columns, taking group and
         #    sequence from `hints` (falling back to the file stem)
-        df = self._build_frame(path, params, hints)
-        ensure_track_schema(
-            df, "trex_v1", strict=params.strict_schema, source=str(path)
-        )
-        return df
+        #
+        # Do not validate here -- the caller validates every table it writes
+        # against ``output_schema`` above, and a second check under a
+        # separately chosen name is how the two drifted apart.
+        return self._build_frame(path, params, hints)
 
     def _build_frame(
         self, path: Path, params: MyFormatParams, hints: EntryHints

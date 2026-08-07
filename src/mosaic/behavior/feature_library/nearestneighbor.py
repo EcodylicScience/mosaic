@@ -32,12 +32,14 @@ class NearestNeighbor:
       - nn_delta_x / nn_delta_y: neighbor position minus focal, world frame
       - nn_dist: Euclidean distance to nearest neighbor
       - nn_delta_angle: neighbor heading minus focal, wrapped to [-pi, pi]
+      - nn_ego_unrotated: True when no heading column was available, so the
+        `_ego` offsets above are world-frame rather than egocentric
       - nn_delta_x_ego / nn_delta_y_ego: neighbor offset in focal ego frame
     """
 
     category = "per-frame"
     name = "nearest-neighbor"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
@@ -145,6 +147,15 @@ class NearestNeighbor:
         )
         if nn_dangle is not None:
             out["nn_delta_angle"] = nn_dangle
+
+        # Without a heading there is nothing to rotate into, so the ``_ego``
+        # offsets above are the *world* offsets under an egocentric name -- which
+        # reads as a perfectly good egocentric measurement and is not one. The
+        # fallback stays (a neighbour's distance and bearing in world coordinates
+        # is still worth having), but it stops being invisible: a reader can now
+        # tell an unrotated frame from a genuinely zero heading, which is the
+        # distinction the numbers alone do not carry.
+        out["nn_ego_unrotated"] = angles is None
 
         meta = C.meta_set() & set(df.columns)
         return out.join(df[sorted(meta)])
