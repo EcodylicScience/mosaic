@@ -216,6 +216,11 @@ def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> 
 
     The group is empty, so the composite key renders as the bare sequence name
     and the parquet is ``<sequence>.parquet``.
+
+    ``X``/``Y`` are here because the features these scenarios run need them. Without
+    them every entry's ``apply`` raised, and because a per-entity failure used to be
+    swallowed, the run reported success having computed nothing -- so tests asserted
+    on the ``params.json`` of a run with no outputs.
     """
     tracks = dataset.get_root("tracks")
     tracks.mkdir(parents=True, exist_ok=True)
@@ -226,6 +231,8 @@ def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> 
                 "frame": frame,
                 "time": frame / 30.0,
                 "id": np.zeros(n_rows, dtype=np.int64),
+                "X": np.linspace(0.0, 10.0, n_rows),
+                "Y": np.linspace(10.0, 0.0, n_rows),
                 "feat_a": np.linspace(0.0, 1.0, n_rows),
             }
         ).to_parquet(tracks / f"{sequence}.parquet")
