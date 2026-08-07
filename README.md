@@ -10,8 +10,8 @@ training, and annotated video output.
 
 Given pose tracks (per-frame keypoints with identities), mosaic produces:
 
-- standardized parquet track tables from CalMS21, MABe22, TREx, SLEAP,
-  Lightning Pose, DeepLabCut, or user-defined formats;
+- standardized parquet track tables from CalMS21, TREx, SLEAP,
+  Lightning Pose, DeepLabCut, Ultralytics, or user-defined formats;
 - per-frame and per-sequence behavioral features — kinematic, social, spectral,
   and reduction;
 - unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,
@@ -113,9 +113,6 @@ canonical end-to-end example. It walks through:
 5. supervised classification via `extract-labeled-templates` and XGBoost,
    with optional temporal-context stacking;
 6. visualization of predictions on the embedding.
-
-Additional notebooks for the MABe22 mouse-triplet and beetle-ant datasets are
-available in [`notebooks/`](notebooks/).
 
 ## Concepts
 

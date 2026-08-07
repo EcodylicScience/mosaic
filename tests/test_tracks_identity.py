@@ -30,7 +30,10 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.track_converter import TrackConvertParams
-from mosaic.core.track_library.mabe22 import Mabe22Converter, Mabe22Params
+from mosaic.core.track_library.sleap import (
+    SleapAnalysisH5Converter,
+    SleapConvertParams,
+)
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 VARIANT = re.compile(r"^[a-z0-9_-]+\.[0-9]+(?:\.[0-9]+)*-[0-9a-f]{10}$")
@@ -41,30 +44,34 @@ VARIANT = re.compile(r"^[a-z0-9_-]+\.[0-9]+(?:\.[0-9]+)*-[0-9a-f]{10}$")
 
 def test_a_variant_names_its_producer_and_version() -> None:
     """Readable on disk, so two producers are told apart without a lookup."""
-    minted = tracks_run_id("convert-mabe22_npy", "0.1", {"params": {"fps": 30.0}})
+    minted = tracks_run_id(
+        "convert-sleap_analysis_h5", "0.1", {"params": {"fps": 30.0}}
+    )
 
     assert VARIANT.match(minted), minted
-    assert minted.startswith("convert-mabe22_npy.0.1-")
+    assert minted.startswith("convert-sleap_analysis_h5.0.1-")
 
 
 def test_it_parses_as_an_op_run_id() -> None:
     """One format for every run identifier in the codebase, not two.
 
     Including when the producer segment carries an underscore, which every
-    converted variant does -- raw formats are spelled ``mabe22_npy``.
+    converted variant does -- raw formats are spelled ``sleap_analysis_h5``.
     """
     parsed = parse_op_run_id(tracks_run_id("trex", "0.1", {"a": 1}))
     assert parsed is not None
     assert (parsed.kind, parsed.version) == ("trex", "0.1")
 
-    converted = parse_op_run_id(tracks_run_id("convert-mabe22_npy", "0.1", {"a": 1}))
+    converted = parse_op_run_id(
+        tracks_run_id("convert-sleap_analysis_h5", "0.1", {"a": 1})
+    )
     assert converted is not None
-    assert converted.kind == "convert-mabe22_npy"
+    assert converted.kind == "convert-sleap_analysis_h5"
 
 
 def test_a_different_recipe_is_a_different_variant() -> None:
-    a = tracks_run_id("convert-mabe22_npy", "0.1", {"params": {"fps": 30.0}})
-    b = tracks_run_id("convert-mabe22_npy", "0.1", {"params": {"fps": 60.0}})
+    a = tracks_run_id("convert-sleap_analysis_h5", "0.1", {"params": {"fps": 30.0}})
+    b = tracks_run_id("convert-sleap_analysis_h5", "0.1", {"params": {"fps": 60.0}})
 
     assert a != b
 
@@ -101,15 +108,17 @@ def test_the_producer_segment_says_a_conversion_is_a_conversion() -> None:
 
 
 def test_a_variant_records_what_it_is(tmp_path: Path) -> None:
-    run_id = tracks_run_id("convert-mabe22_npy", "0.1", {"params": {"fps": 30.0}})
+    run_id = tracks_run_id(
+        "convert-sleap_analysis_h5", "0.1", {"params": {"fps": 30.0}}
+    )
 
     path = write_tracks_variant(
-        tmp_path, run_id, "convert-mabe22_npy", "0.1", {"fps": 30.0}
+        tmp_path, run_id, "convert-sleap_analysis_h5", "0.1", {"fps": 30.0}
     )
     record = json.loads(path.read_text())
 
     assert path == tracks_variant_root(tmp_path, run_id) / "params.json"
-    assert record["op"] == "convert-mabe22_npy"
+    assert record["op"] == "convert-sleap_analysis_h5"
     assert record["version"] == "0.1"
     assert record["params"] == {"fps": 30.0}
     assert record["identity_scheme"] == TRACKS_IDENTITY_SCHEME
@@ -161,8 +170,8 @@ def test_one_recipe_is_one_variant_across_every_sequence(tmp_path: Path) -> None
     which is what P2d says an identifier must not do.
     """
     dataset = _dataset(tmp_path, "one-recipe")
-    converter = Mabe22Converter()
-    params = Mabe22Params(fps=30.0)
+    converter = SleapAnalysisH5Converter()
+    params = SleapConvertParams(fps=30.0)
 
     first = dataset._tracks_variant(converter, params)
     second = dataset._tracks_variant(converter, params)
@@ -173,11 +182,11 @@ def test_one_recipe_is_one_variant_across_every_sequence(tmp_path: Path) -> None
 def test_two_converters_are_two_variants(tmp_path: Path) -> None:
     dataset = _dataset(tmp_path, "two-converters")
 
-    mabe = dataset._tracks_variant(Mabe22Converter(), Mabe22Params())
+    sleap = dataset._tracks_variant(SleapAnalysisH5Converter(), SleapConvertParams())
     trex = dataset._tracks_variant(TrexNpzConverter(), TrackConvertParams())
 
-    assert mabe != trex
-    assert mabe.startswith("convert-mabe22_npy.")
+    assert sleap != trex
+    assert sleap.startswith("convert-sleap_analysis_h5.")
     assert trex.startswith("convert-trex_npz.")
 
 
@@ -186,10 +195,12 @@ def test_validation_strictness_does_not_mint_a_second_variant(
 ) -> None:
     """``strict_schema`` is HASH_EXCLUDE, so it reaches no identity."""
     dataset = _dataset(tmp_path, "strictness")
-    converter = Mabe22Converter()
+    converter = SleapAnalysisH5Converter()
 
-    lenient = dataset._tracks_variant(converter, Mabe22Params(strict_schema=False))
-    strict = dataset._tracks_variant(converter, Mabe22Params(strict_schema=True))
+    lenient = dataset._tracks_variant(
+        converter, SleapConvertParams(strict_schema=False)
+    )
+    strict = dataset._tracks_variant(converter, SleapConvertParams(strict_schema=True))
 
     assert lenient == strict
 
@@ -197,7 +208,9 @@ def test_validation_strictness_does_not_mint_a_second_variant(
 def test_converting_records_the_variant_beside_the_tracks(tmp_path: Path) -> None:
     """Explicable from disk, not merely comparable."""
     dataset = _dataset(tmp_path, "recorded")
-    run_id = dataset._tracks_variant(Mabe22Converter(), Mabe22Params(fps=30.0))
+    run_id = dataset._tracks_variant(
+        SleapAnalysisH5Converter(), SleapConvertParams(fps=30.0)
+    )
 
     record = json.loads(
         (
@@ -205,7 +218,7 @@ def test_converting_records_the_variant_beside_the_tracks(tmp_path: Path) -> Non
         ).read_text()
     )
 
-    assert record["op"] == "convert-mabe22_npy"
+    assert record["op"] == "convert-sleap_analysis_h5"
     assert record["params"]["fps"] == 30.0
 
 

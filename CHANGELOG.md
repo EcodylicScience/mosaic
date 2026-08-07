@@ -64,6 +64,25 @@ copies. The classification head's weights are now drawn from a seeded generator:
 with identical params started from different weights and ended at different
 predictions while the `run_id` matched and the cache hit.
 
+**The MABe22 converters are gone, and with them the `mabe22_npy` format name.**
+Both the track converter and the behavior label converter are removed, along with
+the mouse-triplets notebook and the script that generated it. Neither converter
+was ever exercised against real data beyond its own fixtures, and an untested
+reader of a benchmark format is a claim mosaic could not stand behind. A dataset
+holding `convert-mabe22_npy.*` tracks variants keeps its tables and its index
+rows — nothing on disk is rewritten — but the format can no longer be converted,
+and `get_track_converter("mabe22_npy")` now raises and names the formats that do
+exist. CalMS21 is unaffected and remains the reference dataset the template
+notebook is built on.
+
+Two test files used `Mabe22Converter` as their vehicle for the converter-identity
+seam rather than as their subject, and now use the SLEAP converter, which carries
+`fps` and keeps the underscore in `sleap_analysis_h5` that the run-identifier
+parsing test depends on. One MABe22 test was the only cover anywhere for a
+converter refusing to guess among several sequences in one file; CalMS21 has the
+same guard and had no test for it, so that test moved across rather than being
+deleted with the format.
+
 ###  The manifest says where the data comes from
 
 **`dataset.yaml` is at version 2, and declares its scan sources.** Roots were

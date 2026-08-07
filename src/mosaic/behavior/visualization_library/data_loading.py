@@ -242,7 +242,7 @@ def load_ground_truth_labels(
     if "frames" in payload.files:
         frames = payload["frames"]
     else:
-        # Dense label format (e.g. mabe22_behavior): one entry per frame,
+        # Dense label format (e.g. calms21_behavior): one entry per frame,
         # implicitly indexed 0..N-1.
         frames = np.arange(len(label_ids), dtype=np.int64)
     label_id_list = payload.get("label_ids")

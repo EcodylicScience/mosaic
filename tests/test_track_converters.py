@@ -34,7 +34,10 @@ from mosaic.core.track_converter import (
     register_track_converter,
 )
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
-from mosaic.core.track_library.mabe22 import Mabe22Converter, Mabe22Params
+from mosaic.core.track_library.sleap import (
+    SleapAnalysisH5Converter,
+    SleapConvertParams,
+)
 from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
@@ -211,67 +214,6 @@ def test_trex_npz_declares_that_several_files_are_one_sequence() -> None:
     assert TrexNpzConverter().sequence_from_stem("no_suffix") == "no_suffix"
 
 
-def _write_mabe22(path: Path, sequences: dict[str, int]) -> None:
-    payload = {
-        "vocabulary": {"a": 0},
-        "sequences": {
-            name: {"keypoints": np.zeros((n, 2, 3, 2), dtype=float)}
-            for name, n in sequences.items()
-        },
-    }
-    np.save(path, payload, allow_pickle=True)
-
-
-def test_mabe22_selects_the_hinted_sequence(tmp_path: Path) -> None:
-    npy = tmp_path / "mouse_triplet_train.npy"
-    _write_mabe22(npy, {"seq_a": 5, "seq_b": 7})
-
-    df = Mabe22Converter().convert(
-        npy, Mabe22Params(fps=30.0), EntryHints(sequence="seq_b")
-    )
-
-    assert set(df["sequence"]) == {"seq_b"}
-    assert set(df["group"]) == {"mouse_triplet_train"}
-
-
-def test_mabe22_refuses_to_guess_among_several_sequences(tmp_path: Path) -> None:
-    npy = tmp_path / "multi.npy"
-    _write_mabe22(npy, {"seq_a": 5, "seq_b": 7})
-
-    with pytest.raises(ValueError, match="contains 2 sequences"):
-        _ = Mabe22Converter().convert(npy, Mabe22Params(), EntryHints())
-
-
-def test_mabe22_converts_a_lone_sequence_without_a_hint(tmp_path: Path) -> None:
-    """Preserved behaviour: one sequence is unambiguous."""
-    npy = tmp_path / "single.npy"
-    _write_mabe22(npy, {"only": 5})
-
-    df = Mabe22Converter().convert(npy, Mabe22Params(), EntryHints())
-
-    assert set(df["sequence"]) == {"only"}
-
-
-def test_mabe22_enumerates_its_sequences(tmp_path: Path) -> None:
-    npy = tmp_path / "grp.npy"
-    _write_mabe22(npy, {"seq_a": 5, "seq_b": 7})
-
-    assert Mabe22Converter().enumerate_sequences(npy) == [
-        ("grp", "seq_a"),
-        ("grp", "seq_b"),
-    ]
-
-
-def test_mabe22_has_one_spelling_of_fps() -> None:
-    """The old converter read ``fps`` falling back to ``fps_default``.
-
-    One behaviour with two payload shapes would mint two tracks variants for
-    identical output, so the fallback moved to the caller, before hashing.
-    """
-    assert "fps" in Mabe22Params.model_fields
-    assert "fps_default" not in Mabe22Params.model_fields
-
-
 def _write_calms21(path: Path, pairs: dict[str, dict[str, int]]) -> None:
     payload = {
         group: {
@@ -291,6 +233,30 @@ def test_calms21_enumerates_group_sequence_pairs(tmp_path: Path) -> None:
         ("train", "s0"),
         ("train", "s1"),
     ]
+
+
+def test_calms21_refuses_to_guess_among_several_sequences(tmp_path: Path) -> None:
+    """A file holding several sequences is ambiguous without a hint.
+
+    The converter says so rather than picking one -- silently converting the
+    first would mint tracks for an entry the caller never named.
+    """
+    npy = tmp_path / "multi.npy"
+    _write_calms21(npy, {"train": {"s0": 4, "s1": 4}})
+
+    with pytest.raises(ValueError, match="contains multiple sequences"):
+        _ = Calms21Converter().convert(npy, Calms21Params(), EntryHints())
+
+
+def test_a_converter_has_one_spelling_of_fps() -> None:
+    """One behaviour with two payload shapes would mint two variants.
+
+    A converter reading ``fps`` and falling back to ``fps_default`` would hash
+    identical output twice, so the fallback is resolved by the caller before the
+    value reaches the digest.
+    """
+    assert "fps" in SleapConvertParams.model_fields
+    assert "fps_default" not in SleapConvertParams.model_fields
 
 
 def test_calms21_registers_one_class_per_source_format() -> None:
@@ -323,7 +289,7 @@ def test_two_sequences_of_one_recipe_share_one_params_payload(tmp_path: Path) ->
     same object for both, or one recipe becomes as many variants as there are
     sequences.
     """
-    params = Mabe22Params(fps=30.0)
+    params = SleapConvertParams(fps=30.0)
 
     first = EntryHints(group="g", sequence="seq_a")
     second = EntryHints(group="g", sequence="seq_b")
@@ -341,9 +307,9 @@ def test_the_dataset_resolves_fps_from_its_own_default(tmp_path: Path) -> None:
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     dataset.meta["fps_default"] = 60.0
 
-    resolved = dataset._converter_params(Mabe22Converter(), None)
+    resolved = dataset._converter_params(SleapAnalysisH5Converter(), None)
 
-    assert isinstance(resolved, Mabe22Params)
+    assert isinstance(resolved, SleapConvertParams)
     assert resolved.fps == 60.0
 
 
@@ -354,9 +320,9 @@ def test_an_explicit_fps_outranks_the_dataset_default(tmp_path: Path) -> None:
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     dataset.meta["fps_default"] = 60.0
 
-    resolved = dataset._converter_params(Mabe22Converter(), {"fps": 25.0})
+    resolved = dataset._converter_params(SleapAnalysisH5Converter(), {"fps": 25.0})
 
-    assert isinstance(resolved, Mabe22Params)
+    assert isinstance(resolved, SleapConvertParams)
     assert resolved.fps == 25.0
 
 
@@ -382,13 +348,15 @@ def test_params_by_format_keeps_a_mixed_dataset_convertible(tmp_path: Path) -> N
     manifest = new_dataset_manifest(name="mixed", base_dir=tmp_path / "ds")
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
 
-    overrides = {"params_by_format": {"mabe22_npy": {"fps": 45.0}}}
+    overrides = {"params_by_format": {"sleap_analysis_h5": {"fps": 45.0}}}
 
-    mabe = dataset._converter_params(Mabe22Converter(), overrides, "mabe22_npy")
+    sleap = dataset._converter_params(
+        SleapAnalysisH5Converter(), overrides, "sleap_analysis_h5"
+    )
     trex = dataset._converter_params(TrexNpzConverter(), overrides, "trex_npz")
 
-    assert isinstance(mabe, Mabe22Params)
-    assert mabe.fps == 45.0
+    assert isinstance(sleap, SleapConvertParams)
+    assert sleap.fps == 45.0
     assert trex.identity_dump() == TrackConvertParams().identity_dump()
 
 

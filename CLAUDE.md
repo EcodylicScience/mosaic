@@ -342,12 +342,12 @@ src/mosaic/
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
-│   └── track_library/          # track converters (CalMS21, MABe22, TREx, SLEAP, DeepLabCut)
+│   └── track_library/          # track converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
 ├── behavior/
 │   ├── feature_library/        # ~35+ per-frame + global features (plugin)
 │   │   ├── movement/           # optional movement-library integration
 │   │   └── external/           # keypoint-moseq subprocess runner (own venv)
-│   ├── label_library/          # label converters (BORIS, CalMS21, MABe22)
+│   ├── label_library/          # label converters (BORIS, CalMS21)
 │   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
@@ -603,8 +603,6 @@ Reference end-to-end examples (not test fixtures):
 - [`notebooks/calms21-template.ipynb`](notebooks/calms21-template.ipynb) —
   canonical end-to-end (manifest → features → wavelet/scaler/t-SNE →
   clustering → XGBoost classifier → visualization).
-- [`notebooks/mabe22-mouse-triplets.ipynb`](notebooks/mabe22-mouse-triplets.ipynb)
-- [`notebooks/mabe22-beetle-ant.ipynb`](notebooks/mabe22-beetle-ant.ipynb)
 
 Notebooks may use sample data not present in the repo; check the first cell
 for path expectations before running.

@@ -25,7 +25,6 @@ accessible from mosaic.core.dataset module.
 # Each module calls register_track_converter() at module level.
 from . import calms21
 from . import deeplabcut
-from . import mabe22
 from . import sleap
 from . import trex
 from . import ultralytics_tracks
@@ -33,7 +32,6 @@ from . import ultralytics_tracks
 __all__ = [
     "calms21",
     "deeplabcut",
-    "mabe22",
     "sleap",
     "trex",
     "ultralytics_tracks",
