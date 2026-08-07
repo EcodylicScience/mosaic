@@ -69,6 +69,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
+from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.model_refs import resolve_model_set
 from mosaic.tracking.sleap.version import (
     SLEAP_KIND,
@@ -346,8 +347,12 @@ def run_sleap(
             clear_outputs(work_dir, SLEAP_KIND, "track")
             track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
+            # SLEAP opens the path itself, so an imgstore recording resolves to
+            # the plain video export-store wrote for it. Resolved here rather
+            # than before the reuse gate: an entry already tracked needs no
+            # export, and demanding one would fail a re-run over finished work.
             track_result = run_sleap_track(
-                item.video_path,
+                resolve_tool_input(job.ds, item, kind=SLEAP_KIND),
                 slp_path,
                 model_paths=resolved_models.paths,
                 tracking=tracking,

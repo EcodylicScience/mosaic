@@ -333,8 +333,14 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
     Motif ``camera_serial`` / ``synchronizationuuid`` / ``synchronization``) so a
     multi-camera recording can be simulated.
 
+    ``fill`` tags the *whole* frame with ``i`` rather than only its first pixel.
+    A one-pixel tag cannot survive an encode to 4:2:0, whose chroma planes are
+    subsampled 2x2, so a test that reads frames back through a lossy codec (the
+    store export) needs frames that are uniform enough to stay distinguishable.
+    The ``frame[0, 0, 0] == i`` invariant holds either way.
+
     Returns a callable ``(name=, nframes=, fmt=, shape=, dtype=, chunksize=,
-    parent=, extra_metadata=) -> (store_dir, frames)``.
+    parent=, fill=, extra_metadata=) -> (store_dir, frames)``.
     """
     imgstore = pytest.importorskip("imgstore")
 
@@ -347,6 +353,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         chunksize: int = 5,
         parent: Path | None = None,
         fps: float = 30.0,
+        fill: bool = False,
         extra_metadata: Mapping[str, object] | None = None,
     ) -> tuple[Path, list[np.ndarray]]:
         base = parent if parent is not None else tmp_path
@@ -368,7 +375,16 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         )
         frames: list[np.ndarray] = []
         for i in range(nframes):
-            img = np.zeros(shape, dtype=dtype)
+            if fill:
+                # Spread across the middle of the range rather than using i
+                # directly. Consecutive small integers are indistinguishable
+                # after a lossy encode -- everything below the limited-range
+                # floor comes back as 0 -- and the point of a filled frame is to
+                # stay identifiable through one.
+                value = 16 + (i * 200) // max(1, nframes - 1)
+                img = np.full(shape, value, dtype=dtype)
+            else:
+                img = np.zeros(shape, dtype=dtype)
             img.reshape(-1)[0] = i % 256  # unique per-frame tag at [0, 0(, 0)]
             frames.append(img)
             store.add_image(img, frame_number=i, frame_time=float(i) / fps)
