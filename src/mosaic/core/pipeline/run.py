@@ -46,14 +46,19 @@ from .index import (
     missing_outputs_error,
     recorded_consumption,
 )
-from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
+from .loading import (
+    CROSS_JOIN_FEATURES,
+    build_nn_lookup,
+    nn_pair_mask,
+    resolve_sequence_identity,
+)
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
 from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition
+from .types.data_config import META_COLS
 from .types import (
-    COLUMNS,
     ArtifactSpec,
     DependencyLookup,
     Feature,
@@ -799,6 +804,8 @@ def _run_feature_impl(
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
     outputs on disk -- the permanent source of truth.
     """
+    # The frame-only-merge escape, for the one feature that declares it.
+    cross_join = feature.name in CROSS_JOIN_FEATURES
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
         ds.meta_float("fps_default"),
@@ -942,7 +949,9 @@ def _run_feature_impl(
         ctx.check_cancel()
 
         def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
-            return iter_manifest(manifest, filter_factory=filter_factory)
+            return iter_manifest(
+                manifest, filter_factory=filter_factory, cross_join=cross_join
+            )
 
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
@@ -1266,6 +1275,7 @@ def _run_feature_impl(
                 filter_factory=filter_factory,
                 overlap_frames=apply_overlap,
                 progress_label=storage_feature_name,
+                cross_join=cross_join,
             ):
                 _process_entry(entry_key, df, core_start, core_end)
         else:
@@ -1273,6 +1283,7 @@ def _run_feature_impl(
                 compute_manifest,
                 filter_factory=filter_factory,
                 progress_label=storage_feature_name,
+                cross_join=cross_join,
             ):
                 _process_entry(entry_key, df, 0, len(df))
 
@@ -1435,12 +1446,17 @@ def resolve_labels_variants(
 
 
 def _find_merged_column(column: str, input_index: int, df: pd.DataFrame) -> str | None:
+    """The merged frame's name for *column* as declared by input *input_index*.
+
+    No bare-name fallback for a suffixed lookup. It existed to tolerate a missing
+    ``__<i>``, and what it actually did was return input 0's column under input i's
+    name -- silently, and only when the suffix numbering had already drifted. The
+    suffix now counts declared inputs, so a miss is a real absence.
+    """
     if input_index == 0:
         return column if column in df.columns else None
     suffixed = f"{column}__{input_index}"
-    if suffixed in df.columns:
-        return suffixed
-    return column if column in df.columns else None
+    return suffixed if suffixed in df.columns else None
 
 
 def load_values(
@@ -1456,6 +1472,7 @@ def load_values(
     filter_end_time: float | None = None,
     pair_filter: NNResult | None = None,
     tracks_run_id: str | None = None,
+    labels_run_id: str | None = None,
 ) -> pd.DataFrame:
     """Load and align value columns from tracks, features, and labels.
 
@@ -1467,7 +1484,8 @@ def load_values(
     ``TracksColumn`` is among the sources -- that is what puts the ``"tracks"``
     literal into the synthetic inputs below. Without it a notebook reading a
     column from a dataset holding two recipes for one sequence would meet the
-    resolver's refusal with no keyword able to answer it.
+    resolver's refusal with no keyword able to answer it. ``labels_run_id`` is the
+    same argument for labels, which this function accepted no answer for at all.
     """
     source_list = list(sources)
     if not source_list:
@@ -1544,9 +1562,9 @@ def load_values(
     labels_lookups: dict[str, dict[tuple[str, str], Path]] = {}
     for ls in label_sources:
         if ls.kind not in labels_lookups:
-            labels_lookups[ls.kind] = _build_labels_lookup(ds, ls.kind)
+            labels_lookups[ls.kind] = _build_labels_lookup(ds, ls.kind, labels_run_id)
 
-    meta_cols = COLUMNS.meta_set() | {"id1", "id2"}
+    meta_cols = META_COLS
 
     all_parts: list[pd.DataFrame] = []
 

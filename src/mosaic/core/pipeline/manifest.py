@@ -512,6 +512,7 @@ def _load_neighbor(
     file_specs: FileSpecs | None,
     entry_key: str | None,
     filter_factory: FilterFactory | None,
+    cross_join: bool = False,
 ) -> pd.DataFrame | None:
     """Load a neighbor segment with its own filters applied."""
     if file_specs is None:
@@ -519,7 +520,7 @@ def _load_neighbor(
     filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = ()
     if filter_factory is not None and entry_key is not None:
         filters = filter_factory(entry_key)
-    return load_entry_data(file_specs, filters=filters)
+    return load_entry_data(file_specs, filters=filters, cross_join=cross_join)
 
 
 @overload
@@ -530,6 +531,7 @@ def iter_manifest(
     overlap_frames: None = None,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame]]: ...
 
 
@@ -541,6 +543,7 @@ def iter_manifest(
     overlap_frames: int,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame, int, int]]: ...
 
 
@@ -551,11 +554,15 @@ def iter_manifest(
     overlap_frames: int | None = None,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, int, int]]:
     """Iterate manifest entries, yielding data per sequence.
 
     When overlap_frames is None (default), yields (entry_key, df).
     When overlap_frames is an int, yields (entry_key, df, core_start, core_end).
+
+    *cross_join* passes the frame-only-merge escape down to the loader, for the one
+    feature that declares it (``loading.CROSS_JOIN_FEATURES``).
     """
     n_entries = len(manifest)
     for i, (entry_key, entry) in enumerate(manifest.items()):
@@ -565,7 +572,7 @@ def iter_manifest(
             filters = filter_factory(entry_key)
 
         # Load current segment
-        df = load_entry_data(entry.file_specs, filters=filters)
+        df = load_entry_data(entry.file_specs, filters=filters, cross_join=cross_join)
         if df is None:
             continue
 

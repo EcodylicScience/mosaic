@@ -107,3 +107,13 @@ class PoseConfig(StrictModel):
             )
             raise ValueError(msg)
         return self
+
+
+# Join keys for a multi-input merge, and the metadata a feature passes through.
+# They differ by exactly ``{group, sequence}``: those are constant within an entry,
+# so joining on them narrows nothing, and a blank group spelled ``""`` on one side
+# and ``NaN`` on the other would empty the join instead.
+ALIGN_COLS: frozenset[str] = frozenset(
+    (COLUMNS.meta_set() - {COLUMNS.group_col, COLUMNS.seq_col}) | {"id1", "id2"}
+)
+META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | {"id1", "id2"})
