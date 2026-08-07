@@ -26,11 +26,17 @@ from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.tracking.model_refs import ModelShape, resolve_model
-from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
+from mosaic.tracking.ops._common import (
+    claim_run_root,
+    ensure_models_root,
+    fingerprint_dataset,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
+
+_TRAIN_IDLE_SECONDS = 1800.0
 
 # --- Trained-model index -------------------------------------------------
 
@@ -337,6 +343,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         train_pose_model(
@@ -406,6 +413,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         train_point_model(
@@ -480,6 +488,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         result = train_localizer(

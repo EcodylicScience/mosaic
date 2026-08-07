@@ -21,7 +21,11 @@ from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
-from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
+from mosaic.tracking.ops._common import (
+    claim_run_root,
+    ensure_models_root,
+    fingerprint_dataset,
+)
 from mosaic.tracking.ops.train import (
     finalize_training,
     train_run_id,
@@ -123,6 +127,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, run_root, self.kind, params.idle_timeout)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         produced = train_litpose(

@@ -25,8 +25,10 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
+from mosaic.tracking.ops._common import RunRootHeld
 from mosaic.tracking.ops.train import trained_model_index
 from tests.test_tracking_ops import _make_dataset
 
@@ -141,3 +143,40 @@ def test_an_incomplete_run_root_retrains(
 
     assert again == run_id
     assert trainer.calls == 2
+
+
+def test_a_second_execution_cannot_train_into_a_held_run_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two executions of one identifier would interleave one run root's artifacts.
+
+    For a nondeterministic trainer that is a corrupt model, not a slow one, so the
+    second execution fails naming the holder rather than skipping quietly: a
+    one-shot op is the whole batch, and returning its run_id would hand the caller
+    a model someone else is mid-write.
+    """
+    ds = _make_dataset(tmp_path)
+    trainer = _Counter()
+    trainer.install(monkeypatch)
+    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+
+    run_id = run_op(ds, "train-pose", dict(params))
+    assert trainer.calls == 1
+
+    # A peer holds the root: a live claim whose execution has no terminal run-log.
+    write_inflight(
+        model_run_root(ds, "train-pose", run_id),
+        new_inflight(
+            execution_id="SOMEONE-ELSE",
+            host="otherhost",
+            pid=4242,
+            phase=None,
+            idle_seconds=3600.0,
+        ),
+    )
+
+    # overwrite, so the reuse gate does not answer first and the claim is reached.
+    with pytest.raises(RunRootHeld, match="SOMEONE-ELSE"):
+        _ = run_op(ds, "train-pose", {**params, "overwrite": True})
+
+    assert trainer.calls == 1

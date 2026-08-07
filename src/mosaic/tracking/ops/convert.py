@@ -25,7 +25,11 @@ from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
-from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
+from mosaic.tracking.ops._common import (
+    claim_run_root,
+    ensure_models_root,
+    fingerprint_dataset,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -113,6 +117,9 @@ def _count_labels(split_dir: Path) -> int:
     return sum(1 for _ in labels.glob("*.txt")) if labels.exists() else 0
 
 
+_CONVERT_IDLE_SECONDS = 600.0
+
+
 @register_op
 class ConvertPointsOp(Op[ConvertPointsParams]):
     """Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml``."""
@@ -152,9 +159,14 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         if data_yaml.exists() and not params.overwrite:
             return run_id
 
-        if out.exists():
-            shutil.rmtree(out)
+        # Claimed before the rmtree, not after: two executions of this identifier
+        # would otherwise have one delete the other's output mid-write. The body is
+        # deterministic, so the bytes agree -- the destruction is the hazard.
         out.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, out, self.kind, _CONVERT_IDLE_SECONDS)
+        for child in out.iterdir():
+            if child.name != ".mosaic-inflight.json":
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
 
         schema = convert_cvat_points_polo(
             xml,
