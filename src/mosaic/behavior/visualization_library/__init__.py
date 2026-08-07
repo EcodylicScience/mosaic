@@ -1,11 +1,21 @@
-"""Visualization library for behavior datasets.
+"""Rendering a sequence's tracks over its video, plus the crop features.
 
-This library provides modular visualization components:
-- Data loading (tracks, labels, ground truth)
-- Overlay preparation and frame drawing
-- Video streaming with overlays
-- Interactive video playback
-- Egocentric crop generation
+Two unrelated things live here, and the distinction matters:
+
+- **The overlay renderer** -- ``load_tracks_and_labels`` -> ``prepare_overlay``
+  -> ``render_stream`` -> ``play_video``. Plain functions, not features. This is
+  the one presentational thing the toolkit keeps: a headless "draw this
+  sequence's tracks on its video" is how you check a tracker actually worked,
+  and it is what a CLI or queue context cannot get from a web interface.
+- **The crop features** -- ``egocentric-crop`` and ``interaction-crop-pipeline``.
+  Despite living here, these produce *data*: egocentric crops are the input all
+  three identity models read. They are categorized ``media``, not as
+  visualization, for exactly that reason.
+
+Static plotting is deliberately absent. ``viz-timeline`` and
+``viz-global-colored`` wrote matplotlib PNGs from a compute backend and were
+retired; ``load_values()`` gets the same numbers out for a caller to plot however
+it likes.
 
 Example usage:
     from mosaic.behavior.visualization_library import playback
@@ -16,10 +26,6 @@ Example usage:
     dataset.run_feature(crop_feat, sequences=["hex_3"])
 """
 
-# Import helpers module
-# Import visualization modules
-# Import egocentric crop feature
-# Import visualization features (registered via @register_feature)
 from . import (
     data_loading,
     egocentric_crop,
@@ -29,8 +35,6 @@ from . import (
     playback,
     video_stream,
     visual_spec,
-    viz_global_colored,
-    viz_timeline,
 )
 
 # Re-export common functions for convenience
@@ -62,12 +66,6 @@ from .visual_spec import (
     list_visual_adapters,
     normalize_visualization_spec,
 )
-from .viz_global_colored import (
-    VizGlobalColored,
-)
-from .viz_timeline import (
-    TimelinePlot,
-)
 
 __all__ = [
     # Modules
@@ -79,8 +77,6 @@ __all__ = [
     "visual_spec",
     "egocentric_crop",
     "interaction_crop",
-    "viz_global_colored",
-    "viz_timeline",
     # Functions
     "load_tracks_and_labels",
     "load_ground_truth_labels",
@@ -97,6 +93,4 @@ __all__ = [
     # Classes
     "EgocentricCrop",
     "InteractionCropPipeline",
-    "VizGlobalColored",
-    "TimelinePlot",
 ]

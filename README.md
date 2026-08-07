@@ -142,9 +142,9 @@ permissive; `BVRA/MegaDescriptor-L-384` is the strongest option for academic
 wildlife re-identification and is non-commercial. See
 [Licensing](docs/licensing.md).
 
-Visualization (`egocentric-crop`, `viz-timeline`, `viz-global-colored`,
-`interaction-crop-pipeline`) is exposed as features and shares the same caching
-and reproducibility machinery.
+The crop features (`egocentric-crop`, `interaction-crop-pipeline`) share the same
+caching and reproducibility machinery. Rendering a sequence's tracks over its
+video is not a feature — it is `playback.play_video(...)`, a plain function.
 
 The full registry is documented in the
 [feature library reference](docs/api/behavior/feature-library.md).

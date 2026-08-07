@@ -74,7 +74,7 @@ class InteractionCropPipeline:
       - video_path (filename only, relative to run_root)
     """
 
-    category = "viz"
+    category = "media"
     name = "interaction-crop-pipeline"
     version = "0.2"
     parallelizable = True

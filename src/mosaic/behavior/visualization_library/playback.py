@@ -3,6 +3,7 @@
 This module contains the high-level playback orchestrator:
 - play_video: Full pipeline with window display + optional file output
 """
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional, Iterable, Any, Tuple
@@ -24,9 +25,12 @@ def build_overlay(
     label_maps: Optional[Dict[str, dict]] = None,
     hide_unlabeled: bool = False,
     visualization_spec: Optional[dict] = None,
+    tracks_run_id: Optional[str] = None,
 ) -> Tuple[dict, Any, Dict[str, Any]]:
     """Build a base overlay (and optional spec layers), returning overlay/tracks/labels."""
-    tracks_df, labels = load_tracks_and_labels(ds, group, sequence, feature_runs)
+    tracks_df, labels = load_tracks_and_labels(
+        ds, group, sequence, feature_runs, tracks_run_id=tracks_run_id
+    )
 
     if label_maps:
         for feat, mapping in label_maps.items():
@@ -41,33 +45,39 @@ def build_overlay(
         except FileNotFoundError as exc:
             print(f"[build_overlay] warning: {exc}")
 
-    overlay = prepare_overlay(tracks_df, labels, gt_df=gt_df, color_by=color_by, hide_unlabeled=hide_unlabeled)
+    overlay = prepare_overlay(
+        tracks_df, labels, gt_df=gt_df, color_by=color_by, hide_unlabeled=hide_unlabeled
+    )
     if visualization_spec:
         apply_visualization_spec(overlay, tracks_df, labels, visualization_spec)
     return overlay, tracks_df, labels
 
 
-def play_video(ds,
-               group: str,
-               sequence: str,
-               feature_runs: Dict[str, Optional[str]],
-               label_kind: Optional[str] = "behavior",
-               color_by: Optional[str] = None,
-               label_maps: Optional[Dict[str, dict]] = None,
-               hide_unlabeled: bool = False,
-               overlay_data: Optional[dict] = None,
-               start: int = 0,
-               end: Optional[int] = None,
-               downscale: float = 1.0,
-               draw_options: Optional[Dict[str, Any]] = None,
-               show_individual_bboxes: bool = True,
-               pair_box_feature: Optional[str] = None,
-               pair_box_behaviors: Optional[Iterable[Any]] = None,
-               hide_individual_bboxes_for_pair: bool = False,
-               output_path: Optional[Path | str] = None,
-               show_window: bool = True,
-               window_name: Optional[str] = None,
-               visualization_spec: Optional[dict] = None) -> Optional[Path]:
+def play_video(
+    ds,
+    group: str,
+    sequence: str,
+    feature_runs: Dict[str, Optional[str]],
+    label_kind: Optional[str] = "behavior",
+    color_by: Optional[str] = None,
+    label_maps: Optional[Dict[str, dict]] = None,
+    hide_unlabeled: bool = False,
+    overlay_data: Optional[dict] = None,
+    start: int = 0,
+    end: Optional[int] = None,
+    downscale: float = 1.0,
+    draw_options: Optional[Dict[str, Any]] = None,
+    show_individual_bboxes: bool = True,
+    pair_box_feature: Optional[str] = None,
+    pair_box_behaviors: Optional[Iterable[Any]] = None,
+    hide_individual_bboxes_for_pair: bool = False,
+    output_path: Optional[Path | str] = None,
+    show_window: bool = True,
+    window_name: Optional[str] = None,
+    visualization_spec: Optional[dict] = None,
+    tracks_run_id: Optional[str] = None,
+    camera: Optional[str] = None,
+) -> Optional[Path]:
     """
     Stream a video with overlays; optionally save to disk.
 
@@ -118,6 +128,15 @@ def play_video(ds,
         Name for the display window.
     visualization_spec : dict, optional
         Optional spec with extra render layers and playback overrides.
+    tracks_run_id : str, optional
+        Which tracks variant to draw. Required when the entry carries more than
+        one, which is exactly the case worth looking at: a dataset tracked by two
+        tools. ``""`` names the unlabelled tables. Ignored when *overlay_data* is
+        supplied, since that overlay was already built from a chosen variant.
+    camera : str, optional
+        Which camera of a synchronized multi-camera recording to draw. Required
+        when the sequence spans more than one; a single-camera sequence needs
+        nothing.
 
     Returns
     -------
@@ -132,7 +151,9 @@ def play_video(ds,
     - s: Save current frame as PNG
     """
     overlay = overlay_data
-    spec_playback = playback_kwargs_from_spec(visualization_spec) if visualization_spec else {}
+    spec_playback = (
+        playback_kwargs_from_spec(visualization_spec) if visualization_spec else {}
+    )
     if overlay is None:
         overlay, _, _ = build_overlay(
             ds=ds,
@@ -144,6 +165,7 @@ def play_video(ds,
             label_maps=label_maps,
             hide_unlabeled=hide_unlabeled,
             visualization_spec=visualization_spec,
+            tracks_run_id=tracks_run_id,
         )
     elif label_maps:
         _remap_overlay_labels(overlay, label_maps)
@@ -153,12 +175,19 @@ def play_video(ds,
         pair_box_feature = spec_playback.get("pair_box_feature")
     if pair_box_behaviors is None:
         pair_box_behaviors = spec_playback.get("pair_box_behaviors")
-    show_individual_bboxes = bool(spec_playback.get("show_individual_bboxes", show_individual_bboxes))
+    show_individual_bboxes = bool(
+        spec_playback.get("show_individual_bboxes", show_individual_bboxes)
+    )
     hide_individual_bboxes_for_pair = bool(
-        spec_playback.get("hide_individual_bboxes_for_pair", hide_individual_bboxes_for_pair)
+        spec_playback.get(
+            "hide_individual_bboxes_for_pair", hide_individual_bboxes_for_pair
+        )
     )
 
-    resolved = ds.resolve_media(group, sequence)
+    # camera= rather than a bare resolve: a synchronized multi-camera recording is
+    # one sequence with several cameras, and resolve_media refuses to pick for
+    # you rather than concatenating two views into a fabricated timeline.
+    resolved = ds.resolve_media(group, sequence, camera=camera)
 
     stream = render_stream(
         resolved.paths,
@@ -180,11 +209,15 @@ def play_video(ds,
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         frame_size = getattr(stream, "frame_size", (0, 0))
-        writer = cv2.VideoWriter(str(out_path), fourcc, float(getattr(stream, "fps", 30.0)), frame_size)
+        writer = cv2.VideoWriter(
+            str(out_path), fourcc, float(getattr(stream, "fps", 30.0)), frame_size
+        )
         if not writer.isOpened():
             writer = None
             out_path = None
-            print("[play_video] warning: failed to open VideoWriter; skipping output file.")
+            print(
+                "[play_video] warning: failed to open VideoWriter; skipping output file."
+            )
 
     win = window_name or f"{group}:{sequence}"
     try:
@@ -248,6 +281,11 @@ def play_video_with_spec(
     Convenience wrapper: build overlay from tracks/labels + visualization_spec, then play/save.
 
     Any explicit kwargs are forwarded to play_video and override spec playback defaults.
+
+    ``tracks_run_id`` is taken here rather than forwarded: this wrapper builds the
+    overlay itself, and ``play_video`` ignores the argument once it is handed a
+    prebuilt one. Left in ``kwargs`` it would reach a parameter that does nothing
+    and silently read whichever variant the index happened to resolve.
     """
     overlay, _, _ = build_overlay(
         ds=ds,
@@ -259,6 +297,7 @@ def play_video_with_spec(
         label_maps=kwargs.pop("label_maps", None),
         hide_unlabeled=kwargs.pop("hide_unlabeled", False),
         visualization_spec=visualization_spec,
+        tracks_run_id=kwargs.pop("tracks_run_id", None),
     )
     return play_video(
         ds=ds,

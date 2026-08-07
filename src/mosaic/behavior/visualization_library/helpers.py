@@ -6,7 +6,9 @@ This module contains helper functions used across visualization modules:
 - Video I/O utilities (capture, writer, scaling)
 - Cropping utilities (safe crop with padding, rotation)
 """
+
 from __future__ import annotations
+import hashlib
 from pathlib import Path
 from typing import Tuple, Any, Optional, Dict
 import numpy as np
@@ -18,7 +20,10 @@ import cv2
 # Parameter Merging (follows feature_library pattern)
 # =============================================================================
 
-def _merge_params(overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> Dict[str, Any]:
+
+def _merge_params(
+    overrides: Optional[Dict[str, Any]], defaults: Dict[str, Any]
+) -> Dict[str, Any]:
     """Merge user overrides with defaults. None values in overrides use defaults."""
     if not overrides:
         return dict(defaults)
@@ -58,23 +63,37 @@ LABEL_PALETTE = [
 ]
 
 
-def _color_for_id(id_val: Any) -> Tuple[int, int, int]:
-    """Hash-based color selection for individual IDs."""
-    idx = hash(str(id_val)) % len(ID_PALETTE)
-    return ID_PALETTE[idx]
+def _palette_index(value: Any, palette_size: int) -> int:
+    """Stable palette slot for *value*, identical in every process.
+
+    ``hash()`` on a ``str`` is salted by ``PYTHONHASHSEED``, so the obvious
+    spelling of this gave one id a different color on every run -- two renders of
+    the same tracks disagreeing about which animal is which. A digest has no
+    per-process salt, so a sequence renders the same way today, tomorrow, and on
+    someone else's machine.
+    """
+    digest = hashlib.blake2b(str(value).encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % palette_size
 
 
-def _color_for_label(label_val: Any) -> Tuple[int, int, int]:
-    """Hash-based color selection for labels."""
-    idx = hash(str(label_val)) % len(LABEL_PALETTE)
-    return LABEL_PALETTE[idx]
+def color_for_id(id_val: Any) -> Tuple[int, int, int]:
+    """Stable per-ID color."""
+    return ID_PALETTE[_palette_index(id_val, len(ID_PALETTE))]
+
+
+def color_for_label(label_val: Any) -> Tuple[int, int, int]:
+    """Stable per-label color."""
+    return LABEL_PALETTE[_palette_index(label_val, len(LABEL_PALETTE))]
 
 
 # =============================================================================
 # Geometry Utilities
 # =============================================================================
 
-def _extract_pose_points(row: pd.Series, pose_pairs: list[Tuple[str, str]]) -> list[Tuple[float, float]]:
+
+def _extract_pose_points(
+    row: pd.Series, pose_pairs: list[Tuple[str, str]]
+) -> list[Tuple[float, float]]:
     """Extract list of (x, y) coordinates from a DataFrame row."""
     pts = []
     for x_col, y_col in pose_pairs:
@@ -88,7 +107,9 @@ def _extract_pose_points(row: pd.Series, pose_pairs: list[Tuple[str, str]]) -> l
     return pts
 
 
-def _compute_bbox(points: list[Tuple[float, float]]) -> Tuple[float, float, float, float]:
+def _compute_bbox(
+    points: list[Tuple[float, float]],
+) -> Tuple[float, float, float, float]:
     """Compute axis-aligned bounding box from point list."""
     xs = [p[0] for p in points if np.isfinite(p[0])]
     ys = [p[1] for p in points if np.isfinite(p[1])]
@@ -97,7 +118,9 @@ def _compute_bbox(points: list[Tuple[float, float]]) -> Tuple[float, float, floa
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _extract_centroid(row: pd.Series, candidates: list[Tuple[str, str]]) -> Optional[Tuple[float, float]]:
+def _extract_centroid(
+    row: pd.Series, candidates: list[Tuple[str, str]]
+) -> Optional[Tuple[float, float]]:
     """Find first valid centroid from candidate (x, y) column pairs."""
     for x_col, y_col in candidates:
         x = row.get(x_col)
@@ -111,6 +134,7 @@ def _extract_centroid(row: pd.Series, candidates: list[Tuple[str, str]]) -> Opti
 # Video I/O Utilities
 # =============================================================================
 
+
 def _scaled_size(base_size: Tuple[int, int], downscale: float) -> Tuple[int, int]:
     """Compute resized dimensions with downscale factor."""
     w, h = base_size
@@ -120,10 +144,7 @@ def _scaled_size(base_size: Tuple[int, int], downscale: float) -> Tuple[int, int
 
 
 def create_video_writer(
-    path: Path | str,
-    fps: float,
-    frame_size: Tuple[int, int],
-    fourcc: str = "mp4v"
+    path: Path | str, fps: float, frame_size: Tuple[int, int], fourcc: str = "mp4v"
 ) -> cv2.VideoWriter:
     """Create a VideoWriter with standard settings.
 
@@ -155,6 +176,7 @@ def create_video_writer(
 # =============================================================================
 # Label/Data Lookup Utilities
 # =============================================================================
+
 
 def _lookup_label_series(per_id_map: dict, id_val: Any) -> Optional[pd.Series]:
     """Flexible lookup with fallback: exact match -> str(id_val) -> int(id_val) -> None."""
@@ -201,11 +223,12 @@ def _format_label_text(value: Any) -> str:
 # Cropping Utilities (NEW for egocentric crop)
 # =============================================================================
 
+
 def safe_crop_with_padding(
     image: np.ndarray,
     center: Tuple[int, int],
     crop_size: Tuple[int, int],
-    pad_value: int = 0
+    pad_value: int = 0,
 ) -> np.ndarray:
     """Extract a crop centered at (cx, cy), padding if out of bounds.
 
@@ -260,7 +283,9 @@ def safe_crop_with_padding(
     return crop
 
 
-def compute_heading_angle(neck_xy: Tuple[float, float], tail_xy: Tuple[float, float]) -> float:
+def compute_heading_angle(
+    neck_xy: Tuple[float, float], tail_xy: Tuple[float, float]
+) -> float:
     """Compute heading angle from anatomical landmarks (neck -> tail direction).
 
     Parameters

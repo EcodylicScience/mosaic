@@ -16,8 +16,8 @@ import pandas as pd
 from mosaic.core.pipeline.loading import pose_column_pairs
 
 from .helpers import (
-    _color_for_id,
-    _color_for_label,
+    color_for_id,
+    color_for_label,
     _compute_bbox,
     _extract_centroid,
     _extract_pose_points,
@@ -312,7 +312,7 @@ def prepare_overlay(
             if label_val is not None:
                 color_key = f"gt:{label_val}"
                 if color_key not in label_colors:
-                    label_colors[color_key] = _color_for_label(label_val)
+                    label_colors[color_key] = color_for_label(label_val)
                 frame_color = label_colors[color_key]
         for _, row in frame_df.iterrows():
             id_val = row.get("id")
@@ -375,21 +375,21 @@ def prepare_overlay(
                 if label_val is not None:
                     color_key = f"{color_feature}:{label_val}"
                     if color_key not in label_colors:
-                        label_colors[color_key] = _color_for_label(label_val)
+                        label_colors[color_key] = color_for_label(label_val)
                     color = label_colors[color_key]
             elif color_mode == "gt":
                 gt_val = labels_for_id.get("gt")
                 if gt_val is not None:
                     color_key = f"gt:{gt_val}"
                     if color_key not in label_colors:
-                        label_colors[color_key] = _color_for_label(gt_val)
+                        label_colors[color_key] = color_for_label(gt_val)
                     color = label_colors[color_key]
                 elif frame_color is not None:
                     color = frame_color
             if color is None:
                 color = id_colors.get(id_val)
                 if color is None:
-                    color = _color_for_id(id_val)
+                    color = color_for_id(id_val)
                     id_colors[id_val] = color
             info["color"] = color
             id_infos[id_val] = info
@@ -444,7 +444,9 @@ def draw_frame(
     canvas = image.copy()
     sx, sy = scale
     ids = frame_overlay.get("ids", {})
-    frame_color = frame_overlay.get("frame_color")
+    # The frame's own color is deliberately not read here: prepare_overlay has
+    # already folded it into each id's "color" before writing the frame, so a
+    # second read would be a value with nothing left to apply it to.
     render_layers = frame_overlay.get("render_layers") or {}
 
     # Layer-driven style overrides applied before drawing.
@@ -533,7 +535,7 @@ def draw_frame(
                     "label": val,
                     "label_norm": lbl_norm,
                     "bbox": union,
-                    "color": _color_for_label(val),
+                    "color": color_for_label(val),
                 }
             )
             ids_in_pair_boxes.update({key_a, key_b})
@@ -598,6 +600,27 @@ def draw_frame(
                     continue
                 pt = (int(x * sx), int(y * sy))
                 cv2.circle(canvas, pt, point_radius, color, -1, lineType=cv2.LINE_AA)
+        elif "centroid" in info:
+            # A tracker that reports position without keypoints still has to be
+            # visible. T-Rex is the case that matters: its tables carry
+            # X#wcentroid/Y#wcentroid and no poseX*/poseY* at all, and because
+            # the box is derived from the pose extent, drawing only pose left
+            # such a table rendering a completely blank video -- indistinguishable
+            # from "the tracker found nothing".
+            #
+            # Drawn as a ring rather than a filled disc so a centroid is never
+            # mistaken for a keypoint at a glance.
+            cx = float(info["centroid"][0])
+            cy = float(info["centroid"][1])
+            if np.isfinite(cx) and np.isfinite(cy):
+                cv2.circle(
+                    canvas,
+                    (int(cx * sx), int(cy * sy)),
+                    point_radius,
+                    color,
+                    max(1, bbox_thickness),
+                    lineType=cv2.LINE_AA,
+                )
         if show_labels and (info.get("labels") or color_mode == "gt"):
             labels_map = info.get("labels") or {}
             dominant = None
@@ -667,7 +690,8 @@ def draw_frame(
     id_circles = render_layers.get("id_circles") or []
     if id_circles:
         fill_entries = [
-            c for c in id_circles
+            c
+            for c in id_circles
             if isinstance(c, dict) and float(c.get("fill_alpha", 0.0)) > 0.0
         ]
         if fill_entries:
@@ -686,7 +710,9 @@ def draw_frame(
                 cv2.circle(fill_canvas, center, r_px, color, -1, lineType=cv2.LINE_AA)
                 blend_alpha = max(blend_alpha, float(c.get("fill_alpha", 0.0)))
             if blend_alpha > 0:
-                cv2.addWeighted(fill_canvas, blend_alpha, canvas, 1.0 - blend_alpha, 0, canvas)
+                cv2.addWeighted(
+                    fill_canvas, blend_alpha, canvas, 1.0 - blend_alpha, 0, canvas
+                )
         for c in id_circles:
             if not isinstance(c, dict):
                 continue
@@ -738,7 +764,7 @@ def draw_frame(
         y2 = max(r[3] for r in rects)
 
         color = _coerce_color(
-            item.get("color"), _color_for_label(item.get("group_size", len(members)))
+            item.get("color"), color_for_label(item.get("group_size", len(members)))
         )
         thickness = int(item.get("thickness", max(1, bbox_thickness + 1)))
         pt1 = (int(x1 * sx), int(y1 * sy))

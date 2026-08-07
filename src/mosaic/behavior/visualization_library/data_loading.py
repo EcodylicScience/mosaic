@@ -74,6 +74,7 @@ def load_tracks_and_labels(
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],
+    tracks_run_id: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Load a single sequence's tracks plus per-frame labels from feature/model runs.
@@ -87,6 +88,12 @@ def load_tracks_and_labels(
     feature_runs : dict[str, str | None]
         Mapping of feature/model storage names -> run_id.
         If run_id is None, the latest finished run is used.
+    tracks_run_id : str, optional
+        Which tracks variant to read. Required when the entry carries more than
+        one -- a dataset tracked by both Ultralytics and T-Rex holds two, and
+        there is no defensible default between two recipes, so leaving this
+        ``None`` raises rather than guessing. ``""`` names the unlabelled tables
+        explicitly. Same spelling as ``run_feature``/``build_manifest``.
 
     Returns
     -------
@@ -101,7 +108,9 @@ def load_tracks_and_labels(
         Series are indexed by frame and hold the chosen label column.
     """
     tracks_df = None
-    for _, _, df in yield_sequences(ds, groups=[group], sequences=[sequence]):
+    for _, _, df in yield_sequences(
+        ds, groups=[group], sequences=[sequence], run_id=tracks_run_id
+    ):
         tracks_df = df
         break
     if tracks_df is None:

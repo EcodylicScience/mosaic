@@ -290,17 +290,21 @@ Two flavors:
   `global-identity-model`). `kpms` is license-restricted — see
   "`feature_library/external/` is sandboxed" below.
 
-Visualization features (`egocentric-crop`, `viz-timeline`,
-`viz-global-colored`, `interaction-crop-pipeline`) use the same protocol and
-caching machinery.
+The crop features (`egocentric-crop`, `interaction-crop-pipeline`) use the same
+protocol and caching machinery. They live under `visualization_library/` for
+historical reasons but are categorized `media`, not visualization: they write
+image and video artifacts that other features read, and egocentric crops are the
+input all three identity models take.
 
 `feral` (the FERAL V-JEPA behavior classifier) is a global fit-then-apply
 feature but runs **in-process** — it imports the installed `feral` package
 directly, unlike the sandboxed keypoint-MoSeq runner in
 `feature_library/external/`. Each feature also declares a `category` used for
-grouping/display; beyond per-frame / global / visualization, the taxonomy
-includes `summary` (per-sequence aggregations, e.g. `frame-aggregate`) and
-`tag` (e.g. `id-tag-columns`).
+grouping/display; beyond per-frame and global, the taxonomy includes `summary`
+(per-sequence aggregations, e.g. `frame-aggregate`), `tag` (e.g.
+`id-tag-columns`) and `media` (writes crops or clips another feature reads, e.g.
+`egocentric-crop`). There is deliberately no visualization category: rendering
+lives in `visualization_library/` as plain functions rather than as features.
 
 ### Pipeline package
 

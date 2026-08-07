@@ -60,8 +60,7 @@ raw tracks/labels
          trainable:    xgboost, arhmm, feral, kpms*, lightning-action,
                        global-identity-model, global-identity-embedding,
                        global-identity-dinov2-temporal
-         visualization: egocentric-crop, viz-timeline, viz-global-colored,
-                        interaction-crop-pipeline
+         media:        egocentric-crop, interaction-crop-pipeline
 ```
 
 \* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
@@ -100,7 +99,7 @@ Two flavors:
 | Context | temporal-stack |
 | Templates | extract-templates, extract-labeled-templates |
 | **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model, global-identity-embedding, global-identity-dinov2-temporal |
-| Visualization | egocentric-crop, viz-global-colored, viz-timeline, interaction-crop-pipeline |
+| **Media** (crops other features read) | egocentric-crop, interaction-crop-pipeline |
 
 !!! warning "kpms is non-commercial only"
 

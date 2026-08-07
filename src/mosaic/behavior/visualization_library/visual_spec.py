@@ -5,13 +5,14 @@ This module provides a lightweight, phase-1 foundation for spec-driven overlays:
 - register_visual_adapter: plugin point for layer builders
 - apply_visualization_spec: apply adapters to an overlay's per-frame payload
 """
+
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from .helpers import _color_for_label
+from .helpers import color_for_label
 
 
 VisualAdapter = Callable[[dict[str, Any], dict[str, Any]], None]
@@ -131,7 +132,9 @@ def _adapter_group_outlines(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
 
     for col in (frame_col, id_col, group_col):
         if col not in raw_df.columns:
-            raise ValueError(f"group_outlines: required column '{col}' missing in '{feature}'.")
+            raise ValueError(
+                f"group_outlines: required column '{col}' missing in '{feature}'."
+            )
 
     keep_cols = [frame_col, id_col, group_col]
     if size_col in raw_df.columns:
@@ -181,7 +184,9 @@ def _adapter_group_outlines(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
         if color_by == "group_size":
             color = color_map.get(group_size)
             if color is None:
-                color = _coerce_color(_color_for_label(f"group_size:{group_size}"), default_color)
+                color = _coerce_color(
+                    color_for_label(f"group_size:{group_size}"), default_color
+                )
         else:
             color = default_color
 
@@ -230,7 +235,9 @@ def _adapter_pair_roles(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
 
     for col in (frame_col, id1_col, id2_col):
         if col not in raw_df.columns:
-            raise ValueError(f"pair_roles: required column '{col}' missing in '{feature}'.")
+            raise ValueError(
+                f"pair_roles: required column '{col}' missing in '{feature}'."
+            )
 
     keep = [frame_col, id1_col, id2_col]
     for c in (forward_col, reverse_col, active_col):
@@ -250,7 +257,9 @@ def _adapter_pair_roles(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
     approach_color = _coerce_color(layer.get("approach_color"), (0, 0, 255))
     avoid_color = _coerce_color(layer.get("avoid_color"), (255, 0, 0))
     other_color = layer.get("other_color")
-    other_color = _coerce_color(other_color, (140, 140, 140)) if other_color is not None else None
+    other_color = (
+        _coerce_color(other_color, (140, 140, 140)) if other_color is not None else None
+    )
     approach_label = str(layer.get("approach_label", "approach"))
     avoid_label = str(layer.get("avoid_label", "avoid"))
 
@@ -262,7 +271,11 @@ def _adapter_pair_roles(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
 
         fwd = int(getattr(row, forward_col, 0)) if forward_col in keep else 0
         rev = int(getattr(row, reverse_col, 0)) if reverse_col in keep else 0
-        active = int(getattr(row, active_col, 0)) if active_col in keep else int(fwd == 1 or rev == 1)
+        active = (
+            int(getattr(row, active_col, 0))
+            if active_col in keep
+            else int(fwd == 1 or rev == 1)
+        )
 
         if active != 1 and fwd != 1 and rev != 1:
             continue
@@ -270,15 +283,35 @@ def _adapter_pair_roles(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
         if fwd == 1:
             by_frame.setdefault(frame, []).extend(
                 [
-                    {"id": id1, "color": approach_color, "label_key": label_key, "label": approach_label},
-                    {"id": id2, "color": avoid_color, "label_key": label_key, "label": avoid_label},
+                    {
+                        "id": id1,
+                        "color": approach_color,
+                        "label_key": label_key,
+                        "label": approach_label,
+                    },
+                    {
+                        "id": id2,
+                        "color": avoid_color,
+                        "label_key": label_key,
+                        "label": avoid_label,
+                    },
                 ]
             )
         elif rev == 1:
             by_frame.setdefault(frame, []).extend(
                 [
-                    {"id": id2, "color": approach_color, "label_key": label_key, "label": approach_label},
-                    {"id": id1, "color": avoid_color, "label_key": label_key, "label": avoid_label},
+                    {
+                        "id": id2,
+                        "color": approach_color,
+                        "label_key": label_key,
+                        "label": approach_label,
+                    },
+                    {
+                        "id": id1,
+                        "color": avoid_color,
+                        "label_key": label_key,
+                        "label": avoid_label,
+                    },
                 ]
             )
 
@@ -303,7 +336,9 @@ def _adapter_id_styles_from_feature(ctx: dict[str, Any], layer: dict[str, Any]) 
         raise ValueError("id_styles_from_feature layer requires 'feature'.")
     raw_df = (labels.get("raw") or {}).get(feature)
     if raw_df is None:
-        raise KeyError(f"id_styles_from_feature: raw labels missing for feature '{feature}'.")
+        raise KeyError(
+            f"id_styles_from_feature: raw labels missing for feature '{feature}'."
+        )
 
     frame_col = str(layer.get("frame_col", "frame"))
     id_col = str(layer.get("id_col", "id"))
@@ -315,7 +350,9 @@ def _adapter_id_styles_from_feature(ctx: dict[str, Any], layer: dict[str, Any]) 
 
     for col in (frame_col, id_col, value_col):
         if col not in raw_df.columns:
-            raise ValueError(f"id_styles_from_feature: required column '{col}' missing in '{feature}'.")
+            raise ValueError(
+                f"id_styles_from_feature: required column '{col}' missing in '{feature}'."
+            )
 
     work = raw_df[[frame_col, id_col, value_col]].copy()
     work[frame_col] = pd.to_numeric(work[frame_col], errors="coerce")
@@ -355,7 +392,9 @@ def _adapter_id_styles_from_feature(ctx: dict[str, Any], layer: dict[str, Any]) 
                 except Exception:
                     color = None
             if color is None:
-                color = _coerce_color(_color_for_label(f"{value_col}:{val}"), default_color)
+                color = _coerce_color(
+                    color_for_label(f"{value_col}:{val}"), default_color
+                )
             style["color"] = color
         elif color_mode == "constant":
             style["color"] = default_color
@@ -384,7 +423,9 @@ def _adapter_pair_focus(ctx: dict[str, Any], layer: dict[str, Any]) -> None:
         id1 = layer.get("id1")
         id2 = layer.get("id2")
         if id1 is None or id2 is None:
-            raise ValueError("pair_focus requires either 'pair' or both 'id1' and 'id2'.")
+            raise ValueError(
+                "pair_focus requires either 'pair' or both 'id1' and 'id2'."
+            )
         pair_val = (id1, id2)
 
     try:

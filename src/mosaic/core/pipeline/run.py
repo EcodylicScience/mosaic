@@ -344,7 +344,7 @@ class MissingScopeDeclaration(AttributeError):
 
     Subclasses ``AttributeError`` because that is what the bare attribute read
     below used to raise, so any caller already handling it keeps working -- but
-    it names the feature, which a bare ``AttributeError: 'TimelinePlot' object
+    it names the feature, which a bare ``AttributeError: 'EgocentricCrop' object
     has no attribute 'scope_dependent'`` does only by accident of the repr.
 
     Deliberately *not* solved by a ``ClassVar`` default on the protocol. A

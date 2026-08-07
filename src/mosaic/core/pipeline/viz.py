@@ -16,7 +16,7 @@ Categories control color coding in the diagram. Resolution order:
 4. ``'other'`` fallback
 
 Built-in category names: ``per-frame``, ``summary``, ``tag``, ``global``,
-``viz``, ``callback``, ``other``. New categories may be introduced ad-hoc by
+``media``, ``callback``, ``other``. New categories may be introduced ad-hoc by
 passing ``category_colors={'my_cat': '#hex'}``.
 """
 
@@ -36,42 +36,42 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _CAT_COLORS = {
-    "per-frame":  "#0d6efd",   # blue   — time-resolved features
-    "summary":    "#6f42c1",   # purple — per-id collapses
-    "tag":        "#fd7e14",   # orange — id label columns
-    "global":     "#20c997",   # teal   — fit-then-apply / templates / models
-    "viz":        "#e83e8c",   # pink   — overlays / timelines / crops
-    "callback":   "#adb5bd",   # light  — orchestration
-    "other":      "#495057",
+    "per-frame": "#0d6efd",  # blue   — time-resolved features
+    "summary": "#6f42c1",  # purple — per-id collapses
+    "tag": "#fd7e14",  # orange — id label columns
+    "global": "#20c997",  # teal   — fit-then-apply / templates / models
+    "media": "#e83e8c",  # pink   — crops and clips other features read
+    "callback": "#adb5bd",  # light  — orchestration
+    "other": "#495057",
 }
 
 # Fallback registry for built-in feature classes that don't declare a
 # `category` attribute. The class attribute is the source of truth; this
 # table is a safety net for classes that haven't opted in yet.
 _DEFAULT_CLASS_TO_CATEGORY = {
-    "TrajectorySmooth":         "per-frame",
-    "FFGroups":                 "per-frame",
-    "NearestNeighbor":          "per-frame",
-    "SpeedAngvel":              "per-frame",
-    "NearestNeighborDelta":     "per-frame",
-    "PairEgocentricFeatures":   "per-frame",
-    "PairWavelet":              "per-frame",
-    "ApproachAvoidance":        "per-frame",
-    "TemporalStackingFeature":  "per-frame",
-    "FFGroupsMetrics":          "summary",
+    "TrajectorySmooth": "per-frame",
+    "FFGroups": "per-frame",
+    "NearestNeighbor": "per-frame",
+    "SpeedAngvel": "per-frame",
+    "NearestNeighborDelta": "per-frame",
+    "PairEgocentricFeatures": "per-frame",
+    "PairWavelet": "per-frame",
+    "ApproachAvoidance": "per-frame",
+    "TemporalStackingFeature": "per-frame",
+    "FFGroupsMetrics": "summary",
     "NearestNeighborDeltaBins": "summary",
-    "IdTagColumns":             "tag",
-    "ExtractTemplates":         "global",
-    "ExtractLabeledTemplates":  "global",
-    "GlobalScaler":             "global",
-    "GlobalTSNE":               "global",
-    "GlobalKMeansClustering":   "global",
-    "GlobalWardClustering":     "global",
-    "ArHmmFeature":             "global",
-    "KpmsFeature":              "global",
-    "XgboostFeature":           "global",
-    "GlobalIdentityModel":      "global",
-    "LightningActionFeature":   "global",
+    "IdTagColumns": "tag",
+    "ExtractTemplates": "global",
+    "ExtractLabeledTemplates": "global",
+    "GlobalScaler": "global",
+    "GlobalTSNE": "global",
+    "GlobalKMeansClustering": "global",
+    "GlobalWardClustering": "global",
+    "ArHmmFeature": "global",
+    "KpmsFeature": "global",
+    "XgboostFeature": "global",
+    "GlobalIdentityModel": "global",
+    "LightningActionFeature": "global",
 }
 
 
@@ -93,10 +93,14 @@ def _resolve_category(step, category_map: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
-                   include_stop: bool = True,
-                   category_map: dict | None = None,
-                   root_label: str = "tracks") -> list[dict]:
+def _pipeline_rows(
+    pipe: "Pipeline",
+    *,
+    stop_at: str | None = None,
+    include_stop: bool = True,
+    category_map: dict | None = None,
+    root_label: str = "tracks",
+) -> list[dict]:
     """Walk pipe → ordered row dicts (depth, level, category, parents, ...).
 
     Each row carries everything both renderers need; pure data so it's
@@ -106,8 +110,7 @@ def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
     keep = set(all_names)
     if stop_at is not None:
         if stop_at not in keep:
-            msg = (f"stop_at={stop_at!r} not in pipeline. "
-                   f"Available: {all_names}")
+            msg = f"stop_at={stop_at!r} not in pipeline. Available: {all_names}"
             raise ValueError(msg)
         keep = pipe._upstream_of(stop_at)  # noqa: SLF001
         if not include_stop:
@@ -116,8 +119,7 @@ def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
     steps_by_name = {s.name: s for s in pipe.steps}
 
     def _parents(s):
-        refs = (s.input_names if isinstance(s, FeatureStep)
-                else s.depends_on)
+        refs = s.input_names if isinstance(s, FeatureStep) else s.depends_on
         return [p for p in refs if p in keep]
 
     primary, extras, parents_all = {}, {}, {}
@@ -126,7 +128,7 @@ def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
             continue
         ps = _parents(s)
         primary[s.name] = ps[0] if ps else root_label
-        extras[s.name]  = ps[1:]
+        extras[s.name] = ps[1:]
         parents_all[s.name] = ps
 
     children = defaultdict(list)
@@ -155,15 +157,20 @@ def _pipeline_rows(pipe: "Pipeline", *, stop_at: str | None = None,
     def _walk(parent, depth):
         for kid in children.get(parent, []):
             s = steps_by_name[kid]
-            rows.append({
-                "name": kid, "depth": depth, "level": levels[kid],
-                "parents": parents_all.get(kid, []),
-                "extras":  extras.get(kid, []),
-                "is_callback": isinstance(s, CallbackStep),
-                "category": _resolve_category(s, category_map),
-                "feature_class": (s.feature_cls.__name__
-                                  if isinstance(s, FeatureStep) else None),
-            })
+            rows.append(
+                {
+                    "name": kid,
+                    "depth": depth,
+                    "level": levels[kid],
+                    "parents": parents_all.get(kid, []),
+                    "extras": extras.get(kid, []),
+                    "is_callback": isinstance(s, CallbackStep),
+                    "category": _resolve_category(s, category_map),
+                    "feature_class": (
+                        s.feature_cls.__name__ if isinstance(s, FeatureStep) else None
+                    ),
+                }
+            )
             _walk(kid, depth + 1)
 
     _walk(root_label, 0)
@@ -212,16 +219,18 @@ def show_pipeline_tree(
         Return the rendered text instead of printing it.
     """
     highlights = set(
-        [highlight] if isinstance(highlight, str)
-        else list(highlight) if highlight else []
+        [highlight]
+        if isinstance(highlight, str)
+        else list(highlight)
+        if highlight
+        else []
     )
 
     all_names = [s.name for s in pipe.steps]
     keep = set(all_names)
     if stop_at is not None:
         if stop_at not in keep:
-            msg = (f"stop_at={stop_at!r} not in pipeline. "
-                   f"Available: {all_names}")
+            msg = f"stop_at={stop_at!r} not in pipeline. Available: {all_names}"
             raise ValueError(msg)
         keep = pipe._upstream_of(stop_at)  # noqa: SLF001
         if not include_stop:
@@ -230,8 +239,7 @@ def show_pipeline_tree(
     steps_by_name = {s.name: s for s in pipe.steps}
 
     def _parents(step):
-        refs = (step.input_names if isinstance(step, FeatureStep)
-                else step.depends_on)
+        refs = step.input_names if isinstance(step, FeatureStep) else step.depends_on
         return [p for p in refs if p in keep]
 
     primary, extras = {}, {}
@@ -240,7 +248,7 @@ def show_pipeline_tree(
             continue
         ps = _parents(step)
         primary[step.name] = ps[0] if ps else root_label
-        extras[step.name]  = ps[1:]
+        extras[step.name] = ps[1:]
 
     children = defaultdict(list)
     for step in pipe.steps:
@@ -263,10 +271,8 @@ def show_pipeline_tree(
     def _walk(parent, prefix):
         kids = children.get(parent, [])
         for i, kid in enumerate(kids):
-            last = (i == len(kids) - 1)
-            lines.append(
-                f"{prefix}{'└─ ' if last else '├─ '}{_format(kid)}"
-            )
+            last = i == len(kids) - 1
+            lines.append(f"{prefix}{'└─ ' if last else '├─ '}{_format(kid)}")
             _walk(kid, prefix + ("   " if last else "│  "))
 
     _walk(root_label, "")
@@ -344,16 +350,19 @@ def show_pipeline_diagram(
     import matplotlib.pyplot as plt
 
     if show_inputs not in ("off", "extras", "all"):
-        msg = (f"show_inputs must be 'off', 'extras', or 'all'; "
-               f"got {show_inputs!r}")
+        msg = f"show_inputs must be 'off', 'extras', or 'all'; got {show_inputs!r}"
         raise ValueError(msg)
 
     cat_colors = {**_CAT_COLORS, **(category_colors or {})}
-    rows = _pipeline_rows(pipe, stop_at=stop_at, include_stop=include_stop,
-                          category_map=category_map)
+    rows = _pipeline_rows(
+        pipe, stop_at=stop_at, include_stop=include_stop, category_map=category_map
+    )
     hi = set(
-        [highlight] if isinstance(highlight, str)
-        else list(highlight) if highlight else []
+        [highlight]
+        if isinstance(highlight, str)
+        else list(highlight)
+        if highlight
+        else []
     )
 
     n = len(rows)
@@ -365,8 +374,7 @@ def show_pipeline_diagram(
     ax.set_ylim(-n - 2, 1.2)
     ax.axis("off")
 
-    ax.text(0.1, 0.5, "tracks", fontsize=10, color="#888",
-            style="italic", va="center")
+    ax.text(0.1, 0.5, "tracks", fontsize=10, color="#888", style="italic", va="center")
 
     # 1 data unit ≈ 1 inch (xlim=(0,width); figsize width = width)
     def _tw(s, fs):
@@ -379,27 +387,40 @@ def show_pipeline_diagram(
         text = f"[{r['name']}]" if r["is_callback"] else r["name"]
         is_h = r["name"] in hi
         name_fs = 12 if is_h else 11
-        ax.text(x, y, text,
-                fontsize=name_fs,
-                fontweight="bold" if is_h else "normal",
-                color=color, va="center",
-                bbox=(dict(boxstyle="round,pad=0.2",
-                           facecolor="#fff3cd", edgecolor="none")
-                      if is_h else None))
+        ax.text(
+            x,
+            y,
+            text,
+            fontsize=name_fs,
+            fontweight="bold" if is_h else "normal",
+            color=color,
+            va="center",
+            bbox=(
+                dict(boxstyle="round,pad=0.2", facecolor="#fff3cd", edgecolor="none")
+                if is_h
+                else None
+            ),
+        )
         cursor = x + _tw(text, name_fs) + 0.18
 
         if show_feature_class and r["feature_class"]:
             cls_str = f"({r['feature_class']})"
-            ax.text(cursor, y, cls_str, fontsize=9, color="#888",
-                    style="italic", va="center")
+            ax.text(
+                cursor,
+                y,
+                cls_str,
+                fontsize=9,
+                color="#888",
+                style="italic",
+                va="center",
+            )
             cursor += _tw(cls_str, 9) + 0.22
 
         if show_inputs != "off":
             ps = r["parents"] if show_inputs == "all" else r["extras"]
             if ps:
                 in_str = "← " + ", ".join(ps)
-                ax.text(cursor, y, in_str, fontsize=8, color="#aaa",
-                        va="center")
+                ax.text(cursor, y, in_str, fontsize=8, color="#aaa", va="center")
 
     # Inline category legend at bottom
     used = list(dict.fromkeys(r["category"] for r in rows))
@@ -407,10 +428,8 @@ def show_pipeline_diagram(
     x_cursor = 0.3
     for c in used:
         col = cat_colors.get(c, cat_colors["other"])
-        ax.text(x_cursor, legend_y, "■", fontsize=10, color=col,
-                va="center")
-        ax.text(x_cursor + 0.18, legend_y, c, fontsize=8,
-                color="#444", va="center")
+        ax.text(x_cursor, legend_y, "■", fontsize=10, color=col, va="center")
+        ax.text(x_cursor + 0.18, legend_y, c, fontsize=8, color="#444", va="center")
         x_cursor += len(c) * 0.11 + 0.5
 
     if title:
