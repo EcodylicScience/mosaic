@@ -30,19 +30,38 @@ def trim_feature_output(
 # --- Parquet writing ---
 
 
+def write_parquet_atomic(df: pd.DataFrame, path: Path) -> int:
+    """Write *df* to *path* as parquet, atomically. Returns the row count.
+
+    **The only sanctioned way to write a parquet anywhere in the toolkit**, and the
+    reason it exists as one function rather than an idiom: this used to be
+    ``df.to_parquet(final_path)`` at eleven independent sites, so a kill mid-write
+    left a half-written file exactly where a whole one belongs. A torn table is
+    worse than an absent one, because every reuse gate in the tracking layer tests
+    for *presence*.
+
+    ``atomic_write`` writes a temp file in the destination directory and renames it
+    over the target, so the addressed path only ever holds a complete file, and
+    creates the parent directory itself -- an adjacent ``mkdir`` beside a call here
+    is redundant.
+
+    One constraint on callers, inherited from ``atomic_write`` and documented on
+    ``index_lock``: **never call this inside a locked block except as the block's
+    last act.** The rename replaces the inode a POSIX lock is held on, so a write
+    part-way through a locked section silently drops that section's grip.
+    """
+    n_rows = len(df)
+    atomic_write(path, lambda p: df.to_parquet(p, index=False))
+    return n_rows
+
+
 def write_output(
     meta: FeatureMeta,
     df_feat: FeatureOutput,
 ) -> int:
-    """Write feature output to parquet atomically. Returns n_rows written.
-
-    The parquet is written to a temp file and renamed onto ``meta.out_path``, so
-    a concurrent/interrupted write never leaves a torn file at the final path.
-    """
+    """Write feature output to parquet atomically. Returns n_rows written."""
     df = pd.DataFrame() if df_feat is None else df_feat
-    n_rows = len(df)
-    atomic_write(meta.out_path, lambda p: df.to_parquet(p, index=False))
-    return n_rows
+    return write_parquet_atomic(df, meta.out_path)
 
 
 # --- Output validation (cache-hit checks) ---

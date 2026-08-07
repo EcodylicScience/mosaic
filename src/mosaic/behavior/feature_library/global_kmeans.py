@@ -37,6 +37,8 @@ from mosaic.core.pipeline.types import (
 
 from .helpers import ensure_columns
 from .registry import register_feature
+from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.pipeline._utils import atomic_savez
 
 
 class KMeansModelBundle(TypedDict):
@@ -268,13 +270,12 @@ class GlobalKMeansClustering:
         joblib.dump(bundle, run_root / "model.joblib")
 
         centers = np.asarray(self._kmeans.cluster_centers_, dtype=np.float32)
-        np.savez_compressed(run_root / "cluster_centers.npz", centers=centers)
+        atomic_savez(run_root / "cluster_centers.npz", centers=centers)
 
         if self._artifact_labels is not None:
-            np.savez_compressed(
-                run_root / "artifact_labels.npz", labels=self._artifact_labels
-            )
+            atomic_savez(run_root / "artifact_labels.npz", labels=self._artifact_labels)
             uniq, cnt = np.unique(self._artifact_labels, return_counts=True)
-            pd.DataFrame(
-                {"cluster": uniq.astype(int), "count": cnt.astype(int)}
-            ).to_parquet(run_root / "cluster_sizes.parquet", index=False)
+            _ = write_parquet_atomic(
+                pd.DataFrame({"cluster": uniq.astype(int), "count": cnt.astype(int)}),
+                run_root / "cluster_sizes.parquet",
+            )

@@ -40,6 +40,17 @@ def convert_tracks_command(
     group_from: Annotated[
         str | None, typer.Option("--group-from", help="'infile' | 'filename' | 'both'.")
     ] = None,
+    strict_schema: Annotated[
+        bool,
+        typer.Option(
+            "--strict-schema/--no-strict-schema",
+            help=(
+                "Refuse a table that fails schema validation instead of warning "
+                "and skipping its sequence. Off by default, which is the "
+                "converter default."
+            ),
+        ),
+    ] = False,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON.")
     ] = False,
@@ -52,9 +63,15 @@ def convert_tracks_command(
         if not isinstance(params_value, dict):
             fail("--params must be a JSON object.")
         params_dict = cast("dict[str, object]", params_value)
+    if strict_schema:
+        # An explicit flag wins over the same key in --params, and is the surface a
+        # caller should reach for: the key was only ever reachable through
+        # `--params '{"strict_schema": true}'`, which reads like an obscure
+        # converter setting rather than the refusal it is.
+        params_dict = {**(params_dict or {}), "strict_schema": True}
     try:
         with stdout_to_stderr():
-            ds.convert_all_tracks(  # pyright: ignore[reportUnknownMemberType]
+            outcome = ds.convert_all_tracks(
                 params=params_dict,
                 overwrite=overwrite,
                 merge_per_sequence=merge_per_sequence,
@@ -63,6 +80,18 @@ def convert_tracks_command(
     except Exception as exc:  # noqa: BLE001 - surface conversion errors cleanly
         fail(f"convert-tracks failed: {exc}")
     if as_json:
-        emit_json({"status": "ok"})
+        # "ok" was emitted unconditionally, so a run in which every sequence
+        # failed to convert exited 0 reporting success.
+        emit_json(
+            {
+                "status": "ok" if outcome.ok else "partial",
+                "converted": outcome.converted,
+                "failed": outcome.failed,
+            }
+        )
+    elif outcome.ok:
+        typer.echo(f"Converted {outcome.converted} sequence(s).")
     else:
-        typer.echo("Converted tracks.")
+        typer.echo(
+            f"Converted {outcome.converted} sequence(s); {outcome.failed} failed."
+        )

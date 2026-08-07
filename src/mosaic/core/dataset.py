@@ -55,6 +55,7 @@ from .media.facts_columns import (
 from .media.probe_row import probe_video_metadata, row_from_facts
 from .media.uniformity import UniformityVerdict, camera_uniformity
 from .schema import (
+    TrackSchemaError,
     TRACK_SCHEMAS,
     TrackSchema,
     ensure_track_schema,
@@ -188,6 +189,8 @@ from .pipeline.tracks_raw_index import (
     source_members_from_rows,
     write_tracks_raw_index_rows,
 )
+from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.pipeline._utils import atomic_savez
 
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
@@ -568,6 +571,24 @@ class MediaIndexResult:
     index_path: Path
     disagreements: list[MediaIndexDisagreement]
     drift: list[MediaDrift] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionOutcome:
+    """What one ``convert_all_tracks`` call actually did.
+
+    ``convert_all_tracks`` used to return ``None`` and print its warnings, so a
+    caller -- the CLI included -- could not tell a run that converted everything
+    from one that converted nothing, and reported ``{"status": "ok"}`` either way.
+    """
+
+    converted: int
+    failed: int
+
+    @property
+    def ok(self) -> bool:
+        """Did every sequence the run attempted convert?"""
+        return self.failed == 0
 
 
 class Dataset:
@@ -4941,7 +4962,7 @@ class Dataset:
                     strict=conv_params.strict_schema,
                     source=f"{src_path}::{canon_seq}",
                 )
-                df_std.to_parquet(out_path, index=False)
+                _ = write_parquet_atomic(df_std, out_path)
 
                 # The file-level grouping hint the old row kept as 'collection'
                 # is not recorded: it had no reader anywhere, and it stays
@@ -4995,7 +5016,7 @@ class Dataset:
             df_std, std_fmt, strict=conv_params.strict_schema, source=str(src_path)
         )
 
-        df_std.to_parquet(out_path, index=False)
+        _ = write_parquet_atomic(df_std, out_path)
 
         # The same two values the filename above was built from. Reading the row
         # a second time here is what let the table and its index row disagree:
@@ -5109,6 +5130,7 @@ class Dataset:
         params: dict[str, object] | None,
         group_from: str,
         overwrite: bool,
+        failures: list[str] | None = None,
     ) -> set[tuple[str, str]]:
         """Convert each raw row into a table of its own, warning per failure.
 
@@ -5132,8 +5154,15 @@ class Dataset:
                 _ = self.convert_one_track(
                     row, params=call_params, overwrite=overwrite, covered=covered
                 )
+            except TrackSchemaError:
+                raise
             except Exception as e:
-                print(f"[WARN] convert failed for {row.get('abs_path')}: {e}")
+                print(
+                    f"[WARN] convert failed for {row.get('abs_path')}: {e}",
+                    file=sys.stderr,
+                )
+                if failures is not None:
+                    failures.append(str(row.get("abs_path")))
         return covered
 
     def convert_all_tracks(
@@ -5142,7 +5171,7 @@ class Dataset:
         overwrite: bool = False,
         merge_per_sequence: Optional[bool] = None,
         group_from: Optional[str] = None,
-    ) -> None:
+    ) -> ConversionOutcome:
         """
         Convert all raw track files (from tracks_raw/index.csv) to standard T-Rex-like parquet files.
 
@@ -5226,6 +5255,11 @@ class Dataset:
                 f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}"
             )
 
+        # Sequences that raised, so the return value can say so. A refusal under
+        # ``strict_schema`` never lands here: it propagates, because it is the
+        # answer the caller asked for rather than a mishap to survive.
+        failures: list[str] = []
+
         # Every entry the raw sources name, filled as the branches below walk
         # them. What is indexed but absent from this is an old spelling -- see
         # ``_warn_superseded_entries``.
@@ -5234,10 +5268,10 @@ class Dataset:
         if not merging:
             # Nothing in this index merges: one table per raw file.
             covered |= self._convert_rows_individually(
-                df, params, group_from, overwrite
+                df, params, group_from, overwrite, failures=failures
             )
             self._warn_superseded_entries(covered)
-            return
+            return ConversionOutcome(converted=len(covered), failed=len(failures))
 
         # Read once, and from the manifest rather than spelled "trex_v1" here:
         # convert_one_track already asks the manifest, and the two paths writing
@@ -5282,7 +5316,7 @@ class Dataset:
             # convert_one_track's expansion rather than this loop's concat.
             if src_format not in merging or not sequence:
                 covered |= self._convert_rows_individually(
-                    group_df, params, group_from, overwrite
+                    group_df, params, group_from, overwrite, failures=failures
                 )
                 continue
 
@@ -5326,11 +5360,18 @@ class Dataset:
                 src_path = self.resolve_path(row["abs_path"])
                 try:
                     df_std = converter.convert(src_path, conv_params, hints)
+                except TrackSchemaError:
+                    # The caller asked for strict validation, so this is an answer
+                    # rather than a mishap. Warning and skipping would report
+                    # success over a dataset quietly missing this sequence.
+                    raise
                 except Exception as e:
                     print(
                         f"[WARN] convert failed for {src_path}: {e}; "
-                        f"skipping sequence ({group}, {sequence})"
+                        f"skipping sequence ({group}, {sequence})",
+                        file=sys.stderr,
                     )
+                    failures.append(str(src_path))
                     _merge_failed = True
                     break
                 dfs.append(df_std)
@@ -5338,16 +5379,15 @@ class Dataset:
                 continue
 
             merged_df = merge_on_column_union(dfs)
-            ensure_track_schema(
+            _, _schema_report = ensure_track_schema(
                 merged_df,
                 std_fmt,
-                strict=False,
+                strict=conv_params.strict_schema,
                 source=f"{group}/{sequence} (merged)",
             )
 
             # Write output (out_path determined above for overwrite check)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            merged_df.to_parquet(out_path, index=False)
+            _ = write_parquet_atomic(merged_df, out_path)
 
             # source_abs_path names only the first of the N per-id files merged
             # here. Unchanged from before; the full set stays recoverable from
@@ -5368,6 +5408,14 @@ class Dataset:
             )
 
         self._warn_superseded_entries(covered)
+        outcome = ConversionOutcome(converted=len(covered), failed=len(failures))
+        if failures:
+            print(
+                f"[convert-tracks] converted {outcome.converted} sequence(s); "
+                f"{outcome.failed} failed: {', '.join(sorted(failures))}",
+                file=sys.stderr,
+            )
+        return outcome
 
     # ----------------------------
     # Labels: conversion + indexing
@@ -5476,7 +5524,7 @@ class Dataset:
                 )
                 if out_path.exists() and not overwrite:
                     continue
-                np.savez_compressed(out_path, **dict(entry.payload))
+                atomic_savez(out_path, **dict(entry.payload))
                 write_labels_row(
                     self,
                     run_id=variant,
@@ -5809,7 +5857,7 @@ class Dataset:
             for meta_key, meta_val in metadata.items():
                 payload[f"meta__{meta_key}"] = np.asarray([meta_val], dtype=object)
 
-        np.savez_compressed(out_path, **payload)
+        atomic_savez(out_path, **payload)
 
         # Authored in place from an external table that is in no raw index -- the
         # third label provenance (item 9.3): an empty run_id and no consumed
@@ -6399,6 +6447,7 @@ class Dataset:
         check_output: bool = False,
         *,
         tracks_run_id: str | None = None,
+        labels_run_id: str | None = None,
         execution_id: str | None = None,
         owner: str = "",
         track: bool = True,
@@ -6485,6 +6534,7 @@ class Dataset:
             filter_end_time=filter_end_time,
             check_output=check_output,
             tracks_run_id=tracks_run_id,
+            labels_run_id=labels_run_id,
             execution_id=execution_id,
             owner=owner,
             track=track,

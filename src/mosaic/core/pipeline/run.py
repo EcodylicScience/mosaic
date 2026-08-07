@@ -45,15 +45,22 @@ from .index import (
     feature_run_root,
     missing_outputs_error,
     recorded_consumption,
+    recorded_tracks_composition,
 )
-from .loading import build_nn_lookup, nn_pair_mask, resolve_sequence_identity
+from .loading import (
+    CROSS_JOIN_FEATURES,
+    build_nn_lookup,
+    nn_pair_mask,
+    resolve_sequence_identity,
+)
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
 from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition
+from .tracks_index import tracks_compositions
+from .types.data_config import META_COLS
 from .types import (
-    COLUMNS,
     ArtifactSpec,
     DependencyLookup,
     Feature,
@@ -363,6 +370,21 @@ class MissingConsumedRootsDeclaration(AttributeError):
     undeclared and silently claim to read nothing -- and item 6.2's per-entry
     delete set reads this declaration, so an empty one is a stale crop nothing
     deletes.
+    """
+
+
+class AllEntriesFailed(RuntimeError):
+    """Every entity the run attempted raised, so the run is a failure.
+
+    A run that loses *some* entities is partial: the work it did is durable and
+    worth keeping, and the caller learns what is missing from
+    ``Result.failed_entries``. A run that loses *all* of them produced nothing,
+    and reporting that as finished is the defect this closes -- the CLI exits 0
+    and mosaic-queue maps exit 0 to a ``finished`` ledger row.
+
+    Guarded on having had work to do. An empty scope is a legitimate outcome
+    (a narrowed selector, a global feature with no pipeline inputs), and
+    ``all([])`` would otherwise turn every one of those into a failure.
     """
 
 
@@ -784,6 +806,8 @@ def _run_feature_impl(
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
     outputs on disk -- the permanent source of truth.
     """
+    # The frame-only-merge escape, for the one feature that declares it.
+    cross_join = feature.name in CROSS_JOIN_FEATURES
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
         ds.meta_float("fps_default"),
@@ -927,7 +951,9 @@ def _run_feature_impl(
         ctx.check_cancel()
 
         def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
-            return iter_manifest(manifest, filter_factory=filter_factory)
+            return iter_manifest(
+                manifest, filter_factory=filter_factory, cross_join=cross_join
+            )
 
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
@@ -991,6 +1017,11 @@ def _run_feature_impl(
         if feature.consumed_roots
         else {}
     )
+    # The same question for tracks, which no feature declares as a root: the tracks
+    # row records what its table was converted from, so the comparison is two index
+    # reads rather than a new digest.
+    prior_tracks = recorded_tracks_composition(ds, storage_feature_name, run_id)
+    tracks_now_by_entry = tracks_compositions(ds, scope.tracks_variants)
 
     skip_keys: set[str] = set()
     # Entries whose provenance neither side can establish. Collected rather than
@@ -1037,8 +1068,13 @@ def _run_feature_impl(
             recorded = prior_compositions.get(entry)
             was_made_from = recorded if recorded is not None else ""
             now_made_of = entry_composition(feature, scope, entry)
+            tracks_was = prior_tracks.get(entry, "")
+            tracks_now = tracks_now_by_entry.get(entry, "")
             disposition = cached_entry_disposition(was_made_from, now_made_of)
-            if disposition == "recompute":
+            tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
+            if "recompute" in (disposition, tracks_disposition):
+                if disposition != "recompute":
+                    was_made_from, now_made_of = tracks_was, tracks_now
                 # Serving this would be the wrong answer this milestone exists to
                 # prevent, and recording it would restamp the only cell that says
                 # so. Costly, loud, and never destructive.
@@ -1064,6 +1100,7 @@ def _run_feature_impl(
                     # output nothing describes, so its provenance is unknown and
                     # says so, rather than claiming the present.
                     consumed_composition=was_made_from,
+                    consumed_tracks_composition=tracks_was,
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -1071,8 +1108,10 @@ def _run_feature_impl(
             )
             skip_keys.add(entry_key)
 
-    if undetectable:
-        roots = ", ".join(sorted({root for root in feature.consumed_roots if root}))
+    if undetectable and (feature.consumed_roots or scope.tracks_variants):
+        roots = ", ".join(
+            sorted({root for root in feature.consumed_roots if root} or {"tracks"})
+        )
         print(
             f"[feature:{feature.name}] served {len(undetectable)} cached "
             f"entry(ies) whose source cannot be checked: neither the run nor "
@@ -1122,6 +1161,24 @@ def _run_feature_impl(
 
     pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, int, int]] = {}
 
+    def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
+        """One entity's ``apply`` raised: report it and carry on.
+
+        Shared by the inline and parallel-drain paths deliberately. They used to
+        hold two copies of a bare ``print``, which is how one of them could be
+        repaired and the other left reporting success.
+
+        The stderr line stays -- it is what a human running the CLI directly
+        reads. The record that survives the queue is ``ctx.entry_failed``: the
+        child's stderr goes to DEVNULL there, so the print alone was destroyed
+        before anything could read it.
+        """
+        print(
+            f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
+            file=sys.stderr,
+        )
+        ctx.entry_failed(make_entry_key(group, sequence), exc)
+
     def _drain_completed() -> None:
         done, _ = wait(pending, return_when=FIRST_COMPLETED)
         for future in done:
@@ -1129,10 +1186,7 @@ def _run_feature_impl(
             try:
                 result_df: FeatureOutput = future.result()
             except Exception as exc:
-                print(
-                    f"[feature:{feature.name}] apply failed for ({meta.group},{meta.sequence}): {exc}",
-                    file=sys.stderr,
-                )
+                _entry_failed(meta.group, meta.sequence, exc)
                 continue
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
@@ -1148,6 +1202,9 @@ def _run_feature_impl(
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
                     consumed_composition=entry_composition(
                         feature, scope, (meta.group, meta.sequence)
+                    ),
+                    consumed_tracks_composition=tracks_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
                     ),
                     n_rows=n_rows,
                     params_hash=params_hash,
@@ -1200,10 +1257,7 @@ def _run_feature_impl(
             try:
                 result_df: FeatureOutput = feature.apply(df)
             except Exception as exc:
-                print(
-                    f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
-                    file=sys.stderr,
-                )
+                _entry_failed(group, sequence, exc)
                 return
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
@@ -1219,6 +1273,9 @@ def _run_feature_impl(
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
                     consumed_composition=entry_composition(
                         feature, scope, (group, sequence)
+                    ),
+                    consumed_tracks_composition=tracks_now_by_entry.get(
+                        (group, sequence), ""
                     ),
                     n_rows=n_rows,
                     params_hash=params_hash,
@@ -1239,6 +1296,7 @@ def _run_feature_impl(
                 filter_factory=filter_factory,
                 overlap_frames=apply_overlap,
                 progress_label=storage_feature_name,
+                cross_join=cross_join,
             ):
                 _process_entry(entry_key, df, core_start, core_end)
         else:
@@ -1246,6 +1304,7 @@ def _run_feature_impl(
                 compute_manifest,
                 filter_factory=filter_factory,
                 progress_label=storage_feature_name,
+                cross_join=cross_join,
             ):
                 _process_entry(entry_key, df, 0, len(df))
 
@@ -1313,12 +1372,22 @@ def _run_feature_impl(
     )
     if complete:
         idx.mark_finished(run_id)
+    failed_entries = tuple(ctx.failed_keys)
+    if compute_manifest and len(failed_entries) == len(compute_manifest):
+        msg = (
+            f"[feature:{storage_feature_name}] every one of "
+            f"{len(failed_entries)} attempted entries failed, so run_id={run_id} "
+            f"produced nothing: {', '.join(failed_entries)}. The per-entry errors "
+            f"are in this attempt's run-log."
+        )
+        raise AllEntriesFailed(msg)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(
         feature=storage_feature_name,
         run_id=run_id,
         execution_id=ctx.execution_id,
         cache_hit=cache_hit,
+        failed_entries=failed_entries,
     )
 
 
@@ -1398,12 +1467,17 @@ def resolve_labels_variants(
 
 
 def _find_merged_column(column: str, input_index: int, df: pd.DataFrame) -> str | None:
+    """The merged frame's name for *column* as declared by input *input_index*.
+
+    No bare-name fallback for a suffixed lookup. It existed to tolerate a missing
+    ``__<i>``, and what it actually did was return input 0's column under input i's
+    name -- silently, and only when the suffix numbering had already drifted. The
+    suffix now counts declared inputs, so a miss is a real absence.
+    """
     if input_index == 0:
         return column if column in df.columns else None
     suffixed = f"{column}__{input_index}"
-    if suffixed in df.columns:
-        return suffixed
-    return column if column in df.columns else None
+    return suffixed if suffixed in df.columns else None
 
 
 def load_values(
@@ -1419,6 +1493,7 @@ def load_values(
     filter_end_time: float | None = None,
     pair_filter: NNResult | None = None,
     tracks_run_id: str | None = None,
+    labels_run_id: str | None = None,
 ) -> pd.DataFrame:
     """Load and align value columns from tracks, features, and labels.
 
@@ -1430,7 +1505,8 @@ def load_values(
     ``TracksColumn`` is among the sources -- that is what puts the ``"tracks"``
     literal into the synthetic inputs below. Without it a notebook reading a
     column from a dataset holding two recipes for one sequence would meet the
-    resolver's refusal with no keyword able to answer it.
+    resolver's refusal with no keyword able to answer it. ``labels_run_id`` is the
+    same argument for labels, which this function accepted no answer for at all.
     """
     source_list = list(sources)
     if not source_list:
@@ -1507,9 +1583,9 @@ def load_values(
     labels_lookups: dict[str, dict[tuple[str, str], Path]] = {}
     for ls in label_sources:
         if ls.kind not in labels_lookups:
-            labels_lookups[ls.kind] = _build_labels_lookup(ds, ls.kind)
+            labels_lookups[ls.kind] = _build_labels_lookup(ds, ls.kind, labels_run_id)
 
-    meta_cols = COLUMNS.meta_set() | {"id1", "id2"}
+    meta_cols = META_COLS
 
     all_parts: list[pd.DataFrame] = []
 

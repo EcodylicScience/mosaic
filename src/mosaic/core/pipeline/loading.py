@@ -6,7 +6,8 @@ pipeline infrastructure they depend on.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -21,14 +22,79 @@ from .index import (
     latest_feature_run_root,
 )
 from .types import ArtifactSpec, NNResult
+from .types.data_config import ALIGN_COLS, COLUMNS
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
 
-# TODO, also see below: This shares logic, and hardcodes columns defined in feature_library.params.COLUMNS
-# so COLUMNS needs to move to core or pipeline, and we'd need to derive the sets dynamically from it
-# should use the new Columns.meta_set() | {"id1", "id2"} - id1 and id2 should actually also move to Columns for consistency.
-_ALIGN_COLS = frozenset({"frame", "time", "id", "id1", "id2"})
+_ALIGN_COLS = ALIGN_COLS
+
+# Features whose inputs legitimately align on frame alone. A closed set rather than
+# a per-feature flag: ``Feature`` is a Protocol with 44 standalone implementations,
+# so a required attribute is 44 edits, and it cannot live on ``Inputs`` whose dump
+# feeds every downstream identifier. ``interaction-crop-pipeline`` merges tracks
+# against a pair-level filter and groups afterwards, so its fan-out costs memory
+# rather than correctness.
+CROSS_JOIN_FEATURES: frozenset[str] = frozenset({"interaction-crop-pipeline"})
+
+
+class MultiInputAlignmentError(ValueError):
+    """Two inputs cannot be aligned without inventing or dropping rows."""
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentVerdict:
+    """Whether two column sets can be joined, and on what.
+
+    Exported so a caller composing a chain before running it uses the same rule the
+    merge enforces, rather than learning at execution.
+    """
+
+    keys: frozenset[str]
+    levels: tuple[str, ...]
+    compatible: bool
+    reason: str
+
+
+def entity_level_of(columns: Iterable[str]) -> str:
+    """``"pair"`` / ``"individual"`` / ``"global"`` from column names alone.
+
+    Name-based, so it answers for a parquet schema without reading data -- which is
+    what lets a submit-time check resolve a run's level cheaply. The value-sniffing
+    twin, :func:`normalize_identity_columns`, additionally distinguishes a pair
+    frame whose second id is all-null; this does not, and does not need to.
+    """
+    present = set(columns)
+    for a, b in (("id1", "id2"), ("id_a", "id_b"), ("id_A", "id_B")):
+        if a in present and b in present:
+            return "pair"
+    return "individual" if COLUMNS.id_col in present else "global"
+
+
+def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
+    """Can these inputs be joined? The rule behind :class:`MultiInputAlignmentError`.
+
+    Incompatible when two inputs carry identity at different levels and the keys
+    they share carry no identity at all: joining an individual frame to a pair frame
+    on ``frame`` alone is a per-frame cartesian product, not an alignment.
+    """
+    sets = [set(columns) for columns in column_sets]
+    keys = frozenset(_ALIGN_COLS.intersection(*sets)) if sets else frozenset()
+    levels = tuple(entity_level_of(columns) for columns in sets)
+    identity = keys - {COLUMNS.frame_col, COLUMNS.time_col}
+    concrete = {level for level in levels if level != "global"}
+    if len(concrete) > 1 and not identity:
+        return AlignmentVerdict(
+            keys,
+            levels,
+            False,
+            f"inputs are at different entity levels ({', '.join(levels)}) and share "
+            f"no identity column, so joining on {sorted(keys) or 'nothing'} would "
+            f"pair every row of one with every row of the other",
+        )
+    if not keys:
+        return AlignmentVerdict(keys, levels, False, "no shared alignment columns")
+    return AlignmentVerdict(keys, levels, True, "")
 
 
 # TODO: this shares logic with feature_library.params.PoseConfig
@@ -109,36 +175,53 @@ def load_parquet_dataframe(
     return df
 
 
-def _merge_parquet_inputs(dfs: Iterable[pd.DataFrame]) -> pd.DataFrame | None:
-    """Merge parquet DataFrames on shared alignment columns.
+def _merge_parquet_inputs(
+    dfs: Iterable[tuple[int, pd.DataFrame]], *, cross_join: bool = False
+) -> pd.DataFrame | None:
+    """Merge parquet inputs on the identity columns they share.
 
-    Accepts an iterator -- DataFrames are consumed one at a time and
-    merged incrementally, so only two are in memory at once.
+    Each item carries the input's **declared** position, not its position among the
+    ones that happened to load: the suffix on a collided column used to count
+    survivors, so with an empty middle input a later input's column was renamed to
+    an earlier input's index and read back as the wrong column entirely.
+
+    Refuses rather than inventing rows -- see :func:`alignment_verdict`. Two escapes,
+    both narrow: *cross_join* for a feature that declares a frame-only merge, and
+    the multiplicity check below, which allows a one-to-many join (a per-frame table
+    against a per-frame-per-id one) while refusing many-to-many.
     """
     it = iter(dfs)
-    merged = next(it, None)
-    if merged is None:
+    first = next(it, None)
+    if first is None:
         return None
+    merged = first[1]
 
-    for i, df_next in enumerate(it, 1):
-        on_cols = _ALIGN_COLS & set(merged.columns) & set(df_next.columns)
-        if not on_cols:
-            msg = (
-                f"Cannot merge input {i}: no shared alignment columns "
-                f"({_ALIGN_COLS}) between merged ({list(merged.columns)}) "
-                f"and input ({list(df_next.columns)})"
+    for declared, df_next in it:
+        verdict = alignment_verdict([merged.columns, df_next.columns])
+        if not verdict.compatible and not cross_join:
+            raise MultiInputAlignmentError(
+                f"cannot merge input {declared}: {verdict.reason}"
             )
-            raise ValueError(msg)
-
-        # Suffix duplicate feature columns so they survive the merge
+        on_cols = sorted(verdict.keys)
+        if not on_cols:
+            raise MultiInputAlignmentError(
+                f"cannot merge input {declared}: no shared alignment columns"
+            )
+        if not cross_join and (
+            merged.duplicated(on_cols).any() and df_next.duplicated(on_cols).any()
+        ):
+            raise MultiInputAlignmentError(
+                f"cannot merge input {declared}: {on_cols} is not unique on either "
+                "side, so the join would multiply rows"
+            )
         rename_map = {
-            c: f"{c}__{i}"
+            c: f"{c}__{declared}"
             for c in df_next.columns
             if c not in on_cols and c in merged.columns
         }
         if rename_map:
             df_next = df_next.rename(columns=rename_map)
-        merged = merged.merge(df_next, how="inner", on=list(on_cols))
+        merged = merged.merge(df_next, how="inner", on=on_cols)
 
     if merged.empty:
         return None
@@ -148,6 +231,8 @@ def _merge_parquet_inputs(dfs: Iterable[pd.DataFrame]) -> pd.DataFrame | None:
 def load_entry_data(
     file_specs: list[tuple[Path, LoadSpec]],
     filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = (),
+    *,
+    cross_join: bool = False,
 ) -> pd.DataFrame | None:
     """Load and merge data for a single manifest entry.
 
@@ -156,13 +241,13 @@ def load_entry_data(
     lazily and merged incrementally to minimize peak memory.
     """
 
-    def _load_dfs() -> Iterator[pd.DataFrame]:
-        for path, load_spec in file_specs:
+    def _load_dfs() -> Iterator[tuple[int, pd.DataFrame]]:
+        for declared, (path, load_spec) in enumerate(file_specs):
             df = load_parquet_dataframe(path, load_spec)
             if df is not None:
-                yield df
+                yield declared, df
 
-    merged = _merge_parquet_inputs(_load_dfs())
+    merged = _merge_parquet_inputs(_load_dfs(), cross_join=cross_join)
     if merged is None or merged.empty:
         return None
     for fn in filters:

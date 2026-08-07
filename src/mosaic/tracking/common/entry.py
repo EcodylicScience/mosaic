@@ -38,6 +38,7 @@ from mosaic.core.pipeline.markers import (
     clear_inflight,
     inflight_state,
     new_inflight,
+    try_create_inflight,
     read_inflight,
     read_phase_marker,
     refresh_inflight,
@@ -168,26 +169,44 @@ def open_entry(
     *,
     kind: str,
     overwrite: bool,
-) -> Path | None:
+    idle_seconds: float = 0.0,
+) -> tuple[Path, InflightMarker] | None:
     """Create this entry's working directory and take it, or ``None`` if held.
 
-    The contention check runs **before** any destructive step, including
-    ``overwrite``'s tree removal: a live claim means another execution is writing
-    here right now, and clearing first would delete both its work and the claim
-    that says so. A contended entry is skipped rather than raised, because one
-    contended sequence must not end a batch.
+    Takes it for real, with an exclusive create, before anything else touches the
+    directory. The claim used to be *read* here and written hundreds of lines later
+    inside per-phase code, so two executions could both see a free directory and
+    proceed -- and the reuse-hit path wrote none at all, leaving the entry
+    unprotected for its whole run.
+
+    ``overwrite``'s tree removal happens after the claim succeeds: clearing first
+    would delete a peer's work and the claim saying so. A contended entry is
+    skipped, not raised, so one sequence cannot end a batch. An expired or orphaned
+    claim is stealable -- otherwise a killed run locks its directory forever -- so
+    it is unlinked and the create retried once.
     """
     work_dir = run_root / key
     work_dir.mkdir(parents=True, exist_ok=True)
-
-    if (
-        inflight_state(
+    marker = new_inflight(
+        execution_id=ctx.execution_id,
+        host=socket.gethostname(),
+        pid=os.getpid(),
+        phase=None,
+        idle_seconds=idle_seconds,
+    )
+    for attempt in (0, 1):
+        if try_create_inflight(work_dir, marker):
+            break
+        state = inflight_state(
             read_inflight(work_dir),
             run_log_base=ds.base_dir,
             execution_id=ctx.execution_id,
         )
-        == "live"
-    ):
+        if state == "mine":
+            break
+        if state in {"expired", "orphaned"} and attempt == 0:
+            clear_inflight(work_dir)
+            continue
         print(
             f"[{kind}] {key} is held by another execution; skipping it.",
             file=sys.stderr,
@@ -197,12 +216,17 @@ def open_entry(
     if overwrite:
         shutil.rmtree(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
-    return work_dir
+        _ = try_create_inflight(work_dir, marker)
+    return work_dir, marker
 
 
-def release_entry(work_dir: Path) -> None:
-    """Release the claim. Belongs in the caller's ``finally``."""
-    clear_inflight(work_dir)
+def release_entry(work_dir: Path, execution_id: str = "") -> None:
+    """Release *our* claim. Belongs in the caller's ``finally``.
+
+    Ownership-checked: this runs whether or not this execution ever held the
+    directory, so an unchecked unlink deleted a live peer's claim.
+    """
+    clear_inflight(work_dir, execution_id=execution_id)
 
 
 # --- what still holds ------------------------------------------------------

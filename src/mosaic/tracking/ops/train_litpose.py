@@ -21,8 +21,16 @@ from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
-from mosaic.tracking.ops._common import ensure_models_root, fingerprint_dataset
-from mosaic.tracking.ops.train import finalize_training, train_run_id
+from mosaic.tracking.ops._common import (
+    claim_run_root,
+    ensure_models_root,
+    fingerprint_dataset,
+)
+from mosaic.tracking.ops.train import (
+    finalize_training,
+    train_run_id,
+    training_is_complete,
+)
 from mosaic.tracking.litpose.templates import default_config_path
 from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
@@ -58,6 +66,12 @@ class TrainLitposeParams(Params):
     device: Annotated[str, HASH_EXCLUDE] = "auto"
     idle_timeout: Annotated[float, HASH_EXCLUDE] = 1800
     max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
+    overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    """Train again even if this exact run already finished.
+
+    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
+    flipping it must not mint a second identity for the same weights.
+    """
 
 
 @register_op
@@ -107,9 +121,13 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             extra={"config": file_digest(base_config)},
         )
         ctx.set_run_id(run_id)
+        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+            print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            return run_id
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
+        claim_run_root(ds, ctx, run_root, self.kind, params.idle_timeout)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         produced = train_litpose(

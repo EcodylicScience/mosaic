@@ -23,6 +23,7 @@ from mosaic.core.pipeline.types import (
 
 from .helpers import ensure_columns
 from .registry import register_feature
+from mosaic.core.pipeline.writers import write_parquet_atomic
 
 
 class ScalerModelBundle(TypedDict):
@@ -179,4 +180,4 @@ class GlobalScaler:
 
         if self._scaled_templates is not None:
             df = pd.DataFrame(self._scaled_templates, columns=self._feature_columns)
-            df.to_parquet(run_root / "scaled_templates.parquet", index=False)
+            _ = write_parquet_atomic(df, run_root / "scaled_templates.parquet")

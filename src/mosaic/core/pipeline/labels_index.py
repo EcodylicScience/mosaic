@@ -256,7 +256,8 @@ def _ambiguous_label_variant_message(
         f"labels index holds {len(variants)} variants of "
         f"(group={group!r}, sequence={sequence!r}): {listing}. "
         f"There is no defensible default between two recipes, so say which one to "
-        f"read: pass labels_run_id=<variant> to run_feature or build_manifest."
+        f"read: pass labels_run_id=<variant> to run_feature, Dataset.run_feature or "
+        f"load_values (or --labels-run-id on `mosaic run`)."
     )
 
 

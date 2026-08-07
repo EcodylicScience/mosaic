@@ -10,6 +10,7 @@ from .index import (
     list_feature_runs,
 )
 from .index_csv import IndexCSV
+from .loading import alignment_verdict, entity_level_of
 from .manifest import (
     FileSpecs,
     FilterFactory,
@@ -35,6 +36,8 @@ from .viz import show_pipeline_diagram, show_pipeline_tree
 from .writers import trim_feature_output, write_output
 
 __all__ = [
+    "entity_level_of",
+    "alignment_verdict",
     "CallbackStep",
     "Feature",
     "FeatureIndexRow",

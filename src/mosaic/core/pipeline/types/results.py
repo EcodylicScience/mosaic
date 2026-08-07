@@ -19,18 +19,22 @@ class Result(StrictModel, Generic[F]):
         execution_id: ULID of the attempt that produced this result (attempt
             identity, not content identity).
         cache_hit: Whether the producing run was fully served from cache.
+        failed_entries: Entry keys whose ``apply`` raised while the run carried
+            on. Empty for a clean run; non-empty means a partial one, and the
+            producing run's outputs are missing exactly these entities.
 
-    ``execution_id`` and ``cache_hit`` are ``exclude=True`` so they never enter
-    ``model_dump()``. This is load-bearing: a ``Result`` doubles as a pipeline
-    *input reference* whose ``model_dump()`` feeds the ``run_id`` hash of every
-    downstream feature -- excluding these two attempt-level fields keeps that
-    hash (and thus caching/determinism) unperturbed.
+    ``execution_id``, ``cache_hit`` and ``failed_entries`` are ``exclude=True`` so
+    they never enter ``model_dump()``. This is load-bearing: a ``Result`` doubles
+    as a pipeline *input reference* whose ``model_dump()`` feeds the ``run_id``
+    hash of every downstream feature -- excluding these attempt-level fields keeps
+    that hash (and thus caching/determinism) unperturbed.
     """
 
     feature: F
     run_id: str | None = None
     execution_id: str | None = Field(default=None, exclude=True)
     cache_hit: bool = Field(default=False, exclude=True)
+    failed_entries: tuple[str, ...] = Field(default=(), exclude=True)
 
     def use_latest(self) -> Self:
         """Return a copy with run_id=None (resolves to latest run)."""

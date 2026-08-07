@@ -131,14 +131,17 @@ updates the published docs.
 
 ### CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs three jobs on push
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs four jobs on push
 and pull request. There is no `.pre-commit-config.yaml`.
 
 - **`test`** — `uv run --no-sync pytest -q`. It inherits `addopts = "-m 'not slow'"`,
   so **slow-marked tests never run in CI**. A change that only breaks a slow test
   goes green; run them locally.
-- **`identity`** — four named test files under a torch-bearing environment, so
+- **`identity`** — five named test files under a torch-bearing environment, so
   `pytest.importorskip("torch")` cannot silently skip them.
+- **`tracking`** — the ultralytics preflight and marker suites under a `pose`
+  environment, for the same reason: without `ultralytics` and `lap` installed they
+  would skip green and prove nothing.
 - **`lint-changed`** — `uvx ruff check` **and** `uvx ruff format --check` over
   every changed `.py` file. Formatting is a merge gate, not a suggestion.
 
@@ -160,8 +163,14 @@ pytest -m "slow or not slow"        # CI skips the slow ones
 the central object users interact with. A `Dataset` manages a fixed set of
 named roots:
 
-- `media/`        — video files + `index.csv` (ffprobe metadata)
-- `tracks_raw/`   — user-uploaded raw tracks/labels + `index.csv`
+- `media_raw/`    — the originals index (`index.csv`, ffprobe metadata). The one
+                  source root `backfill_roots` cannot fill, so it may legitimately
+                  be absent; accessors resolve through `resolve_media_root()`
+- `media/`        — transcode derivatives + their own `index.csv`, one row per
+                  derivative, reached through `media_routing_context`
+- `media/frames/` — extracted PNGs for annotation (root key `frames`)
+- `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
+- `labels_raw/`   — user-uploaded raw labels + `index.csv`
 - `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
                   (`trex` / `sleap` / `litpose` / `ultralytics`) and of model inference
                   (`infer-pose` / `infer-points` / `infer-localizer`), before
@@ -182,7 +191,6 @@ named roots:
 - `labels/<kind>/` — converted manual labels (`.npz`)
 - `features/<name>/<run_id>/` — per-feature outputs
 - `models/<name>/<run_id>/`   — trained model artifacts
-- `inputsets/`    — input-set definitions for grouped runs
 
 ### The dataset manifest
 
@@ -273,7 +281,8 @@ mosaic uses decorator-based registries; new functionality almost always means
 | -------------------------- | ------------------- | --------------------------------- |
 | `@register_feature`        | `FEATURES`          | `behavior/feature_library/`       |
 | `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_converter.py` (impls in `core/track_library/`) |
-| `@register_label_converter`| `LABEL_CONVERTERS`  | `behavior/label_library/`         |
+| `@register_label_converter`| `LABEL_CONVERTERS`  | `core/label_converter.py` (impls in `behavior/label_library/`) |
+| `@register_op`             | `OPS`               | `core/pipeline/ops.py`            |
 
 ### Feature protocol
 
@@ -311,7 +320,7 @@ lives in `visualization_library/` as plain functions rather than as features.
 [`src/mosaic/core/pipeline/`](src/mosaic/core/pipeline/) owns data loading,
 output writing, dependency resolution, and indexing. **Features own
 computation only.** The public typed surface lives in `pipeline/types/`:
-`Params`, `Inputs`, `Result`, `ArtifactSpec`, `OutputType`, `InputStream`,
+`Params`, `Inputs`, `Result`, `ArtifactSpec`, `InputStream`,
 `DependencyLookup`, `FeatureLabelsSource`, `GroundTruthLabelsSource`.
 
 ### `run_id` reproducibility
@@ -328,8 +337,12 @@ outputs directly — it would desync indexes and break reproducibility.
 
 ```
 src/mosaic/
+├── cli/                        # every `mosaic` verb
+├── runlog.py                   # append-only JSONL run-log (a deliberate leaf)
+├── media_probe_config.py       # verdict thresholds, read by core/media
 ├── core/
 │   ├── dataset.py              # Dataset orchestrator
+│   ├── manifest.py             # dataset.yaml models (NOT pipeline/manifest.py)
 │   ├── pipeline/               # feature execution engine, typed protocol
 │   │   ├── types/              # Params, Inputs, Result, ArtifactSpec, ...
 │   │   ├── run.py              # run_feature() orchestration
@@ -355,6 +368,7 @@ src/mosaic/
 │   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
+    ├── ops/                    # @register_op layer behind `mosaic run --kind`
     ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
     ├── pose_training/          # YOLO pose, POLO point, localizer training
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
@@ -434,8 +448,10 @@ Models follow the same shape: `models/<name>/<run_id>/`.
 
 `tracks/index.csv` is a typed [`IndexCSV`](src/mosaic/core/pipeline/tracks_index.py)
 (`TracksIndexRow`), written atomically under a per-file lock. Do not write it by
-hand — `write_tracks_row()` is the only writer, and `read_tracks_index()` the only
-reader.
+hand — `write_tracks_row()` is the only *row-append* writer, and
+`read_tracks_index()` the only reader. Two other modules rewrite the same file
+through sibling `IndexCSV` methods: `delete_set` (deletion) and
+`reconcile_variants` (re-addressing).
 
 Beyond `abs_path`/`group`/`sequence` each row carries `run_id` (the *tracks
 variant* — which recipe produced the table, from
@@ -479,8 +495,9 @@ this scheme keeps the identifiers it already has.
 
 A `group` or `sequence` may not contain `/`, `\\` or NUL. mosaic itself survives a
 slash — `to_safe_name` percent-encodes it — but an entry name doubles as a
-directory name in mosaic-api, where it does not. Validated at the three write
-boundaries (`EntryHints`, `write_tracks_row`, `build_tracks_raw_row`) and at no
+directory name in mosaic-api, where it does not. Validated at the six write
+boundaries (`EntryHints`, `Dataset.set_display_name`, `build_tracks_raw_row`,
+`promote_correction`, `write_tracks_row`, `write_labels_row`) and at no
 read path, so an index that already holds one keeps resolving. Join levels with
 `__`, which `parse_hierarchy` reads by default.
 
@@ -611,6 +628,36 @@ Reference end-to-end examples (not test fixtures):
 Notebooks may use sample data not present in the repo; check the first cell
 for path expectations before running.
 
+### Invariants a change must not quietly undo
+
+Each of these replaced a silent wrong answer, and each has a test named for it.
+
+- **One parquet writer.** `write_parquet_atomic` (and `atomic_savez`) are the only
+  sanctioned ways to write an output. A direct `df.to_parquet(final_path)` leaves a
+  torn file where a whole one belongs, and every reuse gate in the tracking layer
+  tests for presence. A test fails if a new call site addresses a final path.
+- **Unreadable is not empty.** `readable_tracks_table` returns `None` for a table
+  that cannot be read and `BridgeCounts(0, 0)` for one that reads and holds no rows.
+  The second is a legitimate result -- a video with no detected individuals -- and
+  must stay reusable.
+- **A run reports what it lost.** A per-entity failure is recorded as an
+  `entry_error` run-log event and surfaced as `Result.failed_entries` plus
+  `"status": "partial"`; losing every entity raises. Do not add `partial` to
+  `runlog.TERMINAL_STATUSES` -- mosaic-api's sweeper reaps that set.
+- **Inputs align at one entity level.** `alignment_verdict` decides; the merge
+  raises from it. Joining individual-level to pair-level output is a cartesian
+  product, not an alignment. `loading.CROSS_JOIN_FEATURES` is the closed escape.
+- **An entry is claimed before it is touched.** `open_entry` takes the claim with an
+  exclusive create; release and refresh are ownership-checked. One-shot ops claim
+  their run root and raise on contention, because two nondeterministic trainers in
+  one run root interleave artifacts.
+- **One rule resolves an unpinned `Result`.** `track_universe.current_run_id`:
+  leaf-of-chain when the runs have edges among themselves, recorded time when they
+  are siblings. Do not reintroduce a second rule.
+- **`consumed_tracks_composition` is compared, not just recorded.** It is what
+  notices a re-conversion from changed sources; the tracks variant identity is
+  params-only and does not move.
+
 ## Common Pitfalls
 
 1. **`pose` vs `polo` install conflict.** Both extras install something named
@@ -639,6 +686,15 @@ for path expectations before running.
    `lightning-action`, and `gpu`. Don't quietly fold them in.
 7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
    changes still warrant explicit discussion in an issue first.
+
+8. **Exactly one distribution may provide `cv2`.** `albumentations` requires
+   `opencv-python-headless` and mosaic + `ultralytics` require `opencv-python`; pip
+   installs both without complaint because they are different distributions, then
+   they overwrite each other's files and merge two ffmpeg builds into one
+   `cv2/.dylibs`. The suite then dies with `Trace/BPT trap: 5` somewhere different
+   every run, and whichever wheel wins may be the headless one, which has no
+   `imshow` -- silently breaking playback. `tests/conftest.py` refuses to start when
+   both are present. Keep `opencv-python`.
 
 ## Pointers to Deeper Docs
 

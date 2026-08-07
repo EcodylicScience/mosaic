@@ -18,11 +18,10 @@ from ._utils import Scope
 from .index import (
     feature_index,
     feature_index_path,
-    latest_feature_run_root,
     missing_outputs_error,
 )
 from .loading import load_entry_data
-from .track_universe import is_track_shaped
+from .track_universe import current_run_id, is_track_shaped
 from .tracks_index import read_tracks_index, select_variant_rows, tracks_index_path
 from .types import (
     COLUMNS,
@@ -123,32 +122,15 @@ def _ensure_track_shaped(
 
 
 def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
-    """The run of *feature_name* nothing downstream consumed (item 9.4).
+    """Which run of *feature_name* an unpinned reference reads.
 
-    Restricted to one storage, because the caller asked for one feature: the
-    dataset-wide question is ``track_universe.track_leaf``, and answering it here
-    would resolve a *different* feature than the one named.
-
-    Falls back to the recorded latest when this feature's runs are not
-    track-shaped -- an ordinary derived feature has no chain to walk, and its
-    runs are pinned by ``resolve_references`` on every path that matters.
+    Delegates: this used to hold its own three rules -- leaf when the runs were
+    track-shaped, recorded time otherwise, and recorded time again when a cycle left
+    no leaf -- while ``resolve`` used a fourth and claimed they agreed. One function
+    now answers, and it needs neither a materialised nor a track-shaped run because
+    the edges come from ``params.json``.
     """
-    from .track_universe import AmbiguousTrackLeaf, track_universe
-
-    mine = [source for source in track_universe(ds) if source.storage == feature_name]
-    if not mine:
-        return latest_feature_run_root(ds, feature_name)[0]
-    consumed = {run for source in track_universe(ds) for run in source.consumed}
-    leaves = [source.run_id for source in mine if source.run_id not in consumed]
-    if len(leaves) == 1:
-        return leaves[0]
-    if not leaves:
-        return latest_feature_run_root(ds, feature_name)[0]
-    raise AmbiguousTrackLeaf(
-        f"{len(leaves)} runs of {feature_name!r} are leaves of the chain, so "
-        f"there is no default: {', '.join(sorted(leaves))}. Name one by passing "
-        "its run_id in the Result."
-    )
+    return current_run_id(ds, feature_name)
 
 
 def build_manifest(
@@ -512,6 +494,7 @@ def _load_neighbor(
     file_specs: FileSpecs | None,
     entry_key: str | None,
     filter_factory: FilterFactory | None,
+    cross_join: bool = False,
 ) -> pd.DataFrame | None:
     """Load a neighbor segment with its own filters applied."""
     if file_specs is None:
@@ -519,7 +502,7 @@ def _load_neighbor(
     filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = ()
     if filter_factory is not None and entry_key is not None:
         filters = filter_factory(entry_key)
-    return load_entry_data(file_specs, filters=filters)
+    return load_entry_data(file_specs, filters=filters, cross_join=cross_join)
 
 
 @overload
@@ -530,6 +513,7 @@ def iter_manifest(
     overlap_frames: None = None,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame]]: ...
 
 
@@ -541,6 +525,7 @@ def iter_manifest(
     overlap_frames: int,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame, int, int]]: ...
 
 
@@ -551,11 +536,15 @@ def iter_manifest(
     overlap_frames: int | None = None,
     progress_label: str = "",
     progress_interval: int = 10,
+    cross_join: bool = False,
 ) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, int, int]]:
     """Iterate manifest entries, yielding data per sequence.
 
     When overlap_frames is None (default), yields (entry_key, df).
     When overlap_frames is an int, yields (entry_key, df, core_start, core_end).
+
+    *cross_join* passes the frame-only-merge escape down to the loader, for the one
+    feature that declares it (``loading.CROSS_JOIN_FEATURES``).
     """
     n_entries = len(manifest)
     for i, (entry_key, entry) in enumerate(manifest.items()):
@@ -565,7 +554,7 @@ def iter_manifest(
             filters = filter_factory(entry_key)
 
         # Load current segment
-        df = load_entry_data(entry.file_specs, filters=filters)
+        df = load_entry_data(entry.file_specs, filters=filters, cross_join=cross_join)
         if df is None:
             continue
 

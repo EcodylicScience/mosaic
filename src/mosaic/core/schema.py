@@ -1,4 +1,5 @@
 """Track schema system for validating standardized track DataFrames."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,15 +11,32 @@ import pandas as pd
 @dataclass(frozen=True)
 class TrackSchema:
     name: str
-    required: Set[str]                    # exact column names that MUST exist
-    required_prefixes: Set[str] = None    # any column that starts with these prefixes (at least one match each)
-    recommended: Set[str] = None          # warn-only
+    required: Set[str]  # exact column names that MUST exist
+    required_prefixes: Set[str] = (
+        None  # any column that starts with these prefixes (at least one match each)
+    )
+    recommended: Set[str] = None  # warn-only
     description: str = ""
+
 
 TRACK_SCHEMAS: Dict[str, TrackSchema] = {}
 
+
 def register_track_schema(schema: TrackSchema):
     TRACK_SCHEMAS[schema.name] = schema
+
+
+class TrackSchemaError(ValueError):
+    """A table failed schema validation under ``strict=True``.
+
+    Named rather than a bare ``ValueError`` so the conversion loops can let it
+    through their "warn and keep going" handlers. Those exist so one broken file
+    does not end a batch, which is right -- but they also swallowed the refusal a
+    caller had explicitly asked for, turning ``strict_schema=True`` into a printed
+    line and a silently smaller dataset. A ``ValueError`` subclass, so any caller
+    already catching that keeps working.
+    """
+
 
 def ensure_track_schema(
     df: pd.DataFrame,
@@ -42,13 +60,17 @@ def ensure_track_schema(
         return df, {}
 
     sch = TRACK_SCHEMAS[schema_name]
-    missing_required = sorted([c for c in (sch.required or set()) if c not in df.columns])
+    missing_required = sorted(
+        [c for c in (sch.required or set()) if c not in df.columns]
+    )
     missing_prefixes = []
     if sch.required_prefixes:
         for pref in sch.required_prefixes:
             if not any(col.startswith(pref) for col in df.columns):
                 missing_prefixes.append(pref)
-    missing_recommended = sorted([c for c in (sch.recommended or set()) if c not in df.columns])
+    missing_recommended = sorted(
+        [c for c in (sch.recommended or set()) if c not in df.columns]
+    )
 
     report = {
         "missing_required": missing_required,
@@ -57,10 +79,13 @@ def ensure_track_schema(
     }
     src_tag = f" {source}" if source else ""
     if strict and (missing_required or missing_prefixes):
-        raise ValueError(f"Schema '{schema_name}'{src_tag} validation failed: {report}")
+        raise TrackSchemaError(
+            f"Schema '{schema_name}'{src_tag} validation failed: {report}"
+        )
     if missing_required or missing_prefixes or missing_recommended:
         print(f"[schema:{schema_name}]{src_tag} Validation report -> {report}")
     return df, report
+
 
 # Default T-Rex-like schema (flexible): must have these core columns; poseX/poseY are prefix-validated.
 #
@@ -72,16 +97,25 @@ def ensure_track_schema(
 # arbitrary tag-resolved subset can be run via `run_feature(entries=[(group, seq), ...])`.
 # `group` keeps a structural meaning only as a temporal-contiguity key for the
 # future `continuous` dataset type (see core/pipeline/manifest.py).
-register_track_schema(TrackSchema(
-    name="trex_v1",
-    required={
-        "frame", "time", "id", "group", "sequence",
-    },
-    required_prefixes={"poseX", "poseY"},
-    recommended={
-        "X#wcentroid", "Y#wcentroid", "SPEED", "ANGLE",
-    },
-    description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
-                "`group` is required but may be empty (an optional namespace, not the "
-                "canonical grouping — use tags / run_feature(entries=...) for that)."
-))
+register_track_schema(
+    TrackSchema(
+        name="trex_v1",
+        required={
+            "frame",
+            "time",
+            "id",
+            "group",
+            "sequence",
+        },
+        required_prefixes={"poseX", "poseY"},
+        recommended={
+            "X#wcentroid",
+            "Y#wcentroid",
+            "SPEED",
+            "ANGLE",
+        },
+        description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
+        "`group` is required but may be empty (an optional namespace, not the "
+        "canonical grouping — use tags / run_feature(entries=...) for that).",
+    )
+)

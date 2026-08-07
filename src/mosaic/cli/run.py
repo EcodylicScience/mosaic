@@ -74,6 +74,16 @@ def run_command(
             ),
         ),
     ] = None,
+    labels_run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--labels-run-id",
+            help=(
+                "Which labels variant to read, e.g. 'trex.0.1-abc123def0'. "
+                "Feature runs only; needed when one sequence has two recipes."
+            ),
+        ),
+    ] = None,
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Recompute even if a cached run exists.")
     ] = False,
@@ -132,16 +142,26 @@ def run_command(
                     entries=entry_pairs or None,
                     overwrite=overwrite,
                     tracks_run_id=tracks_run_id,
+                    labels_run_id=labels_run_id,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,
                 )
+            # "partial" rather than "finished" when entities were lost. It is
+            # deliberately not a new *terminal* status: `partial` is absent from
+            # `runlog.TERMINAL_STATUSES` on purpose, because mosaic-api's sweeper
+            # treats that set as terminal and would reap a live run. The exit code
+            # stays 0, so `terminal_status_for_exit` still records `finished` in
+            # the ledger -- with `entries_failed` and the per-entity errors
+            # alongside it, which is what a reader needs and what stderr could
+            # never carry under the queue.
             payload = {
                 "execution_id": result.execution_id,
                 "feature": result.feature,
                 "run_id": result.run_id,
-                "status": "finished",
+                "status": "partial" if result.failed_entries else "finished",
                 "cache_hit": result.cache_hit,
+                "failed_entries": list(result.failed_entries),
             }
         else:
             if entries:
@@ -150,10 +170,10 @@ def run_command(
                 fail(
                     "--inputs is not supported with --kind (ops declare inputs in Params)."
                 )
-            if tracks_run_id is not None:
+            if tracks_run_id is not None or labels_run_id is not None:
                 fail(
-                    "--tracks-run-id is not supported with --kind; an op produces "
-                    "tracks rather than reading them."
+                    "--tracks-run-id / --labels-run-id are not supported with --kind; "
+                    "an op produces these rather than reading them."
                 )
             op_kind = cast("str", kind)
             from mosaic.core.pipeline.ops import run_op

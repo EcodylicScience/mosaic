@@ -19,9 +19,6 @@ its ``source_abs_path``.
 
 from __future__ import annotations
 
-import os
-import socket
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Final
 
@@ -33,11 +30,6 @@ from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.markers import (
     PhaseMarker,
-    clear_inflight,
-    inflight_state,
-    new_inflight,
-    read_inflight,
-    write_inflight,
     write_phase_marker,
 )
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
@@ -53,7 +45,9 @@ from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
+from mosaic.tracking.common.entry import open_entry, release_entry
 from mosaic.tracking.model_refs import resolve_model
+from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -182,8 +176,7 @@ def _bridge_df_to_tracks(
     if "time" not in df.columns:
         df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
     ensure_track_schema(df, "trex_v1", strict=False, source=f"{group}/{sequence}")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+    _ = write_parquet_atomic(df, out_path)
     # source_abs_path was empty here, because the frame is built in memory and
     # there is no raw file. It now points at the prediction directory this run
     # wrote -- the row-level pointer from a tracks table back to the predictions
@@ -273,47 +266,32 @@ def _run_inference_op(
         ctx.progress.on_entry_start(i, len(work), key)
         ctx.progress.on_phase("infer", key)
 
-        seq_dir = run_root / key
-        seq_dir.mkdir(parents=True, exist_ok=True)
-
         # A claim, not a cache. Inference still re-infers unconditionally -- the
         # completion marker below records that output is whole, and nothing gates
         # on it, because turning this into a cache is a behaviour change with its
-        # own failure mode (a silently skipped re-run over a corrected video) and
-        # is not what item 8.7 asked for. What the claim prevents is two
-        # executions writing one ``predictions.parquet`` at once, which is the
-        # guard the three trackers already have and this path did not.
-        if (
-            inflight_state(
-                read_inflight(seq_dir),
-                run_log_base=ds.base_dir,
-                execution_id=ctx.execution_id,
-            )
-            == "live"
-        ):
-            print(
-                f"[{kind}] ({group}, {sequence}) is held by another execution; "
-                "skipping it.",
-                file=sys.stderr,
-            )
+        # own failure mode (a silently skipped re-run over a corrected video). What
+        # the claim prevents is two executions writing one ``predictions.parquet``
+        # at once. Through ``open_entry`` rather than a fifth inline copy of it, so
+        # the exclusive create and the ownership-checked release are the same ones
+        # every tracker gets.
+        opened = open_entry(
+            ds,
+            ctx,
+            run_root,
+            key,
+            kind=kind,
+            overwrite=False,
+            idle_seconds=_INFER_IDLE_SECONDS,
+        )
+        if opened is None:
             ctx.progress.on_entry_end(i + 1, len(work), key)
             continue
-
-        write_inflight(
-            seq_dir,
-            new_inflight(
-                execution_id=ctx.execution_id,
-                host=socket.gethostname(),
-                pid=os.getpid(),
-                phase="infer",
-                idle_seconds=_INFER_IDLE_SECONDS,
-            ),
-        )
+        seq_dir, _held = opened
         try:
             df = per_video(str(model.path), video_path, seq_dir, facts)
             pred_path = seq_dir / "predictions.parquet"
             if df is not None and not df.empty:
-                df.to_parquet(pred_path, index=False)
+                _ = write_parquet_atomic(df, pred_path)
 
             if params.convert_to_tracks and df is not None and not df.empty:
                 ctx.progress.on_phase("bridge", key)
@@ -354,7 +332,7 @@ def _run_inference_op(
             # Released whatever happened, including a cancel: a claim outliving
             # its process is what makes the next run read a dead directory as
             # busy, and only its expiry would ever free it.
-            clear_inflight(seq_dir)
+            release_entry(seq_dir, ctx.execution_id)
 
         ctx.progress.on_entry_end(i + 1, len(work), key)
         ctx.heartbeat(i + 1)

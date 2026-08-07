@@ -53,6 +53,7 @@ from mosaic.core.pipeline.op_identity import (
     parse_op_run_id,
 )
 from mosaic.tracking.common.bridge import (
+    readable_tracks_table,
     BridgeCounts,
     publish_tracks_table,
     tracks_table_path,
@@ -255,7 +256,14 @@ def _bridge_npz_to_tracks(
 
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     if out_path.exists() and not overwrite:
-        return None
+        # The same answer the other three trackers give. This used to ``return
+        # None``, which this function also uses for "nothing was published" -- so a
+        # reuse was indistinguishable from a failed conversion, and the counts the
+        # caller records came from nowhere. An unreadable table falls through and
+        # is reconverted.
+        reusable = readable_tracks_table(out_path)
+        if reusable is not None:
+            return reusable
 
     converter = get_track_converter("trex_npz")
     # The tracker knows the authoritative entry from the media index, so the

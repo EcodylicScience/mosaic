@@ -32,6 +32,7 @@ from mosaic.core.pipeline.types import (
 
 from .helpers import ensure_columns
 from .registry import register_feature
+from mosaic.core.pipeline._utils import atomic_savez
 
 
 class _FaissKNNIndex:
@@ -385,4 +386,4 @@ class GlobalTSNE:
 
         # Save template coordinates for visualization
         coords = np.asarray(self._embedding)
-        np.savez_compressed(run_root / "global_tsne_templates.npz", Y=coords)
+        atomic_savez(run_root / "global_tsne_templates.npz", Y=coords)

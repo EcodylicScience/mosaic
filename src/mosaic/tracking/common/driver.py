@@ -126,7 +126,7 @@ def run_tracker(
                 job.check_cancel()
                 job.progress.on_entry_start(i, len(work_items), item.key)
 
-                work_dir = open_entry(
+                opened = open_entry(
                     ds,
                     job,
                     minted.run_root,
@@ -134,10 +134,11 @@ def run_tracker(
                     kind=kind,
                     overwrite=overwrite,
                 )
-                if work_dir is None:
+                if opened is None:
                     skipped.append(item.key)
                     job.progress.on_entry_end(i + 1, len(work_items), item.key)
                     continue
+                work_dir, _held = opened
 
                 try:
                     row = run_entry(
@@ -151,7 +152,7 @@ def run_tracker(
                         )
                     )
                 finally:
-                    release_entry(work_dir)
+                    release_entry(work_dir, job.execution_id)
 
                 if row is not None:
                     rows.append(row)

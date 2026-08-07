@@ -257,16 +257,23 @@ from mosaic.behavior.feature_library import (
     ExtractTemplates, GlobalScaler, GlobalTSNE,
 )
 
-# 1. Extract templates from upstream features
+# 1. Extract templates from an upstream feature
+#
+# Inputs at the same entity level, always. `speed_result` is one row per
+# individual per frame and `ego_result` is one row per *pair* per frame, so they
+# share only `frame`: merging them would pair every individual with every pair and
+# the templates would be fitted on rows that never existed. mosaic refuses that
+# merge rather than performing it, so pick one level -- here the pair features --
+# or run two chains and compare them.
 templates = ExtractTemplates(
-    Inputs((speed_result, ego_result)),
+    Inputs((ego_result,)),
     params={"n_templates": 2000},
 )
 templates_result = ds.run_feature(templates)
 
 # 2. Fit scaler on those templates, apply per-sequence
 scaler = GlobalScaler(
-    Inputs((speed_result, ego_result)),
+    Inputs((ego_result,)),
     params={"templates": ExtractTemplates.TemplatesArtifact().from_result(templates_result)},
 )
 scaler_result = ds.run_feature(scaler)

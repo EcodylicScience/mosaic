@@ -59,18 +59,21 @@ class Feature(Protocol):
     ``tracks_raw``'s composition, a change under ``tracks_raw`` would move its
     identifier without the tracks parquet having changed a byte -- a false
     invalidation, and precisely the "couple every per-sequence feature to the
-    whole dataset" hazard the media-storage decision note warns about. The honest
-    path is transitive: a change under ``tracks_raw`` re-produces the tracks
-    table, which moves the tracks variant identity, which is already in this
-    feature's ``_tracks`` term.
+    whole dataset" hazard the media-storage decision note warns about.
 
-    **Known gap, and it is dated rather than papered over.** That transitivity is
-    incomplete until item 5.1 gives the tracks variant a source-content term:
-    ``tracks_identity`` says so itself -- "this names the recipe, not the input".
-    So between Stage 4 and 5.1 a ``tracks_raw`` change moves nothing downstream.
-    Declaring ``("tracks_raw",)`` would close that by false invalidation, which is
-    the wrong trade: an honest miss beats a confident wrong value, but a
-    *spurious* miss is neither.
+    **Not transitive through the variant identity, which this used to claim.** A
+    change under ``tracks_raw`` re-produces the tracks table but does *not* move the
+    tracks variant identity: that identity is params-only, and ``tracks_identity``
+    says so -- "this names the recipe, not the input". So the ``_tracks`` hash term
+    is byte-identical across a re-conversion of changed bytes, and nothing about the
+    identifier notices.
+
+    What closes it is a recorded comparison rather than an identifier: the tracks row
+    already carries the source composition its table was converted from, and a
+    feature row carries that value forward in ``consumed_tracks_composition``, so the
+    per-entry cache check compares the two. Declaring ``("tracks_raw",)`` would have
+    closed it by false invalidation instead, which is the wrong trade -- an honest
+    miss beats a confident wrong value, but a *spurious* miss is neither.
     """
 
     @property

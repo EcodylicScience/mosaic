@@ -125,6 +125,7 @@ class JobContext:
     cancel_token: CancelToken
     owner: str = ""
     run_id: str | None = None
+    failed_keys: list[str] = field(default_factory=list)
     _total: int = 0
     _done: int = 0
     _hb_count: int = 0
@@ -166,6 +167,22 @@ class JobContext:
         ):
             self.run_log.heartbeat(self._done, self._total)
             self._hb_last = now
+
+    def entry_failed(self, key: str, exc: BaseException) -> None:
+        """Record that one entity failed while the attempt carries on.
+
+        Call from inside the ``except`` block: the captured blob includes
+        ``traceback.format_exc()``, which only has a traceback to format while an
+        exception is being handled.
+
+        The count reaches an external reader through the run-log rather than
+        through stderr, because ``mosaic-queue`` spawns the child with stderr on
+        DEVNULL -- for a good reason (an undrained pipe deadlocks a chatty child),
+        which is precisely why a printed line cannot be the record.
+        """
+        self.failed_keys.append(key)
+        if self.run_log is not None:
+            self.run_log.entry_failed(key, _capture_error(exc))
 
     def check_cancel(self) -> None:
         """Raise :class:`Cancelled` if a cancel has been requested."""
@@ -211,9 +228,7 @@ def job_context(
     run_log: JsonlRunLog | None = None
     if track:
         try:
-            run_log = JsonlRunLog(
-                run_log_path(ds.base_dir, execution_id), execution_id
-            )
+            run_log = JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id)
         except Exception as exc:  # dataset without a base dir, unwritable FS, etc.
             print(
                 f"[job] tracking disabled (could not open run-log): {exc}",

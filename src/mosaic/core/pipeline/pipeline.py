@@ -227,6 +227,22 @@ def _narrow_target(
     return result
 
 
+def _parquet_is_readable(path: "Path") -> bool:
+    """Is this parquet whole? Footer-only, so it costs one seek rather than a read.
+
+    A parquet's footer is written last, so a file torn by an interrupted write has
+    no readable metadata. That makes this cheap enough to run per file on a
+    per-step gate while still catching the failure that presence alone cannot.
+    """
+    import pyarrow.parquet as pq
+
+    try:
+        _ = pq.read_metadata(path)
+    except Exception:
+        return False
+    return True
+
+
 def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
     """Query-relative completeness test for a feature run.
 
@@ -244,6 +260,16 @@ def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
     marker (a single ``__global__`` artifact, see ``run.py`` global marker) and
     when no target is known.
 
+    A present file must also be a *readable* one. Presence alone was the test, and
+    a torn parquet is present: a run killed mid-write left a half-written file
+    where a whole one belongs, this read it as coverage satisfied, and the step
+    reported complete. Today a human notices the downstream failure; a
+    level-triggered reconciler would chain straight past it. The check is
+    footer-only (``pq.read_metadata``), which is O(1) per file and catches the
+    torn-footer signature, because a parquet's footer is written last. The deep
+    validator (``default_check_output``, a full ``read_table``) stays where it is,
+    on the per-entry cache path, since it is not affordable per step.
+
     Known limitation: a feature that *legitimately* produces fewer outputs than
     inputs — when an input filter empties a sequence and ``iter_manifest`` drops
     it (``manifest.py``/``loading.py``) — will read as not-cached and recompute
@@ -253,7 +279,7 @@ def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
     if not run_root.exists():
         return False
     present = {
-        p.stem for p in run_root.glob("*.parquet")
+        p.stem for p in run_root.glob("*.parquet") if _parquet_is_readable(p)
     }  # stem == make_entry_key(g, s)
     if "__global__" in present:
         return True

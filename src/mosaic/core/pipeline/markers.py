@@ -57,6 +57,7 @@ mount, or many machines one at a time, never both.
 from __future__ import annotations
 
 import datetime
+import os
 from pathlib import Path
 from typing import Final, Literal, TypeVar
 
@@ -274,8 +275,37 @@ def write_inflight(work_dir: Path, marker: InflightMarker) -> None:
     _store(inflight_marker_path(work_dir), marker)
 
 
-def clear_inflight(work_dir: Path) -> None:
-    """Release the claim on *work_dir*. Belongs in a ``finally``."""
+def try_create_inflight(work_dir: Path, marker: InflightMarker) -> bool:
+    """Take the claim on *work_dir*, or ``False`` because someone else holds it.
+
+    ``O_EXCL`` rather than :func:`write_inflight`, whose ``os.replace`` cannot fail
+    on an existing target: two executions reading a directory as free would both
+    "claim" it, last writer winning. Single-mount only, the bound
+    :mod:`index_lock` documents -- across a synced folder the marker's expiry and
+    the run-log check in :func:`inflight_state` remain the cross-machine guard.
+    """
+    path = inflight_marker_path(work_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        _ = handle.write(marker.model_dump_json(indent=2))
+    return True
+
+
+def clear_inflight(work_dir: Path, *, execution_id: str = "") -> None:
+    """Release the claim on *work_dir*. Belongs in a ``finally``.
+
+    *execution_id* makes the release ownership-checked. Without it the driver's
+    unconditional ``finally`` unlinked whatever marker was present -- including a
+    live peer's, on any path where this execution never claimed anything.
+    """
+    if execution_id:
+        held = read_inflight(work_dir)
+        if held is not None and held.execution_id != execution_id:
+            return
     inflight_marker_path(work_dir).unlink(missing_ok=True)
 
 
@@ -318,14 +348,21 @@ def refresh_inflight(
     idle_seconds: float,
     *,
     now: datetime.datetime | None = None,
-) -> InflightMarker:
+) -> InflightMarker | None:
     """Re-stamp *marker*'s expiry while its phase is still producing output.
 
     Called on the activity signal (each line the tool prints), so a live
     multi-hour phase keeps its claim fresh; a holder that dies stops refreshing
     and the claim self-voids ``idle_seconds`` (plus grace) after its last line.
     Every identity field is preserved -- only ``expires_at`` moves.
+
+    Absent is restored: something deleted our claim while the phase ran, and this
+    callback is what puts it back. Foreign is left alone and reported as ``None``:
+    a peer has taken the directory over, and re-stamping would steal it back.
     """
+    held = read_inflight(work_dir)
+    if held is not None and held.execution_id != marker.execution_id:
+        return None
     refreshed = marker.model_copy(
         update={"expires_at": inflight_expiry(idle_seconds, now)}
     )
