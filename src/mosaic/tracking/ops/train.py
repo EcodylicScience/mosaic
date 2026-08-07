@@ -17,6 +17,7 @@ import pandas as pd
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated
 
+from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -209,6 +210,42 @@ def finalize_training(
     idx.mark_finished(run_id)
 
 
+def training_is_complete(ds: Dataset, kind: str, run_id: str) -> bool:
+    """Has this exact training run already finished and left its artifact?
+
+    The completion evidence is the ``models/<kind>/index.csv`` row, because
+    ``finalize_training`` writes it only after the trainer returns. Deliberately
+    **not** the artifact alone: Ultralytics writes ``best.pt`` progressively, so a
+    run killed mid-training leaves a plausible-looking weights file, and adopting
+    that would hand a caller a half-trained model under a finished run's id. The
+    row is the only thing on disk that means "the trainer returned".
+
+    Both halves are required. The row proves the trainer finished; the artifact
+    check catches the row outliving what it points at -- a swept run root, a
+    hand-deleted directory -- in which case the honest answer is to train again.
+
+    Absent index, absent row, unreadable index: not complete. A false negative
+    costs a recompute, a false positive ships the wrong model.
+    """
+    index_path = model_index_path(ds, kind)
+    if not index_path.exists():
+        return False
+    try:
+        rows = trained_model_index(index_path).read(run_id=run_id)
+    except (OSError, ValueError, KeyError):
+        return False
+    if rows.empty:
+        return False
+    if text_cell(rows.iloc[-1].get("status", "")) != "finished":
+        return False
+    recorded = text_cell(rows.iloc[-1].get("artifact_path", "")) or text_cell(
+        rows.iloc[-1].get("best_model_path", "")
+    )
+    if not recorded:
+        return False
+    return ds.resolve_path(recorded).exists()
+
+
 # --- Params --------------------------------------------------------------
 
 
@@ -223,6 +260,12 @@ class PoseTrainParams(Params):
     augmentation: str | None = None
     device: Annotated[str, HASH_EXCLUDE] = "0"
     batch: Annotated[int, HASH_EXCLUDE] = 16
+    overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    """Train again even if this exact run already finished.
+
+    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
+    flipping it must not mint a second identity for the same weights.
+    """
 
 
 class PointTrainParams(PoseTrainParams):
@@ -248,6 +291,12 @@ class LocalizerTrainParams(Params):
     seed: int = 42
     device: Annotated[str, HASH_EXCLUDE] = "0"
     batch_size: Annotated[int, HASH_EXCLUDE] = 128
+    overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    """Train again even if this exact run already finished.
+
+    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
+    flipping it must not mint a second identity for the same weights.
+    """
 
 
 # --- Ops -----------------------------------------------------------------
@@ -282,6 +331,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
             self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
         )
         ctx.set_run_id(run_id)
+        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+            print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -348,6 +400,9 @@ class TrainPointsOp(Op[PointTrainParams]):
             self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
         )
         ctx.set_run_id(run_id)
+        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+            print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -419,6 +474,9 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             base_run_id,
         )
         ctx.set_run_id(run_id)
+        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+            print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
