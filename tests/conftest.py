@@ -29,6 +29,7 @@ _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import csv
 import dataclasses
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -86,6 +87,38 @@ CI_TRACKING_MODULES = ("ultralytics", "lap")
 CI_REQUIRED_BINARIES = ("ffprobe",)
 
 
+def _refuse_two_opencvs() -> None:
+    """Two distributions providing ``cv2`` is a broken environment, everywhere.
+
+    ``albumentations`` and ``albucore`` require ``opencv-python-headless``;
+    ``mosaic-behavior`` and ``ultralytics`` require ``opencv-python``. Install both
+    and pip is happy: they are different distributions, so nothing conflicts -- but
+    they ship the *same* import package, so one overwrites the other's files and both
+    leave their bundled native libraries in one ``cv2/.dylibs``. That directory then
+    holds two ffmpeg builds (``libavcodec.61.19.100`` beside ``.101``), and the suite
+    dies with ``Trace/BPT trap: 5`` at a different place on every run.
+
+    Unlike the checks below this fires outside CI too, because the failure mode is a
+    crash rather than a skip, and because the other half of it is silent: whichever
+    wheel wins may be the headless one, which has no ``imshow``, so interactive
+    playback breaks with no dependency error anywhere.
+    """
+    providers = sorted(
+        name
+        for dist in importlib.metadata.distributions()
+        if "opencv" in (name := (dist.metadata["Name"] or "").lower())
+    )
+    if len(providers) > 1:
+        raise pytest.UsageError(
+            f"{len(providers)} distributions provide cv2 ({', '.join(providers)}). "
+            "They share one import package, so their bundled ffmpeg libraries land in "
+            "one directory and the suite crashes nondeterministically. Keep exactly "
+            "one -- `uv pip uninstall opencv-python opencv-python-headless` then "
+            "`uv pip install 'opencv-python>=4.7'`, which is the build whose imshow "
+            "playback needs."
+        )
+
+
 def pytest_configure() -> None:
     """Under CI, a missing optional dependency is an error rather than a skip.
 
@@ -93,6 +126,7 @@ def pytest_configure() -> None:
     gets skips, which is the point of ``importorskip``. Only CI, which installs
     them explicitly, treats their absence as a broken environment.
     """
+    _refuse_two_opencvs()
     if not os.environ.get("CI"):
         return
     required = CI_REQUIRED_MODULES

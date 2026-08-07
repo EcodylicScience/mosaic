@@ -683,6 +683,15 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
    changes still warrant explicit discussion in an issue first.
 
+8. **Exactly one distribution may provide `cv2`.** `albumentations` requires
+   `opencv-python-headless` and mosaic + `ultralytics` require `opencv-python`; pip
+   installs both without complaint because they are different distributions, then
+   they overwrite each other's files and merge two ffmpeg builds into one
+   `cv2/.dylibs`. The suite then dies with `Trace/BPT trap: 5` somewhere different
+   every run, and whichever wheel wins may be the headless one, which has no
+   `imshow` -- silently breaking playback. `tests/conftest.py` refuses to start when
+   both are present. Keep `opencv-python`.
+
 ## Pointers to Deeper Docs
 
 - [`docs/getting-started.md`](docs/getting-started.md) — installation and first run.
