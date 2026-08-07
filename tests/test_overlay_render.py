@@ -6,16 +6,15 @@ how the renderer came to draw a completely blank video for any tracker that
 reports positions without keypoints -- T-Rex among them -- without a single test
 going red.
 
-These drive the real ``prepare_overlay`` -> ``draw_frame`` path and assert on the
-pixels it produced, but against an in-memory frame rather than a decoded video.
-Encoding and decoding either side of the assertion would be testing the codec
-rather than the overlay, and doing it repeatedly late in a full run destabilised
-the interpreter on macOS -- the duplicate-OpenMP hazard ``conftest`` documents.
-Rendering a whole recording end to end belongs to the imgstore workflow harness,
-which has real media to do it against.
+Two levels, deliberately. The ``prepare_overlay`` -> ``draw_frame`` tests assert
+on pixels drawn onto an in-memory frame, so a failure points at the drawing
+decision rather than at a codec. The ``play_video`` tests then run the whole
+chain -- imgstore decode, overlay, encode, read back -- because that is what a
+user actually invokes, and because the parts either side of the drawing are
+exactly where this surface had rotted.
 
-The two scope refusals do build a dataset, because refusing is the whole point of
-them, but both raise before a frame is ever read.
+The two scope refusals build a dataset for the same reason: refusing is the whole
+point of them, and both raise before a frame is ever read.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ from mosaic.behavior.visualization_library.helpers import (
 from mosaic.behavior.visualization_library.overlay import draw_frame, prepare_overlay
 from mosaic.behavior.visualization_library.playback import play_video
 from mosaic.core.dataset import Dataset
+from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.tracks_index import write_tracks_row
 
 _FRAMES = 4
@@ -75,6 +75,14 @@ def _drawn_pixels(*, pose: bool) -> int:
     blank = np.zeros((_SIZE[1], _SIZE[0], 3), dtype=np.uint8)
     drawn = draw_frame(blank, overlay["per_frame"][0], overlay["id_colors"])
     return int(np.count_nonzero(np.any(drawn != blank, axis=-1)))
+
+
+def _changed_pixels(rendered: list[np.ndarray], source: list[np.ndarray]) -> int:
+    """Pixels the overlay altered, summed over the frames the two share."""
+    return sum(
+        int(np.count_nonzero(np.any(a.astype(np.int16) != b.astype(np.int16), axis=-1)))
+        for a, b in zip(rendered, source, strict=False)
+    )
 
 
 def test_a_pose_table_draws_on_the_frame() -> None:
@@ -176,6 +184,70 @@ def _store_dataset(
         )
     ds.index_media([search])
     return ds
+
+
+def _rendered_and_source(
+    ds: Dataset, out_path: Path, variant: str
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Render *variant* to ``out_path`` through ``play_video`` and read both back."""
+    written = play_video(
+        ds,
+        "",
+        "seq",
+        feature_runs={},
+        label_kind=None,
+        show_window=False,
+        output_path=out_path,
+        tracks_run_id=variant,
+    )
+    assert written is not None and written.is_file()
+    with open_frame_reader(written, target="raw") as reader:
+        rendered = [frame for _, frame in reader]
+    with open_frame_reader(
+        ds.resolve_media("", "seq").paths[0], target="raw"
+    ) as reader:
+        source = [frame for _, frame in reader]
+    return rendered, source
+
+
+def test_a_pose_table_renders_a_marked_video(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """The whole chain: decode an imgstore, draw, encode, read the marks back."""
+    pytest.importorskip("imgstore")
+    ds = _store_dataset(tmp_path, make_media_dataset, make_imgstore, [""])
+    _add_variant(ds, "ultralytics.8.4-aaaaaaaaaa", pose=True)
+
+    rendered, source = _rendered_and_source(
+        ds, tmp_path / "pose.mp4", "ultralytics.8.4-aaaaaaaaaa"
+    )
+    assert len(rendered) == _FRAMES
+    assert _changed_pixels(rendered, source) > 0
+
+
+def test_a_centroid_only_table_renders_a_marked_video(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """The end-to-end form of the regression: T-Rex output must be visible.
+
+    The unit test above pins the drawing decision; this pins that the decision
+    survives a real render, which is the thing a user looks at.
+    """
+    pytest.importorskip("imgstore")
+    ds = _store_dataset(tmp_path, make_media_dataset, make_imgstore, [""])
+    _add_variant(ds, "trex.0.1-bbbbbbbbbb", pose=False)
+
+    rendered, source = _rendered_and_source(
+        ds, tmp_path / "centroid.mp4", "trex.0.1-bbbbbbbbbb"
+    )
+    assert len(rendered) == _FRAMES
+    assert _changed_pixels(rendered, source) > 0, (
+        "a centroid-only table rendered an unmarked video"
+    )
 
 
 def test_two_tracks_variants_must_be_named(
