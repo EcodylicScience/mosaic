@@ -45,7 +45,7 @@ from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    existing_counts,
+    readable_tracks_table,
     publish_tracks_table,
     tracks_table_path,
 )
@@ -175,7 +175,12 @@ def _bridge_csv_to_tracks(
 
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     if out_path.exists() and not overwrite:
-        return existing_counts(out_path)
+        # Reuse only what reads. An unreadable table -- torn by a kill before the
+        # writes here became atomic, or by an external tool -- falls through and is
+        # republished, rather than being adopted as a valid empty result.
+        reusable = readable_tracks_table(out_path)
+        if reusable is not None:
+            return reusable
 
     converter = get_track_converter("deeplabcut")
     try:

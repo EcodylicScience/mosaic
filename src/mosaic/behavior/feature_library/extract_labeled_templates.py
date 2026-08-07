@@ -28,6 +28,7 @@ from mosaic.core.pipeline.types import (
 from .helpers import feature_columns
 from .registry import register_feature
 from .types import PoolConfig
+from mosaic.core.pipeline.writers import write_parquet_atomic
 
 
 @dataclass
@@ -689,8 +690,8 @@ class ExtractLabeledTemplates:
         df = pd.DataFrame(self._templates, columns=self._feature_columns)
         df["label"] = self._labels
         df["split"] = self._splits
-        df.to_parquet(run_root / "templates.parquet", index=False)
+        _ = write_parquet_atomic(df, run_root / "templates.parquet")
 
-        self._provenance.to_parquet(
-            run_root / "template_provenance.parquet", index=False
+        _ = write_parquet_atomic(
+            self._provenance, run_root / "template_provenance.parquet"
         )

@@ -54,6 +54,7 @@ from mosaic.core.pipeline.ops import Op, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
 from mosaic.tracking.model_refs import resolve_model
+from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -182,8 +183,7 @@ def _bridge_df_to_tracks(
     if "time" not in df.columns:
         df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
     ensure_track_schema(df, "trex_v1", strict=False, source=f"{group}/{sequence}")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+    _ = write_parquet_atomic(df, out_path)
     # source_abs_path was empty here, because the frame is built in memory and
     # there is no raw file. It now points at the prediction directory this run
     # wrote -- the row-level pointer from a tracks table back to the predictions
@@ -313,7 +313,7 @@ def _run_inference_op(
             df = per_video(str(model.path), video_path, seq_dir, facts)
             pred_path = seq_dir / "predictions.parquet"
             if df is not None and not df.empty:
-                df.to_parquet(pred_path, index=False)
+                _ = write_parquet_atomic(df, pred_path)
 
             if params.convert_to_tracks and df is not None and not df.empty:
                 ctx.progress.on_phase("bridge", key)

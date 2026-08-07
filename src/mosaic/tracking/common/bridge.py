@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.schema import ensure_track_schema
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BridgeCounts",
-    "existing_counts",
+    "readable_tracks_table",
     "frame_counts",
     "publish_tracks_table",
     "tracks_table_path",
@@ -72,18 +73,34 @@ def frame_counts(df: pd.DataFrame) -> BridgeCounts:
     return BridgeCounts(n_rows=int(len(df)), n_ids=n_ids)
 
 
-def existing_counts(path: Path) -> BridgeCounts:
-    """``(rows, distinct ids)`` read back from a table already on disk.
+def readable_tracks_table(path: Path) -> BridgeCounts | None:
+    """``(rows, distinct ids)`` for a table on disk, or ``None`` if unreadable.
 
-    Reads only the ``id`` column, so a reuse run pays a column read rather than a
-    full table load. Re-derived rather than reported as unknown: the index row
-    carries the count, and a reuse run that returned nothing would replace a good
-    row with a zero.
+    Three answers, not two, and the third is the whole point. A table that reads
+    and holds no rows is a *legitimate* result -- a video in which the tracker
+    found no individuals -- and the marker rules declare it reusable, so it must
+    stay reusable. A table that cannot be read at all is not a result.
+
+    This used to be ``existing_counts``, which collapsed the two: it caught
+    ``(OSError, ValueError, KeyError)`` -- and pyarrow raises ``ArrowInvalid``, a
+    ``ValueError`` subclass, on a truncated file -- and returned
+    ``BridgeCounts(0, 0)``. A torn table was therefore adopted as a valid empty
+    one, its zero written into the index row, and the run reported success. The
+    old docstring even argued the correct case and then did the opposite: "a reuse
+    run that returned nothing would replace a good row with a zero" is precisely
+    what the ``except`` did.
+
+    Reads only the ``id`` column, so a reuse check pays a column read rather than a
+    full table load. That is enough to catch a torn file, because a parquet is
+    unreadable without its footer and the footer is written last.
+
+    ``None`` for an absent path too: a caller asking whether it can reuse a table
+    wants one answer for "there is nothing usable here", not two.
     """
     try:
         existing = pd.read_parquet(path, columns=["id"])
     except (OSError, ValueError, KeyError):
-        return BridgeCounts(n_rows=0, n_ids=0)
+        return None
     return frame_counts(existing)
 
 
@@ -119,8 +136,7 @@ def publish_tracks_table(
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     ensure_track_schema(df, STANDARD_FORMAT, strict=False, source=f"{group}/{sequence}")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+    _ = write_parquet_atomic(df, out_path)
 
     counts = frame_counts(df)
     write_tracks_row(

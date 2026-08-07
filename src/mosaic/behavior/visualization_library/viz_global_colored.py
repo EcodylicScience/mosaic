@@ -37,6 +37,7 @@ from mosaic.core.pipeline.types import (
 )
 
 from ..feature_library.registry import register_feature
+from mosaic.core.pipeline._utils import atomic_savez
 
 
 @register_feature
@@ -544,9 +545,7 @@ class VizGlobalColored:
             fig.savefig(run_root / fname, dpi=150, bbox_inches="tight")
         if self.params.debug_save_arrays and self._debug_arrays:
             try:
-                np.savez_compressed(
-                    run_root / "debug_viz_arrays.npz", **self._debug_arrays
-                )
+                atomic_savez(run_root / "debug_viz_arrays.npz", **self._debug_arrays)
             except Exception as exc:
                 print(
                     f"[viz-global-colored] WARN: failed to save debug arrays: {exc}",

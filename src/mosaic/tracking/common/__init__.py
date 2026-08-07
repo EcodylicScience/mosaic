@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    existing_counts,
+    readable_tracks_table,
     frame_counts,
     publish_tracks_table,
     tracks_table_path,
@@ -69,7 +69,7 @@ __all__ = [
     "claim",
     "clear_outputs",
     "conda_invocation",
-    "existing_counts",
+    "readable_tracks_table",
     "frame_counts",
     "list_tracker_runs",
     "mint_tracker_run",

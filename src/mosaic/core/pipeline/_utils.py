@@ -228,6 +228,23 @@ _UMASK = os.umask(0)
 os.umask(_UMASK)
 
 
+def atomic_savez(final_path: Path, **arrays: object) -> None:
+    """Write a compressed ``.npz`` to *final_path* atomically.
+
+    The npz counterpart of :func:`atomic_write`, and it exists as its own function
+    for one reason: ``np.savez_compressed`` handed a *path* without an ``.npz``
+    suffix appends one, which would defeat the temp-then-rename entirely -- the
+    bytes would land beside the temp file rather than in it. Handed an open file
+    object it writes exactly there, so that is what this does.
+    """
+
+    def _write(temp: Path) -> None:
+        with temp.open("wb") as handle:
+            np.savez_compressed(handle, **arrays)
+
+    atomic_write(final_path, _write)
+
+
 def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
     """Write *final_path* atomically: *write_fn* fills a temp file, then rename.
 

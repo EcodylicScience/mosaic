@@ -40,6 +40,7 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
     TrackerSetting,
 )
+from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic_media import MediaFacts
@@ -582,11 +583,7 @@ def run_ultralytics_track(
     table = pd.DataFrame(stacked, columns=columns)
     table = table.astype({"frame": "int64", "track_id": "int64", "cls": "int64"})
 
-    def write(temp: Path) -> None:
-        table.to_parquet(temp, index=False)
-
-    out_parquet.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(out_parquet, write)
+    _ = write_parquet_atomic(table, out_parquet)
 
     n_ids = int(np.unique(stacked[:, 1]).size) if blocks else 0
     return UltralyticsTrackResult(

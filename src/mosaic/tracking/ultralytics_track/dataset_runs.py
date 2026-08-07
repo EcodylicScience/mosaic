@@ -37,7 +37,7 @@ from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    existing_counts,
+    readable_tracks_table,
     publish_tracks_table,
     tracks_table_path,
 )
@@ -209,7 +209,12 @@ def _bridge_predictions_to_tracks(
 
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     if out_path.exists() and not overwrite:
-        return existing_counts(out_path)
+        # Reuse only what reads. An unreadable table -- torn by a kill before the
+        # writes here became atomic, or by an external tool -- falls through and is
+        # republished, rather than being adopted as a valid empty result.
+        reusable = readable_tracks_table(out_path)
+        if reusable is not None:
+            return reusable
 
     converter = get_track_converter("ultralytics_tracks")
     try:
@@ -424,7 +429,7 @@ def run_ultralytics(
         else:
             marker, out_path = reusable
             # Re-derived from disk: the phase that knew these did not run.
-            counts = existing_counts(out_path) if out_path.exists() else None
+            counts = readable_tracks_table(out_path) if out_path.exists() else None
             n_ids = counts.n_ids if counts is not None else 0
             n_frames = _frame_count_of(out_path)
             n_keypoints = _keypoint_count_of(out_path)

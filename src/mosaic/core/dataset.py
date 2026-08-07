@@ -188,6 +188,8 @@ from .pipeline.tracks_raw_index import (
     source_members_from_rows,
     write_tracks_raw_index_rows,
 )
+from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.pipeline._utils import atomic_savez
 
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
@@ -4941,7 +4943,7 @@ class Dataset:
                     strict=conv_params.strict_schema,
                     source=f"{src_path}::{canon_seq}",
                 )
-                df_std.to_parquet(out_path, index=False)
+                _ = write_parquet_atomic(df_std, out_path)
 
                 # The file-level grouping hint the old row kept as 'collection'
                 # is not recorded: it had no reader anywhere, and it stays
@@ -4995,7 +4997,7 @@ class Dataset:
             df_std, std_fmt, strict=conv_params.strict_schema, source=str(src_path)
         )
 
-        df_std.to_parquet(out_path, index=False)
+        _ = write_parquet_atomic(df_std, out_path)
 
         # The same two values the filename above was built from. Reading the row
         # a second time here is what let the table and its index row disagree:
@@ -5346,8 +5348,7 @@ class Dataset:
             )
 
             # Write output (out_path determined above for overwrite check)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            merged_df.to_parquet(out_path, index=False)
+            _ = write_parquet_atomic(merged_df, out_path)
 
             # source_abs_path names only the first of the N per-id files merged
             # here. Unchanged from before; the full set stays recoverable from
@@ -5476,7 +5477,7 @@ class Dataset:
                 )
                 if out_path.exists() and not overwrite:
                     continue
-                np.savez_compressed(out_path, **dict(entry.payload))
+                atomic_savez(out_path, **dict(entry.payload))
                 write_labels_row(
                     self,
                     run_id=variant,
@@ -5809,7 +5810,7 @@ class Dataset:
             for meta_key, meta_val in metadata.items():
                 payload[f"meta__{meta_key}"] = np.asarray([meta_val], dtype=object)
 
-        np.savez_compressed(out_path, **payload)
+        atomic_savez(out_path, **payload)
 
         # Authored in place from an external table that is in no raw index -- the
         # third label provenance (item 9.3): an empty run_id and no consumed
