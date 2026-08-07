@@ -67,7 +67,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard
 
-from .index import feature_index, feature_index_path
+from .track_universe import current_run_id
 from .types import Feature, Result
 
 if TYPE_CHECKING:
@@ -173,18 +173,19 @@ def _pin(ds: Dataset, reference: Result[str], where: str) -> Resolution | None:
 
 
 def _latest_run_id(ds: Dataset, feature_name: str) -> str | None:
-    """The upstream's latest run, or None when it has not run here yet.
+    """The upstream's current run, or None when it has not run here yet.
 
     Uses the same rule as every consumer of an unpinned reference --
-    ``IndexCSV.latest_run_id``, which prefers a finished run over an in-progress
-    one -- so pinning cannot change *which* run a run would have read.
+    ``track_universe.current_run_id`` -- so pinning cannot change *which* run a run
+    would have read. That sentence used to be here and be false: this sorted on the
+    recorded timestamps while the query path walked the chain, so the two disagreed
+    on exactly the dataset the chain walk exists for.
 
     ``FileNotFoundError`` is a missing index (the feature has never run in this
     dataset); ``ValueError`` is an index with no rows (created by ``ensure()``,
     not yet written to). Both mean the same thing here.
     """
-    index = feature_index(feature_index_path(ds, feature_name))
     try:
-        return index.latest_run_id()
+        return current_run_id(ds, feature_name)
     except (FileNotFoundError, ValueError):
         return None

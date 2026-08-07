@@ -236,3 +236,46 @@ def track_leaf(ds: Dataset) -> TrackSource:
         f"is no default: {named}. Name one explicitly -- pass tracks_run_id= for "
         "a tracks variant, or the feature Result for a derived track table."
     )
+
+
+def current_run_id(ds: Dataset, feature_name: str) -> str:
+    """Which run of *feature_name* an unpinned reference reads. The single rule.
+
+    There were three. ``resolve._latest_run_id`` sorted on the recorded timestamps
+    and its docstring claimed to use "the same rule as every consumer"; the query
+    path used a leaf walk restricted to track-shaped runs; and that walk fell back
+    to the clock twice. The claim was false, so pinning a reference could change
+    which run a run would have read -- the exact defect pinning exists to prevent.
+
+    Chain-aware rather than leaf-always. When this storage's runs have edges among
+    themselves the leaf is meaningful and is used, and two leaves refuse instead of
+    tiebreaking. When they have none they are siblings -- the ordinary "re-ran it
+    with one parameter changed" state -- and siblings are not an ambiguous chain, so
+    recorded time answers. Leaf-always would make every such dataset raise.
+
+    Unlike the old walk this does not require a run to be track-shaped or even
+    materialised: the edges come from ``params.json``, which every run writes.
+    """
+    index_path = feature_index_path(ds, feature_name)
+    if not index_path.exists():
+        raise FileNotFoundError(index_path)
+    index = feature_index(index_path)
+    runs = {str(value) for value in index.list_runs().get("run_id", [])}
+    if not runs:
+        raise ValueError(f"No runs found in {index_path}")
+    consumed: set[str] = set()
+    for run_id in runs:
+        consumed |= _consumed_track_runs(ds, feature_name, run_id)
+    if not consumed & runs:
+        # Siblings, or a dataset whose runs predate the ``_resolved`` record.
+        return index.latest_run_id()
+    leaves = sorted(runs - consumed)
+    if len(leaves) == 1:
+        return leaves[0]
+    if not leaves:
+        return index.latest_run_id()
+    raise AmbiguousTrackLeaf(
+        f"{len(leaves)} runs of {feature_name!r} are leaves of the chain, so there "
+        f"is no default: {', '.join(leaves)}. Name one by passing its run_id in the "
+        "Result."
+    )
