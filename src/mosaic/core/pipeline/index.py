@@ -89,6 +89,14 @@ class FeatureIndexRow(RunIndexRowBase):
     # and features **go**", deleted, not re-identified.
     consumed_roots: str = ""
     consumed_composition: str = ""
+    # The source composition of the *tracks* this entry read, copied from the tracks
+    # row that recorded it. A separate column rather than folded into
+    # ``consumed_composition`` on purpose: folding would make every row written
+    # before this existed read as one-side-known, hence stale, and force a full
+    # recompute of every tracks-consuming feature on every dataset. Empty here means
+    # "predates the column" and is served with a warning, so only rows written from
+    # now on are checkable.
+    consumed_tracks_composition: str = ""
 
 
 def adopt_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -137,6 +145,30 @@ def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
     idx = feature_index(feature_index_path(ds, feature_name))
     run_id = idx.latest_run_id()
     return run_id, feature_run_root(ds, feature_name, run_id)
+
+
+def recorded_tracks_composition(
+    ds: Dataset, feature_name: str, run_id: str
+) -> dict[tuple[str, str], str]:
+    """Per entry, the tracks composition each row recorded reading.
+
+    Its own reader rather than a third element on :func:`recorded_consumption`,
+    which drops every row whose ``consumed_roots`` is empty -- and that is the forty
+    features this exists for.
+    """
+    index = feature_index(feature_index_path(ds, feature_name))
+    if not index.path.exists():
+        return {}
+    try:
+        rows = index.read(run_id=run_id)
+    except FileNotFoundError:
+        return {}
+    return {
+        (str(row["group"]), str(row["sequence"])): str(
+            row.get("consumed_tracks_composition", "")
+        )
+        for _, row in rows.iterrows()
+    }
 
 
 def recorded_consumption(

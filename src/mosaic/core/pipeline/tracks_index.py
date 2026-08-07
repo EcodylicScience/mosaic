@@ -495,3 +495,34 @@ def write_tracks_row(
 # Item 6.1: reconciled through the shared registry, beside the tracker
 # indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
 register_reconcilable_index("tracks", tracks_index)
+
+
+def tracks_compositions(
+    ds: Dataset, variants: Sequence[str]
+) -> dict[tuple[str, str], str]:
+    """Per entry, what the tracks tables of *variants* were built from.
+
+    The tracks row already records the source composition its table was converted
+    from, so a downstream feature can compare against that cell instead of digesting
+    the table itself. Content-digesting the parquet would also catch a table edited
+    with its inputs unchanged, at the cost of making a nondeterministic tracker's
+    re-run invalidate everything downstream -- see the deferred issue.
+
+    Joined across variants when a feature reads several, sorted so one set of inputs
+    has one spelling.
+    """
+    if not variants:
+        return {}
+    index = read_tracks_index(ds)
+    if index.empty:
+        return {}
+    wanted = set(variants)
+    per_entry: dict[tuple[str, str], set[str]] = {}
+    for _, row in index.iterrows():
+        if str(row.get("run_id", "")) not in wanted:
+            continue
+        entry = (str(row.get("group", "")), str(row.get("sequence", "")))
+        digest = str(row.get("consumed_composition", ""))
+        if digest:
+            per_entry.setdefault(entry, set()).add(digest)
+    return {entry: "|".join(sorted(d)) for entry, d in per_entry.items()}

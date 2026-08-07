@@ -45,6 +45,7 @@ from .index import (
     feature_run_root,
     missing_outputs_error,
     recorded_consumption,
+    recorded_tracks_composition,
 )
 from .loading import (
     CROSS_JOIN_FEATURES,
@@ -57,6 +58,7 @@ from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition
+from .tracks_index import tracks_compositions
 from .types.data_config import META_COLS
 from .types import (
     ArtifactSpec,
@@ -1015,6 +1017,11 @@ def _run_feature_impl(
         if feature.consumed_roots
         else {}
     )
+    # The same question for tracks, which no feature declares as a root: the tracks
+    # row records what its table was converted from, so the comparison is two index
+    # reads rather than a new digest.
+    prior_tracks = recorded_tracks_composition(ds, storage_feature_name, run_id)
+    tracks_now_by_entry = tracks_compositions(ds, scope.tracks_variants)
 
     skip_keys: set[str] = set()
     # Entries whose provenance neither side can establish. Collected rather than
@@ -1061,8 +1068,13 @@ def _run_feature_impl(
             recorded = prior_compositions.get(entry)
             was_made_from = recorded if recorded is not None else ""
             now_made_of = entry_composition(feature, scope, entry)
+            tracks_was = prior_tracks.get(entry, "")
+            tracks_now = tracks_now_by_entry.get(entry, "")
             disposition = cached_entry_disposition(was_made_from, now_made_of)
-            if disposition == "recompute":
+            tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
+            if "recompute" in (disposition, tracks_disposition):
+                if disposition != "recompute":
+                    was_made_from, now_made_of = tracks_was, tracks_now
                 # Serving this would be the wrong answer this milestone exists to
                 # prevent, and recording it would restamp the only cell that says
                 # so. Costly, loud, and never destructive.
@@ -1088,6 +1100,7 @@ def _run_feature_impl(
                     # output nothing describes, so its provenance is unknown and
                     # says so, rather than claiming the present.
                     consumed_composition=was_made_from,
+                    consumed_tracks_composition=tracks_was,
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -1095,8 +1108,10 @@ def _run_feature_impl(
             )
             skip_keys.add(entry_key)
 
-    if undetectable:
-        roots = ", ".join(sorted({root for root in feature.consumed_roots if root}))
+    if undetectable and (feature.consumed_roots or scope.tracks_variants):
+        roots = ", ".join(
+            sorted({root for root in feature.consumed_roots if root} or {"tracks"})
+        )
         print(
             f"[feature:{feature.name}] served {len(undetectable)} cached "
             f"entry(ies) whose source cannot be checked: neither the run nor "
@@ -1188,6 +1203,9 @@ def _run_feature_impl(
                     consumed_composition=entry_composition(
                         feature, scope, (meta.group, meta.sequence)
                     ),
+                    consumed_tracks_composition=tracks_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -1255,6 +1273,9 @@ def _run_feature_impl(
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
                     consumed_composition=entry_composition(
                         feature, scope, (group, sequence)
+                    ),
+                    consumed_tracks_composition=tracks_now_by_entry.get(
+                        (group, sequence), ""
                     ),
                     n_rows=n_rows,
                     params_hash=params_hash,
