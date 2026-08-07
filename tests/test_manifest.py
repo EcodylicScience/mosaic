@@ -559,6 +559,8 @@ _CHAINED_FEATURES = [
     "social-motion-summary",
     "nn-delta-response",
     "nn-delta-bins",
+    "collective-motion-metrics",
+    "local-order-metrics",
 ]
 
 

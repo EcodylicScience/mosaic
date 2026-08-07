@@ -93,6 +93,7 @@ Two flavors:
 | Per-frame kinematic | speed-angvel, body-scale, orientation-rel |
 | Per-frame spatial | pair-egocentric, pair-position, approach-avoidance |
 | Per-frame social | nearest-neighbor, ffgroups, ffgroups-metrics, nn-delta-response, nn-delta-bins |
+| Collective motion | collective-motion-metrics, local-order-metrics |
 | Track preprocessing | trajectory-smooth, movement-smooth, movement-filter-interpolate, pair-interaction-filter, id-tag-columns |
 | Spectral | pair-wavelet |
 | Reduction | pair-posedistance-pca |

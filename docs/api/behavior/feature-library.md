@@ -1,6 +1,6 @@
 # Feature Library
 
-Mosaic's feature library provides 30+ registered feature implementations
+Mosaic's feature library provides 40+ registered feature implementations
 organized by output type. Features are composable pipeline stages that
 read from tracks or upstream feature outputs and produce per-sequence
 parquet files.
@@ -12,6 +12,7 @@ parquet files.
 | Per-frame kinematic | SpeedAngvel, BodyScale, OrientationRelative |
 | Per-frame spatial | PairEgocentric, PairPosition, PairInteractionFilter, ApproachAvoidance |
 | Per-frame social | NearestNeighbor, FFGroups, FFGroupsMetrics, NNDeltaResponse, NNDeltaBins |
+| Collective motion | CollectiveMotionMetrics, LocalOrderMetrics |
 | Per-frame context | TemporalStacking, PairWavelet |
 | Dimensionality reduction | PairPoseDistancePCA, GlobalScaler |
 | Embedding & clustering | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, ExtractTemplates, ExtractLabeledTemplates |

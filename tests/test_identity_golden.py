@@ -87,6 +87,7 @@ class Case:
 _TRACKS_DEFAULT_FEATURES = (
     "approach-avoidance",
     "body-scale",
+    "collective-motion-metrics",
     "egocentric-crop",
     "ffgroups",
     "ffgroups-metrics",
@@ -137,6 +138,32 @@ CASES: tuple[Case, ...] = (
         case_id="frame-aggregate/column-speed",
         feature="frame-aggregate",
         params={"column": "SPEED"},
+    ),
+    Case(
+        case_id="collective-motion-metrics/subgroups-alpha",
+        feature="collective-motion-metrics",
+        params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},
+    ),
+    # local-order-metrics has a required ``radius`` and so is not
+    # default-constructible; it is covered by these bespoke cases instead.
+    Case(
+        case_id="local-order-metrics/radius-position",
+        feature="local-order-metrics",
+        params={"radius": 150.0},
+    ),
+    Case(
+        case_id="local-order-metrics/params-shells",
+        feature="local-order-metrics",
+        params={"radius": 150.0, "n_shells": 4},
+    ),
+    Case(
+        case_id="local-order-metrics/radius-body-scale",
+        feature="local-order-metrics",
+        params={
+            "radius": 3.0,
+            "radius_units": "body_scale",
+            "body_scale": {"feature": "body-scale__from__tracks"},
+        },
     ),
     # --- the frame range participates in identity ---
     Case(

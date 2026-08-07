@@ -45,6 +45,8 @@ from . import (
     approach_avoidance,
     attention_target,
     body_scale,
+    collective_math,
+    collective_motion_metrics,
     dinov2_temporal_identity_model,
     extract_labeled_templates,
     extract_templates,
@@ -60,6 +62,7 @@ from . import (
     identity_embedding_model,
     identity_model,
     kpms,
+    local_order_metrics,
     nearestneighbor,
     nn_delta_bins,
     nn_delta_response,
@@ -81,6 +84,8 @@ from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
 from .attention_target import AttentionTarget
 from .body_scale import BodyScaleFeature
+from .collective_math import STATE_HIGH, STATE_LOW, classify_state
+from .collective_motion_metrics import CollectiveMotionMetrics
 from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
 from .extract_labeled_templates import ExtractLabeledTemplates
 from .extract_templates import ExtractTemplates
@@ -95,6 +100,7 @@ from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
 from .kpms import KpmsFeature
+from .local_order_metrics import LocalOrderMetrics
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
@@ -155,10 +161,15 @@ __all__ = [
     "TrackInput",
     # Helpers
     "helpers",
+    "collective_math",
+    "STATE_HIGH",
+    "STATE_LOW",
+    "classify_state",
     # Feature classes
     "ArHmmFeature",
     "ApproachAvoidance",
     "BodyScaleFeature",
+    "CollectiveMotionMetrics",
     "ExtractLabeledTemplates",
     "ExtractTemplates",
     "FFGroups",
@@ -174,6 +185,7 @@ __all__ = [
     "GlobalWardClustering",
     "IdTagColumns",
     "KpmsFeature",
+    "LocalOrderMetrics",
     "NearestNeighbor",
     "NearestNeighborDelta",
     "NearestNeighborDeltaBins",
@@ -198,6 +210,7 @@ __all__ = [
     "arhmm",
     "approach_avoidance",
     "body_scale",
+    "collective_motion_metrics",
     "dinov2_temporal_identity_model",
     "extract_labeled_templates",
     "extract_templates",
@@ -212,6 +225,7 @@ __all__ = [
     "identity_embedding_model",
     "identity_model",
     "kpms",
+    "local_order_metrics",
     "nearestneighbor",
     "nn_delta_bins",
     "nn_delta_response",
