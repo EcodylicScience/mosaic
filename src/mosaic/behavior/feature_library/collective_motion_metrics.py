@@ -215,9 +215,14 @@ class CollectiveMotionMetrics:
         is auto-detected as the label column by ``viz-timeline``, which renders a
         collective-state timeline with no further wiring.
 
-        **Assumes one coordinate frame.** A multi-camera table with a ``camera``
-        column is pooled, mixing coordinate systems into one centroid and one
-        hull with no error. Filter to a single camera first.
+        **Every row reduced together must share one coordinate frame.** That
+        holds by construction today -- no track converter emits a ``camera``
+        column, so a track table describes one view. When multi-camera tracks
+        arrive, ``subgroup_col="camera"`` is the answer and needs no change
+        here: it is a generic per-(frame, id) partition key, so each camera gets
+        its own centroid, order parameters, hull and state, exactly as each
+        ffgroup does. Pooling two views into one centroid would otherwise be
+        silent, since nothing in the numbers says a coordinate system changed.
 
         **Must not be run with ``overlap_frames > 0``.** Output trimming slices
         by row offsets measured on the multi-id input, and a one-row-per-frame

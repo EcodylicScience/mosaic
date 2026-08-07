@@ -185,9 +185,15 @@ class LocalOrderMetrics:
         Cost is O(N^2) per frame, of the same order as ``nearest-neighbor``.
 
         Input must carry one row per (frame, id); pair-shaped output is refused
-        rather than silently double-counted. Assumes a single coordinate frame,
-        and must not be run with ``overlap_frames > 0`` when a filter is set --
-        see ``collective-motion-metrics`` for both.
+        rather than silently double-counted.
+
+        Every row in one neighborhood must share a coordinate frame, which holds
+        by construction today -- no track converter emits a ``camera`` column.
+        When multi-camera tracks arrive, ``subgroup_col="camera"`` confines every
+        disc, group center, ``R_out`` and shell to one view with no change here.
+
+        Must not be run with ``overlap_frames > 0`` when a filter is set -- see
+        ``collective-motion-metrics``.
     """
 
     category = "per-frame"
