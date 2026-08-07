@@ -67,6 +67,11 @@ class RunLogSnapshot(TypedDict):
 
     ``run_id`` / ``target`` / the timestamps are empty strings until the job emits
     them; ``progress_done`` / ``progress_total`` / ``pid`` are zero until reported.
+
+    ``entries_failed`` counts the entities that raised while the attempt carried
+    on. A non-zero count on an otherwise ``finished`` run is the partial outcome:
+    the run did what it could and lost the rest. Consumers index this TypedDict
+    with ``.get``, so the key is additive rather than breaking.
     """
 
     execution_id: str
@@ -84,6 +89,7 @@ class RunLogSnapshot(TypedDict):
     error_json: str
     progress_done: int
     progress_total: int
+    entries_failed: int
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +234,25 @@ class JsonlRunLog:
         """Terminal: the attempt was cooperatively cancelled."""
         self._emit("cancelled")
 
+    def entry_failed(self, key: str, error_json: str = "") -> None:
+        """One entity failed; the attempt continues.
+
+        Deliberately NOT a terminal event and deliberately not a new status. A
+        status would have to join :data:`TERMINAL_STATUSES` to be folded, and
+        mosaic-api's sweeper treats everything in that set as terminal -- so a
+        live run would be reaped mid-flight. An ordinary event kind costs nothing
+        instead: ``reduce_run_log`` is an if/elif fold in which an unrecognised
+        ``ev`` advances liveness and changes nothing else, so a reader that
+        predates this event still folds a log containing it correctly.
+
+        Not part of the progress protocol either. ``ProgressCallback`` is a
+        runtime-checkable Protocol with four implementations and a documented
+        extension point, so a required sixth method would break any backend
+        outside this repository. The failure goes to the run-log, which is the
+        channel that survives the queue sending the child's stderr to DEVNULL.
+        """
+        self._emit("entry_error", key=key, error=error_json)
+
     # -- progress protocol --------------------------------------------------
 
     def on_entry_start(self, index: int, total: int, key: str) -> None:
@@ -330,6 +355,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "error_json": "",
         "progress_done": 0,
         "progress_total": 0,
+        "entries_failed": 0,
     }
     records = _iter_records(path)
     if not records:
@@ -360,6 +386,8 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         elif ev == "epoch":
             snap["progress_done"] = rec.get("epoch", -1) + 1
             snap["progress_total"] = rec.get("total_epochs", snap["progress_total"])
+        elif ev == "entry_error":
+            snap["entries_failed"] += 1
         elif ev in TERMINAL_STATUSES:
             snap["status"] = ev
             snap["finished_at"] = ts

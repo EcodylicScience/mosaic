@@ -122,7 +122,19 @@ def test_json_stream_separation(dataset: tuple[Path, Dataset]) -> None:
     assert result.exit_code == 0
     # stdout is exactly one JSON object (no stray prints).
     obj = json.loads(result.stdout)
-    assert set(obj) == {"execution_id", "feature", "run_id", "status", "cache_hit"}
+    assert set(obj) == {
+        "execution_id",
+        "feature",
+        "run_id",
+        "status",
+        "cache_hit",
+        "failed_entries",
+    }
+    # ``failed_entries`` is always present rather than only when non-empty: this
+    # payload is a machine contract, so a consumer should not have to tell an
+    # absent key from an empty one to know whether a run lost anything.
+    assert obj["status"] == "finished"
+    assert obj["failed_entries"] == []
     # the execution_id breadcrumb went to stderr.
     assert "execution_id=" in result.stderr
 

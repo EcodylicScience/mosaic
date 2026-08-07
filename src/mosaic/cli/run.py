@@ -136,12 +136,21 @@ def run_command(
                     owner=owner,
                     cancel_token=token,
                 )
+            # "partial" rather than "finished" when entities were lost. It is
+            # deliberately not a new *terminal* status: `partial` is absent from
+            # `runlog.TERMINAL_STATUSES` on purpose, because mosaic-api's sweeper
+            # treats that set as terminal and would reap a live run. The exit code
+            # stays 0, so `terminal_status_for_exit` still records `finished` in
+            # the ledger -- with `entries_failed` and the per-entity errors
+            # alongside it, which is what a reader needs and what stderr could
+            # never carry under the queue.
             payload = {
                 "execution_id": result.execution_id,
                 "feature": result.feature,
                 "run_id": result.run_id,
-                "status": "finished",
+                "status": "partial" if result.failed_entries else "finished",
                 "cache_hit": result.cache_hit,
+                "failed_entries": list(result.failed_entries),
             }
         else:
             if entries:

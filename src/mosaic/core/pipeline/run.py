@@ -366,6 +366,21 @@ class MissingConsumedRootsDeclaration(AttributeError):
     """
 
 
+class AllEntriesFailed(RuntimeError):
+    """Every entity the run attempted raised, so the run is a failure.
+
+    A run that loses *some* entities is partial: the work it did is durable and
+    worth keeping, and the caller learns what is missing from
+    ``Result.failed_entries``. A run that loses *all* of them produced nothing,
+    and reporting that as finished is the defect this closes -- the CLI exits 0
+    and mosaic-queue maps exit 0 to a ``finished`` ledger row.
+
+    Guarded on having had work to do. An empty scope is a legitimate outcome
+    (a narrowed selector, a global feature with no pipeline inputs), and
+    ``all([])`` would otherwise turn every one of those into a failure.
+    """
+
+
 def encode_consumed_roots(roots: Iterable[str]) -> str:
     """Encode a feature's declared source roots into one index cell.
 
@@ -1122,6 +1137,24 @@ def _run_feature_impl(
 
     pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, int, int]] = {}
 
+    def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
+        """One entity's ``apply`` raised: report it and carry on.
+
+        Shared by the inline and parallel-drain paths deliberately. They used to
+        hold two copies of a bare ``print``, which is how one of them could be
+        repaired and the other left reporting success.
+
+        The stderr line stays -- it is what a human running the CLI directly
+        reads. The record that survives the queue is ``ctx.entry_failed``: the
+        child's stderr goes to DEVNULL there, so the print alone was destroyed
+        before anything could read it.
+        """
+        print(
+            f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
+            file=sys.stderr,
+        )
+        ctx.entry_failed(make_entry_key(group, sequence), exc)
+
     def _drain_completed() -> None:
         done, _ = wait(pending, return_when=FIRST_COMPLETED)
         for future in done:
@@ -1129,10 +1162,7 @@ def _run_feature_impl(
             try:
                 result_df: FeatureOutput = future.result()
             except Exception as exc:
-                print(
-                    f"[feature:{feature.name}] apply failed for ({meta.group},{meta.sequence}): {exc}",
-                    file=sys.stderr,
-                )
+                _entry_failed(meta.group, meta.sequence, exc)
                 continue
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
@@ -1200,10 +1230,7 @@ def _run_feature_impl(
             try:
                 result_df: FeatureOutput = feature.apply(df)
             except Exception as exc:
-                print(
-                    f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
-                    file=sys.stderr,
-                )
+                _entry_failed(group, sequence, exc)
                 return
             if apply_overlap is not None and apply_overlap > 0:
                 result_df = trim_feature_output(result_df, core_start, core_end)
@@ -1313,12 +1340,22 @@ def _run_feature_impl(
     )
     if complete:
         idx.mark_finished(run_id)
+    failed_entries = tuple(ctx.failed_keys)
+    if compute_manifest and len(failed_entries) == len(compute_manifest):
+        msg = (
+            f"[feature:{storage_feature_name}] every one of "
+            f"{len(failed_entries)} attempted entries failed, so run_id={run_id} "
+            f"produced nothing: {', '.join(failed_entries)}. The per-entry errors "
+            f"are in this attempt's run-log."
+        )
+        raise AllEntriesFailed(msg)
     print(f"[feature:{storage_feature_name}] completed run_id={run_id} -> {run_root}")
     return Result(
         feature=storage_feature_name,
         run_id=run_id,
         execution_id=ctx.execution_id,
         cache_hit=cache_hit,
+        failed_entries=failed_entries,
     )
 
 
