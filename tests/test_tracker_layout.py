@@ -256,15 +256,14 @@ def test_litpose_leaves_this_shape(
     assert got["index_rows"] == 1
     assert got["run_params_keys"] == ["litpose_overrides", "model"]
     assert got["tracks_files"] == ["<run>/vid1.parquet"]
+    # What Lightning Pose actually measured, and nothing else. ANGLE, SPEED and
+    # VX/VY used to be here, computed by the converter and indistinguishable in
+    # the table from something the tracker had reported; the duplicated
+    # `#wcentroid` pair was a verbatim copy of X/Y. Heading is now the `heading`
+    # feature's, velocity `speed-angvel`'s, and both record which method ran.
     assert got["tracks_columns"] == [
-        "ANGLE",
-        "SPEED",
-        "VX",
-        "VY",
         "X",
-        "X#wcentroid",
         "Y",
-        "Y#wcentroid",
         "frame",
         "group",
         "id",

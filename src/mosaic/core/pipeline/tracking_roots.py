@@ -157,6 +157,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="trex",
             retention="tracker",
+            output_schema="trex_v2",
             outputs=("*.pv", "*.settings", "*.results", "data/*.npz"),
             phase_outputs=(
                 TrackingPhase("convert", ("*.pv", "*.settings", "average_*.png")),
@@ -171,6 +172,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="sleap",
             retention="tracker",
+            output_schema="mosaic_v1",
             outputs=("*.predictions.slp", "*.analysis.h5"),
             phase_outputs=(
                 TrackingPhase("track", ("*.predictions.slp", "*.analysis.h5")),
@@ -180,6 +182,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="litpose",
             retention="tracker",
+            output_schema="mosaic_v1",
             outputs=("*.predictions.csv",),
             phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
@@ -191,6 +194,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="ultralytics",
             retention="tracker",
+            output_schema="mosaic_v1",
             outputs=("*.predictions.parquet",),
             phase_outputs=(TrackingPhase("track", ("*.predictions.parquet",)),),
             path_columns=("video_abs_path", "predictions_path"),
@@ -203,18 +207,21 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="infer-pose",
             retention="inference",
+            output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
             phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),
         TrackingRoot(
             key="infer-points",
             retention="inference",
+            output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
             phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),
         TrackingRoot(
             key="infer-localizer",
             retention="inference",
+            output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
             phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
         ),

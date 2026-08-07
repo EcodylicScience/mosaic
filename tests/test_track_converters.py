@@ -416,10 +416,41 @@ def test_calms21_enumerate_and_convert_agree_on_the_name(tmp_path: Path) -> None
 
 
 def test_calms21_version_says_its_output_identity_moved() -> None:
-    """A variant identity covers what the recipe emits, and that changed."""
+    """A variant identity covers what the recipe emits, and that changed twice.
+
+    0.2 changed the entry keys. 0.3 changed the columns: the derived ones are
+    gone, and so are eighteen TRex-shaped placeholders -- fifteen of them
+    all-NaN floats that every template matrix built from CalMS21 was carrying.
+    """
     from mosaic.core.track_library.calms21 import Calms21Converter
 
-    assert Calms21Converter.version == "0.2"
+    assert Calms21Converter.version == "0.3"
+
+
+def test_calms21_no_longer_fabricates_trex_shaped_placeholders() -> None:
+    """An all-NaN column nobody measured is not a column.
+
+    ``feature_columns()`` selects by wildcard, so each of these was silently
+    joining every scaler, embedding and model matrix built from this converter.
+    """
+    from mosaic.core.track_library.calms21 import _calms21_seq_to_trex_df
+
+    frame = _calms21_seq_to_trex_df(
+        {"keypoints": np.zeros((4, 2, 2, 7), dtype=float)}, "g", "seq"
+    )
+    fabricated = {
+        "SPEED#pcentroid",
+        "SPEED#wcentroid",
+        "midline_x",
+        "midline_length",
+        "MIDLINE_OFFSET",
+        "num_pixels",
+        "detection_p",
+        "visual_identification_p",
+        "missing",
+        "timestamp",
+    }
+    assert fabricated.isdisjoint(set(frame.columns))
 
 
 # --- entry names are one path component -------------------------------------

@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
+from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
@@ -82,7 +83,10 @@ def test_run_then_status_roundtrip(dataset: tuple[Path, Dataset]) -> None:
         isinstance(payload["execution_id"], str)
         and len(str(payload["execution_id"])) == 26
     )
-    assert str(payload["run_id"]).startswith("0.1-")
+    # Read from the feature rather than written here as a literal: what this
+    # asserts is that a run identifier carries its feature's declared version as
+    # a visible segment, not that speed-angvel happens to be at a given one.
+    assert str(payload["run_id"]).startswith(f"{SpeedAngvel.version}-")
     assert payload["cache_hit"] is False
     assert payload["status"] == "finished"
 

@@ -62,7 +62,7 @@ class MyFormatParams(TrackConvertParams):
 # ``mosaic.core.track_converter``) once implemented. It is left off here so this
 # template does not register a converter that raises.
 class MyFormatConverter(TrackConverter[MyFormatParams]):
-    """Convert a source file to a ``trex_v1``-compatible table."""
+    """Convert a source file to a ``mosaic_v1``-compatible table."""
 
     src_format = "my_format"
     version = "0.1"
@@ -74,7 +74,7 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     # Which schema the tables answer to. Declared here and nowhere else: the
     # caller validates against this, so a converter cannot claim one schema
     # while its rows are recorded under another.
-    output_schema = "trex_v1"
+    output_schema = "mosaic_v1"
     Params = MyFormatParams
 
     def convert(

@@ -1,7 +1,7 @@
 """SLEAP analysis-HDF5 track converter.
 
 Converts a SLEAP *analysis* HDF5 export (``sleap-convert --format analysis``)
-to the standardized ``trex_v1`` parquet schema. mosaic reads the HDF5 with
+to the standardized ``mosaic_v1`` parquet schema. mosaic reads the HDF5 with
 ``h5py`` alone, so no SLEAP package is needed in the mosaic environment -- the
 same dependency-free bridge TREx's per-id NPZ converter provides.
 
@@ -21,9 +21,15 @@ order.
 
 Each SLEAP ``Track`` becomes one ``id`` (its 0-based track index), emitted only
 on frames where that track is present. Keypoints are written in node order as
-``poseX0..N`` / ``poseY0..N`` (with ``poseP0..N`` point confidence). Per-frame
-centroid, velocity, speed and a heading ``ANGLE`` are derived so the output also
-satisfies the recommended ``trex_v1`` columns.
+``poseX0..N`` / ``poseY0..N`` (with ``poseP0..N`` point confidence), and ``X``/``Y``
+carry the mean of that frame's keypoints as the body centre.
+
+Nothing else is derived here. Velocity, speed and heading used to be computed in
+this module and written into the table, where they were indistinguishable from
+something SLEAP had reported -- and the heading in particular came from a
+principal-component fit whose sign is arbitrary. They belong to the
+``speed-angvel`` and ``heading`` features, where the method is chosen, recorded
+in a run identifier, and visible to whoever reads the numbers.
 """
 
 from __future__ import annotations
@@ -40,11 +46,7 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
     register_track_converter,
 )
-from mosaic.core.track_library.helpers import (
-    angle_from_pca,
-    angle_from_two_points,
-    norm_hint,
-)
+from mosaic.core.track_library.helpers import norm_hint
 
 # Axis-name aliases. sleap-io names the coordinate axis "xy"; the others are
 # singular, but tolerate a plural just in case a future writer emits one.
@@ -158,10 +160,8 @@ def _track_to_trex_df(
     group: str,
     sequence: str,
     fps: float,
-    neck_idx: int | None,
-    tail_idx: int | None,
 ) -> pd.DataFrame | None:
-    """Build a per-frame ``trex_v1`` frame for one track, or None if never present.
+    """Build a per-frame ``mosaic_v1`` frame for one track, or None if never present.
 
     *xy* is ``(n_frames, n_nodes, 2)`` for this track; *scores* is
     ``(n_frames, n_nodes)`` or None. Frames where every node is NaN (the track is
@@ -180,30 +180,6 @@ def _track_to_trex_df(
     cy = np.nanmean(y, axis=1) if n_nodes else np.full(len(frame_idx), np.nan)
 
     frame_f = frame_idx.astype(float)
-    if len(frame_idx) > 1:
-        # Frame spacing may be non-uniform (a track drops out and returns), so
-        # differentiate against the actual frame index and scale to per-second.
-        vx = np.gradient(cx, frame_f) * fps
-        vy = np.gradient(cy, frame_f) * fps
-    else:
-        vx = np.zeros(len(frame_idx))
-        vy = np.zeros(len(frame_idx))
-    speed = np.hypot(vx, vy)
-
-    if (
-        neck_idx is not None
-        and tail_idx is not None
-        and 0 <= neck_idx < n_nodes
-        and 0 <= tail_idx < n_nodes
-    ):
-        angle = angle_from_two_points(
-            np.stack([x[:, neck_idx], y[:, neck_idx]], axis=-1),
-            np.stack([x[:, tail_idx], y[:, tail_idx]], axis=-1),
-        )
-    elif n_nodes >= 2:
-        angle = angle_from_pca(np.stack([x, y], axis=-1))
-    else:
-        angle = np.full(len(frame_idx), np.nan)
 
     data: dict[str, np.ndarray] = {
         "frame": frame_idx,
@@ -211,12 +187,6 @@ def _track_to_trex_df(
         "id": np.full(len(frame_idx), track_id, dtype=int),
         "X": cx,
         "Y": cy,
-        "X#wcentroid": cx,
-        "Y#wcentroid": cy,
-        "VX": vx,
-        "VY": vy,
-        "SPEED": speed,
-        "ANGLE": angle,
         "group": np.full(len(frame_idx), group),
         "sequence": np.full(len(frame_idx), sequence),
     }
@@ -238,22 +208,22 @@ class SleapConvertParams(TrackConvertParams):
         fps: Frame rate used to derive ``time`` and velocities. Filled from the
             source video's measured fps by the tracker bridge, so the value that
             reaches identity is the one that was used.
-        neck_idx: Keypoint index of the neck for a two-point heading.
-        tail_idx: Keypoint index of the tail for a two-point heading. With
-            neither index, heading falls back to per-frame PCA of all keypoints.
     """
 
     fps: float = 30.0
-    neck_idx: int | None = None
-    tail_idx: int | None = None
 
 
 @register_track_converter
 class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
-    """SLEAP analysis ``.h5`` -> a ``trex_v1`` table."""
+    """SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table."""
 
     src_format = "sleap_analysis_h5"
-    output_schema = "trex_v1"
+    # 0.2: derived columns (VX/VY/SPEED/ANGLE and a duplicated #wcentroid
+    # pair) are no longer invented here -- they belong to features, where
+    # the method is chosen and recorded. The params that picked a heading
+    # went with them, so the recipe changed twice over.
+    version = "0.2"
+    output_schema = "mosaic_v1"
     Params = SleapConvertParams
 
     def convert(
@@ -273,8 +243,6 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
                 group,
                 sequence,
                 params.fps,
-                params.neck_idx,
-                params.tail_idx,
             )
             if df is not None:
                 frames.append(df)

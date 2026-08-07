@@ -292,7 +292,11 @@ Two flavors:
 
 - **per-frame / per-sequence** — stateless transforms (e.g. `speed-angvel`,
   `pair-egocentric`, `nearest-neighbor`, `pair-wavelet`, `temporal-stack`,
-  `body-scale`).
+  `body-scale`, `heading`, `scale-to-cm`). The last two hold what converters
+  used to do inline: `heading` derives `ANGLE` from keypoints under a *chosen*
+  method, and `scale-to-cm` converts pixels to centimetres using the per-video
+  `cm_per_pixel` on the media index. Both put the choice in a run identifier,
+  which is the whole reason they are features rather than columns.
 - **global** (fit-then-apply) — trained on a collection of sequences, then
   applied (e.g. `global-scaler`, `global-tsne`, `global-kmeans`,
   `global-ward`, `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
@@ -511,13 +515,59 @@ annotation paths.
 
 ### Track schema
 
-Standardized tracks are validated by `core/schema.py`. The `trex_v1` schema, for
-example, *requires* columns `frame, time, id, group, sequence` plus at least one
-`poseX*` and one `poseY*` keypoint column, and *recommends* (warn-only)
-`X#wcentroid, Y#wcentroid, SPEED, ANGLE`. The validator never rejects unknown
-columns, so additive columns (e.g. an optional `camera` axis for multi-camera
-recordings) are back-compatible. New track converters must emit schema-valid
-parquet.
+Standardized tracks are validated by `core/schema.py`. Three schemas are
+registered, and a converter declares which it emits through
+`TrackConverter.output_schema` — a tracker through `TrackingRoot.output_schema`.
+**That declaration is the only place the name is written.** It used to be spelled
+in five (each converter, `Dataset` via a manifest setting, the tracker bridge,
+the inference path), so one table was validated twice under two independently
+chosen names and the index row recorded only the second.
+
+- **`mosaic_v1`** — the tracker-neutral standard. Requires
+  `frame, time, id, group, sequence, X, Y` plus at least one `poseX*`/`poseY*`
+  pair. Every spatial column is **video pixels**, and `X`/`Y` are the
+  individual's **body centre**.
+- **`trex_v2`** — `mosaic_v1` plus what TREx genuinely measures (`SPEED`,
+  `ANGLE`, `X#wcentroid`, the midline family), also in pixels. TREx's own bare
+  `X`/`Y` are the *head* and are preserved as `X#head`/`Y#head`.
+- **`trex_v1`** — the legacy schema, kept registered permanently because a real
+  archived dataset is in it. Its spatial columns are **centimetres** and its `X`
+  is a head position.
+
+Two rules the validator enforces beyond presence:
+
+- **A named, closed `forbidden` set.** `mosaic_v1` forbids `VX, VY, AX, AY,
+  SPEED*, ANGLE, ANGULAR_*, X#wcentroid, Y#wcentroid` — quantities a *feature*
+  derives, not ones a tracker measures. Violating it raises **regardless of
+  `strict`**, because every tracker write path validates with `strict=False` and
+  a wrong table must not reach disk. A tracker that genuinely measures one
+  declares a schema that `allows` it, as `trex_v2` does.
+- **An unregistered schema name raises.** It used to return an empty report,
+  validating nothing *and* silently disarming `strict=True`.
+
+The validator still **never rejects a column merely for being unknown**, so
+additive columns (e.g. an optional `camera` axis for multi-camera recordings)
+remain back-compatible — only the named set is refused. New track converters
+must emit schema-valid parquet.
+
+### Tracks are pixels; a physical unit is a feature
+
+Every spatial column in `tracks/` is in video pixels, and `X`/`Y` mean the body
+centre on every tracker. Neither was true before: TREx reports centimetres scaled
+by `cm_per_pixel` and puts the *head* in `X`, while every other converter wrote
+pixels and a keypoint mean. A feature reading `X` across trackers was comparing
+a head to a centroid in two unit systems, and nothing on disk recorded either
+fact.
+
+- The TREx converter divides the centimetre columns back out, reading the factor
+  **from the file** (TREx writes `cm_per_pixel` into every export) rather than
+  from mosaic's own parameter — the parameter records what mosaic *passed*, and
+  TREx substitutes `meta_real_width / video_width` when it is unset.
+- Centimetres are obtained downstream by the `scale-to-cm` feature, from a
+  per-video `cm_per_pixel` on the media index. That column is **text**, so empty
+  can mean *uncalibrated* rather than `0.0`, and a rescan never clears it.
+- `mosaic upgrade-tracks` rescales centimetre-era tables whose raw export has
+  been swept, and **refuses** a table that does not record its factor.
 
 ### `group` is an optional namespace, not the grouping
 
@@ -636,6 +686,18 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   sanctioned ways to write an output. A direct `df.to_parquet(final_path)` leaves a
   torn file where a whole one belongs, and every reuse gate in the tracking layer
   tests for presence. A test fails if a new call site addresses a final path.
+- **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
+  and neither did before: TREx reports centimetres and puts the *head* in `X`. A
+  physical unit is obtained by the `scale-to-cm` feature, never stored in the
+  table. A converter that writes a scaled column, or puts a landmark other than
+  the body centre in `X`, reintroduces a difference that reads as a plausible
+  number and is recorded nowhere.
+- **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
+  `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
+  as a measurement. Heading is the sharpest case: the principal-component fit the
+  converters used has an arbitrary sign, and its flips read downstream as real
+  turns. Anything wanting one runs `heading` and chooses the method, which then
+  enters the run identifier.
 - **Unreadable is not empty.** `readable_tracks_table` returns `None` for a table
   that cannot be read and `BridgeCounts(0, 0)` for one that reads and holds no rows.
   The second is a legitimate result -- a video with no detected individuals -- and

@@ -100,6 +100,7 @@ class SpeedAngvel:
 
     Outputs (per frame):
       - speed: displacement magnitude between consecutive frames divided by dt
+      - vx / vy: the signed components of that same displacement over dt
       - angvel: wrapped heading difference (rad) divided by dt
       - speed_step / angvel_step: same, but using a configurable step_size
         (omitted if step_size is None)
@@ -136,7 +137,7 @@ class SpeedAngvel:
 
     category = "per-frame"
     name = "speed-angvel"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
@@ -229,8 +230,18 @@ class SpeedAngvel:
         # Common kwargs for _compute_speed / _compute_angvel
         dt_kw = dict(time_arr=time_arr, frame_arr=frame_arr, fps=fps)
 
+        # Velocity components alongside the magnitude. They are the same
+        # differencing the speed already does, and the converters used to write
+        # them into the track table as VX/VY -- deriving them there made them
+        # look like tracker output. Emitting them here costs one division each
+        # and means nothing has to difference positions a second time.
+        dt = _dt(1, time_arr, len(x), frame_arr=frame_arr, fps=fps)
         out = pd.DataFrame(
-            {"speed": _compute_speed(x, y, step=1, **dt_kw)},
+            {
+                "speed": _compute_speed(x, y, step=1, **dt_kw),
+                "vx": _diff_with_step(x, 1) / dt,
+                "vy": _diff_with_step(y, 1) / dt,
+            },
             index=sub.index,
         )
         if angle is not None:

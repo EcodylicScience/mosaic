@@ -193,6 +193,7 @@ TrackingRoot(
     outputs=("*.predictions.json",),
     phase_outputs=(TrackingPhase("track", ("*.predictions.json",)),),
     path_columns=("video_abs_path", "predictions_path"),
+    output_schema="mosaic_v1",
 )
 ```
 
@@ -201,6 +202,23 @@ TrackingRoot(
 thing, since it includes byproducts that are evidence of nothing. `path_columns`
 is every path-bearing column on your row beyond `abs_path`; a column missing here
 silently stops being portable across machines.
+
+`output_schema` is the schema your bridged tables answer to, and it is the only
+place that answer is written — the bridge validates against it and records it on
+every row. **State what your tracker measured, and nothing more.**
+
+- `mosaic_v1` is almost certainly right. It wants `frame, time, id, group,
+  sequence, X, Y` in **video pixels**, plus keypoints as `poseX*`/`poseY*`, with
+  `X`/`Y` the body centre — for a pose-only tracker, the mean of that frame's
+  keypoints.
+- It **forbids** `VX`, `VY`, `SPEED`, `ANGLE` and the rest. Do not compute them
+  in your converter, however easy it looks. In the table they are
+  indistinguishable from measurements, and the heading in particular is an
+  inference with an arbitrary sign. `heading` and `speed-angvel` derive them
+  where the method is chosen and recorded.
+- If your tool genuinely *reports* one of them, declare a schema that `extends`
+  `mosaic_v1` and `allows` it, as `trex_v2` does. That is a deliberate statement
+  about your tracker, which is exactly what it should be.
 
 ### 7. Exports
 

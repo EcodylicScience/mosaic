@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types import COLUMNS
+
 from .types import InterpolationConfig
 
 __all__ = [
@@ -59,12 +61,42 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     return sorted(set(df.select_dtypes(include="number").columns) - exclude)
 
 
+# What to say when a missing column has a known producer. A tracks table records
+# what the tracker measured; a heading is derived from keypoints, so no tracker
+# reports one and no table carries it until a feature puts it there. Without this
+# the error named the column and stopped, which is unhelpful precisely when the
+# reason is "this moved out of the converters" rather than "your data is broken".
+_PRODUCER_HINTS: dict[str, str] = {
+    COLUMNS.orientation_col: (
+        "no tracker reports a heading -- it is derived from keypoints. Run the "
+        "'heading' feature first (choosing method='two_point' with front_idx/"
+        "rear_idx, or method='pca'), or point orientation_col= at a column this "
+        "table already has"
+    ),
+    "SPEED": (
+        "speed is derived from position, not measured. Run the 'speed-angvel' "
+        "feature first"
+    ),
+}
+
+
 def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
-    """Raise ValueError if any required columns are missing from *df*."""
-    missing = set(required) - set(df.columns)
-    if missing:
-        msg = f"Missing required columns: {sorted(missing)}"
-        raise ValueError(msg)
+    """Raise ValueError if any required columns are missing from *df*.
+
+    Names the feature that produces a missing column when there is one, so a
+    table that simply has not had a step run against it says so, rather than
+    reading as a malformed table.
+    """
+    missing = sorted(set(required) - set(df.columns))
+    if not missing:
+        return
+    lines = [f"Missing required columns: {missing}"]
+    lines.extend(
+        f"  {column}: {_PRODUCER_HINTS[column]}."
+        for column in missing
+        if column in _PRODUCER_HINTS
+    )
+    raise ValueError("\n".join(lines))
 
 
 # --- Shared helpers for per-sequence features ---

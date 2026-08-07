@@ -1,7 +1,8 @@
 """CalMS21 .npy/.json track converter.
 
 Converts CalMS21 multi-animal pose tracking files to the standardized
-trex_v1 parquet schema. Handles task1/task2/task3 splits.
+``mosaic_v1`` parquet schema: pixels, keypoints, and the body centre.
+Handles task1/task2/task3 splits.
 
 CalMS21 keypoint layout: (T, n_animals, xy=2, n_landmarks)
 """
@@ -22,20 +23,13 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
     register_track_converter,
 )
-from mosaic.core.track_library.helpers import (
-    load_calms21,
-    angle_from_two_points,
-    angle_from_pca,
-    norm_hint,
-)
+from mosaic.core.track_library.helpers import load_calms21, norm_hint
 
 
 def _calms21_seq_to_trex_df(
     one_seq_dict: dict,
     groupname: str,
     seq_id: str,
-    neck_idx: Optional[int] = None,
-    tail_idx: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Convert a single sequence dict to T-Rex-like long DataFrame (rows = frames x animals).
@@ -67,34 +61,13 @@ def _calms21_seq_to_trex_df(
 
     rows = []
     for a in range(n_anim):
-        # Extract XY for this animal: (T, L, 2)
+        # Extract XY for this animal
         X = keypoints[:, a, 0, :]  # (T, L)
         Y = keypoints[:, a, 1, :]  # (T, L)
-        XY = np.stack([X, Y], axis=-1)  # (T, L, 2)
 
         # Centroid over landmarks
         cx = X.mean(axis=1)  # (T,)
         cy = Y.mean(axis=1)
-
-        # Vel/acc (finite diff)
-        VX = np.gradient(cx) * fps
-        VY = np.gradient(cy) * fps
-        SPEED = np.hypot(VX, VY)
-        AX = np.gradient(VX) * fps
-        AY = np.gradient(VY) * fps
-
-        # Heading angle
-        if (
-            (neck_idx is not None)
-            and (tail_idx is not None)
-            and 0 <= neck_idx < n_lm
-            and 0 <= tail_idx < n_lm
-        ):
-            neck = XY[:, neck_idx, :]  # (T,2)
-            tail = XY[:, tail_idx, :]
-            ANGLE = angle_from_two_points(neck, tail)
-        else:
-            ANGLE = angle_from_pca(XY)
 
         # Build a per-frame DataFrame
         data = {
@@ -103,14 +76,6 @@ def _calms21_seq_to_trex_df(
             "id": np.full(T, a, dtype=int),
             "X": cx,
             "Y": cy,
-            "X#wcentroid": cx,
-            "Y#wcentroid": cy,
-            "VX": VX,
-            "VY": VY,
-            "SPEED": SPEED,
-            "AX": AX,
-            "AY": AY,
-            "ANGLE": ANGLE,
             "group": np.full(T, groupname),
             "sequence": np.full(T, seq_id),
         }
@@ -136,39 +101,17 @@ def _calms21_seq_to_trex_df(
 
         rows.append(pd.DataFrame(data))
 
-    out = pd.concat(rows, ignore_index=True)
-    # Add placeholders often present in T-Rex schema
-    out["missing"] = False
-    out["visual_identification_p"] = 1.0
-    out["timestamp"] = out["time"]
-    for col in [
-        "X",
-        "Y",
-        "SPEED#pcentroid",
-        "SPEED#wcentroid",
-        "midline_x",
-        "midline_y",
-        "midline_length",
-        "midline_segment_length",
-        "normalized_midline",
-        "ANGULAR_V#centroid",
-        "ANGULAR_A#centroid",
-        "BORDER_DISTANCE#pcentroid",
-        "MIDLINE_OFFSET",
-        "num_pixels",
-        "detection_p",
-    ]:
-        if col not in out.columns:
-            out[col] = np.nan
-    return out
+    # No TRex-shaped placeholders. Eighteen columns used to be added here so the
+    # output "looked like" a TRex table -- fifteen of them all-NaN floats, which
+    # `feature_columns()` then dragged into every template matrix, scaler and
+    # embedding built from CalMS21. A column nobody measured is not a column.
+    return pd.concat(rows, ignore_index=True)
 
 
 def calms21_to_trex_df(
     path: Path | str,
     prefer_group: Optional[str] = None,
     prefer_sequence: Optional[str] = None,
-    neck_idx: Optional[int] = None,
-    tail_idx: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Load a CalMS21 .npy/.json and return a concatenated T-Rex-like DataFrame.
@@ -206,11 +149,7 @@ def calms21_to_trex_df(
             seq = {
                 k: (np.array(v) if isinstance(v, list) else v) for k, v in seq.items()
             }
-            rows.append(
-                _calms21_seq_to_trex_df(
-                    seq, groupname, entry_name, neck_idx=neck_idx, tail_idx=tail_idx
-                )
-            )
+            rows.append(_calms21_seq_to_trex_df(seq, groupname, entry_name))
     if not rows:
         if prefer_group or prefer_sequence:
             raise KeyError(
@@ -224,15 +163,11 @@ class Calms21Params(TrackConvertParams):
     """Parameters for the CalMS21 converters.
 
     Attributes:
-        neck_idx: Keypoint index of the neck for a two-point heading.
-        tail_idx: Keypoint index of the tail for a two-point heading.
         debug: Print the in-file ``(group, sequence)`` pairs. Diagnostics only,
             so excluded from identity -- it changes what is printed, never what
             is written.
     """
 
-    neck_idx: int | None = None
-    tail_idx: int | None = None
     debug: Annotated[bool, HASH_EXCLUDE] = False
 
 
@@ -260,15 +195,18 @@ def calms21_entry_name(seq_id: str) -> str:
 
 
 class Calms21Converter(TrackConverter[Calms21Params]):
-    """CalMS21 -> a ``trex_v1`` table, one ``(group, sequence)`` at a time."""
+    """CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time."""
 
     src_format = "calms21_npy"
     # 0.2: entry names are compound (``task1__test__m``) rather than slash paths.
     # The tables are otherwise identical, but the identity of a *variant* covers
     # what it emits, and this changed the entry keys and therefore the filenames.
-    version = "0.2"
+    # 0.3: derived columns are gone, and so are the eighteen TRex-shaped
+    # placeholders -- fifteen of them all-NaN floats that every template matrix
+    # built from CalMS21 was carrying.
+    version = "0.3"
     enumerable = True
-    output_schema = "trex_v1"
+    output_schema = "mosaic_v1"
     Params = Calms21Params
 
     def convert(
@@ -295,8 +233,6 @@ class Calms21Converter(TrackConverter[Calms21Params]):
                 path,
                 prefer_group=prefer_group,
                 prefer_sequence=prefer_sequence,
-                neck_idx=params.neck_idx,
-                tail_idx=params.tail_idx,
             )
 
         # else single-pair inference
@@ -307,8 +243,6 @@ class Calms21Converter(TrackConverter[Calms21Params]):
                 path,
                 prefer_group=g,
                 prefer_sequence=s,
-                neck_idx=params.neck_idx,
-                tail_idx=params.tail_idx,
             )
         raise ValueError(
             f"Ambiguous CalMS21 file {path}; contains multiple sequences {pairs}. "

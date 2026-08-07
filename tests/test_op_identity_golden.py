@@ -288,10 +288,21 @@ def _run_id() -> str:
 
 
 def _convert_variant() -> str:
+    """A conversion variant, minted from the converter's own version and params.
+
+    Both read from the class rather than written here as literals. A hard-coded
+    ``"0.1"`` and a hand-built ``{"neck_idx": 3, "tail_idx": 6}`` meant this case
+    pinned a recipe that could not occur -- those params no longer exist -- and,
+    worse, that a converter version bump moved nothing anybody would notice. A
+    version is a visible segment of the identifier, so bumping one *should* show
+    up here.
+    """
+    from mosaic.core.track_library.calms21 import Calms21Converter
+
     return tracks_run_id(
         converter_op("calms21_npy"),
-        "0.1",
-        convert_variant_payload({"neck_idx": 3, "tail_idx": 6}),
+        Calms21Converter.version,
+        convert_variant_payload(Calms21Converter.Params().identity_dump()),
     )
 
 

@@ -8,6 +8,73 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — tracks are pixels, and every tracks variant re-mints
+
+**Standardized tracks are now in video pixels, on every tracker, and `X`/`Y`
+name the body centre.** Neither held before. TREx reports centimetres scaled by
+`cm_per_pixel` and puts the *head* in its bare `X`; every other converter wrote
+pixels and a keypoint mean. A feature reading `X` across trackers was comparing
+a head to a centroid in two unit systems, and nothing on disk recorded either
+fact. It went unnoticed because `cm_per_pixel` defaults to 1, where the two
+units are the same number — the error appears the first time somebody calibrates.
+
+**Every tracks variant re-mints, and every feature run built on tracks moves with
+it.** All five converters bump: `trex_npz` 0.1 → 0.2, `sleap_analysis_h5`,
+`deeplabcut` and `ultralytics_tracks` 0.1 → 0.2, `calms21_npy`/`calms21_json`
+0.2 → 0.3. A tracks variant names the directory its tables live in, and the
+resolved variants enter every feature identifier as the `_tracks` term, so
+existing feature outputs become orphans rather than silently-reused caches.
+Reconvert with `mosaic convert-tracks`.
+
+**Three schemas, declared by the producer.** `mosaic_v1` is the tracker-neutral
+standard; `trex_v2` is that plus what TREx genuinely measures, also in pixels;
+`trex_v1` stays registered permanently because a real archived dataset is in it,
+and its spatial columns are centimetres. A converter declares which it emits
+through `TrackConverter.output_schema`, a tracker through
+`TrackingRoot.output_schema`, and the tracks index records it in `std_format` —
+a column that existed with no reader and now has one. `build_manifest` refuses a
+scope resolving tables from two schema families, which is the mixture
+`select_variant_rows` structurally could not see.
+
+**Columns that were never measurements are gone.** `VX`, `VY`, `SPEED`, `ANGLE`
+and a duplicated `X#wcentroid` were computed *by the converters* and presented
+as tracker output. `mosaic_v1` forbids them. Heading is now the `heading`
+feature (the method is a parameter, so the arbitrary-sign principal-component
+fit is a choice rather than a silent fallback) and velocity is `speed-angvel`,
+which gains `vx`/`vy`. CalMS21 also drops eighteen fabricated placeholder
+columns, fifteen of them all-NaN floats that `feature_columns()` was pulling
+into every matrix built from it.
+
+**Three feature identifiers move.** `speed-angvel` 0.1 → 0.2 and
+`nearest-neighbor` 0.1 → 0.2 move their version segment only, digests unchanged.
+`nn-delta-response` 0.2 → 0.3 moves its digest too: its `speed_col` default
+changes from `SPEED#wcentroid` to `SPEED`, and it now raises instead of
+returning an empty frame — it was silently producing nothing on three of the
+four trackers. `nearest-neighbor` gains an `nn_ego_unrotated` column recording
+when its `_ego` offsets are world-frame because no heading was available.
+
+**The media index gains a `cm_per_pixel` column.** Text, not numeric, so empty
+means *uncalibrated* rather than `0.0`; set with
+`Dataset.set_media_calibration(...)` and preserved across every rescan. Physical
+units come from the new `scale-to-cm` feature, which refuses an uncalibrated
+sequence rather than assuming 1.0. The media-index header moves, so a reader
+pinning its column list sees one more.
+
+**New: `mosaic upgrade-tracks`.** Rescales centimetre-era TREx tables whose raw
+export has been reclaimed by `sweep-tracking`, reading the factor TREx wrote
+into the file and refusing a table that does not record one. Dry-run by default.
+Reconverting is still the better route where the `.npz` survives.
+
+**For mosaic-api:** `parse_pose_columns` reads these tables, and
+`scripts/conversion.py` globs `*.parquet` without consulting `tracks/index.csv`
+— with two variants under `tracks/`, that can select the wrong recipe. Existing
+`.pose` files are never regenerated (bound by filename co-location, with
+`pose_frame_count` frozen at import), so they keep serving the old conversion.
+A stored pipeline chain naming `"SPEED#wcentroid"` or `"X#wcentroid"` in a
+free-string column parameter will start raising.
+
+**The guppies archive stays on `trex_v1` and is deliberately not migrated.**
+
 ## Unreleased — mosaic-media 0.3.0 moves every media identifier
 
 **Every `video_uuid` and `content_digest` re-mints.** `mosaic-media` advances its

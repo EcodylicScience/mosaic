@@ -192,34 +192,39 @@ def test_time_is_seconds_and_ids_are_densified(tmp_path: Path) -> None:
     assert sorted(df["source_track_id"].unique().tolist()) == [3, 7, 11]
 
 
-def test_velocity_is_differentiated_against_the_true_frame_index(
-    tmp_path: Path,
-) -> None:
-    """A track that drops out and returns must not have its gap counted as a step."""
+def test_a_gap_in_a_track_keeps_its_true_frame_numbers(tmp_path: Path) -> None:
+    """A track that drops out and returns must not have its gap closed up.
+
+    The converter used to differentiate position itself, and this test asserted
+    the resulting speed was uniform across a gap. That arithmetic now belongs to
+    ``speed-angvel``, which differentiates against ``frame`` for exactly the same
+    reason -- so what the converter still owes is the honest frame index. Were it
+    to renumber rows contiguously, every downstream velocity would silently treat
+    the gap as one step.
+    """
     rows = [
         [float(f), 1.0, 0.0, 0.0, 4.0, 4.0, 0.9, 0.0, float(f), 0.0, 0.8]
         for f in (0, 1, 3, 4)  # frame 2 missing
     ]
     df = _convert(_write_raw(tmp_path / "p.parquet", rows, 1), fps=10.0)
-    # x advances one unit per frame throughout, so speed is uniform at fps units
-    # per second even across the gap -- which is only true if the gradient is
-    # taken against `frame` rather than against position in the array.
-    assert np.allclose(df["SPEED"], 10.0)
+    assert df["frame"].to_list() == [0, 1, 3, 4]
 
 
-def test_a_box_only_table_takes_its_heading_from_travel(tmp_path: Path) -> None:
+def test_a_box_only_table_reports_no_heading_at_all(tmp_path: Path) -> None:
+    """It used to infer one from direction of travel. That was not an orientation.
+
+    A box tracker localizes no shape, so it has nothing to say about which way an
+    animal faces -- a bee walking backwards would have been recorded as facing
+    the way it went. Inferring it here also made a *derived* quantity look like a
+    measurement, under a column name every other tracker filled differently.
+    Anything wanting a heading now runs the ``heading`` feature and chooses.
+    """
     moving = [
         [float(f), 1.0, 0.0, 0.0, 4.0, 4.0, 0.9, 0.0, float(f), 0.0, 0.8]
         for f in range(3)
     ]
     df = _convert(_write_raw(tmp_path / "p.parquet", moving, 1))
-    assert np.allclose(df["ANGLE"], 0.0)  # travelling along +x
-
-    still = [
-        [float(f), 1.0, 0.0, 0.0, 4.0, 4.0, 0.9, 0.0, 5.0, 5.0, 0.8] for f in range(3)
-    ]
-    stationary = _convert(_write_raw(tmp_path / "q.parquet", still, 1))
-    assert stationary["ANGLE"].isna().all()  # no travel, so no heading
+    assert "ANGLE" not in df.columns
 
 
 def test_the_converted_table_satisfies_the_schema(tmp_path: Path) -> None:
@@ -243,7 +248,7 @@ def test_the_converted_table_satisfies_the_schema(tmp_path: Path) -> None:
         for f in range(3)
     ]
     df = _convert(_write_raw(tmp_path / "p.parquet", rows, 2))
-    _, report = ensure_track_schema(df, "trex_v1", strict=True)
+    _, report = ensure_track_schema(df, "mosaic_v1", strict=True)
     assert report["missing_required"] == []
     assert report["missing_prefixes"] == []
     assert report["missing_recommended"] == []

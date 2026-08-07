@@ -57,6 +57,7 @@ from . import (
     global_scaler,
     global_tsne,
     global_ward,
+    heading,
     helpers,
     id_tag_columns,
     identity_embedding_model,
@@ -73,6 +74,7 @@ from . import (
     pair_position,
     pair_wavelet,
     pairposedistancepca,
+    scale_to_cm,
     social_motion_summary,
     speed_angvel,
     temporal_stacking,
@@ -84,6 +86,7 @@ from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
 from .attention_target import AttentionTarget
 from .body_scale import BodyScaleFeature
+from .heading import HeadingFeature
 from .collective_math import STATE_HIGH, STATE_LOW, classify_state
 from .collective_motion_metrics import CollectiveMotionMetrics
 from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
@@ -111,6 +114,7 @@ from .pair_interaction_filter import PairInteractionFilter
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
+from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
@@ -169,6 +173,7 @@ __all__ = [
     "ArHmmFeature",
     "ApproachAvoidance",
     "BodyScaleFeature",
+    "HeadingFeature",
     "CollectiveMotionMetrics",
     "ExtractLabeledTemplates",
     "ExtractTemplates",
@@ -195,6 +200,7 @@ __all__ = [
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "PairWavelet",
+    "ScaleToCm",
     "SocialMotionSummary",
     "SpeedAngvel",
     "TemporalStackingFeature",
@@ -221,6 +227,7 @@ __all__ = [
     "global_scaler",
     "global_tsne",
     "global_ward",
+    "heading",
     "id_tag_columns",
     "identity_embedding_model",
     "identity_model",
@@ -235,6 +242,7 @@ __all__ = [
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
+    "scale_to_cm",
     "social_motion_summary",
     "speed_angvel",
     "temporal_stacking",

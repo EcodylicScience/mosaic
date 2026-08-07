@@ -2,7 +2,8 @@
 Track converter library for standardizing raw tracker outputs.
 
 This module provides a plugin architecture for converting various tracking
-formats to the standardized trex_v1 parquet schema. Converters are
+formats to the standardized ``mosaic_v1`` parquet schema (TREx emits the
+``trex_v2`` superset). Converters are
 automatically registered on import.
 
 Adding a New Track Converter

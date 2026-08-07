@@ -1,6 +1,6 @@
 """DeepLabCut track converter (.csv / .h5).
 
-Converts DeepLabCut pose-estimation output to the standardized ``trex_v1``
+Converts DeepLabCut pose-estimation output to the standardized ``mosaic_v1``
 parquet schema. Supports both single-animal and multi-animal (maDLC) exports,
 in either CSV or HDF5 form.
 
@@ -18,9 +18,9 @@ file order as ``poseX0..N`` / ``poseY0..N`` (with ``poseP0..N`` confidence when
 the ``likelihood`` column is present).
 
 A single-animal file becomes one ``id=0`` track; a multi-animal file becomes one
-``id`` per individual (in file order). Per-frame centroid, velocity, speed and a
-heading ``ANGLE`` are derived so the output also satisfies the recommended
-``trex_v1`` columns.
+``id`` per individual (in file order). ``X``/``Y`` carry the mean of that frame's
+keypoints as the body centre; velocity, speed and heading are not derived here --
+see the SLEAP converter's module docstring for why.
 """
 
 from __future__ import annotations
@@ -38,11 +38,7 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
     register_track_converter,
 )
-from mosaic.core.track_library.helpers import (
-    angle_from_pca,
-    angle_from_two_points,
-    norm_hint,
-)
+from mosaic.core.track_library.helpers import norm_hint
 
 
 @dataclass(frozen=True)
@@ -172,10 +168,8 @@ def _individual_to_trex_df(
     group: str,
     sequence: str,
     fps: float,
-    neck_idx: Optional[int],
-    tail_idx: Optional[int],
 ) -> pd.DataFrame:
-    """Build a per-frame ``trex_v1`` DataFrame for one individual."""
+    """Build a per-frame ``mosaic_v1`` DataFrame for one individual."""
     x = indiv.x
     y = indiv.y
     T = x.shape[0]
@@ -185,37 +179,12 @@ def _individual_to_trex_df(
     cx = np.nanmean(x, axis=1) if n_lm else np.full(T, np.nan)
     cy = np.nanmean(y, axis=1) if n_lm else np.full(T, np.nan)
 
-    vx = np.gradient(cx) * fps if T > 1 else np.zeros(T)
-    vy = np.gradient(cy) * fps if T > 1 else np.zeros(T)
-    speed = np.hypot(vx, vy)
-
-    if (
-        neck_idx is not None
-        and tail_idx is not None
-        and 0 <= neck_idx < n_lm
-        and 0 <= tail_idx < n_lm
-    ):
-        angle = angle_from_two_points(
-            np.stack([x[:, neck_idx], y[:, neck_idx]], axis=-1),
-            np.stack([x[:, tail_idx], y[:, tail_idx]], axis=-1),
-        )
-    elif n_lm >= 2:
-        angle = angle_from_pca(np.stack([x, y], axis=-1))
-    else:
-        angle = np.full(T, np.nan)
-
     data: dict[str, np.ndarray] = {
         "frame": np.arange(T, dtype=int),
         "time": np.arange(T, dtype=float) / fps,
         "id": np.full(T, animal_id, dtype=int),
         "X": cx,
         "Y": cy,
-        "X#wcentroid": cx,
-        "Y#wcentroid": cy,
-        "VX": vx,
-        "VY": vy,
-        "SPEED": speed,
-        "ANGLE": angle,
         "group": np.full(T, group),
         "sequence": np.full(T, sequence),
     }
@@ -236,22 +205,20 @@ class DlcParams(TrackConvertParams):
         fps: Frame rate used to derive ``time`` and velocities. Filled from the
             dataset's ``fps_default`` when the caller does not set it, so the
             value that reaches identity is the one that was used.
-        neck_idx: Keypoint index of the neck for a two-point heading.
-        tail_idx: Keypoint index of the tail for a two-point heading. With
-            neither index, heading falls back to per-frame PCA of all keypoints.
     """
 
     fps: float = 30.0
-    neck_idx: int | None = None
-    tail_idx: int | None = None
 
 
 @register_track_converter
 class DlcConverter(TrackConverter[DlcParams]):
-    """DeepLabCut ``.csv`` / ``.h5`` -> a ``trex_v1`` table."""
+    """DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table."""
 
     src_format = "deeplabcut"
-    output_schema = "trex_v1"
+    # 0.2: see the SLEAP converter -- the same derived columns and the same
+    # heading params are gone. Also serves Lightning Pose.
+    version = "0.2"
+    output_schema = "mosaic_v1"
     Params = DlcParams
 
     def convert(self, path: Path, params: DlcParams, hints: EntryHints) -> pd.DataFrame:
@@ -260,9 +227,7 @@ class DlcConverter(TrackConverter[DlcParams]):
         sequence = norm_hint(hints.sequence) or path.stem
 
         frames = [
-            _individual_to_trex_df(
-                indiv, a, group, sequence, params.fps, params.neck_idx, params.tail_idx
-            )
+            _individual_to_trex_df(indiv, a, group, sequence, params.fps)
             for a, indiv in enumerate(individuals)
         ]
         out = (

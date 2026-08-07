@@ -1,4 +1,4 @@
-"""Ultralytics tracker output -> a ``trex_v1`` table.
+"""Ultralytics tracker output -> a ``mosaic_v1`` table.
 
 The tracker writes one long-format parquet per entry: a row per
 ``(frame, track)`` carrying the box, the detection confidence and class, and --
@@ -32,7 +32,6 @@ from mosaic.core.track_converter import (
     TrackConverter,
     register_track_converter,
 )
-from mosaic.core.track_library.helpers import angle_from_pca, angle_from_two_points
 
 RAW_FRAME: Final = "frame"
 RAW_TRACK_ID: Final = "track_id"
@@ -62,14 +61,6 @@ def raw_columns(n_keypoints: int) -> tuple[str, ...]:
 
 
 _EMPTY_COLUMNS: Final[list[str]] = ["frame", "time", "id", "group", "sequence"]
-
-_HEADING_SPEED_FLOOR: Final = 1e-6
-"""Below this speed, a velocity heading is direction-less rather than zero.
-
-Reached only on the one-keypoint (box-only) path, where heading has no other
-source. A stationary animal has no heading, and ``0.0`` would read as "pointing
-along +x".
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,10 +137,8 @@ def _track_to_trex_df(
     group: str,
     sequence: str,
     fps: float,
-    neck_idx: int | None,
-    tail_idx: int | None,
 ) -> pd.DataFrame:
-    """One track's rows, already frame-ordered, as a ``trex_v1`` frame."""
+    """One track's rows, already frame-ordered, as a ``mosaic_v1`` frame."""
     frame_idx = raw.frame[rows]
     frame_f = frame_idx.astype(float)
     n = len(rows)
@@ -161,34 +150,6 @@ def _track_to_trex_df(
         cx = np.nanmean(x, axis=1)
         cy = np.nanmean(y, axis=1)
 
-    if n > 1:
-        # Frame spacing is not uniform -- a track drops out and returns -- so
-        # differentiate against the frame index and scale to per-second.
-        vx = np.gradient(cx, frame_f) * fps
-        vy = np.gradient(cy, frame_f) * fps
-    else:
-        vx = np.zeros(n)
-        vy = np.zeros(n)
-    speed = np.hypot(vx, vy)
-
-    if (
-        neck_idx is not None
-        and tail_idx is not None
-        and 0 <= neck_idx < n_keypoints
-        and 0 <= tail_idx < n_keypoints
-    ):
-        angle = angle_from_two_points(
-            np.stack([x[:, neck_idx], y[:, neck_idx]], axis=-1),
-            np.stack([x[:, tail_idx], y[:, tail_idx]], axis=-1),
-        )
-    elif n_keypoints >= 2:
-        angle = angle_from_pca(np.stack([x, y], axis=-1))
-    else:
-        # A box tracker has one synthetic keypoint, so there is no shape to take
-        # a heading from. Direction of travel is the only signal left, and it
-        # beats leaving a recommended column permanently NaN.
-        angle = np.where(speed > _HEADING_SPEED_FLOOR, np.arctan2(vy, vx), np.nan)
-
     data: dict[str, np.ndarray] = {
         "frame": frame_idx,
         "time": frame_f / fps,
@@ -196,12 +157,6 @@ def _track_to_trex_df(
         "source_track_id": raw.track_id[rows],
         "X": cx,
         "Y": cy,
-        "X#wcentroid": cx,
-        "Y#wcentroid": cy,
-        "VX": vx,
-        "VY": vy,
-        "SPEED": speed,
-        "ANGLE": angle,
         "group": np.full(n, group),
         "sequence": np.full(n, sequence),
         "det_conf": raw.conf[rows],
@@ -223,20 +178,14 @@ class UltralyticsTracksParams(TrackConvertParams):
         fps: Frame rate used to derive ``time`` and velocities. Filled from the
             source video's measured fps by the tracker bridge, so the value that
             reaches identity is the one that was used.
-        neck_idx: Keypoint index of the neck for a two-point heading.
-        tail_idx: Keypoint index of the tail for a two-point heading. With
-            neither index, heading falls back to per-frame PCA over all
-            keypoints, or -- for a box-only model -- to direction of travel.
     """
 
     fps: float = 30.0
-    neck_idx: int | None = None
-    tail_idx: int | None = None
 
 
 @register_track_converter
 class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
-    """Ultralytics tracker predictions parquet -> a ``trex_v1`` table.
+    """Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table.
 
     Identity is **densified** here: Ultralytics numbers tracks from 1 with gaps,
     and mosaic's ``id`` is 0-based and dense everywhere else. The tracker's own
@@ -250,7 +199,11 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
     """
 
     src_format = "ultralytics_tracks"
-    output_schema = "trex_v1"
+    # 0.2: derived columns removed, as for the other pose converters. The
+    # box-only heading-from-travel fallback went with them: a box tracker
+    # reports no shape, and direction of travel is not a body orientation.
+    version = "0.2"
+    output_schema = "mosaic_v1"
     Params = UltralyticsTracksParams
 
     def convert(
@@ -277,8 +230,6 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
                 group=group,
                 sequence=sequence,
                 fps=fps,
-                neck_idx=params.neck_idx,
-                tail_idx=params.tail_idx,
             )
             for dense_id, source in enumerate(sources)
         ]
