@@ -208,8 +208,9 @@ install before relying on any row.
 | --------- | --------------- | ------- | -------------- |
 | keypoint-MoSeq | environment you build under `feature_library/external`, run as a subprocess | Harvard OTD Non-Commercial Research and Academic Use | **Prohibited.** No paid exception exists |
 | TRex | external binary in its own environment | AGPL-3.0-or-later (the `Application/src/commons` subtree under GPL-3.0) | **Company use requires a paid commercial license** from the authors |
-| Ultralytics YOLO | `pose` extra, included in `recommended` | AGPL-3.0 | Permitted under AGPL terms; an Enterprise license is sold for use that cannot meet them |
+| Ultralytics YOLO | `pose` extra, included in `recommended`; also what `mosaic track ultralytics` drives | AGPL-3.0 | Permitted under AGPL terms; an Enterprise license is sold for use that cannot meet them |
 | `ultralytics-thop` | transitive dependency of Ultralytics; named in no `pyproject.toml` | AGPL-3.0-or-later | As Ultralytics |
+| `lap` | `pose`, `polo` and `recommended` extras | BSD-2-Clause | Permitted |
 | POLO | `polo` extra | AGPL-3.0 (fork of Ultralytics) | Permitted under AGPL terms. The Ultralytics Enterprise license covers Ultralytics' own distribution and does not extend to a third-party fork |
 | SLEAP | external binary in its own environment | BSD 3-Clause Clear | Permitted |
 | Lightning Pose | external binary in its own environment | MIT | Permitted |
@@ -236,6 +237,24 @@ Mosaic is AGPL-3.0-or-later itself, so there is no incompatibility; the question
 is whether *your* use of the combined work can meet AGPL's obligations,
 including its network-use provision.
 
+## The tracker default tables
+
+`mosaic track ultralytics` selects one of six Ultralytics tracker backends and
+must name, in the run identifier, the exact settings the backend ran under. That
+requires mosaic to hold its own copy of each backend's defaults: reading them
+from the installed Ultralytics would make an upstream retune silently re-mint
+every identifier already on disk, which is the failure the declared integration
+version exists to prevent.
+
+Mosaic therefore **transcribes** those defaults —
+[`src/mosaic/tracking/ultralytics_track/tracker_defaults.py`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/tracking/ultralytics_track/tracker_defaults.py)
+records the setting names and their values in mosaic's own typed structure, with
+mosaic's own commentary. The Ultralytics YAML files themselves are not copied,
+and no AGPL-licensed source is vendored into `src/`. The setting names are
+dictated by the code that reads them, and the values are parameters rather than
+expression. A test compares the transcription against whatever Ultralytics is
+installed, so drift is a named failure at upgrade time.
+
 ## Citing the tools mosaic drives
 
 Mosaic does not require citation, but several of the tools above ask for it, and
@@ -246,6 +265,26 @@ these components, cite them as their authors ask.
 TRex in particular asks to be cited as Walter, T. and Couzin, I. D. (2021),
 "TRex, a fast multi-animal tracking system with markerless identification, and
 2D estimation of posture and visual fields", *eLife* 10:e64000.
+
+The six tracker backends `mosaic track ultralytics` selects between are each
+someone's published method, and results produced with one should cite it:
+
+- **ByteTrack** — Zhang, Y. *et al.* (2021), "ByteTrack: Multi-Object Tracking by
+  Associating Every Detection Box", [arXiv:2110.06864](https://arxiv.org/abs/2110.06864).
+- **BoT-SORT** — Aharon, N., Orfaig, R. and Bobrovsky, B.-Z. (2022), "BoT-SORT:
+  Robust Associations Multi-Pedestrian Tracking",
+  [arXiv:2206.14651](https://arxiv.org/abs/2206.14651).
+- **OC-SORT** — Cao, J. *et al.* (2022), "Observation-Centric SORT: Rethinking
+  SORT for Robust Multi-Object Tracking",
+  [arXiv:2203.14360](https://arxiv.org/abs/2203.14360).
+- **Deep OC-SORT** — Maggiolino, G. *et al.* (2023), "Deep OC-SORT:
+  Multi-Pedestrian Tracking by Adaptive Re-Identification",
+  [arXiv:2302.11813](https://arxiv.org/abs/2302.11813).
+- **FastTracker** — Hashempoor, H. and Hwang, Y. D. (2025), "FastTracker:
+  Real-Time and Accurate Visual Tracking",
+  [arXiv:2508.14370](https://arxiv.org/abs/2508.14370).
+- **TrackTrack** — Shim *et al.* (2025), "Focusing on Tracks for Online
+  Multi-Object Tracking", *CVPR 2025*.
 
 ## Regenerating the dependency inventory
 

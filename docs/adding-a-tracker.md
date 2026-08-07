@@ -17,9 +17,14 @@ then `trex/` for two gated phases.
 
 They decide how much of the rest applies.
 
-1. **Does it need its own environment?** If yes, it is an integrated tracker and
-   this page applies. Point mosaic at it with env vars; never add it to mosaic's
-   own dependencies.
+1. **Does it need its own environment?** If yes, point mosaic at it with env
+   vars and never add it to mosaic's own dependencies. If no -- it is already an
+   optional mosaic dependency and runs in this process -- everything below still
+   applies except files 1 and 2: there is no `ToolEnv`, no location ladder and no
+   `run_supervised`, so what tests patch is whatever module-level function drives
+   the tool, and the invocation suite is replaced by a *preflight* suite checking
+   what mosaic declares against what is installed. `ultralytics_track/` is the
+   worked reference.
 2. **Does it produce identity, or pose only?** A pose-only tool has no tracker
    knobs and emits one `id` per instance. Otherwise identical.
 3. **What *shape* is its model?** One weights file, a directory holding a config

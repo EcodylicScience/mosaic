@@ -63,6 +63,7 @@ __all__ = [
     "release_entry",
     "reusable_marker",
     "reusable_output",
+    "tick_activity",
 ]
 
 INFLIGHT_REFRESH_SECONDS: Final = 15.0
@@ -118,6 +119,45 @@ def phase_activity(
             pass
 
     return on_line
+
+
+def tick_activity(
+    ctx: JobContext,
+    work_dir: Path,
+    marker: InflightMarker,
+    idle_seconds: float,
+    *,
+    phase: PhaseName,
+    key: str,
+) -> Callable[[int, int], None]:
+    """The same liveness callback, for a phase that runs *in process*.
+
+    :func:`phase_activity` reads a subprocess's output as its proof of life, and
+    an in-process tracker produces none -- so progress through the work is the
+    signal instead. The callback takes ``(done, total)`` and, on the same
+    throttle, advances the heartbeat, re-stamps the claim and reports position.
+
+    It also **raises on cancellation**, which the subprocess form does not need:
+    there, cancelling kills the child and the wrapper turns that into
+    ``Cancelled``. In process there is nothing to kill, so the loop has to be
+    asked to stop, and this is the call it already makes.
+    """
+    last_refresh = [0.0]
+
+    def on_tick(done: int, total: int) -> None:
+        ctx.check_cancel()
+        now = time.monotonic()
+        if now - last_refresh[0] < INFLIGHT_REFRESH_SECONDS:
+            return
+        last_refresh[0] = now
+        ctx.heartbeat()
+        ctx.progress.on_phase(phase, f"{key} {done}/{total}")
+        try:
+            _ = refresh_inflight(work_dir, marker, idle_seconds)
+        except OSError:
+            pass
+
+    return on_tick
 
 
 def open_entry(

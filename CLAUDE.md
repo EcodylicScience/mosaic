@@ -50,7 +50,11 @@ the sibling. See [CONTRIBUTING.md](CONTRIBUTING.md).
 table, see [README.md](README.md). Notable points:
 
 - `pose` and `polo` cannot be installed in the same environment — both ship
-  under the `ultralytics` distribution name.
+  under the `ultralytics` distribution name. `pose` also carries `lap` and an
+  `ultralytics>=8.4.63` floor, which is what `mosaic track ultralytics` needs:
+  `lap` is the tracker's linear-assignment solver and is in no ultralytics
+  extra, so undeclared it gets pip-installed mid-run, and the four newer
+  tracker backends only exist from 8.4.63. `polo` carries `lap` too.
 - `lightning-action` and `gpu` are intentionally excluded from `recommended`.
 - `gpu` installs `faiss-cpu` by default; on Linux + CUDA, install `faiss-gpu`
   manually for GPU-accelerated kNN in `global-tsne`.
@@ -159,7 +163,7 @@ named roots:
 - `media/`        — video files + `index.csv` (ffprobe metadata)
 - `tracks_raw/`   — user-uploaded raw tracks/labels + `index.csv`
 - `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
-                  (`trex` / `sleap` / `litpose`) and of model inference
+                  (`trex` / `sleap` / `litpose` / `ultralytics`) and of model inference
                   (`infer-pose` / `infer-points` / `infer-localizer`), before
                   conversion. Kept out of `tracks_raw/` so that root holds only
                   user-uploaded content, and **excluded by name from every scan
@@ -338,12 +342,12 @@ src/mosaic/
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
-│   └── track_library/          # track converters (CalMS21, MABe22, TREx, SLEAP, DeepLabCut)
+│   └── track_library/          # track converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
 ├── behavior/
 │   ├── feature_library/        # ~35+ per-frame + global features (plugin)
 │   │   ├── movement/           # optional movement-library integration
 │   │   └── external/           # keypoint-moseq subprocess runner (own venv)
-│   ├── label_library/          # label converters (BORIS, CalMS21, MABe22)
+│   ├── label_library/          # label converters (BORIS, CalMS21)
 │   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
 │   └── visualization_library/  # overlay, playback, egocentric crops, timelines
 └── tracking/
@@ -362,7 +366,8 @@ src/mosaic/
     │   └── driver.py           # run_tracker(): the per-entry loop
     ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
     ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export
-    └── litpose/                # Lightning Pose: one gated phase, reuses the deeplabcut converter
+    ├── litpose/                # Lightning Pose: one gated phase, reuses the deeplabcut converter
+    └── ultralytics_track/      # Ultralytics MOT: one gated phase, in process, no second env
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,
@@ -598,8 +603,6 @@ Reference end-to-end examples (not test fixtures):
 - [`notebooks/calms21-template.ipynb`](notebooks/calms21-template.ipynb) —
   canonical end-to-end (manifest → features → wavelet/scaler/t-SNE →
   clustering → XGBoost classifier → visualization).
-- [`notebooks/mabe22-mouse-triplets.ipynb`](notebooks/mabe22-mouse-triplets.ipynb)
-- [`notebooks/mabe22-beetle-ant.ipynb`](notebooks/mabe22-beetle-ant.ipynb)
 
 Notebooks may use sample data not present in the repo; check the first cell
 for path expectations before running.

@@ -37,7 +37,7 @@ def manifest(tmp_path: Path) -> Path:
 
 def test_every_integrated_tracker_is_runnable() -> None:
     """Read from the roots table, so a fourth tracker is covered when its row is."""
-    assert tracker_kinds() == ["litpose", "sleap", "trex"]
+    assert tracker_kinds() == ["litpose", "sleap", "trex", "ultralytics"]
 
 
 def test_the_help_names_the_trackers() -> None:

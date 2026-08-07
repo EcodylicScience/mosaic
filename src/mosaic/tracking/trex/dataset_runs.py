@@ -76,6 +76,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
+from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
@@ -471,8 +472,13 @@ def run_trex(
             clear_outputs(work_dir, TREX_KIND, "track")
             convert_claim = claim(seq_ctx, work_dir, "convert", idle_timeout)
             seq_ctx.progress.on_phase("convert", item.key)
+            # T-Rex opens the path itself, so an imgstore recording resolves to
+            # the plain video export-store wrote for it. Resolved here rather
+            # than before the reuse gate: an entry whose conversion is already
+            # reusable needs no export, and demanding one would fail a re-run
+            # over work that is finished.
             convert_result = run_trex_convert(
-                item.video_path,
+                resolve_tool_input(job.ds, item, kind=TREX_KIND),
                 work_dir,
                 detect_model=detect_model_exec,
                 detect_type=detect_type,

@@ -21,6 +21,10 @@ from mosaic.tracking.frame_extraction import (
 from mosaic.tracking.litpose import list_litpose_runs, run_litpose
 from mosaic.tracking.sleap import list_sleap_runs, run_sleap
 from mosaic.tracking.trex import list_trex_runs, run_trex
+from mosaic.tracking.ultralytics_track import (
+    list_ultralytics_runs,
+    run_ultralytics,
+)
 
 # Explicit re-export: importing the ops subpackage runs its registration side
 # effects (kept import-light; heavy backends load lazily inside each op's run()).
@@ -53,7 +57,9 @@ __all__ = [
     "list_litpose_runs",
     "list_sleap_runs",
     "list_trex_runs",
+    "list_ultralytics_runs",
     "run_litpose",
     "run_sleap",
     "run_trex",
+    "run_ultralytics",
 ]

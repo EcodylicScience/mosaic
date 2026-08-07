@@ -112,7 +112,7 @@ class TranscodeParams(Params):
     allow_hardware: Annotated[bool, HASH_EXCLUDE] = False
 
 
-def _relative_to(path: Path, anchor: Path) -> str:
+def relative_to_anchor(path: Path, anchor: Path) -> str:
     """POSIX-style path of *path* relative to *anchor* (falls back to relpath)."""
     return Path(os.path.relpath(path.resolve(), anchor.resolve())).as_posix()
 
@@ -269,14 +269,14 @@ def _derivative_row(
         group_safe=to_safe_name(group) if group else "",
         sequence_safe=to_safe_name(sequence),
         probe=probe,
-        source_path=_relative_to(source, raw_root),
+        source_path=relative_to_anchor(source, raw_root),
         source_video_uuid=source_video_uuid,
         recipe_hash=recipe_hash,
         video_order=video_order,
     )
 
 
-def _set_back_link(
+def set_back_link(
     ds: "Dataset",
     group: str,
     sequence: str,
@@ -423,7 +423,7 @@ class TranscodeOp(Op[TranscodeParams]):
 
             already_linked = derivative_cell(
                 row_mapping(row), params.target
-            ) == _relative_to(dest, media_root)
+            ) == relative_to_anchor(dest, media_root)
             if dest.exists() and already_linked:
                 # The name carries the whole recipe, so an existing file at this
                 # path is this recipe's output. The link is checked too, and it
@@ -475,13 +475,13 @@ class TranscodeOp(Op[TranscodeParams]):
                 raise TranscodeError(message)
 
             output_path = result.output_path
-            derivative_rel = _relative_to(output_path, media_root)
+            derivative_rel = relative_to_anchor(output_path, media_root)
             # The back-link row first, the forward link last. The forward link is
             # what the reuse gate reads, so writing it last makes it a completion
             # marker: an interrupted registration leaves an unlinked file, which
             # the next run re-links, rather than a linked file with no row, which
             # nothing can repair.
-            _set_back_link(
+            set_back_link(
                 ds,
                 group,
                 sequence,

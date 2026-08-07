@@ -65,6 +65,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
+from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.litpose.version import (
     LITPOSE_KIND,
     LITPOSE_VERSION,
@@ -294,8 +295,13 @@ def run_litpose(
             clear_outputs(work_dir, LITPOSE_KIND, "track")
             track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
+            # Lightning Pose opens the path itself, so an imgstore recording
+            # resolves to the plain video export-store wrote for it. Resolved
+            # here rather than before the reuse gate: an entry already predicted
+            # needs no export, and demanding one would fail a re-run over
+            # finished work.
             predict_result = run_litpose_predict(
-                item.video_path,
+                resolve_tool_input(job.ds, item, kind=LITPOSE_KIND),
                 csv_path,
                 model_dir=resolved_model.path,
                 precision=precision,

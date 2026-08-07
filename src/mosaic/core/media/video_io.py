@@ -10,6 +10,7 @@ from typing import Any, Iterator, Optional, Protocol, Sequence
 import cv2
 import numpy as np
 from mosaic_media import MediaFacts, MediaProbeError, probe_media
+from mosaic_media.io import FFmpegVideoWriter as FFmpegVideoWriter
 from mosaic_media.io import MultiVideoReader as _PlainMultiReader
 from mosaic_media.io import SeekIndex
 from mosaic_media.io import VideoReader
@@ -180,7 +181,9 @@ def normalize_frame_range(
     start = max(0, start)
     end = min(frame_count - 1, end)
     if start > end:
-        raise ValueError(f"Invalid frame range after clamping: start={start}, end={end}")
+        raise ValueError(
+            f"Invalid frame range after clamping: start={start}, end={end}"
+        )
     return start, end
 
 
@@ -218,12 +221,14 @@ def normalize_crop_rect(
     return (x, y, w, h)
 
 
-def apply_crop(frame: np.ndarray, crop_rect: Optional[tuple[int, int, int, int]]) -> np.ndarray:
+def apply_crop(
+    frame: np.ndarray, crop_rect: Optional[tuple[int, int, int, int]]
+) -> np.ndarray:
     """Apply an optional (x, y, w, h) crop rectangle."""
     if crop_rect is None:
         return frame
     x, y, w, h = crop_rect
-    return frame[y:y + h, x:x + w]
+    return frame[y : y + h, x : x + w]
 
 
 def extract_candidate_features(
@@ -311,7 +316,9 @@ def extract_candidate_features(
     if not indices:
         raise RuntimeError("No candidate frames available in the requested range.")
 
-    return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(np.float32, copy=False)
+    return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(
+        np.float32, copy=False
+    )
 
 
 def save_frames_as_png(
@@ -349,12 +356,14 @@ def save_frames_as_png(
         if not ok_write:
             raise RuntimeError(f"Failed to write PNG frame: {out_path}")
         h, w = frame.shape[:2]
-        records.append({
-            "frame_index": frame_idx,
-            "path": out_name,
-            "width": int(w),
-            "height": int(h),
-        })
+        records.append(
+            {
+                "frame_index": frame_idx,
+                "path": out_name,
+                "width": int(w),
+                "height": int(h),
+            }
+        )
 
     if is_imgstore(resolved):
         # imgstore is always randomly addressable by frame_index, so a plain
@@ -470,7 +479,9 @@ class _ImgStoreMultiReader:
         # silent fall-back to the first video's rate.
         fps_vals = sorted({round(s.fps, 4) for s in self._segments})
         if len(fps_vals) > 1:
-            message = f"property mismatch across sequence: fps {fps_vals[0]} vs {fps_vals[1]}"
+            message = (
+                f"property mismatch across sequence: fps {fps_vals[0]} vs {fps_vals[1]}"
+            )
             raise ValueError(message)
 
     # -- Properties --
@@ -519,7 +530,9 @@ class _ImgStoreMultiReader:
     # -- Open / close helpers --
 
     def _open_segment(self, seg_idx: int) -> None:
-        from .imgstore_io import ImgStoreCapture  # local: breaks the video_io <-> imgstore_io cycle
+        from .imgstore_io import (
+            ImgStoreCapture,
+        )  # local: breaks the video_io <-> imgstore_io cycle
 
         if self._current_cap is not None:
             self._current_cap.close()
@@ -549,10 +562,7 @@ class _ImgStoreMultiReader:
         """
         seg_idx, local_frame = self.segment_for_frame(global_frame)
 
-        need_reopen = (
-            self._current_cap is None
-            or seg_idx != self._current_seg_idx
-        )
+        need_reopen = self._current_cap is None or seg_idx != self._current_seg_idx
 
         if need_reopen:
             self._open_segment(seg_idx)
@@ -639,7 +649,9 @@ def open_multi_video_reader(
     the caller's declaration of intent, and a store's own chunk reads declare
     their target separately, where the chunk reader is actually built.
     """
-    from .imgstore_io import is_imgstore  # local: breaks the video_io <-> imgstore_io cycle
+    from .imgstore_io import (
+        is_imgstore,
+    )  # local: breaks the video_io <-> imgstore_io cycle
 
     paths = (
         [Path(video_paths)]
@@ -776,7 +788,9 @@ def extract_candidate_features_multi(
     if not indices:
         raise RuntimeError("No candidate frames available in the requested range.")
 
-    return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(np.float32, copy=False)
+    return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(
+        np.float32, copy=False
+    )
 
 
 def save_frames_as_png_multi(
@@ -809,12 +823,14 @@ def save_frames_as_png_multi(
         if not ok_write:
             raise RuntimeError(f"Failed to write PNG frame: {out_path}")
         h, w = frame.shape[:2]
-        records.append({
-            "frame_index": frame_idx,
-            "path": out_name,
-            "width": int(w),
-            "height": int(h),
-        })
+        records.append(
+            {
+                "frame_index": frame_idx,
+                "path": out_name,
+                "width": int(w),
+                "height": int(h),
+            }
+        )
 
     # Restore original order from frame_indices
     record_map = {r["frame_index"]: r for r in records}

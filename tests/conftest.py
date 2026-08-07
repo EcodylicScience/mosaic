@@ -28,6 +28,7 @@ import os as _os
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import csv
+import dataclasses
 import importlib.util
 import os
 import shutil
@@ -38,10 +39,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 from mosaic_media.io.writer import FFmpegVideoWriter
 from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.media.facts_columns import facts_to_row, store_facts
 
 # Modules the CI workflow installs through extras (`.[wavelets,imgstore,sleap]`).
 # `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
@@ -68,6 +71,13 @@ CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py")
 # between a refactor and a silently randomly-initialised network inside T-Rex.
 CI_IDENTITY_MODULES = ("torch",)
 
+# The same argument again, for the job that installs `pose`. `lap` is the one
+# that matters: Ultralytics imports it at module scope in its tracker matching
+# and pip-installs it at run time when it is absent, so a job without it would
+# skip the drift and reset checks green while proving nothing about the
+# declaration that exists to stop that install happening.
+CI_TRACKING_MODULES = ("ultralytics", "lap")
+
 # The same argument, for a binary rather than a module. Probing shells out to a
 # system ffprobe, so every test that indexes real media hard-*fails* without one
 # rather than skipping -- and the failure names a codec, not a missing tool.
@@ -88,6 +98,8 @@ def pytest_configure() -> None:
     required = CI_REQUIRED_MODULES
     if os.environ.get("MOSAIC_CI_IDENTITY"):
         required += CI_IDENTITY_MODULES
+    if os.environ.get("MOSAIC_CI_TRACKING"):
+        required += CI_TRACKING_MODULES
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         raise pytest.UsageError(
@@ -332,8 +344,14 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
     Motif ``camera_serial`` / ``synchronizationuuid`` / ``synchronization``) so a
     multi-camera recording can be simulated.
 
+    ``fill`` tags the *whole* frame with ``i`` rather than only its first pixel.
+    A one-pixel tag cannot survive an encode to 4:2:0, whose chroma planes are
+    subsampled 2x2, so a test that reads frames back through a lossy codec (the
+    store export) needs frames that are uniform enough to stay distinguishable.
+    The ``frame[0, 0, 0] == i`` invariant holds either way.
+
     Returns a callable ``(name=, nframes=, fmt=, shape=, dtype=, chunksize=,
-    parent=, extra_metadata=) -> (store_dir, frames)``.
+    parent=, fill=, extra_metadata=) -> (store_dir, frames)``.
     """
     imgstore = pytest.importorskip("imgstore")
 
@@ -346,6 +364,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         chunksize: int = 5,
         parent: Path | None = None,
         fps: float = 30.0,
+        fill: bool = False,
         extra_metadata: Mapping[str, object] | None = None,
     ) -> tuple[Path, list[np.ndarray]]:
         base = parent if parent is not None else tmp_path
@@ -367,7 +386,16 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
         )
         frames: list[np.ndarray] = []
         for i in range(nframes):
-            img = np.zeros(shape, dtype=dtype)
+            if fill:
+                # Spread across the middle of the range rather than using i
+                # directly. Consecutive small integers are indistinguishable
+                # after a lossy encode -- everything below the limited-range
+                # floor comes back as 0 -- and the point of a filled frame is to
+                # stay identifiable through one.
+                value = 16 + (i * 200) // max(1, nframes - 1)
+                img = np.full(shape, value, dtype=dtype)
+            else:
+                img = np.zeros(shape, dtype=dtype)
             img.reshape(-1)[0] = i % 256  # unique per-frame tag at [0, 0(, 0)]
             frames.append(img)
             store.add_image(img, frame_number=i, frame_time=float(i) / fps)
@@ -437,6 +465,77 @@ def scenario_dataset_with_media(
     """
     add_media_sequence(scenario_dataset, "seq_a")
     return scenario_dataset
+
+
+def clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
+    """A complete, verdict-clean set of media-facts cells for one index row.
+
+    The tracker marker suites all need a media row a tracker will actually run
+    against: probed dimensions, a container and pixel format that derive to a
+    clean verdict, and -- when *video_uuid* is given -- the content identity that
+    lets a marker tell a video replaced in place from one merely renamed.
+    """
+    facts: MediaFacts = store_facts(
+        width=640,
+        height=480,
+        fps=30.0,
+        frame_count=100,
+        codec="h264",
+        duration=100 / 30.0,
+        video_uuid=video_uuid,
+        identity_scheme="video/1" if video_uuid else "",
+    )
+    facts = dataclasses.replace(
+        facts,
+        container="mov,mp4,m4a,3gp,3g2,mj2",
+        pixel_format="yuv420p",
+        moov_at_start=True,
+    )
+    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
+
+
+def write_media_index(
+    dataset: Dataset,
+    sequences: list[str],
+    *,
+    filenames: dict[str, str] | None = None,
+    uids: dict[str, str] | None = None,
+) -> None:
+    """Index one stub video per sequence, with full facts cells.
+
+    The bytes are a placeholder: every tracker marker suite fakes the tool, so
+    nothing decodes them. *filenames* and *uids* are what the rename-versus-replace
+    scenarios vary -- the same file under a new name keeps its uid, a replacement
+    changes it.
+    """
+    media_root = dataset.get_root(dataset.resolve_media_root())
+    media_root.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, object]] = []
+    for seq in sequences:
+        filename = (filenames or {}).get(seq, f"{seq}.mp4")
+        video = media_root / filename
+        if not video.exists():
+            _ = video.write_bytes(b"fake")
+        rows.append(
+            {
+                "name": filename,
+                "group": "",
+                "sequence": seq,
+                "group_safe": "",
+                "sequence_safe": seq,
+                "abs_path": dataset.relative_to_root(video),
+                "size_bytes": 4,
+                "mtime_iso": "",
+                "width": 640,
+                "height": 480,
+                "fps": 30.0,
+                "codec": "h264",
+                "media_type": "video",
+                "video_order": 0,
+                **clean_facts_cells((uids or {}).get(seq, "")),
+            }
+        )
+    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
 
 
 def add_transcode_derivative(
