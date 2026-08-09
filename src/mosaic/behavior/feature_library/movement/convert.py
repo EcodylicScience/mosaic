@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS
-
-
-def _pose_column_pairs(columns) -> list[tuple[str, str]]:
-    """Extract (poseX*, poseY*) column pairs from column names."""
-    pose_pairs = []
-    xs = [c for c in columns if c.startswith("poseX")]
-    for x_col in sorted(xs):
-        idx = x_col[5:]
-        y_col = f"poseY{idx}"
-        if y_col in columns:
-            pose_pairs.append((x_col, y_col))
-    return pose_pairs
 
 
 def _ensure_movement():
@@ -74,7 +62,7 @@ def to_movement_dataset(
     y_col = COLUMNS.y_col
 
     # --- Detect pose columns ---
-    pose_pairs = _pose_column_pairs(df.columns)
+    pose_pairs = pose_column_pairs(df.columns)
     n_pose_kp = len(pose_pairs)
 
     # Detect confidence columns (poseP0, poseP1, ...)

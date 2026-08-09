@@ -15,20 +15,9 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.pipeline.loading import pose_column_pairs
 
 from .registry import register_feature
-
-
-def _pose_column_pairs(columns) -> list[tuple[str, str]]:
-    """Extract (poseX*, poseY*) column pairs from column names."""
-    pose_pairs = []
-    xs = [c for c in columns if c.startswith("poseX")]
-    for x_col in sorted(xs):
-        idx = x_col[5:]
-        y_col = f"poseY{idx}"
-        if y_col in columns:
-            pose_pairs.append((x_col, y_col))
-    return pose_pairs
 
 
 def _savgol_with_nan(arr: np.ndarray, window: int, polyorder: int) -> np.ndarray:
@@ -138,7 +127,7 @@ class TrajectorySmooth:
         if id_col not in df.columns:
             raise ValueError(f"Missing id column '{id_col}'.")
 
-        pose_pairs = _pose_column_pairs(df.columns)
+        pose_pairs = pose_column_pairs(df.columns)
 
         out_parts = []
         for _, sub in df.groupby(id_col, sort=False):
