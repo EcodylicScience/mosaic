@@ -10,6 +10,28 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased — tracks are pixels, and every tracks variant re-mints
 
+**Index locking moved to a sidecar, and every index directory gains one
+zero-byte file.** `index_lock` held its lock on the index inode itself.
+`atomic_write` renames a *new* inode over that path, which POSIX permits and
+Windows does not — and WSL's `/mnt/*` mounts carry Windows semantics, so on a
+dataset under `/mnt/c` every index write failed, reporting a missing temp file
+that `atomic_write`'s own cleanup had already removed. The lock now lives on
+`<index>.lock` beside the index — `media_raw/index.csv.lock`,
+`tracks/index.csv.lock`, one per index — created on the first locked write,
+never deleted, and never renamed over. Anything enumerating a dataset root will
+see it. Nothing reads it, no identifier moves, and `index.csv` is no longer held
+open at any point.
+
+Two things travel with the move. The rule that a locked block may perform at
+most one `atomic_write`, as its last act, is no longer load-bearing: it existed
+because the first write dropped the block's grip on the inode it had locked, and
+a sidecar is never renamed over. Where that shape survives in the code it is now
+about throughput — not holding a lock tuned for a CSV rewrite across an ffprobe
+pass. And the Windows branch, which kept its lock in `%TEMP%` keyed by a hash of
+the index path, is gone: `%TEMP%` is per user, as `$TMPDIR` is per SLURM job and
+per container, so a temp-directory lock silently failed to serialize the very
+cases the lock exists for. Both platforms now lock the same file.
+
 **Standardized tracks are now in video pixels, on every tracker, and `X`/`Y`
 name the body centre.** Neither held before. TREx reports centimetres scaled by
 `cm_per_pixel` and puts the *head* in its bare `X`; every other converter wrote

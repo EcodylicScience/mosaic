@@ -48,8 +48,9 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_run_root,
 )
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
-from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
+from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock, lock_path_for
 from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.run import (
@@ -700,6 +701,139 @@ def test_the_index_lock_is_reentrant_within_a_thread() -> None:
         with index_lock(path, timeout=5):
             with index_lock(path, timeout=5):
                 pass
+
+
+# --- P7: the lock survives the write it serializes ---------------------------
+#
+# The property the sidecar exists for, and the one the previous design silently
+# lacked. A subprocess rather than a thread throughout: ``index_lock`` serializes
+# threads with its own ``RLock`` and is re-entrant within one, so a thread would
+# block whether or not the *file* lock survived -- which is the thing measured.
+
+_LOCK_PROBE = """
+import sys
+from pathlib import Path
+from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
+
+try:
+    with index_lock(Path(sys.argv[1]), timeout=float(sys.argv[2])):
+        pass
+except IndexLockTimeout:
+    sys.exit(0)   # still held by the parent
+sys.exit(3)       # acquired: the parent's grip is gone
+"""
+
+
+def _locked_out(index_path: Path, timeout: float = 1.0) -> bool:
+    """Does a separate process fail to acquire *index_path*'s lock right now?"""
+    proc = subprocess.run(
+        [sys.executable, "-c", _LOCK_PROBE, str(index_path), str(timeout)],
+        capture_output=True,
+        timeout=120,
+    )
+    if proc.returncode not in (0, 3):
+        raise AssertionError(proc.stderr.decode()[-800:])
+    return proc.returncode == 0
+
+
+def test_the_lock_survives_the_atomic_writes_it_serializes(tmp_path: Path) -> None:
+    """A locked block may rewrite its index as often as it likes.
+
+    The regression the sidecar exists for, and it reproduces on any POSIX
+    machine. Held on the *index* inode, the first ``atomic_write`` renamed a new
+    inode over the path and the block silently lost the lock it thought it had:
+    a second process opened the new inode, flocked it uncontended, and
+    interleaved. Two writes here, and the probe must still be shut out after
+    both -- with the final assertion proving the earlier one is not vacuous.
+    """
+    index_path = tmp_path / "index.csv"
+
+    with index_lock(index_path, timeout=10):
+        lock_file = lock_path_for(index_path.resolve())
+        held_inode = lock_file.stat().st_ino
+
+        atomic_write(index_path, lambda p: p.write_text("key\nfirst\n"))
+        atomic_write(index_path, lambda p: p.write_text("key\nsecond\n"))
+
+        # Same inode, so nothing replaced the file the lock is on...
+        assert lock_file.stat().st_ino == held_inode
+        # ...and, decisively, another process still cannot take it.
+        assert _locked_out(index_path), (
+            "an atomic_write dropped the block's lock: a concurrent writer can "
+            "now interleave with a block that believes it holds it"
+        )
+
+    assert index_path.read_text() == "key\nsecond\n"
+    # The probe can succeed when the lock is free, so the assertion above is
+    # about the lock and not about the probe never working.
+    assert not _locked_out(index_path), "the lock outlived its block"
+
+
+def test_the_lock_file_is_created_once_and_never_removed(tmp_path: Path) -> None:
+    """Unlinking a lock file reopens the race the sidecar closed.
+
+    A holder's inode would go away while it still held it, the next process
+    would create a fresh one at the same name and flock it uncontended, and both
+    would write. Pinned as an *inode*, not merely as a name: a
+    delete-and-recreate leaves the name in place and is the same bug.
+    """
+    index_path = tmp_path / "index.csv"
+    lock_file = lock_path_for(index_path.resolve())
+
+    with index_lock(index_path, timeout=10):
+        assert lock_file.exists()
+        first_inode = lock_file.stat().st_ino
+
+    assert lock_file.exists(), "the lock file was removed on release"
+    with index_lock(index_path, timeout=10):
+        pass
+    assert lock_file.stat().st_ino == first_inode, "the lock file was recreated"
+
+
+def test_acquiring_still_creates_the_index_empty(tmp_path: Path) -> None:
+    """The side effect three readers are written around.
+
+    ``IndexCSV.append`` and ``mark_finished`` order ``ensure()`` or an existence
+    check before the lock precisely because acquiring materializes the file;
+    ``load_media_index_frame`` and ``Dataset._read_media_index`` read a zero-byte
+    index as empty rather than raising. Moving the lock off the index inode
+    removed the ``O_CREAT`` that produced it, so it is now deliberate -- and a
+    deliberate side effect three modules depend on has to be pinned.
+    """
+    index_path = tmp_path / "nested" / "index.csv"
+    assert not index_path.exists()
+
+    with index_lock(index_path, timeout=10):
+        pass
+
+    assert index_path.exists() and index_path.stat().st_size == 0
+    assert sorted(p.name for p in index_path.parent.iterdir()) == [
+        "index.csv",
+        "index.csv.lock",
+    ]
+
+
+def test_two_routes_to_one_index_take_one_lock(tmp_path: Path) -> None:
+    """The sidecar is derived from the resolved path, not the path as written.
+
+    Two callers reaching one index by different routes must name one lock file.
+    Derived from the unresolved path instead, ``sub/../index.csv`` and
+    ``index.csv`` would each get their own and serialize against nothing -- the
+    exact failure a temp-directory lock keyed on ``$TMPDIR`` has, reintroduced
+    locally. ``..`` rather than a symlink so this needs no privilege on Windows.
+    """
+    (tmp_path / "sub").mkdir()
+    direct = tmp_path / "index.csv"
+    roundabout = tmp_path / "sub" / ".." / "index.csv"
+
+    with index_lock(direct, timeout=10):
+        assert _locked_out(roundabout)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "index.csv",
+        "index.csv.lock",
+        "sub",
+    ]
 
 
 # --- 0.3 / 0.4: persisted scope and the identity-scheme marker ----------------

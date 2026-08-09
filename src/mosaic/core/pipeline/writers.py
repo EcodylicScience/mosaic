@@ -60,10 +60,10 @@ def write_parquet_atomic(df: pd.DataFrame, path: Path) -> int:
     creates the parent directory itself -- an adjacent ``mkdir`` beside a call here
     is redundant.
 
-    One constraint on callers, inherited from ``atomic_write`` and documented on
-    ``index_lock``: **never call this inside a locked block except as the block's
-    last act.** The rename replaces the inode a POSIX lock is held on, so a write
-    part-way through a locked section silently drops that section's grip.
+    No constraint on where a caller puts it. This used to owe ``index_lock`` a
+    rule -- never inside a locked block except as its last act, because the
+    rename replaced the inode the lock was held on -- and the rule is gone:
+    ``index_lock`` holds a sidecar that no rename touches.
     """
     n_rows = len(df)
     atomic_write(path, lambda p: df.to_parquet(p, index=False))

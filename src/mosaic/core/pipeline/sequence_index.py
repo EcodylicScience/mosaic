@@ -18,16 +18,18 @@ sequence, so putting it on every member row means rewriting every row to record
 one change, and leaves no way to tell a stale copy from a current one when they
 disagree.
 
-**Lock order, and it must not be inverted.** A writer commits its ``index.csv``
-first, releases, and only then writes ``sequences.csv``. Two files, two locks,
-never nested: ``atomic_write`` renames a new inode over ``index.csv``, so a
-locked block that went on to write a second file would already have lost its grip
-on the first (see :mod:`mosaic.core.pipeline.index_lock`), and ``index_lock`` is
-re-entrant per resolved path so it will not catch the mistake. Writing
-``sequences.csv`` first would be worse than unsafe: it would record a composition
-for an index state that never committed -- a confident value nothing on disk
-supports. A crash between the two leaves the projection absent or stale, which
-over-reports on the next comparison and heals on the next write.
+**Write order, and it must not be inverted.** A writer commits its ``index.csv``
+first, releases, and only then writes ``sequences.csv``. Writing
+``sequences.csv`` first would record a composition for an index state that never
+committed -- a confident value nothing on disk supports. A crash between the two
+leaves the projection absent or stale, which over-reports on the next comparison
+and heals on the next write.
+
+Two files, two locks, and still never nested -- no longer for safety, since
+``index_lock`` holds a sidecar the atomic rename never touches
+(see :mod:`mosaic.core.pipeline.index_lock`), but because nesting two different
+paths' locks is a lock-ordering hazard with no upside here, and ``index_lock``
+is re-entrant per resolved path so it would not catch an accidental one.
 
 **The display name is deliberately not here**, though item 4.4 says all three
 per-sequence facts share one row. A composition is a property of
@@ -197,8 +199,8 @@ def adopt_sequence_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Bring a frame read off disk up to the current schema, in memory.
 
     Wired in as ``IndexCSV``'s ``adopt`` hook so it runs inside the write lock
-    and its result is written by the single ``atomic_write`` that already ends
-    that block. Idempotent.
+    and its result is written by the ``atomic_write`` that ends that block.
+    Idempotent.
 
     Every column is built with an explicit ``object`` dtype. An empty list
     assigned to a column lands as ``float64``, and a later ``pd.concat`` against

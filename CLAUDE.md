@@ -446,6 +446,11 @@ run_feature(...)             → features/<name>/<run_id>/*.parquet
 
 Models follow the same shape: `models/<name>/<run_id>/`.
 
+Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
+sidecar, created on the first locked write and **never removed**. It is not
+data, nothing reads it, and deleting it while a writer holds it reintroduces the
+lost update the lock prevents. Anything that enumerates a root should expect it.
+
 ## Important Conventions
 
 ### The tracks index

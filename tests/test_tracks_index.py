@@ -291,7 +291,10 @@ def test_the_write_is_atomic_and_leaves_no_orphan(tmp_path: Path) -> None:
         n_rows=40,
     )
     names = sorted(p.name for p in ds.get_root("tracks").iterdir())
-    assert names == ["index.csv", "s.parquet"]
+    # index.csv.lock is index_lock's sidecar: one zero-byte file per index,
+    # created on the first locked write and never removed. What must *not* be
+    # here is a ".<stem>-*.tmp" orphan from a torn atomic_write.
+    assert names == ["index.csv", "index.csv.lock", "s.parquet"]
 
 
 # --- consumed_source_roots -------------------------------------------------

@@ -698,10 +698,13 @@ class TestAdoptHook:
         assert saw_dedup_key == [False]
 
     def test_leaves_no_temp_file_and_writes_once(self, tmp_path: Path) -> None:
-        """One atomic_write per locked block -- the index_lock invariant.
+        """One atomic_write per append -- adoption and rows commit together.
 
-        A stray temp file is the visible symptom of a block that wrote more than
-        once or died between writes.
+        No longer an ``index_lock`` requirement (the lock is a sidecar no rename
+        touches) but an atomicity one: a second write would publish the adopted
+        schema without this append's rows, and a reader landing between the two
+        would see it. A stray temp file is the visible symptom of a block that
+        died between writes.
         """
         csv_path = tmp_path / "index.csv"
         csv_path.write_text("group,sequence,abs_path\n,legacy,legacy.parquet\n")

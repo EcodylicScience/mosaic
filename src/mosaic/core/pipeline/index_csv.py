@@ -323,8 +323,8 @@ class IndexCSV(Generic[RowT]):
         natively in pd.DataFrame().
         """
         # ensure() runs *before* the lock, not inside it. Acquiring the lock
-        # opens the index with O_CREAT, so on a first write it materializes a
-        # zero-byte file -- after which ensure()'s "already exists" early return
+        # creates the index if it is absent, so on a first write it materializes
+        # a zero-byte file -- after which ensure()'s "already exists" early return
         # would leave it headerless and the read below would raise
         # EmptyDataError. ensure() is itself atomic and idempotent, so two
         # writers racing here both write the same header harmlessly.
@@ -339,11 +339,13 @@ class IndexCSV(Generic[RowT]):
         read, before the dedup backfill, and inside the same lock. That placement
         is forced rather than tidy.
 
-        - **In memory, not a second write.** ``atomic_write`` renames a new inode
-          over the path while the lock is held on the old one, so a locked block
-          that writes twice loses its grip after the first write and a concurrent
-          writer interleaves (see ``index_lock``). An ``adopt`` that rewrote the
-          file would be exactly that block.
+        - **In memory, not a second write.** No longer a lock constraint --
+          ``index_lock`` holds a sidecar the atomic rename never touches, so a
+          locked block may write twice. It is an atomicity one: an adoption that
+          rewrote the file would publish the schema change as its own commit, so
+          a reader landing between the two sees a widened file carrying none of
+          this append's rows, and a crash between them leaves that state
+          permanently. One write publishes the adoption and the append together.
         - **Inside the lock**, because it decides what the merged frame contains;
           run before acquiring it, another writer's rows could land in between and
           be adopted away.
@@ -396,7 +398,7 @@ class IndexCSV(Generic[RowT]):
         that wants to add one row still calls ``append``.
 
         ``ensure()`` runs before the lock for the reason ``append`` gives: the
-        lock's ``O_CREAT`` would otherwise materialize a zero-byte file that
+        lock's file creation would otherwise materialize a zero-byte file that
         ``ensure`` then declines to header. The frame is projected onto the
         schema, so column order is fixed and an extra key is dropped rather than
         widening the file.

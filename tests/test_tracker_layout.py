@@ -224,6 +224,12 @@ def test_litpose_leaves_this_shape(
         "<run>/vid1/.mosaic-track.json",
         "<run>/vid1/vid1.predictions.csv",
         "index.csv",
+        # index_lock's sidecar: one zero-byte file per index, created on the
+        # first locked write and never removed. Pinned rather than filtered out
+        # of ``snapshot`` -- what a run leaves on disk is this file's whole
+        # subject, and a layout change is either intended and re-pinned in the
+        # same commit, or a defect.
+        "index.csv.lock",
     ]
     assert got["markers"] == {
         ".mosaic-track.json": {
@@ -357,6 +363,7 @@ def test_sleap_leaves_this_shape(
         "<run>/vid1/vid1.analysis.h5",
         "<run>/vid1/vid1.predictions.slp",
         "index.csv",
+        "index.csv.lock",
     ]
     assert got["markers"] == {
         ".mosaic-track.json": {
@@ -505,6 +512,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
         "<run>/vid1/vid1.pv",
         "<run>/vid1/vid1.results",
         "index.csv",
+        "index.csv.lock",
     ]
     assert got["markers"] == {
         ".mosaic-convert.json": {

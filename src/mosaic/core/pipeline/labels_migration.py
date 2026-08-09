@@ -25,6 +25,7 @@ from __future__ import annotations
 import shutil
 from typing import TYPE_CHECKING
 
+from ._utils import atomic_write
 from .index_lock import index_lock
 from .labels_index import (
     legacy_labels_view,
@@ -152,10 +153,13 @@ def revert_labels(ds: Dataset) -> dict[str, int]:
             if child.is_dir():
                 shutil.rmtree(child)
         idx_path = kind_root / "index.csv"
+        frame = pd.DataFrame(legacy_rows, columns=_LEGACY_LABEL_COLUMNS)
+        # atomic_write rather than a bare to_csv: this was the one locked block
+        # in the toolkit writing its index in place. It was safe only because it
+        # wrote the inode the lock was on; now that the lock is a sidecar, an
+        # in-place write is just a torn file waiting for a kill mid-migration.
         with index_lock(idx_path):
-            pd.DataFrame(legacy_rows, columns=_LEGACY_LABEL_COLUMNS).to_csv(
-                idx_path, index=False
-            )
+            atomic_write(idx_path, lambda p: frame.to_csv(p, index=False))
 
     removed = 0
     try:

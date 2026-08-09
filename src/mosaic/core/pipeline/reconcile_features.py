@@ -581,9 +581,9 @@ class FeatureReconciler:
             )
             return finding.with_action("none")
         builder.backed_up(backup_index(read.index_path))
-        # Directory move first, index rewrite second: an atomic index write renames
-        # a new inode over the path, so the row rewrite must be the only write held
-        # under the lock (see index_lock). The move is not under that lock.
+        # Directory move first, index rewrite second. The move is deliberately
+        # not under the index lock: it is filesystem work of unbounded duration
+        # and the lock's timeout is tuned for a CSV rewrite.
         _ = shutil.move(str(read.run_root), str(new_run_root))
         write_identity_scheme(new_run_root, FEATURE_IDENTITY_SCHEME)
         self._rewrite_provenance(read, new_run_root)

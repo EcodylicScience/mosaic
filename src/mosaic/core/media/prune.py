@@ -593,9 +593,9 @@ def prune_media(
     byte-identical.
 
     **Write order, and it is the safe one of the two.** Two sequential locked
-    blocks -- originals first, derivatives second -- never nested, because
-    ``atomic_write`` renames a new inode over the path and a block that went on
-    to write a second file would already have lost its grip on the first. The
+    blocks -- originals first, derivatives second -- never nested, for
+    lock-ordering hygiene rather than safety: ``index_lock``'s sidecar survives
+    the atomic rename, so a block that wrote twice would keep its grip. The
     unlinks come after both. A crash between the row drop and the unlink leaves
     files on disk that no row and no link describes, which the next run decides
     identically and removes: the file predicate never consults the row. The

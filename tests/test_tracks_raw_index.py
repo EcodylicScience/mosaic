@@ -188,14 +188,18 @@ def test_write_is_atomic_leaves_no_temp_orphans_and_overwrites(tmp_path: Path) -
         src_format="calms21_npy",
     )
     write_tracks_raw_index_rows(index_path, frame_from_rows([row]))
-    # Only the final file remains -- no leftover ".<stem>-*.tmp" temp.
-    assert [p.name for p in index_path.parent.iterdir()] == ["index.csv"]
+    # "No leftover '.<stem>-*.tmp' orphan" is what this pins -- not the exact
+    # directory contents. ``index_lock`` legitimately puts an ``index.csv.lock``
+    # sidecar beside an index; this writer takes no lock (its callers do), so
+    # none appears here, and pinning the temp's absence is what stays true
+    # either way.
+    assert [p.name for p in index_path.parent.iterdir() if p.suffix == ".tmp"] == []
     assert len(read_tracks_raw_index(index_path)) == 1
 
     # A second write fully replaces the file (and still leaves no orphan).
     row2 = {**row, "sequence": "b", "abs_path": "raw/b.npy"}
     write_tracks_raw_index_rows(index_path, frame_from_rows([row2]))
-    assert [p.name for p in index_path.parent.iterdir()] == ["index.csv"]
+    assert [p.name for p in index_path.parent.iterdir() if p.suffix == ".tmp"] == []
     records = read_tracks_raw_index(index_path)
     assert [r["sequence"] for r in records] == ["b"]
 

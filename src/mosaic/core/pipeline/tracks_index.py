@@ -25,8 +25,9 @@ one entry refuse to be guessed between.
 
 **Adoption is on write, tolerance is on read.** An older index is brought up to
 this schema by :func:`adopt_legacy_columns`, wired in as ``IndexCSV``'s ``adopt``
-hook so it runs in memory inside the write lock (see ``index_lock`` for why a
-second write there would be unsafe). Readers go through
+hook so it runs in memory inside the write lock (in memory so the adoption and
+the append commit as one atomic write: a reader never sees a widened file with
+none of the appended rows). Readers go through
 :func:`read_tracks_index`, which projects in memory and never touches disk -- so
 listing sequences on a read-only mount works, and a legacy dataset is not
 silently rewritten by someone merely looking at it.
@@ -249,8 +250,8 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Bring a frame read off disk up to the current schema, in memory.
 
     Wired in as ``IndexCSV``'s ``adopt`` hook, so it runs inside the write lock
-    and its result is written by the single ``atomic_write`` that already ends
-    that block. Idempotent: a frame already in schema is projected onto itself.
+    and its result is written by the ``atomic_write`` that ends that block.
+    Idempotent: a frame already in schema is projected onto itself.
 
     Four things happen, and each is load-bearing:
 

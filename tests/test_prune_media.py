@@ -653,11 +653,13 @@ def test_a_single_root_dataset_declines(tmp_path: Path) -> None:
 
 
 def test_one_directory_under_two_root_names_declines(tmp_path: Path) -> None:
-    """Two names for one directory is one index, and `index_lock` cannot tell.
+    """Two names for one directory is one index, and the run writes two.
 
-    The lock is re-entrant per resolved path, so a run that took "both" locks
-    would hold one and perform two writes inside it -- the lost update the lock
-    exists to prevent.
+    `_prune_media` writes a whole-file projection of the originals index and
+    another of the derivatives index. Against one path the second erases the
+    first, entire, with no error -- and neither projection describes the other's
+    rows. Not a lock problem: `index_lock` holds a sidecar, so the two writes
+    under one re-entrant lock would keep their grip.
     """
     base = (tmp_path / "dataset").resolve()
     shared = base / "media"

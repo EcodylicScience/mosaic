@@ -2649,7 +2649,10 @@ class Dataset:
         out_csv = media_root / index_filename
         # Scanning and probing above is the expensive, read-only phase and is
         # deliberately unlocked; from here it is in-memory work plus one terminal
-        # ``atomic_write``, which is the shape ``index_lock`` requires.
+        # ``atomic_write``. Not a requirement of ``index_lock`` any more -- the
+        # lock is on a sidecar the rename never touches -- but of throughput: the
+        # lock's timeout is tuned for a CSV rewrite, and holding it across
+        # ffprobe would serialize every uploader on I/O that is not the write.
         #
         # **This is a replace over what the scan claims, not over the file.** A
         # row the scan does not claim survives: rows written by an assignment
@@ -3001,12 +3004,13 @@ class Dataset:
         # phase's snapshot: another writer may have landed rows while this one
         # was probing, and they are exactly the rows this write must preserve.
         # Everything from here is in-memory work plus one terminal
-        # ``atomic_write`` -- the shape ``index_lock`` requires, since a rename
-        # over the path drops the block's grip on the inode it flocked.
+        # ``atomic_write``. Not because ``index_lock`` requires it any more -- it
+        # holds a sidecar no rename touches -- but because the probe phase above
+        # is unbounded I/O and the lock's timeout is tuned for a CSV rewrite.
         #
         # ``_read_media_index`` uses ``csv.DictReader`` and yields ``[]`` for the
-        # zero-byte file the lock's ``O_CREAT`` leaves on a first write. A pandas
-        # reader moved inside this block would raise ``EmptyDataError`` there.
+        # zero-byte file the lock leaves on a first write. A pandas reader moved
+        # inside this block would raise ``EmptyDataError`` there.
         index_path.parent.mkdir(parents=True, exist_ok=True)
         touched = {(scope.group, scope.sequence) for scope in scope_list}
         with index_lock(index_path):
@@ -3649,9 +3653,12 @@ class Dataset:
         # so both of the next two are needed: the first rejects a dataset that
         # never had one, the second a manifest that points both names at one
         # place. Compared resolved, as reprobe does -- an unnormalized ".." or a
-        # symlink would make one file look like two indexes, and `index_lock` is
-        # re-entrant per resolved path, so a run that took "both" locks would
-        # hold one and perform two writes inside it.
+        # symlink would make one file look like two indexes, and this function
+        # writes two whole-file projections, originals then derivatives. Against
+        # one path the second erases the first, entire, with no error. (It is no
+        # longer a lock problem: `index_lock` holds a sidecar, so the two writes
+        # under one re-entrant lock would be safe. It is that neither projection
+        # describes the other's rows.)
         if self.resolve_media_root() != "media_raw":
             return declined_report("single-root")
         media_root = self.get_root("media")

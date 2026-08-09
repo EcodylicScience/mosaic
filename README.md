@@ -97,9 +97,14 @@ no native-Windows build and need **WSL2** (or Linux):
 
 Native-Windows support for the core is new; for any **No** / **Partial**
 capability, or if anything misbehaves natively, use **WSL2** (`wsl --install` in
-an admin PowerShell), then follow the Linux setup above inside Ubuntu. Keep the
-repository on the WSL filesystem (for example `~/mosaic`) rather than under
-`/mnt/c`, so index locking and I/O behave as on Linux.
+an admin PowerShell), then follow the Linux setup above inside Ubuntu. Keeping
+the repository and your datasets on the WSL filesystem (for example `~/mosaic`)
+rather than under `/mnt/c` is still much faster -- `drvfs` I/O is roughly an
+order of magnitude slower than ext4 -- but it is no longer a correctness
+requirement: index writes work on a `/mnt/*` mount. One caveat remains: a lock
+taken from WSL and one taken by a native-Windows process are different lock
+namespaces and do not see each other, so do not run both against one dataset at
+the same time.
 
 ## Quick start
 

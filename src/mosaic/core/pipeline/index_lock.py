@@ -12,41 +12,59 @@ That is rule P7: every index write is serialized by a lock scoped to the file
 being written.
 
 **The guarantee, and its limit.** A POSIX advisory lock is per-inode on one
-filesystem. It serializes any number of processes and threads writing through
-one mount, which covers the real case -- parallel feature workers and queue
-workers on a host. It does **not** reach across machines: two hosts writing the
-same synced folder (a dataset shared between a Mac and a Linux box, as they are
-today) each lock their own local copy, both write, and the sync service produces
-conflicted copies with no error. So the rule is a constraint rather than a
-promise: **many writers on one mount, or many machines one at a time, never
-both.**
+filesystem -- here, the sidecar's inode. It serializes any number of processes
+and threads writing through one mount, which covers the real case -- parallel
+feature workers and queue workers on a host. It does **not** reach across
+machines: two hosts writing the same synced folder (a dataset shared between a
+Mac and a Linux box, as they are today) each lock their own local copy, both
+write, and the sync service produces conflicted copies with no error. So the
+rule is a constraint rather than a promise: **many writers on one mount, or many
+machines one at a time, never both.**
 
-**Why the index file itself and not a sidecar.** A sidecar ``.lock`` is another
-file in a root that users browse and that tests enumerate -- ``test_tracks_raw_index``
-asserts an index directory holds exactly ``index.csv``. Locking the index inode
-directly keeps the guarantee without adding anything to disk.
+**Why a sidecar and not the index file itself.** The lock is held on an inode,
+and ``atomic_write`` renames a **new** inode over the index path on every write.
+Locking the index directly therefore cost two things, and the second is why this
+module no longer does it.
 
-**The invariant that choice imposes: a locked block performs at most one**
-``atomic_write``, **and it is the last thing the block does.** The lock is held
-on the *inode*, but ``atomic_write`` renames a **new** inode over the path. So
-the first write inside a locked block silently drops that block's grip: a second
-process then opens the new inode, flocks it uncontended, and interleaves with the
-first -- both holding "the lock", one erasing the other. This reproduces as a
-real lost update with two processes. Every locked block here obeys it today
-(``IndexCSV._append_locked``, ``prune_missing``, ``mark_finished`` each write
-exactly once, last), and anything that needs to transform the file before
-appending must do it **in memory** on the frame rather than as a separate write
--- which is why ``IndexCSV`` takes an ``adopt`` callable over a ``DataFrame``
-rather than a function that rewrites the path.
+The first is portability. Holding an open handle on the file being replaced is
+legal on POSIX and refused under Windows' delete semantics -- which reach into
+Linux through WSL's ``drvfs``, so every index write to a dataset under ``/mnt/*``
+failed, and failed by naming the temp file ``atomic_write``'s own cleanup had
+just removed. That whole class of "works on ext4, not on the share the data
+actually lives on" goes away once the locked inode is never the renamed one.
 
-**Cross-platform.** POSIX locks the index inode directly with an advisory
-``fcntl.flock`` -- it survives the atomic rename and adds nothing to the
-dataset. Windows locks are *mandatory* (they would block index readers) and an
-open handle blocks the ``os.replace`` that ``atomic_write`` performs, so there
-the index inode cannot be the lock. Windows instead locks a dedicated file in
-the OS temp directory, keyed by the resolved index path so every caller and
-process on the host agrees on it -- outside the dataset, so it blocks neither
-readers nor the rename and the "exactly ``index.csv``" invariant still holds.
+The second is correctness, and it held on every platform. The first
+``atomic_write`` inside a locked block silently dropped that block's grip: a
+second process opened the new inode, flocked it uncontended, and interleaved
+with the first -- both holding "the lock", one erasing the other. It was
+contained by a convention -- at most one ``atomic_write`` per locked block, and
+it is the last thing the block does -- which is a rule a reader has to know and
+a reviewer has to enforce. A sidecar removes the hazard rather than documenting
+it: **a locked block may rewrite its index as often as it likes and still holds
+the lock at the end.**
+
+The cost is one zero-byte ``<index>.lock`` beside each index, and it is the
+right trade twice over. It is *visible* to anyone who can see the dataset, which
+a lock in a temp directory is not; and it is keyed by the dataset's own path,
+which a lock in a temp directory is not either -- SLURM sets ``TMPDIR`` per job,
+a container gets its own ``/tmp``, and Windows' ``%TEMP%`` is per user, so a
+temp-directory lock silently fails to serialize precisely the multi-writer cases
+this module exists for. An adjacent sidecar cannot split that way: two writers
+who can see the same index can see the same lock, by construction.
+
+**The lock file is created once and never unlinked**, not on release and not by
+a later tidying pass. Removing it reopens the hazard the sidecar was adopted to
+close: a holder's inode is unlinked while it still holds the lock, a third
+process creates a fresh one at the same name, flocks it uncontended, and the two
+interleave. A zero-byte file per index is the price of the guarantee, not litter.
+
+**Cross-platform, and now one strategy rather than two.** POSIX takes an
+advisory ``fcntl.flock`` on the sidecar; Windows takes a mandatory
+``msvcrt.locking`` on the same file. Windows' locks being mandatory no longer
+matters, because the locked file is not one anybody reads -- readers open
+``index.csv``, which is never locked and never held open. So the Windows branch
+narrows to two three-line functions, and the ``%TEMP%`` keying it used to need,
+with the per-user split that came with it, is gone.
 
 Per file rather than per root, which is finer than P7's wording and never less
 safe. Feature indexes are per feature (``features/<name>/index.csv``), so a
@@ -63,33 +81,17 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Final
 
-# Platform lock backend. ``_open_lock_fd`` returns the fd whose byte 0 is locked
-# for the index at *resolved*; ``_lock_exclusive_nb`` / ``_release`` take and
-# drop the lock. Both backends raise ``OSError`` when the lock is already held
-# (what the poll loop in ``_acquire`` expects) and are released by the OS on
-# process death, so there is never a stale lock to clean up.
-#
-# POSIX locks the index inode itself: an advisory ``flock`` survives the atomic
-# rename and leaves nothing on disk. Windows locks are mandatory and an open
-# handle blocks ``os.replace``, so the index inode cannot be the lock there --
-# it would block readers and the rename. Windows locks a dedicated file in the
-# OS temp directory keyed by the resolved index path (outside the dataset, so
-# ``test_tracks_raw_index``'s "exactly index.csv" still holds), and still creates
-# the empty index so the POSIX side effect callers rely on is preserved.
+# Platform lock backend. ``_lock_exclusive_nb`` / ``_release`` take and drop an
+# exclusive lock on byte 0 of the fd ``_open_lock_fd`` returns. Both raise
+# ``OSError`` when the lock is already held -- what the poll loop in ``_acquire``
+# expects -- and both are released by the OS on process death, so there is never
+# a stale lock to clean up. POSIX's flock is advisory and Windows'
+# ``msvcrt.locking`` is mandatory; that difference used to force two strategies
+# and no longer does, because neither is ever taken on a file something reads.
 if sys.platform == "win32":
-    import tempfile
-    from hashlib import sha1
-
     import msvcrt
-
-    _WIN_LOCK_DIR = Path(tempfile.gettempdir()) / "mosaic-index-locks"
-
-    def _open_lock_fd(resolved: Path) -> int:
-        resolved.touch(exist_ok=True)
-        _WIN_LOCK_DIR.mkdir(parents=True, exist_ok=True)
-        digest = sha1(str(resolved).encode("utf-8"), usedforsecurity=False).hexdigest()
-        return os.open(_WIN_LOCK_DIR / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o666)
 
     def _lock_exclusive_nb(fd: int) -> None:
         os.lseek(fd, 0, os.SEEK_SET)
@@ -101,14 +103,50 @@ if sys.platform == "win32":
 else:
     import fcntl
 
-    def _open_lock_fd(resolved: Path) -> int:
-        return os.open(resolved, os.O_RDWR | os.O_CREAT, 0o666)
-
     def _lock_exclusive_nb(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def _release(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+LOCK_SUFFIX: Final = ".lock"
+
+
+def lock_path_for(resolved: Path) -> Path:
+    """The sidecar whose inode holds the lock for the index at *resolved*.
+
+    Derived from the **resolved** path, not the path as written, so two callers
+    reaching one index by different routes -- a symlinked root, a relative path,
+    a ``..`` -- name one lock file rather than two that serialize against
+    nothing. Public because a test pins it and because anything that ever has to
+    recognise the file should ask rather than spell it.
+    """
+    return resolved.with_name(resolved.name + LOCK_SUFFIX)
+
+
+def _open_lock_fd(resolved: Path) -> int:
+    """Open (creating if absent) the sidecar for the index at *resolved*.
+
+    Two side effects, both load-bearing.
+
+    **The index is created empty if it is absent.** That was a by-product of
+    locking the index inode with ``O_CREAT``, and three call sites are written
+    around it: ``IndexCSV.append`` and ``mark_finished`` order ``ensure()`` or an
+    existence check *before* acquiring because of it, ``load_media_index_frame``
+    reads a zero-byte index as an empty frame because of it, and
+    ``Dataset._read_media_index`` uses ``csv.DictReader`` rather than pandas
+    inside a locked block for the same reason. Moving the lock off the index
+    removed the mechanism, so the side effect is now deliberate and is kept.
+
+    **The sidecar is created if absent and never removed** -- not here, not on
+    release, not by a later cleanup. Unlinking a held lock file is the same
+    lost-grip race the sidecar exists to close: the holder's inode goes away
+    while it still holds it, the next process creates a fresh one at the same
+    name and flocks it uncontended, and two writers proceed at once.
+    """
+    resolved.touch(exist_ok=True)
+    return os.open(lock_path_for(resolved), os.O_RDWR | os.O_CREAT, 0o666)
 
 
 # Default ceiling on how long a writer waits for its turn. Generous, because the
@@ -159,13 +197,23 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
     released on the way out even if the body raises, and by the OS if the
     process dies -- there is no stale lock to clean up.
 
+    The lock is taken on a sidecar, ``<name>.lock`` in the same directory, which
+    is created once and never removed. **A locked block may therefore perform
+    any number of ``atomic_write``s to *path* and still hold the lock when it
+    exits** -- the sidecar is never the inode a rename replaces. The old "one
+    atomic_write, and it is the last thing the block does" convention is no
+    longer load-bearing; the call sites that still follow it do so because
+    holding this lock across an expensive read phase would serialize writers on
+    work that is not the write.
+
     Args:
-        path: The index file. **Created empty if absent**, because a lock needs
-            an inode to hold. Callers that distinguish "missing" from "empty"
-            must therefore check existence, or call ``ensure()``, *before*
-            acquiring -- both ``IndexCSV.append`` and ``mark_finished`` do, and
-            getting that order wrong leaves a headerless file that reads back as
-            ``EmptyDataError``.
+        path: The index file. **Created empty if absent** -- a by-product of the
+            old design that callers depend on and that is now kept on purpose
+            (see ``_open_lock_fd``). Callers that distinguish "missing" from
+            "empty" must therefore check existence, or call ``ensure()``,
+            *before* acquiring -- both ``IndexCSV.append`` and ``mark_finished``
+            do, and getting that order wrong leaves a headerless file that reads
+            back as ``EmptyDataError``.
         timeout: Seconds to wait before giving up.
 
     Raises:
