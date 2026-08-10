@@ -15,6 +15,57 @@ import numpy as np
 import pandas as pd
 import cv2
 
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.types import COLUMNS
+from mosaic.core.schema import LEGACY_SCHEMA, schema_family
+
+
+# =============================================================================
+# Units
+# =============================================================================
+
+
+def require_pixel_positions(ds: Any, group: str, sequence: str, who: str) -> None:
+    """Refuse to read ``X``/``Y`` as pixels where the entry records centimetres.
+
+    Called only where a table carries no keypoints and the body centre is the
+    sole thing left to draw or crop around. ``mosaic_v1`` and everything
+    extending it store video pixels, so using ``X``/``Y`` is exact there.
+    ``trex_v1`` stores centimetres, and a crop or marker placed at those
+    coordinates lands somewhere else in the frame entirely -- silently, which is
+    the failure the centroid fallback exists to remove.
+
+    An unrecorded schema is read as the legacy one, matching the scope check in
+    ``pipeline.manifest``: the column was added after ``trex_v1`` was the only
+    schema there was, so a keypoint-less table from that era is a TREx table.
+
+    Args:
+        ds: The dataset holding the tracks index.
+        group: Entry group.
+        sequence: Entry sequence.
+        who: Name of the caller, for the message.
+
+    Raises:
+        ValueError: If the entry's recorded schema is in the ``trex_v1`` family.
+    """
+    recorded = ""
+    index = read_tracks_index(ds)
+    if not index.empty:
+        hit = index[
+            (index[COLUMNS.group_col] == group) & (index[COLUMNS.seq_col] == sequence)
+        ]
+        if not hit.empty:
+            recorded = str(hit["std_format"].iloc[0])
+    if schema_family(recorded or LEGACY_SCHEMA) != LEGACY_SCHEMA:
+        return
+    raise ValueError(
+        f"{who} has only {COLUMNS.x_col}/{COLUMNS.y_col} to work from for "
+        f"{group}/{sequence}, and this table records schema "
+        f"{recorded or '(none)'!r}, whose spatial columns are centimetres "
+        "rather than video pixels. Run `mosaic upgrade-tracks` to convert the "
+        "table to pixels."
+    )
+
 
 # =============================================================================
 # Parameter Merging (follows feature_library pattern)

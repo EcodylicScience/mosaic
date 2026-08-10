@@ -20,6 +20,7 @@ from mosaic_media import MediaFacts
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
     COLUMNS,
     Inputs,
@@ -35,6 +36,7 @@ from .helpers import (
     compute_heading_angle,
     create_video_writer,
     infer_angle_degrees,
+    require_pixel_positions,
     safe_crop_with_padding,
 )
 
@@ -272,6 +274,9 @@ class EgocentricCrop:
             str(df[COLUMNS.seq_col].iloc[0]) if COLUMNS.seq_col in df.columns else ""
         )
 
+        if not pose_column_pairs(df.columns):
+            require_pixel_positions(self._ds, group, sequence, self.name)
+
         # Resolve video paths (supports multi-video sequences)
         resolved = self._ds.resolve_media(group, sequence)
 
@@ -315,9 +320,11 @@ class EgocentricCrop:
         mode = p.center_mode
 
         if mode == "default":
-            # Average all available pose points (these are in pixel coordinates).
-            # X/Y and X#wcentroid/Y#wcentroid are in real-world units (e.g. cm)
-            # and cannot be used directly for video cropping.
+            # Average the pose points present on this row. Every spatial column
+            # in a mosaic_v1 table is video pixels, so the body centre in X/Y is
+            # a usable fallback for a tracker that reports no keypoints -- see
+            # _require_pixel_centroid, which refuses the one family where it is
+            # not (trex_v1, centimetres).
             xs, ys = [], []
             for i in range(p.pose.pose_n):
                 px = row.get(f"{p.pose.x_prefix}{i}")
@@ -330,9 +337,19 @@ class EgocentricCrop:
                 ):
                     xs.append(px)
                     ys.append(py)
-            if not xs:
-                return (np.nan, np.nan)
-            cx, cy = float(np.mean(xs)), float(np.mean(ys))
+            if xs:
+                cx, cy = float(np.mean(xs)), float(np.mean(ys))
+            else:
+                bx = row.get(COLUMNS.x_col)
+                by = row.get(COLUMNS.y_col)
+                if (
+                    bx is None
+                    or by is None
+                    or not np.isfinite(bx)
+                    or not np.isfinite(by)
+                ):
+                    return (np.nan, np.nan)
+                cx, cy = float(bx), float(by)
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
             x = row.get(f"{p.pose.x_prefix}{idx}")
@@ -414,6 +431,15 @@ class EgocentricCrop:
                 with np.errstate(invalid="ignore"):
                     cx = np.nanmean(xs, axis=1)
                     cy = np.nanmean(ys, axis=1)
+            elif (
+                COLUMNS.x_col in df_target.columns
+                and COLUMNS.y_col in df_target.columns
+            ):
+                # Centroid-only tracker: crop around the body centre. Legal only
+                # because tracks are pixels; apply() has already refused the
+                # legacy centimetre family.
+                cx = df_target[COLUMNS.x_col].to_numpy(dtype=np.float64).copy()
+                cy = df_target[COLUMNS.y_col].to_numpy(dtype=np.float64).copy()
             else:
                 cx = np.full(n, np.nan, dtype=np.float64)
                 cy = np.full(n, np.nan, dtype=np.float64)
@@ -421,11 +447,28 @@ class EgocentricCrop:
             idx = 0 if mode == "pose0" else int(mode)
             xc = f"{p.pose.x_prefix}{idx}"
             yc = f"{p.pose.y_prefix}{idx}"
+            missing = [c for c in (xc, yc) if c not in df_target.columns]
+            if missing:
+                raise ValueError(
+                    f"{self.name} center_mode={mode!r} needs {xc}/{yc} and this "
+                    f"table carries no {', '.join(missing)}. A centroid-only "
+                    "tracker reports no keypoints, so name a centre it does "
+                    "report: center_mode='default' falls back to X/Y."
+                )
             cx = df_target[xc].to_numpy(dtype=np.float64).copy()
             cy = df_target[yc].to_numpy(dtype=np.float64).copy()
         else:
             raise ValueError(
                 f"Unknown center_mode: {mode}. Use 'default', 'pose0', or an int pose index."
+            )
+
+        if n and not np.isfinite(cx).any():
+            raise ValueError(
+                f"{self.name} could not derive a centre for any frame of this "
+                "entry. Every crop would be a blank frame, and the identity "
+                "models read these crops, so this stops rather than writing "
+                f"them. Check that the table carries usable {COLUMNS.x_col}/"
+                f"{COLUMNS.y_col} or pose columns."
             )
 
         # Apply offset along heading direction (positive = forward / toward head)

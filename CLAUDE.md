@@ -467,7 +467,12 @@ variant* — which recipe produced the table, from
 [`tracks_identity.py`](src/mosaic/core/pipeline/tracks_identity.py)), `producer`
 (`convert-<fmt>` | `trex` | `infer-<kind>`, exactly `parse_op_run_id(run_id).kind`),
 `producer_run_id` (the op run behind it, empty for a conversion, which has none),
-and `consumed_source_roots` (dataset root *keys*, comma-joined and sorted).
+`consumed_source_roots` (dataset root *keys*, comma-joined and sorted), and
+`n_keypoints` (how many `poseX*`/`poseY*` pairs the table holds, **measured from
+the parquet** at write time rather than passed in, so no call site can record a
+false zero). Since keypoints are optional, "does this entry have any" would
+otherwise need a parquet open per entry; a blank cell means *unknown*, not zero,
+exactly as it does for `n_rows`.
 
 Three invariants worth knowing:
 
@@ -529,9 +534,17 @@ the inference path), so one table was validated twice under two independently
 chosen names and the index row recorded only the second.
 
 - **`mosaic_v1`** — the tracker-neutral standard. Requires
-  `frame, time, id, group, sequence, X, Y` plus at least one `poseX*`/`poseY*`
-  pair. Every spatial column is **video pixels**, and `X`/`Y` are the
-  individual's **body centre**.
+  `frame, time, id, group, sequence, X, Y`. Every spatial column is **video
+  pixels**, and `X`/`Y` are the individual's **body centre**. **Keypoints are
+  optional**: a centroid-only tracker (TREx without posture, a box model, an
+  export that carries a centroid and nothing else) emits no `poseX*`/`poseY*` at
+  all. Requiring a pair made those trackers fabricate one — a verbatim copy of
+  `X`/`Y` under a name promising a detected landmark, which is the same
+  plausible-but-not-measured column the forbidden set exists to refuse. The
+  features that are *defined* on keypoints (`heading`, `body-scale`,
+  `orientation-rel`, `kpms`, the `pair-*` family) refuse a table without them,
+  naming themselves; the ones that only prefer them (`egocentric-crop`,
+  `interaction-crop-pipeline`, the overlay) fall back to the body centre.
 - **`trex_v2`** — `mosaic_v1` plus what TREx genuinely measures (`SPEED`,
   `ANGLE`, `X#wcentroid`, the midline family), also in pixels. TREx's own bare
   `X`/`Y` are the *head* and are preserved as `X#head`/`Y#head`.

@@ -13,7 +13,7 @@ import pandas as pd
 import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
-from ...core.schema import schema_family
+from ...core.schema import LEGACY_SCHEMA, schema_family
 from .sequence_index import read_entry_compositions
 from ._utils import Scope
 from .index import (
@@ -395,14 +395,6 @@ def _resolve_tracks(
     )
 
 
-_LEGACY_SCHEMA = "trex_v1"
-"""What a tracks row with no recorded schema is.
-
-The column was added after ``trex_v1`` was the only schema there was, so a blank
-cell is not an unknown -- it is that one, stated by omission.
-"""
-
-
 def _refuse_mixed_schemas(
     scoped: set[tuple[str, str]],
     schema_by_entry: dict[tuple[str, str], str],
@@ -439,7 +431,7 @@ def _refuse_mixed_schemas(
     """
     families: dict[str, list[tuple[str, str]]] = {}
     for entry in scoped:
-        recorded = schema_by_entry.get(entry, "") or _LEGACY_SCHEMA
+        recorded = schema_by_entry.get(entry, "") or LEGACY_SCHEMA
         families.setdefault(schema_family(recorded), []).append(entry)
     if len(families) < 2:
         return
@@ -456,7 +448,7 @@ def _refuse_mixed_schemas(
         "This scope resolves tracks tables of incompatible schemas, which do not "
         "mean the same thing and must not be read together:\n"
         f"{listing}\n"
-        f"A row with no recorded schema is read as {_LEGACY_SCHEMA!r}, the only one "
+        f"A row with no recorded schema is read as {LEGACY_SCHEMA!r}, the only one "
         "there was before the column existed. Reconvert the odd entries out, or "
         "narrow the scope with groups=/sequences=/entries= so one run reads one "
         "schema."

@@ -89,7 +89,12 @@ class BodyScaleFeature:
         ensure_columns(df, [C.frame_col, C.id_col])
         pose_pairs = pose_column_pairs(df.columns)
         if not pose_pairs:
-            return pd.DataFrame()
+            raise ValueError(
+                f"{self.name} needs pose keypoint columns (poseX*/poseY*) and this "
+                "table carries none. A body scale is the spread among an "
+                "individual's keypoints; a table with only a centroid has one "
+                "point per individual and no spread to measure."
+            )
         group = _expect_single(df, C.group_col)
         sequence = _expect_single(df, C.seq_col)
         rows: list[dict[str, int | str | float]] = []

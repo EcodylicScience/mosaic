@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Dict, Optional, Iterable, Any, Tuple
 import cv2
 
+from mosaic.core.pipeline.loading import pose_column_pairs
+
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
+from .helpers import require_pixel_positions
 from .overlay import prepare_overlay, _remap_overlay_labels
 from .video_stream import render_stream
 from .visual_spec import apply_visualization_spec, playback_kwargs_from_spec
@@ -44,6 +47,11 @@ def build_overlay(
             gt_df = load_ground_truth_labels(ds, label_kind, group, sequence)
         except FileNotFoundError as exc:
             print(f"[build_overlay] warning: {exc}")
+
+    if not pose_column_pairs(tracks_df.columns):
+        # With no keypoints the overlay falls back to drawing the centroid ring,
+        # which reads X/Y as pixels. Refuse where they are not.
+        require_pixel_positions(ds, group, sequence, "overlay")
 
     overlay = prepare_overlay(
         tracks_df, labels, gt_df=gt_df, color_by=color_by, hide_unlabeled=hide_unlabeled

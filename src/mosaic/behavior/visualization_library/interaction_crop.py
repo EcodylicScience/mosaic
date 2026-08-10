@@ -24,6 +24,7 @@ from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
 )
@@ -41,6 +42,7 @@ from mosaic.behavior.feature_library.registry import register_feature
 from mosaic.behavior.visualization_library.helpers import (
     create_video_writer,
     infer_angle_degrees,
+    require_pixel_positions,
     safe_crop_with_padding,
 )
 
@@ -204,6 +206,9 @@ class InteractionCropPipeline:
         p = self.params
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
+
+        if not pose_column_pairs(df.columns):
+            require_pixel_positions(self._ds, group, sequence, self.name)
 
         # Resolve video
         resolved = self._ds.resolve_media(group, sequence)
@@ -404,36 +409,69 @@ class InteractionCropPipeline:
                 angles[valid] = raw[valid]
         else:
             neck_idx, tail_idx = p.heading_points
-            nx = df_target[f"{p.pose.x_prefix}{neck_idx}"].to_numpy(dtype=np.float64)
-            ny = df_target[f"{p.pose.y_prefix}{neck_idx}"].to_numpy(dtype=np.float64)
-            tx = df_target[f"{p.pose.x_prefix}{tail_idx}"].to_numpy(dtype=np.float64)
-            ty = df_target[f"{p.pose.y_prefix}{tail_idx}"].to_numpy(dtype=np.float64)
-            valid = (
-                np.isfinite(nx) & np.isfinite(ny) & np.isfinite(tx) & np.isfinite(ty)
-            )
-            angles[valid] = np.arctan2(ny[valid] - ty[valid], nx[valid] - tx[valid])
+            nx_col = f"{p.pose.x_prefix}{neck_idx}"
+            ny_col = f"{p.pose.y_prefix}{neck_idx}"
+            tx_col = f"{p.pose.x_prefix}{tail_idx}"
+            ty_col = f"{p.pose.y_prefix}{tail_idx}"
+            # A centroid-only tracker reports no body axis. Leave the angles at
+            # zero, which is "unrotated" -- the crop is still centred correctly,
+            # it just is not turned to face +x. Set `angle_col` to use a measured
+            # heading where the table carries one.
+            if all(c in df_target.columns for c in (nx_col, ny_col, tx_col, ty_col)):
+                nx = df_target[nx_col].to_numpy(dtype=np.float64)
+                ny = df_target[ny_col].to_numpy(dtype=np.float64)
+                tx = df_target[tx_col].to_numpy(dtype=np.float64)
+                ty = df_target[ty_col].to_numpy(dtype=np.float64)
+                valid = (
+                    np.isfinite(nx)
+                    & np.isfinite(ny)
+                    & np.isfinite(tx)
+                    & np.isfinite(ty)
+                )
+                angles[valid] = np.arctan2(ny[valid] - ty[valid], nx[valid] - tx[valid])
 
         # --- Centers ---
         mode = p.center_mode
         if mode == "default":
-            xs = np.column_stack(
-                [
-                    df_target[f"{p.pose.x_prefix}{i}"].to_numpy(dtype=np.float64)
-                    for i in range(p.pose.pose_n)
-                ]
-            )
-            ys = np.column_stack(
-                [
-                    df_target[f"{p.pose.y_prefix}{i}"].to_numpy(dtype=np.float64)
-                    for i in range(p.pose.pose_n)
-                ]
-            )
-            cx = np.nanmean(xs, axis=1)
-            cy = np.nanmean(ys, axis=1)
+            x_cols = [
+                f"{p.pose.x_prefix}{i}"
+                for i in range(p.pose.pose_n)
+                if f"{p.pose.x_prefix}{i}" in df_target.columns
+            ]
+            y_cols = [
+                f"{p.pose.y_prefix}{i}"
+                for i in range(p.pose.pose_n)
+                if f"{p.pose.y_prefix}{i}" in df_target.columns
+            ]
+            if x_cols and y_cols:
+                xs = np.column_stack(
+                    [df_target[c].to_numpy(dtype=np.float64) for c in x_cols]
+                )
+                ys = np.column_stack(
+                    [df_target[c].to_numpy(dtype=np.float64) for c in y_cols]
+                )
+                cx = np.nanmean(xs, axis=1)
+                cy = np.nanmean(ys, axis=1)
+            else:
+                # Centroid-only tracker: crop around the body centre. Legal only
+                # because tracks are pixels; apply() has already refused the
+                # legacy centimetre family.
+                cx = df_target[C.x_col].to_numpy(dtype=np.float64).copy()
+                cy = df_target[C.y_col].to_numpy(dtype=np.float64).copy()
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
-            cx = df_target[f"{p.pose.x_prefix}{idx}"].to_numpy(dtype=np.float64).copy()
-            cy = df_target[f"{p.pose.y_prefix}{idx}"].to_numpy(dtype=np.float64).copy()
+            xc = f"{p.pose.x_prefix}{idx}"
+            yc = f"{p.pose.y_prefix}{idx}"
+            missing = [c for c in (xc, yc) if c not in df_target.columns]
+            if missing:
+                raise ValueError(
+                    f"{self.name} center_mode={mode!r} needs {xc}/{yc} and this "
+                    f"table carries no {', '.join(missing)}. A centroid-only "
+                    "tracker reports no keypoints, so name a centre it does "
+                    "report: center_mode='default' falls back to X/Y."
+                )
+            cx = df_target[xc].to_numpy(dtype=np.float64).copy()
+            cy = df_target[yc].to_numpy(dtype=np.float64).copy()
         else:
             raise ValueError(f"Unknown center_mode: {mode}")
 

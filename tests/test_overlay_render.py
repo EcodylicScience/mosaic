@@ -149,7 +149,11 @@ def _add_variant(ds: Dataset, variant: str, *, pose: bool) -> None:
         sequence="seq",
         out_path=out_path,
         producer=variant.split(".")[0],
-        std_format="trex_v1",
+        # What the TREx tracking root declares (`tracking_roots.py`), and what
+        # this table actually is: pixels. It said `trex_v1` from before the
+        # pixel-native conversion, which claims centimetres -- so the overlay's
+        # units guard refused to draw a centroid it had been told was in cm.
+        std_format="trex_v2",
         n_rows=len(table),
     )
 

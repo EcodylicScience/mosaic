@@ -114,7 +114,11 @@ class OrientationRelativeFeature:
         ensure_columns(df, [C.frame_col, C.id_col, C.orientation_col])
         pose_pairs = pose_column_pairs(df.columns)
         if not pose_pairs:
-            return pd.DataFrame()
+            raise ValueError(
+                f"{self.name} needs pose keypoint columns (poseX*/poseY*) and this "
+                "table carries none. It places each keypoint in a neighbour's "
+                "frame; a table with only a centroid has no keypoints to place."
+            )
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
         global_scale = self._scale_for(group, sequence)

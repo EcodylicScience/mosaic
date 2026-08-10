@@ -166,6 +166,115 @@ def test_a_row_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
     assert cells["n_rows"] == "40"
 
 
+def _posed_track_parquet(ds: Dataset, sequence: str, n_keypoints: int = 7) -> Path:
+    """A real parquet under tracks/ carrying *n_keypoints* keypoint pairs."""
+    root = ds.get_root("tracks")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{sequence}.parquet"
+    frame = pd.DataFrame({"frame": range(40), "id": [0] * 40})
+    for k in range(n_keypoints):
+        frame[f"poseX{k}"] = 1.0
+        frame[f"poseY{k}"] = 2.0
+    frame.to_parquet(path)
+    return path
+
+
+def test_the_keypoint_count_is_measured_from_the_written_table(
+    tmp_path: Path,
+) -> None:
+    """Measured, not passed in.
+
+    Every caller holds the frame and could have passed a count, but six of them
+    would each have to remember to, and one that forgot would record "no
+    keypoints" about a table full of them -- a claim, not an absence.
+    """
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="posed",
+        out_path=_posed_track_parquet(ds, "posed"),
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=40,
+    )
+    row = read_tracks_index(ds).iloc[0]
+    assert str(row["n_keypoints"]) == "7"
+
+
+def test_a_centroid_only_table_records_no_keypoints(tmp_path: Path) -> None:
+    """Zero is the honest answer, and now a legal one."""
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=40,
+    )
+    row = read_tracks_index(ds).iloc[0]
+    assert str(row["n_keypoints"]) == "0"
+
+
+def test_a_keypoint_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
+    """``7`` not ``7.0`` -- the same concat widening ``n_rows`` guards against."""
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="posed",
+        out_path=_posed_track_parquet(ds, "posed"),
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=40,
+    )
+    header, row = tracks_index_path(ds).read_text().splitlines()[:2]
+    cells = dict(zip(header.split(","), row.split(","), strict=True))
+    assert cells["n_keypoints"] == "7"
+
+
+def test_a_legacy_row_reads_as_unknown_not_as_no_keypoints(tmp_path: Path) -> None:
+    """The distinction a reader has to respect.
+
+    A row written before this column existed projects to ``""``. Reading that as
+    zero would say "this entry has no keypoints" of a table that may be full of
+    them -- and something branching on it would then skip every pose feature on
+    every dataset converted before today.
+    """
+    ds = _dataset(tmp_path)
+    _write_legacy_index(
+        ds,
+        [
+            {
+                "abs_path": "tracks/legacy.parquet",
+                "group": "",
+                "sequence": "legacy",
+                "n_rows": 40,
+            }
+        ],
+    )
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="posed",
+        out_path=_posed_track_parquet(ds, "posed"),
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=40,
+    )
+    df = read_tracks_index(ds)
+    legacy = df[df["sequence"] == "legacy"].iloc[0]
+    fresh = df[df["sequence"] == "posed"].iloc[0]
+    assert str(legacy["n_keypoints"]) == ""
+    assert str(fresh["n_keypoints"]) == "7"
+
+
 # --- writing ---------------------------------------------------------------
 
 

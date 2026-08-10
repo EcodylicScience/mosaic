@@ -128,6 +128,48 @@ def test_mosaic_v1_requires_the_body_centre() -> None:
         _ = ensure_track_schema(_minimal_trex_v1_frame(), "mosaic_v1", strict=True)
 
 
+def _centroid_only_frame() -> pd.DataFrame:
+    """What a tracker that measures a position and no keypoints produces."""
+    return pd.DataFrame(
+        {
+            "frame": [0, 1],
+            "time": [0.0, 0.04],
+            "id": [0, 0],
+            "group": ["", ""],
+            "sequence": ["seq", "seq"],
+            "X": [1.0, 2.0],
+            "Y": [3.0, 4.0],
+        }
+    )
+
+
+def test_mosaic_v1_accepts_a_table_with_no_keypoints() -> None:
+    """Keypoints are optional, and a centroid-only tracker is ordinary.
+
+    Requiring a ``poseX*``/``poseY*`` pair made those trackers copy ``X``/``Y``
+    into a fabricated ``poseX0`` -- a converter-written duplicate presented under
+    a name that promises a detected landmark, which is the very thing
+    ``DERIVED_COLUMNS`` refuses. ``strict=True`` because the point is that this
+    is *valid*, not merely tolerated with a warning.
+    """
+    _, report = ensure_track_schema(_centroid_only_frame(), "mosaic_v1", strict=True)
+    assert report["missing_required"] == []
+    assert report["missing_prefixes"] == []
+    assert report["forbidden_present"] == []
+
+
+def test_trex_v2_inherits_the_optional_keypoints() -> None:
+    """It extends ``mosaic_v1``; a TREx table without posture is ordinary too."""
+    _, report = ensure_track_schema(_centroid_only_frame(), "trex_v2", strict=True)
+    assert report["missing_prefixes"] == []
+
+
+def test_trex_v1_still_requires_keypoints() -> None:
+    """The legacy schema is frozen, so what it demanded it goes on demanding."""
+    with pytest.raises(TrackSchemaError):
+        _ = ensure_track_schema(_centroid_only_frame(), "trex_v1", strict=True)
+
+
 def test_mosaic_v1_forbids_a_derived_column() -> None:
     frame = _minimal_mosaic_v1_frame()
     frame["SPEED"] = [0.0, 1.0]

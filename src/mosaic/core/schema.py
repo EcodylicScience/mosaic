@@ -12,6 +12,7 @@ _NO_COLUMNS: AbstractSet[str] = frozenset()
 
 __all__ = [
     "DERIVED_COLUMNS",
+    "LEGACY_SCHEMA",
     "TRACK_SCHEMAS",
     "ForbiddenTrackColumnError",
     "TrackSchema",
@@ -21,6 +22,16 @@ __all__ = [
     "register_track_schema",
     "schema_family",
 ]
+
+LEGACY_SCHEMA = "trex_v1"
+"""What a tracks row with no recorded schema is.
+
+The column was added after ``trex_v1`` was the only schema there was, so a blank
+cell is not an unknown -- it is that one, stated by omission. Every reader that
+has to decide what an unrecorded schema means reads it from here, so the two
+that ask -- the scope check in ``pipeline.manifest`` and the crop features'
+units guard -- cannot drift into answering differently.
+"""
 
 
 @dataclass(frozen=True)
@@ -332,16 +343,18 @@ register_track_schema(
             "X",
             "Y",
         },
-        required_prefixes={"poseX", "poseY"},
         forbidden=DERIVED_COLUMNS,
         description=(
             "The tracker-neutral standard: per-frame, per-id tracks in video "
             "pixels. `X`/`Y` are the individual's body centre -- for a pose-only "
             "tracker the mean of that frame's keypoints, for one that measures a "
-            "centroid its own. Every spatial column is pixels; a physical unit is "
-            "a feature, not a column. Derived quantities (velocity, speed, "
-            "heading) are forbidden: they belong to features, where the method is "
-            "chosen and recorded. `group` is required but may be empty."
+            "centroid its own. Keypoints are optional: a centroid-only tracker "
+            "emits none rather than copying `X`/`Y` into a fabricated `poseX0`, "
+            "and the features that need keypoints refuse without them. Every "
+            "spatial column is pixels; a physical unit is a feature, not a "
+            "column. Derived quantities (velocity, speed, heading) are "
+            "forbidden: they belong to features, where the method is chosen and "
+            "recorded. `group` is required but may be empty."
         ),
     )
 )

@@ -38,11 +38,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, get_args
+from typing import TYPE_CHECKING, Final, cast, get_args
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
+from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
@@ -124,6 +126,17 @@ class TracksIndexRow(RunIndexRowBase):
     value into the name would rename one recipe's whole directory because one
     other sequence's source moved -- the same reason a per-frame feature records
     its composition here rather than in its identifier (rule P2d).
+
+    ``n_keypoints`` is how many ``(poseX<k>, poseY<k>)`` pairs the table carries,
+    measured from the frame as it is written. Keypoints are optional -- a
+    centroid-only tracker reports none, and ``mosaic_v1`` no longer demands a
+    fabricated pair -- so "does this entry have keypoints" became a question with
+    no answer on disk, needing a parquet open per entry. It is recorded here for
+    the same reason ``n_rows`` is.
+
+    **A blank cell means unknown, not zero.** Rows written before this column
+    existed project to ``""``, exactly as they do for ``n_rows``, so a reader
+    testing for "no keypoints" must not treat a legacy row as one.
     """
 
     group: str
@@ -135,6 +148,7 @@ class TracksIndexRow(RunIndexRowBase):
     source_md5: str = ""
     consumed_source_roots: str = ""
     n_rows: int = 0
+    n_keypoints: int = 0
     consumed_composition: str = ""
 
 
@@ -435,6 +449,27 @@ def consumed_composition_for(
     return encode_entry_composition(recorded, source_roots)
 
 
+def count_keypoints(path: Path) -> int:
+    """How many ``(poseX<k>, poseY<k>)`` pairs a written track table carries.
+
+    Reads the parquet footer, not the table: the answer is in the schema, and a
+    keypoint-less table is an ordinary thing to be asked about.
+
+    An unreadable file counts as zero rather than raising. This runs while
+    recording a row about a table that has just been written, and a file that
+    cannot be opened one line later is a problem for ``readable_tracks_table`` to
+    report, not for the index writer to raise from mid-append.
+    """
+    if not path.exists():
+        return 0
+    try:
+        # pyarrow ships no type stubs here, so read_schema().names is Unknown.
+        names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
+    except (OSError, ValueError):
+        return 0
+    return len(pose_column_pairs(names))
+
+
 def write_tracks_row(
     ds: Dataset,
     *,
@@ -452,8 +487,15 @@ def write_tracks_row(
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
-    Keyword-only throughout: five call sites in three files pass ``group`` and
+    Keyword-only throughout: six call sites in four files pass ``group`` and
     ``sequence`` adjacently, and transposing them would be silent.
+
+    ``n_keypoints`` is **measured from the parquet just written**, not passed in.
+    Every caller already holds the frame and could have passed a count, but then
+    six call sites would each have to remember to, and one that forgot would
+    record "no keypoints" -- a claim, not an absence -- about a table full of
+    them. Reading it back costs one footer read on a path that has just written
+    the whole file.
 
     ``group``/``sequence`` are typed ``object`` and read through
     :func:`~mosaic.core.helpers.text_cell` here because one caller reads them
@@ -486,6 +528,7 @@ def write_tracks_row(
         source_md5=source_md5,
         consumed_source_roots=encode_source_roots(consumed_source_roots),
         n_rows=int(n_rows),
+        n_keypoints=count_keypoints(out_path),
         consumed_composition=consumed_composition_for(
             ds, entry_group, entry_sequence, consumed_source_roots
         ),

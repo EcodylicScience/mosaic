@@ -208,3 +208,31 @@ def test_the_target_is_where_a_reconversion_would_have_written(tmp_path: Path) -
     assert report.target_variant.startswith(
         f"convert-trex_npz.{type(converter).version}-"
     )
+
+
+def test_one_bad_table_does_not_abort_the_migration(tmp_path: Path) -> None:
+    """A refusal is per entry, not per run.
+
+    The strict validation here is the only one in production, and unguarded it
+    ended the whole migration on the first table that failed it -- after the
+    tables before it had already been written and indexed. That left a
+    half-upgraded dataset, a traceback instead of a report, and no record of
+    which entry was responsible.
+    """
+    ds = _dataset(tmp_path)
+    pixels = np.linspace(0.0, 100.0, 6)
+    good = _legacy_trex_table(ds, "seq_ok", cm_per_pixel=0.25, pixels=pixels)
+    bad = _legacy_trex_table(ds, "seq_bad", cm_per_pixel=0.25, pixels=pixels)
+    # Drop a column mosaic_v1 requires, leaving a table that converts and then
+    # fails validation -- which is exactly the shape that used to abort.
+    broken = pd.read_parquet(bad).drop(columns=["time"])
+    _ = write_parquet_atomic(broken, bad)
+    assert good.exists()
+
+    report = upgrade_trex_tables(ds, apply=True)
+
+    upgraded = {outcome.sequence for outcome in report.upgraded}
+    refused = {outcome.sequence for outcome in report.refused}
+    assert upgraded == {"seq_ok"}
+    assert refused == {"seq_bad"}
+    assert any("time" in outcome.detail for outcome in report.refused)

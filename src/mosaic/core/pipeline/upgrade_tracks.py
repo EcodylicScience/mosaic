@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 
 
 from mosaic.core.helpers import make_entry_key, text_cell
-from mosaic.core.schema import ensure_track_schema, schema_family
+from mosaic.core.schema import TrackSchemaError, ensure_track_schema, schema_family
 from mosaic.core.track_converter import get_track_converter
 from mosaic.core.track_library.trex import (
     CALIBRATION_COLUMN,
@@ -191,12 +191,21 @@ def upgrade_trex_tables(ds: Dataset, *, apply: bool = False) -> UpgradeReport:
             tracks_variant_root(ds.get_root("tracks"), target)
             / f"{make_entry_key(group, sequence)}.parquet"
         )
-        _ = ensure_track_schema(
-            converted,
-            converter.output_schema,
-            strict=True,
-            source=f"{group}/{sequence} (upgraded)",
-        )
+        # Per entry, not per run. This is the only production `strict=True`, and
+        # unguarded it ended the migration on the first bad table -- after the
+        # tables before it had already been written and indexed, leaving a
+        # half-upgraded dataset and no record of why it stopped.
+        try:
+            _ = ensure_track_schema(
+                converted,
+                converter.output_schema,
+                strict=True,
+                source=f"{group}/{sequence} (upgraded)",
+            )
+        except TrackSchemaError as exc:
+            outcome("refused", str(exc))
+            continue
+
         _ = write_parquet_atomic(converted, out_path)
         write_tracks_row(
             ds,
