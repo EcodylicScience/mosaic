@@ -72,12 +72,12 @@ class TestThePreviewCarriesTheBlastRadius:
         self, scenario_dataset_with_media: Dataset
     ) -> None:
         """The preview is item 6.1's walk, run against the sequences about to move."""
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         report = rearrange_media(ds, [_reverse(ds)])
 

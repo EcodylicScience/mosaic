@@ -11,19 +11,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.provenance import PROVENANCE_COLUMNS, reached_by
-from mosaic.core.pipeline.types import Inputs, Params
+from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params
 
 
 class _P(Params):
     pass
 
 
-class _CropLike:
-    """A per-frame feature that opens video: it declares ``media_raw``."""
+class CropLike:
+    """A per-frame feature that opens video: it declares ``media_raw``.
+
+    Plainly named, along with :class:`PlainFeature`, because five test modules
+    build their scenarios on these two -- a leading underscore on a symbol a
+    sibling imports is the thing ``reportPrivateUsage`` names.
+
+    The four protocol methods carry the protocol's own parameter names and types
+    rather than ``object`` stand-ins. A structural protocol matches on parameter
+    *names*, so a stub spelling them differently is not a ``Feature``, and every
+    module passing one to ``run_feature`` inherited that error.
+    """
 
     name = "prov-crop"
     version = "0.1"
@@ -39,20 +50,25 @@ class _CropLike:
         self.inputs = inputs if inputs is not None else Inputs(("tracks",))
         self.params = params if isinstance(params, _P) else _P.from_overrides(params)
 
-    def load_state(self, run_root: Path, artifacts: object, deps: object) -> bool:
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
         return True
 
-    def fit(self, inputs: object) -> None:
+    def fit(self, inputs: InputStream) -> None:
         pass
 
     def save_state(self, run_root: Path) -> None:
         pass
 
-    def apply(self, df):
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
 
 
-class _PlainFeature(_CropLike):
+class PlainFeature(CropLike):
     """The ordinary shape: forty of forty-two features declare no source root."""
 
     name = "prov-plain"
@@ -97,7 +113,7 @@ class TestScopingByRoot:
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _PlainFeature())
+        _ = run_feature(ds, PlainFeature())
 
         reached = reached_by(ds, [("", "seq_a")], "media_raw")
 
@@ -112,7 +128,7 @@ class TestScopingByRoot:
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         reached = reached_by(ds, [("", "seq_a")], "tracks_raw")
         crop = _for(reached, "features", "prov-crop__from__tracks")
@@ -125,7 +141,7 @@ class TestScopingByRoot:
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         reached = reached_by(ds, [("", "seq_a")], "media_raw")
         crop = _for(reached, "features", "prov-crop__from__tracks")
@@ -148,7 +164,7 @@ class TestVerdicts:
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         reached = reached_by(ds, [("", "seq_a")], "media_raw")
         crop = _for(reached, "features", "prov-crop__from__tracks")
@@ -164,7 +180,7 @@ class TestVerdicts:
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         _ = ds.write_media_index(
             [
@@ -269,7 +285,7 @@ class TestTheTransitiveArm:
 
         ds = scenario_dataset_with_media
         variant = self._tracked_dataset(ds)
-        _ = run_feature(ds, _PlainFeature())
+        _ = run_feature(ds, PlainFeature())
 
         self._reorder(ds)
         reached = reached_by(ds, [("", "seq_a")], "media_raw")
@@ -299,7 +315,7 @@ class TestTheTransitiveArm:
 
         ds = scenario_dataset_with_media
         _ = self._tracked_dataset(ds)
-        _ = run_feature(ds, _PlainFeature())
+        _ = run_feature(ds, PlainFeature())
 
         reached = reached_by(ds, [("", "seq_a")], "media_raw")
 
@@ -318,7 +334,7 @@ class TestTheTransitiveArm:
 
         ds = scenario_dataset_with_media
         _ = self._tracked_dataset(ds)
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
 
         self._reorder(ds)
         reached = reached_by(ds, [("", "seq_a")], "media_raw")

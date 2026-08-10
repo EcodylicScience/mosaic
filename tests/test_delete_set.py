@@ -34,12 +34,12 @@ class TestDryRunFirst:
     def test_a_preview_deletes_nothing(
         self, scenario_dataset_with_media: Dataset
     ) -> None:
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        result = run_feature(ds, _CropLike())
+        result = run_feature(ds, CropLike())
         output = ds.get_root("features") / "prov-crop__from__tracks" / result.run_id
         before = sorted(path.name for path in output.glob("*.parquet"))
         assert before, "the fixture produced no outputs"
@@ -54,13 +54,13 @@ class TestDryRunFirst:
     def test_applying_removes_the_output_and_its_row(
         self, scenario_dataset_with_media: Dataset
     ) -> None:
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.index import feature_index, feature_index_path
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        result = run_feature(ds, _CropLike())
+        result = run_feature(ds, CropLike())
         storage = "prov-crop__from__tracks"
         output = ds.get_root("features") / storage / result.run_id / "seq_a.parquet"
         assert output.exists()
@@ -81,12 +81,12 @@ class TestDryRunFirst:
         self, scenario_dataset_with_media: Dataset
     ) -> None:
         """H3 case 2's neighbour: scoping is what keeps this honest."""
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        result = run_feature(ds, _CropLike())
+        result = run_feature(ds, CropLike())
         storage = "prov-crop__from__tracks"
         untouched = ds.get_root("features") / storage / result.run_id / "seq_b.parquet"
         assert untouched.exists()
@@ -138,14 +138,14 @@ class TestDeclines:
         Deleting one entry of a fit leaves the rest describing a fit that
         included it, with nothing on disk saying so.
         """
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline import delete_set as delete_set_mod
         from mosaic.core.pipeline.fit_scope import FitScope
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
         _reorder(ds)
 
         def wider(_run_root: object) -> FitScope:
@@ -168,14 +168,14 @@ class TestDeclines:
         self, scenario_dataset_with_media: Dataset, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ "Would delete 0" must not read as "nothing was affected"."""
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline import delete_set as delete_set_mod
         from mosaic.core.pipeline.fit_scope import FitScope
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
         _reorder(ds)
         monkeypatch.setattr(
             delete_set_mod,
@@ -209,13 +209,13 @@ class TestTheSafeguard:
         A candidate pointing outside is evidence the set was computed wrongly, so
         the rest of it cannot be trusted either.
         """
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline import delete_set as delete_set_mod
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, _CropLike())
+        _ = run_feature(ds, CropLike())
         _reorder(ds)
 
         real = ds.resolve_path
@@ -244,13 +244,13 @@ class TestUnknownIsNeverDeleted:
     def test_an_unknown_verdict_is_declined_and_the_output_survives(
         self, scenario_dataset_with_media: Dataset
     ) -> None:
-        from tests.test_provenance import _CropLike
+        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.index import feature_index, feature_index_path
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        result = run_feature(ds, _CropLike())
+        result = run_feature(ds, CropLike())
         storage = "prov-crop__from__tracks"
         output = ds.get_root("features") / storage / result.run_id / "seq_a.parquet"
 

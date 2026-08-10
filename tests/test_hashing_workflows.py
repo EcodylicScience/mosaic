@@ -416,7 +416,7 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
     from mosaic.core.pipeline.media_index import MediaIndexScope
 
     from tests.conftest import add_tracks_variant, add_transcode_derivative
-    from tests.test_provenance import _PlainFeature
+    from tests.test_provenance import PlainFeature
 
     ds = scenario_dataset_with_media
     # The producer that reads media: the TREx bridge passes the video and its own
@@ -424,7 +424,7 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
     variant = "trex.0.1-aaaaaaaaaa"
     add_tracks_variant(ds, variant, "seq_a", consumed_source_roots=("media_raw",))
     derivative = add_transcode_derivative(ds, "seq_a")
-    _ = run_feature(ds, _PlainFeature())
+    _ = run_feature(ds, PlainFeature())
 
     _ = ds.write_media_index(
         [

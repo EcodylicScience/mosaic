@@ -5,7 +5,7 @@ import importlib
 import json
 import multiprocessing as mp
 import sys
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -54,6 +54,7 @@ from .loading import (
     resolve_sequence_identity,
 )
 from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
+from .op_identity import parse_op_run_id
 from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
@@ -470,6 +471,99 @@ def _disposition_reason(recorded: str, current: str) -> str:
     if recorded:
         return "the composition it was built from is no longer recorded"
     return "nothing records what it was built from"
+
+
+def _scan_kind(root: str) -> str:
+    """The ``mosaic scan --kind`` word for a source root.
+
+    Roots carry ``_raw`` and kinds are bare, and ``SourceRoot`` is closed over
+    exactly ``media_raw`` / ``tracks_raw`` / ``labels_raw``, so the suffix is the
+    whole of the difference. Derived rather than tabulated because the table
+    joining the two already exists once, as ``_RAW_ROOT_FOR_KIND`` in ``dataset``,
+    which this layer cannot import.
+    """
+    return root.removesuffix("_raw")
+
+
+def _blind_roots_warning(feature_name: str, roots: Sequence[str], count: int) -> str:
+    """What to say when a root a feature declares has recorded no composition.
+
+    Named per root, because the repair is per root: ``<root>/sequences.csv`` is
+    written by a scan of the sources feeding that root, and a scan reads only
+    *declared* sources -- so a dataset assembled by ``index_media`` alone needs
+    ``mosaic sources add`` first, which is why the repair is a pointer to the verb
+    rather than a command line to paste.
+    """
+    named = ", ".join(roots)
+    # Space-joined, not comma-joined: ``--kind`` is a repeatable typer option, so
+    # two roots are two flags. A comma would render a line that reads like a
+    # command and is not one, which is worse than naming no command at all.
+    kinds = " ".join([f"--kind {_scan_kind(root)}" for root in roots])
+    return (
+        f"[feature:{feature_name}] served {count} cached entry(ies) whose "
+        f"{named} composition is unrecorded, so a change under {named} would go "
+        f"unnoticed. Write it with `mosaic scan {kinds}` over the sources feeding "
+        f"{named}; the run after that recomputes once, then serves from cache."
+    )
+
+
+def _variant_producer(variant: str) -> str:
+    """Which producer minted a tracks variant, for the repair that reaches it.
+
+    An identifier that does not parse -- a pre-version ``trex-<digest>`` still on
+    disk under migration M1 -- is reported under its own text rather than guessed
+    into a conversion, because the conversion repair is the one that would be
+    wrong.
+    """
+    parsed = parse_op_run_id(variant)
+    return parsed.kind if parsed is not None else variant
+
+
+def _blind_tracks_warning(
+    feature_name: str, variants: Sequence[str], count: int
+) -> str:
+    """What to say when the tracks tables record no source composition.
+
+    The repair depends on what *wrote* the table, so the variant identifiers
+    decide it: their kind is ``convert-<fmt>`` for a conversion and the tool's own
+    name for a tracker or inference bridge.
+
+    A converted table takes the cell from ``tracks_raw``
+    (``convert_all_tracks`` passes exactly that root), so a scan followed by a
+    re-conversion records it. A **bridged** table takes it from the roots its
+    *inputs* fell under -- the video, the tool output, the weights -- of which
+    only ``media_raw`` is a source root, so one tracked over a transcode
+    derivative or over media held outside the dataset records nothing that any
+    command can backfill.
+
+    Naming the conversion pair for a bridged table would name two commands that
+    cannot reach the cell, the second of which walks ``tracks_raw`` -- where a
+    ``_tracking/``-bridged entry has no row at all, so it would convert nothing,
+    or worse mint a second variant for an entry that already has one.
+    """
+    kinds = sorted({_variant_producer(variant) for variant in variants})
+    converted = [kind for kind in kinds if kind.startswith("convert-")]
+    bridged = [kind for kind in kinds if not kind.startswith("convert-")]
+    parts = [
+        f"[feature:{feature_name}] served {count} cached entry(ies) whose tracks "
+        f"tables record no source composition, so a change under the tracks "
+        f"sources would go unnoticed."
+    ]
+    if converted:
+        parts.append(
+            " A converted table takes that cell from `tracks_raw`, so "
+            "`mosaic scan --kind tracks` and then `mosaic convert-tracks "
+            "--overwrite` records it."
+        )
+    if bridged:
+        named = ", ".join(bridged)
+        parts.append(
+            f" A table from {named} takes it from the roots its inputs fell "
+            f"under, so `mosaic scan --kind media` and a re-run of that producer "
+            f"records it -- and one run over media outside `media_raw`, such as a "
+            f"transcode derivative, has nothing to record."
+        )
+    return "".join(parts)
 
 
 def _scope_term(feature: Feature, scope: Scope) -> list[list[object]]:
@@ -1028,7 +1122,18 @@ def _run_feature_impl(
     # reported per entry: on a dataset with no projection this is every entry,
     # and one line naming the repair is worth more than two hundred naming the
     # symptom.
-    undetectable: set[tuple[str, str]] = set()
+    #
+    # One set per channel, because the two are blind independently and their
+    # repairs differ. A channel the run does not read is not blind, it is absent,
+    # and counting it as blind is how one set reported the wrong thing twice over:
+    # `disposition` is unconditionally `undetectable` for a feature declaring no
+    # source root -- forty-four of forty-seven, and the declaration `consumed_roots`
+    # documents as correct -- so every such run announced an unverifiable source
+    # while the tracks channel it actually reads was recorded and compared; and a
+    # genuinely unrecorded tracks channel under a declared root that *was* recorded
+    # was served in silence.
+    roots_blind: set[tuple[str, str]] = set()
+    tracks_blind: set[tuple[str, str]] = set()
     if state_ready and not overwrite:
         for entry_key in manifest:
             group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
@@ -1085,8 +1190,10 @@ def _run_feature_impl(
                     file=sys.stderr,
                 )
                 continue
-            if disposition == "undetectable":
-                undetectable.add(entry)
+            if feature.consumed_roots and disposition == "undetectable":
+                roots_blind.add(entry)
+            if scope.tracks_variants and tracks_disposition == "undetectable":
+                tracks_blind.add(entry)
             _record_row(
                 FeatureIndexRow(
                     run_id=run_id,
@@ -1108,16 +1215,19 @@ def _run_feature_impl(
             )
             skip_keys.add(entry_key)
 
-    if undetectable and (feature.consumed_roots or scope.tracks_variants):
-        roots = ", ".join(
-            sorted({root for root in feature.consumed_roots if root} or {"tracks"})
-        )
+    # No guard beyond emptiness: each set is populated only where its channel
+    # exists, so a non-empty one is already the whole condition.
+    if roots_blind:
+        declared = sorted({root for root in feature.consumed_roots if root})
         print(
-            f"[feature:{feature.name}] served {len(undetectable)} cached "
-            f"entry(ies) whose source cannot be checked: neither the run nor "
-            f"{roots} records a composition for them, so a change under "
-            f"{roots} would go unnoticed. Run `mosaic reindex` (or "
-            f"`mosaic reprobe-media --apply` for media) to write the projection.",
+            _blind_roots_warning(feature.name, declared, len(roots_blind)),
+            file=sys.stderr,
+        )
+    if tracks_blind:
+        print(
+            _blind_tracks_warning(
+                feature.name, scope.tracks_variants, len(tracks_blind)
+            ),
             file=sys.stderr,
         )
 
