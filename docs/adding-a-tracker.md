@@ -34,7 +34,8 @@ They decide how much of the rest applies.
    external directory resolve the same way.
 4. **Can you reuse a converter?** If it exports DeepLabCut-format CSV or HDF5,
    use `src_format="deeplabcut"` and write no converter at all — that is what
-   Lightning Pose does.
+   Lightning Pose does. Writing one is
+   [Adding a converter](adding-a-converter.md).
 5. **Does reading its output need a Python library in the mosaic env?** If so it
    is an *optional* dependency: lazy-import it with a clear message and guard the
    tests with `pytest.importorskip`.
@@ -209,7 +210,7 @@ every row. **State what your tracker measured, and nothing more.**
 
 - `mosaic_v1` is almost certainly right. It wants `frame, time, id, group,
   sequence, X, Y` in **video pixels**, plus keypoints as `poseX*`/`poseY*`, with
-  `X`/`Y` the body centre — for a pose-only tracker, the mean of that frame's
+  `X`/`Y` the body center — for a pose-only tracker, the mean of that frame's
   keypoints.
 - It **forbids** `VX`, `VY`, `SPEED`, `ANGLE` and the rest. Do not compute them
   in your converter, however easy it looks. In the table they are

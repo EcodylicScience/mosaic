@@ -57,6 +57,7 @@ nav:
   - Getting Started: getting-started.md
   - Pipeline Guide: guide-pipeline.md
   - Adding a Tracker: adding-a-tracker.md
+  - Adding a Converter: adding-a-converter.md
   - Licensing: licensing.md
   - API Reference:
       - Core:

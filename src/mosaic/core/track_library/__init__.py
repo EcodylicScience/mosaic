@@ -8,13 +8,18 @@ automatically registered on import.
 
 Adding a New Track Converter
 -----------------------------
-1. Create a new file in this directory (e.g., deeplabcut.py)
-2. Use track_converter_template.py as a starting point
-3. Implement the converter function with signature:
-   (path: Path, params: dict) -> pd.DataFrame
-4. Optionally implement a sequence enumerator for multi-sequence files
-5. Call register_track_converter() at module level
-6. Import the module here to register it
+1. Create a new file in this directory (e.g., deeplabcut.py), starting from
+   track_converter_template.py.
+2. Declare a Params model, subclass TrackConverter, implement
+   convert(path, params, hints) -> pd.DataFrame, and name the output schema in
+   the class variable ``output_schema``.
+3. Decorate the class with @register_track_converter.
+4. For one file holding several sequences, set ``enumerable = True`` and
+   implement enumerate_sequences; the scan source must also declare
+   ``multi_sequences_per_file=True`` or the expansion never runs.
+5. Import the module here and add its name to ``__all__``.
+
+See docs/adding-a-converter.md for the full contract.
 
 Available Converters
 --------------------

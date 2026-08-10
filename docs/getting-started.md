@@ -300,6 +300,13 @@ The full pattern (with k-means/Ward clustering, ground-truth alignment, and
 XGBoost training on top) is shown in the
 [CalMS21 template notebook](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-template.ipynb).
 
+If your tracking output is in a format mosaic does not ship a converter for, see
+[Adding a converter](adding-a-converter.md). The
+[collective-motion notebook](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-shiners.ipynb)
+works one end to end on a published fish-schooling dataset, then runs the
+polarization, rotation, local-order and nearest-neighbour measurements on the
+result.
+
 ### Declarative pipelines
 
 For multi-step workflows, use the `Pipeline` class instead of manual

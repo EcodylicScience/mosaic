@@ -772,6 +772,10 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   its argv, its settings, its phases and its converter, plus one `TrackingRoot`
   row. `tests/test_tracker_conformance.py` is parametrized over every tracker
   root, so a half-implemented one fails by name.
+- [`docs/adding-a-converter.md`](docs/adding-a-converter.md) — writing a track
+  converter for files you already have: the file-to-sequence declarations, params
+  versus hints, `output_schema`, and where a converter or a custom schema has to
+  be registered to reach the CLI.
 - [`docs/api/`](docs/api/) — auto-generated API reference (core, pipeline,
   behavior, media, tracking).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.
