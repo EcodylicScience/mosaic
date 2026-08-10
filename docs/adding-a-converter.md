@@ -309,6 +309,16 @@ on the CC0 golden-shiners dataset (Davidson et al. 2021, *J R Soc Interface*
 `schooltracker_v1` for a genuinely measured body-axis heading, and runs the
 collective-motion features on the result.
 
+[`notebooks/collective-motion-zebrafish.ipynb`][zebrafish] is the second, and
+covers the case this guide otherwise leaves open: a **tracker that locates no
+keypoints at all**. A Ctrax/JAABA `trx` MATLAB struct gives a centroid, an
+orientation and a fitted ellipse, so the converter emits `X`, `Y` and `ANGLE`
+and no pose columns, and validates the heading against the direction of travel
+rather than against a landmark it does not have. It also works through what to
+do when a tracker's own metadata is stale: six fields in that format are wrong,
+and the arena, the frame rate and the body length all have to be measured back
+out of the trajectories.
+
 [deeplabcut]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/deeplabcut.py
 [calms21]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/calms21.py
 [trex]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/trex.py
@@ -316,3 +326,4 @@ collective-motion features on the result.
 [library]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/__init__.py
 [tests]: https://github.com/EcodylicScience/mosaic/blob/main/tests/test_track_converters.py
 [shiners]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-shiners.ipynb
+[zebrafish]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-zebrafish.ipynb

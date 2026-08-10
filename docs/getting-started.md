@@ -305,7 +305,11 @@ If your tracking output is in a format mosaic does not ship a converter for, see
 [collective-motion notebook](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-shiners.ipynb)
 works one end to end on a published fish-schooling dataset, then runs the
 polarization, rotation, local-order and nearest-neighbour measurements on the
-result.
+result. The
+[zebrafish notebook](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-zebrafish.ipynb)
+does the same for a tracker that reports no pose keypoints at all, and goes on to
+build social force maps -- how a fish turns and changes speed depending on where
+its nearest neighbour is.
 
 ### Declarative pipelines
 

@@ -692,6 +692,13 @@ Reference end-to-end examples (not test fixtures):
 - [`notebooks/calms21-template.ipynb`](notebooks/calms21-template.ipynb) —
   canonical end-to-end (manifest → features → wavelet/scaler/t-SNE →
   clustering → XGBoost classifier → visualization).
+- [`notebooks/collective-motion-shiners.ipynb`](notebooks/collective-motion-shiners.ipynb) —
+  a track converter written inside the notebook, then the collective-motion
+  features across four group sizes.
+- [`notebooks/collective-motion-zebrafish.ipynb`](notebooks/collective-motion-zebrafish.ipynb) —
+  a converter for a tracker with **no pose keypoints** (Ctrax/JAABA `trx`), then
+  collective motion and the `nearest-neighbor` → `nn-delta-response` →
+  `nn-delta-bins` social-force chain.
 
 Notebooks may use sample data not present in the repo; check the first cell
 for path expectations before running.
