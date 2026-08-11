@@ -28,7 +28,7 @@ import pytest
 from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
-from mosaic.tracking.ops._common import RunRootHeld
+from mosaic.tracking.ops._common import RunRootHeld, fingerprint_yolo_dataset
 from mosaic.tracking.ops.train import trained_model_index
 from tests.test_tracking_ops import _make_dataset
 
@@ -38,6 +38,7 @@ class _Counter:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.last_kwargs: dict[str, object] = {}
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import mosaic.tracking.pose_training.train as tr
@@ -53,6 +54,7 @@ class _Counter:
             **kw: object,
         ) -> None:
             self.calls += 1
+            self.last_kwargs = dict(kw)
             run_dir = Path(project) / name
             (run_dir / "weights").mkdir(parents=True, exist_ok=True)
             _ = (run_dir / "weights" / "best.pt").write_bytes(b"weights")
@@ -64,18 +66,36 @@ class _Counter:
 def _data_yaml(tmp_path: Path) -> Path:
     """A converted-dataset directory holding just the data.yaml.
 
-    Its own directory on purpose. ``fingerprint_dataset`` handed a *file* digests
-    ``path.parent`` **recursively**, so a data.yaml sitting at the dataset root
-    would fold the dataset's own outputs into the training identity -- and the
-    second run of identical work would then mint a different ``run_id``, which
-    makes content-addressed reuse untestable and, in that layout, impossible.
-    See docs/issues/training-fingerprint-sweeps-the-sibling-tree.md.
+    Its own directory because that is the layout ``convert-points`` produces, not
+    because the fingerprint requires it: ``fingerprint_yolo_dataset`` digests what
+    the YAML *declares*, so a data.yaml sharing a directory with anything else --
+    including whatever the run itself writes -- fingerprints the same either way.
+    ``test_an_unrelated_sibling_does_not_move_the_identity`` is what pins that.
     """
     directory = tmp_path / "converted"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "data.yaml"
     _ = path.write_text("kpt_shape: [4, 3]\n")
     return path
+
+
+def _yolo_dataset(root: Path, *, image: bytes = b"train-image") -> Path:
+    """A minimal YOLO dataset: a data.yaml naming two split directories.
+
+    ``path`` is written absolute because that is what ``make_data_yaml`` writes
+    (``os.path.abspath(dataset_root)``), which is exactly the spelling the
+    fingerprint must not depend on.
+    """
+    (root / "train" / "images").mkdir(parents=True, exist_ok=True)
+    (root / "valid" / "images").mkdir(parents=True, exist_ok=True)
+    _ = (root / "train" / "images" / "a.png").write_bytes(image)
+    _ = (root / "valid" / "images" / "b.png").write_bytes(b"val-image")
+    data_yaml = root / "data.yaml"
+    _ = data_yaml.write_text(
+        f"path: {root.resolve()}\ntrain: train/images\nval: valid/images\n"
+        "nc: 1\nnames: [bee]\n"
+    )
+    return data_yaml
 
 
 def test_an_identical_resubmission_does_not_retrain(
@@ -180,3 +200,106 @@ def test_a_second_execution_cannot_train_into_a_held_run_root(
         _ = run_op(ds, "train-pose", {**params, "overwrite": True})
 
     assert trainer.calls == 1
+
+
+# --- What the data fingerprint may and may not notice ----------------------
+#
+# The reuse gate above can only fire if an identical resubmission mints an
+# identical identifier, so these pin the fingerprint the identifier is built on.
+# They are filesystem tests on purpose: the golden corpus stubs the fingerprint
+# with a literal, so nothing there would notice any of these regressing.
+
+
+def test_an_unrelated_sibling_does_not_move_the_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file dropped beside the data.yaml is not part of the training data.
+
+    The fingerprint used to walk the YAML's parent recursively, so anything
+    landing there -- a notebook, a log, the run's own output -- re-addressed the
+    next training run and made content-addressed reuse unreachable in that layout.
+    """
+    ds = _make_dataset(tmp_path)
+    trainer = _Counter()
+    trainer.install(monkeypatch)
+    data_yaml = _yolo_dataset(tmp_path / "converted")
+    params = {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
+
+    first = run_op(ds, "train-pose", dict(params))
+    _ = (data_yaml.parent / "notes.txt").write_text("dropped beside the data.yaml")
+    second = run_op(ds, "train-pose", dict(params))
+
+    assert first == second
+    assert trainer.calls == 1
+
+
+def test_the_same_dataset_at_two_locations_fingerprints_alike(tmp_path: Path) -> None:
+    """A copied or moved dataset is the same dataset.
+
+    ``make_data_yaml`` writes ``path: os.path.abspath(dataset_root)``, so digesting
+    the YAML's raw text made the location part of the model's identity -- two
+    identical conversions at two paths were two different models, and an API box
+    and a compute pod on different mounts could never agree.
+    """
+    a = _yolo_dataset(tmp_path / "somewhere")
+    b = _yolo_dataset(tmp_path / "elsewhere-entirely")
+    assert fingerprint_yolo_dataset(a) == fingerprint_yolo_dataset(b)
+
+
+def test_a_changed_image_does_move_the_fingerprint(tmp_path: Path) -> None:
+    """Location-independence must not cost content-sensitivity.
+
+    This is what rules out the cheap fix of digesting the data.yaml alone: the
+    YAML is identical here and the training data is not.
+    """
+    a = _yolo_dataset(tmp_path / "a", image=b"one")
+    b = _yolo_dataset(tmp_path / "b", image=b"a different image entirely")
+    assert fingerprint_yolo_dataset(a) != fingerprint_yolo_dataset(b)
+
+
+def test_a_declaration_free_data_yaml_still_fingerprints(tmp_path: Path) -> None:
+    """Identity computation is not the place to refuse an odd dataset."""
+    directory = tmp_path / "odd"
+    directory.mkdir()
+    no_splits = directory / "data.yaml"
+    _ = no_splits.write_text("kpt_shape: [4, 3]\n")
+    missing = directory / "missing.yaml"
+    _ = missing.write_text("train: nowhere/at/all\nval: [also, absent]\n")
+    malformed = directory / "malformed.yaml"
+    _ = malformed.write_text("{[unclosed")
+
+    digests = {
+        fingerprint_yolo_dataset(no_splits),
+        fingerprint_yolo_dataset(missing),
+        fingerprint_yolo_dataset(malformed),
+        fingerprint_yolo_dataset(directory / "does-not-exist.yaml"),
+    }
+    assert len(digests) == 4  # each is a digest, and none collides with another
+
+
+# --- train_overrides -------------------------------------------------------
+
+
+def test_overrides_reach_the_trainer_and_move_the_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model trained on a different learning rate is a different model.
+
+    So ``train_overrides`` reaches the trainer *and* reaches identity -- the pair
+    that lets the deployed POLO hyperparameters run through the op instead of
+    around it.
+    """
+    ds = _make_dataset(tmp_path)
+    trainer = _Counter()
+    trainer.install(monkeypatch)
+    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+
+    plain = run_op(ds, "train-pose", dict(params))
+    tuned = run_op(
+        ds, "train-pose", {**params, "train_overrides": {"lr0": 0.0044, "lrf": 0.0072}}
+    )
+
+    assert plain != tuned
+    assert trainer.calls == 2
+    assert trainer.last_kwargs["lr0"] == 0.0044
+    assert trainer.last_kwargs["lrf"] == 0.0072

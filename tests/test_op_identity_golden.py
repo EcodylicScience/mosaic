@@ -480,9 +480,14 @@ def _media_empty() -> str:
 
 
 def _train_run_id() -> str:
+    # The version comes from the registry for the reason ``_op_params`` does: it
+    # is a visible segment of the identifier, so a bump belongs in this file's
+    # diff rather than leaving a literal here describing what the op used to mint.
+    # The *base* stays a literal 0.1 id -- fine-tuning from an older model is a
+    # real case, and the term is opaque to the minter either way.
     return train_run_id(
         "train-pose",
-        "0.1",
+        OPS["train-pose"].version,
         _op_params("train-pose", data="d.yaml", epochs=3),
         "deadbeefcafe",
         "train-pose.0.1-aaaaaaaaaa",
@@ -494,7 +499,7 @@ def _train_run_id_from_a_bare_path() -> str:
     # contributes its weights digest where it used to contribute "".
     return train_run_id(
         "train-pose",
-        "0.1",
+        OPS["train-pose"].version,
         _op_params("train-pose", data="d.yaml", epochs=3),
         "deadbeefcafe",
         "0123456789abcdef",

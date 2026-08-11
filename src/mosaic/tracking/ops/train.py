@@ -15,9 +15,12 @@ from pathlib import Path
 
 import pandas as pd
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Final, Self
+
+from pydantic import model_validator
 
 from mosaic.core.helpers import text_cell
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -30,6 +33,7 @@ from mosaic.tracking.ops._common import (
     claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
+    fingerprint_yolo_dataset,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +41,17 @@ if TYPE_CHECKING:
 
 
 _TRAIN_IDLE_SECONDS = 1800.0
+
+OP_SUPPLIED_TRAIN_ARGS: Final = frozenset(
+    {"project", "name", "callback", "cancel_check", "task"}
+)
+"""Trainer arguments the op supplies that are not params fields.
+
+``project`` / ``name`` address the claimed run root, ``callback`` and
+``cancel_check`` are the Job Contract's progress and cancellation hooks, and
+``task`` selects the ultralytics task. Together with the params fields
+themselves these are what ``train_overrides`` may not set.
+"""
 
 # --- Trained-model index -------------------------------------------------
 
@@ -256,6 +271,16 @@ def training_is_complete(ds: Dataset, kind: str, run_id: str) -> bool:
 
 
 class PoseTrainParams(Params):
+    """Parameters for the ``train-pose`` op.
+
+    The typed fields are the decisions mosaic has an opinion about. Everything
+    else ultralytics exposes -- the learning-rate schedule, the loss weights, the
+    long tail of ``yolo.train`` knobs -- is reachable through *train_overrides*,
+    which reaches identity for the same reason the typed fields do: a model
+    trained with a different learning rate is a different model whether or not
+    there is a field for it here.
+    """
+
     data: str  # path to data.yaml
     model: str = "yolo11n-pose.pt"
     base_model: str = ""  # weights path OR a prior training run_id (retraining)
@@ -263,7 +288,22 @@ class PoseTrainParams(Params):
     imgsz: int = 640
     patience: int = 50
     resume: bool = False
-    augmentation: str | None = None
+    augmentation: str | dict[str, JsonValue] | None = None
+    """A preset name, or a dict -- with a ``preset`` key to start from one and
+    override, or without to replace the augmentation set outright.
+
+    ``resolve_augmentation`` has always accepted both; the op used to narrow it
+    to ``str``, which put the dict forms out of reach of the CLI and the API.
+    """
+
+    train_overrides: dict[str, JsonValue] | None = None
+    """Extra keyword arguments forwarded verbatim to ``yolo.train``.
+
+    Hashed, because a different learning rate is a different model. Keys that
+    would collide with a typed field or with an argument the op supplies are
+    refused -- see :data:`OP_SUPPLIED_TRAIN_ARGS`.
+    """
+
     device: Annotated[str, HASH_EXCLUDE] = "0"
     batch: Annotated[int, HASH_EXCLUDE] = 16
     overwrite: Annotated[bool, HASH_EXCLUDE] = False
@@ -272,6 +312,35 @@ class PoseTrainParams(Params):
     ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
     flipping it must not mint a second identity for the same weights.
     """
+
+    @model_validator(mode="after")
+    def _train_overrides_do_not_shadow(self) -> Self:
+        """Refuse an override the op already supplies, at submit time.
+
+        Two different failures, one guard. A key naming a *parameter* of the
+        trainer (``epochs``, ``imgsz``, ...) arrives as a duplicate keyword and
+        raises :exc:`TypeError` from Python itself -- on a GPU node, after the
+        job was accepted and scheduled. A key naming something the trainer only
+        builds internally (``data``, ``task``) does not raise at all: it lands
+        via ``train_kwargs.update(extra_args)`` and silently retargets the run,
+        so the identifier would describe data the run never read.
+
+        Validating here rather than in ``run()`` is what lets mosaic-api answer
+        a bad submission with a 422 the caller can act on.
+        """
+        overrides = self.train_overrides
+        if not overrides:
+            return self
+        reserved = set(type(self).model_fields) | OP_SUPPLIED_TRAIN_ARGS
+        shadowed = sorted(set(overrides) & reserved)
+        if shadowed:
+            names = ", ".join(shadowed)
+            msg = (
+                f"train_overrides may not set {names}: "
+                "the op supplies these itself. Use the typed field instead."
+            )
+            raise ValueError(msg)
+        return self
 
 
 class PointTrainParams(PoseTrainParams):
@@ -313,7 +382,11 @@ class TrainPoseOp(Op[PoseTrainParams]):
     kind = "train-pose"
     category = "train"
     domain = "tracking"
-    version = "0.1"
+    # 0.2 carries ``train_overrides`` in the identity payload and fingerprints the
+    # data.yaml by what it declares. Both move the digest, so the visible segment
+    # moves with them: ``train-pose.0.1-*`` runs stay readable and keep their index
+    # rows rather than sitting under a name that now means something else.
+    version = "0.2"
     Params = PoseTrainParams
 
     def run(self, ds: Dataset, params: PoseTrainParams, ctx: JobContext) -> str:
@@ -334,7 +407,11 @@ class TrainPoseOp(Op[PoseTrainParams]):
             model_arg = str(base.path)
 
         run_id = train_run_id(
-            self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
+            self.kind,
+            self.version,
+            params,
+            fingerprint_yolo_dataset(data_yaml),
+            base_run_id,
         )
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
@@ -360,6 +437,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
             name="train",
             callback=ctx.progress,
             cancel_check=ctx.cancel_token.is_cancelled,
+            **(params.train_overrides or {}),
         )
         ctx.check_cancel()  # raise Cancelled if a between-epoch cancel fired
         finalize_training(
@@ -383,7 +461,7 @@ class TrainPointsOp(Op[PointTrainParams]):
     kind = "train-points"
     category = "train"
     domain = "tracking"
-    version = "0.1"
+    version = "0.2"  # see TrainPoseOp.version
     Params = PointTrainParams
 
     def run(self, ds: Dataset, params: PointTrainParams, ctx: JobContext) -> str:
@@ -404,7 +482,11 @@ class TrainPointsOp(Op[PointTrainParams]):
             model_arg = str(base.path)
 
         run_id = train_run_id(
-            self.kind, self.version, params, fingerprint_dataset(data_yaml), base_run_id
+            self.kind,
+            self.version,
+            params,
+            fingerprint_yolo_dataset(data_yaml),
+            base_run_id,
         )
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
@@ -434,6 +516,7 @@ class TrainPointsOp(Op[PointTrainParams]):
             name="train",
             callback=ctx.progress,
             cancel_check=ctx.cancel_token.is_cancelled,
+            **(params.train_overrides or {}),
         )
         ctx.check_cancel()
         finalize_training(
