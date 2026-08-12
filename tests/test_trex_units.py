@@ -252,3 +252,88 @@ def test_an_export_without_a_calibration_refuses(tmp_path: Path) -> None:
 def test_the_converter_declares_the_trex_superset_schema() -> None:
     """It emits SPEED and ANGLE, which the tracker-neutral base forbids."""
     assert TrexNpzConverter.output_schema == "trex_v2"
+
+
+# --- the per-tracklet exports are a different axis ---------------------------
+
+
+def _with_tracklet_arrays(path: Path, *, n: int = 8) -> None:
+    """A real export's tracklet trio, at the shapes TRex actually writes.
+
+    Taken from a measured file: ``tracklets`` is ``(n_tracklets, 2)`` and
+    ``tracklet_vxys`` ``(n_frames_in_tracklets, 4)``, both shorter than the frame
+    axis, while ``tracklet_id`` is one value per frame.
+    """
+    write_trex_npz(
+        path,
+        n=n,
+        cm_per_pixel=0.03,
+        tracklet_id=np.full(n, 1.266e14),
+        tracklets=np.array([[0, 3], [4, 7]], dtype=np.uint32),
+        tracklet_vxys=np.array(
+            [[1.0, -60.0, -120.0, 134.164], [2.0, -109.9, -300.0, 319.504]],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_a_calibrated_export_with_tracklet_arrays_converts(tmp_path: Path) -> None:
+    """The failure a real run hit: four NPZ refused, nothing published.
+
+    ``UnknownTrexUnitsError`` fired on ``tracklets_0`` and ``tracklet_vxys_0..3``
+    -- names no classification list had, because the flattener invents them from
+    an ND array while the lists were written against the NPZ key. The run still
+    reported ``finished``, because the bridge logs a conversion failure and
+    returns None, so the whole session's tracks were silently absent.
+    """
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    table = _convert(path)
+
+    assert "tracklet_id" in table.columns, "the per-frame tracklet key must survive"
+    leaked = [c for c in table.columns if c.startswith(("tracklets", "tracklet_vxys"))]
+    assert not leaked, f"off-axis per-tracklet arrays reached the table: {leaked}"
+
+
+def test_the_dropped_arrays_are_the_off_axis_ones_only(tmp_path: Path) -> None:
+    """Dropping must not become a licence to drop the per-frame column too."""
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    table = _convert(path)
+
+    assert table["tracklet_id"].notna().all()
+    assert len(table) == 8, "the frame axis must be unchanged by the drop"
+
+
+def test_a_flattened_field_is_classified_under_its_base_name() -> None:
+    """The general defect behind the specific one.
+
+    ``load_npz_to_df`` names an ND array's components ``<key>_<i>``, so any field
+    classified under its NPZ key was invisible to the unit guard once it arrived
+    two-dimensional. Reducing the index is what makes a classification apply to
+    the components it was written for -- and is what stops the *next* ND field
+    from failing a whole session the same way.
+    """
+    from mosaic.core.track_library.trex import base_field
+
+    assert base_field("tracklet_vxys_2") == "tracklet_vxys"
+    assert base_field("tracklets_0") == "tracklets"
+    # A source suffix and an index reduce together, and neither eats a name that
+    # merely ends in a word or a digit-bearing keypoint column.
+    assert base_field("SPEED#wcentroid") == "SPEED"
+    assert base_field("midline_x") == "midline_x"
+    assert base_field("poseX0") == "poseX0"
+
+
+def test_an_unclassified_field_still_refuses_a_calibrated_table(
+    tmp_path: Path,
+) -> None:
+    """The guard must keep its teeth: dropping two fields is not disarming it."""
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(
+        path, n=4, cm_per_pixel=0.03, some_new_trex_field=np.arange(4, dtype=float)
+    )
+    with pytest.raises(UnknownTrexUnitsError, match="some_new_trex_field"):
+        _ = _convert(path)

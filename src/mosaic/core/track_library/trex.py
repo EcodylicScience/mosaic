@@ -157,9 +157,12 @@ _DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
         "qr_id",
         "detection_p",
         "visual_identification_p",
+        # Per frame, and the one of the three tracklet exports that belongs in
+        # this table. ``tracklets`` and ``tracklet_vxys`` used to be listed here
+        # too, where they never matched anything -- the flattener renames them
+        # ``tracklets_0`` and so on -- and they are now dropped outright as
+        # off-axis rather than classified. See OFF_AXIS_FIELDS.
         "tracklet_id",
-        "tracklets",
-        "tracklet_vxys",
         "blobid",
         "blob_id",
         "frame_rate",
@@ -178,9 +181,47 @@ _DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
 _PIXEL_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "poseP", "pose")
 
 
+_FLATTENED_INDEX = re.compile(r"_\d+$")
+
+
 def base_field(column: str) -> str:
-    """A column name without its TRex source suffix (``X#wcentroid`` -> ``X``)."""
-    return column.split("#", 1)[0]
+    """A column name without its TRex source suffix or flattening index.
+
+    ``X#wcentroid`` -> ``X``, and ``tracklet_vxys_2`` -> ``tracklet_vxys``.
+
+    The second half is not cosmetic. ``load_npz_to_df`` flattens an ND array
+    into one column per component, named ``<key>_<i>`` -- so a field classified
+    under its NPZ key was invisible to the classifier the moment it arrived
+    two-dimensional, and the unit guard refused the whole table naming a column
+    nobody had ever written down. Reducing the index here is what makes a
+    classification of the *field* apply to its components.
+    """
+    return _FLATTENED_INDEX.sub("", column.split("#", 1)[0])
+
+
+OFF_AXIS_FIELDS: frozenset[str] = frozenset({"tracklets", "tracklet_vxys"})
+"""TRex exports that are not one row per frame, and so cannot join this table.
+
+Both are per-*tracklet* rather than per-frame, and the flattener would pad them
+with NaN to the frame axis -- putting each value on a row that does not mean it.
+
+``tracklets`` is ``(n_tracklets, 2)`` of ``[start_frame, end_frame]``.
+``tracklet_vxys`` is ``(n_frames_inside_tracklets, 4)`` of
+``[frame, vx, vy, speed]``.
+
+Dropped rather than realigned, for two reasons beyond the axis. Their velocities
+are the one thing TRex exports in ``PX_AND_SECONDS`` while ``VX``/``VY``/``SPEED``
+beside them are centimetres -- verified in ``Export.cpp`` and on real data, where
+``tracklet_vxys[:, 3] * cm_per_pixel`` reproduces ``SPEED#wcentroid`` exactly. And
+they are computed against the ``.pv``'s single frame rate, which a joined
+multi-clip session gets from its *first* clip alone; that is precisely why
+:mod:`mosaic.tracking.trex.joined` drops the other rate-dependent columns, and
+carrying these would smuggle the same error back in under a name it does not
+check.
+
+Nothing is lost: ``tracklet_id`` is per frame and carries which tracklet a frame
+belongs to, so the tracklet bounds are a ``groupby`` away.
+"""
 
 
 def calibration_from_frame(frame: pd.DataFrame) -> float | None:
@@ -274,7 +315,10 @@ def load_npz_to_df(filepath: Path) -> pd.DataFrame:
     data = np.load(filepath, allow_pickle=True)
     keys = list(data.files)
 
-    skip_keys = {}  # including all for now.  Could make this a parameter to pass
+    # Not a preference: these are per-tracklet arrays, and padding them onto the
+    # frame axis would put each value on a row that does not mean it. See
+    # OFF_AXIS_FIELDS.
+    skip_keys = OFF_AXIS_FIELDS
 
     # Determine candidate lengths per key
     lens = []
