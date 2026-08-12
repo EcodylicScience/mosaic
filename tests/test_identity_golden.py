@@ -146,6 +146,11 @@ CASES: tuple[Case, ...] = (
         feature="collective-motion-metrics",
         params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},
     ),
+    Case(
+        case_id="egocentric-crop/center-mode-xy",
+        feature="egocentric-crop",
+        params={"center_mode": "xy"},
+    ),
     # local-order-metrics has a required ``radius`` and so is not
     # default-constructible; it is covered by these bespoke cases instead.
     Case(

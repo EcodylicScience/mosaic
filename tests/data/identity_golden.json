@@ -8,6 +8,7 @@
   "body-scale/default": "0.1-3b632409e1",
   "collective-motion-metrics/default": "0.1-f3b6f719d2",
   "collective-motion-metrics/subgroups-alpha": "0.1-4bd3f8f29a",
+  "egocentric-crop/center-mode-xy": "0.2-08ada24d03",
   "egocentric-crop/default": "0.2-b9ad2c4c3e",
   "extract-templates/from-pair-wavelet": "0.1-159e90dde3",
   "ffgroups-metrics/default": "0.1-690f995583",
