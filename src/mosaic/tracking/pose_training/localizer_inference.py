@@ -6,6 +6,7 @@ detections to image-pixel coordinates.
 
 Requires: ``torch >= 2.0``
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,6 +24,7 @@ from mosaic.core.media.video_io import open_frame_reader
 def _require_torch():
     try:
         import torch
+
         return torch
     except ImportError:
         raise ImportError(
@@ -34,6 +36,7 @@ def _require_torch():
 # --------------------------------------------------------------------------- #
 # Single-image detection
 # --------------------------------------------------------------------------- #
+
 
 def detect_locations(
     model: Any,
@@ -138,12 +141,14 @@ def detect_locations(
             x_img = col_refined * STRIDE + OFFSET
             y_img = row_refined * STRIDE + OFFSET
 
-            detections.append({
-                "x": x_img,
-                "y": y_img,
-                "confidence": confidence,
-                "class_id": class_id,
-            })
+            detections.append(
+                {
+                    "x": x_img,
+                    "y": y_img,
+                    "confidence": confidence,
+                    "class_id": class_id,
+                }
+            )
 
     return detections
 
@@ -151,6 +156,7 @@ def detect_locations(
 # --------------------------------------------------------------------------- #
 # Video inference
 # --------------------------------------------------------------------------- #
+
 
 def run_localizer_inference(
     model_path: str | Path,
@@ -215,7 +221,9 @@ def run_localizer_inference(
     from .localizer_weights import load_localizer_weights
 
     # Load model
-    encoder = LocalizerEncoder(num_classes=num_classes, initial_channels=initial_channels)
+    encoder = LocalizerEncoder(
+        num_classes=num_classes, initial_channels=initial_channels
+    )
     load_localizer_weights(encoder, model_path)
 
     if device == "cpu":
@@ -251,7 +259,9 @@ def run_localizer_inference(
     try:
         for frame_idx, frame in reader:
             detections = detect_locations(
-                encoder, frame, thresholds,
+                encoder,
+                frame,
+                thresholds,
                 device=device,
                 min_distance=min_distance,
                 refine_window=refine_window,
@@ -286,6 +296,7 @@ def run_localizer_inference(
 # DataFrame conversion
 # --------------------------------------------------------------------------- #
 
+
 def localizer_detections_to_dataframe(
     results: list[list[dict]],
     class_names: list[str] | None = None,
@@ -308,17 +319,19 @@ def localizer_detections_to_dataframe(
     for frame_idx, detections in enumerate(results):
         for det_idx, det in enumerate(detections):
             class_id = det["class_id"]
-            rows.append({
-                "frame": frame_idx,
-                "detection_id": det_idx,
-                "x": det["x"],
-                "y": det["y"],
-                "confidence": det["confidence"],
-                "class_id": class_id,
-                "class_name": (
-                    class_names[class_id]
-                    if class_names and class_id < len(class_names)
-                    else f"class_{class_id}"
-                ),
-            })
+            rows.append(
+                {
+                    "frame": frame_idx,
+                    "detection_id": det_idx,
+                    "x": det["x"],
+                    "y": det["y"],
+                    "confidence": det["confidence"],
+                    "class_id": class_id,
+                    "class_name": (
+                        class_names[class_id]
+                        if class_names and class_id < len(class_names)
+                        else f"class_{class_id}"
+                    ),
+                }
+            )
     return pd.DataFrame(rows)

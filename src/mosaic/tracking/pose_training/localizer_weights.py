@@ -5,6 +5,7 @@ be loaded directly into :class:`~.localizer_model.LocalizerEncoder`.
 
 Requires: ``h5py >= 3.0`` (optional dependency).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,6 +17,7 @@ import numpy as np
 def _require_h5py():
     try:
         import h5py
+
         return h5py
     except ImportError:
         raise ImportError(
@@ -27,6 +29,7 @@ def _require_h5py():
 # --------------------------------------------------------------------------- #
 # H5 weight extraction
 # --------------------------------------------------------------------------- #
+
 
 def _extract_keras_weights(h5_path: Path) -> list[np.ndarray]:
     """Extract weight arrays from a Keras H5 file in layer order.
@@ -100,6 +103,7 @@ def _extract_keras_weights(h5_path: Path) -> list[np.ndarray]:
 # --------------------------------------------------------------------------- #
 # Weight mapping
 # --------------------------------------------------------------------------- #
+
 
 def _transpose_conv_kernel(kernel: np.ndarray) -> np.ndarray:
     """Keras (H, W, C_in, C_out) → PyTorch (C_out, C_in, H, W)."""
@@ -187,6 +191,7 @@ def _build_state_dict(
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
+
 
 def convert_keras_weights(
     keras_h5_path: str | Path,

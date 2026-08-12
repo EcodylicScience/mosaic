@@ -33,8 +33,8 @@ def _make_merged_df() -> pd.DataFrame:
                 "group": "g",
                 "speed": speed0[k],
                 "nn_id": 1.0,
-                "nn_delta_angle": 0.0,          # cos = 1  -> nn_align = 1
-                "nn_delta_x_ego": 1.0,          # ahead    -> frac_nn_ahead = 1
+                "nn_delta_angle": 0.0,  # cos = 1  -> nn_align = 1
+                "nn_delta_x_ego": 1.0,  # ahead    -> frac_nn_ahead = 1
                 "nn_delta_y_ego": 0.0,
                 "group_membership": 0,
                 "group_size": 2,
@@ -49,8 +49,8 @@ def _make_merged_df() -> pd.DataFrame:
                 "group": "g",
                 "speed": speed1[k],
                 "nn_id": 0.0,
-                "nn_delta_angle": math.pi,      # cos = -1 -> nn_align = -1
-                "nn_delta_x_ego": -1.0,         # behind   -> frac_nn_ahead = 0
+                "nn_delta_angle": math.pi,  # cos = -1 -> nn_align = -1
+                "nn_delta_x_ego": -1.0,  # behind   -> frac_nn_ahead = 0
                 "nn_delta_y_ego": 0.0,
                 "group_membership": 0,
                 "group_size": 2,
@@ -130,9 +130,7 @@ def test_burst_coast_optional() -> None:
     df = _make_merged_df()
     off = SocialMotionSummary(params={"fps": 1.0}).apply(df)
     assert "kick_rate" not in off.columns
-    on = SocialMotionSummary(
-        params={"fps": 1.0, "compute_burst_coast": True}
-    ).apply(df)
+    on = SocialMotionSummary(params={"fps": 1.0, "compute_burst_coast": True}).apply(df)
     assert "kick_rate" in on.columns
     assert "burst_coast_ratio" in on.columns
 

@@ -15,15 +15,17 @@ from mosaic.core.pipeline.types import GroundTruthLabelsSource, InputStream, Res
 
 class TestMetaColumnReservation:
     def test_feature_columns_excludes_label_and_split(self) -> None:
-        df = pd.DataFrame({
-            "frame": [0, 1, 2],
-            "time": [0.0, 1.0, 2.0],
-            "id": [0, 0, 0],
-            "label": [1, 2, 0],
-            "split": ["train", "test", "train"],
-            "feat_a": [1.0, 2.0, 3.0],
-            "feat_b": [4.0, 5.0, 6.0],
-        })
+        df = pd.DataFrame(
+            {
+                "frame": [0, 1, 2],
+                "time": [0.0, 1.0, 2.0],
+                "id": [0, 0, 0],
+                "label": [1, 2, 0],
+                "split": ["train", "test", "train"],
+                "feat_a": [1.0, 2.0, 3.0],
+                "feat_b": [4.0, 5.0, 6.0],
+            }
+        )
         cols = feature_columns(df)
         assert "label" not in cols
         assert "split" not in cols
@@ -33,46 +35,58 @@ class TestMetaColumnReservation:
 class TestParams:
     def test_requires_exactly_one_sampling_spec(self) -> None:
         with pytest.raises(ValueError, match="Exactly one"):
-            ExtractLabeledTemplates.Params.from_overrides({
-                "labels": GroundTruthLabelsSource(),
-            })
+            ExtractLabeledTemplates.Params.from_overrides(
+                {
+                    "labels": GroundTruthLabelsSource(),
+                }
+            )
 
     def test_rejects_both_sampling_specs(self) -> None:
         with pytest.raises(ValueError, match="Exactly one"):
-            ExtractLabeledTemplates.Params.from_overrides({
-                "labels": GroundTruthLabelsSource(),
-                "n_per_class": 100,
-                "n_total": 500,
-            })
+            ExtractLabeledTemplates.Params.from_overrides(
+                {
+                    "labels": GroundTruthLabelsSource(),
+                    "n_per_class": 100,
+                    "n_total": 500,
+                }
+            )
 
     def test_n_per_class_int(self) -> None:
-        params = ExtractLabeledTemplates.Params.from_overrides({
-            "labels": GroundTruthLabelsSource(),
-            "n_per_class": 100,
-        })
+        params = ExtractLabeledTemplates.Params.from_overrides(
+            {
+                "labels": GroundTruthLabelsSource(),
+                "n_per_class": 100,
+            }
+        )
         assert params.n_per_class == 100
 
     def test_n_total(self) -> None:
-        params = ExtractLabeledTemplates.Params.from_overrides({
-            "labels": GroundTruthLabelsSource(),
-            "n_total": 500,
-        })
+        params = ExtractLabeledTemplates.Params.from_overrides(
+            {
+                "labels": GroundTruthLabelsSource(),
+                "n_total": 500,
+            }
+        )
         assert params.n_total == 500
 
     def test_test_fraction_validation(self) -> None:
         with pytest.raises(Exception):
-            ExtractLabeledTemplates.Params.from_overrides({
-                "labels": GroundTruthLabelsSource(),
-                "n_total": 100,
-                "test_fraction": 1.5,
-            })
+            ExtractLabeledTemplates.Params.from_overrides(
+                {
+                    "labels": GroundTruthLabelsSource(),
+                    "n_total": 100,
+                    "test_fraction": 1.5,
+                }
+            )
 
     def test_strategy_param(self) -> None:
-        params = ExtractLabeledTemplates.Params.from_overrides({
-            "labels": GroundTruthLabelsSource(),
-            "n_total": 100,
-            "strategy": "farthest_first",
-        })
+        params = ExtractLabeledTemplates.Params.from_overrides(
+            {
+                "labels": GroundTruthLabelsSource(),
+                "n_total": 100,
+                "strategy": "farthest_first",
+            }
+        )
         assert params.strategy == "farthest_first"
 
 
@@ -107,6 +121,7 @@ def _make_factory(
 ) -> InputStream:
     def factory() -> Iterator[tuple[str, pd.DataFrame]]:
         yield from entries
+
     return InputStream(factory, n_entries=len(entries))
 
 
@@ -152,12 +167,15 @@ class TestReservoirLabeled:
             [("g", "s1", labels_a), ("g", "s2", labels_b)],
         )
 
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": 20,
-            "test_fraction": 0.0,
-            "random_state": 42,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 20,
+                "test_fraction": 0.0,
+                "random_state": 42,
+            },
+        )
 
         df_a = _make_labeled_df(n, sequence="s1", group="g")
         df_b = _make_labeled_df(n, sequence="s2", group="g")
@@ -186,15 +204,22 @@ class TestReservoirLabeled:
         for i in range(20):
             seq = f"s{i}"
             entries_labels.append(("g", seq, labels))
-            entries_data.append((f"g__{seq}", _make_labeled_df(n, sequence=seq, group="g")))
+            entries_data.append(
+                (f"g__{seq}", _make_labeled_df(n, sequence=seq, group="g"))
+            )
 
-        labels_lookup = _setup_labels_lookup(tmp_path / "labels" / "behavior", entries_labels)
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_total": 200,
-            "test_fraction": 0.3,
-            "random_state": 42,
-        })
+        labels_lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior", entries_labels
+        )
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_total": 200,
+                "test_fraction": 0.3,
+                "random_state": 42,
+            },
+        )
         feat.fit(_make_factory(entries_data))
 
         run_root = tmp_path / "run"
@@ -213,13 +238,18 @@ class TestReservoirLabeled:
             tmp_path / "labels" / "behavior",
             [("g", "s1", labels)],
         )
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_total": 40,
-            "pool": {"allocation": "exact"},
-            "test_fraction": 0.0,
-        })
-        feat.fit(_make_factory([("g__s1", _make_labeled_df(n, sequence="s1", group="g"))]))
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_total": 40,
+                "pool": {"allocation": "exact"},
+                "test_fraction": 0.0,
+            },
+        )
+        feat.fit(
+            _make_factory([("g__s1", _make_labeled_df(n, sequence="s1", group="g"))])
+        )
 
         run_root = tmp_path / "run"
         feat.save_state(run_root)
@@ -240,12 +270,15 @@ class TestReservoirLabeled:
 
         results = []
         for run in range(2):
-            feat = _make_feature_with_labels(labels_lookup, params={
-                "labels": {"kind": "behavior"},
-                "n_per_class": 15,
-                "test_fraction": 0.0,
-                "random_state": 123,
-            })
+            feat = _make_feature_with_labels(
+                labels_lookup,
+                params={
+                    "labels": {"kind": "behavior"},
+                    "n_per_class": 15,
+                    "test_fraction": 0.0,
+                    "random_state": 123,
+                },
+            )
             df = _make_labeled_df(n, sequence="s1", group="g")
             feat.fit(_make_factory([("g__s1", df)]))
             run_root = tmp_path / f"run_{run}"
@@ -264,12 +297,15 @@ class TestExactLabeled:
             tmp_path / "labels" / "behavior",
             [("g", "s1", labels)],
         )
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": {0: 10, 1: 30},
-            "pool": {"allocation": "exact"},
-            "test_fraction": 0.0,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": {0: 10, 1: 30},
+                "pool": {"allocation": "exact"},
+                "test_fraction": 0.0,
+            },
+        )
         df = _make_labeled_df(n, sequence="s1", group="g")
         feat.fit(_make_factory([("g__s1", df)]))
 
@@ -290,13 +326,16 @@ class TestFarthestFirstLabeled:
             tmp_path / "labels" / "behavior",
             [("g", "s1", labels)],
         )
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": 10,
-            "strategy": "farthest_first",
-            "pool": {"size": 50},
-            "test_fraction": 0.0,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 10,
+                "strategy": "farthest_first",
+                "pool": {"size": 50},
+                "test_fraction": 0.0,
+            },
+        )
         df = _make_labeled_df(n, sequence="s1", group="g")
         feat.fit(_make_factory([("g__s1", df)]))
 
@@ -316,11 +355,14 @@ class TestSaveLoadLabeled:
             tmp_path / "labels" / "behavior",
             [("g", "s1", labels)],
         )
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": 15,
-            "test_fraction": 0.0,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 15,
+                "test_fraction": 0.0,
+            },
+        )
         df = _make_labeled_df(n, sequence="s1", group="g")
         feat.fit(_make_factory([("g__s1", df)]))
 
@@ -368,10 +410,13 @@ class TestSaveLoadLabeled:
 class TestEdgeCasesLabeled:
     def test_empty_inputs_raises(self, tmp_path: Path) -> None:
         labels_lookup = _setup_labels_lookup(tmp_path / "labels" / "behavior", [])
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": 10,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 10,
+            },
+        )
         with pytest.raises(RuntimeError, match="No data"):
             feat.fit(InputStream(lambda: iter([]), n_entries=0))
 
@@ -383,11 +428,14 @@ class TestEdgeCasesLabeled:
             tmp_path / "labels" / "behavior",
             [("g", "s1", labels)],
         )
-        feat = _make_feature_with_labels(labels_lookup, params={
-            "labels": {"kind": "behavior"},
-            "n_per_class": 20,
-            "test_fraction": 0.0,
-        })
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 20,
+                "test_fraction": 0.0,
+            },
+        )
         df = _make_labeled_df(n, sequence="s1", group="g")
         feat.fit(_make_factory([("g__s1", df)]))
 

@@ -5,6 +5,7 @@ Supports fine-tuning from existing weights (PyTorch ``.pt`` or Keras ``.h5``).
 
 Requires: ``torch >= 2.0``
 """
+
 from __future__ import annotations
 
 import csv
@@ -21,6 +22,7 @@ import numpy as np
 def _require_torch():
     try:
         import torch
+
         return torch
     except ImportError:
         raise ImportError(
@@ -53,7 +55,7 @@ def _make_dataloader(dataset_dir: Path, subset: str, batch_size: int, shuffle: b
         raise FileNotFoundError(f"No patches found at {patches_path}")
 
     patches = np.load(str(patches_path))  # (N, H, W) float32
-    labels = np.load(str(labels_path))    # (N, num_classes) float32
+    labels = np.load(str(labels_path))  # (N, num_classes) float32
 
     # Add channel dimension: (N, H, W) → (N, 1, H, W)
     patches = patches[:, np.newaxis, :, :]
@@ -170,7 +172,9 @@ def train_localizer(
         dev = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
 
     # Build model
-    encoder = LocalizerEncoder(num_classes=num_classes, initial_channels=initial_channels)
+    encoder = LocalizerEncoder(
+        num_classes=num_classes, initial_channels=initial_channels
+    )
 
     if weights is not None:
         load_localizer_weights(encoder, weights, strict=True)
@@ -199,7 +203,11 @@ def train_localizer(
         lr=lr,
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=lr_factor, patience=lr_patience, min_lr=min_lr,
+        optimizer,
+        mode="min",
+        factor=lr_factor,
+        patience=lr_patience,
+        min_lr=min_lr,
     )
 
     # Training state
@@ -279,12 +287,16 @@ def train_localizer(
         )
 
         if callback is not None and hasattr(callback, "on_epoch_end"):
-            callback.on_epoch_end(epoch, epochs, {
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-                "lr": current_lr,
-                "time_s": dt,
-            })
+            callback.on_epoch_end(
+                epoch,
+                epochs,
+                {
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "lr": current_lr,
+                    "time_s": dt,
+                },
+            )
 
         # Save last checkpoint (encoder state_dict only)
         torch.save(encoder.state_dict(), str(weights_dir / "last.pt"))
@@ -317,6 +329,7 @@ def train_localizer(
     # Save run config (all training parameters for reproducibility)
     if aug_config is not None:
         from dataclasses import asdict
+
         aug_saved: Any = asdict(aug_config)
     else:
         aug_saved = None

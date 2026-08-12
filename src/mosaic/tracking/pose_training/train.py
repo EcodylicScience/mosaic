@@ -7,6 +7,7 @@ Requires:
     Pose:  pip install ultralytics
     POLO:  pip install git+https://github.com/mooch443/POLO.git
 """
+
 from __future__ import annotations
 
 import os
@@ -18,6 +19,7 @@ from typing import Any, Callable
 def _require_ultralytics():
     try:
         from ultralytics import YOLO
+
         return YOLO
     except ImportError:
         raise ImportError(
@@ -132,6 +134,7 @@ def train_pose_model(
 
     if not resume:
         from .augmentation import resolve_augmentation
+
         aug_dict = resolve_augmentation(augmentation)
         if aug_dict:
             train_kwargs.update(aug_dict)
@@ -192,9 +195,7 @@ def find_best_model(project_dir: str | Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def find_last_checkpoint(
-    project_dir: str | Path, name: str | None = None
-) -> Path:
+def find_last_checkpoint(project_dir: str | Path, name: str | None = None) -> Path:
     """Find the last.pt checkpoint for resuming training.
 
     Parameters
@@ -274,7 +275,10 @@ def validate_model(
         project = str(Path(model_path).resolve().parent.parent)
 
     results = yolo.val(
-        data=str(data_yaml), device=device, imgsz=imgsz, split=split,
+        data=str(data_yaml),
+        device=device,
+        imgsz=imgsz,
+        split=split,
         project=str(project),
     )
     return results
@@ -283,6 +287,7 @@ def validate_model(
 # --------------------------------------------------------------------------- #
 # POLO point-detection training
 # --------------------------------------------------------------------------- #
+
 
 def _require_polo():
     """Import YOLO from a POLO fork and verify the 'locate' task is available.
@@ -435,6 +440,7 @@ def train_point_model(
 
     if not resume:
         from .augmentation import resolve_augmentation
+
         aug_dict = resolve_augmentation(augmentation)
         if aug_dict:
             train_kwargs.update(aug_dict)

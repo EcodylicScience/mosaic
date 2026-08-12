@@ -7,6 +7,7 @@ Provides curated augmentation configurations for the three model types:
 - **Localizer**: Typed configuration with geometric (flip, rot90) and
   photometric (brightness, contrast, noise) transforms using pure torch ops.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -139,6 +140,7 @@ def resolve_augmentation(
 # Localizer augmentation
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class LocalizerAugmentConfig:
     """Configuration for localizer patch augmentation.
@@ -151,6 +153,7 @@ class LocalizerAugmentConfig:
     Photometric transforms (applied per-sample for variety):
         brightness, contrast, gaussian_noise_std
     """
+
     # Geometric
     flip_h: bool = True
     flip_v: bool = True
@@ -169,18 +172,28 @@ class LocalizerAugmentConfig:
 
 LOCALIZER_AUGMENT_PRESETS: dict[str, LocalizerAugmentConfig] = {
     "none": LocalizerAugmentConfig(
-        flip_h=False, flip_v=False, rotate_90=False,
+        flip_h=False,
+        flip_v=False,
+        rotate_90=False,
     ),
     "light": LocalizerAugmentConfig(
-        flip_h=True, flip_v=True, rotate_90=True,
+        flip_h=True,
+        flip_v=True,
+        rotate_90=True,
     ),
     "medium": LocalizerAugmentConfig(
-        flip_h=True, flip_v=True, rotate_90=True,
-        brightness=0.05, contrast=(0.9, 1.1),
+        flip_h=True,
+        flip_v=True,
+        rotate_90=True,
+        brightness=0.05,
+        contrast=(0.9, 1.1),
     ),
     "heavy": LocalizerAugmentConfig(
-        flip_h=True, flip_v=True, rotate_90=True,
-        brightness=0.1, contrast=(0.8, 1.2),
+        flip_h=True,
+        flip_v=True,
+        rotate_90=True,
+        brightness=0.1,
+        contrast=(0.8, 1.2),
         gaussian_noise_std=0.02,
     ),
 }
@@ -269,7 +282,9 @@ def augment_localizer_batch(
 
     if config.brightness > 0:
         shift = torch.from_numpy(
-            rng.uniform(-config.brightness, config.brightness, size=(B, 1, 1, 1)).astype(np.float32)
+            rng.uniform(
+                -config.brightness, config.brightness, size=(B, 1, 1, 1)
+            ).astype(np.float32)
         ).to(dev)
         patches = patches + shift
 
@@ -283,7 +298,9 @@ def augment_localizer_batch(
 
     if config.gaussian_noise_std > 0:
         noise = torch.from_numpy(
-            rng.normal(0, config.gaussian_noise_std, size=patches.shape).astype(np.float32)
+            rng.normal(0, config.gaussian_noise_std, size=patches.shape).astype(
+                np.float32
+            )
         ).to(dev)
         patches = patches + noise
 

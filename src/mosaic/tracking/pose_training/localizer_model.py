@@ -17,6 +17,7 @@ the corresponding input coordinate is  ``q * 8 + 47``.
 
 Requires: ``torch >= 2.0``
 """
+
 from __future__ import annotations
 
 import torch

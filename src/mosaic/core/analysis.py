@@ -15,7 +15,13 @@ from sklearn.metrics import (
 )
 
 from .dataset import Dataset
-from .helpers import to_safe_name, load_labels_auto, detect_label_format, expand_labels_to_dense, load_labels_for_feature_frames
+from .helpers import (
+    to_safe_name,
+    load_labels_auto,
+    detect_label_format,
+    expand_labels_to_dense,
+    load_labels_for_feature_frames,
+)
 
 
 def cluster_gt_agreement(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -57,7 +63,7 @@ def cluster_gt_agreement(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 
     cm = _contingency_matrix(y_true, y_pred, classes, clusters)
     if cm.size and cm.sum() > 0:
-        purity = (cm.max(axis=0).sum() / cm.sum())
+        purity = cm.max(axis=0).sum() / cm.sum()
     else:
         purity = 0.0
 
@@ -69,7 +75,9 @@ def cluster_gt_agreement(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 
     ari = adjusted_rand_score(y_true, y_pred)
     ami = adjusted_mutual_info_score(y_true, y_pred)
-    homogeneity, completeness, v_measure = homogeneity_completeness_v_measure(y_true, y_pred)
+    homogeneity, completeness, v_measure = homogeneity_completeness_v_measure(
+        y_true, y_pred
+    )
 
     return {
         "n_samples": int(n_samples),
@@ -136,12 +144,18 @@ def compute_cluster_label_agreement(
         Used when cluster labels are row-indexed and need to be aligned with
         frame-indexed behavior labels. If None, tries to infer from cluster_feature.
     """
-    cluster_map, resolved_run_id, run_root = _load_feature_sequence_index(ds, cluster_feature, cluster_run_id)
+    cluster_map, resolved_run_id, run_root = _load_feature_sequence_index(
+        ds, cluster_feature, cluster_run_id
+    )
     label_map = _load_label_sequence_index(ds, label_kind)
     if not cluster_map:
-        raise RuntimeError(f"No sequences found for feature '{cluster_feature}' (run_id={cluster_run_id}).")
+        raise RuntimeError(
+            f"No sequences found for feature '{cluster_feature}' (run_id={cluster_run_id})."
+        )
     if not label_map:
-        raise RuntimeError(f"No labels found for kind '{label_kind}'. Run dataset.convert_all_labels first?")
+        raise RuntimeError(
+            f"No labels found for kind '{label_kind}'. Run dataset.convert_all_labels first?"
+        )
 
     if sequences:
         wanted = _normalize_sequence_filters(sequences)
@@ -157,7 +171,9 @@ def compute_cluster_label_agreement(
     frame_source_map = None
     if frame_source_feature:
         try:
-            frame_source_map, _, _ = _load_feature_sequence_index(ds, frame_source_feature, run_id=None)
+            frame_source_map, _, _ = _load_feature_sequence_index(
+                ds, frame_source_feature, run_id=None
+            )
         except Exception:
             pass
     elif "__from__" in cluster_feature:
@@ -166,7 +182,9 @@ def compute_cluster_label_agreement(
         # Try: pair-egocentric (common source with frames)
         for candidate in ["pair-egocentric", "pair-posedistance-pca"]:
             try:
-                frame_source_map, _, _ = _load_feature_sequence_index(ds, candidate, run_id=None)
+                frame_source_map, _, _ = _load_feature_sequence_index(
+                    ds, candidate, run_id=None
+                )
                 if frame_source_map:
                     break
             except Exception:
@@ -184,7 +202,9 @@ def compute_cluster_label_agreement(
             continue
 
         # Load cluster labels with frames if available
-        pred, cluster_frames = _load_cluster_labels(c_bundle.path, cluster_column, return_frames=True)
+        pred, cluster_frames = _load_cluster_labels(
+            c_bundle.path, cluster_column, return_frames=True
+        )
 
         # If cluster file doesn't have frames, try frame source feature
         feature_frames = cluster_frames
@@ -215,23 +235,27 @@ def compute_cluster_label_agreement(
         true = true[:n].astype(int, copy=False)
         y_true_blocks.append(true)
         y_pred_blocks.append(pred)
-        aligned_rows.append({
-            "sequence_safe": safe_seq,
-            "sequence": c_bundle.sequence or l_bundle.sequence or safe_seq,
-            "group": c_bundle.group or l_bundle.group or "",
-            "n_frames": int(n),
-            "cluster_path": str(c_bundle.path),
-            "label_path": str(l_bundle.path),
-        })
-
-        if include_per_sequence:
-            seq_metrics = cluster_gt_agreement(true, pred)
-            per_sequence.append({
+        aligned_rows.append(
+            {
                 "sequence_safe": safe_seq,
                 "sequence": c_bundle.sequence or l_bundle.sequence or safe_seq,
                 "group": c_bundle.group or l_bundle.group or "",
-                **_strip_confusion(seq_metrics),
-            })
+                "n_frames": int(n),
+                "cluster_path": str(c_bundle.path),
+                "label_path": str(l_bundle.path),
+            }
+        )
+
+        if include_per_sequence:
+            seq_metrics = cluster_gt_agreement(true, pred)
+            per_sequence.append(
+                {
+                    "sequence_safe": safe_seq,
+                    "sequence": c_bundle.sequence or l_bundle.sequence or safe_seq,
+                    "group": c_bundle.group or l_bundle.group or "",
+                    **_strip_confusion(seq_metrics),
+                }
+            )
 
     if not y_true_blocks:
         raise RuntimeError("All overlapping sequences were empty after alignment.")
@@ -277,10 +301,20 @@ def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Feature index missing: {idx_path}")
     df = pd.read_csv(idx_path)
     if df.empty:
-        return pd.DataFrame(columns=[
-            "feature", "run_id", "started_at", "finished_at", "n_entries",
-            "params_hash", "model_path", "k", "n_clusters", "params",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "feature",
+                "run_id",
+                "started_at",
+                "finished_at",
+                "n_entries",
+                "params_hash",
+                "model_path",
+                "k",
+                "n_clusters",
+                "params",
+            ]
+        )
 
     runs = []
     for run_id, group in df.groupby("run_id"):
@@ -289,15 +323,17 @@ def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
         finished = _first_value(group.get("finished_at"))
         params_hash = _first_value(group.get("params_hash"))
         model_info = _load_model_summary(run_root)
-        runs.append({
-            "feature": feature_name,
-            "run_id": str(run_id),
-            "started_at": started,
-            "finished_at": finished,
-            "n_entries": int(group.shape[0]),
-            "params_hash": params_hash,
-            **model_info,
-        })
+        runs.append(
+            {
+                "feature": feature_name,
+                "run_id": str(run_id),
+                "started_at": started,
+                "finished_at": finished,
+                "n_entries": int(group.shape[0]),
+                "params_hash": params_hash,
+                **model_info,
+            }
+        )
 
     runs_df = pd.DataFrame(runs)
     if not runs_df.empty and "finished_at" in runs_df.columns:

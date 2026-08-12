@@ -14,35 +14,43 @@ from mosaic.core.pipeline.types import InputStream, Result
 
 class TestXgboostParams:
     def test_default_strategy(self) -> None:
-        params = XgboostFeature.Params.from_overrides({
-            "templates": {"feature": "extract-labeled-templates"},
-            "default_class": 0,
-        })
+        params = XgboostFeature.Params.from_overrides(
+            {
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+            }
+        )
         assert params.strategy == "multiclass"
         assert params.class_weight == "balanced"
 
     def test_one_vs_rest_strategy(self) -> None:
-        params = XgboostFeature.Params.from_overrides({
-            "templates": {"feature": "extract-labeled-templates"},
-            "default_class": 0,
-            "strategy": "one_vs_rest",
-        })
+        params = XgboostFeature.Params.from_overrides(
+            {
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "strategy": "one_vs_rest",
+            }
+        )
         assert params.strategy == "one_vs_rest"
 
     def test_decision_threshold_float(self) -> None:
-        params = XgboostFeature.Params.from_overrides({
-            "templates": {"feature": "extract-labeled-templates"},
-            "default_class": 0,
-            "decision_threshold": 0.7,
-        })
+        params = XgboostFeature.Params.from_overrides(
+            {
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "decision_threshold": 0.7,
+            }
+        )
         assert params.decision_threshold == 0.7
 
     def test_decision_threshold_mapping(self) -> None:
-        params = XgboostFeature.Params.from_overrides({
-            "templates": {"feature": "extract-labeled-templates"},
-            "default_class": 0,
-            "decision_threshold": {0: 0.5, 1: 0.8},
-        })
+        params = XgboostFeature.Params.from_overrides(
+            {
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "decision_threshold": {0: 0.5, 1: 0.8},
+            }
+        )
         assert params.decision_threshold == {0: 0.5, 1: 0.8}
 
 
@@ -193,12 +201,14 @@ class TestXgboostApply:
     def test_apply_produces_predictions(self, tmp_path: Path) -> None:
         feat = self._fit_feature(tmp_path / "t")
         rng = np.random.default_rng(0)
-        df = pd.DataFrame({
-            "frame": np.arange(20),
-            "time": np.arange(20, dtype=float) / 30.0,
-            "id": np.zeros(20, dtype=int),
-            **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
-        })
+        df = pd.DataFrame(
+            {
+                "frame": np.arange(20),
+                "time": np.arange(20, dtype=float) / 30.0,
+                "id": np.zeros(20, dtype=int),
+                **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
+            }
+        )
         result = feat.apply(df)
 
         assert "predicted_label" in result.columns
@@ -209,12 +219,14 @@ class TestXgboostApply:
     def test_apply_with_threshold(self, tmp_path: Path) -> None:
         feat = self._fit_feature(tmp_path / "t", decision_threshold=0.99)
         rng = np.random.default_rng(0)
-        df = pd.DataFrame({
-            "frame": np.arange(20),
-            "time": np.arange(20, dtype=float) / 30.0,
-            "id": np.zeros(20, dtype=int),
-            **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
-        })
+        df = pd.DataFrame(
+            {
+                "frame": np.arange(20),
+                "time": np.arange(20, dtype=float) / 30.0,
+                "id": np.zeros(20, dtype=int),
+                **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
+            }
+        )
         result = feat.apply(df)
 
         # With very high threshold, most predictions should fall back to default_class
@@ -229,12 +241,14 @@ class TestXgboostApply:
     def test_apply_one_vs_rest(self, tmp_path: Path) -> None:
         feat = self._fit_feature(tmp_path / "t", strategy="one_vs_rest")
         rng = np.random.default_rng(0)
-        df = pd.DataFrame({
-            "frame": np.arange(20),
-            "time": np.arange(20, dtype=float) / 30.0,
-            "id": np.zeros(20, dtype=int),
-            **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
-        })
+        df = pd.DataFrame(
+            {
+                "frame": np.arange(20),
+                "time": np.arange(20, dtype=float) / 30.0,
+                "id": np.zeros(20, dtype=int),
+                **{f"feat_{i}": rng.standard_normal(20) for i in range(5)},
+            }
+        )
         result = feat.apply(df)
 
         assert "predicted_label" in result.columns

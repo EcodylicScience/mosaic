@@ -64,13 +64,15 @@ def _fit_feature(
     templates = _make_templates(n_templates)
     template_path = _setup_templates(tmp_path, templates)
 
-    feat = _make_feature(params={
-        "templates": {
-            "feature": "extract-templates",
-            "pattern": "templates.parquet",
-        },
-        "n_clusters": n_clusters,
-    })
+    feat = _make_feature(
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            },
+            "n_clusters": n_clusters,
+        }
+    )
     feat.load_state(
         tmp_path / "run",
         {"templates": template_path},
@@ -110,12 +112,14 @@ class TestFitAndSave:
         assert bundle["linkage_matrix"].shape == (n_templates - 1, 4)
 
     def test_fit_raises_without_templates(self) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
         with pytest.raises(RuntimeError, match="No templates"):
             feat.fit(lambda: iter([]))
 
@@ -137,15 +141,11 @@ class TestApply:
         df = _make_sequence_df(20, 5)
         result = feat.apply(df)
 
-        pd.testing.assert_series_equal(
-            result["frame"], df["frame"], check_names=False
-        )
+        pd.testing.assert_series_equal(result["frame"], df["frame"], check_names=False)
         pd.testing.assert_series_equal(
             result["sequence"], df["sequence"], check_names=False
         )
-        pd.testing.assert_series_equal(
-            result["group"], df["group"], check_names=False
-        )
+        pd.testing.assert_series_equal(result["group"], df["group"], check_names=False)
 
     def test_apply_removes_feature_columns(self, tmp_path: Path) -> None:
         feat = _fit_feature(tmp_path, n_clusters=5)
@@ -166,12 +166,14 @@ class TestApply:
         assert result.shape[0] == 19
 
     def test_apply_raises_before_fit(self) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
         df = _make_sequence_df(10, 5)
         with pytest.raises(RuntimeError, match="not fitted"):
             feat.apply(df)
@@ -182,13 +184,15 @@ class TestSaveLoadRoundTrip:
         feat1 = _fit_feature(tmp_path, n_clusters=5)
         feat1.save_state(tmp_path / "run")
 
-        feat2 = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-            "n_clusters": 5,
-        })
+        feat2 = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+                "n_clusters": 5,
+            }
+        )
         loaded = feat2.load_state(tmp_path / "run", {}, {})
         assert loaded is True
 
@@ -198,10 +202,12 @@ class TestSaveLoadRoundTrip:
         pd.testing.assert_frame_equal(result1, result2)
 
     def test_load_state_returns_false_when_missing(self, tmp_path: Path) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
         assert feat.load_state(tmp_path, {}, {}) is False

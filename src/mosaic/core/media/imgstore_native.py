@@ -54,7 +54,9 @@ _NUMPY_IMAGE_FORMAT = "npy"
 _CV2_IMAGE_FORMATS = frozenset({"tif", "png", "jpg", "ppm", "pgm", "bmp"})
 
 # Matches cv2's "COLOR_<codec>2BGR[_<method>]" enum names.
-_CV2_CODEC_PATTERN = re.compile(r"^COLOR_(?P<codec>[A-Za-z0-9_]+)2BGR($|(?P<method>_[A-Za-z0-9]*))")
+_CV2_CODEC_PATTERN = re.compile(
+    r"^COLOR_(?P<codec>[A-Za-z0-9_]+)2BGR($|(?P<method>_[A-Za-z0-9]*))"
+)
 
 
 def _build_encoding_enum_by_code() -> dict[str, int]:
@@ -213,7 +215,9 @@ class NativeStore:
         _ensure_sequence(raw_shape, metadata_path)
         img_shape = tuple(int(v) for v in raw_shape)
         if len(img_shape) < 2:
-            message = f"malformed imgstore imgshape (need at least 2 dims): {metadata_path}"
+            message = (
+                f"malformed imgstore imgshape (need at least 2 dims): {metadata_path}"
+            )
             raise MediaProbeError(message)
         if self._is_video:
             # Video encoders only write even dimensions -- VideoImgStore

@@ -100,7 +100,9 @@ def select_kmeans_frames(
     if candidates.size == 0:
         raise ValueError("No candidate frames to sample from.")
     if X.ndim != 2 or X.shape[0] != candidates.size:
-        raise ValueError("features must be shape (N, D) and aligned with candidate_indices.")
+        raise ValueError(
+            "features must be shape (N, D) and aligned with candidate_indices."
+        )
     if n_frames <= 0:
         raise ValueError("n_frames must be > 0.")
     if n_frames >= candidates.size:
@@ -129,7 +131,9 @@ def select_kmeans_frames(
         best = int(members[int(np.argmin(d2))])
         selected_local.append(best)
 
-    selected_local = _ordered_unique(np.asarray(selected_local, dtype=np.int32)).tolist()
+    selected_local = _ordered_unique(
+        np.asarray(selected_local, dtype=np.int32)
+    ).tolist()
 
     if len(selected_local) < n_frames:
         selected_local = _fill_by_farthest_point(

@@ -62,16 +62,18 @@ def _fit_feature(tmp_path: Path, n_templates: int = 100) -> GlobalTSNE:
     templates = _make_templates(n_templates)
     template_path = _setup_templates(tmp_path, templates)
 
-    feat = _make_feature(params={
-        "templates": {
-            "feature": "extract-templates",
-            "pattern": "templates.parquet",
-        },
-        "perplexity": 10,
-        "n_jobs": 1,
-        "fit": {"exaggeration_iters": 1, "iters": 1},
-        "mapping": {"iters": 1},
-    })
+    feat = _make_feature(
+        params={
+            "templates": {
+                "feature": "extract-templates",
+                "pattern": "templates.parquet",
+            },
+            "perplexity": 10,
+            "n_jobs": 1,
+            "fit": {"exaggeration_iters": 1, "iters": 1},
+            "mapping": {"iters": 1},
+        }
+    )
     feat.load_state(
         tmp_path / "run",
         {"templates": template_path},
@@ -108,13 +110,15 @@ class TestFitAndSave:
         assert data["Y"].shape == (80, 2)
 
     def test_fit_raises_without_templates(self) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-            "perplexity": 10,
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+                "perplexity": 10,
+            }
+        )
         with pytest.raises(RuntimeError, match="No templates"):
             feat.fit(lambda: iter([]))
 
@@ -161,12 +165,14 @@ class TestApply:
         assert not np.isnan(result["tsne_x"].iloc[0])
 
     def test_apply_raises_before_fit(self) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
         df = _make_sequence_df(10, 5)
         with pytest.raises(RuntimeError, match="Not fitted"):
             feat.apply(df)
@@ -177,15 +183,17 @@ class TestSaveLoadRoundTrip:
         feat1 = _fit_feature(tmp_path)
         feat1.save_state(tmp_path / "run")
 
-        feat2 = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-            "perplexity": 10,
-            "n_jobs": 1,
-            "mapping": {"iters": 1},
-        })
+        feat2 = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+                "perplexity": 10,
+                "n_jobs": 1,
+                "mapping": {"iters": 1},
+            }
+        )
         loaded = feat2.load_state(tmp_path / "run", {}, {})
         assert loaded is True
 
@@ -195,10 +203,12 @@ class TestSaveLoadRoundTrip:
         pd.testing.assert_frame_equal(result1, result2)
 
     def test_load_state_returns_false_when_missing(self, tmp_path: Path) -> None:
-        feat = _make_feature(params={
-            "templates": {
-                "feature": "extract-templates",
-                "pattern": "templates.parquet",
-            },
-        })
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
         assert feat.load_state(tmp_path, {}, {}) is False

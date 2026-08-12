@@ -7,6 +7,7 @@ Requires:
     Pose:  pip install ultralytics
     POLO:  pip install git+https://github.com/mooch443/POLO.git
 """
+
 from __future__ import annotations
 
 import queue
@@ -52,6 +53,7 @@ class _ProgressBar(Protocol):
 def _require_ultralytics():
     try:
         from ultralytics import YOLO
+
         return YOLO
     except ImportError:
         raise ImportError(
@@ -313,7 +315,9 @@ def run_inference(
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
-    eff_end = min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
+    eff_end = (
+        min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
+    )
     expected_frames = max(0, len(range(start_frame, eff_end, frame_step)))
     if max_frames is not None:
         expected_frames = min(expected_frames, max_frames)
@@ -323,6 +327,7 @@ def run_inference(
     if verbose:
         try:
             from tqdm.auto import tqdm
+
             pbar = tqdm(total=expected_frames, desc="Inference", unit="frame")
         except ImportError:
             pass
@@ -446,7 +451,9 @@ def inference_to_dataframe(results: list[Any]) -> pd.DataFrame:
         if kps_data is None or len(kps_data) == 0:
             continue
 
-        kps_np = kps_data.cpu().numpy() if hasattr(kps_data, "cpu") else np.asarray(kps_data)
+        kps_np = (
+            kps_data.cpu().numpy() if hasattr(kps_data, "cpu") else np.asarray(kps_data)
+        )
 
         for det_idx in range(kps_np.shape[0]):
             row: dict[str, Any] = {
@@ -457,7 +464,9 @@ def inference_to_dataframe(results: list[Any]) -> pd.DataFrame:
             for k in range(n_kps):
                 row[f"poseX{k}"] = float(kps_np[det_idx, k, 0])
                 row[f"poseY{k}"] = float(kps_np[det_idx, k, 1])
-                row[f"poseP{k}"] = float(kps_np[det_idx, k, 2]) if kps_np.shape[2] > 2 else 1.0
+                row[f"poseP{k}"] = (
+                    float(kps_np[det_idx, k, 2]) if kps_np.shape[2] > 2 else 1.0
+                )
             rows.append(row)
 
     return pd.DataFrame(rows)
@@ -466,6 +475,7 @@ def inference_to_dataframe(results: list[Any]) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # POLO point-detection inference
 # --------------------------------------------------------------------------- #
+
 
 def _require_polo():
     """Import YOLO from a POLO fork and verify the 'locate' task is available."""
@@ -583,7 +593,9 @@ def run_point_inference_opencv(
     finally:
         reader.close()
 
-    print(f"[point_inference] Processed {processed}/{total_str} frames from {video_path}")
+    print(
+        f"[point_inference] Processed {processed}/{total_str} frames from {video_path}"
+    )
 
     return all_results
 
@@ -684,7 +696,9 @@ def run_point_inference(
     resize_dims = _compute_resize(meta.width, meta.height, imgsz)
 
     # Compute expected total frames for progress bar
-    eff_end = min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
+    eff_end = (
+        min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
+    )
     expected_frames = max(0, len(range(start_frame, eff_end, frame_step)))
     if max_frames is not None:
         expected_frames = min(expected_frames, max_frames)
@@ -694,6 +708,7 @@ def run_point_inference(
     if verbose:
         try:
             from tqdm.auto import tqdm
+
             pbar = tqdm(total=expected_frames, desc="Inference", unit="frame")
         except ImportError:
             pass
@@ -727,7 +742,9 @@ def run_point_inference(
             pbar.close()
 
     total_str = str(meta.frame_count)
-    print(f"[point_inference] Processed {processed}/{total_str} frames from {video_path}")
+    print(
+        f"[point_inference] Processed {processed}/{total_str} frames from {video_path}"
+    )
 
     return all_results
 
@@ -754,7 +771,11 @@ def locations_to_dataframe(results: list[Any]) -> pd.DataFrame:
         if locs_data is None or len(locs_data) == 0:
             continue
 
-        locs_np = locs_data.cpu().numpy() if hasattr(locs_data, "cpu") else np.asarray(locs_data)
+        locs_np = (
+            locs_data.cpu().numpy()
+            if hasattr(locs_data, "cpu")
+            else np.asarray(locs_data)
+        )
         names = getattr(result, "names", {})
 
         for det_idx in range(locs_np.shape[0]):
@@ -764,15 +785,17 @@ def locations_to_dataframe(results: list[Any]) -> pd.DataFrame:
             else:
                 x, y, conf, cls = locs_np[det_idx, :4]
 
-            rows.append({
-                "frame": frame_idx,
-                "detection_id": det_idx,
-                "x": float(x),
-                "y": float(y),
-                "confidence": float(conf),
-                "class_id": int(cls),
-                "class_name": names.get(int(cls), f"class_{int(cls)}"),
-            })
+            rows.append(
+                {
+                    "frame": frame_idx,
+                    "detection_id": det_idx,
+                    "x": float(x),
+                    "y": float(y),
+                    "confidence": float(conf),
+                    "class_id": int(cls),
+                    "class_name": names.get(int(cls), f"class_{int(cls)}"),
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -845,8 +868,13 @@ def visualize_detections(
         if show_labels:
             label = det.get("class_name", str(cid))
             cv2.putText(
-                out, label, (x + point_radius + 2, y + 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1,
+                out,
+                label,
+                (x + point_radius + 2, y + 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                color,
+                1,
             )
 
     return out
@@ -891,7 +919,9 @@ def _extract_point_detections(result: Any) -> list[dict]:
     if locs_data is None or len(locs_data) == 0:
         return []
 
-    locs_np = locs_data.cpu().numpy() if hasattr(locs_data, "cpu") else np.asarray(locs_data)
+    locs_np = (
+        locs_data.cpu().numpy() if hasattr(locs_data, "cpu") else np.asarray(locs_data)
+    )
     names = getattr(result, "names", {})
 
     dets = []
@@ -900,13 +930,15 @@ def _extract_point_detections(result: Any) -> list[dict]:
             x, y, _track, conf, cls = locs_np[i, :5]
         else:
             x, y, conf, cls = locs_np[i, :4]
-        dets.append({
-            "x": float(x),
-            "y": float(y),
-            "confidence": float(conf),
-            "class_id": int(cls),
-            "class_name": names.get(int(cls), f"class_{int(cls)}"),
-        })
+        dets.append(
+            {
+                "x": float(x),
+                "y": float(y),
+                "confidence": float(conf),
+                "class_id": int(cls),
+                "class_name": names.get(int(cls), f"class_{int(cls)}"),
+            }
+        )
     return dets
 
 
@@ -1014,14 +1046,20 @@ def visualize_inference(
         raise ValueError(f"Unknown rendering mode: {rendering!r}")
 
     if rendering == "ultralytics" and rtype == "localizer":
-        raise ValueError("rendering='ultralytics' is not supported for localizer results")
+        raise ValueError(
+            "rendering='ultralytics' is not supported for localizer results"
+        )
 
     meta = get_video_metadata(video_path)
 
     # Compute scale factors for coordinate mapping
     # Ultralytics results store orig_shape = (H, W) of the inference input
     scale_x, scale_y = 1.0, 1.0
-    if rendering == "custom" and rtype in ("pose", "point") and hasattr(results[0], "orig_shape"):
+    if (
+        rendering == "custom"
+        and rtype in ("pose", "point")
+        and hasattr(results[0], "orig_shape")
+    ):
         inf_h, inf_w = results[0].orig_shape
         if inf_w != meta.width or inf_h != meta.height:
             scale_x = meta.width / inf_w
@@ -1044,13 +1082,19 @@ def visualize_inference(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             writer = FFmpegVideoWriter(
-                out_path, meta.width, meta.height,
-                fps=meta.fps, crf=crf,
+                out_path,
+                meta.width,
+                meta.height,
+                fps=meta.fps,
+                crf=crf,
             )
         except (RuntimeError, MediaProbeError):
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(
-                str(out_path), fourcc, meta.fps, (meta.width, meta.height),
+                str(out_path),
+                fourcc,
+                meta.fps,
+                (meta.width, meta.height),
             )
 
     # Progress bar
@@ -1058,6 +1102,7 @@ def visualize_inference(
     if verbose:
         try:
             from tqdm.auto import tqdm
+
             pbar = tqdm(total=len(results), desc="Visualize", unit="frame")
         except ImportError:
             pass
@@ -1086,13 +1131,19 @@ def visualize_inference(
                 if kps_attr is not None:
                     kps_data = getattr(kps_attr, "data", None)
                     if kps_data is not None and len(kps_data) > 0:
-                        kps_np = kps_data.cpu().numpy() if hasattr(kps_data, "cpu") else np.asarray(kps_data)
+                        kps_np = (
+                            kps_data.cpu().numpy()
+                            if hasattr(kps_data, "cpu")
+                            else np.asarray(kps_data)
+                        )
                         for det_idx in range(kps_np.shape[0]):
                             kpts = kps_np[det_idx].copy()
                             kpts[:, 0] *= scale_x
                             kpts[:, 1] *= scale_y
                             annotated = visualize_keypoints(
-                                annotated, kpts, skeleton,
+                                annotated,
+                                kpts,
+                                skeleton,
                                 conf_threshold=conf_threshold,
                                 point_radius=point_radius,
                                 point_color=point_color,
@@ -1106,7 +1157,8 @@ def visualize_inference(
                         d["x"] *= scale_x
                         d["y"] *= scale_y
                 annotated = visualize_detections(
-                    frame, dets,
+                    frame,
+                    dets,
                     conf_threshold=conf_threshold,
                     point_radius=det_point_radius,
                     class_colors=class_colors,
@@ -1115,7 +1167,8 @@ def visualize_inference(
             else:  # localizer
                 dets = result if isinstance(result, list) else []
                 annotated = visualize_detections(
-                    frame, dets,
+                    frame,
+                    dets,
                     conf_threshold=conf_threshold,
                     point_radius=det_point_radius,
                     class_colors=class_colors,

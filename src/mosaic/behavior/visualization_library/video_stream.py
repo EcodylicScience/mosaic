@@ -4,6 +4,7 @@ This module contains the video streaming infrastructure:
 - _FrameStream: Iterator yielding (frame_idx, frame_bgr) with overlay
 - render_stream: Factory function returning a _FrameStream
 """
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple, Optional, Iterable, Any, Dict, Sequence, Union
@@ -19,13 +20,24 @@ _ALLOWED_DRAW_OPTIONS = {"show_labels", "point_radius", "bbox_thickness", "font_
 class _FrameStream:
     """Iterator that yields (frame_index, frame_bgr_with_overlay) tuples."""
 
-    def __init__(self, reader, fps, base_size, scaled_size, per_frame, id_colors,
-                 start, end, color_feature=None, color_mode=None,
-                 show_individual_bboxes: bool = True,
-                 pair_box_feature: Optional[str] = None,
-                 pair_box_behaviors: Optional[Iterable[Any]] = None,
-                 hide_individual_bboxes_for_pair: bool = False,
-                 draw_options: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        reader,
+        fps,
+        base_size,
+        scaled_size,
+        per_frame,
+        id_colors,
+        start,
+        end,
+        color_feature=None,
+        color_mode=None,
+        show_individual_bboxes: bool = True,
+        pair_box_feature: Optional[str] = None,
+        pair_box_behaviors: Optional[Iterable[Any]] = None,
+        hide_individual_bboxes_for_pair: bool = False,
+        draw_options: Optional[Dict[str, Any]] = None,
+    ):
         self._reader = reader
         self._fps = fps or 30.0
         self._base_size = base_size
@@ -81,14 +93,18 @@ class _FrameStream:
         frame_overlay = self._per_frame.get(idx)
         if frame_overlay:
             frame = draw_frame(
-                frame, frame_overlay, self._id_colors,
-                scale=self._scale, color_feature=self._color_feature,
+                frame,
+                frame_overlay,
+                self._id_colors,
+                scale=self._scale,
+                color_feature=self._color_feature,
                 color_mode=self._color_mode,
                 show_individual_bboxes=self._show_individual_bboxes,
                 pair_box_feature=self._pair_box_feature,
                 pair_box_behaviors=self._pair_box_behaviors,
                 hide_individual_bboxes_for_pair=self._hide_individual_bboxes_for_pair,
-                **self._draw_options)
+                **self._draw_options,
+            )
         return idx, frame
 
     def close(self):
@@ -100,17 +116,19 @@ class _FrameStream:
         self.close()
 
 
-def render_stream(video_paths: Union[list[Path], Path, str],
-                  overlay_data: dict,
-                  start: int = 0,
-                  end: Optional[int] = None,
-                  downscale: float = 1.0,
-                  show_individual_bboxes: bool = True,
-                  pair_box_feature: Optional[str] = None,
-                  pair_box_behaviors: Optional[Iterable[Any]] = None,
-                  hide_individual_bboxes_for_pair: bool = False,
-                  draw_options: Optional[Dict[str, Any]] = None,
-                  facts: Sequence[MediaFacts] | None = None) -> _FrameStream:
+def render_stream(
+    video_paths: Union[list[Path], Path, str],
+    overlay_data: dict,
+    start: int = 0,
+    end: Optional[int] = None,
+    downscale: float = 1.0,
+    show_individual_bboxes: bool = True,
+    pair_box_feature: Optional[str] = None,
+    pair_box_behaviors: Optional[Iterable[Any]] = None,
+    hide_individual_bboxes_for_pair: bool = False,
+    draw_options: Optional[Dict[str, Any]] = None,
+    facts: Sequence[MediaFacts] | None = None,
+) -> _FrameStream:
     """
     Return an iterable that yields (frame_index, frame_bgr_with_overlay).
 
@@ -164,15 +182,32 @@ def render_stream(video_paths: Union[list[Path], Path, str],
     merged_draw_options = {}
     overlay_draw_options = overlay_data.get("draw_options")
     if isinstance(overlay_draw_options, dict):
-        merged_draw_options.update({k: v for k, v in overlay_draw_options.items() if k in _ALLOWED_DRAW_OPTIONS})
+        merged_draw_options.update(
+            {
+                k: v
+                for k, v in overlay_draw_options.items()
+                if k in _ALLOWED_DRAW_OPTIONS
+            }
+        )
     if isinstance(draw_options, dict):
-        merged_draw_options.update({k: v for k, v in draw_options.items() if k in _ALLOWED_DRAW_OPTIONS})
+        merged_draw_options.update(
+            {k: v for k, v in draw_options.items() if k in _ALLOWED_DRAW_OPTIONS}
+        )
 
     return _FrameStream(
-        reader, fps, base_size, scaled_size, per_frame, id_colors,
-        start, end, color_feature=color_feature, color_mode=color_mode,
+        reader,
+        fps,
+        base_size,
+        scaled_size,
+        per_frame,
+        id_colors,
+        start,
+        end,
+        color_feature=color_feature,
+        color_mode=color_mode,
         show_individual_bboxes=show_individual_bboxes,
         pair_box_feature=pair_box_feature,
         pair_box_behaviors=pair_box_behaviors,
         hide_individual_bboxes_for_pair=hide_individual_bboxes_for_pair,
-        draw_options=merged_draw_options)
+        draw_options=merged_draw_options,
+    )
