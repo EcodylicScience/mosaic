@@ -37,8 +37,9 @@ from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    readable_tracks_table,
+    publish_or_record,
     publish_tracks_table,
+    readable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -217,21 +218,16 @@ def _bridge_predictions_to_tracks(
             return reusable
 
     converter = get_track_converter("ultralytics_tracks")
-    try:
-        df = converter.convert(
-            predictions_path,
-            UltralyticsTracksParams(fps=fps),
-            EntryHints(group=group, sequence=sequence),
-        )
-    # Broad on purpose: a table one entry cannot convert must not end a batch
-    # whose other entries converted fine. Tracking failures still propagate.
-    except Exception as exc:
-        print(
-            f"[run_ultralytics] convert failed for {predictions_path}: {exc}; "
-            f"skipping ({group}, {sequence})",
-            file=sys.stderr,
-        )
-        return None
+    # A table one entry cannot convert must not end a batch whose other entries
+    # converted fine -- but it must not vanish either. The exception now
+    # propagates to `publish_or_record`, which keeps the batch going *and*
+    # records the entry as failed on the attempt. Tracking failures still
+    # propagate past that and end the run.
+    df = converter.convert(
+        predictions_path,
+        UltralyticsTracksParams(fps=fps),
+        EntryHints(group=group, sequence=sequence),
+    )
 
     return publish_tracks_table(
         ds,
@@ -457,17 +453,22 @@ def run_ultralytics(
 
         if not convert_to_tracks:
             return row
-        bridged = _bridge_predictions_to_tracks(
-            job.ds,
-            item.group,
-            item.sequence,
-            out_path,
-            tracks_variant=minted.tracks_variant,
-            producer_run_id=minted.run_id,
-            video_path=item.video_path,
-            model_files=list(resolved_model.significant_files),
-            fps=item.fps,
-            overwrite=job.overwrite or recomputed,
+        bridged = publish_or_record(
+            job.ctx,
+            item.key,
+            lambda: _bridge_predictions_to_tracks(
+                job.ds,
+                item.group,
+                item.sequence,
+                out_path,
+                tracks_variant=minted.tracks_variant,
+                producer_run_id=minted.run_id,
+                video_path=item.video_path,
+                model_files=list(resolved_model.significant_files),
+                fps=item.fps,
+                overwrite=job.overwrite or recomputed,
+            ),
+            kind=ULTRALYTICS_KIND,
         )
         return row if bridged is None else dataclasses.replace(row, n_ids=bridged.n_ids)
 

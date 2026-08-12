@@ -39,3 +39,31 @@ def run_log_dir_for(ds: "Dataset") -> Path:
     from mosaic.core.pipeline.run_log import run_log_dir
 
     return run_log_dir(ds.base_dir)
+
+
+def entry_failure_status(ds: "Dataset", execution_id: str) -> dict[str, object]:
+    """``status`` and ``entries_failed`` for an attempt, read back from its log.
+
+    An op that lost some entities but not all is ``partial``, not ``finished``:
+    it exited 0, and saying ``finished`` would report a run that published
+    nothing for those entries as a clean success. ``run_feature`` already
+    reports this way; ops and trackers hardcoded the literal.
+
+    Read from the run-log rather than returned by ``run_op``, whose ``-> str``
+    is also called by mosaic-queue and mosaic-api -- and the log is the record
+    that survives the queue giving the child's stderr to ``DEVNULL``.
+    ``reduce_run_log`` already folds the ``entry_error`` events into
+    ``entries_failed``, so nothing new is derived here.
+
+    ``partial`` is deliberately **not** a terminal status and is absent from
+    ``runlog.TERMINAL_STATUSES``: mosaic-api's sweeper treats that set as
+    terminal and would reap a live run. It is a reporting word, computed here.
+    """
+    from mosaic.core.pipeline.run_log import read_run
+
+    snapshot = read_run(run_log_dir_for(ds), execution_id)
+    failed = int(snapshot["entries_failed"]) if snapshot else 0
+    return {
+        "status": "partial" if failed else "finished",
+        "entries_failed": failed,
+    }

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking.common.entry import open_entry, release_entry
 from mosaic.tracking.common.index import TrackerRunRowBase
@@ -102,6 +103,10 @@ def run_tracker(
     index.ensure()
     rows: list[RowT] = []
     skipped: list[str] = []
+    # Entries this run actually opened. Not `work_items`: one held by another
+    # execution was never this run's to lose, and counting it would let a
+    # contended run declare itself a total failure.
+    attempted: set[str] = set()
 
     managed: AbstractContextManager[JobContext] = (
         nullcontext(ctx)
@@ -139,6 +144,7 @@ def run_tracker(
                     job.progress.on_entry_end(i + 1, len(work_items), item.key)
                     continue
                 work_dir, _held = opened
+                attempted.add(item.key)
 
                 try:
                     row = run_entry(
@@ -165,6 +171,29 @@ def run_tracker(
             if rows:
                 index.append(rows)
                 index.mark_finished(minted.run_id)
+
+        # Losing every entry means the run produced nothing, and reporting that
+        # as finished is the defect AllEntriesFailed exists to close -- the CLI
+        # exits 0 and mosaic-queue maps exit 0 to a `finished` ledger row. The
+        # shape a tracker reaches it by is a bridge that failed on every entry:
+        # one systematic converter fault, nine sessions of GPU time, and no
+        # table published. Raised after the `finally` above, so the rows for the
+        # tracking that *did* happen are already durable and a re-run adopts the
+        # finished directories rather than recomputing them.
+        #
+        # Counted against this run's own entries rather than `failed_keys`
+        # wholesale: the op path may hand in a JobContext that already carries
+        # failures from an earlier stage of the same attempt.
+        lost = {key for key in job.failed_keys if key in attempted}
+        if attempted and lost == attempted:
+            raise AllEntriesFailed(
+                f"[{kind}] every one of {len(attempted)} attempted entries failed "
+                f"to publish, so run_id={minted.run_id} produced no tracks: "
+                f"{', '.join(sorted(lost))}. The tool output is kept under "
+                f"{minted.run_root}, so fixing the cause and re-running will "
+                f"adopt it and retry only the conversion. The per-entry errors "
+                f"are in this attempt's run-log."
+            )
 
     held = f", {len(skipped)} held by another execution" if skipped else ""
     print(

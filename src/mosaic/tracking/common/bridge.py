@@ -26,7 +26,8 @@ had no effect on any tracked table at all.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,11 +43,13 @@ from mosaic.core.schema import ensure_track_schema
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.job import JobContext
 
 __all__ = [
     "BridgeCounts",
     "readable_tracks_table",
     "frame_counts",
+    "publish_or_record",
     "publish_tracks_table",
     "tracks_table_path",
 ]
@@ -157,3 +160,58 @@ def publish_tracks_table(
         consumed_source_roots=consumed_roots_for(ds, list(consumed)),
     )
     return counts
+
+
+def publish_or_record(
+    ctx: JobContext,
+    key: str,
+    publish: Callable[[], BridgeCounts | None],
+    *,
+    kind: str,
+) -> BridgeCounts | None:
+    """Run one entry's bridge, recording a failure instead of hiding it.
+
+    A tracker run's declared output is a tracks table. When the conversion of a
+    finished entry raises, the run has lost that entry's entire published result
+    -- and every tracker used to answer that by printing to stderr and returning
+    ``None``, which its caller discarded. The run then reported ``finished`` and
+    exited 0 having published nothing, and under ``mosaic-queue``, which gives
+    the child's stderr to ``DEVNULL``, the message did not exist at all. A real
+    TREx run tracked a 3.5-hour session and produced no table this way; it was
+    found by noticing ``tracks/`` was empty.
+
+    So the failure goes to the run-log through :meth:`JobContext.entry_failed`,
+    which is the channel that survives the queue: it appends to ``failed_keys``
+    and emits an ``entry_error`` event that ``reduce_run_log`` folds into
+    ``entries_failed``, and the CLI reports the attempt as ``partial``. That is
+    the invariant the feature pipeline already keeps -- *a run reports what it
+    lost* -- applied to the layer that never adopted it.
+
+    **The entry's index row is still written by the caller.** The tool output is
+    real and durable, and recording it is what lets a re-run adopt the finished
+    directory and redo only the bridge -- seconds rather than hours. A failed
+    bridge means the publication was lost, not the tracking.
+
+    Args:
+        ctx: The attempt's Job Contract, which owns the run-log.
+        key: The entry's ``<group>__<sequence>`` key, named in the event.
+        publish: The tracker's own bridge call, deferred so this can wrap it.
+        kind: The tracker, for the stderr line that accompanies the record.
+
+    Returns:
+        Whatever *publish* returned, or ``None`` when it raised.
+    """
+    try:
+        return publish()
+    except Exception as exc:  # noqa: BLE001 - recorded on the attempt, not hidden
+        # Inside the except block on purpose: entry_failed captures
+        # traceback.format_exc(), which only has a traceback while one is being
+        # handled. Called before the print for the same reason -- the record is
+        # the point, and the print is the convenience.
+        ctx.entry_failed(key, exc)
+        print(
+            f"[{kind}] publishing {key} failed: {type(exc).__name__}: {exc}; "
+            f"the tracker output is kept, so a re-run will retry the conversion",
+            file=sys.stderr,
+        )
+        return None

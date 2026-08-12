@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
@@ -182,7 +183,21 @@ class FakeTrex:
         data_dir = Path(seq_dir) / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         for i in range(self.npz_per_track):
-            _ = (data_dir / f"fish{i}.npz").write_bytes(b"npz")
+            # A real, convertible export rather than a stub. These tests are
+            # about markers and reuse, not about conversion -- but a stub made
+            # every bridge in this suite fail, which used to be swallowed and is
+            # now recorded as a lost entry. Writing what TREx writes keeps the
+            # suite exercising the real publish path instead of a broken one.
+            np.savez(
+                data_dir / f"fish{i}.npz",
+                frame=np.arange(4),
+                time=np.arange(4) / 30.0,
+                cm_per_pixel=np.array([1.0]),
+                **{
+                    "X#wcentroid": np.arange(4, dtype=float),
+                    "Y#wcentroid": np.arange(4, dtype=float),
+                },
+            )
         _ = (Path(seq_dir) / f"{Path(pv_path).stem}.results").write_bytes(b"results")
         return TRexTrackResult()
 

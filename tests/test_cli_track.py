@@ -9,6 +9,7 @@ than from a hand-written list, and refuses what it cannot honor.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -128,3 +129,58 @@ def test_the_deleted_command_is_gone(manifest: Path) -> None:
     result = runner.invoke(app, ["trex", "-m", str(manifest)])
 
     assert result.exit_code != 0
+
+
+def test_a_clean_run_reports_finished_with_no_lost_entries(manifest: Path) -> None:
+    """The baseline the partial case is measured against.
+
+    An empty scope loses nothing, so the status stays ``finished`` and the count
+    is present and zero -- a reader should not have to tell "no failures" from
+    "this command does not report failures" by the absence of a key.
+    """
+    result = runner.invoke(
+        app, ["track", "trex", "-m", str(manifest), "--sequences", "none", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "finished"
+    assert payload["entries_failed"] == 0
+
+
+def test_a_run_that_lost_an_entry_reports_partial(
+    manifest: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status a run that published nothing for an entry must not claim.
+
+    Derived from the attempt's own run-log rather than from anything the op
+    returns, so it works for every op and needs no change to ``run_op``'s
+    signature -- which mosaic-queue and mosaic-api also call. The exit code
+    stays 0: ``partial`` is a reporting word, and mosaic-queue maps exit 0 to a
+    ``finished`` ledger row, with ``entries_failed`` recorded beside it.
+    """
+    import mosaic.core.pipeline.ops as ops_module
+
+    real_run_op = ops_module.run_op
+
+    def run_op_losing_an_entry(ds, kind, params, **kwargs):  # type: ignore[no-untyped-def]
+        from mosaic.core.pipeline.run_log import JsonlRunLog, run_log_path
+
+        run_id = real_run_op(ds, kind, params, **kwargs)
+        # Append the event a lost entry writes, to the attempt this call made.
+        execution_id = kwargs["execution_id"]
+        log = JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id)
+        log.entry_failed("some__entry", '{"type": "UnknownTrexUnitsError"}')
+        log.close()
+        return run_id
+
+    monkeypatch.setattr(ops_module, "run_op", run_op_losing_an_entry)
+
+    result = runner.invoke(
+        app, ["track", "trex", "-m", str(manifest), "--sequences", "none", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "partial"
+    assert payload["entries_failed"] == 1

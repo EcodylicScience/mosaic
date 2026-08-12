@@ -14,7 +14,7 @@ from typing import Annotated, cast
 
 import typer
 
-from mosaic.cli._context import load_dataset
+from mosaic.cli._context import entry_failure_status, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
     emit_json,
@@ -194,7 +194,7 @@ def run_command(
                 "execution_id": exec_id,
                 "kind": op_kind,
                 "run_id": run_id,
-                "status": "finished",
+                **entry_failure_status(ds, exec_id),
                 "cache_hit": None,
             }
     except Cancelled:

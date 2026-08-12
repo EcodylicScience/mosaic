@@ -54,9 +54,10 @@ from mosaic.core.pipeline.op_identity import (
     parse_op_run_id,
 )
 from mosaic.tracking.common.bridge import (
-    readable_tracks_table,
     BridgeCounts,
+    publish_or_record,
     publish_tracks_table,
+    readable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -322,15 +323,12 @@ def _bridge_npz_to_tracks(
     hints = EntryHints(group=group, sequence=sequence)
     frames: list[pd.DataFrame] = []
     for npz in npz_paths:
-        try:
-            frames.append(converter.convert(npz, conv_params, hints))
-        except Exception as exc:
-            print(
-                f"[run_trex] convert failed for {npz}: {exc}; "
-                f"skipping ({group}, {sequence})",
-                file=sys.stderr,
-            )
-            return None
+        # A conversion failure propagates to `publish_or_record`, which records
+        # it on the attempt as a failed entry. Caught and printed here, it was
+        # discarded by the caller: a real run tracked a 3.5-hour session, refused
+        # all four NPZ on an unclassified column, and reported `finished` having
+        # published nothing.
+        frames.append(converter.convert(npz, conv_params, hints))
     if not frames:
         return None
 
@@ -688,16 +686,21 @@ def run_trex(
             # A recomputed entry must replace its parquet: the bridge otherwise
             # declines to overwrite, and the table would keep the results of the
             # run just invalidated.
-            _ = _bridge_npz_to_tracks(
-                job.ds,
-                item.group,
-                item.sequence,
-                npz_paths,
-                tracks_variant=minted.tracks_variant,
-                producer_run_id=minted.run_id,
-                video_paths=item.video_paths,
-                timeline=timeline,
-                overwrite=job.overwrite or recomputed,
+            _ = publish_or_record(
+                job.ctx,
+                item.key,
+                lambda: _bridge_npz_to_tracks(
+                    job.ds,
+                    item.group,
+                    item.sequence,
+                    npz_paths,
+                    tracks_variant=minted.tracks_variant,
+                    producer_run_id=minted.run_id,
+                    video_paths=item.video_paths,
+                    timeline=timeline,
+                    overwrite=job.overwrite or recomputed,
+                ),
+                kind=TREX_KIND,
             )
         return row
 

@@ -47,8 +47,9 @@ from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    readable_tracks_table,
+    publish_or_record,
     publish_tracks_table,
+    readable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -199,19 +200,14 @@ def _bridge_analysis_h5_to_tracks(
             return reusable
 
     converter = get_track_converter("sleap_analysis_h5")
-    try:
-        df = converter.convert(
-            h5_path,
-            SleapConvertParams(fps=fps),
-            EntryHints(group=group, sequence=sequence),
-        )
-    except Exception as exc:
-        print(
-            f"[run_sleap] convert failed for {h5_path}: {exc}; "
-            f"skipping ({group}, {sequence})",
-            file=sys.stderr,
-        )
-        return None
+    # A conversion failure propagates to `publish_or_record`, which records it on
+    # the attempt as a failed entry. Caught and printed here, it was discarded by
+    # the caller and the run reported success having published nothing.
+    df = converter.convert(
+        h5_path,
+        SleapConvertParams(fps=fps),
+        EntryHints(group=group, sequence=sequence),
+    )
 
     return publish_tracks_table(
         ds,
@@ -444,17 +440,22 @@ def run_sleap(
 
         if not convert_to_tracks:
             return row
-        bridged = _bridge_analysis_h5_to_tracks(
-            job.ds,
-            item.group,
-            item.sequence,
-            h5_path,
-            tracks_variant=minted.tracks_variant,
-            producer_run_id=minted.run_id,
-            video_path=item.video_path,
-            model_checkpoints=list(resolved_models.significant_files),
-            fps=item.fps,
-            overwrite=job.overwrite or recomputed,
+        bridged = publish_or_record(
+            job.ctx,
+            item.key,
+            lambda: _bridge_analysis_h5_to_tracks(
+                job.ds,
+                item.group,
+                item.sequence,
+                h5_path,
+                tracks_variant=minted.tracks_variant,
+                producer_run_id=minted.run_id,
+                video_path=item.video_path,
+                model_checkpoints=list(resolved_models.significant_files),
+                fps=item.fps,
+                overwrite=job.overwrite or recomputed,
+            ),
+            kind=SLEAP_KIND,
         )
         return row if bridged is None else dataclasses.replace(row, n_ids=bridged.n_ids)
 

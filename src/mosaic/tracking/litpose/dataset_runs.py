@@ -45,8 +45,9 @@ from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
-    readable_tracks_table,
+    publish_or_record,
     publish_tracks_table,
+    readable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -183,17 +184,10 @@ def _bridge_csv_to_tracks(
             return reusable
 
     converter = get_track_converter("deeplabcut")
-    try:
-        df = converter.convert(
-            csv_path, DlcParams(fps=fps), EntryHints(group=group, sequence=sequence)
-        )
-    except Exception as exc:
-        print(
-            f"[run_litpose] convert failed for {csv_path}: {exc}; "
-            f"skipping ({group}, {sequence})",
-            file=sys.stderr,
-        )
-        return None
+    # Propagates to `publish_or_record` -- see the note in the sleap bridge.
+    df = converter.convert(
+        csv_path, DlcParams(fps=fps), EntryHints(group=group, sequence=sequence)
+    )
 
     return publish_tracks_table(
         ds,
@@ -360,17 +354,22 @@ def run_litpose(
         # A recomputed entry must replace its parquet: the bridge otherwise
         # declines to overwrite, and the table would keep the results of the run
         # just invalidated.
-        bridged = _bridge_csv_to_tracks(
-            job.ds,
-            item.group,
-            item.sequence,
-            csv_out,
-            tracks_variant=minted.tracks_variant,
-            producer_run_id=minted.run_id,
-            video_path=item.video_path,
-            model_files=list(resolved_model.significant_files),
-            fps=item.fps,
-            overwrite=job.overwrite or recomputed,
+        bridged = publish_or_record(
+            job.ctx,
+            item.key,
+            lambda: _bridge_csv_to_tracks(
+                job.ds,
+                item.group,
+                item.sequence,
+                csv_out,
+                tracks_variant=minted.tracks_variant,
+                producer_run_id=minted.run_id,
+                video_path=item.video_path,
+                model_files=list(resolved_model.significant_files),
+                fps=item.fps,
+                overwrite=job.overwrite or recomputed,
+            ),
+            kind=LITPOSE_KIND,
         )
         return row if bridged is None else dataclasses.replace(row, n_ids=bridged.n_ids)
 

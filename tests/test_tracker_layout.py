@@ -667,3 +667,228 @@ def test_an_extra_trex_column_survives_into_the_tracks_table(
     assert "blobid" in table.columns
     assert sorted(table["tracklet_id"]) == [0, 0, 0, 1, 1, 1]
     assert run_id.startswith("trex.")
+
+
+# --- a run that publishes nothing must not report success --------------------
+#
+# A real TREx run tracked a 3.5-hour session to completion -- .pv, .results, four
+# per-individual NPZ, all durable -- and published no tracks table at all. Every
+# tracker used to answer a conversion failure by printing to stderr and returning
+# None, which its caller discarded; the run then reported `finished` and exited 0.
+# Under mosaic-queue, which gives the child's stderr to DEVNULL, the message did
+# not exist either. These pin the three halves of the answer: the failure is
+# recorded on the attempt, the tool output is kept so a re-run can adopt it, and
+# losing *every* entry raises rather than reporting a clean success.
+
+
+def _add_second_entry(dataset: Dataset) -> None:
+    """Give the single-entry fixture a second sequence.
+
+    Needed because with one entry, one failure is *all* of them -- which is the
+    raise, not the partial. Partial only exists where something else succeeded.
+    """
+    media_root = dataset.get_root(dataset.resolve_media_root())
+    video = media_root / "vid2.mp4"
+    video.write_bytes(b"fake")
+    index = media_root / "index.csv"
+    rows = pd.read_csv(index).to_dict("records")
+    second = dict(rows[0])
+    second.update(
+        {
+            "name": "vid2.mp4",
+            "sequence": "vid2",
+            "sequence_safe": "vid2",
+            "abs_path": dataset.relative_to_root(video),
+        }
+    )
+    pd.DataFrame([*rows, second]).to_csv(index, index=False)
+
+
+def _unconvertible_npz(path: Path) -> None:
+    """An export the converter refuses, in the way the real one did.
+
+    A calibrated file (``cm_per_pixel != 1``) carrying a column no classification
+    covers raises ``UnknownTrexUnitsError`` -- the guard against scaling a column
+    whose units nobody wrote down. This is the exact shape that lost the real
+    session.
+    """
+    _write_npz(
+        path,
+        {
+            "frame": np.arange(6),
+            "time": np.arange(6) / 30.0,
+            "cm_per_pixel": np.array([0.03]),
+            "X#wcentroid": np.arange(6, dtype=float),
+            "Y#wcentroid": np.arange(6, dtype=float),
+            "a_field_mosaic_has_never_seen": np.arange(6, dtype=float),
+        },
+    )
+
+
+def _trex_failing_for(monkeypatch: pytest.MonkeyPatch, doomed: set[str]) -> _FakeTrex:
+    """A fake TREx that tracks everything but exports garbage for *doomed*."""
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    fake = _FakeTrex()
+
+    def track(pv_path: Path, output_dir: Path, **kwargs: object) -> object:
+        result = fake.track(pv_path, output_dir, **kwargs)
+        if Path(pv_path).stem in doomed:
+            _unconvertible_npz(result.npz_paths[0])  # pyright: ignore[reportAttributeAccessIssue]
+        return result
+
+    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
+    monkeypatch.setattr(trex_runs, "run_trex_track", track)
+    return fake
+
+
+def _snapshot_for(dataset: Dataset, execution_id: str) -> dict[str, object]:
+    from mosaic.core.pipeline.run_log import read_run, run_log_dir
+
+    snap = read_run(run_log_dir(dataset.base_dir), execution_id)
+    assert snap is not None, "the attempt wrote no run-log"
+    return dict(snap)
+
+
+def test_a_lost_entry_is_recorded_and_the_others_still_publish(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One entry's conversion fails; the run says so and keeps the rest."""
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1"})
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-partial")
+
+    snapshot = _snapshot_for(ds, "exec-partial")
+    assert snapshot["entries_failed"] == 1
+    # `finished` in the log on purpose: `partial` is absent from
+    # TERMINAL_STATUSES because mosaic-api's sweeper reaps that set, so the
+    # word is computed for display and never written as a terminal status.
+    assert snapshot["status"] == "finished"
+
+    published = {p.stem for p in ds.get_root("tracks").rglob("*.parquet")}
+    assert published == {"vid2"}, "the healthy entry must still be published"
+
+
+def test_the_lost_entry_keeps_its_row_so_a_rerun_can_adopt_it(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed bridge loses the publication, not the tracking.
+
+    The tool output is real and expensive -- hours of GPU for a long session --
+    so its index row is still written. That row is what lets a re-run adopt the
+    finished directory and redo only the conversion.
+    """
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1"})
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-keeps-row")
+
+    listed = trex_runs.list_trex_runs(ds)
+    assert set(listed["sequence"]) == {"vid1", "vid2"}
+
+
+def test_the_run_log_names_the_entry_and_the_error(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stderr is not the record: mosaic-queue sends the child's to DEVNULL."""
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.core.pipeline.run_log import run_log_dir
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1"})
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-named")
+
+    log_path = run_log_dir(ds.base_dir) / "exec-named.jsonl"
+    events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
+    errors = [e for e in events if e.get("ev") == "entry_error"]
+    assert len(errors) == 1
+    assert errors[0]["key"] == "vid1"
+    assert "UnknownTrexUnitsError" in errors[0].get("error", "")
+
+
+def test_losing_every_entry_raises_instead_of_reporting_success(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The case that actually happened: one systematic converter fault.
+
+    Nine sessions would have tracked for days and published nothing while every
+    run reported finished. Raising makes one bug stop the batch at the first
+    session instead of the last.
+    """
+    from mosaic.core.pipeline.run import AllEntriesFailed
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
+
+    with pytest.raises(AllEntriesFailed, match="produced no tracks"):
+        _ = trex_runs.run_trex(ds, execution_id="exec-all-lost")
+
+
+def test_the_tracking_rows_survive_the_all_lost_raise(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raising must not throw away the expensive half of the work."""
+    from mosaic.core.pipeline.run import AllEntriesFailed
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
+
+    with pytest.raises(AllEntriesFailed):
+        _ = trex_runs.run_trex(ds, execution_id="exec-rows-survive")
+
+    listed = trex_runs.list_trex_runs(ds)
+    assert set(listed["sequence"]) == {"vid1", "vid2"}
+
+
+def test_not_converting_to_tracks_is_not_a_failure(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publishing nothing is the *point* when bridging is off.
+
+    No bridge runs, so no bridge can fail -- the all-lost guard cannot fire, and
+    needs no special case to avoid firing.
+    """
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-no-bridge", convert_to_tracks=False)
+
+    assert _snapshot_for(ds, "exec-no-bridge")["entries_failed"] == 0
+
+
+def test_an_entry_with_no_detections_is_a_success_not_a_loss(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``BridgeCounts(0, 0)`` is a video in which the tracker found nobody.
+
+    A legitimate result the marker rules declare reusable, and it must not be
+    swept into the failure count by a guard aimed at output that could not be
+    read at all. Asserted against the bridge's return value rather than a
+    hand-built empty export, because the two are different claims: what this
+    pins is that a *successful* publish of zero rows is not a loss.
+    """
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.tracking.common.bridge import BridgeCounts
+
+    fake = _FakeTrex()
+    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
+    monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
+    monkeypatch.setattr(
+        trex_runs,
+        "_bridge_npz_to_tracks",
+        lambda *_args, **_kwargs: BridgeCounts(n_rows=0, n_ids=0),
+    )
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-empty")
+
+    assert _snapshot_for(ds, "exec-empty")["entries_failed"] == 0
