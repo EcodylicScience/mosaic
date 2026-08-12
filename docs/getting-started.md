@@ -121,34 +121,72 @@ bridges the results into `tracks/`, or from the command line:
 `mosaic track` takes its flags from each tracker's parameter schema, so
 `mosaic tracking describe trex` lists what `--set` accepts.
 
+**mosaic sets no TREx parameter you did not ask for.** Every tool-facing
+parameter — `detect_type`, `detect_conf_threshold`, `detect_iou_threshold`,
+`cm_per_pixel`, `meta_encoding`, `track_max_individuals`, `track_max_speed`,
+`track_max_reassign_time`, `track_trusted_probability` — defaults to unset and is
+then absent from the argv entirely, so **TREx's own default applies**. Set the
+ones you care about and leave the rest alone.
+
+This matters when translating a hand-written `.settings` file into a mosaic run.
+A TREx `.settings` records only *non-default* values, so such a file is exactly
+the set of knobs its author chose; anything it omits was deliberately left to
+TREx. Passing only what the file names now reproduces it. Note in particular that
+`detect_iou_threshold` has no numeric default at all: TREx documents unset as
+preserving "the upstream model's default postprocessing behaviour" and set as
+possibly disabling end-to-end NMS-free inference, so passing a number is a
+decision about your detector, not just a threshold.
+
 **Asking TREx for extra columns.** TREx decides what its per-individual `.npz`
 holds with its `output_fields` parameter, and mosaic does not set it, so you get
 TREx's default export. That default does **not** include `tracklet_id` (the
-identifier of a consecutively tracked frame segment) or `blobid`. To keep them,
-pass `output_fields` through `track_extra_settings` with TREx's defaults plus
-what you want:
+identifier of a consecutively tracked frame segment) or `blobid`. Setting
+`output_fields` *replaces* the list rather than adding to it, so pass TREx's own
+default plus what you want:
 
 ```python
+TREX_DEFAULT_OUTPUT_FIELDS = [
+    ["X", ["RAW", "WCENTROID"]], ["Y", ["RAW", "WCENTROID"]],
+    ["X", ["RAW", "HEAD"]], ["Y", ["RAW", "HEAD"]],
+    ["VX", ["RAW", "HEAD"]], ["VY", ["RAW", "HEAD"]],
+    ["AX", ["RAW", "HEAD"]], ["AY", ["RAW", "HEAD"]],
+    ["ANGLE", ["RAW"]], ["ANGULAR_V", ["RAW"]], ["ANGULAR_A", ["RAW"]],
+    ["MIDLINE_OFFSET", ["RAW"]], ["normalized_midline", ["RAW"]],
+    ["midline_length", ["RAW"]], ["midline_x", ["RAW"]], ["midline_y", ["RAW"]],
+    ["midline_segment_length", ["RAW"]],
+    ["SPEED", ["RAW", "WCENTROID"]], ["SPEED", ["RAW", "PCENTROID"]],
+    ["SPEED", ["RAW", "HEAD"]], ["BORDER_DISTANCE", ["PCENTROID"]],
+    ["time", []], ["timestamp", []], ["frame", []], ["missing", []],
+    ["num_pixels", []],
+    ["ACCELERATION", ["RAW", "PCENTROID"]], ["ACCELERATION", ["RAW", "WCENTROID"]],
+    ["visual_identification_p", ["RAW"]],
+]
+
 run_trex(
     ds,
     track_extra_settings={
         "output_fields": [
-            ["X", ["RAW", "WCENTROID"]], ["Y", ["RAW", "WCENTROID"]],
-            ["SPEED", ["RAW", "WCENTROID"]], ["ANGLE", ["RAW"]],
-            ["time", []], ["frame", []], ["missing", []], ["num_pixels", []],
+            *TREX_DEFAULT_OUTPUT_FIELDS,
             ["tracklet_id", []], ["blobid", []],
         ]
     },
 )
 ```
 
+Dropping entries from that list is a real choice, not tidying: without
+`["X", ["RAW", "HEAD"]]` and the `midline_*` family you lose the columns the
+`trex_v2` schema exists to preserve. **Pose keypoints need no entry** — TREx's
+`add_missing_pose_fields()` appends every keypoint the model reports that you did
+not name yourself, so an `output_fields` override cannot lose them.
+
 Whatever TREx exports reaches `tracks/<variant>/*.parquet` unchanged: the
 converter flattens every field in the `.npz` rather than a known list, and the
 standardized schema accepts additional columns. `output_fields` is part of the
 tracking parameters, so changing it correctly invalidates an existing run rather
 than silently reusing one exported with different columns. Check TREx's
-[parameter reference](https://trex.run/docs/parameters_trex.html) for its current
-default list before trimming this.
+[parameter reference](https://trex.run/docs/parameters_trex.html) — or, since that
+page is incomplete, `default_config.cpp` in the TREx source — if you need to
+confirm the current default list.
 
 **Two-env setup (recommended).** TRex's conda package pins `python=3.11` /
 `numpy=1.26`, so install it in its **own** env rather than the mosaic env:

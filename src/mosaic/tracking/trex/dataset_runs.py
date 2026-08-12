@@ -198,16 +198,16 @@ TRACK_KEYS: Final[tuple[str, ...]] = (
 def trex_settings(
     *,
     detect_model: Path | str | None,
-    detect_type: str,
-    detect_conf_threshold: float,
-    detect_iou_threshold: float,
-    cm_per_pixel: float,
-    meta_encoding: str,
+    detect_type: str | None,
+    detect_conf_threshold: float | None,
+    detect_iou_threshold: float | None,
+    cm_per_pixel: float | None,
+    meta_encoding: str | None,
     convert_extra_settings: dict[str, Any] | None,
-    track_max_individuals: int,
-    track_max_speed: float,
-    track_max_reassign_time: float,
-    track_trusted_probability: float,
+    track_max_individuals: int | None,
+    track_max_speed: float | None,
+    track_max_reassign_time: float | None,
+    track_trusted_probability: float | None,
     analysis_range: tuple[int, int] | None,
     visual_identification_model_path: Path | str | None,
     auto_train: bool,
@@ -222,6 +222,13 @@ def trex_settings(
     would let two different runs share one identifier and report the second as
     already done. This docstring said the opposite for three milestones, which is
     the state the caller had already left behind for ``detect_model``.
+
+    **``None`` means "not sent", and is recorded as such.** It is a distinct
+    setting from any value, because the run it describes is one where TREx's own
+    default governed -- so it hashes to a distinct ``run_id``, which is what
+    stops a run made under mosaic's old imposed defaults from being reused for a
+    run that leaves TREx to decide. The key is kept rather than dropped, so the
+    payload's shape does not depend on what was set.
     """
     return {
         "detect_model": str(detect_model) if detect_model is not None else None,
@@ -355,17 +362,17 @@ def run_trex(
     entries: Iterable[tuple[str, str]] | None = None,
     # detection / conversion
     detect_model: Path | str | None = None,
-    detect_type: str = "yolo",
-    detect_conf_threshold: float = 0.5,
-    detect_iou_threshold: float = 0.1,
-    cm_per_pixel: float = 1.0,
-    meta_encoding: str = "gray",
+    detect_type: str | None = None,
+    detect_conf_threshold: float | None = None,
+    detect_iou_threshold: float | None = None,
+    cm_per_pixel: float | None = None,
+    meta_encoding: str | None = None,
     convert_extra_settings: dict[str, Any] | None = None,
     # tracking
-    track_max_individuals: int = 1,
-    track_max_speed: float = 80.0,
-    track_max_reassign_time: float = 2.0,
-    track_trusted_probability: float = 0.1,
+    track_max_individuals: int | None = None,
+    track_max_speed: float | None = None,
+    track_max_reassign_time: float | None = None,
+    track_trusted_probability: float | None = None,
     analysis_range: tuple[int, int] | None = None,
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
@@ -396,6 +403,10 @@ def run_trex(
     :func:`~mosaic.tracking.trex.run_trex_track`, plus scope
     (``groups``/``sequences``/``entries``) and the Job-Contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
+
+    Every TREx parameter defaults to ``None``, which means *do not send it*, so
+    TREx's own default governs. See :class:`~mosaic.tracking.ops.trex.TrexParams`
+    for why mosaic declares no default of its own.
 
     Returns the content-addressed ``run_id``.
     """

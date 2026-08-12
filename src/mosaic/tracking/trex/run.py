@@ -257,12 +257,12 @@ def run_trex_convert(
     *,
     output_name: str | None = None,
     detect_model: Path | str | None = None,
-    detect_type: str = "yolo",
-    detect_conf_threshold: float = 0.5,
-    detect_iou_threshold: float = 0.1,
-    track_max_individuals: int = 1,
-    cm_per_pixel: float = 1.0,
-    meta_encoding: str = "gray",
+    detect_type: str | None = None,
+    detect_conf_threshold: float | None = None,
+    detect_iou_threshold: float | None = None,
+    track_max_individuals: int | None = None,
+    cm_per_pixel: float | None = None,
+    meta_encoding: str | None = None,
     extra_settings: dict[str, Any] | None = None,
     idle_timeout: float = 900,
     max_runtime: float | None = None,
@@ -276,6 +276,12 @@ def run_trex_convert(
 
     Runs T-Rex in headless mode (``-nowindow -auto_quit``) to convert a
     video file, applying the specified detection model and parameters.
+
+    **Every T-Rex parameter below defaults to ``None``, meaning it is not put on
+    the argv at all**, so T-Rex's own default applies. mosaic used to default
+    each of them to a value of its own, none of which matched T-Rex's, with no
+    way for a caller to decline -- see
+    :class:`~mosaic.tracking.ops.trex.TrexParams`.
 
     Parameters
     ----------
@@ -308,20 +314,26 @@ def run_trex_convert(
         sense: it is a path, and paths never enter a run identifier.
     detect_model : path, optional
         Path to a YOLO ``.pt`` model file for detection/pose.
-    detect_type : str
-        Detection algorithm: ``"yolo"`` (default) or ``"background_subtraction"``.
-    detect_conf_threshold : float
-        Minimum YOLO detection confidence (default 0.5).
-    detect_iou_threshold : float
-        NMS IoU threshold for suppressing overlapping detections (default 0.1).
-    track_max_individuals : int
-        Maximum number of simultaneous individuals to track (default 1).
-    cm_per_pixel : float
-        Spatial calibration factor (default 1.0 = pixels).
-    meta_encoding : str
-        Pixel encoding: ``"gray"`` or ``"rgb8"`` (default ``"gray"``).
+    detect_type : str, optional
+        Detection algorithm, e.g. ``"yolo"`` or ``"background_subtraction"``.
+    detect_conf_threshold : float, optional
+        Minimum YOLO detection confidence. T-Rex's own default is 0.1.
+    detect_iou_threshold : float, optional
+        NMS IoU threshold for suppressing overlapping detections. T-Rex has no
+        numeric default: left unset it "preserves the upstream model's default
+        postprocessing behaviour", while setting it "may disable end-to-end
+        NMS-free inference". Passing a number is therefore a behavioural choice
+        about the detector, not only a threshold.
+    track_max_individuals : int, optional
+        Maximum number of simultaneous individuals to track.
+    cm_per_pixel : float, optional
+        Spatial calibration factor. Unset, T-Rex derives it from
+        ``meta_real_width / video_width``.
+    meta_encoding : str, optional
+        Pixel encoding: ``"gray"`` or ``"rgb8"``.
     extra_settings : dict, optional
-        Additional T-Rex parameters passed as ``-key value`` pairs.
+        Additional T-Rex parameters passed as ``-key value`` pairs. A ``None``
+        value here removes a parameter this function would otherwise send.
     idle_timeout : float
         Kill the subprocess after this many seconds with no output on either
         stream (an inactivity/hang watchdog; default 900). TRex prints progress
@@ -423,10 +435,10 @@ def run_trex_track(
     pv_path: Path | str,
     output_dir: Path | str,
     *,
-    track_max_individuals: int = 1,
-    track_max_speed: float = 80.0,
-    track_max_reassign_time: float = 2.0,
-    track_trusted_probability: float = 0.1,
+    track_max_individuals: int | None = None,
+    track_max_speed: float | None = None,
+    track_max_reassign_time: float | None = None,
+    track_trusted_probability: float | None = None,
     analysis_range: tuple[int, int] | None = None,
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
@@ -444,20 +456,29 @@ def run_trex_track(
     Runs T-Rex in headless mode to perform tracking and (optionally)
     visual-identification training.
 
+    **Every T-Rex parameter below defaults to ``None``, meaning it is not put on
+    the argv at all**, so T-Rex's own default applies. See
+    :func:`run_trex_convert` and :class:`~mosaic.tracking.ops.trex.TrexParams`.
+
     Parameters
     ----------
     pv_path : path
         Converted T-Rex ``.pv`` file.
     output_dir : path
         Directory for output NPZ and results files.
-    track_max_individuals : int
-        Number of individuals to track (default 1).
-    track_max_speed : float
-        Maximum plausible speed in cm/s (default 80).
-    track_max_reassign_time : float
-        Seconds to wait before giving up on a lost individual (default 2.0).
-    track_trusted_probability : float
-        Probability threshold below which a tracklet is terminated (default 0.1).
+    track_max_individuals : int, optional
+        Number of individuals to track. T-Rex's own default is 1024.
+    track_max_speed : float, optional
+        Maximum plausible speed in cm/s -- so its meaning depends on the
+        ``cm_per_pixel`` the conversion applied.
+    track_max_reassign_time : float, optional
+        Seconds to wait before giving up on a lost individual. T-Rex's own
+        default is 0.5.
+    track_trusted_probability : float, optional
+        Probability below which the current tracklet ends and a new one starts.
+        T-Rex's own default is 0.25. This is the parameter that decides where a
+        tracklet boundary falls, so lowering it yields longer tracklets held
+        together by weaker evidence.
     analysis_range : tuple of (start, end), optional
         Frame range to analyse.  ``-1`` means beginning/end of video.
     visual_identification_model_path : path, optional
@@ -558,7 +579,7 @@ def _convert_and_track_single(
     video_path: Path,
     output_dir: Path,
     detect_model: Path | None,
-    track_max_individuals: int,
+    track_max_individuals: int | None,
     common_settings: dict[str, Any] | None,
     trex_conda_env: str | None = None,
     trex_bin: Path | str | None = None,
@@ -592,7 +613,7 @@ def run_trex_batch(
     output_dir: Path | str,
     *,
     detect_model: Path | str | None = None,
-    track_max_individuals: int = 1,
+    track_max_individuals: int | None = None,
     common_settings: dict[str, Any] | None = None,
     parallel_workers: int = 1,
     trex_conda_env: str | None = None,
@@ -612,8 +633,8 @@ def run_trex_batch(
         Root output directory.
     detect_model : path, optional
         YOLO ``.pt`` model for detection/pose.
-    track_max_individuals : int
-        Number of individuals per video (default 1).
+    track_max_individuals : int, optional
+        Number of individuals per video. Unset leaves T-Rex's own default.
     common_settings : dict, optional
         Additional T-Rex parameters applied to every video.
     parallel_workers : int

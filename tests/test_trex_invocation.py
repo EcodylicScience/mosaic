@@ -192,3 +192,123 @@ def test_a_mapping_is_json_too():
     from mosaic.tracking.trex.run import _build_args
 
     assert _build_args({"opts": {"a": 1}}) == ["-opts", '{"a":1}']
+
+
+# --- mosaic sends no default of its own -------------------------------------
+
+# The nine parameters that used to carry a mosaic default. Each is named with
+# the phase that sends it, because they are split across two argv builds and a
+# parameter that quietly moved phase would otherwise still pass.
+UNSENT_WHEN_UNSET: dict[str, tuple[str, ...]] = {
+    "convert": (
+        "detect_type",
+        "detect_conf_threshold",
+        "detect_iou_threshold",
+        "cm_per_pixel",
+        "meta_encoding",
+        "track_max_individuals",
+    ),
+    "track": (
+        "track_max_individuals",
+        "track_max_speed",
+        "track_max_reassign_time",
+        "track_trusted_probability",
+    ),
+}
+
+
+class _Captured(Exception):
+    """Stops a phase the moment its argv exists, so nothing after it matters."""
+
+
+def _captured_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, phase: str, **kwargs: object
+) -> list[str]:
+    """Run one phase against a stubbed subprocess and return the argv it built.
+
+    The stub raises rather than returning, so neither phase reaches its
+    output-location step. Returning a success would make the two phases differ
+    in whether they then raise -- convert refuses a missing ``.pv``, track
+    tolerates missing results -- and a test whose control flow depends on that
+    is a test that can pass because it went down the wrong branch.
+    """
+    captured: list[str] = []
+
+    def fake_supervised(cmd, **_kwargs):
+        captured.extend(cmd)
+        raise _Captured
+
+    monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
+    out = tmp_path / phase
+    with pytest.raises(_Captured):
+        if phase == "convert":
+            trex_run.run_trex_convert(tmp_path / "v.mp4", out, **kwargs)
+        else:
+            trex_run.run_trex_track(tmp_path / "v.pv", out, **kwargs)
+    # Without this the argv-absence assertions below pass on an empty list, which
+    # is exactly how the first version of this helper was silently vacuous.
+    assert captured, "the phase never reached the subprocess, so no argv was built"
+    return captured
+
+
+@pytest.mark.parametrize("phase", sorted(UNSENT_WHEN_UNSET))
+def test_an_unset_parameter_is_not_on_the_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, phase: str
+):
+    """mosaic declares no default, so an unset parameter reaches TREx as absent.
+
+    Every one of these used to carry a mosaic default, and not one of them
+    matched TREx's -- ``detect_conf_threshold`` was five times stricter,
+    ``meta_encoding`` forced a grayscale ``.pv`` where TREx writes ``rgb8``,
+    ``track_max_individuals`` tracked one animal against TREx's 1024. Since the
+    wrappers put every parameter on the argv unconditionally, a caller who set
+    nothing still got mosaic's opinion and had no way to decline it.
+
+    This is the test that fails if a default creeps back in, which is easy to do
+    by writing ``= 0.5`` in a signature and easy to miss in review, because
+    nothing else in the suite reads the argv of an all-defaults call.
+    """
+    argv = _captured_argv(monkeypatch, tmp_path, phase)
+    sent = {token[1:] for token in argv if token.startswith("-")}
+    assert not sent & set(UNSENT_WHEN_UNSET[phase]), (
+        f"the {phase} phase put an unset parameter on the argv: "
+        f"{sorted(sent & set(UNSENT_WHEN_UNSET[phase]))}"
+    )
+
+
+def test_a_set_parameter_is_still_sent(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """The other half: unset means absent, it does not mean unreachable."""
+    argv = _captured_argv(
+        monkeypatch,
+        tmp_path,
+        "track",
+        track_max_individuals=4,
+        track_trusted_probability=0.25,
+    )
+    assert "-track_max_individuals" in argv
+    assert argv[argv.index("-track_max_individuals") + 1] == "4"
+    assert "-track_trusted_probability" in argv
+    assert argv[argv.index("-track_trusted_probability") + 1] == "0.25"
+    # Its neighbours stay unset -- setting one parameter must not resurrect the
+    # rest, which is what a "fill in the defaults when any is given" fix would do.
+    assert "-track_max_speed" not in argv
+
+
+def test_extra_settings_can_unset_a_parameter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """A ``None`` in the pass-through dict removes a parameter the caller set.
+
+    The escape hatch for the case where the two layers disagree, and the
+    mechanism the whole change rests on: ``_build_args`` skips a ``None``, and
+    ``extra_settings`` is merged over the assembled params, so this is the last
+    word on any single flag.
+    """
+    argv = _captured_argv(
+        monkeypatch,
+        tmp_path,
+        "convert",
+        detect_conf_threshold=0.5,
+        extra_settings={"detect_conf_threshold": None},
+    )
+    assert "-detect_conf_threshold" not in argv

@@ -27,21 +27,41 @@ if TYPE_CHECKING:
 
 
 class TrexParams(TrackerOpParams):
-    """Parameters for the ``trex`` tracking op (mirrors :func:`run_trex`'s settings + scope)."""
+    """Parameters for the ``trex`` tracking op (mirrors :func:`run_trex`'s settings + scope).
+
+    **Every tool-facing parameter defaults to ``None``, meaning "do not send it".**
+    mosaic declares no opinion about how TREx behaves; an unset parameter leaves
+    TREx's own default in force, and setting one is unchanged.
+
+    This is not cosmetic. Each of these used to carry a mosaic default, and *not
+    one of them matched TREx's* -- so a caller who set nothing silently got
+    mosaic's opinion with no way to decline it. ``detect_conf_threshold`` was
+    five times stricter than TREx's 0.1; ``meta_encoding`` forced a grayscale
+    ``.pv`` where TREx writes ``rgb8``; ``track_max_individuals`` tracked one
+    animal against TREx's 1024. Two mattered beyond tuning:
+    ``track_trusted_probability`` decides where a *tracklet ends*, and
+    ``detect_iou_threshold`` has no numeric default at all -- TREx documents
+    unset as preserving "the upstream model's default postprocessing behaviour"
+    and set as possibly disabling end-to-end NMS-free inference, so a number
+    here can move a YOLO26 detector off the inference path it was trained for.
+
+    ``None`` reaches the argv builder, which omits the flag, so "unset" is
+    expressed the whole way down rather than translated into a stand-in value.
+    """
 
     # detection / conversion (part of the run_id identity)
     detect_model: str | None = None
-    detect_type: str = "yolo"
-    detect_conf_threshold: float = 0.5
-    detect_iou_threshold: float = 0.1
-    cm_per_pixel: float = 1.0
-    meta_encoding: str = "gray"
+    detect_type: str | None = None
+    detect_conf_threshold: float | None = None
+    detect_iou_threshold: float | None = None
+    cm_per_pixel: float | None = None
+    meta_encoding: str | None = None
     convert_extra_settings: dict[str, JsonValue] | None = None
     # tracking (part of the run_id identity)
-    track_max_individuals: int = 1
-    track_max_speed: float = 80.0
-    track_max_reassign_time: float = 2.0
-    track_trusted_probability: float = 0.1
+    track_max_individuals: int | None = None
+    track_max_speed: float | None = None
+    track_max_reassign_time: float | None = None
+    track_trusted_probability: float | None = None
     analysis_range: tuple[int, int] | None = None
     visual_identification_model_path: str | None = None
     auto_train: bool = False

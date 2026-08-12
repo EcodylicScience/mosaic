@@ -38,8 +38,8 @@
   "transcode/analysis-entry": "a1a4155642",
   "transcode/recipe-hash": "49bf3aa578",
   "transcode/run-id": "transcode-03632a82d2",
-  "trex/defaults": "d8a5094e59",
-  "trex/max-individuals": "da40ef26e3",
+  "trex/defaults": "75eefe5d76",
+  "trex/max-individuals": "b896757d3d",
   "trex/run-id-settings": "trex.0.1-5a5da77582",
   "ultralytics/run-id-settings": "ultralytics.8.4-7175d735b7",
   "ultralytics/tracker-defaults": "b85743c3e7"
