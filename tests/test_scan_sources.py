@@ -110,6 +110,200 @@ class TestScanPreservesWhatItDoesNotClaim:
         assert indexed_paths(dataset) == {"two.mp4"}
 
 
+class TestASymlinkedSourceIsStillTheScansOwnRow:
+    """A scan must own what it walked, however the row spells the path.
+
+    A symlink inside a scanned directory splits the two paths a scan reasons
+    about: the walk finds ``<dataset>/media_raw/<entry>/clip.mp4``, but the row
+    records the symlink's *target*, because ``_relative_to_root`` resolves before
+    testing containment and a target outside the dataset is stored absolute. The
+    directory claim covers the first path and the row carries the second, so the
+    scan used to preserve rows it had itself just written -- and append the same
+    files again on the next pass, forever.
+
+    The farm is a real arrangement, not a contrivance: it is how a fixed
+    directory tree gets the ``<group>__<sequence>`` level that
+    ``layout="per_sequence"`` reads identity from, without copying the videos.
+    """
+
+    @staticmethod
+    def farm(dataset: Dataset, targets: list[Path], entry: str) -> Path:
+        """Link *targets* into ``media_raw/<entry>/`` and declare it as a source."""
+        directory = dataset.get_root("media_raw") / entry
+        directory.mkdir(parents=True, exist_ok=True)
+        for target in targets:
+            (directory / target.name).symlink_to(target)
+        dataset.add_scan_source(
+            MediaScanSource(id="farm", path="media_raw", layout="per_sequence")
+        )
+        return directory
+
+    def test_rescanning_a_symlink_farm_does_not_duplicate(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        """Three scans, three files. The bug made it 3, then 6, then 9."""
+        dataset = make_dataset(tmp_path)
+        elsewhere = tmp_path / "nas"
+        targets = [elsewhere / f"clip_{n}.mp4" for n in range(3)]
+        for target in targets:
+            write_cfr_mp4(target)
+        _ = self.farm(dataset, targets, "cage__day1")
+
+        counts = []
+        for _ in range(3):
+            _ = dataset.scan_media()
+            counts.append(len(dataset.read_media_index()))
+
+        assert counts == [3, 3, 3], f"the index grew across rescans: {counts}"
+
+    def test_the_duplicates_would_have_reached_the_tracker(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        """Why this is not a cosmetic index-tidiness bug.
+
+        TREx joins an entry's clips into one ``.pv``, so a duplicated row is a
+        clip handed to the conversion twice: the session's frame count doubles
+        and its footage repeats mid-timeline, with nothing raising.
+        """
+        from mosaic.tracking.common.scope import build_work_items
+
+        dataset = make_dataset(tmp_path)
+        elsewhere = tmp_path / "nas"
+        targets = [elsewhere / f"clip_{n}.mp4" for n in range(3)]
+        for target in targets:
+            write_cfr_mp4(target)
+        _ = self.farm(dataset, targets, "cage__day1")
+
+        _ = dataset.scan_media()
+        _ = dataset.scan_media()
+
+        scope = dataset.resolve_media_scope(None, None, None)
+        item = build_work_items(dataset, scope, kind="trex")[0]
+        assert item.n_sources == 3, "a clip would be converted more than once"
+        assert len({path.name for path in item.video_paths}) == 3
+
+    def test_a_symlinked_file_that_leaves_the_farm_still_leaves(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        """Widening the claim must not cost the deletion half of the rule.
+
+        The link is what the scan walks, so removing it is how a file leaves a
+        farm -- and ``prune_unsourced`` is what collects the row, since the
+        target is under no claim once nothing points at it.
+        """
+        dataset = make_dataset(tmp_path)
+        elsewhere = tmp_path / "nas"
+        targets = [elsewhere / f"clip_{n}.mp4" for n in range(3)]
+        for target in targets:
+            write_cfr_mp4(target)
+        directory = self.farm(dataset, targets, "cage__day1")
+
+        _ = dataset.scan_media()
+        assert len(dataset.read_media_index()) == 3
+
+        (directory / "clip_2.mp4").unlink()
+        _ = dataset.scan_media(prune_unsourced=True)
+        assert indexed_paths(dataset) == {"clip_0.mp4", "clip_1.mp4"}
+
+    def test_an_unwalked_external_row_still_survives_a_farm_scan(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        """The preserve rule the widening must not eat.
+
+        The widened claim covers what this scan *found*. A row no scan walked --
+        an assignment, or a reference to another dataset's video -- appears in no
+        walk and must still come through untouched.
+        """
+        dataset = make_dataset(tmp_path)
+        far = tmp_path / "other-dataset"
+        write_cfr_mp4(far / "borrowed.mp4")
+        _ = dataset.index_media([far])
+
+        elsewhere = tmp_path / "nas"
+        targets = [elsewhere / "clip_0.mp4"]
+        write_cfr_mp4(targets[0])
+        _ = self.farm(dataset, targets, "cage__day1")
+
+        _ = dataset.scan_media()
+        _ = dataset.scan_media()
+
+        assert indexed_paths(dataset) == {"borrowed.mp4", "clip_0.mp4"}
+
+    def test_a_symlink_loop_does_not_abort_the_scan(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        """A circular link in a farm is skipped, and the clip beside it survives.
+
+        This passes because the *walk* rejects a loop before it can become a
+        row -- ``is_file()`` is false for one -- so it never reaches the claim
+        builder. Worth pinning anyway, and worth being clear about: it is the
+        walk that makes this safe, not the claim builder's guard, and the
+        sibling test below is what actually exercises that guard.
+        """
+        dataset = make_dataset(tmp_path)
+        elsewhere = tmp_path / "nas"
+        good = elsewhere / "clip_0.mp4"
+        write_cfr_mp4(good)
+        directory = self.farm(dataset, [good], "cage__day1")
+        (directory / "loop_a.mp4").symlink_to(directory / "loop_b.mp4")
+        (directory / "loop_b.mp4").symlink_to(directory / "loop_a.mp4")
+
+        _ = dataset.scan_media()
+        _ = dataset.scan_media()
+
+        assert indexed_paths(dataset) == {"clip_0.mp4"}
+
+    def test_an_unresolvable_stored_path_is_skipped_not_raised(
+        self, tmp_path: Path
+    ) -> None:
+        """The claim builder's guard, exercised directly.
+
+        A row whose path cannot be resolved is claimed by nobody -- the same
+        conservative answer ``_row_claimed`` gives an empty cell -- rather than
+        an exception escaping into the caller's scan.
+        """
+        dataset = make_dataset(tmp_path)
+        directory = dataset.get_root("media_raw") / "cage__day1"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "a.mp4").symlink_to(directory / "b.mp4")
+        (directory / "b.mp4").symlink_to(directory / "a.mp4")
+
+        claim = dataset._walked_claim(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"abs_path": str(directory / "a.mp4")},
+                {"abs_path": str(tmp_path / "plain.mp4")},
+                {"abs_path": ""},
+            ]
+        )
+
+        assert not claim.claims((directory / "a.mp4").absolute())
+        assert claim.claims((tmp_path / "plain.mp4").resolve())
+
+    def test_a_symlinked_tracks_source_does_not_duplicate_either(
+        self, tmp_path: Path
+    ) -> None:
+        """The raw scans share the write path, so they shared the bug."""
+        dataset = make_dataset(tmp_path)
+        elsewhere = tmp_path / "nas"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        target = elsewhere / "session.npy"
+        target.write_bytes(b"\x00")
+
+        farm = dataset.get_root("tracks_raw") / "linked"
+        farm.mkdir(parents=True, exist_ok=True)
+        (farm / target.name).symlink_to(target)
+        dataset.add_scan_source(
+            TracksScanSource(id="farm", path="tracks_raw/linked", patterns=("*.npy",))
+        )
+
+        counts = []
+        for _ in range(3):
+            _ = dataset.scan_tracks()
+            counts.append(len(dataset.read_tracks_raw_index()))
+
+        assert counts == [1, 1, 1], f"the tracks index grew across rescans: {counts}"
+
+
 class TestFileModeSources:
     def test_a_file_source_indexes_only_what_it_lists(
         self, tmp_path: Path, write_cfr_mp4: VideoWriter

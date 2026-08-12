@@ -2675,6 +2675,11 @@ class Dataset:
         touched = {
             (str(row.get("group", "")), str(row.get("sequence", ""))) for row in dedup
         }
+        # What the walk found, added to where it looked. See _walked_claim: a
+        # symlinked source stores each row under the target path, which the
+        # directory claim does not cover, so without this the scan preserves its
+        # own rows and appends a duplicate set on every pass.
+        claim = claim | self._walked_claim(dedup)
         with index_lock(out_csv):
             committed = _read_media_index(out_csv)
             prior_order = build_prior_order(committed)
@@ -3898,6 +3903,60 @@ class Dataset:
             return False
         return claim.claims(self.resolve_path(abs_cell).resolve())
 
+    def _walked_claim(self, rows: Iterable[Mapping[str, object]]) -> ScanClaim:
+        """The claim over the files a scan actually walked, by stored path.
+
+        A source's declared claim covers *where it looked*; this covers *what it
+        found*, and the two are not always the same set. A symlink inside a
+        scanned directory is the case that separates them: the walk finds
+        ``<dataset>/media_raw/<entry>/clip.mp4``, but the row records the
+        symlink's target, because :meth:`_relative_to_root` resolves before
+        testing containment and a target outside the dataset is stored absolute.
+        The directory claim then does not cover the row the walk just produced.
+
+        Left at that, a scan **disowns rows it created**: they are preserved as
+        somebody else's, and the same files are appended again on the next pass.
+        The index grows by a full copy per scan, silently, and the duplicates
+        reach the tracker -- a joined TREx conversion is handed every clip twice,
+        which doubles a session's frame count and repeats its footage mid-timeline
+        with nothing raising.
+
+        Unioning this in fixes that without touching the preserve rule that
+        motivates it. A row an ordinary scan walked was already claimed by the
+        directory, so nothing moves for it; a row **no** scan walked -- one an
+        assignment scope wrote, or one referencing another dataset's video --
+        appears in no walk and is still preserved. Deletion is the one case this
+        cannot answer: a file removed from a symlinked source is neither walked
+        nor under the directory claim, so its row survives until
+        ``prune_unsourced``.
+
+        A path that cannot be resolved is skipped rather than raised on.
+        ``Path.resolve()`` is non-strict about a *missing* target but still
+        raises ``RuntimeError`` on a symlink **loop**, and ``OSError`` when a
+        parent directory cannot be traversed -- so building this claim could
+        abort a whole scan over one bad link. Skipping is not a shrug: a path
+        this process cannot resolve is one no claim can cover, which is exactly
+        the conservative answer :meth:`_row_claimed` already gives an empty
+        cell. The row then falls through to being preserved, which is the safe
+        direction -- the failure mode this whole method exists to remove is a
+        duplicate, and the one it must never introduce is a deletion.
+
+        Resolved here rather than left to :meth:`ScanClaim.over_files`, which
+        resolves what it is given: the guard has to wrap the call that actually
+        raises. It also makes this symmetric with :meth:`_row_claimed`, whose
+        ``resolve_path(cell).resolve()`` is what these paths are compared against.
+        """
+        claimed: list[Path] = []
+        for row in rows:
+            cell = str(row.get("abs_path", "") or "").strip()
+            if not cell:
+                continue
+            try:
+                claimed.append(self.resolve_path(cell).resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return ScanClaim.over_files(claimed)
+
     def _row_under_dirs(self, row: Mapping[str, object], dirs: list[Path]) -> bool:
         """True if *row*'s resolved ``abs_path`` lives under any of *dirs*.
 
@@ -4800,6 +4859,10 @@ class Dataset:
         # then a CalMS21 one used to leave only the second.
         if claim is None:
             claim = ScanClaim.over_directories(Path(d) for d in search_dirs)
+        # The same widening the media scan applies, for the same reason: a
+        # symlinked raw file records its target, which the directory claim does
+        # not cover, and the scan would preserve the row it had just written.
+        claim = claim | self._walked_claim(rows)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         with index_lock(out_csv):
             committed = _read_tracks_raw_index(out_csv)
