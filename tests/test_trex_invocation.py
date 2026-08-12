@@ -7,6 +7,8 @@ launched: in a conda env, via an explicit binary, or from ``$PATH``) and the
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.tracking.common import toolenv
@@ -312,3 +314,93 @@ def test_extra_settings_can_unset_a_parameter(
         extra_settings={"detect_conf_threshold": None},
     )
     assert "-detect_conf_threshold" not in argv
+
+
+# --- a session's clips reach TREx as one PathArray ---------------------------
+
+# TREx takes `source` as a file::PathArray whose string form accepts a JSON-like
+# array, and its VideoSource sums the frame counts of every file it names into a
+# single length. So the clips a recorder split one session into convert to one
+# `.pv` with one continuous frame index -- provided the argv says so, which is
+# what these pin.
+
+
+def _convert_argv(monkeypatch: pytest.MonkeyPatch, tmp_path, **kwargs) -> list[str]:
+    """The argv one ``run_trex_convert`` call would hand the binary."""
+    captured: dict = {}
+    video_path = kwargs.pop("video_path")
+    first = video_path if isinstance(video_path, (str, Path)) else video_path[0]
+    stem = kwargs.get("output_name") or Path(first).stem
+
+    def fake_supervised(cmd, **_kwargs):
+        captured["cmd"] = list(cmd)
+        # Satisfy the output lookup so the call returns rather than raising.
+        _ = (tmp_path / f"{stem}.pv").write_bytes(b"pv")
+        return ("", "", 0)
+
+    monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
+    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
+    _ = trex_run.run_trex_convert(video_path, tmp_path, **kwargs)
+    return captured["cmd"]
+
+
+def test_one_video_is_still_a_bare_path(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """The single-source argv must not move: every existing run depends on it."""
+    argv = _convert_argv(monkeypatch, tmp_path, video_path=tmp_path / "vid1.mp4")
+    assert argv[argv.index("-i") + 1] == str(tmp_path / "vid1.mp4")
+    assert "-filename" not in argv
+
+
+def test_several_videos_become_one_bracketed_array(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    clips = [tmp_path / "c0.mp4", tmp_path / "c1.mp4", tmp_path / "c2.mp4"]
+    argv = _convert_argv(monkeypatch, tmp_path, video_path=clips, output_name="sess")
+    assert argv[argv.index("-i") + 1] == (f"[{clips[0]},{clips[1]},{clips[2]}]")
+
+
+def test_the_clip_order_given_is_the_order_sent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """It is video_order, it is semantic, and nothing here may sort it."""
+    clips = [tmp_path / "c2.mp4", tmp_path / "c0.mp4", tmp_path / "c1.mp4"]
+    argv = _convert_argv(monkeypatch, tmp_path, video_path=clips, output_name="sess")
+    assert argv[argv.index("-i") + 1] == (f"[{clips[0]},{clips[1]},{clips[2]}]")
+
+
+def test_output_name_pins_the_pv_that_would_otherwise_be_the_parent_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """TREx's find_basename names a multi-source .pv after the shared parent.
+
+    Without ``filename`` the output would land as ``<parent>.pv`` -- a name
+    mosaic did not choose and does not look for.
+    """
+    clips = [tmp_path / "c0.mp4", tmp_path / "c1.mp4"]
+    argv = _convert_argv(
+        monkeypatch, tmp_path, video_path=clips, output_name="grp__sess"
+    )
+    assert argv[argv.index("-filename") + 1] == str(tmp_path / "grp__sess.pv")
+
+
+def test_the_located_pv_follows_output_name(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    captured: dict = {}
+
+    def fake_supervised(cmd, **_kwargs):
+        captured["cmd"] = list(cmd)
+        _ = (tmp_path / "grp__sess.pv").write_bytes(b"pv")
+        return ("", "", 0)
+
+    monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
+    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
+    result = trex_run.run_trex_convert(
+        [tmp_path / "c0.mp4", tmp_path / "c1.mp4"],
+        tmp_path,
+        output_name="grp__sess",
+    )
+    assert result.pv_path == tmp_path / "grp__sess.pv"
+
+
+def test_no_sources_is_refused():
+    with pytest.raises(ValueError, match="at least one source"):
+        _ = trex_run._as_sources([])
