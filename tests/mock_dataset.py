@@ -18,10 +18,18 @@ from pathlib import Path
 class MockDataset:
     """A dataset-shaped object over *root*, with no manifest behind it."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, continuous_groups: tuple[str, ...] = ()) -> None:
         self._root = root
+        self._continuous_groups = continuous_groups
         for directory in ("tracks", "features"):
             (root / directory).mkdir(parents=True, exist_ok=True)
+
+    @property
+    def continuous_groups(self) -> tuple[str, ...]:
+        return self._continuous_groups
+
+    def is_continuous_group(self, group: str) -> bool:
+        return group in self._continuous_groups
 
     @property
     def base_dir(self) -> Path:

@@ -40,12 +40,33 @@ class InputStream:
 
 
 class Feature(Protocol):
-    """Feature protocol -- 5 attributes, 4 methods."""
+    """Feature protocol -- 6 attributes, 4 methods."""
 
     name: str
     version: str
     parallelizable: bool
     scope_dependent: bool
+    accepts_overlap: bool
+    """Whether ``apply`` may be handed rows from the neighbouring sequences.
+
+    Only asked when a run sets ``overlap_frames > 0``, which is how a feature
+    reads across the boundary between the time divisions of one continuous
+    recording -- a rolling window, a backward difference, a wavelet, all of which
+    otherwise return an edge artifact at every division.
+
+    The cost of saying yes is that ``group`` and ``sequence`` stop being constant
+    down the frame. The loader documents them as constant (it is why they are not
+    ``ALIGN_COLS``), and a good deal of the library relies on that without saying
+    so: a feature that reads its identity from row 0 stamps its neighbour's name
+    onto every output row, and one that opens media for that identity reads the
+    wrong video. So this is ``True`` only where ``apply`` reads nothing from the
+    frame that is true of one entry alone.
+
+    It has no default, for the reason ``scope_dependent`` has none: a default
+    would let the next feature ship without answering, and the wrong answer is
+    silent in one direction.
+    """
+
     consumed_roots: tuple[str, ...]
     """The **source roots this feature opens directly**, outside its inputs.
 

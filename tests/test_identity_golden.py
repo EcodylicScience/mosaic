@@ -64,6 +64,9 @@ class Case:
             ``scope_dependent`` feature that declares the matching root, and is
             omitted from the payload otherwise -- which is why every pre-existing
             case is unaffected by item 4.4.
+        overlap_frames: The neighbour-context width an overlapped run read.
+            Omitted from the payload when zero, which is what keeps every case
+            written before it existed at the identifier it already has.
     """
 
     case_id: str
@@ -73,6 +76,7 @@ class Case:
     frame_start: int | None = None
     frame_end: int | None = None
     scope: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    overlap_frames: int = 0
     tracks_variants: tuple[str, ...] = field(default_factory=tuple)
     labels_variants: tuple[str, ...] = field(default_factory=tuple)
     compositions: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = field(
@@ -184,6 +188,28 @@ CASES: tuple[Case, ...] = (
         feature="speed-angvel",
         frame_start=0,
         frame_end=200,
+    ),
+    # --- overlap participates in identity, and is omitted when zero ---
+    #
+    # `overlap-0` exists to be *equal* to `speed-angvel/default`: that equality
+    # in the data file is the omit-when-zero rule, asserted rather than
+    # described, and it is what keeps every identifier on every existing dataset
+    # where it is. The other two must differ from it and from each other,
+    # because an overlapped run writes different numbers at the same keys.
+    Case(
+        case_id="speed-angvel/overlap-0",
+        feature="speed-angvel",
+        overlap_frames=0,
+    ),
+    Case(
+        case_id="speed-angvel/overlap-30",
+        feature="speed-angvel",
+        overlap_frames=30,
+    ),
+    Case(
+        case_id="speed-angvel/overlap-60",
+        feature="speed-angvel",
+        overlap_frames=60,
     ),
     # --- scope participates only for scope_dependent features (P2d) ---
     Case(
@@ -444,7 +470,13 @@ def _identifier(case: Case) -> str:
             for group, sequence, pairs in case.compositions
         },
     )
-    run_id, _ = compute_run_id(feature, case.frame_start, case.frame_end, scope)
+    run_id, _ = compute_run_id(
+        feature,
+        case.frame_start,
+        case.frame_end,
+        scope,
+        overlap_frames=case.overlap_frames,
+    )
     return run_id
 
 
@@ -466,6 +498,33 @@ def test_case_ids_are_unique() -> None:
     """A duplicated case id would silently drop coverage from the golden file."""
     ids = [case.case_id for case in CASES]
     assert len(ids) == len(set(ids)), "duplicate case ids in CASES"
+
+
+def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
+    """Asking for no context must reproduce the identifier that predates the term.
+
+    The omit-when-absent rule, asserted against the data file rather than
+    described in a docstring. If ``_overlap_frames`` were written into the
+    payload as ``0``, every feature run in every existing dataset would be
+    re-addressed and recomputed, for a parameter none of them used.
+    """
+    golden = _load_golden()
+    assert golden.get("speed-angvel/overlap-0") == golden.get("speed-angvel/default")
+
+
+def test_a_wider_context_is_a_different_run() -> None:
+    """Two context widths are two computations and must not share a directory.
+
+    They write the same rows under the same keys, with different numbers near
+    every sequence boundary -- so a shared identifier means the second run is
+    served the first's parquet and nothing anywhere says so.
+    """
+    golden = _load_golden()
+    zero = golden.get("speed-angvel/overlap-0")
+    thirty = golden.get("speed-angvel/overlap-30")
+    sixty = golden.get("speed-angvel/overlap-60")
+    assert None not in (zero, thirty, sixty)
+    assert len({zero, thirty, sixty}) == 3
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)

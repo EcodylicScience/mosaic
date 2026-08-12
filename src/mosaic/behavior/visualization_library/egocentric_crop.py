@@ -138,6 +138,7 @@ class EgocentricCrop:
     version = "0.2"
     parallelizable = False  # Video I/O is sequential
     scope_dependent = False
+    accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
 
     class Inputs(Inputs[TrackInput | Result]):

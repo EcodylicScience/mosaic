@@ -91,6 +91,7 @@ class FrameAggregate:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
@@ -168,10 +169,14 @@ class FrameAggregate:
         cols.append(out_col)
         result = result[cols]
 
-        # Attach sequence/group metadata (constant per sequence)
-        if C.seq_col in df.columns:
-            result[C.seq_col] = df[C.seq_col].iloc[0]
-        if C.group_col in df.columns:
-            result[C.group_col] = df[C.group_col].iloc[0]
+        # Identity per frame, not from row 0. Constant per sequence, but with
+        # overlap the input spans the neighbouring sequences and row 0 is the
+        # previous one's; a frame belongs to exactly one sequence, so the map is
+        # exact either way.
+        for meta_col in (C.seq_col, C.group_col):
+            if meta_col in df.columns:
+                result[meta_col] = result[order_col].map(
+                    df.groupby(order_col)[meta_col].first()
+                )
 
         return result

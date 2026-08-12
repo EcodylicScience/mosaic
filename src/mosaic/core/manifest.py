@@ -774,6 +774,9 @@ class DatasetManifest(BaseModel):
         sources: Declared scan recipes, which point wherever the data is.
         notes: Free text that travels with the dataset.
         tags: Typed attributes describing the dataset.
+        continuous_groups: Groups whose sequences are time divisions of one
+            recording rather than independent trials. See
+            :meth:`is_continuous_group`.
         meta: Structured per-subsystem metadata, written by converters.
         preserved: Top-level keys this version does not model, kept verbatim.
         migrated_from: The version read from disk, when it was not the current
@@ -791,6 +794,7 @@ class DatasetManifest(BaseModel):
     sources: ScanSources = Field(default_factory=ScanSources)
     notes: str = ""
     tags: tuple[DatasetTag, ...] = ()
+    continuous_groups: tuple[str, ...] = ()
     meta: dict[str, JsonValue] = Field(default_factory=dict)
 
     # Not written as themselves: `preserved` is re-emitted by name after the
@@ -848,6 +852,52 @@ class DatasetManifest(BaseModel):
                 raise ValueError(msg)
             seen[folded] = tag.name
         return self
+
+    @field_validator("continuous_groups")
+    @classmethod
+    def _continuous_groups_are_named_and_unique(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """A continuous group must be named, and named once.
+
+        The empty group -- legal everywhere else, because ``group`` is an
+        optional namespace -- cannot be continuous. A continuous group *is* the
+        recording its sequences divide, so it is the one place the name carries
+        meaning rather than merely disambiguating.
+        """
+        seen: set[str] = set()
+        for name in value:
+            if not name:
+                msg = (
+                    "continuous_groups names the empty group. A continuous "
+                    "group is the recording its sequences divide, so it has to "
+                    "be named; the empty group is the absence of one."
+                )
+                raise ValueError(msg)
+            if name in seen:
+                msg = f"continuous_groups lists {name!r} more than once"
+                raise ValueError(msg)
+            seen.add(name)
+        return value
+
+    def is_continuous_group(self, group: str) -> bool:
+        """Whether *group*'s sequences are time divisions of one recording.
+
+        A continuous group asserts two things nothing else records. Its
+        sequences are ordered in time and adjacent, so a feature may read across
+        a sequence boundary (``overlap_frames``); and its ``frame`` column is one
+        axis spanning the whole group rather than restarting per sequence, so its
+        media resolves as one shared timeline rather than per sequence.
+
+        The assertion is the caller's; mosaic verifies it against the recorded
+        frame ranges before acting on it, and refuses where the two disagree.
+        Declaration and measurement are both required and neither substitutes
+        for the other: no measurement can establish that two sequences are
+        divisions of one recording rather than two recordings that happen to be
+        numbered consecutively, and no declaration can be trusted about an axis
+        that is there to be read.
+        """
+        return group in self.continuous_groups
 
     def tag(self, name: str) -> DatasetTag | None:
         """The tag called *name*, matched case-insensitively, or ``None``."""
@@ -1006,6 +1056,12 @@ def manifest_header() -> str:
 # tags     Typed dataset attributes: the same type / type_constraints / value
 #          shape as the sequence and individual tags in mosaic-api. These
 #          describe the DATASET; per-sequence tags live in mosaic-api.
+# continuous_groups
+#          Groups whose sequences are time divisions of ONE recording, not
+#          independent trials. Their `frame` column is one axis spanning the
+#          group, and their media resolves as one shared timeline. This is what
+#          `overlap_frames` reads across; mosaic verifies it against the
+#          recorded frame ranges and refuses where the two disagree.
 # meta     Structured per-subsystem metadata, written by converters.
 #
 # Comments are NOT preserved across a save: this header is regenerated and
@@ -1097,6 +1153,8 @@ def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
         payload["notes"] = manifest.notes
     if manifest.tags:
         payload["tags"] = [_tag_payload(tag) for tag in manifest.ordered_tags()]
+    if manifest.continuous_groups:
+        payload["continuous_groups"] = list(manifest.continuous_groups)
     if manifest.meta:
         payload["meta"] = dict(manifest.meta)
 

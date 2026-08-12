@@ -89,6 +89,9 @@ class ScaleToCm:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = (
+        False  # resolves one entry's calibration, and refuses a multi-entry frame
+    )
     consumed_roots: tuple[str, ...] = ("media_raw",)
 
     class Inputs(Inputs[TrackInput | Result]):

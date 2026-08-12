@@ -398,6 +398,146 @@ def test_overlap_frame_filter_mutual_exclusion(tmp_path: Path) -> None:
         run_feature(ds, feature, overlap_frames=5, filter_start_frame=0)
 
 
+# --- overlap: what it refuses, and what it computes ---
+
+
+def _setup_continuous(
+    ds: MockDataset, n_frames: int = 10, *, contiguous: bool = True
+) -> None:
+    """Three sequences of one group, with recorded extents, as a real index has."""
+    rows: list[dict[str, object]] = []
+    for index, name in enumerate(("s1", "s2", "s3")):
+        start = index * n_frames if contiguous else 0
+        path = ds.get_root("tracks") / f"g__{name}.parquet"
+        frames = np.arange(start, start + n_frames)
+        pd.DataFrame(
+            {
+                "frame": frames,
+                "time": frames / 30.0,
+                "id": np.zeros(n_frames, dtype=int),
+                "group": "g",
+                "sequence": name,
+                "feat_a": np.arange(n_frames, dtype=float),
+            }
+        ).to_parquet(path)
+        rows.append(
+            {
+                "group": "g",
+                "sequence": name,
+                "abs_path": str(path),
+                "frame_min": str(start),
+                "frame_max": str(start + n_frames - 1),
+            }
+        )
+    pd.DataFrame(rows).to_csv(ds.get_root("tracks") / "index.csv", index=False)
+
+
+def test_overlap_refuses_a_group_not_declared_continuous(tmp_path: Path) -> None:
+    """Independent sequences are not neighbours, however their frames are numbered.
+
+    Nothing measurable separates "two divisions of one recording" from "two
+    recordings numbered consecutively", so without the declaration overlap would
+    splice unrelated data in as context and report success.
+    """
+    ds = MockDataset(tmp_path)
+    _setup_continuous(ds)
+
+    with pytest.raises(ValueError, match="not declared continuous"):
+        run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+
+def test_overlap_refuses_sequences_that_restart_their_frame_numbering(
+    tmp_path: Path,
+) -> None:
+    """Segments sharing frame numbers are not one axis, declaration or not.
+
+    This is what every mosaic converter writes today, so it is the case that has
+    to fail loudly: concatenating three segments that all start at frame 0 hands
+    the feature three rows for frame 7, and every sort or groupby on frame then
+    interleaves or merges three recordings.
+    """
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds, contiguous=False)
+
+    with pytest.raises(ValueError, match="one frame axis"):
+        run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+
+def test_overlap_refuses_a_feature_that_has_not_declared_it(tmp_path: Path) -> None:
+    """An undeclared feature is refused rather than assumed safe."""
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+
+    feature = _StatelessFeature()
+    assert not hasattr(type(feature), "accepts_overlap")
+    with pytest.raises(AttributeError, match="accepts_overlap"):
+        run_feature(ds, feature, overlap_frames=3)
+
+
+class _OverlapAwareFeature(_StatelessFeature):
+    """Records the frames it was handed, so the context is observable.
+
+    Deliberately does *not* file what it saw under ``df["sequence"].iloc[0]``.
+    Under overlap that row belongs to the previous sequence, so the record would
+    be filed under the neighbour's name -- the very defect ``accepts_overlap``
+    exists to keep out of features that cannot handle it, and it would make this
+    test lie about what it observed.
+    """
+
+    name = "overlap-aware"
+    accepts_overlap = True
+    seen: ClassVar[list[list[int]]] = []
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        _OverlapAwareFeature.seen.append(sorted({int(f) for f in df["frame"]}))
+        out = df[["frame", "time", "id", "group", "sequence"]].copy()
+        out["doubled"] = df["feat_a"].to_numpy() * 2.0
+        return out
+
+
+def test_overlap_gives_context_and_trims_it_back_off(tmp_path: Path) -> None:
+    """The run sees the neighbours and writes only its own rows.
+
+    Both halves matter. Without the first there is no point to the parameter;
+    without the second the neighbour's rows land in this entry's parquet, which
+    is what the positional trim did whenever a feature reordered or dropped rows.
+    """
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+    _OverlapAwareFeature.seen = []
+
+    result = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    # The middle sequence covers frames 10-19 and is handed 3 on either side.
+    assert list(range(7, 23)) in _OverlapAwareFeature.seen
+
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    row = index[index["sequence"] == "s2"].iloc[0]
+    written = pd.read_parquet(ds.resolve_path(row["abs_path"]))
+    assert sorted(written["frame"].unique()) == list(range(10, 20))
+    assert set(written["sequence"]) == {"s2"}
+
+
+def test_overlap_changes_the_identifier_so_it_cannot_reuse_the_cache(
+    tmp_path: Path,
+) -> None:
+    """Two context widths are two computations, addressed apart.
+
+    They write the same rows under the same keys with different numbers near the
+    boundaries, so a shared identifier means the second run silently receives the
+    first's output.
+    """
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+    _OverlapAwareFeature.seen = []
+
+    without = run_feature(ds, _OverlapAwareFeature(), overlap_frames=0)
+    with_context = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert without.run_id != with_context.run_id
+    assert not with_context.cache_hit
+
+
 def test_result_type(tmp_path: Path) -> None:
     ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g", "s1")])

@@ -455,6 +455,14 @@ class Pipeline:
                 kwargs.get("filter_start_time"),
                 kwargs.get("filter_end_time"),
             )
+            # Read here for the same reason the frame range is: every argument
+            # the digest covers has to be recovered from the merged kwargs, or
+            # this predicts a different identifier than `run` will mint. The
+            # prediction is load-bearing rather than advisory -- a complete
+            # predicted directory makes `run` skip the step and pin the predicted
+            # id into the next step's inputs -- so a missed term reports "cached"
+            # over a directory built with different edge handling.
+            step_overlap = int(kwargs.get("overlap_frames") or 0)
 
             # Target scope for this step: the intended sequence universe
             # narrowed by any groups/sequences/entries restriction. Used
@@ -505,7 +513,9 @@ class Pipeline:
                     tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
                     on_missing_run="empty",
                 )
-            expected_run_id, _ = compute_run_id(feature, frame_start, frame_end, scope)
+            expected_run_id, _ = compute_run_id(
+                feature, frame_start, frame_end, scope, overlap_frames=step_overlap
+            )
 
             # Check cache on disk: cached only when the run is *complete*
             # for this step's target scope, not merely non-empty.

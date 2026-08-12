@@ -82,6 +82,7 @@ class XgboostFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = XgboostModelArtifact

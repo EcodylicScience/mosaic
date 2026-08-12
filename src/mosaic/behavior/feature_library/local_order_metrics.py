@@ -192,8 +192,12 @@ class LocalOrderMetrics:
         When multi-camera tracks arrive, ``subgroup_col="camera"`` confines every
         disc, group center, ``R_out`` and shell to one view with no change here.
 
-        Must not be run with ``overlap_frames > 0`` when a filter is set -- see
-        ``collective-motion-metrics``.
+        ``overlap_frames`` is supported, including with a filter set: the trim
+        selects on the frame axis rather than on row offsets, so rows the filter
+        dropped cost nothing. The velocity heading is a backward difference, so
+        context removes its NaN on the first frame of every sequence. Under
+        ``radius_units="body_scale"`` each neighbourhood resolves its own entry's
+        radius, so a neighbour's body scale never scales the core's discs.
     """
 
     category = "per-frame"
@@ -201,6 +205,7 @@ class LocalOrderMetrics:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
@@ -308,6 +313,22 @@ class LocalOrderMetrics:
             raise ValueError(msg)
         return p.radius * mean_scale
 
+    @staticmethod
+    def _entries_present(df: pd.DataFrame) -> list[tuple[str, str]]:
+        """Every ``(group, sequence)`` the frame holds, deduplicated and sorted.
+
+        One entry without overlap; the core plus its neighbours with it. Sorted so
+        the radius lookups happen in a fixed order, which matters because
+        resolving one can raise.
+        """
+        if C.group_col not in df.columns and C.seq_col not in df.columns:
+            return [("", "")]
+        groups = df[C.group_col].astype(str) if C.group_col in df.columns else ""
+        sequences = df[C.seq_col].astype(str) if C.seq_col in df.columns else ""
+        pairs = pd.DataFrame({"group": groups, "sequence": sequences})
+        unique = pairs.drop_duplicates().sort_values(["group", "sequence"])
+        return [(str(row.group), str(row.sequence)) for row in unique.itertuples()]
+
     def _refuse_duplicated_ids(self, df: pd.DataFrame, order_col: str) -> None:
         """Refuse input carrying an individual more than once per frame."""
         present = [c for c in _PAIR_MARKERS if c in df.columns]
@@ -338,9 +359,15 @@ class LocalOrderMetrics:
         ensure_columns(df, required)
         self._refuse_duplicated_ids(df, order_col)
 
-        group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
-        radius = self._resolve_radius(group, sequence)
+        # A radius per entry present in the frame, rather than one resolved from
+        # row 0. Under overlap the frame spans the neighbouring sequences, and
+        # ``radius_units="body_scale"`` reads a per-entry body-scale run -- so row
+        # 0 would scale every disc, the core's included, by the *previous*
+        # sequence's mean. Identity is constant within a frame, so each
+        # neighbourhood below is measured against its own entry's radius.
+        radius_by_entry = {
+            entry: self._resolve_radius(*entry) for entry in self._entries_present(df)
+        }
 
         df = df.sort_values([C.id_col, order_col], kind="stable").reset_index(drop=True)
 
@@ -394,7 +421,19 @@ class LocalOrderMetrics:
         shell_rr = np.full(n, np.nan, dtype=float)
 
         keys = [order_col] if p.subgroup_col is None else [p.subgroup_col, order_col]
-        r2 = radius * radius
+        # Filled per neighbourhood from that neighbourhood's own entry, and
+        # emitted, so a body_scale resolution stays auditable row by row.
+        radius_of_row = np.full(n, np.nan, dtype=float)
+
+        def _entry_of(rows: pd.DataFrame) -> tuple[str, str]:
+            """The entry a frame's rows belong to. Constant within a frame."""
+            group_name = (
+                str(rows[C.group_col].iloc[0]) if C.group_col in rows.columns else ""
+            )
+            sequence_name = (
+                str(rows[C.seq_col].iloc[0]) if C.seq_col in rows.columns else ""
+            )
+            return group_name, sequence_name
 
         # ffgroups marks a non-event row with -1. That is a pooled pseudo-group,
         # not a subgroup: treating it as one would invent neighborhoods out of
@@ -410,6 +449,9 @@ class LocalOrderMetrics:
             if bool(g["_skip"].iloc[0]):
                 continue
             idx = g.index.to_numpy()
+            radius = radius_by_entry[_entry_of(g)]
+            radius_of_row[idx] = radius
+            r2 = radius * radius
             gx = g["_x"].to_numpy(dtype=float)
             gy = g["_y"].to_numpy(dtype=float)
             gux = g["_ux"].to_numpy(dtype=float)
@@ -505,7 +547,7 @@ class LocalOrderMetrics:
         out = pd.DataFrame(
             {
                 "local_heading_source": resolved,
-                "local_radius": radius,
+                "local_radius": radius_of_row,
                 "heading_x": work["_ux"].to_numpy(dtype=float),
                 "heading_y": work["_uy"].to_numpy(dtype=float),
                 "n_local_neighbors": n_neighbors,

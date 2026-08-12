@@ -8,6 +8,55 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — `overlap_frames` reads across a continuous recording, or refuses
+
+**`overlap_frames` did not do what it said, and said nothing about it.** It
+concatenated the neighbouring sequences onto a run's input and then trimmed the
+output by *row offsets measured on the input* — sound only for a feature returning
+one row per input row in input order, which the `Feature` protocol has never
+required and about half the library breaks by sorting, filtering or reducing. The
+trim returned the right row *count* and the wrong rows. It also counted rows rather
+than frames, so three individuals turned a request for three frames of context into
+one; and its `core_start == 0` fast path skipped the trim outright for the first
+sequence of every group whenever the feature dropped rows, writing the next
+segment's rows into that entry's parquet. Two features documented a prohibition
+against it; they were the only honest statements about the facility.
+
+**The frame axis it needed did not exist.** Every converter numbers frames per file
+from zero, so the three segments carried the same frame numbers: concatenating them
+handed `apply` three rows for frame 7, and every feature that sorts or groups by
+frame interleaved or merged three recordings. No trim can repair numbers computed
+from that, so fixing only the trim would have made the result *look* correct.
+
+**A group now declares that its sequences divide one recording**, with
+`continuous_groups:` in the manifest, and mosaic verifies the claim against
+`frame_min`/`frame_max` — two columns the tracks index now measures from each
+parquet as it is written, the way `n_keypoints` is, blank meaning unknown. Within a
+continuous group, neighbours are ordered by recorded frame extent rather than by
+sequence name (which sorted `seg1, seg10, seg2` and closed silently over a missing
+sequence), context is a window of N *frames*, the output is trimmed on the frame
+interval the entry covers, and media resolves as one shared timeline so `frame`
+still addresses the right clip. Anything else raises and names the two sequences and
+their ranges. Features declare `accepts_overlap`; the two prohibitions are gone, and
+both collective features now support it.
+
+**Feature identity now covers the context width.** `compute_run_id` gains an
+`_overlap_frames` term and `FEATURE_IDENTITY_SCHEME` moves 5 → 6. Before this,
+`overlap_frames=300` and `overlap_frames=0` minted one identifier and one directory,
+and the second run was served the first's parquet — the same shape of hole `_tracks`
+and `_labels` closed, but for an *argument* that changes the numbers rather than an
+input the digest failed to name. The term is omitted when zero, which every existing
+run is, so the golden corpus moved zero lines and no directory is re-addressed;
+`params.json` records it unconditionally so `mosaic reconcile` can still reproduce
+an address. `Pipeline` step-cache prediction reads it too, where a missed term would
+have reported "cached" over a directory built with different edge handling.
+
+**On disk:** `tracks/index.csv` gains `frame_min` and `frame_max` (blank on existing
+rows; `ds.measure_frame_extents()` fills them). `dataset.yaml` gains an optional
+`continuous_groups`. `yield_sequences_with_overlap` is removed — a second
+implementation of the same slicing with the same defects, reachable only from its
+own tests, whose worked example taught the positional trim.
+
 ## Unreleased — tracks are pixels, and every tracks variant re-mints
 
 **TREx tracks a session, not its first clip.** An entry whose media index holds

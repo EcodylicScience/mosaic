@@ -159,6 +159,9 @@ class GlobalIdentityEmbedding:
     # apply are two runs with two identifiers rather than one that silently
     # reuses a network fitted on a narrower scope.
     scope_dependent = True
+    accepts_overlap = (
+        False  # trains per entry; a neighbour's rows carry another entry's labels
+    )
     consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = EmbeddingIdentityArtifact

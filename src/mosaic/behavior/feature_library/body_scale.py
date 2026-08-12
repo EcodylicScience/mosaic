@@ -53,6 +53,7 @@ class BodyScaleFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):

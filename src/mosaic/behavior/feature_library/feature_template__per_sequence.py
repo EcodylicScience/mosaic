@@ -61,6 +61,7 @@ class MyPerSequenceFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = False  # the template declares the conservative answer
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):

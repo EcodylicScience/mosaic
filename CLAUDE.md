@@ -272,6 +272,38 @@ yet set.
 These describe the **dataset**. The per-sequence tags that categorize sequences
 for analysis are a different thing, owned by mosaic-api.
 
+### Continuous groups
+
+`continuous_groups:` names the groups whose sequences are **time divisions of one
+recording** rather than independent trials. A 6-hour session is either one discrete
+sequence covering all 6 hours, or a continuous group whose sequences are its
+half-hour divisions -- never a group of independent half-hours.
+
+The declaration asserts two things nothing else records, and mosaic acts on both:
+
+- Its sequences are adjacent in time, so a feature may read across their boundary
+  (`overlap_frames`), with neighbours ordered by their recorded frame extent rather
+  than by name.
+- Its `frame` column is one axis spanning the group, so its media resolves as **one
+  shared timeline** -- every sequence resolves the group's whole ordered clip set,
+  ordered by `(where the sequence starts, video_order)`. `video_order`'s counter
+  restarts per `(group, sequence, camera)`, so it cannot order a group by itself.
+
+**Declaration and measurement are both required.** No measurement can establish that
+two sequences divide one recording rather than being two recordings numbered
+consecutively; no declaration can be trusted about an axis that is there to be read.
+So `overlap_frames > 0` checks the declaration *and* verifies the recorded extents
+are disjoint and increasing, naming both sequences and both ranges when they are
+not. A continuous group's `group` may not be empty -- the one place "group is an
+optional namespace" does not hold.
+
+Nothing in mosaic produces a continuous dataset yet: every mechanism that meets a
+split recording collapses it into one sequence. Making one means converting with
+frames numbered across the whole recording (sum the frame counts of the earlier
+files as an offset), then declaring the group with
+`ds.set_continuous_groups([...])`. A dataset converted before the extent was
+recorded reads blank and is refused; `ds.measure_frame_extents()` fills it in.
+
 ### Plugin registries (everything is a plugin)
 
 mosaic uses decorator-based registries; new functionality almost always means
@@ -711,6 +743,23 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   sanctioned ways to write an output. A direct `df.to_parquet(final_path)` leaves a
   torn file where a whole one belongs, and every reuse gate in the tracking layer
   tests for presence. A test fails if a new call site addresses a final path.
+- **One tracks file per sequence, and the frame axis is global over the enclosing
+  unit.** The first half is structural: `tracks_table_path` addresses one parquet per
+  `(variant, group, sequence)` and the index holds one row per
+  `(run_id, group, sequence)`. The second says what `frame` counts *from*, and it
+  applies at two levels. In a **discrete** dataset the enclosing unit is the
+  sequence: a multi-clip sequence numbers frames across its ordered clips, which is
+  what `ConcatenatedTimeline` and `MultiVideoReader` already build and what
+  `joins_sources=True` makes a tracker deliver. In a **continuous** group -- one
+  declared in `continuous_groups`, whose sequences are time divisions of one
+  recording -- the enclosing unit is the group: frames are numbered across the whole
+  recording, and its media resolves as one shared timeline for the same reason.
+  Never a group of independent divisions each restarting at zero; that makes one
+  frame number name a different moment in each, which is exactly what
+  `overlap_frames` refuses. Note the invariant is *not* enforced on the write paths
+  today -- `merges_per_sequence` is the individual axis, not the time axis, and only
+  TREx joins an entry's clips -- so a converter fed per-clip files can still produce
+  colliding frames inside one sequence.
 - **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
   and neither did before: TREx reports centimetres and puts the *head* in `X`. A
   physical unit is obtained by the `scale-to-cm` feature, never stored in the

@@ -53,7 +53,15 @@ from .loading import (
     nn_pair_mask,
     resolve_sequence_identity,
 )
-from .manifest import FilterFactory, Manifest, build_manifest, iter_manifest
+from .manifest import (
+    CoreSelector,
+    FilterFactory,
+    Manifest,
+    OverlapUnsupported,
+    build_manifest,
+    iter_manifest,
+    verify_overlap_supported,
+)
 from .op_identity import parse_op_run_id
 from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
@@ -374,6 +382,48 @@ class MissingConsumedRootsDeclaration(AttributeError):
     """
 
 
+class MissingOverlapDeclaration(AttributeError):
+    """A feature was asked to run with overlap without declaring ``accepts_overlap``.
+
+    The same argument as :class:`MissingScopeDeclaration`, one field over, and
+    raised only when ``overlap_frames > 0`` -- the question does not arise
+    otherwise, and making every feature answer it before it can be run at all
+    would be a migration with no safety in it.
+    """
+
+
+def require_overlap_capable(feature: Feature, overlap_frames: int) -> None:
+    """Refuse a feature that has not declared it can be handed several entries.
+
+    With overlap, ``apply`` receives rows from the neighbouring sequences as well
+    as its own, so ``group`` and ``sequence`` are no longer constant down the
+    frame -- which the loader's ``ALIGN_COLS`` documents as an invariant, and
+    which a good half of the library relies on without saying so. A feature that
+    reads its identity from row 0 stamps its neighbour's name onto every output
+    row; one that opens media for that identity reads the wrong video.
+
+    Only the feature knows, so the feature declares it, and an undeclared one is
+    an error rather than a default.
+    """
+    if not hasattr(feature, "accepts_overlap"):
+        name = getattr(feature, "name", type(feature).__name__)
+        raise MissingOverlapDeclaration(
+            f"feature {name!r} ({type(feature).__name__}) declares no "
+            f"'accepts_overlap', so whether it can be handed a frame spanning "
+            f"several sequences is unknown. Declare it: True if apply() reads "
+            f"nothing from the frame that is only true of one entry -- no "
+            f"df[...].iloc[0] identity, no media opened for it -- False otherwise."
+        )
+    if not feature.accepts_overlap:
+        name = getattr(feature, "name", type(feature).__name__)
+        msg = (
+            f"overlap_frames={overlap_frames} but feature {name!r} declares "
+            f"accepts_overlap = False, so it must be given one sequence at a "
+            f"time. Run it with overlap_frames=0."
+        )
+        raise OverlapUnsupported(msg)
+
+
 class AllEntriesFailed(RuntimeError):
     """Every entity the run attempted raised, so the run is a failure.
 
@@ -609,6 +659,8 @@ def compute_run_id(
     frame_start: int | None,
     frame_end: int | None,
     scope: Scope,
+    *,
+    overlap_frames: int = 0,
 ) -> tuple[str, str]:
     """Compute the content-addressed ``(run_id, params_hash)`` for a run.
 
@@ -636,6 +688,22 @@ def compute_run_id(
     so pinning its resolved value into ``_inputs`` would move a scope-free
     consumer's identifier whenever a sequence was added -- it is a Scope term
     instead.
+
+    ``_overlap_frames`` is the width of the neighbour context an overlapped run
+    read, and it belongs in the digest because it changes the *output*: with
+    context, a windowed feature's rows near a sequence boundary carry different
+    numbers at the same ``(frame, id)`` keys -- same rows, same schema, different
+    values, which is the shape of difference nothing downstream can notice. It is
+    the only ``run_feature`` argument outside the frame range that does this;
+    ``overwrite``, the parallelism knobs and the attempt identity all leave the
+    bytes alone.
+
+    It follows the omit-when-absent rule rather than ``_frame_range``'s
+    unconditional one, because ``_frame_range`` has been in the payload since
+    scheme 1 and had no identifiers to preserve. ``json.dumps(sort_keys=True)``
+    digests an absent key differently from a zero one, so omitting it at 0
+    reproduces every identifier on every dataset in existence, byte for byte, and
+    the golden corpus proves that rather than this docstring asserting it.
 
     Raises:
         MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
@@ -676,6 +744,8 @@ def compute_run_id(
         # reads no labels -- almost all of them -- digests exactly as before and
         # the golden corpus moves only for the labels-consuming features.
         hashable["_labels"] = sorted(scope.labels_variants)
+    if overlap_frames:
+        hashable["_overlap_frames"] = int(overlap_frames)
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
 
@@ -686,6 +756,8 @@ def build_run_params_payload(
     frame_end: int | None,
     scope: Scope,
     feature_resolutions: list[dict[str, str | None]],
+    *,
+    overlap_frames: int = 0,
 ) -> dict[str, object]:
     """The ``params.json`` save payload -- provenance, deliberately not the digest.
 
@@ -710,11 +782,21 @@ def build_run_params_payload(
     labels variants are appended here from the scope -- they ride in ``_resolved``
     rather than ``_inputs``, which must stay the literal the process worker
     revalidates, and match what the digest's ``_tracks``/``_labels`` terms cover.
+
+    ``_overlap_frames`` is written **unconditionally**, where the digest omits it
+    at zero -- the same split ``_frame_range`` already shows. This is the readable
+    record, so it states the value; the digest is where the omission buys
+    identifier stability. It is not garnish: ``mosaic reconcile`` replays a run's
+    identity from this document alone, so a run computed with overlap whose params
+    file said nothing about it would recompute to a digest differing from its own
+    directory name, be classified unresolvable, and block everything downstream of
+    it.
     """
     return {
         "_params": json_ready(feature.params),
         "_inputs": feature.inputs.model_dump(),
         "_frame_range": [frame_start, frame_end],
+        "_overlap_frames": int(overlap_frames),
         "_scope": {
             "scope_dependent": feature.scope_dependent,
             "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
@@ -795,8 +877,22 @@ def run_feature(
         Execution backend when parallel_workers > 1. 'thread' (default) uses
         ThreadPoolExecutor; 'process' uses ProcessPoolExecutor.
     overlap_frames : int, default 0
-        Load this many frames from adjacent segments to handle edge effects.
-        Mutually exclusive with frame/time filters.
+        Load this many frames of context from the sequences on either side, so a
+        feature computing across frames -- a rolling window, a backward
+        difference, a wavelet -- has real data where it would otherwise have an
+        edge. The context is trimmed back off the output, so the run writes
+        exactly the rows it would have without it, with better numbers near the
+        boundaries.
+
+        Frames, not rows: the window is the neighbour's last (or first) N frame
+        *numbers*, however many individuals each holds.
+
+        Only meaningful inside a **continuous group** -- one whose sequences are
+        time divisions of a single recording, numbered on one frame axis. A run
+        that asks for context elsewhere is refused rather than approximated,
+        because sequences that restart their numbering are not one axis and
+        splicing them produces plausible, wrong numbers. The feature must also
+        declare ``accepts_overlap``. Mutually exclusive with frame/time filters.
     filter_start_frame : int | None
         If set, only include frames >= this value.
     filter_end_frame : int | None
@@ -961,6 +1057,15 @@ def _run_feature_impl(
             tracks_run_id=tracks_run_id,
         )
 
+    # Overlap is refused up front, over the whole manifest, rather than as the
+    # iteration reaches each entry: a run that cannot do what was asked should
+    # fail before it writes half its outputs. Both halves are checked here --
+    # whether the feature can be handed a frame spanning several entries, and
+    # whether the data forms the single axis that makes the neighbours meaningful.
+    if overlap_frames > 0:
+        require_overlap_capable(feature, overlap_frames)
+        verify_overlap_supported(manifest, overlap_frames)
+
     # Labels are a params dependency, not a manifest input, so they are resolved
     # here rather than inside build_manifest -- and *before* compute_run_id, so a
     # run over different label content gets a different identifier. The same
@@ -970,7 +1075,9 @@ def _run_feature_impl(
 
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
     # identity (execution_id, progress, cancel) is deliberately NOT part of it.
-    run_id, params_hash = compute_run_id(feature, frame_start, frame_end, scope)
+    run_id, params_hash = compute_run_id(
+        feature, frame_start, frame_end, scope, overlap_frames=overlap_frames
+    )
     ctx.set_run_id(run_id)
     ctx.set_total(len(manifest))
 
@@ -984,7 +1091,12 @@ def _run_feature_impl(
         # reconstructs the document -- the same single-site rule the identity
         # payload follows. Deliberately provenance, not the hash payload.
         save_payload = build_run_params_payload(
-            feature, frame_start, frame_end, scope, resolution_payload(resolutions)
+            feature,
+            frame_start,
+            frame_end,
+            scope,
+            resolution_payload(resolutions),
+            overlap_frames=overlap_frames,
         )
         atomic_write(
             params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
@@ -1269,7 +1381,7 @@ def _run_feature_impl(
         else:
             executor = ThreadPoolExecutor(max_workers=max_workers)
 
-    pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, int, int]] = {}
+    pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, CoreSelector | None]] = {}
 
     def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
         """One entity's ``apply`` raised: report it and carry on.
@@ -1292,14 +1404,14 @@ def _run_feature_impl(
     def _drain_completed() -> None:
         done, _ = wait(pending, return_when=FIRST_COMPLETED)
         for future in done:
-            meta, core_start, core_end = pending.pop(future)
+            meta, selector = pending.pop(future)
             try:
                 result_df: FeatureOutput = future.result()
             except Exception as exc:
                 _entry_failed(meta.group, meta.sequence, exc)
                 continue
-            if apply_overlap is not None and apply_overlap > 0:
-                result_df = trim_feature_output(result_df, core_start, core_end)
+            if selector is not None:
+                result_df = trim_feature_output(result_df, selector)
             n_rows = write_output(meta, result_df)
             _record_row(
                 FeatureIndexRow(
@@ -1327,8 +1439,7 @@ def _run_feature_impl(
     def _process_entry(
         entry_key: str,
         df: pd.DataFrame,
-        core_start: int,
-        core_end: int,
+        selector: CoreSelector | None,
     ) -> None:
         # Cooperative cancel checkpoint: covers both apply loops and both the
         # executor and inline branches. Completed entries are already durable.
@@ -1356,21 +1467,17 @@ def _run_feature_impl(
                         df,
                         str(ds.manifest_path),
                     )
-                ] = (meta, core_start, core_end)
+                ] = (meta, selector)
             else:
-                pending[executor.submit(feature.apply, df)] = (
-                    meta,
-                    core_start,
-                    core_end,
-                )
+                pending[executor.submit(feature.apply, df)] = (meta, selector)
         else:
             try:
                 result_df: FeatureOutput = feature.apply(df)
             except Exception as exc:
                 _entry_failed(group, sequence, exc)
                 return
-            if apply_overlap is not None and apply_overlap > 0:
-                result_df = trim_feature_output(result_df, core_start, core_end)
+            if selector is not None:
+                result_df = trim_feature_output(result_df, selector)
             n_rows = write_output(meta, result_df)
             _record_row(
                 FeatureIndexRow(
@@ -1401,14 +1508,14 @@ def _run_feature_impl(
     # output parquet is already present (the cache-hit pre-pass above).
     try:
         if apply_overlap is not None:
-            for entry_key, df, core_start, core_end in iter_manifest(
+            for entry_key, df, selector in iter_manifest(
                 compute_manifest,
                 filter_factory=filter_factory,
                 overlap_frames=apply_overlap,
                 progress_label=storage_feature_name,
                 cross_join=cross_join,
             ):
-                _process_entry(entry_key, df, core_start, core_end)
+                _process_entry(entry_key, df, selector)
         else:
             for entry_key, df in iter_manifest(
                 compute_manifest,
@@ -1416,7 +1523,7 @@ def _run_feature_impl(
                 progress_label=storage_feature_name,
                 cross_join=cross_join,
             ):
-                _process_entry(entry_key, df, 0, len(df))
+                _process_entry(entry_key, df, None)
 
         # Drain remaining futures
         if executor is not None:

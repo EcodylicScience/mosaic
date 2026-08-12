@@ -42,8 +42,19 @@ from ._utils import atomic_write
 
 MARKER_NAME: Final = ".identity_scheme"
 
-FEATURE_IDENTITY_SCHEME: Final = "5"
+FEATURE_IDENTITY_SCHEME: Final = "6"
 """The contract ``compute_run_id`` implements today.
+
+Scheme 6: the payload gains ``_overlap_frames``, the width of the neighbour
+context an overlapped run read, present only when it is not zero. It closes a
+hole of a different shape from ``_tracks`` and ``_labels``: not an input the
+digest failed to name, but an *argument* that changes the numbers a run writes.
+With context, a windowed feature's rows near a sequence boundary carry different
+values at the same ``(frame, id)`` keys -- so ``overlap_frames=300`` and
+``overlap_frames=0`` used to mint one identifier, land in one directory, and the
+second run was served the first's parquet. Omitted at zero, which every run
+before this one was, so the golden corpus moves no line and no directory is
+re-addressed. The marker still moves, because what the digest *covers* changed.
 
 Scheme 5 (item 9.3): the payload gains ``_labels``, the label recipes behind the
 ``labels/<kind>/`` tables a run reads, present only when a resolved labels variant

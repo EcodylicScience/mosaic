@@ -156,6 +156,7 @@ class _ParamsFile(BaseModel):
     params: dict[str, object] = Field(default_factory=dict, alias="_params")
     inputs: list[object] = Field(default_factory=list, alias="_inputs")
     frame_range: list[int | None] = Field(default_factory=list, alias="_frame_range")
+    overlap_frames: int = Field(0, alias="_overlap_frames")
     scope: _ScopeBlock = Field(default_factory=_ScopeBlock, alias="_scope")
     resolved: list[_ResolvedRef] = Field(default_factory=list, alias="_resolved")
 
@@ -175,6 +176,18 @@ def _frame_range(params: _ParamsFile | None) -> tuple[int | None, int | None]:
     if params is None or len(params.frame_range) != 2:
         return None, None
     return params.frame_range[0], params.frame_range[1]
+
+
+def _overlap_frames(params: _ParamsFile | None) -> int:
+    """The overlap a run recorded, defaulting to none.
+
+    A file written before the key existed reads as 0, which is the right answer:
+    the argument existed then, but the digest did not cover it, so a run that
+    used it was addressed as though it had not. Such a run keeps the address it
+    has, and a fresh identical invocation mints a new one -- the one-wrong-cache-
+    miss migration this repository has taken before.
+    """
+    return 0 if params is None else int(params.overlap_frames)
 
 
 def _entries(params: _ParamsFile | None) -> set[tuple[str, str]]:
@@ -237,6 +250,7 @@ class _RunRead:
     build_error: str
     frame_start: int | None
     frame_end: int | None
+    overlap_frames: int
     entries: set[tuple[str, str]]
     compositions: dict[tuple[str, str], dict[str, str]]
     tracks_old: tuple[str, ...]
@@ -289,6 +303,7 @@ class FeatureReconciler:
 
         params = self._load_params(run_root)
         frame_start, frame_end = _frame_range(params)
+        overlap_frames = _overlap_frames(params)
         entries = _entries(params)
         compositions = _compositions(params, entries)
         tracks_old, labels_old = _resolved_variants(params)
@@ -306,6 +321,7 @@ class FeatureReconciler:
             build_error=build_error,
             frame_start=frame_start,
             frame_end=frame_end,
+            overlap_frames=overlap_frames,
             entries=entries,
             compositions=compositions,
             tracks_old=tracks_old,
@@ -444,7 +460,11 @@ class FeatureReconciler:
         read.scope = scope
         try:
             _, new_hash = compute_run_id(
-                read.feature, read.frame_start, read.frame_end, scope
+                read.feature,
+                read.frame_start,
+                read.frame_end,
+                scope,
+                overlap_frames=read.overlap_frames,
             )
         except Exception as exc:  # noqa: BLE001 - a raising feature is unresolvable, not fatal
             return (
@@ -635,7 +655,12 @@ class FeatureReconciler:
                     }
                 )
         payload = build_run_params_payload(
-            read.feature, read.frame_start, read.frame_end, read.scope, resolutions
+            read.feature,
+            read.frame_start,
+            read.frame_end,
+            read.scope,
+            resolutions,
+            overlap_frames=read.overlap_frames,
         )
         atomic_write(
             new_run_root / "params.json",

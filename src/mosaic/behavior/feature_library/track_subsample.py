@@ -103,6 +103,7 @@ class TrackSubsample:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):

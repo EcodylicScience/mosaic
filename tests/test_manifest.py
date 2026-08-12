@@ -18,18 +18,7 @@ from mosaic.core.pipeline.manifest import (
 from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
 
 
-class _MockDataset:
-    def __init__(self, root: Path):
-        self._root = root
-        for d in ("tracks", "features"):
-            (root / d).mkdir(parents=True, exist_ok=True)
-
-    def get_root(self, key: str) -> Path:
-        return self._root / key
-
-    def resolve_path(self, stored_path, anchor=None) -> Path:
-        p = Path(stored_path)
-        return p if p.is_absolute() else self._root / p
+from tests.mock_dataset import MockDataset as _MockDataset
 
 
 def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:
@@ -386,110 +375,152 @@ def test_iter_manifest_mixed_inner_join(tmp_path):
 # --- Helpers for overlap / filter_factory tests ---
 
 
-def _make_simple_parquet(path: Path, n_rows: int, start_frame: int = 0) -> None:
-    """Write a simple parquet with frame, time, id, feat_a columns."""
+def _make_simple_parquet(
+    path: Path,
+    n_frames: int,
+    start_frame: int = 0,
+    n_ids: int = 1,
+    sequence: str = "",
+    group: str = "g1",
+) -> None:
+    """Write a frame-major parquet carrying identity, as a real tracks table does.
+
+    ``n_ids`` and the identity columns are not decoration. An overlap defect only
+    shows itself where a frame holds several individuals -- with one id per frame
+    a row offset and a frame number happen to agree, which is why the suite could
+    not see any of this before.
+    """
+    frames = np.repeat(np.arange(start_frame, start_frame + n_frames), n_ids)
+    ids = np.tile(np.arange(n_ids), n_frames)
     df = pd.DataFrame(
         {
-            "frame": range(start_frame, start_frame + n_rows),
-            "time": [f / 30.0 for f in range(start_frame, start_frame + n_rows)],
-            "id": [0] * n_rows,
-            "feat_a": np.arange(n_rows, dtype=float),
+            "frame": frames,
+            "time": frames / 30.0,
+            "id": ids,
+            "group": group,
+            "sequence": sequence,
+            "feat_a": np.arange(len(frames), dtype=float),
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path)
 
 
-def _build_three_seq_manifest(tmp_path: Path) -> dict[str, ManifestEntry]:
-    """Build a 3-sequence manifest (s1, s2, s3) with adjacency, each 10 rows."""
-    paths = {}
-    for name in ("s1", "s2", "s3"):
+def _build_three_seq_manifest(
+    tmp_path: Path,
+    *,
+    n_ids: int = 1,
+    contiguous: bool = True,
+    continuous: bool = True,
+    n_frames: int = 10,
+) -> dict[str, ManifestEntry]:
+    """A 3-sequence group with adjacency, as the resolvers would have built it.
+
+    ``contiguous`` chooses the frame axis: numbered across the whole group, as a
+    continuous recording is, or restarted at zero for each sequence, which is
+    what every mosaic converter writes today and what overlap has to refuse.
+    """
+    names = ("s1", "s2", "s3")
+    paths: dict[str, Path] = {}
+    extents: dict[str, tuple[int, int]] = {}
+    for index, name in enumerate(names):
+        start = index * n_frames if contiguous else 0
         path = tmp_path / f"g1__{name}.parquet"
-        _make_simple_parquet(path, n_rows=10, start_frame=0)
+        _make_simple_parquet(
+            path, n_frames=n_frames, start_frame=start, n_ids=n_ids, sequence=name
+        )
         paths[name] = path
+        extents[name] = (start, start + n_frames - 1)
 
     def specs(name: str) -> list[tuple[Path, ParquetLoadSpec]]:
         return [(paths[name], ParquetLoadSpec())]
 
-    return {
-        "g1__s1": ManifestEntry(
-            file_specs=specs("s1"),
-            prev_file_specs=None,
-            prev_entry_key=None,
-            next_file_specs=specs("s2"),
-            next_entry_key="g1__s2",
-        ),
-        "g1__s2": ManifestEntry(
-            file_specs=specs("s2"),
-            prev_file_specs=specs("s1"),
-            prev_entry_key="g1__s1",
-            next_file_specs=specs("s3"),
-            next_entry_key="g1__s3",
-        ),
-        "g1__s3": ManifestEntry(
-            file_specs=specs("s3"),
-            prev_file_specs=specs("s2"),
-            prev_entry_key="g1__s2",
-            next_file_specs=None,
-            next_entry_key=None,
-        ),
-    }
+    def entry(index: int) -> ManifestEntry:
+        name = names[index]
+        prev_name = names[index - 1] if index > 0 else None
+        next_name = names[index + 1] if index < len(names) - 1 else None
+        return ManifestEntry(
+            file_specs=specs(name),
+            prev_file_specs=None if prev_name is None else specs(prev_name),
+            prev_entry_key=None if prev_name is None else f"g1__{prev_name}",
+            next_file_specs=None if next_name is None else specs(next_name),
+            next_entry_key=None if next_name is None else f"g1__{next_name}",
+            entry_key=f"g1__{name}",
+            group="g1",
+            sequence=name,
+            continuous=continuous,
+            core_extent=extents[name],
+            prev_extent=None if prev_name is None else extents[prev_name],
+            next_extent=None if next_name is None else extents[next_name],
+        )
+
+    return {f"g1__{name}": entry(index) for index, name in enumerate(names)}
 
 
 # --- overlap_frames tests ---
 
 
 def test_iter_manifest_overlap_frames_zero(tmp_path):
-    """overlap_frames=0 yields 4-tuples with core_start=0, core_end=len(df)."""
+    """overlap_frames=0 loads no neighbour and selects the whole segment."""
     manifest = _build_three_seq_manifest(tmp_path)
     results = list(iter_manifest(manifest, overlap_frames=0))
     assert len(results) == 3
-    for entry_key, df, core_start, core_end in results:
-        assert core_start == 0
-        assert core_end == 10
+    for index, (_key, df, selector) in enumerate(results):
         assert len(df) == 10
+        assert (selector.first, selector.last) == (index * 10, index * 10 + 9)
 
 
 def test_iter_manifest_overlap_frames_positive(tmp_path):
-    """overlap_frames > 0 loads and concatenates neighbor data."""
+    """overlap_frames > 0 loads and concatenates neighbour data."""
     manifest = _build_three_seq_manifest(tmp_path)
     results = list(iter_manifest(manifest, overlap_frames=3))
     assert len(results) == 3
 
     # s1: no prev, has next -> 10 core + 3 next = 13
-    key_s1, df_s1, start_s1, end_s1 = results[0]
+    key_s1, df_s1, sel_s1 = results[0]
     assert key_s1 == "g1__s1"
-    assert start_s1 == 0
-    assert end_s1 == 10
+    assert (sel_s1.first, sel_s1.last) == (0, 9)
     assert len(df_s1) == 13
 
     # s2: has prev and next -> 3 prev + 10 core + 3 next = 16
-    key_s2, df_s2, start_s2, end_s2 = results[1]
+    key_s2, df_s2, sel_s2 = results[1]
     assert key_s2 == "g1__s2"
-    assert start_s2 == 3
-    assert end_s2 == 13
+    assert (sel_s2.first, sel_s2.last) == (10, 19)
     assert len(df_s2) == 16
 
     # s3: has prev, no next -> 3 prev + 10 core = 13
-    key_s3, df_s3, start_s3, end_s3 = results[2]
+    key_s3, df_s3, sel_s3 = results[2]
     assert key_s3 == "g1__s3"
-    assert start_s3 == 3
-    assert end_s3 == 13
+    assert (sel_s3.first, sel_s3.last) == (20, 29)
     assert len(df_s3) == 13
 
 
+def test_overlap_context_is_counted_in_frames_not_rows(tmp_path):
+    """The window is N frames wide however many individuals a frame holds.
+
+    ``.iloc[-N:]`` took N rows, so three individuals turned a request for three
+    frames of context into one. The row count then varied with the population and
+    nothing said so.
+    """
+    manifest = _build_three_seq_manifest(tmp_path, n_ids=3)
+    _key, df, selector = list(iter_manifest(manifest, overlap_frames=3))[1]
+
+    before = sorted(df.loc[df["frame"] < selector.first, "frame"].unique())
+    after = sorted(df.loc[df["frame"] > selector.last, "frame"].unique())
+    assert before == [7, 8, 9]
+    assert after == [20, 21, 22]
+    assert len(df) == 3 * (3 + 10 + 3)
+
+
 def test_iter_manifest_overlap_frames_exceeds_neighbor(tmp_path):
-    """overlap_frames larger than neighbor length trims to available rows."""
+    """A window wider than the neighbour takes all of it, with no special case."""
     manifest = _build_three_seq_manifest(tmp_path)
-    # Each sequence has 10 rows; request 50 overlap
     results = list(iter_manifest(manifest, overlap_frames=50))
     assert len(results) == 3
 
-    # s2: prev has 10 rows (all used), next has 10 rows (all used) -> 30 total
-    key_s2, df_s2, start_s2, end_s2 = results[1]
+    key_s2, df_s2, sel_s2 = results[1]
     assert key_s2 == "g1__s2"
-    assert start_s2 == 10
-    assert end_s2 == 20
+    assert (sel_s2.first, sel_s2.last) == (10, 19)
     assert len(df_s2) == 30
 
 
@@ -530,12 +561,12 @@ def test_iter_manifest_filter_factory_with_overlap(tmp_path):
     results = list(iter_manifest(manifest, filter_factory=factory, overlap_frames=3))
     assert len(results) == 3
 
-    # s2: prev filtered to 5 rows, trimmed to 3; core filtered to 5; next filtered to 5, trimmed to 3
-    key_s2, df_s2, start_s2, end_s2 = results[1]
+    # Each segment is filtered to its first 5 frames, then the neighbours are
+    # windowed to the 3 frames nearest the boundary of what survived.
+    key_s2, df_s2, sel_s2 = results[1]
     assert key_s2 == "g1__s2"
-    assert start_s2 == 3
-    assert end_s2 == 8
-    assert len(df_s2) == 11  # 3 + 5 + 3
+    assert (sel_s2.first, sel_s2.last) == (10, 14)
+    assert sorted(df_s2["frame"].unique()) == [2, 3, 4, 10, 11, 12, 13, 14, 20, 21, 22]
 
 
 def test_iter_manifest_filter_factory_empty_skips(tmp_path):

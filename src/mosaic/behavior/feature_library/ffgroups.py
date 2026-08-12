@@ -213,6 +213,7 @@ class FFGroups:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):
@@ -267,8 +268,6 @@ class FFGroups:
             df = df.sort_values(resolve_order_col(df)).reset_index(drop=True)
         except ValueError:
             pass
-        group_val = str(df[group_col].iloc[0]) if group_col in df.columns else ""
-        seq_val = str(df[seq_col].iloc[0]) if seq_col in df.columns else ""
 
         frames = np.asarray(sorted(df[frame_col].dropna().unique()), dtype=int)
         ids = np.asarray(sorted(df[id_col].dropna().unique()))
@@ -360,14 +359,16 @@ class FFGroups:
         if time_col and time_col in df.columns:
             time_map = df.groupby(frame_col)[time_col].first()
             out[time_col] = out[frame_col].map(time_map)
-        if seq_col in df.columns:
-            out[seq_col] = seq_val
-        else:
-            out[seq_col] = seq_val
-        if group_col in df.columns:
-            out[group_col] = group_val
-        else:
-            out[group_col] = group_val
+        # Identity per frame, the way `time` above is already carried, rather
+        # than one value read off row 0. Under overlap the frame spans the
+        # neighbouring sequences, so row 0 belongs to the previous one and every
+        # output row would carry its name. A frame belongs to exactly one
+        # sequence, so mapping is exact in both cases.
+        for column, fallback in ((seq_col, ""), (group_col, "")):
+            if column in df.columns:
+                out[column] = out[frame_col].map(df.groupby(frame_col)[column].first())
+            else:
+                out[column] = fallback
 
         # Event detection
         df_events = _get_events_info(

@@ -117,6 +117,9 @@ class ArHmmFeature:
     version = "0.1"
     parallelizable = False
     scope_dependent = True
+    accepts_overlap = (
+        False  # decodes a whole sequence at once, so context is not a window
+    )
     consumed_roots: tuple[str, ...] = ()
 
     ModelArtifact = ArHmmModelArtifact

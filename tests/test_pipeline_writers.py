@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline._utils import FeatureMeta
+from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.run import build_feature_meta, build_output_path
 from mosaic.core.pipeline.writers import trim_feature_output, write_output
 
@@ -17,20 +18,59 @@ def meta(tmp_path):
     )
 
 
-class TestTrimFeatureOutput:
-    def test_trim_dataframe(self):
-        df = pd.DataFrame({"a": range(10)})
-        trimmed = trim_feature_output(df, 2, 8)
-        assert len(trimmed) == 6
-        assert trimmed.iloc[0]["a"] == 2
+def _selector(first: int, last: int) -> CoreSelector:
+    return CoreSelector(order_col="frame", first=first, last=last, entry_key="g__s2")
 
-    def test_trim_noop_when_full_range(self):
-        df = pd.DataFrame({"a": range(5)})
-        trimmed = trim_feature_output(df, 0, 5)
-        assert len(trimmed) == 5
+
+class TestTrimFeatureOutput:
+    def test_trim_keeps_the_entry_and_drops_its_neighbours(self):
+        df = pd.DataFrame({"frame": range(10), "a": range(10)})
+        trimmed = trim_feature_output(df, _selector(2, 7))
+        assert list(trimmed["frame"]) == [2, 3, 4, 5, 6, 7]
+
+    def test_trim_is_a_noop_when_the_output_is_all_core(self):
+        df = pd.DataFrame({"frame": range(5), "a": range(5)})
+        assert len(trim_feature_output(df, _selector(0, 4))) == 5
 
     def test_trim_none_returns_none(self):
-        assert trim_feature_output(None, 0, 5) is None
+        assert trim_feature_output(None, _selector(0, 5)) is None
+
+    def test_trim_survives_a_feature_that_reordered_its_rows(self):
+        """The defect the row offsets could not survive.
+
+        A feature sorting by ``(id, frame)`` scatters the entry's rows into one
+        block per individual, so a positional window lands on the wrong ones --
+        with the right row *count*, which is why it read as correct.
+        """
+        frames = [7, 8, 9] + list(range(10, 14))
+        df = pd.DataFrame({"frame": frames * 2, "id": [0] * 7 + [1] * 7}).sort_values(
+            ["id", "frame"]
+        )
+        trimmed = trim_feature_output(df, _selector(10, 13))
+        assert sorted(trimmed["frame"].unique()) == [10, 11, 12, 13]
+        assert len(trimmed) == 8
+
+    def test_trim_survives_a_feature_that_dropped_rows(self):
+        """A filtered output is shorter than its input, which offsets mis-slice."""
+        df = pd.DataFrame({"frame": [7, 9, 11, 13, 21], "a": range(5)})
+        trimmed = trim_feature_output(df, _selector(10, 19))
+        assert list(trimmed["frame"]) == [11, 13]
+
+    def test_trim_refuses_an_output_with_no_frame_axis(self):
+        """A per-sequence summary cannot be told from its neighbours' rows."""
+        df = pd.DataFrame({"mean_speed": [1.0]})
+        with pytest.raises(ValueError, match="does not carry it"):
+            trim_feature_output(df, _selector(0, 5))
+
+    def test_trim_refuses_when_nothing_matches_the_entry(self):
+        """Rows addressed to frames the entry does not cover are not "no rows".
+
+        Writing an empty parquet here would read as an entry that legitimately
+        produced nothing, hiding a feature that re-based the frame axis.
+        """
+        df = pd.DataFrame({"frame": [100, 101], "a": [1, 2]})
+        with pytest.raises(ValueError, match="kept no rows"):
+            trim_feature_output(df, _selector(0, 5))
 
 
 class TestWriteOutput:

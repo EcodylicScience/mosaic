@@ -21,6 +21,10 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import (
     DROPPED_LEGACY_COLUMNS,
+    backfill_frame_extents,
+    frame_extent,
+    read_frame_extent,
+    read_frame_extents,
     TRACKS_INDEX_COLUMNS,
     TRACKS_INDEX_PATH_COLUMNS,
     TracksIndexRow,
@@ -1031,3 +1035,87 @@ def test_an_empty_tracks_scope_is_not_recorded_as_a_completed_run(
     assert "__global__" not in {str(s) for s in rows["sequence"]}, (
         "an empty tracks scope was recorded as a finished per-frame run"
     )
+
+
+# --- the measured frame extent ---
+
+
+def _write_table(path: Path, start: int, n_frames: int, n_ids: int = 1) -> None:
+    frames = [start + f for f in range(n_frames) for _ in range(n_ids)]
+    ids = [i for _ in range(n_frames) for i in range(n_ids)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"frame": frames, "id": ids, "X": 0.0, "Y": 0.0}).to_parquet(path)
+
+
+def test_frame_extent_is_measured_from_the_table(tmp_path: Path) -> None:
+    """Measured, not passed: no call site can record an extent the table denies."""
+    path = tmp_path / "t.parquet"
+    _write_table(path, start=10, n_frames=5, n_ids=3)
+    assert frame_extent(path) == (10, 14)
+
+
+def test_frame_extent_is_unknown_rather_than_zero_when_it_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """An unanswerable question must not answer ``(0, 0)``.
+
+    Frame 0 is where the first sequence of every recording begins, so a
+    substituted zero would read as a measurement rather than as its absence.
+    """
+    assert frame_extent(tmp_path / "missing.parquet") is None
+    no_frames = tmp_path / "n.parquet"
+    pd.DataFrame({"id": [1]}).to_parquet(no_frames)
+    assert frame_extent(no_frames) is None
+
+
+def test_a_blank_extent_cell_reads_as_unknown_not_as_frame_zero() -> None:
+    """The trap this column has that ``n_keypoints`` does not."""
+    assert read_frame_extent(pd.Series({"frame_min": "", "frame_max": ""})) is None
+    assert read_frame_extent(pd.Series({"frame_min": "0", "frame_max": "9"})) == (0, 9)
+    # A half-written pair is unknown, not a range starting at zero.
+    assert read_frame_extent(pd.Series({"frame_min": "0", "frame_max": ""})) is None
+
+
+def test_write_tracks_row_records_the_extent(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    out = ds.get_root("tracks") / "g__s1.parquet"
+    _write_table(out, start=100, n_frames=4)
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence="s1",
+        out_path=out,
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=4,
+    )
+    assert read_frame_extents(ds) == {("g", "s1"): (100, 103)}
+
+
+def test_backfill_measures_only_the_rows_that_lack_an_extent(tmp_path: Path) -> None:
+    """The migration for a dataset converted before the columns existed.
+
+    Nothing else in the toolkit re-measures an index column: ``reindex`` prunes
+    rows without opening a file, and ``reconcile`` re-addresses runs from their
+    sidecars.
+    """
+    ds = _dataset(tmp_path)
+    rows = []
+    for index, name in enumerate(("s1", "s2")):
+        path = ds.get_root("tracks") / f"g__{name}.parquet"
+        _write_table(path, start=index * 10, n_frames=10)
+        rows.append({"group": "g", "sequence": name, "abs_path": str(path)})
+    pd.DataFrame(rows).to_csv(tracks_index_path(ds), index=False)
+
+    assert read_frame_extents(ds) == {}
+
+    would = backfill_frame_extents(ds, dry_run=True)
+    assert len(would) == 2
+    assert read_frame_extents(ds) == {}, "a dry run must not write"
+
+    filled = backfill_frame_extents(ds, dry_run=False)
+    assert len(filled) == 2
+    assert read_frame_extents(ds) == {("g", "s1"): (0, 9), ("g", "s2"): (10, 19)}
+
+    assert len(backfill_frame_extents(ds, dry_run=False)) == 0, "not idempotent"

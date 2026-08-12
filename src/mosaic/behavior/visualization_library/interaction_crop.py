@@ -81,6 +81,7 @@ class InteractionCropPipeline:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
 
     class Inputs(Inputs[TrackInput | Result]):

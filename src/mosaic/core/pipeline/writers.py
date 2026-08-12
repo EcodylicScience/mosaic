@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import pyarrow.parquet as pq
 
 from ._utils import FeatureMeta, atomic_write
+
+if TYPE_CHECKING:
+    from .manifest import CoreSelector
 
 FeatureOutput = pd.DataFrame | None
 
@@ -15,16 +19,56 @@ FeatureOutput = pd.DataFrame | None
 
 def trim_feature_output(
     df_feat: FeatureOutput,
-    core_start: int,
-    core_end: int,
+    selector: CoreSelector,
 ) -> FeatureOutput:
-    """Trim feature output to original segment bounds (removing overlap regions)."""
-    if df_feat is None:
+    """Keep the rows of an overlapped output that belong to the entry.
+
+    Selects on the frame interval the entry covers, rather than slicing by the
+    row offsets the input happened to have. Those offsets assumed ``apply``
+    returned one row per input row in input order -- a contract the ``Feature``
+    protocol has never stated and roughly half the library breaks, by sorting, by
+    filtering, or by reducing to a row per frame. The old positional slice
+    returned the right *number* of rows and the wrong ones, silently; and its
+    ``core_start == 0`` fast path skipped the trim entirely for the first
+    sequence of every group, writing the next segment's rows into it.
+
+    Two refusals rather than a plausible answer:
+
+    - **No order column.** A per-sequence summary carries no frame, so there is
+      nothing to select on and no honest fallback -- a positional guess is the
+      thing this replaced.
+    - **A non-empty output, none of which is inside the interval.** The feature
+      returned rows addressed to frames the entry does not cover, which means it
+      rewrote or re-based the frame axis. Writing zero rows would look like an
+      entry that legitimately produced nothing.
+
+    ``None`` and an empty frame pass through: both mean the feature produced
+    nothing, which is a real result and distinguishable from the case above.
+    """
+    if df_feat is None or df_feat.empty:
         return df_feat
 
-    if core_start == 0 and core_end >= len(df_feat):
-        return df_feat
-    return df_feat.iloc[core_start:core_end].reset_index(drop=True)
+    if selector.order_col not in df_feat.columns:
+        msg = (
+            f"overlap trimming needs the {selector.order_col!r} column to tell "
+            f"this entry's rows from its neighbours', and "
+            f"{selector.entry_key or 'this feature'}'s output does not carry it. "
+            f"A feature whose output has no frame axis -- a per-sequence summary "
+            f"-- cannot be run with overlap_frames > 0."
+        )
+        raise ValueError(msg)
+
+    keep = selector.mask(df_feat)
+    if not bool(keep.any()):
+        msg = (
+            f"overlap trimming kept no rows of {selector.entry_key or 'the'} "
+            f"output: it returned {len(df_feat)} rows, none inside frames "
+            f"{selector.first}-{selector.last}, which the entry covers. The "
+            f"feature re-based or replaced the frame axis it was given, so its "
+            f"rows can no longer be told from its neighbours'."
+        )
+        raise ValueError(msg)
+    return df_feat[keep].reset_index(drop=True)
 
 
 # --- Parquet reading ---
@@ -40,6 +84,17 @@ def read_parquet_table(path: Path) -> pd.DataFrame:
     to one annotated function keeps that at one site rather than at each caller.
     """
     return pd.read_parquet(path)
+
+
+def read_parquet_table_columns(path: Path, columns: list[str]) -> pd.DataFrame:
+    """Read only *columns* of a parquet.
+
+    The projected sibling of :func:`read_parquet_table`, and confined here for
+    the same typing reason. A column the file does not hold is not an error --
+    pyarrow raises, and the callers of this are asking a question whose honest
+    answer is "unknown", so they catch rather than let it escape.
+    """
+    return pd.read_parquet(path, columns=columns)
 
 
 # --- Parquet writing ---

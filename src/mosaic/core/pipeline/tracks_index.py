@@ -45,12 +45,16 @@ import pyarrow.parquet as pq
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pipeline.types.data_config import COLUMNS
+from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
     project_to_schema,
 )
+from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -137,6 +141,22 @@ class TracksIndexRow(RunIndexRowBase):
     **A blank cell means unknown, not zero.** Rows written before this column
     existed project to ``""``, exactly as they do for ``n_rows``, so a reader
     testing for "no keypoints" must not treat a legacy row as one.
+
+    ``frame_min`` / ``frame_max`` are the smallest and largest value of the
+    table's ``frame`` column, measured from the parquet as it is written, for the
+    same reason ``n_keypoints`` is. They are what lets a *continuous* group be
+    put in temporal order and checked: which sequence precedes which, and whether
+    the group really is one frame axis rather than several restarting at zero.
+    Deriving that from the tables would need a parquet open per entry at every
+    manifest build, including the builds that run before anything is computed.
+
+    They are **text**, for the reason ``cm_per_pixel`` is text on the media
+    index: zero is a real and common answer here -- it is where the first
+    sequence of every recording begins -- so a numeric column could not spell
+    "unknown" without inventing a sentinel. Empty means unknown, and the writer
+    records empty whenever the extent could not be measured rather than
+    substituting a value that reads as a measurement. :func:`read_frame_extent`
+    is the only reader; it parses, and returns ``None`` for a blank.
     """
 
     group: str
@@ -150,12 +170,18 @@ class TracksIndexRow(RunIndexRowBase):
     n_rows: int = 0
     n_keypoints: int = 0
     consumed_composition: str = ""
+    frame_min: str = ""
+    frame_max: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
     field.name for field in fields(TracksIndexRow)
 ]
 """The schema, in CSV order. Derived from the row so the two cannot drift."""
+
+_FRAME_MIN: Final = "frame_min"
+_FRAME_MAX: Final = "frame_max"
+"""The two extent cells, named once so reader and row cannot drift."""
 
 TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("source_abs_path",)
 """Path-bearing columns beyond ``abs_path``.
@@ -470,6 +496,129 @@ def count_keypoints(path: Path) -> int:
     return len(pose_column_pairs(names))
 
 
+def frame_extent(path: Path) -> tuple[int, int] | None:
+    """The ``(min, max)`` of a written track table's ``frame`` column.
+
+    ``None`` when the answer is unknown -- an absent file, an unreadable one, a
+    table with no ``frame`` column, or one whose every ``frame`` is null. The
+    caller records a blank cell for that, which is not the same claim as
+    ``(0, 0)``: frame 0 is where the first sequence of a recording begins.
+
+    Reads the one column rather than the whole table, as the ultralytics run
+    index does for its frame count and the tracker bridge does for its id check.
+    Unlike :func:`count_keypoints` this cannot be a schema read -- a column's
+    extent is data, not a name -- so it is one column chunk rather than one
+    footer, on a path that has just written the whole file.
+
+    Errors are swallowed for the same reason ``count_keypoints`` swallows them:
+    this runs while recording a row about a table written one line earlier, and a
+    file that cannot be opened now is for ``readable_tracks_table`` to report,
+    not for the index writer to raise from mid-append.
+    """
+    if not path.exists():
+        return None
+    try:
+        column = read_parquet_table_columns(path, [COLUMNS.frame_col])
+    except (OSError, ValueError, KeyError):
+        return None
+    if COLUMNS.frame_col not in column.columns:
+        return None
+    frames = pd.to_numeric(column[COLUMNS.frame_col], errors="coerce").dropna()
+    if frames.empty:
+        return None
+    return int(frames.min()), int(frames.max())
+
+
+def read_frame_extent(row: "pd.Series[object]") -> tuple[int, int] | None:
+    """The recorded ``(frame_min, frame_max)`` of one index row, or ``None``.
+
+    The only reader of those two cells, so the blank-is-unknown rule is applied
+    in one place rather than at each caller. ``None`` covers every way the answer
+    can be absent: a legacy row written before the columns existed, a row whose
+    table could not be measured, and a half-written pair. A blank is never read
+    as zero.
+    """
+    raw_min = text_cell(row.get(_FRAME_MIN))
+    raw_max = text_cell(row.get(_FRAME_MAX))
+    if not raw_min or not raw_max:
+        return None
+    try:
+        return int(float(raw_min)), int(float(raw_max))
+    except ValueError:
+        return None
+
+
+FrameExtents = dict[tuple[str, str], tuple[int, int]]
+"""Each entry's recorded ``(frame_min, frame_max)``. Absent means unmeasured."""
+
+
+def read_frame_extents(ds: Dataset, run_id: str | None = None) -> FrameExtents:
+    """Every entry's recorded frame extent, from the tracks index.
+
+    Read from the **index**, never from the tables. Adjacency is computed during
+    :func:`build_manifest`, which also runs to *predict* an identifier before
+    anything has been computed -- there is no parquet to measure there, and a
+    read per entry at every manifest build would not be affordable if there were.
+
+    An entry whose extent was never recorded is simply absent from the result;
+    see :func:`~mosaic.core.pipeline.tracks_index.read_frame_extent` for the ways
+    that happens. Sourced from the tracks index whatever a feature's inputs are,
+    because when a recording was divided in time is a property of the dataset,
+    not of whichever input a caller happened to list first.
+    """
+    df = select_variant_rows(read_tracks_index(ds), run_id)
+    extents: FrameExtents = {}
+    for _, series in df.iterrows():
+        extent = read_frame_extent(series)
+        if extent is not None:
+            extents[(str(series["group"]), str(series["sequence"]))] = extent
+    return extents
+
+
+def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame:
+    """Measure and record the frame extent of every row that lacks one.
+
+    The migration path for a dataset converted before the columns existed. Its
+    rows read blank, and blank refuses ``overlap_frames`` -- correctly, since
+    nothing knows whether those sequences share one frame axis -- so a dataset
+    that wants to use overlap has to be measured once. Rows written by the
+    current writer already carry it, so a dataset built after this change never
+    needs the pass.
+
+    The only thing in the toolkit that re-measures an index column: ``reindex``
+    prunes rows and never opens a file, and ``reconcile`` re-addresses runs from
+    their sidecars. This opens one column of each parquet.
+
+    Locked for the whole read-measure-write, and for the reason ``prune_missing``
+    is: an append landing between the read and the rewrite would be erased by a
+    frame computed before it existed. A dry run holds the lock too -- it reports
+    what a real run would record, which means nothing against a moving file.
+
+    Returns the rows it filled (or would fill), with the measured values.
+    """
+    path = tracks_index_path(ds)
+    if not path.exists():
+        return empty_tracks_frame()
+    with index_lock(path):
+        df = read_tracks_index(ds)
+        if df.empty:
+            return df.iloc[0:0]
+        filled: list[int] = []
+        for position, row in df.iterrows():
+            if read_frame_extent(row) is not None:
+                continue
+            extent = frame_extent(ds.resolve_path(str(row["abs_path"])))
+            if extent is None:
+                continue
+            df.at[position, _FRAME_MIN] = str(extent[0])
+            df.at[position, _FRAME_MAX] = str(extent[1])
+            filled.append(cast("int", position))
+        measured = df.loc[filled].reset_index(drop=True)
+        if filled and not dry_run:
+            atomic_write(path, lambda p: df.to_csv(p, index=False))
+        return measured
+
+
 def write_tracks_row(
     ds: Dataset,
     *,
@@ -516,6 +665,10 @@ def write_tracks_row(
     # that reads its group off a pandas Series as a numpy scalar.
     entry_group = validate_entry_name(text_cell(group), "group")
     entry_sequence = validate_entry_name(text_cell(sequence), "sequence")
+    # An unknown extent is recorded as a blank pair, never as (0, 0): frame 0 is
+    # a real and common value, so a substituted zero would read as the start of a
+    # recording rather than as the absence of an answer.
+    extent = frame_extent(out_path)
     row = TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=run_id,
@@ -532,6 +685,8 @@ def write_tracks_row(
         consumed_composition=consumed_composition_for(
             ds, entry_group, entry_sequence, consumed_source_roots
         ),
+        frame_min="" if extent is None else str(extent[0]),
+        frame_max="" if extent is None else str(extent[1]),
     )
     tracks_index(tracks_index_path(ds)).append([row])
 

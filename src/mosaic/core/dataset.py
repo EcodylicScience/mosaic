@@ -165,8 +165,10 @@ from .pipeline.tracking_roots import (
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
+    backfill_frame_extents,
     consumed_composition_for,
     legacy_view,
+    read_frame_extents,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -785,6 +787,38 @@ class Dataset:
         """The value of tag *name*, or ``None`` if it is absent or is a label."""
         found = self.manifest.tag(name)
         return None if found is None else found.value
+
+    @property
+    def continuous_groups(self) -> tuple[str, ...]:
+        """Groups whose sequences are time divisions of one recording."""
+        return self.manifest.continuous_groups
+
+    def is_continuous_group(self, group: str) -> bool:
+        """Whether *group*'s sequences divide one recording. See the manifest."""
+        return self.manifest.is_continuous_group(group)
+
+    def measure_frame_extents(self, *, dry_run: bool = False) -> "pd.DataFrame":
+        """Record the frame extent of every tracks row that lacks one.
+
+        A dataset converted before the extent was recorded reads blank, and blank
+        refuses ``overlap_frames``. Run this once to make such a dataset eligible.
+        Returns the rows filled, with their measured values.
+        """
+        return backfill_frame_extents(self, dry_run=dry_run)
+
+    def set_continuous_groups(
+        self, groups: Iterable[str], *, save: bool = True
+    ) -> None:
+        """Declare which groups are one continuous recording.
+
+        Raises:
+            ValueError: If a name is empty or repeated.
+        """
+        named = tuple(str(group) for group in groups)
+        self.manifest = self.manifest.model_copy(update={"continuous_groups": named})
+        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        if save:
+            self.save()
 
     def define_tag(self, tag: DatasetTag, *, save: bool = True) -> None:
         """Declare *tag*, replacing any existing one of the same name.
@@ -4046,6 +4080,51 @@ class Dataset:
             for column, link in links.items():
                 row[column] = link
 
+    def _match_continuous_group_rows(
+        self,
+        df: "pd.DataFrame",
+        group: str,
+        camera: str | None = None,
+    ) -> "pd.DataFrame | None":
+        """Every media row of a continuous *group*, in recording order.
+
+        Ordered by ``(where the sequence starts, video_order)``. ``video_order``
+        alone will not do it: its dense counter restarts at zero for each
+        ``(group, sequence, camera)``, so a group whose clips are indexed one per
+        division would come back as N rows all claiming position 0. The sequence
+        term comes from the recorded frame extents -- the same key the tracks
+        adjacency uses -- so the media order and the track order are derived from
+        one fact rather than two that can disagree.
+
+        ``None`` when the group has no rows, which sends the caller back to the
+        ordinary per-sequence tiers.
+        """
+        if "group" not in df.columns:
+            return None
+        matched = df[df["group"].fillna("") == group]
+        if camera is not None and "camera" in matched.columns:
+            matched = matched[matched["camera"].fillna("") == camera]
+        if matched.empty:
+            return None
+
+        extents = read_frame_extents(self)
+        starts = {
+            entry_sequence: extent[0]
+            for (entry_group, entry_sequence), extent in extents.items()
+            if entry_group == group
+        }
+        # An unplaced sequence sorts after every placed one, by name, so the
+        # order stays total and deterministic rather than depending on the index.
+        unplaced = max(starts.values(), default=0) + 1
+        order = (
+            matched["sequence"].fillna("").map(lambda s: starts.get(str(s), unplaced))
+        )
+        return (
+            matched.assign(_recording_order=order)
+            .sort_values(["_recording_order", "sequence", "video_order"], kind="stable")
+            .drop(columns="_recording_order")
+        )
+
     def _match_media_rows(
         self,
         df: "pd.DataFrame",
@@ -4075,6 +4154,18 @@ class Dataset:
             AmbiguousMediaMatchError: If the sequence-cell tier leaves rows of
                 more than one ``(group, sequence)`` standing.
         """
+        # A continuous group is one recording, so every one of its sequences
+        # resolves to the whole of it: their `frame` column is a single axis
+        # spanning the group, and it has to address a timeline spanning the group
+        # or every frame read lands in the wrong clip. Scoped here, in the
+        # resolution, rather than by listing each sequence's rows against every
+        # other sequence -- that would store one file's facts once per division
+        # and leave a rescan to keep the copies agreeing.
+        if group and self.is_continuous_group(str(group)):
+            matched = self._match_continuous_group_rows(df, str(group), camera)
+            if matched is not None:
+                return matched
+
         # Untyped so the pandas ``df[mask]`` (Series | DataFrame in the stubs)
         # widens by inference rather than tripping a declared-type mismatch, as
         # the rest of this module's index masking does.
@@ -6681,9 +6772,13 @@ class Dataset:
                 parallelizable, run the apply phase in parallel.
             parallel_mode: ``'thread'`` (default) or ``'process'`` execution
                 backend when *parallel_workers* > 1.
-            overlap_frames: Extra frames from adjacent segments for
-                edge-effect handling.  Mutually exclusive with frame/time
-                filters.
+            overlap_frames: Frames of context from the sequences on either side,
+                for a feature computing across frames. Trimmed back off the
+                output. Only meaningful inside a continuous group, whose
+                sequences are time divisions of one recording on one frame axis;
+                refused elsewhere, as is a feature that has not declared
+                ``accepts_overlap``. Mutually exclusive with frame/time filters.
+                See :func:`~mosaic.core.pipeline.run.run_feature`.
             filter_start_frame: Only include frames >= this value.
             filter_end_frame: Only include frames < this value.
             filter_start_time: Converted to start frame via *fps_default*

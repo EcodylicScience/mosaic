@@ -224,10 +224,12 @@ class CollectiveMotionMetrics:
         ffgroup does. Pooling two views into one centroid would otherwise be
         silent, since nothing in the numbers says a coordinate system changed.
 
-        **Must not be run with ``overlap_frames > 0``.** Output trimming slices
-        by row offsets measured on the multi-id input, and a one-row-per-frame
-        output is shorter by a factor of N. The default is 0, which makes the
-        trim inert.
+        **``overlap_frames`` is supported, and worth using on a continuous
+        group.** ``centroid_speed`` and ``group_angvel`` are backward differences,
+        so without context they are NaN on the first frame of every sequence --
+        the artifact overlap exists to remove. It needs the group's sequences to
+        be declared continuous and numbered on one frame axis; a run that asks
+        for it otherwise is refused rather than approximated.
     """
 
     category = "summary"
@@ -235,6 +237,7 @@ class CollectiveMotionMetrics:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
@@ -392,6 +395,9 @@ class CollectiveMotionMetrics:
         work["_finite"] = finite
         if C.time_col in df.columns:
             work[C.time_col] = df[C.time_col].to_numpy()
+        for meta_col in (C.seq_col, C.group_col):
+            if meta_col in df.columns:
+                work[meta_col] = df[meta_col].to_numpy()
         if p.speed_col is not None:
             work[p.speed_col] = df[p.speed_col].to_numpy()
 
@@ -483,6 +489,13 @@ class CollectiveMotionMetrics:
         }
         if C.time_col in work.columns:
             named[C.time_col] = pd.NamedAgg(column=C.time_col, aggfunc="first")
+        # Identity travels with the frame, not from row 0 of the whole input.
+        # With overlap the input spans the neighbouring sequences and row 0 is
+        # the previous one's; a frame belongs to exactly one sequence, so taking
+        # it per group is exact whether or not overlap is in play.
+        for meta_col in (C.seq_col, C.group_col):
+            if meta_col in work.columns:
+                named[meta_col] = pd.NamedAgg(column=meta_col, aggfunc="first")
         if p.speed_col is not None:
             named["mean_speed"] = pd.NamedAgg(column=p.speed_col, aggfunc="mean")
 
@@ -583,9 +596,8 @@ class CollectiveMotionMetrics:
         if p.speed_col is not None:
             out["mean_speed"] = agg["mean_speed"].to_numpy()
         out["heading_source"] = resolved
-        if C.seq_col in df.columns:
-            out[C.seq_col] = df[C.seq_col].iloc[0]
-        if C.group_col in df.columns:
-            out[C.group_col] = df[C.group_col].iloc[0]
+        for meta_col in (C.seq_col, C.group_col):
+            if meta_col in agg.columns:
+                out[meta_col] = agg[meta_col].to_numpy()
 
         return out.reset_index(drop=True)

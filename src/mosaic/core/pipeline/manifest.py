@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pyarrow as pa
 
@@ -23,12 +25,19 @@ from .index import (
 )
 from .loading import load_entry_data
 from .track_universe import current_run_id, is_track_shaped
-from .tracks_index import read_tracks_index, select_variant_rows, tracks_index_path
+from .tracks_index import (
+    FrameExtents,
+    read_frame_extents,
+    read_tracks_index,
+    select_variant_rows,
+    tracks_index_path,
+)
 from .types import (
     COLUMNS,
     InputsLike,
     LoadSpec,
     ParquetLoadSpec,
+    resolve_order_col,
 )
 
 if TYPE_CHECKING:
@@ -47,11 +56,26 @@ FilterFactory = Callable[[str], Iterable[Callable[[pd.DataFrame], pd.DataFrame]]
 
 @dataclass(slots=True)
 class ManifestEntry:
+    """One entry's inputs, its neighbours, and what overlap needs to judge them.
+
+    The extents and ``continuous`` are carried rather than looked up so
+    :func:`iter_manifest` can gate and slice without a ``Dataset`` -- it is handed
+    a manifest and nothing else, and reaching back for the index per entry would
+    put a read inside the iteration.
+    """
+
     file_specs: FileSpecs = field(default_factory=list)
     prev_file_specs: FileSpecs | None = None
     prev_entry_key: str | None = None
     next_file_specs: FileSpecs | None = None
     next_entry_key: str | None = None
+    entry_key: str = ""
+    group: str = ""
+    sequence: str = ""
+    continuous: bool = False
+    core_extent: tuple[int, int] | None = None
+    prev_extent: tuple[int, int] | None = None
+    next_extent: tuple[int, int] | None = None
 
 
 Manifest = dict[str, ManifestEntry]
@@ -134,6 +158,24 @@ def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
     return current_run_id(ds, feature_name)
 
 
+def _temporal_key(
+    entry: tuple[str, str], extents: FrameExtents
+) -> tuple[int, int, str]:
+    """Sort an entry by where its frames sit, falling back to its name.
+
+    A measured entry sorts by its first frame; an unmeasured one sorts after
+    every measured one, by name. The leading discriminator is what keeps a
+    partially-measured group deterministic rather than interleaving two
+    incomparable keys -- and a group where nothing is measured, which is every
+    group of every dataset written before the extent was recorded, orders exactly
+    as it always did.
+    """
+    extent = extents.get(entry)
+    if extent is None:
+        return (1, 0, entry[1])
+    return (0, extent[0], entry[1])
+
+
 def build_manifest(
     ds: Dataset,
     inputs: InputsLike,
@@ -214,17 +256,30 @@ def build_manifest(
         compositions=read_entry_compositions(ds, shared_entries),
     )
 
-    # Build per-group ordering from first input's full order.
+    # Build per-group ordering: the universe from the first input, the *order*
+    # from the recorded frame extents.
     #
-    # `group` here defines *temporal contiguity*: the prev/next adjacency below
-    # (used for overlap_frames) is computed only within a group, never across
-    # group boundaries. This is the one structural role of `group`; it is dormant
-    # for discrete datasets and becomes load-bearing for the future `continuous`
-    # dataset type (arbitrary time-window sequences). Preserve when softening
-    # `group` elsewhere. See also iteration.yield_sequences_with_overlap.
+    # `group` defines *temporal contiguity*: the prev/next adjacency below (used
+    # for overlap_frames) is computed only within a group, never across group
+    # boundaries. This is the one structural role of `group`, load-bearing for a
+    # continuous group, whose sequences are time divisions of one recording --
+    # see `DatasetManifest.is_continuous_group`. Preserve when softening `group`
+    # elsewhere.
+    #
+    # Ordering by the recorded first frame rather than by the sequence *name* is
+    # what makes "the next sequence" mean the next one in time. A name sorts
+    # `seg1, seg10, seg2`, which named `seg10` as `seg1`'s successor; and a
+    # sequence whose parquet is missing is skipped by the resolvers above, so a
+    # name order silently closed over the hole and made `seg3` and `seg5`
+    # adjacent. Neither is detectable downstream. A group with no recorded
+    # extents -- every group of every dataset written before they were -- keeps
+    # the name order it has always had.
+    frame_extents = read_frame_extents(ds, tracks_run_id)
     group_order: dict[str, list[tuple[str, str]]] = {}
     for entry in first_full_order:
         group_order.setdefault(entry[0], []).append(entry)
+    for entries_of_group in group_order.values():
+        entries_of_group.sort(key=lambda entry: _temporal_key(entry, frame_extents))
 
     # Build manifest with adjacency
     manifest: Manifest = {}
@@ -274,9 +329,162 @@ def build_manifest(
             prev_entry_key=prev_key,
             next_file_specs=next_specs,
             next_entry_key=next_key,
+            entry_key=key,
+            group=group,
+            sequence=sequence,
+            continuous=ds.is_continuous_group(group),
+            core_extent=frame_extents.get((group, sequence)),
+            prev_extent=None if prev_entry is None else frame_extents.get(prev_entry),
+            next_extent=None if next_entry is None else frame_extents.get(next_entry),
         )
 
     return manifest, scope
+
+
+def order_values(df: pd.DataFrame, order_col: str) -> npt.NDArray[np.float64]:
+    """The order column as a float array, with unreadable cells as NaN.
+
+    Confined to one annotated function for the reason ``read_parquet_table`` is:
+    ``pd.to_numeric`` is typed as returning a scalar-or-array union, so every
+    direct call leaves its result partially unknown and the unknown spreads into
+    whatever compares against it.
+
+    Float rather than int because the order column may be ``time``, and because a
+    NaN is how an unreadable cell has to arrive -- it compares false against both
+    ends of an interval, which is the right answer for a row whose frame cannot
+    be read.
+    """
+    return np.asarray(pd.to_numeric(df[order_col], errors="coerce"), dtype=np.float64)
+
+
+@dataclass(frozen=True, slots=True)
+class CoreSelector:
+    """Which of an overlapped output's rows belong to the entry being computed.
+
+    Replaces the ``(core_start, core_end)`` row offsets, which were measured on
+    the *input* and applied to the *output*. That was only ever sound for a
+    feature returning one row per input row in input order, and the ``Feature``
+    protocol has never required either: a feature that sorts by ``(id, frame)``
+    scatters the core rows into one block per individual, one that filters
+    returns fewer, and one that reduces to a row per frame returns N times fewer.
+    Each produced a right-sized, wrong-content output with no error.
+
+    A frame interval says the same thing about the output that it says about the
+    input, whatever the feature did to the rows in between, and it is exact
+    because ``verify_overlap_supported`` has already established that the three
+    segments do not share frame numbers.
+
+    Attributes:
+        order_col: The column the interval is read on.
+        first: Lowest frame belonging to the entry, inclusive.
+        last: Highest frame belonging to the entry, inclusive.
+        entry_key: Named only so a refusal can say which entry it was trimming.
+    """
+
+    order_col: str
+    first: int
+    last: int
+    entry_key: str = ""
+
+    def mask(self, df: pd.DataFrame) -> npt.NDArray[np.bool_]:
+        """Which rows of *df* fall inside the interval.
+
+        An array rather than a ``Series`` so the result carries no index: it is
+        applied to the frame it was computed from, and an index-aligned boolean
+        would silently reindex against an output whose index the feature reset.
+        """
+        values = order_values(df, self.order_col)
+        return (values >= self.first) & (values <= self.last)
+
+
+class OverlapUnsupported(ValueError):
+    """``overlap_frames > 0`` was asked for where it cannot mean anything.
+
+    Every case this covers produced a plausible, wrong, silent answer before it
+    existed: a neighbour spliced in from an unrelated recording, a context window
+    measured in rows rather than frames, an output trimmed against a frame axis
+    three segments share. It is a ``ValueError`` because the request is the thing
+    that is wrong, not the state of the world.
+    """
+
+
+def _describe(entry: str, extent: tuple[int, int] | None) -> str:
+    """One entry and its frame range, for a refusal a reader can act on."""
+    if extent is None:
+        return f"{entry} (frame range not recorded)"
+    return f"{entry} (frames {extent[0]}-{extent[1]})"
+
+
+def verify_overlap_supported(manifest: Manifest, overlap_frames: int) -> None:
+    """Refuse *manifest* if it cannot support reading across a sequence boundary.
+
+    Checked once, up front, over the whole manifest rather than per entry as the
+    iteration reaches it: a run that cannot do what was asked should fail before
+    it writes half its outputs.
+
+    Three conditions, each of which was a silent wrong answer before:
+
+    - **The group is declared continuous.** Its sequences must be time divisions
+      of one recording. No measurement establishes that -- two unrelated
+      recordings can be numbered consecutively -- so the dataset has to say so.
+    - **Every entry involved records a frame extent.** Without it there is no
+      way to know which neighbour comes first, or whether the axis is shared.
+    - **The extents are disjoint and increase across the boundary.** Sequences
+      that restart their numbering, which is what every mosaic converter writes,
+      do not form one axis: concatenating them hands ``apply`` three rows for
+      frame 7, and every feature that sorts or groups by frame then interleaves
+      or merges three recordings. No trim can repair numbers computed from that.
+
+    A group whose entries fail the last check while being declared continuous is
+    a dataset error, and the message names both sequences and both ranges.
+    """
+    if overlap_frames <= 0:
+        return
+    for entry in manifest.values():
+        if not entry.continuous:
+            msg = (
+                f"overlap_frames={overlap_frames} but group {entry.group!r} is "
+                f"not declared continuous, so its sequences are independent and "
+                f"reading across their boundary would splice unrelated "
+                f"recordings together. Declare it with "
+                f"ds.set_continuous_groups([...]) if its sequences really are "
+                f"time divisions of one recording, or leave overlap_frames at 0."
+            )
+            raise OverlapUnsupported(msg)
+        if entry.core_extent is None:
+            msg = (
+                f"overlap_frames={overlap_frames} but {entry.entry_key} records "
+                f"no frame range, so mosaic cannot tell which sequences neighbour "
+                f"it in time. Re-run the conversion, or measure the existing "
+                f"tables, so the tracks index records each entry's frame extent."
+            )
+            raise OverlapUnsupported(msg)
+        core = entry.core_extent
+        for side, key, extent in (
+            ("precedes", entry.prev_entry_key, entry.prev_extent),
+            ("follows", entry.next_entry_key, entry.next_extent),
+        ):
+            if key is None:
+                continue
+            if extent is None:
+                msg = (
+                    f"overlap_frames={overlap_frames} but {key}, which {side} "
+                    f"{entry.entry_key}, records no frame range. Every sequence a "
+                    f"continuous group reads across has to record one."
+                )
+                raise OverlapUnsupported(msg)
+            before, after = (extent, core) if side == "precedes" else (core, extent)
+            if before[1] >= after[0]:
+                msg = (
+                    f"overlap_frames={overlap_frames} needs one frame axis across "
+                    f"group {entry.group!r}, but "
+                    f"{_describe(entry.entry_key, core)} and "
+                    f"{_describe(key, extent)} overlap. Sequences of a continuous "
+                    f"group have to be numbered across the whole recording, not "
+                    f"restarted at zero for each -- otherwise the same frame "
+                    f"number names a different moment in each of them."
+                )
+                raise OverlapUnsupported(msg)
 
 
 def _resolve_tracks(
@@ -579,6 +787,35 @@ def _load_neighbor(
     return load_entry_data(file_specs, filters=filters, cross_join=cross_join)
 
 
+def _frame_window(
+    df: pd.DataFrame | None, overlap_frames: int, *, keep_tail: bool
+) -> pd.DataFrame | None:
+    """The last (or first) *overlap_frames* frame numbers of a neighbour.
+
+    Frames, not rows. ``.iloc[-N:]`` took N *rows*, so a table of M individuals
+    yielded ceil(N/M) frames of context, fewer where the last frames had
+    dropouts, and it assumed the parquet was stored in temporal order -- which
+    the id-major converters do not guarantee. Hence ``max()``/``min()`` over the
+    column rather than a position.
+
+    Gaps make the row count vary, which is what "N frames of context" should
+    mean. A window that selects nothing is legal -- the neighbour's last N frame
+    numbers can all be dropouts -- and the caller treats it as an absent
+    neighbour. ``overlap_frames`` wider than the neighbour selects all of it,
+    with no special case.
+    """
+    if df is None or df.empty or COLUMNS.frame_col not in df.columns:
+        return df if df is not None and not df.empty else None
+    frames = pd.to_numeric(df[COLUMNS.frame_col], errors="coerce")
+    if frames.isna().all():
+        return None
+    if keep_tail:
+        window = df[frames > int(frames.max()) - overlap_frames]
+    else:
+        window = df[frames < int(frames.min()) + overlap_frames]
+    return None if window.empty else window
+
+
 @overload
 def iter_manifest(
     manifest: Manifest,
@@ -600,7 +837,7 @@ def iter_manifest(
     progress_label: str = "",
     progress_interval: int = 10,
     cross_join: bool = False,
-) -> Iterator[tuple[str, pd.DataFrame, int, int]]: ...
+) -> Iterator[tuple[str, pd.DataFrame, CoreSelector]]: ...
 
 
 def iter_manifest(
@@ -611,11 +848,18 @@ def iter_manifest(
     progress_label: str = "",
     progress_interval: int = 10,
     cross_join: bool = False,
-) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, int, int]]:
+) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, CoreSelector]]:
     """Iterate manifest entries, yielding data per sequence.
 
     When overlap_frames is None (default), yields (entry_key, df).
-    When overlap_frames is an int, yields (entry_key, df, core_start, core_end).
+    When overlap_frames is an int, yields (entry_key, df, selector) -- see
+    :class:`CoreSelector`, which names the rows of the *output* that belong to
+    this entry.
+
+    Call :func:`verify_overlap_supported` before iterating with
+    ``overlap_frames > 0``. This does not re-check per entry: the selector's
+    exactness rests on the segments not sharing frame numbers, and that is
+    established once for the whole manifest rather than rediscovered here.
 
     *cross_join* passes the frame-only-merge escape down to the loader, for the one
     feature that declares it (``loading.CROSS_JOIN_FEATURES``).
@@ -635,34 +879,41 @@ def iter_manifest(
         if overlap_frames is None:
             yield entry_key, df
         else:
+            order_col = resolve_order_col(df)
+            core_frames = pd.to_numeric(df[order_col], errors="coerce")
+            selector = CoreSelector(
+                order_col=order_col,
+                first=int(core_frames.min()),
+                last=int(core_frames.max()),
+                entry_key=entry_key,
+            )
             if overlap_frames > 0:
-                # Load and filter neighbor segments
-                prev_df = _load_neighbor(
-                    entry.prev_file_specs,
-                    entry.prev_entry_key,
-                    filter_factory,
+                # Neighbours are loaded whole, with their own filters, and then
+                # windowed by frame value. The filters have to run first: the
+                # nearest-neighbour filter is built from a feature table keyed on
+                # the frames as written, so it must meet them unaltered.
+                prev_df = _frame_window(
+                    _load_neighbor(
+                        entry.prev_file_specs,
+                        entry.prev_entry_key,
+                        filter_factory,
+                    ),
+                    overlap_frames,
+                    keep_tail=True,
                 )
-                next_df = _load_neighbor(
-                    entry.next_file_specs,
-                    entry.next_entry_key,
-                    filter_factory,
+                next_df = _frame_window(
+                    _load_neighbor(
+                        entry.next_file_specs,
+                        entry.next_entry_key,
+                        filter_factory,
+                    ),
+                    overlap_frames,
+                    keep_tail=False,
                 )
-                # Trim neighbors to overlap_frames
-                if prev_df is not None:
-                    prev_df = prev_df.iloc[-overlap_frames:]
-                if next_df is not None:
-                    next_df = next_df.iloc[:overlap_frames]
-                # Concatenate
-                core_start = len(prev_df) if prev_df is not None else 0
-                core_end = core_start + len(df)
                 parts = [p for p in (prev_df, df, next_df) if p is not None]
                 df = pd.concat(parts, ignore_index=True)
-            else:
-                # overlap_frames == 0: no neighbor loading, trivial bounds
-                core_start = 0
-                core_end = len(df)
 
-            yield entry_key, df, core_start, core_end
+            yield entry_key, df, selector
 
         del df
         gc.collect()

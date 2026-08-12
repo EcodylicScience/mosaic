@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from mosaic.core.manifest import (
     MANIFEST_VERSION,
@@ -575,3 +576,45 @@ class TestResolveManifestPath:
         _ = path.write_text("- one\n- two\n", encoding="utf-8")
         with pytest.raises(ValueError, match="not a mapping"):
             _ = read_manifest(path)
+
+
+class TestContinuousGroups:
+    """The declaration that a group's sequences divide one recording."""
+
+    def test_absent_means_every_group_is_independent(self, tmp_path: Path) -> None:
+        """The default has to be the discrete dataset, which is every dataset."""
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 2\nname: d\n", encoding="utf-8")
+        manifest = read_manifest(path)
+        assert manifest.continuous_groups == ()
+        assert not manifest.is_continuous_group("anything")
+
+    def test_it_survives_a_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 2\nname: d\n", encoding="utf-8")
+        manifest = read_manifest(path).model_copy(
+            update={"continuous_groups": ("trialA", "trialB")}
+        )
+        write_manifest(path, manifest)
+        back = read_manifest(path)
+        assert back.continuous_groups == ("trialA", "trialB")
+        assert back.is_continuous_group("trialA")
+        assert not back.is_continuous_group("trialC")
+
+    def test_adding_it_did_not_move_the_manifest_version(self) -> None:
+        """Additive and optional, so an older file reads unchanged.
+
+        A version bump would make every existing manifest a migration, for a key
+        none of them carry.
+        """
+        assert DatasetManifest().manifest_version == MANIFEST_VERSION
+        assert DatasetManifest().continuous_groups == ()
+
+    def test_the_empty_group_cannot_be_continuous(self) -> None:
+        """A continuous group *is* the recording, so it has to be named."""
+        with pytest.raises(ValidationError, match="empty group"):
+            _ = DatasetManifest(continuous_groups=("",))
+
+    def test_a_group_is_not_declared_twice(self) -> None:
+        with pytest.raises(ValidationError, match="more than once"):
+            _ = DatasetManifest(continuous_groups=("g", "g"))

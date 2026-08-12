@@ -225,6 +225,7 @@ class TemporalStackingFeature:
     version = "0.3"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):

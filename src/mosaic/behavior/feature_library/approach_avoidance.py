@@ -110,6 +110,7 @@ class ApproachAvoidance:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):

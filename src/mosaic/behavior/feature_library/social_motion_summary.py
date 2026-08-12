@@ -141,6 +141,7 @@ class SocialMotionSummary:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput | Result]):
