@@ -10,6 +10,54 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased — tracks are pixels, and every tracks variant re-mints
 
+**TREx tracks a session, not its first clip.** An entry whose media index holds
+several videos — a recording a device split into clips — was tracked from
+`video_order` 0 and the rest were dropped with a line on stderr. TREx now
+receives all of them as one `PathArray`, converts them into a single `.pv` whose
+frame index is continuous, and produces one set of identities across what used to
+be an artificial boundary at every clip. SLEAP, Lightning Pose and Ultralytics
+are unchanged: they still read the first clip and still say so, which is now
+declared as `joins_sources` on each tracker's `TrackingRoot` rather than assumed.
+
+Three observable consequences.
+
+**`time` in `tracks/` is mosaic's for a joined entry, not TREx's.** TREx reads
+one frame rate from the first clip and never checks the others, and it has no
+per-frame timestamps for an `.mp4` at all — its timestamp path for video files is
+compiled out. A real session measuring 30, then 29.95, then 31 fps was therefore
+timed as if it were 30 throughout: about 3% wrong for most of the recording, and
+accumulating. `time` is now reconstructed per clip from the measured rates
+(`mosaic.core.media.timeline`), `frame_rate` names the rate in force at each
+frame rather than one value, and the synthesised `timestamp` column is dropped
+rather than re-minted from numbers mosaic never measured. `frame` is untouched.
+When the clips *disagree* on rate, the per-second columns TREx derived against
+the single rate — `SPEED`, `VX`, `ANGULAR_V` and their kin — are dropped rather
+than rescaled; `speed-angvel` derives them from `X`/`Y` and the corrected `time`
+with its method in a run identifier. A uniform-rate session keeps all of them.
+The time axis assumes the clips are gapless, which mosaic cannot verify: the
+probe records no creation timestamp, so a recorder that stopped between clips is
+timed as though it had not.
+
+**Four columns on `_tracking/trex/index.csv`.** `video_sources` (a JSON array of
+root-relative paths, in `video_order`), `video_uuids` (comma-joined, never
+sorted), `media_composition` (the digest of that arrangement) and
+`n_source_videos`. `video_abs_path` still names the first clip, as every
+tracker's row does. Older indexes gain the columns empty on the next write.
+
+**A joined entry's markers record a composition digest in `source_uid`.** For a
+single video it is still that video's `video_uuid`, so no existing run is
+invalidated; for several it is the ordered digest, which is what notices a clip
+being added, removed or reordered. A joined entry is also never adopted from a
+pre-marker directory — that directory cannot say how many clips it covered.
+
+Nothing else moves: no settings key was added, so every `run_id` and tracks
+variant is unchanged, and `consumed_composition` on the tracks row stops
+over-claiming, since the entry's whole media composition is now what was actually
+tracked.
+
+`mosaic sources add --kind media --layout per_sequence` is how several files
+become one sequence; no new ingestion code was needed.
+
 **Index locking moved to a sidecar, and every index directory gains one
 zero-byte file.** `index_lock` held its lock on the index inode itself.
 `atomic_write` renames a *new* inode over that path, which POSIX permits and

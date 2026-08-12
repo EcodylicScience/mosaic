@@ -28,36 +28,61 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.tracking.common.scope import TrackerWorkItem
 
-__all__ = ["StoreExportMissingError", "resolve_tool_input"]
+__all__ = ["StoreExportMissingError", "resolve_tool_input", "resolve_tool_inputs"]
 
 
 class StoreExportMissingError(FileNotFoundError):
     """An imgstore has no exported video for a subprocess tool to open."""
 
 
-def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
-    """The path *kind*'s external tool should open for *item*.
+def resolve_tool_inputs(
+    ds: "Dataset", item: "TrackerWorkItem", *, kind: str
+) -> tuple[Path, ...]:
+    """Every path *kind*'s external tool should open for *item*, in order.
 
-    Returns ``item.video_path`` unchanged unless it is an imgstore directory, in
-    which case it returns the registered export. The store row is found by path
-    rather than by camera: a work item carries no camera (per-camera tracker
-    output is not built), and the path is what unambiguously identifies which
-    store of a multi-camera sequence this item resolved to.
+    One element per clip, so a tool that reads a session as one video gets the
+    whole arrangement. Each clip is resolved independently: a store becomes its
+    registered export, a plain video passes through, and a sequence mixing the
+    two is fine here because an export *is* a plain video by the time the tool
+    sees it.
 
     Args:
         ds: The dataset, read for the media index and the ``media`` root.
-        item: The work item whose source path is being resolved.
+        item: The work item whose source paths are being resolved.
         kind: The tracker's kind, so a failure names the tool the user invoked.
 
     Raises:
-        StoreExportMissingError: If the source is a store with no export
+        StoreExportMissingError: If a source is a store with no export
             registered, or with a link pointing at a file that is gone.
     """
-    source = item.video_path
+    return tuple(
+        _resolve_one(ds, item, source, kind=kind) for source in item.video_paths
+    )
+
+
+def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
+    """The path *kind*'s external tool should open for *item*'s first clip.
+
+    The single-source view of :func:`resolve_tool_inputs`, for the trackers that
+    read one video file. One rule, two views -- a second implementation is how
+    the two would come to disagree about what a store resolves to.
+    """
+    return resolve_tool_inputs(ds, item, kind=kind)[0]
+
+
+def _resolve_one(
+    ds: "Dataset", item: "TrackerWorkItem", source: Path, *, kind: str
+) -> Path:
+    """*source* itself, or the export registered for it when it is a store.
+
+    The store row is found by path rather than by camera: a work item carries no
+    camera (per-camera tracker output is not built), and the path is what
+    unambiguously identifies which store of a multi-camera sequence this is.
+    """
     if not is_imgstore(source):
         return source
 
-    export = _registered_export(ds, item)
+    export = _registered_export(ds, item, source)
     if export is None:
         message = (
             f"[{kind}] ({item.group}, {item.sequence}) is an imgstore recording, "
@@ -77,15 +102,17 @@ def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> 
     return export
 
 
-def _registered_export(ds: "Dataset", item: "TrackerWorkItem") -> Path | None:
-    """The export linked from *item*'s own store row, or ``None`` if unlinked."""
+def _registered_export(
+    ds: "Dataset", item: "TrackerWorkItem", source: Path
+) -> Path | None:
+    """The export linked from *source*'s own store row, or ``None`` if unlinked."""
     matched = ds.match_media_rows(item.group, item.sequence)
     media_root = ds.get_root("media")
     for _, row in matched.iterrows():
         # Through row_mapping rather than indexing the Series: a Series subscript
         # is untyped, and the path is compared, not merely printed.
         cells = row_mapping(row)
-        if ds.resolve_path(str(cells["abs_path"])) != item.video_path:
+        if ds.resolve_path(str(cells["abs_path"])) != source:
             continue
         return derivative_path_for_target(cells, EXPORT_TARGET, media_root)
     return None

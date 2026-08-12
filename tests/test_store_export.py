@@ -299,10 +299,9 @@ def _work_item(ds: Dataset, group: str, sequence: str) -> TrackerWorkItem:
         group=group,
         sequence=sequence,
         key=sequence,
-        video_path=resolved.paths[0],
-        video_uid=resolved.facts[0].video_uuid,
+        video_paths=(resolved.paths[0],),
         fps=resolved.facts[0].fps,
-        facts=resolved.facts[0],
+        source_facts=(resolved.facts[0],),
     )
 
 

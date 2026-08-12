@@ -236,10 +236,26 @@ def _run_trex(
 # ---------------------------------------------------------------------------
 
 
+def _as_sources(video_path: Path | str | Sequence[Path | str]) -> list[Path]:
+    """*video_path* as a non-empty list, whether one source was given or many.
+
+    A bare ``str`` is a ``Sequence`` of characters, so the scalar case is tested
+    for rather than fallen through to -- iterating it would turn one path into a
+    list of one-character paths.
+    """
+    if isinstance(video_path, (str, Path)):
+        return [Path(video_path)]
+    sources = [Path(entry) for entry in video_path]
+    if not sources:
+        raise ValueError("a conversion needs at least one source video")
+    return sources
+
+
 def run_trex_convert(
-    video_path: Path | str,
+    video_path: Path | str | Sequence[Path | str],
     output_dir: Path | str,
     *,
+    output_name: str | None = None,
     detect_model: Path | str | None = None,
     detect_type: str = "yolo",
     detect_conf_threshold: float = 0.5,
@@ -263,10 +279,33 @@ def run_trex_convert(
 
     Parameters
     ----------
-    video_path : path
-        Input video file (e.g. ``.mp4``, ``.avi``).
+    video_path : path or sequence of paths
+        Input video file (e.g. ``.mp4``, ``.avi``), or **several** of them. T-Rex
+        takes its ``source`` as a ``PathArray`` and sums the frame counts of
+        every file it names into one length, so a sequence of clips converts into
+        a *single* ``.pv`` with one continuous frame index: identities never
+        break at a clip boundary, and ``analysis_range`` addresses the joined
+        timeline rather than any one file.
+
+        Two properties of that join are the caller's to manage, because T-Rex
+        will not. It refuses clips of differing resolution, but it takes the
+        frame rate from the **first file alone** without checking the others --
+        so a session whose clips were recorded at different rates converts into a
+        ``.pv`` that labels all of them with the first clip's rate. Every
+        per-second quantity T-Rex then reports, and its own ``time`` array, is
+        wrong for the rest. See
+        :func:`mosaic.core.media.timeline.concatenated_timeline` for the
+        reconstruction, and :func:`mosaic.tracking.trex.joined.retime_joined_frame`
+        for what mosaic does with it.
     output_dir : path
         Directory for output files (``.pv``, ``.settings``, background).
+    output_name : str, optional
+        Stem for the ``.pv`` T-Rex writes, passed as its ``filename`` setting.
+        Left unset, T-Rex names the output itself -- after the single source's
+        stem, or, for several sources sharing a parent, **after that parent
+        directory**. So a joined conversion without this lands somewhere the
+        caller did not choose and may not find. Not a T-Rex *setting* in mosaic's
+        sense: it is a path, and paths never enter a run identifier.
     detect_model : path, optional
         Path to a YOLO ``.pt`` model file for detection/pose.
     detect_type : str
@@ -315,12 +354,14 @@ def run_trex_convert(
     FileNotFoundError
         If the expected ``.pv`` output file is not found after conversion.
     """
-    video_path = Path(video_path)
+    sources = _as_sources(video_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # One path stays a bare string, several become T-Rex's `[a,b,c]` PathArray
+    # literal -- which is what `_build_args` renders a flat list as already.
     params: dict[str, Any] = {
-        "i": str(video_path),
+        "i": str(sources[0]) if len(sources) == 1 else [str(p) for p in sources],
         "task": "convert",
         "nowindow": True,
         "auto_quit": True,
@@ -332,6 +373,8 @@ def run_trex_convert(
         "cm_per_pixel": cm_per_pixel,
         "meta_encoding": meta_encoding,
     }
+    if output_name is not None:
+        params["filename"] = str(output_dir / f"{output_name}.pv")
     if detect_model is not None:
         params["m"] = str(detect_model)
     if extra_settings:
@@ -347,12 +390,13 @@ def run_trex_convert(
         on_output=on_output,
     )
 
-    # Locate output files
-    stem = video_path.stem
+    # Locate output files. `output_name` pins the stem when it was given;
+    # otherwise T-Rex named the output after the single source.
+    stem = output_name if output_name is not None else sources[0].stem
     pv_path = output_dir / f"{stem}.pv"
     if not pv_path.exists():
         # T-Rex may place the .pv next to the source video
-        pv_alt = video_path.with_suffix(".pv")
+        pv_alt = sources[0].parent / f"{stem}.pv"
         if pv_alt.exists():
             pv_path = pv_alt
         else:
@@ -360,7 +404,7 @@ def run_trex_convert(
 
     settings_path = output_dir / f"{stem}.settings"
     if not settings_path.exists():
-        settings_path = video_path.with_suffix(".settings")
+        settings_path = sources[0].parent / f"{stem}.settings"
 
     bg_path = output_dir / f"average_{stem}.png"
     if not bg_path.exists():

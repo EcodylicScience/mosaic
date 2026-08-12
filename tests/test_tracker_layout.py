@@ -22,7 +22,7 @@ import dataclasses
 import io
 import json
 import zipfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -435,11 +435,23 @@ class _FakeTrex:
     converted: list[Path] = field(default_factory=list)
     tracked: list[Path] = field(default_factory=list)
 
-    def convert(self, video_path: Path, output_dir: Path, **_kwargs: object) -> object:
+    def convert(
+        self,
+        video_path: Path | Sequence[Path],
+        output_dir: Path,
+        *,
+        output_name: str | None = None,
+        **_kwargs: object,
+    ) -> object:
         from mosaic.tracking.trex.run import TRexConvertResult
 
-        self.converted.append(Path(video_path))
-        stem = Path(video_path).stem
+        given = (
+            [Path(video_path)]
+            if isinstance(video_path, (str, Path))
+            else [Path(p) for p in video_path]
+        )
+        self.converted.append(given[0])
+        stem = output_name if output_name is not None else given[0].stem
         pv = Path(output_dir) / f"{stem}.pv"
         pv.parent.mkdir(parents=True, exist_ok=True)
         pv.write_bytes(b"pv")
@@ -551,6 +563,12 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
         "params_hash",
         "n_ids",
         "pv_path",
+        # What the run consumed, which video_abs_path cannot say for a session
+        # of several clips -- it holds the first, as every tracker's does.
+        "video_sources",
+        "video_uuids",
+        "media_composition",
+        "n_source_videos",
     ]
     assert got["index_rows"] == 1
     assert got["tracks_files"] == ["<run>/vid1.parquet"]

@@ -1232,7 +1232,8 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
     seen: list[Path] = []
 
     def fake_convert(video_path, seq_dir, **kw):
-        seen.append(Path(video_path))
+        # A tuple of sources now, one element per clip; this entry has one.
+        seen.append(Path(video_path[0]))
         pv_path = Path(seq_dir) / "vid1.pv"
         pv_path.write_bytes(b"")
         return TRexConvertResult(

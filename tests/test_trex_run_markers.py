@@ -23,8 +23,9 @@ with recording fakes, the established shape in ``test_tracking_ops.py``.
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.tracking.common.bridge import BridgeCounts
+from mosaic.tracking.common.scope import JoinedSourceMismatchError
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.markers import (
@@ -137,15 +139,33 @@ class FakeTrex:
     npz_per_track: int = 1
     pv_beside_the_video: bool = False
     on_convert: Callable[[Path], None] | None = None
+    sources: list[list[Path]] = field(default_factory=list)
+    """Every conversion's *whole* source list, so a joined run is inspectable.
+
+    ``converted`` keeps recording one path per call -- clip 0 -- because that is
+    what every single-video assertion in this file reads.
+    """
 
     def convert(
-        self, video_path: Path, seq_dir: Path, **_kwargs: object
+        self,
+        video_path: Path | Sequence[Path],
+        seq_dir: Path,
+        *,
+        output_name: str | None = None,
+        **_kwargs: object,
     ) -> TRexConvertResult:
-        self.converted.append(Path(video_path))
+        # Mirrors run_trex_convert's own normalisation: one source or many.
+        given = (
+            [Path(video_path)]
+            if isinstance(video_path, (str, Path))
+            else [Path(p) for p in video_path]
+        )
+        self.sources.append(given)
+        self.converted.append(given[0])
         if self.on_convert is not None:
             self.on_convert(Path(seq_dir))
-        stem = Path(video_path).stem
-        home = Path(video_path).parent if self.pv_beside_the_video else Path(seq_dir)
+        stem = output_name if output_name is not None else given[0].stem
+        home = given[0].parent if self.pv_beside_the_video else Path(seq_dir)
         home.mkdir(parents=True, exist_ok=True)
         pv_path = home / f"{stem}.pv"
         _ = pv_path.write_bytes(b"pv")
@@ -511,7 +531,8 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         *,
         tracks_variant: str,
         producer_run_id: str,
-        video_path: Path,
+        video_paths: Sequence[Path],
+        timeline: object,
         overwrite: bool,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
@@ -692,3 +713,143 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 
     assert second == run_id
     assert [p.name for p in trex.converted] == ["vid1.mp4", "vid2.mp4"]
+
+
+# --- a session's clips are one conversion -----------------------------------
+
+# The clip boundary a recorder leaves is a filesystem artifact, not an event, so
+# TREx is handed the whole entry: `source` is a PathArray and VideoSource sums
+# the clip lengths into one continuous frame index. What the reuse gate then has
+# to notice is any change to *the arrangement*, which the first clip's uid
+# cannot see.
+
+
+def _session(ds: Dataset, *names: str, widths: dict[str, int] | None = None) -> None:
+    """Put *names* in one sequence, in the order given, each with an identity.
+
+    *widths* overrides a clip's frame width, for the one case that needs clips
+    which cannot be read as one video.
+    """
+    media_root = ds.get_root(ds.resolve_media_root())
+    sizes = widths or {}
+    rows: list[dict[str, object]] = []
+    for order, name in enumerate(names):
+        width = sizes.get(name, 640)
+        video = media_root / name
+        if not video.exists():
+            _ = video.write_bytes(b"fake")
+        rows.append(
+            {
+                "name": name,
+                "group": "",
+                "sequence": "sess",
+                "group_safe": "",
+                "sequence_safe": "sess",
+                "camera": "",
+                "abs_path": ds.relative_to_root(video),
+                "size_bytes": 4,
+                "mtime_iso": "",
+                "width": width,
+                "height": 480,
+                "fps": 30.0,
+                "codec": "h264",
+                "media_type": "video",
+                "video_order": order,
+                **clean_facts_cells(width=width, video_uuid=f"uid-{name}"),
+            }
+        )
+    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+
+
+def test_a_session_converts_once_with_every_clip(ds: Dataset, trex: FakeTrex) -> None:
+    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+
+    assert len(trex.sources) == 1, "three clips, one conversion"
+    assert [p.name for p in trex.sources[0]] == ["c0.mp4", "c1.mp4", "c2.mp4"]
+
+
+def test_the_pv_is_named_for_the_entry_not_the_first_clip(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """TREx would otherwise name a multi-source .pv after the shared parent."""
+    _session(ds, "c0.mp4", "c1.mp4")
+    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    assert (seq_dir_of(ds, run_id, "sess") / "sess.pv").exists()
+
+
+def test_an_unchanged_session_is_reused(ds: Dataset, trex: FakeTrex) -> None:
+    _session(ds, "c0.mp4", "c1.mp4")
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    assert len(trex.sources) == 1
+
+
+def test_adding_a_clip_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
+    """What the first clip's uid cannot see, and the composition can."""
+    _session(ds, "c0.mp4", "c1.mp4")
+    first = dr.run_trex(ds, entries=[("", "sess")])
+    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
+    second = dr.run_trex(ds, entries=[("", "sess")])
+
+    assert len(trex.sources) == 2, "the added clip must invalidate the conversion"
+    assert first == second, "the settings did not change, so the run_id must not"
+
+
+def test_reordering_the_clips_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
+    _session(ds, "c0.mp4", "c1.mp4")
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _session(ds, "c1.mp4", "c0.mp4")
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    assert len(trex.sources) == 2
+
+
+def test_the_row_records_the_whole_arrangement(ds: Dataset, trex: FakeTrex) -> None:
+    _session(ds, "c0.mp4", "c1.mp4")
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    # Through the typed reader, which is the documented read path: it projects
+    # to the schema and reads a blank cell as "", where a raw read_csv gives NaN.
+    row = dr.list_trex_runs(ds).iloc[0]
+
+    assert int(row["n_source_videos"]) == 2
+    assert row["video_uuids"] == "uid-c0.mp4,uid-c1.mp4"
+    assert str(row["media_composition"]) != ""
+    sources = json.loads(str(row["video_sources"]))
+    assert [Path(p).name for p in sources] == ["c0.mp4", "c1.mp4"]
+    assert not any(Path(p).is_absolute() for p in sources), "portable by construction"
+    # video_abs_path keeps naming the first clip, as every tracker's row does.
+    assert str(row["video_abs_path"]).endswith("c0.mp4")
+
+
+def test_a_single_video_row_says_so(ds: Dataset, trex: FakeTrex) -> None:
+    """One clip is not a session, and its cells must not imply one."""
+    _ = dr.run_trex(ds, entries=[("", "vid1")])
+    row = dr.list_trex_runs(ds).iloc[0]
+    assert int(row["n_source_videos"]) == 1
+    assert str(row["media_composition"]) == ""
+
+
+def test_a_resolution_mismatch_is_refused_before_trex_runs(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    _session(ds, "c0.mp4", "c1.mp4", widths={"c1.mp4": 1280})
+
+    with pytest.raises(JoinedSourceMismatchError, match="c1.mp4"):
+        _ = dr.run_trex(ds, entries=[("", "sess")])
+    assert trex.sources == [], "nothing may be converted before the refusal"
+
+
+def test_a_joined_entry_is_not_adopted(ds: Dataset, trex: FakeTrex) -> None:
+    """A pre-marker directory cannot say how many clips it covered.
+
+    Its shape is identical to a single-video one, so adopting would keep one
+    clip's tracks for a whole session under a marker asserting it was done.
+    """
+    _session(ds, "c0.mp4", "c1.mp4")
+    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    seq_dir = seq_dir_of(ds, run_id, "sess")
+    for marker in seq_dir.glob(".mosaic-*.json"):
+        marker.unlink()
+
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    assert len(trex.sources) == 2, "a joined entry must recompute, never adopt"

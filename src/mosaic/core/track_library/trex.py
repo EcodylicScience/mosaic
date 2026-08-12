@@ -178,7 +178,7 @@ _DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
 _PIXEL_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "poseP", "pose")
 
 
-def _base_field(column: str) -> str:
+def base_field(column: str) -> str:
     """A column name without its TRex source suffix (``X#wcentroid`` -> ``X``)."""
     return column.split("#", 1)[0]
 
@@ -235,7 +235,7 @@ def unscale_to_pixels(frame: pd.DataFrame, cm_per_pixel: float) -> pd.DataFrame:
     unknown: list[str] = []
     scaled: dict[str, np.ndarray] = {}
     for name in column_names(frame):
-        base = _base_field(name)
+        base = base_field(name)
         if base in _LENGTH_FIELDS:
             values = column_array(frame, name).astype("float64", copy=False)
             scaled[name] = values / cm_per_pixel

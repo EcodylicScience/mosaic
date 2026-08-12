@@ -36,8 +36,9 @@ than bolting one on.
 
 from __future__ import annotations
 
+import json
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -76,8 +77,10 @@ from mosaic.tracking.common.index import (
     tracker_index_path,
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
-from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.common.scope import TrackerWorkItem, build_work_items
+from mosaic.tracking.common.tool_input import resolve_tool_inputs
+from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
+from mosaic.tracking.trex.joined import retime_joined_frame
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
@@ -112,14 +115,47 @@ class TRexIndexRow(TrackerRunRowBase):
 
     ``pv_path`` is the tool-specific path column; see :class:`TrackerRunRowBase`
     for how it is stored and where it must be declared.
+
+    The last four record **what the run actually consumed**, which
+    ``video_abs_path`` alone cannot say once a session's clips are converted
+    together: it holds the first clip, as every tracker's does.
+
+    ``video_sources`` is a JSON array of dataset-root-relative paths, in
+    ``video_order``. It is deliberately *not* named ``*_path``, so it is not
+    swept into ``path_columns`` -- the portability passes rewrite such a cell as
+    one path and would corrupt an array. It is portable by construction instead:
+    the paths go in relative and stay relative.
+
+    ``video_uuids`` is the same arrangement by content identity, comma-joined and
+    **never sorted** -- sorting would make two orderings of one session record
+    alike. ``media_composition`` is the digest of that arrangement, and is what
+    the reuse gate compared. Both are empty when any clip carries no identity,
+    which is unestablishable rather than "no videos" -- and that is exactly what
+    ``n_source_videos`` is for, since it is the only cell that tells the two
+    apart.
     """
 
     pv_path: str = ""
+    video_sources: str = ""
+    video_uuids: str = ""
+    media_composition: str = ""
+    n_source_videos: int = 0
 
 
 def trex_index(path: Path) -> IndexCSV[TRexIndexRow]:
     """The trex run index, one row per (run, entry)."""
     return tracker_index(path, TRexIndexRow)
+
+
+def _phase_label(item: TrackerWorkItem) -> str:
+    """The entry key, plus the clip count when there is more than one.
+
+    Progress is per entry, so a seventeen-clip session otherwise reports ``1/1``
+    for hours with nothing to say why it is taking so long.
+    """
+    if item.n_sources == 1:
+        return item.key
+    return f"{item.key} ({item.n_sources} clips)"
 
 
 # --- Settings, whole and per phase ----------------------------------------
@@ -232,7 +268,8 @@ def _bridge_npz_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    video_path: Path,
+    video_paths: Sequence[Path],
+    timeline: ConcatenatedTimeline | None,
     overwrite: bool,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
@@ -242,6 +279,11 @@ def _bridge_npz_to_tracks(
     for one individual and absent for another survives as NaN rather than
     dropping the column. The conversion stays here rather than in the shared
     publisher because the publisher takes one frame, not a set of them.
+
+    *timeline* is the concatenation the conversion was built from, and is what
+    puts a joined entry's ``time`` on the clips' own measured rates instead of
+    the single rate TREx took from the first of them. ``None`` (or a
+    single-segment timeline) leaves the export exactly as it was.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -285,16 +327,20 @@ def _bridge_npz_to_tracks(
     if not frames:
         return None
 
+    merged = merge_on_column_union(frames)
+    if timeline is not None:
+        merged = retime_joined_frame(merged, timeline)
+
     return publish_tracks_table(
         ds,
-        merge_on_column_union(frames),
+        merged,
         kind=TREX_KIND,
         group=group,
         sequence=sequence,
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=npz_paths[0].parent,
-        consumed=[npz_paths[0], video_path],
+        consumed=[npz_paths[0], *video_paths],
     )
 
 
@@ -431,8 +477,12 @@ def run_trex(
     # resolves to its original, an analysis-required entry to its constant-rate
     # analysis derivative (so tracks land in the same frame space as the rest of
     # the pipeline), and a required-but-unlinked entry raises MediaProbeError
-    # here -- before any TREx subprocess opens a known-defective original. TREx
-    # decodes the file itself, so only the routed path is needed, not the facts.
+    # here -- before any TREx subprocess opens a known-defective original.
+    #
+    # TREx decodes the files itself, so the routed *paths* are what it is given.
+    # The routed facts are still read, for a different job: they are what the
+    # concatenated timeline is built from, and TREx cannot supply that -- it
+    # takes one frame rate from the first clip and never checks the others.
     scope = ds.resolve_media_scope(groups, sequences, entries)
     if not scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
@@ -447,22 +497,39 @@ def run_trex(
         """
         item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
         cancel_check = seq_ctx.cancel_token.is_cancelled
+        joined = item.n_sources > 1
+        # Built from the routed facts, which is what TREx will actually read.
+        # It is what puts a joined entry's `time` on the clips' own measured
+        # rates -- TREx takes one rate from the first clip and never checks the
+        # others. `None` when the facts are absent, which leaves the export as
+        # it is rather than guessing at a timeline.
+        timeline = (
+            concatenated_timeline(item.source_facts) if item.source_facts else None
+        )
 
         # The .results file is the only output TREx writes at the *end* of
         # tracking; the .pv and the per-individual files appear as processing
         # proceeds, so neither distinguishes a finished run from one killed
         # partway. A finished tracking implies a finished conversion, which is
         # what lets one signal adopt both phases.
-        adopt_completed_directory(
-            job.ds,
-            work_dir,
-            minted.run_id,
-            required=("data/*.npz", "*.results", "*.pv"),
-            record=(
-                AdoptEvidence("convert", "*.pv"),
-                AdoptEvidence("track", "*.results"),
-            ),
-        )
+        #
+        # Not for a joined entry. A pre-marker directory cannot say how many
+        # clips it covered, and a joined entry's directory is shape-identical to
+        # a single-video one -- so adopting would silently keep one clip's tracks
+        # for a whole session, under a marker asserting the session was done.
+        # This is the documented rule for a tracker whose output cannot make that
+        # distinction: do not adopt.
+        if not joined:
+            adopt_completed_directory(
+                job.ds,
+                work_dir,
+                minted.run_id,
+                required=("data/*.npz", "*.results", "*.pv"),
+                record=(
+                    AdoptEvidence("convert", "*.pv"),
+                    AdoptEvidence("track", "*.results"),
+                ),
+            )
 
         reusable_convert = reusable_output(
             job.ds,
@@ -470,7 +537,7 @@ def run_trex(
             "convert",
             params_hash=phase_hashes["convert"],
             video_path=item.video_path,
-            video_uid=item.video_uid,
+            video_uid=item.source_uid,
         )
         if reusable_convert is None:
             # The tracking phase consumes this phase's output, so a
@@ -479,15 +546,21 @@ def run_trex(
             clear_outputs(work_dir, TREX_KIND, "convert")
             clear_outputs(work_dir, TREX_KIND, "track")
             convert_claim = claim(seq_ctx, work_dir, "convert", idle_timeout)
-            seq_ctx.progress.on_phase("convert", item.key)
+            seq_ctx.progress.on_phase("convert", _phase_label(item))
             # T-Rex opens the path itself, so an imgstore recording resolves to
             # the plain video export-store wrote for it. Resolved here rather
             # than before the reuse gate: an entry whose conversion is already
             # reusable needs no export, and demanding one would fail a re-run
             # over work that is finished.
             convert_result = run_trex_convert(
-                resolve_tool_input(job.ds, item, kind=TREX_KIND),
+                resolve_tool_inputs(job.ds, item, kind=TREX_KIND),
                 work_dir,
+                # Only when joining. TREx names a single-source `.pv` after its
+                # stem, which is where mosaic already looks -- but for several
+                # sources sharing a parent it uses *the parent directory's* name,
+                # which is neither chosen nor looked for. Naming it after the
+                # entry key puts it where every other artifact for the entry is.
+                output_name=item.key if joined else None,
                 detect_model=detect_model_exec,
                 detect_type=detect_type,
                 detect_conf_threshold=detect_conf_threshold,
@@ -515,7 +588,7 @@ def run_trex(
                 run_id=minted.run_id,
                 params_hash=phase_hashes["convert"],
                 video_path=item.video_path,
-                video_uid=item.video_uid,
+                video_uid=item.source_uid,
                 output=pv_path,
             )
         else:
@@ -527,12 +600,12 @@ def run_trex(
             "track",
             params_hash=phase_hashes["track"],
             video_path=item.video_path,
-            video_uid=item.video_uid,
+            video_uid=item.source_uid,
         )
         if track_marker is None:
             clear_outputs(work_dir, TREX_KIND, "track")
             track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
-            seq_ctx.progress.on_phase("track", item.key)
+            seq_ctx.progress.on_phase("track", _phase_label(item))
             run_trex_track(
                 pv_path,
                 work_dir,
@@ -561,7 +634,7 @@ def run_trex(
                 run_id=minted.run_id,
                 params_hash=phase_hashes["track"],
                 video_path=item.video_path,
-                video_uid=item.video_uid,
+                video_uid=item.source_uid,
                 output=results[0] if results else None,
             )
             recomputed = True
@@ -587,6 +660,17 @@ def run_trex(
             # even when convert_to_tracks is off and nothing was published.
             n_ids=len(npz_paths),
             pv_path=job.ds.relative_to_root(pv_path),
+            # What the run consumed, which video_abs_path cannot say for a
+            # session: it holds clip 0. Relative going in, so the array stays
+            # portable without the path passes -- which would corrupt it.
+            video_sources=json.dumps(
+                [job.ds.relative_to_root(path) for path in item.video_paths]
+            ),
+            # Never sorted: this is the arrangement. Empty when any clip carries
+            # no identity, matching what the reuse gate could establish.
+            video_uuids=(",".join(item.video_uids) if all(item.video_uids) else ""),
+            media_composition=item.source_uid if joined else "",
+            n_source_videos=item.n_sources,
         )
 
         if convert_to_tracks:
@@ -600,7 +684,8 @@ def run_trex(
                 npz_paths,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                video_path=item.video_path,
+                video_paths=item.video_paths,
+                timeline=timeline,
                 overwrite=job.overwrite or recomputed,
             )
         return row

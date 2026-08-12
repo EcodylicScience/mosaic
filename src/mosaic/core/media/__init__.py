@@ -11,6 +11,11 @@ from .imgstore_io import (
     is_imgstore,
 )
 from .read_target import ReadTarget
+from .timeline import (
+    ConcatenatedTimeline,
+    TimelineSegment,
+    concatenated_timeline,
+)
 from .video_io import (
     FrameReader,
     MultiVideoReader,
@@ -22,6 +27,8 @@ from .video_io import (
 )
 
 __all__ = [
+    "ConcatenatedTimeline",
+    "concatenated_timeline",
     "FFmpegVideoWriter",
     "FrameReader",
     "ImgStoreCapture",
@@ -37,6 +44,7 @@ __all__ = [
     "probe_media",
     "ReadTarget",
     "SupportsCapture",
+    "TimelineSegment",
     "VideoMetadata",
     "VideoSegment",
 ]

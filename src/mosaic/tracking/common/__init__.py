@@ -42,7 +42,11 @@ from mosaic.tracking.common.index import (
     tracker_index_path,
 )
 from mosaic.tracking.common.mint import MintedRun, mint_tracker_run, tracker_run_root
-from mosaic.tracking.common.scope import TrackerWorkItem, build_work_items
+from mosaic.tracking.common.scope import (
+    JoinedSourceMismatchError,
+    TrackerWorkItem,
+    build_work_items,
+)
 from mosaic.tracking.common.toolenv import (
     BinMode,
     ToolEnv,
@@ -63,6 +67,7 @@ __all__ = [
     "ToolExitError",
     "ToolNotFoundError",
     "TrackerRunRowBase",
+    "JoinedSourceMismatchError",
     "TrackerWorkItem",
     "adopt_completed_directory",
     "build_work_items",

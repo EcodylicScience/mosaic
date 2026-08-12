@@ -32,6 +32,14 @@ about a reader nobody constructs.
 Dataset-agnostic, like ``drift`` and ``prune`` beside it: it takes rows and
 returns a verdict, so the comparison is testable without a dataset on disk and
 the root resolution has one home in :meth:`Dataset.sequence_uniformity`.
+
+**Two narrower questions live here too**, for the caller that is not asking about
+a reader at all: :func:`geometry_mismatch` and :func:`rate_uniform` split
+``uniform_properties``' single verdict into its two halves, because a tracker
+handed several clips as one video has to *refuse* the first and *carry* the
+second. They take probed facts rather than index rows -- the asker already holds
+what a scope resolved -- and they are the reason the drift allowance still has
+exactly one implementation.
 """
 
 from __future__ import annotations
@@ -40,16 +48,96 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from mosaic_media import MeasuredVideoProperties, PropertyMismatch, uniform_properties
+from mosaic_media import (
+    MeasuredVideoProperties,
+    MediaFacts,
+    PropertyMismatch,
+    uniform_properties,
+)
 
 from mosaic.core.media.facts_columns import row_facts_or_none
 from mosaic.core.media.video_io import facts_to_video_metadata
 from mosaic.core.pipeline.media_index import VideoOrderKey, assign_video_order
 
 __all__ = [
+    "GeometryMismatch",
     "UniformityVerdict",
     "camera_uniformity",
+    "geometry_mismatch",
+    "rate_uniform",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryMismatch:
+    """The first clip whose frame geometry differs from the first clip's.
+
+    ``index`` is the position in the sequence as given, so a message can name the
+    offending clip rather than only the field.
+    """
+
+    field: str
+    index: int
+    first: int
+    other: int
+
+
+def geometry_mismatch(facts: Sequence[MediaFacts]) -> GeometryMismatch | None:
+    """The first clip that would not decode into the same frame shape, if any.
+
+    Compares the ``(width, height, rotation_degrees)`` **triple**, which is
+    strictly stronger than comparing either the coded or the displayed
+    dimensions, and is what a caller wants when several clips are about to be
+    handed to one tool as one video.
+
+    Coded-only would wave through an upright clip beside a quarter-turned one of
+    equal coded size -- uniform on the numbers, transposed on every frame either
+    mosaic or the tool actually emits. Displayed-only would accept clips that
+    agree after rotation but disagree in what they store, which a tool doing its
+    own decode is entitled to refuse. Agreement on the triple implies agreement
+    on both, so this asks the question once.
+
+    Frame rate is deliberately **not** asked here; :func:`rate_uniform` asks it,
+    because the two have opposite consequences. Differing geometry is
+    unworkable; differing rate is a fact about the recording that has to be
+    carried rather than refused.
+    """
+    if not facts:
+        return None
+    first = facts[0]
+    for index, clip in enumerate(facts[1:], start=1):
+        for field in ("width", "height", "rotation_degrees"):
+            reference = int(getattr(first, field))
+            measured = int(getattr(clip, field))
+            if reference != measured:
+                return GeometryMismatch(
+                    field=field, index=index, first=reference, other=measured
+                )
+    return None
+
+
+def rate_uniform(facts: Sequence[MediaFacts]) -> bool:
+    """Whether one frame rate indexes every clip, within the shared tolerance.
+
+    Delegates to :func:`uniform_properties` so the drift allowance -- half a
+    frame across the shorter clip -- keeps exactly one implementation. Dimensions
+    are substituted with a constant on purpose: this asks only the rate question,
+    :func:`geometry_mismatch` asks the other one, and letting a geometry
+    disagreement come back from here would give one answer two meanings.
+
+    ``True`` for fewer than two clips, which is agreement by vacuity.
+    """
+    substituted = [
+        MeasuredVideoProperties(
+            fps=clip.fps,
+            width=1,
+            height=1,
+            frame_count=clip.frame_count,
+            duration=clip.duration,
+        )
+        for clip in facts
+    ]
+    return uniform_properties(substituted) is None
 
 
 @dataclass(frozen=True, slots=True)

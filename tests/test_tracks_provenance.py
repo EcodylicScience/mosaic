@@ -210,7 +210,8 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         [npz],
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
-        video_path=video,
+        video_paths=[video],
+        timeline=None,
         overwrite=True,
     )
 
@@ -245,7 +246,8 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         [npz],
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
-        video_path=video,
+        video_paths=[video],
+        timeline=None,
         overwrite=True,
     )
 

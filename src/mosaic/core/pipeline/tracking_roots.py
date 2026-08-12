@@ -120,6 +120,15 @@ class TrackingRoot:
     every tracker, so ``meta.tracks.standard_format`` had no effect on any
     tracked table and a tracker whose columns genuinely differed had nowhere to
     say so. One row per producer, and the bridge reads it.
+
+    ``joins_sources`` is whether this tool can read an entry's several clips as
+    one continuous video. It lives here, beside the other producer knowledge,
+    rather than as a check against the tool's name in the scope builder: "what
+    can this tool do" is exactly what this table is for, and a fifth tracker
+    copying a row has to answer it rather than inherit someone else's answer by
+    matching a string. ``False`` means the scope builder truncates an entry to
+    its first clip and says so, which is what every tracker did before any of
+    them could join.
     """
 
     key: str
@@ -128,6 +137,7 @@ class TrackingRoot:
     phase_outputs: tuple[TrackingPhase, ...]
     path_columns: tuple[str, ...] = ()
     output_schema: str = "trex_v1"
+    joins_sources: bool = False
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -164,6 +174,11 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.results", "data/*.npz")),
             ),
             path_columns=("video_abs_path", "pv_path"),
+            # TRex's `source` is a PathArray, and its VideoSource sums the frame
+            # counts of every file it names into one length -- so a session's
+            # clips convert into a single `.pv` with one continuous frame index,
+            # and identities never break at a clip boundary.
+            joins_sources=True,
         ),
         # The analysis export has no phase of its own -- it is ensured rather
         # than gated -- so the `.h5` is cleared with the inference it derives

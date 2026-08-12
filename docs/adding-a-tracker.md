@@ -195,6 +195,7 @@ TrackingRoot(
     phase_outputs=(TrackingPhase("track", ("*.predictions.json",)),),
     path_columns=("video_abs_path", "predictions_path"),
     output_schema="mosaic_v1",
+    joins_sources=False,
 )
 ```
 
@@ -203,6 +204,34 @@ TrackingRoot(
 thing, since it includes byproducts that are evidence of nothing. `path_columns`
 is every path-bearing column on your row beyond `abs_path`; a column missing here
 silently stops being portable across machines.
+
+`joins_sources` is whether your tool can read an entry's several clips as **one
+continuous video**. A recorder that chops a session into files leaves a boundary
+that is a filesystem artifact rather than an event, so a tool that can span it
+should not be shown only the first clip. Declare `True` and `build_work_items`
+hands you every path in `video_order`; leave it `False` — the default, and right
+for anything that opens one file — and it truncates the entry to its first clip
+and says so on stderr. Only TREx declares `True` today, because its `source` is a
+`PathArray` and its `VideoSource` sums the clip lengths into one frame index.
+
+Declaring it is not free, and the two things it costs you are not obvious:
+
+- **Reuse.** `item.source_uid` is the first clip's `video_uuid` for a single
+  video and the *ordered composition digest* for several, so a clip added,
+  removed or reordered invalidates the run. Pass it to `reusable_marker` /
+  `record_phase` as `video_uid=`, not `item.video_uid` — that one names clip 0
+  and cannot see the rest of the arrangement.
+- **Adoption.** A pre-marker directory cannot say how many clips it covered, and
+  a joined entry's directory looks exactly like a single-video one. Skip
+  `adopt_completed_directory` when `item.n_sources > 1`, or an old directory will
+  be adopted as though one clip's output were the whole session's.
+
+And know what your tool does about frame rate. TREx takes it from the first clip
+without checking the others, so mosaic reconstructs time per clip through
+`mosaic.core.media.timeline` and drops the per-second columns the single rate
+spoiled. `build_work_items` refuses clips that disagree on frame *geometry*
+before your tool ever starts, but it deliberately accepts a rate disagreement:
+that is a real property of real recordings, not an error.
 
 `output_schema` is the schema your bridged tables answer to, and it is the only
 place that answer is written — the bridge validates against it and records it on
