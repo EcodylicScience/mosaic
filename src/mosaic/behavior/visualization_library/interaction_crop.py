@@ -207,7 +207,11 @@ class InteractionCropPipeline:
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
 
-        if not pose_column_pairs(df.columns):
+        # ``xy`` reads the body centre whether or not the table has keypoints, so
+        # it needs the units check unconditionally. Without the first clause a
+        # trex_v1 table -- which *requires* pose columns, and so always has them --
+        # would be cropped at centimetre coordinates and report success.
+        if p.center_mode == "xy" or not pose_column_pairs(df.columns):
             require_pixel_positions(self._ds, group, sequence, self.name)
 
         # Resolve video
@@ -458,6 +462,21 @@ class InteractionCropPipeline:
                 # legacy centimetre family.
                 cx = df_target[C.x_col].to_numpy(dtype=np.float64).copy()
                 cy = df_target[C.y_col].to_numpy(dtype=np.float64).copy()
+        elif mode == "xy":
+            # The body centre, asked for outright. Pose is never consulted, so a
+            # table missing X/Y is a naming error rather than something to fall
+            # back from -- say so instead of raising KeyError out of the lookup.
+            missing = [c for c in (C.x_col, C.y_col) if c not in df_target.columns]
+            if missing:
+                raise ValueError(
+                    f"{self.name} center_mode='xy' reads {C.x_col}/{C.y_col} "
+                    f"and this table carries no {', '.join(missing)}. Keypoints "
+                    "are never consulted under 'xy' -- use "
+                    "center_mode='default' to average the pose points, or name "
+                    "a pose index."
+                )
+            cx = df_target[C.x_col].to_numpy(dtype=np.float64).copy()
+            cy = df_target[C.y_col].to_numpy(dtype=np.float64).copy()
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
             xc = f"{p.pose.x_prefix}{idx}"
@@ -468,12 +487,15 @@ class InteractionCropPipeline:
                     f"{self.name} center_mode={mode!r} needs {xc}/{yc} and this "
                     f"table carries no {', '.join(missing)}. A centroid-only "
                     "tracker reports no keypoints, so name a centre it does "
-                    "report: center_mode='default' falls back to X/Y."
+                    "report: center_mode='xy' reads X/Y directly, and "
+                    "center_mode='default' falls back to it."
                 )
             cx = df_target[xc].to_numpy(dtype=np.float64).copy()
             cy = df_target[yc].to_numpy(dtype=np.float64).copy()
         else:
-            raise ValueError(f"Unknown center_mode: {mode}")
+            raise ValueError(
+                f"Unknown center_mode: {mode}. Use 'default', 'xy', 'pose0', or an int pose index."
+            )
 
         # Apply offset
         if p.center_offset_px != 0.0:

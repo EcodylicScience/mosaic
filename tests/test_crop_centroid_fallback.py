@@ -13,6 +13,13 @@ along the way.
 The fix was blocked on the units question -- ``X``/``Y`` used to be centimetres
 on TREx and pixels everywhere else. It is not any more: tracks are pixels, and
 the one family that is not (``trex_v1``) is refused by name.
+
+``center_mode="xy"`` is that fallback asked for outright: a request for the body
+centre that never consults pose even where pose exists, and that therefore
+carries the units refusal unconditionally rather than only where keypoints are
+absent. It exists because averaging *whichever* keypoints happened to be
+detected on a row moves the crop centre between rows, which reads downstream as
+appearance noise.
 """
 
 from __future__ import annotations
@@ -25,6 +32,9 @@ import pytest
 
 from mosaic.behavior.visualization_library.egocentric_crop import EgocentricCrop
 from mosaic.behavior.visualization_library.helpers import require_pixel_positions
+from mosaic.behavior.visualization_library.interaction_crop import (
+    InteractionCropPipeline,
+)
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import write_tracks_row
 
@@ -101,7 +111,9 @@ def test_no_derivable_centre_at_all_refuses() -> None:
         )
 
 
-def _dataset_recording(base: Path, std_format: str) -> Dataset:
+def _dataset_recording(
+    base: Path, std_format: str, table: pd.DataFrame | None = None
+) -> Dataset:
     """A dataset holding one entry whose table records *std_format*."""
     base.mkdir(parents=True, exist_ok=True)
     ds = Dataset(
@@ -111,7 +123,7 @@ def _dataset_recording(base: Path, std_format: str) -> Dataset:
     ds.ensure_roots()
     ds.save()
     out = ds.get_root("tracks") / "seq.parquet"
-    _centroid_table().to_parquet(out)
+    (_centroid_table() if table is None else table).to_parquet(out)
     write_tracks_row(
         ds,
         run_id="convert-x.0.1-aaaaaaaaaa",
@@ -141,3 +153,76 @@ def test_an_unrecorded_schema_is_read_as_the_legacy_one(tmp_path: Path) -> None:
     ds = _dataset_recording(tmp_path, "")
     with pytest.raises(ValueError, match="upgrade-tracks"):
         require_pixel_positions(ds, "", "seq", "who")
+
+
+# ---------------------------------------------------------------------------
+# center_mode="xy" -- the fallback asked for by name
+# ---------------------------------------------------------------------------
+
+
+def test_xy_never_consults_keypoints() -> None:
+    """The whole point of "xy": pose is present and deliberately ignored.
+
+    Seven keypoints average to ``X + 3`` -- that is what ``"default"`` returns
+    (see ``test_keypoints_still_win_where_they_exist``). ``"xy"`` must return
+    ``X``. Asserting against a keypoint-less table instead would pass even if
+    ``"xy"`` were silently aliased to ``"default"``.
+    """
+    table = _posed_table()
+    _, cx, cy = EgocentricCrop(
+        params={"angle_col": "ANGLE", "center_mode": "xy"}
+    )._precompute_geometry(table, False)
+    assert np.allclose(cx, table["X"])
+    assert np.allclose(cy, table["Y"])
+
+
+def test_xy_without_a_body_centre_refuses_by_name() -> None:
+    """Not a bare ``KeyError`` out of the column lookup."""
+    table = _posed_table().drop(columns=["X", "Y"])
+    with pytest.raises(ValueError, match="Keypoints are never consulted"):
+        _ = EgocentricCrop(
+            params={"angle_col": "ANGLE", "center_mode": "xy"}
+        )._precompute_geometry(table, False)
+
+
+def test_xy_does_not_quietly_fall_back_to_the_pose_mean() -> None:
+    """The same table succeeds under ``"default"``; the pair is what discriminates."""
+    table = _posed_table()
+    table["X"] = np.nan
+    table["Y"] = np.nan
+    with pytest.raises(ValueError, match="could not derive a centre"):
+        _ = EgocentricCrop(
+            params={"angle_col": "ANGLE", "center_mode": "xy"}
+        )._precompute_geometry(table, False)
+
+
+def test_the_refusal_names_every_accepted_mode() -> None:
+    """Catches the half-change: branch added, enumeration left stale."""
+    with pytest.raises(ValueError, match="xy"):
+        _ = EgocentricCrop(
+            params={"angle_col": "ANGLE", "center_mode": "banana"}
+        )._precompute_geometry(_posed_table(), False)
+
+
+def test_xy_carries_the_units_refusal_onto_a_posed_table(tmp_path: Path) -> None:
+    """The units gate used to fire only for keypoint-less tables.
+
+    ``trex_v1`` *requires* pose columns, so a trex_v1 entry always had them and
+    always skipped the gate. Under ``"xy"`` the crop reads ``X``/``Y``
+    regardless, so centimetres would be read as pixels with nothing raising.
+    """
+    ds = _dataset_recording(tmp_path, "trex_v1", table=_posed_table())
+    crop = EgocentricCrop(params={"angle_col": "ANGLE", "center_mode": "xy"})
+    crop.bind_dataset(ds)
+    with pytest.raises(ValueError, match="upgrade-tracks"):
+        _ = crop.transform(_posed_table())
+
+
+def test_interaction_crop_xy_never_consults_keypoints() -> None:
+    """The sibling feature's ``center_mode`` is a verbatim copy; keep them equal."""
+    table = _posed_table()
+    _, cx, cy = InteractionCropPipeline(
+        params={"angle_col": "ANGLE", "center_mode": "xy"}
+    )._precompute_geometry(table, False)
+    assert np.allclose(cx, table["X"])
+    assert np.allclose(cy, table["Y"])

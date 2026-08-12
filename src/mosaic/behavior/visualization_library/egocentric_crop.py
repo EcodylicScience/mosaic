@@ -57,7 +57,17 @@ class EgocentricCrop:
         found in the tracks data, creating separate outputs for each.
     center_mode : str or int
         How to compute the center point:
-        - "default": mean of all pose points poseX0..N/poseY0..N (pixel coords)
+        - "default": mean of the pose points *present on each row*
+          (poseX0..N/poseY0..N, pixel coords), falling back to the X/Y body
+          centre only where the table carries no pose columns at all. The
+          averaged subset varies with which keypoints were detected, so a table
+          with patchy pose yields a centre that shifts between rows.
+        - "xy": the X/Y body centre, always. Unlike "default", pose points are
+          never read *for the centre* even where they exist (heading still uses
+          ``heading_points``), and the pixel-units refusal applies
+          unconditionally -- a table recording the centimetre-era ``trex_v1``
+          schema, or recording no schema at all, is rejected rather than
+          cropped at the wrong coordinates.
         - "pose0" or 0: use poseX0/poseY0 (typically head/nose)
         - int: use specific pose point index
     crop_size : tuple of (int, int)
@@ -274,7 +284,11 @@ class EgocentricCrop:
             str(df[COLUMNS.seq_col].iloc[0]) if COLUMNS.seq_col in df.columns else ""
         )
 
-        if not pose_column_pairs(df.columns):
+        # ``xy`` reads the body centre whether or not the table has keypoints, so
+        # it needs the units check unconditionally. Without the first clause a
+        # trex_v1 table -- which *requires* pose columns, and so always has them --
+        # would be cropped at centimetre coordinates and report success.
+        if p.center_mode == "xy" or not pose_column_pairs(df.columns):
             require_pixel_positions(self._ds, group, sequence, self.name)
 
         # Resolve video paths (supports multi-video sequences)
@@ -323,7 +337,7 @@ class EgocentricCrop:
             # Average the pose points present on this row. Every spatial column
             # in a mosaic_v1 table is video pixels, so the body centre in X/Y is
             # a usable fallback for a tracker that reports no keypoints -- see
-            # _require_pixel_centroid, which refuses the one family where it is
+            # require_pixel_positions, which refuses the one family where it is
             # not (trex_v1, centimetres).
             xs, ys = [], []
             for i in range(p.pose.pose_n):
@@ -350,6 +364,12 @@ class EgocentricCrop:
                 ):
                     return (np.nan, np.nan)
                 cx, cy = float(bx), float(by)
+        elif mode == "xy":
+            bx = row.get(COLUMNS.x_col)
+            by = row.get(COLUMNS.y_col)
+            if bx is None or by is None or not np.isfinite(bx) or not np.isfinite(by):
+                return (np.nan, np.nan)
+            cx, cy = float(bx), float(by)
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
             x = row.get(f"{p.pose.x_prefix}{idx}")
@@ -359,7 +379,7 @@ class EgocentricCrop:
             cx, cy = float(x), float(y)
         else:
             raise ValueError(
-                f"Unknown center_mode: {mode}. Use 'default', 'pose0', or an int pose index."
+                f"Unknown center_mode: {mode}. Use 'default', 'xy', 'pose0', or an int pose index."
             )
 
         # Apply offset along heading direction (positive = forward / toward head)
@@ -443,6 +463,23 @@ class EgocentricCrop:
             else:
                 cx = np.full(n, np.nan, dtype=np.float64)
                 cy = np.full(n, np.nan, dtype=np.float64)
+        elif mode == "xy":
+            # The body centre, asked for outright. Pose is never consulted, so a
+            # table missing X/Y is a naming error rather than something to fall
+            # back from -- say so instead of raising KeyError out of the lookup.
+            missing = [
+                c for c in (COLUMNS.x_col, COLUMNS.y_col) if c not in df_target.columns
+            ]
+            if missing:
+                raise ValueError(
+                    f"{self.name} center_mode='xy' reads {COLUMNS.x_col}/"
+                    f"{COLUMNS.y_col} and this table carries no "
+                    f"{', '.join(missing)}. Keypoints are never consulted under "
+                    "'xy' -- use center_mode='default' to average the pose "
+                    "points, or name a pose index."
+                )
+            cx = df_target[COLUMNS.x_col].to_numpy(dtype=np.float64).copy()
+            cy = df_target[COLUMNS.y_col].to_numpy(dtype=np.float64).copy()
         elif mode == "pose0" or isinstance(mode, int):
             idx = 0 if mode == "pose0" else int(mode)
             xc = f"{p.pose.x_prefix}{idx}"
@@ -453,13 +490,14 @@ class EgocentricCrop:
                     f"{self.name} center_mode={mode!r} needs {xc}/{yc} and this "
                     f"table carries no {', '.join(missing)}. A centroid-only "
                     "tracker reports no keypoints, so name a centre it does "
-                    "report: center_mode='default' falls back to X/Y."
+                    "report: center_mode='xy' reads X/Y directly, and "
+                    "center_mode='default' falls back to it."
                 )
             cx = df_target[xc].to_numpy(dtype=np.float64).copy()
             cy = df_target[yc].to_numpy(dtype=np.float64).copy()
         else:
             raise ValueError(
-                f"Unknown center_mode: {mode}. Use 'default', 'pose0', or an int pose index."
+                f"Unknown center_mode: {mode}. Use 'default', 'xy', 'pose0', or an int pose index."
             )
 
         if n and not np.isfinite(cx).any():
