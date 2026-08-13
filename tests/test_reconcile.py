@@ -512,3 +512,30 @@ def test_full_reconcile_composes_hygiene_passes(
     assert applied.repathed
     # Now portable: a second full run is clean.
     assert not ds.reconcile().changed
+
+
+def test_a_relocated_run_keeps_the_attempt_that_produced_it(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """A re-address moves an artifact somebody else produced.
+
+    ``_rewrite_provenance`` rebuilds ``params.json`` from scratch, so a stamp it
+    did not carry forward would be silently replaced -- with this pass's empty
+    execution and the reconciling toolkit's version. Every artifact would then
+    claim it was computed by whichever mosaic last reconciled, which is the one
+    thing the two keys exist to be able to deny.
+    """
+    ds = scenario_dataset
+    true_run_id = _run(ds)
+    recorded = json.loads((_run_root(ds, true_run_id) / "params.json").read_text())
+    produced_by = str(recorded["_execution_id"])
+    under = str(recorded["_mosaic_version"])
+    assert produced_by, "fixture wrote no attempt to carry"
+
+    fake_run_id, true_root = _fabricate_shifted_run(ds, true_run_id, scheme="5")
+    _ = ds.reconcile(apply=True)
+
+    moved = json.loads((true_root / "params.json").read_text())
+    assert moved["_execution_id"] == produced_by
+    assert moved["_mosaic_version"] == under
+    assert fake_run_id not in str(true_root)

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 
+from mosaic.version import installed_version
 from mosaic.core.helpers import (
     filter_time_range,
     load_labels_for_feature_frames,
@@ -758,6 +759,8 @@ def build_run_params_payload(
     feature_resolutions: list[dict[str, str | None]],
     *,
     overlap_frames: int = 0,
+    execution_id: str = "",
+    mosaic_version: str = "",
 ) -> dict[str, object]:
     """The ``params.json`` save payload -- provenance, deliberately not the digest.
 
@@ -791,12 +794,32 @@ def build_run_params_payload(
     file said nothing about it would recompute to a digest differing from its own
     directory name, be classified unresolvable, and block everything downstream of
     it.
+
+    ``_execution_id`` and ``_mosaic_version`` are what make an artifact on disk
+    joinable back to the attempt that produced it. Without them this document is
+    strictly present-tense -- it says what a run *is*, never when, by whom, or
+    under which toolkit -- and the run-log holding the answer
+    (``.mosaic/runs/<execution_id>.jsonl``) is reachable from the artifact by no
+    path at all. Both are provenance and neither is hashed, so adding them moves
+    no identifier.
+
+    Both arrive as arguments rather than being read here, because the answer
+    differs by caller and only the caller knows it. ``run_feature`` is an attempt
+    and passes its own; ``reconcile`` is *not* one -- it re-addresses an artifact
+    somebody else produced -- so it passes the values it read off the old
+    document. Reading the installed version here instead would have a re-address
+    under a newer toolkit quietly restamp every artifact as produced by it, which
+    is the one thing these fields exist to be able to deny. Empty means
+    *unknown*, as it does for every other unestablishable cell here: a run
+    predating these keys, or a source tree with nothing installed.
     """
     return {
         "_params": json_ready(feature.params),
         "_inputs": feature.inputs.model_dump(),
         "_frame_range": [frame_start, frame_end],
         "_overlap_frames": int(overlap_frames),
+        "_execution_id": execution_id,
+        "_mosaic_version": mosaic_version,
         "_scope": {
             "scope_dependent": feature.scope_dependent,
             "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
@@ -1097,6 +1120,8 @@ def _run_feature_impl(
             scope,
             resolution_payload(resolutions),
             overlap_frames=overlap_frames,
+            execution_id=ctx.execution_id,
+            mosaic_version=installed_version(),
         )
         atomic_write(
             params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))

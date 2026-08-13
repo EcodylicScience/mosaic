@@ -160,6 +160,8 @@ class _ParamsFile(BaseModel):
     overlap_frames: int = Field(0, alias="_overlap_frames")
     scope: _ScopeBlock = Field(default_factory=_ScopeBlock, alias="_scope")
     resolved: list[_ResolvedRef] = Field(default_factory=list, alias="_resolved")
+    execution_id: str = Field("", alias="_execution_id")
+    mosaic_version: str = Field("", alias="_mosaic_version")
 
     @property
     def records_resolutions(self) -> bool:
@@ -258,6 +260,10 @@ class _RunRead:
     labels_old: tuple[str, ...]
     records_resolutions: bool
     upstream_feature_runs: tuple[str, ...]
+    # Carried, never re-derived: a re-address moves an artifact somebody else
+    # produced, so the attempt and the toolkit version stay the ones recorded.
+    execution_id: str
+    mosaic_version: str
     # The scope rebuilt with upstreams substituted, filled by ``_classify`` and
     # read by ``_relocate`` to rewrite the run's recorded provenance so the next
     # pass reproduces its new identifier.
@@ -321,6 +327,8 @@ class FeatureReconciler:
             labels_old=labels_old,
             records_resolutions=params is not None and params.records_resolutions,
             upstream_feature_runs=upstream,
+            execution_id=params.execution_id if params is not None else "",
+            mosaic_version=params.mosaic_version if params is not None else "",
         )
 
     def _load_params(self, run_root: Path) -> _ParamsFile | None:
@@ -654,6 +662,12 @@ class FeatureReconciler:
             read.scope,
             resolutions,
             overlap_frames=read.overlap_frames,
+            # Carried from the document being replaced, not minted here. This
+            # pass re-addresses an artifact it did not produce, so restamping it
+            # with the running toolkit's version would make every re-addressed
+            # run claim it was computed by whichever mosaic last reconciled.
+            execution_id=read.execution_id,
+            mosaic_version=read.mosaic_version,
         )
         atomic_write(
             new_run_root / "params.json",

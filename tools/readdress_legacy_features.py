@@ -186,6 +186,16 @@ def read_runs(ds: Dataset) -> list[Run]:
     return runs
 
 
+def _text_cell(doc: dict[str, object], key: str) -> str:
+    """A string cell from a raw params document; empty when absent or not text.
+
+    Empty is the honest answer for the population this script exists for: a
+    legacy run predates these keys entirely, and unknown is not the same as none.
+    """
+    value = doc.get(key)
+    return value if isinstance(value, str) else ""
+
+
 def _upstream_refs(doc: dict[str, object]) -> list[tuple[str, str | None]]:
     """Every ``(feature, run_id)`` reference reachable from _inputs and _params.
 
@@ -486,7 +496,16 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
             shutil.move(str(run.run_root), str(new_root))
             write_identity_scheme(new_root, FEATURE_IDENTITY_SCHEME)
             payload = build_run_params_payload(
-                feature, *run.frame_range, scope, _resolutions_payload(feature)
+                feature,
+                *run.frame_range,
+                scope,
+                _resolutions_payload(feature),
+                # Carried from the document being replaced. This script
+                # re-addresses artifacts it did not produce, so minting either
+                # value here would have every legacy run claim it was computed
+                # by whichever toolkit last re-addressed it.
+                execution_id=_text_cell(run.doc, "_execution_id"),
+                mosaic_version=_text_cell(run.doc, "_mosaic_version"),
             )
             atomic_write(
                 new_root / "params.json",
