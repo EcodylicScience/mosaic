@@ -332,3 +332,47 @@ def test_the_listing_is_written_in_exactly_one_place() -> None:
         f"{sorted(allowed - matched)} -- a rename may have made this guard scan "
         "for something that no longer exists"
     )
+
+
+# --- labels_raw, which no pass reached ---------------------------------------
+
+
+def test_labels_raw_is_enumerated(tmp_path: Path) -> None:
+    """Written by ``index_labels_raw`` and read by ``convert_all_labels``, but
+    invisible to every portability, reindex and reconcile pass before this."""
+    ds = _dataset(tmp_path)
+
+    reached = {index.root_key for index in iter_dataset_indexes(ds)}
+
+    assert "labels_raw" in reached
+
+
+def test_a_labels_raw_row_is_made_portable(tmp_path: Path) -> None:
+    """The defect the omission caused: an absolute path surviving a move.
+
+    Asserted through ``make_portable`` rather than the enumeration alone,
+    because enumerating a root that no pass then rewrites would satisfy the
+    test above and fix nothing.
+    """
+    ds = _dataset(tmp_path)
+    raw_root = ds.get_root("labels_raw")
+    raw_root.mkdir(parents=True, exist_ok=True)
+    labels_file = raw_root / "scored.csv"
+    labels_file.write_text("frame,label\n0,walk\n")
+    index_path = raw_root / "index.csv"
+    pd.DataFrame(
+        [
+            {
+                "group": "",
+                "sequence": "seq_a",
+                "abs_path": str(labels_file.resolve()),
+                "src_format": "boris_aggregated_csv",
+            }
+        ]
+    ).to_csv(index_path, index=False)
+
+    _ = ds.make_portable(dry_run=False)
+
+    stored = str(pd.read_csv(index_path)["abs_path"].iloc[0])
+    assert not Path(stored).is_absolute(), f"labels_raw row was left absolute: {stored}"
+    assert ds.resolve_path(stored).resolve() == labels_file.resolve()

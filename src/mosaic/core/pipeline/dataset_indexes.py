@@ -76,6 +76,15 @@ class DatasetIndex:
 _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     ("media_raw", "root"),
     ("tracks_raw", "root"),
+    # ``labels_raw`` belongs beside ``tracks_raw``, and its absence was an
+    # asymmetry rather than a decision: ``Dataset.index_labels_raw`` writes
+    # ``labels_raw/index.csv`` through the same body ``tracks_raw`` uses and
+    # ``convert_all_labels`` reads it, but no portability, reindex or reconcile
+    # pass could see it. A dataset moved between machines kept its raw-label rows
+    # naming the old machine's filesystem and reported itself portable. It
+    # declares no extra path columns for the same reason ``tracks_raw`` declares
+    # none: its rows carry ``abs_path`` and nothing else that is a path.
+    ("labels_raw", "root"),
     ("media", "root"),
     ("tracks", "root"),
     # ``per_subdir``, not ``root``: every model index is ``models/<kind>/index.csv``
