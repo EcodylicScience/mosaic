@@ -17,6 +17,12 @@ implementation.
 
 from __future__ import annotations
 
+from .contributors import (
+    InventoryContributor,
+    inventory_contributor,
+    register_inventory_contributor,
+    registered_inventory_kinds,
+)
 from .model import (
     ArtifactKind,
     ArtifactRecord,
@@ -36,6 +42,12 @@ from .model import (
     TrainedModelRef,
     classify,
 )
+from .scan import (
+    entry_universe,
+    inventory,
+    narrow_target,
+    run_covers,
+)
 from .params import (
     LABELS_EDGE,
     TRACKS_EDGE,
@@ -49,6 +61,7 @@ from .params import (
 
 __all__ = [
     "ArtifactKind",
+    "InventoryContributor",
     "ArtifactRecord",
     "ArtifactRef",
     "ArtifactStatus",
@@ -72,5 +85,12 @@ __all__ = [
     "TracksVariantRef",
     "TrainedModelRef",
     "classify",
+    "entry_universe",
+    "inventory",
+    "inventory_contributor",
+    "narrow_target",
     "read_run_params",
+    "register_inventory_contributor",
+    "registered_inventory_kinds",
+    "run_covers",
 ]

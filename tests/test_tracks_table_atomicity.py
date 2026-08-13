@@ -159,15 +159,19 @@ def test_a_truncated_output_does_not_satisfy_coverage(tmp_path: Path) -> None:
     level-triggered runner would chain past it; a human only notices when the
     next step fails on unreadable input.
     """
-    from mosaic.core.pipeline.pipeline import _run_is_complete
+    from mosaic.core.pipeline.inventory.scan import run_covers
 
     run_root = tmp_path / "run"
     run_root.mkdir()
-    target = {("g1", "s1")}
+    target = frozenset({("g1", "s1")})
     _tracks_frame(4).to_parquet(run_root / "g1__s1.parquet", index=False)
-    assert _run_is_complete(run_root, target) is True
+    assert run_covers(run_root, target).is_satisfied is True
 
     whole = (run_root / "g1__s1.parquet").read_bytes()
     _ = (run_root / "g1__s1.parquet").write_bytes(whole[: len(whole) // 2])
 
-    assert _run_is_complete(run_root, target) is False
+    coverage = run_covers(run_root, target)
+    assert coverage.is_satisfied is False
+    # And it says which entry, where the predicate this replaced said only
+    # "not complete" and left the caller to re-glob to find out.
+    assert coverage.missing == target

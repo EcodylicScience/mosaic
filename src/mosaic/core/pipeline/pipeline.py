@@ -21,9 +21,10 @@ from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
-from mosaic.core.helpers import make_entry_key, resolve_frame_range
+from mosaic.core.helpers import resolve_frame_range
 
 from ._utils import Scope, derive_storage_name
+from .inventory.scan import entry_universe, narrow_target, run_covers
 from .index import (
     drifted_entries,
     feature_index,
@@ -34,7 +35,6 @@ from .index import (
 from .manifest import build_manifest
 from .resolve import resolve_references
 from .run import compute_run_id
-from .tracks_index import read_tracks_index, select_variant_rows
 from .types import Feature, Inputs, Result, TrackLike
 
 if TYPE_CHECKING:
@@ -143,39 +143,6 @@ def storage_name(feature: object) -> str:
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
 
 
-def _read_track_universe(
-    ds: "Dataset", tracks_run_id: str | None = None
-) -> frozenset[tuple[str, str]]:
-    """All ``(group, sequence)`` pairs the dataset can process, from tracks.
-
-    This is the *intended* sequence universe — the pipeline's target scope
-    before any per-step ``groups``/``sequences``/``entries`` narrowing — read
-    once and reused for every step's cache check. Mirrors ``_resolve_tracks``
-    (``manifest.py``): only rows whose track file actually exists are kept.
-    Returns an empty set if the tracks index is absent (e.g. a fresh dataset),
-    which makes the cache check fall back to the legacy "any parquet" glob.
-
-    ``tracks_run_id`` must be the *same* selector the steps resolve with, and it
-    is why this takes one at all. A step pinned to a variant covering part of the
-    index would otherwise be measured for completeness against the whole index,
-    read as permanently incomplete, and mark every downstream step stale on every
-    invocation.
-
-    Reads through the shared typed reader and variant selector rather than its
-    own ``read_csv``, so "which rows count" has one answer across the resolver,
-    ``load_tracks`` and this.
-    """
-    df = select_variant_rows(read_tracks_index(ds), tracks_run_id)
-    out: set[tuple[str, str]] = set()
-    for _, row in df.iterrows():
-        abs_path = str(cast(object, row["abs_path"]))
-        if ds.resolve_path(abs_path).exists():
-            out.add(
-                (str(cast(object, row["group"])), str(cast(object, row["sequence"])))
-            )
-    return frozenset(out)
-
-
 def _as_set(x: object) -> set[str] | None:
     """Coerce a ``groups``/``sequences`` run_kwarg to ``set[str] | None``."""
     return {str(v) for v in cast(Iterable[object], x)} if x else None
@@ -196,96 +163,6 @@ def _as_run_id(x: object) -> str | None:
     before tracks carried an identity. Only an absent key means "unrestricted".
     """
     return None if x is None else str(x)
-
-
-def _narrow_target(
-    universe: frozenset[tuple[str, str]],
-    groups: object = None,
-    sequences: object = None,
-    entries: object = None,
-) -> set[tuple[str, str]]:
-    """Narrow the track universe by a step's scope restriction.
-
-    Applies the same intersecting ``groups`` ∧ ``sequences`` ∧ ``entries``
-    filter as ``build_manifest``/``_resolve_tracks`` (``manifest.py:98-106``),
-    so the target matches what ``run_feature`` would actually process. Values
-    may arrive as lists or sets from ``run_kwargs``; ``None``/empty means "no
-    restriction on this axis".
-    """
-    g = _as_set(groups)
-    s = _as_set(sequences)
-    e = _as_entry_set(entries)
-    result: set[tuple[str, str]] = set()
-    for grp, seq in universe:
-        if g is not None and grp not in g:
-            continue
-        if s is not None and seq not in s:
-            continue
-        if e is not None and (grp, seq) not in e:
-            continue
-        result.add((grp, seq))
-    return result
-
-
-def _parquet_is_readable(path: "Path") -> bool:
-    """Is this parquet whole? Footer-only, so it costs one seek rather than a read.
-
-    A parquet's footer is written last, so a file torn by an interrupted write has
-    no readable metadata. That makes this cheap enough to run per file on a
-    per-step gate while still catching the failure that presence alone cannot.
-    """
-    import pyarrow.parquet as pq
-
-    try:
-        _ = pq.read_metadata(path)
-    except Exception:
-        return False
-    return True
-
-
-def _run_is_complete(run_root: "Path", target: set[tuple[str, str]]) -> bool:
-    """Query-relative completeness test for a feature run.
-
-    A run counts as cached only when *every* ``(group, sequence)`` in ``target``
-    has its output parquet on disk — not merely when the run dir is non-empty.
-    This is what makes a partial/interrupted run (e.g. 30 of 90 sequences) read
-    as *not* cached, so ``pipe.run`` resumes it. Checking files directly (rather
-    than the ``index.csv`` ``finished_at`` flag) is deliberate: ``finished_at``
-    is *scope-relative* to whatever manifest an invocation saw — a downstream
-    step whose partial upstream truncated its manifest can be honestly
-    "finished" at 30/90 — and a file check also catches outputs deleted after
-    the fact.
-
-    Falls back to the legacy "any parquet" glob for the empty-input/global
-    marker (a single ``__global__`` artifact, see ``run.py`` global marker) and
-    when no target is known.
-
-    A present file must also be a *readable* one. Presence alone was the test, and
-    a torn parquet is present: a run killed mid-write left a half-written file
-    where a whole one belongs, this read it as coverage satisfied, and the step
-    reported complete. Today a human notices the downstream failure; a
-    level-triggered reconciler would chain straight past it. The check is
-    footer-only (``pq.read_metadata``), which is O(1) per file and catches the
-    torn-footer signature, because a parquet's footer is written last. The deep
-    validator (``default_check_output``, a full ``read_table``) stays where it is,
-    on the per-entry cache path, since it is not affordable per step.
-
-    Known limitation: a feature that *legitimately* produces fewer outputs than
-    inputs — when an input filter empties a sequence and ``iter_manifest`` drops
-    it (``manifest.py``/``loading.py``) — will read as not-cached and recompute
-    each run. Distinguishing "not yet processed" from "processed and empty"
-    needs a processed-entry ledger and is deferred.
-    """
-    if not run_root.exists():
-        return False
-    present = {
-        p.stem for p in run_root.glob("*.parquet") if _parquet_is_readable(p)
-    }  # stem == make_entry_key(g, s)
-    if "__global__" in present:
-        return True
-    if not target:
-        return bool(present)
-    return all(make_entry_key(g, s) in present for g, s in target)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +243,7 @@ class Pipeline:
 
         def track_universe_for(pin: str | None) -> frozenset[tuple[str, str]]:
             if pin not in universes:
-                universes[pin] = _read_track_universe(dataset, pin)
+                universes[pin] = entry_universe(dataset, pin)
             return universes[pin]
 
         # Inverted DAG: {parent -> [children]} for staleness propagation
@@ -468,11 +345,11 @@ class Pipeline:
             # narrowed by any groups/sequences/entries restriction. Used
             # both for the completeness check and (for scope_dependent
             # features) the run_id hash.
-            target = _narrow_target(
+            target = narrow_target(
                 track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))),
-                kwargs.get("groups"),
-                kwargs.get("sequences"),
-                kwargs.get("entries"),
+                groups=_as_set(kwargs.get("groups")),
+                sequences=_as_set(kwargs.get("sequences")),
+                entries=_as_entry_set(kwargs.get("entries")),
             )
 
             # Identity comes from compute_run_id -- the same function
@@ -520,14 +397,13 @@ class Pipeline:
             # Check cache on disk: cached only when the run is *complete*
             # for this step's target scope, not merely non-empty.
             run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
-            cached = _run_is_complete(run_root, target)
-            present: set[str] = (
-                {p.stem for p in run_root.glob("*.parquet")}
-                if run_root.exists()
-                else set()
-            )
-            target_keys = {make_entry_key(g, s) for g, s in target}
-            n_present = len(present & target_keys) if target else len(present)
+            # One measurement, used for both the gate and the display. It used to
+            # be two: the gate filtered out unreadable parquets and the display
+            # re-globbed without that filter, so a torn file made the reported
+            # count exceed what the gate had accepted.
+            coverage = run_covers(run_root, target)
+            cached = coverage.is_satisfied
+            n_present = len(coverage.present if not target else coverage.covered)
             n_target = len(target)
 
             # Staleness: if this step was marked stale by an upstream,

@@ -119,9 +119,34 @@ _DERIVATIVE_COLUMN_BY_TARGET: dict[Target, str] = {
 }
 
 
+# The verdict column each target routes on, beside the link column above. Two
+# tables rather than one, because the pair is not symmetric: a target has a
+# verdict and a link, and their names share no rule -- ``analysis`` routes on
+# ``analysis_transcode`` and ``playback`` on ``stream_transcode``. Written down
+# here because it was spelled as a bare literal at the two call sites that read
+# a verdict, so a third reader had to guess which one it wanted.
+_VERDICT_COLUMN_BY_TARGET: dict[Target, str] = {
+    "analysis": "analysis_transcode",
+    "playback": "stream_transcode",
+}
+
+TRANSCODE_REQUIRED = "required"
+"""The verdict value meaning this row cannot be read without a derivative."""
+
+
 def derivative_column_for_target(target: Target) -> str:
     """Return the media-index forward-link column for a transcode *target*."""
     return _DERIVATIVE_COLUMN_BY_TARGET[target]
+
+
+def verdict_column_for_target(target: Target) -> str:
+    """Return the media-index verdict column a *target* routes on."""
+    return _VERDICT_COLUMN_BY_TARGET[target]
+
+
+def transcode_required(row: Mapping[str, object], target: Target) -> bool:
+    """Does this row need a derivative before it can be read for *target*?"""
+    return read_link_cell(row, verdict_column_for_target(target)) == TRANSCODE_REQUIRED
 
 
 def read_link_cell(row: Mapping[str, object], column: str) -> str:
