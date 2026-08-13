@@ -32,6 +32,7 @@ from typing import ClassVar, Literal, overload
 from .params import ParamsState, RunParams
 
 __all__ = [
+    "AnyRecord",
     "ArtifactKind",
     "ArtifactRecord",
     "ArtifactRef",
