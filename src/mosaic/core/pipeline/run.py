@@ -5,6 +5,7 @@ import importlib
 import json
 import multiprocessing as mp
 import sys
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -14,7 +15,7 @@ from concurrent.futures import (
     wait,
 )
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Final, TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -751,6 +752,32 @@ def compute_run_id(
     return f"{feature.version}-{params_hash}", params_hash
 
 
+IDX_FLUSH_EVERY: Final = 10
+"""How many index rows may be pending before the batch is written.
+
+The index lags the filesystem by up to this many rows, and that direction is
+deliberate: a parquet is renamed into place before its row is even queued, so a
+kill leaves outputs with no row rather than rows with no output. A file check
+resumes correctly from that; an index check would recompute.
+
+**Not 1.** Every append re-reads the whole CSV, re-masks it per new row and
+rewrites it under the lock, so flushing per row is superlinear -- measured on
+this schema, 2000 entries costs 4.2s batched and 33.6s per-row, and the gap
+widens with the run. It is worse under contention, because the lock is held
+across each read-modify-write.
+"""
+
+IDX_FLUSH_SECONDS: Final = 2.0
+"""How long a pending row may wait, whatever the count reaches.
+
+What closes the window without paying the per-row cost: a slow feature that
+produces one entry a minute would otherwise leave nine outputs unrecorded for
+nine minutes. Bounding it in seconds rather than entries makes the lag a
+property of the clock instead of a property of how fast the feature happens to
+be. It moves no identifier and changes no output -- only when rows land.
+"""
+
+
 def build_run_params_payload(
     feature: Feature,
     frame_start: int | None,
@@ -1197,16 +1224,17 @@ def _run_feature_impl(
         write_fit_scope(run_root, scope, scope_dependent=feature.scope_dependent)
 
     # Apply phase — index rows are flushed periodically for interrupt recovery
-    _IDX_FLUSH_EVERY = 10
     _pending_idx_rows: list[FeatureIndexRow] = []
     _total_written = 0
+    _last_flush = time.monotonic()
 
     def _flush_idx() -> None:
-        nonlocal _total_written
+        nonlocal _total_written, _last_flush
         if _pending_idx_rows:
             idx.append(list(_pending_idx_rows))
             _total_written += len(_pending_idx_rows)
             _pending_idx_rows.clear()
+        _last_flush = time.monotonic()
 
     def _record_row(row: FeatureIndexRow) -> None:
         _pending_idx_rows.append(row)
@@ -1217,7 +1245,10 @@ def _run_feature_impl(
             done, ctx.total, make_entry_key(row.group, row.sequence)
         )
         ctx.heartbeat(done)
-        if len(_pending_idx_rows) >= _IDX_FLUSH_EVERY:
+        if (
+            len(_pending_idx_rows) >= IDX_FLUSH_EVERY
+            or time.monotonic() - _last_flush >= IDX_FLUSH_SECONDS
+        ):
             _flush_idx()
 
     # --- Cache-hit pre-pass --------------------------------------------------
