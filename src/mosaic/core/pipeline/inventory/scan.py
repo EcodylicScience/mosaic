@@ -28,7 +28,7 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_index
-from mosaic.core.pipeline.provenance import index_records
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     select_variant_rows,

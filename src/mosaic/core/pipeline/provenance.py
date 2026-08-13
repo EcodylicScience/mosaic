@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Literal
 import pandas as pd
 
 from .dataset_indexes import feature_storages, label_kinds
+from .index_csv import index_records
 from .index import feature_index, feature_index_path, feature_run_root
 from .inventory.params import read_run_params
 from .labels_index import read_labels_index
@@ -53,7 +54,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PROVENANCE_COLUMNS",
-    "index_records",
     "Verdict",
     "reached_by",
 ]
@@ -90,22 +90,6 @@ that moved, ``tracks`` for a feature run whose tracks variant moved under it --
 because the two are answerable by different evidence and a reader deciding what
 to delete needs to know which.
 """
-
-
-def index_records(frame: pd.DataFrame) -> list[dict[str, str]]:
-    """A frame's rows as plain string dicts.
-
-    The one place pandas' partially-typed row access is turned into something the
-    rest of the module can read without a cast at every cell. Every index walked
-    here is written through :class:`IndexCSV`, whose dtype map pins each schema
-    ``str`` column, so the cells are already strings and this states that rather
-    than converting them.
-    """
-    columns = [str(name) for name in frame.columns]
-    return [
-        {column: str(value) for column, value in zip(columns, row, strict=True)}
-        for row in frame.itertuples(index=False, name=None)
-    ]
 
 
 def _verdict(recorded: str, current: str) -> Verdict:

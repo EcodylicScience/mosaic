@@ -52,6 +52,7 @@ from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
+    index_records,
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
@@ -76,6 +77,7 @@ __all__ = [
     "legacy_view",
     "read_tracks_index",
     "select_variant_rows",
+    "variant_for_producer_run",
     "tracks_index",
     "tracks_index_path",
     "write_tracks_row",
@@ -376,6 +378,57 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
         # did with a duplicate before the index enforced uniqueness.
         keep.append((labelled or positions)[-1])
     return df.iloc[sorted(keep)].reset_index(drop=True)
+
+
+def variant_for_producer_run(df: pd.DataFrame, producer_run_id: str) -> str | None:
+    """Which tracks variant a producing op's run wrote, or ``None`` if none did.
+
+    The reverse of what the index records. ``TracksIndexRow.run_id`` is the
+    *tracks variant* -- which recipe produced the table -- and
+    ``producer_run_id`` is the op run behind it, empty for a conversion, which
+    has no op run at all. Nothing could ask the reverse question, so anything
+    holding a tracker's run identifier and wanting the tables it produced had to
+    pass that identifier straight through as a variant.
+
+    **That works today only by coincidence, and the coincidence is deliberate.**
+    ``tracker_variant_payload`` is ``return dict(settings)``, so a tracker's
+    variant digest and its op digest are the same string -- which is what makes
+    the two directories obviously one run. But they are two identities with two
+    reasons to move: an op version bump moves one and not the other. Passing an
+    op run where a variant is wanted is a latent wrong answer waiting for that
+    bump, and it resolves silently to a directory that does not exist.
+
+    Args:
+        df: A tracks index frame, as ``read_tracks_index`` returns.
+        producer_run_id: The op run to look up. ``""`` matches nothing, because
+            an empty producer cell means *a conversion*, which is every
+            converted row -- not one run to be found.
+
+    Returns:
+        The variant identifier, or ``None`` when no row records this producer.
+        Raises when two variants claim one producer run, on the same reasoning
+        :func:`select_variant_rows` refuses two recipes for one entry: there is
+        no defensible way to pick, and guessing serves a silent wrong answer.
+    """
+    if not producer_run_id or df.empty:
+        return None
+    if "producer_run_id" not in df.columns or "run_id" not in df.columns:
+        return None
+    found = {
+        record["run_id"]
+        for record in index_records(df)
+        if record.get("producer_run_id", "") == producer_run_id
+    }
+    if not found:
+        return None
+    if len(found) > 1:
+        listing = ", ".join(repr(variant) for variant in sorted(found))
+        raise ValueError(
+            f"producer run {producer_run_id!r} is recorded against more than one "
+            f"tracks variant ({listing}); the index cannot say which one a "
+            f"reader wants"
+        )
+    return found.pop()
 
 
 def _ambiguous_variant_message(entry: tuple[str, str], variants: list[str]) -> str:

@@ -34,7 +34,7 @@ from mosaic.core.pipeline.index import (
 )
 from mosaic.core.pipeline.run import cached_entry_disposition, run_feature
 from mosaic.core.helpers import text_cell
-from mosaic.core.pipeline.provenance import index_records
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_compositions
 from mosaic.core.pipeline.types import Feature

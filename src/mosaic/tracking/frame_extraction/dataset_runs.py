@@ -896,7 +896,7 @@ def _frame_run_records(
         FrameRunRef,
         classify,
     )
-    from mosaic.core.pipeline.provenance import index_records
+    from mosaic.core.pipeline.index_csv import index_records
 
     records: list[ArtifactRecord[CameraEntry]] = []
     for method in root_subdirectories(ds, "frames"):

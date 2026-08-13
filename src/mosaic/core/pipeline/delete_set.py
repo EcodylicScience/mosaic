@@ -44,7 +44,8 @@ import pandas as pd
 from .fit_scope import read_fit_scope
 from .index import feature_index, feature_index_path
 from .index import feature_run_root
-from .provenance import index_records, reached_by
+from .index_csv import index_records
+from .provenance import reached_by
 from .tracks_index import tracks_index, tracks_index_path
 
 if TYPE_CHECKING:

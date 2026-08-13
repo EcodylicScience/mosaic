@@ -635,7 +635,7 @@ def _trained_model_records(
         TrainedModelRef,
         classify,
     )
-    from mosaic.core.pipeline.provenance import index_records
+    from mosaic.core.pipeline.index_csv import index_records
 
     records: list[ArtifactRecord[str]] = []
     for kind in root_subdirectories(ds, "models"):

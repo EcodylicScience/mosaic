@@ -655,3 +655,23 @@ class IndexCSV(Generic[RowT]):
                 ]
             atomic_write(self.path, lambda p: df.to_csv(p, index=False))
             return matched
+
+
+def index_records(frame: pd.DataFrame) -> list[dict[str, str]]:
+    """A frame's rows as plain string dicts.
+
+    The one place pandas' partially-typed row access is turned into something a
+    caller can read without a cast at every cell.
+
+    It lives here rather than in ``provenance``, where it was written: every
+    index in the toolkit is read this way, and a module named for the
+    blast-radius walk is not where a reader looks for the generic row adapter. Every index walked
+    here is written through :class:`IndexCSV`, whose dtype map pins each schema
+    ``str`` column, so the cells are already strings and this states that rather
+    than converting them.
+    """
+    columns = [str(name) for name in frame.columns]
+    return [
+        {column: str(value) for column, value in zip(columns, row, strict=True)}
+        for row in frame.itertuples(index=False, name=None)
+    ]

@@ -174,7 +174,7 @@ def _tracker_run_records(
     """
     from mosaic.core.pipeline.inventory.model import ArtifactRecord, Coverage
     from mosaic.core.pipeline.inventory.model import TrackerRunRef, classify
-    from mosaic.core.pipeline.provenance import index_records
+    from mosaic.core.pipeline.index_csv import index_records
 
     records: list[ArtifactRecord[Entry]] = []
     for kind in sorted(_ROW_CLASSES):
