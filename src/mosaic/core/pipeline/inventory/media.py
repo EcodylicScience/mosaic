@@ -45,6 +45,19 @@ if TYPE_CHECKING:
 __all__ = ["media_derivative_record"]
 
 
+def _nothing_to_cover(target: Target) -> ArtifactRecord[str]:
+    """The record for a dataset holding no media at all: nothing is missing."""
+    coverage = Coverage[str](target=frozenset(), present=frozenset())
+    return ArtifactRecord[str](
+        ref=MediaDerivativeRef(target=target),
+        name=f"transcode:{target}",
+        run_id="",
+        coverage=coverage,
+        status="absent",
+        extra={"needs_transcode": frozenset(), "needs_probe": frozenset()},
+    )
+
+
 def media_derivative_record(
     ds: Dataset, target: Target, scope: InventoryScope, reader: IndexReader
 ) -> ArtifactRecord[str]:
@@ -61,10 +74,20 @@ def media_derivative_record(
     no reconstructable measurement wants ``mosaic reprobe-media``. Collapsing
     them would tell a user their corpus is short without saying what to do.
     """
+    # ``resolve_media_root`` falls back to ``"media"`` when ``media_raw`` is
+    # unset, and returns that name whether or not ``media`` is set either -- so a
+    # tracks-only dataset, which declares both roots and fills neither, names a
+    # root ``get_root`` then refuses. There is no media to be short of in that
+    # case, and empty coverage is the honest answer rather than an exception out
+    # of a read.
     root_key = ds.resolve_media_root()
+    if not ds.has_root(root_key):
+        return _nothing_to_cover(target)
     index_path = ds.get_root(root_key) / "index.csv"
     reader.note(index_path)
-    media_root = ds.get_root("media") if ds.has_root("media") else index_path.parent
+    # Derivatives are anchored under the ``media`` root. Without one, nothing can
+    # be registered, so a row needing a transcode reads as needing it still.
+    media_root = ds.get_root("media") if ds.has_root("media") else None
 
     covered: set[str] = set()
     target_keys: set[str] = set()
@@ -85,7 +108,11 @@ def media_derivative_record(
         target_keys.add(key)
 
         if transcode_required(row, target):
-            linked = derivative_path_for_target(row, target, media_root)
+            linked = (
+                derivative_path_for_target(row, target, media_root)
+                if media_root is not None
+                else None
+            )
             # Both halves, matching the reuse gate the transcode op itself
             # applies: the link records the registration and the file is the
             # output. Registration writes the back-link row first and the

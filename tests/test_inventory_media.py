@@ -164,3 +164,29 @@ def _blank_facts(index_path: Path) -> None:
     frame = pd.read_csv(index_path, keep_default_na=False, dtype=str)
     frame["media_facts"] = ""
     frame.to_csv(index_path, index=False)
+
+
+def test_a_dataset_with_no_media_root_reads_empty_rather_than_raising(
+    tmp_path: Path,
+) -> None:
+    """Found on a real tracks-only dataset.
+
+    ``resolve_media_root`` falls back to ``"media"`` when ``media_raw`` is unset
+    and returns that name whether or not ``media`` is set either. A dataset that
+    declares both roots and fills neither -- which every tracks-only dataset
+    does -- therefore names a root ``get_root`` refuses, and the whole inventory
+    died on a KeyError rather than reporting the rest of the dataset.
+    """
+    from mosaic.core.dataset import new_dataset_manifest
+
+    manifest = new_dataset_manifest(name="tracks-only", base_dir=tmp_path / "ds")
+    ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    ds.roots["media_raw"] = ""
+    ds.roots["media"] = ""
+
+    record = _record(ds)
+
+    assert record is not None
+    assert record.status == "absent"
+    assert record.coverage.target == frozenset()
+    assert record.extra["needs_transcode"] == frozenset()
