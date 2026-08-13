@@ -68,6 +68,7 @@ nav:
           - Helpers: api/core/helpers.md
       - Pipeline:
           - Overview: api/pipeline/index.md
+          - Inventory: api/pipeline/inventory.md
       - Behavior:
           - Feature Library: api/behavior/feature-library.md
           - Label Library: api/behavior/label-library.md

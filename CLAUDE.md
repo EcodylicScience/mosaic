@@ -359,6 +359,38 @@ computation only.** The public typed surface lives in `pipeline/types/`:
 `Params`, `Inputs`, `Result`, `ArtifactSpec`, `InputStream`,
 `DependencyLookup`, `FeatureLabelsSource`, `GroundTruthLabelsSource`.
 
+### The inventory: what a dataset holds
+
+[`core/pipeline/inventory/`](src/mosaic/core/pipeline/inventory/) answers "what
+has been computed here, with what params, over which entries" -- the question
+`mosaic sequences` (a tracks listing), `mosaic runs`/`status` (job-log surfaces
+reporting *attempts*) and `mosaic features list` (the registry) each do not.
+`inventory(ds)` in the library, `mosaic inventory --json` at the CLI.
+
+- **Coverage is which keys exist, never a flag**, and the key type differs by
+  kind: `(group, sequence)` for a feature run or tracks variant,
+  `(group, sequence, camera)` for a frame run (the cameras of one recording
+  share an entry), the run id for a trained model, and a media row's
+  `video_uuid` for a transcode. **Transcode has no run-addressed directory at
+  all**, so a single `coverage(storage, run_id)` signature makes an
+  already-clean corpus read as permanently incomplete forever.
+- **Status is derived, never stored**: `absent` / `partial` / `complete` /
+  `complete-but-drifted` / `inconsistent`, decided in one function. Files ahead
+  of index rows is damage only on a *finished* run -- outputs are written before
+  their rows.
+- **Truth is on disk.** Every view is a cache, thrown away rather than
+  reconciled; there is deliberately no `.mosaic/inventory.json` and no
+  filesystem watcher. Stale is safe, so `InventoryCache.revalidate()` stats the
+  index files rather than subscribing to anything.
+- **`core` does not import `tracking`**, so tracker runs, frame runs and trained
+  models arrive through `register_inventory_contributor`, the same import-side-
+  effect seam `register_reconcilable_index` uses. A kind nobody registered is
+  reported in `unavailable_kinds`, never as zero artifacts.
+- **`read_run_params` is the only reader of a feature run's `params.json`**, and
+  distinguishes *absent* from *unreadable* -- the sidecar write is best-effort,
+  so a run root with none is a real state. It is tolerant by design: a block it
+  cannot read is dropped and the rest is returned.
+
 ### `run_id` reproducibility
 
 Each feature run is tagged with `run_id = "<version>-<hash>"`, where `<hash>`
@@ -384,7 +416,8 @@ src/mosaic/
 │   │   ├── run.py              # run_feature() orchestration
 │   │   ├── manifest.py         # unified manifest + per-sequence iterator
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
-│   │   ├── index_csv.py        # generic typed IndexCSV
+│   │   ├── index_csv.py        # generic typed IndexCSV + index_records
+│   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── writers.py          # parquet output writing, overlap trimming
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
 │   ├── media/                  # foundational media I/O (read/decode/encode frames)
@@ -477,6 +510,9 @@ run_feature(...)             → features/<name>/<run_id>/*.parquet
 ```
 
 Models follow the same shape: `models/<name>/<run_id>/`.
+
+`inventory(ds)` reads across all of the above and reports what is there; it
+writes nothing. `mosaic inventory --json` is the same answer at the CLI.
 
 Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
 sidecar, created on the first locked write and **never removed**. It is not
@@ -801,7 +837,15 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   are siblings. Do not reintroduce a second rule.
 - **`consumed_tracks_composition` is compared, not just recorded.** It is what
   notices a re-conversion from changed sources; the tracks variant identity is
-  params-only and does not move.
+  params-only and does not move. `consumed_media_composition` on
+  `TrackerRunRowBase` is the same rule one level up: a tracker's identity is its
+  settings with no term for the media it read, so without it a re-transcode
+  leaves every tracker run reading as current over different pixels.
+- **An index lock that cannot be taken is not the same as one that is held.**
+  `index_lock` classifies the errno: a filesystem that refuses locking raises
+  `IndexLockUnsupported` immediately rather than spinning the full timeout and
+  then blaming a writer that does not exist. It never degrades to an unlocked
+  write, and an unfamiliar errno keeps polling rather than guessing.
 
 ## Common Pitfalls
 
