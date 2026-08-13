@@ -22,11 +22,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeGuard
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
-from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope, atomic_write
 from mosaic.core.pipeline.dataset_indexes import feature_storages
+from mosaic.core.pipeline.inventory.params import (
+    RunParams,
+    RunParamsRead,
+    read_run_params,
+)
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     read_identity_scheme,
@@ -121,67 +125,7 @@ def _is_result(value: object) -> TypeGuard["Result[str]"]:
     return isinstance(value, Result)
 
 
-class _ResolvedRef(BaseModel):
-    """One ``_resolved`` entry from ``params.json`` -- provenance, read here."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    where: str = ""
-    feature: str = ""
-    run_id: str | None = None
-
-
-class _ScopeBlock(BaseModel):
-    """The ``_scope`` block: the invocation's resolved scope and compositions."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    scope_dependent: bool = False
-    consumed_roots: list[str] = Field(default_factory=list)
-    entries: list[list[str]] = Field(default_factory=list)
-    compositions: dict[str, dict[str, str]] = Field(default_factory=dict)
-
-
-class _ParamsFile(BaseModel):
-    """The recorded ``params.json``, typed.
-
-    Reading it through a model rather than raw ``json.loads`` navigation keeps this
-    module free of the ``Any``/``Unknown`` that untyped JSON access spreads, and
-    turns a malformed or partial file into a ``ValidationError`` the caller catches
-    -- an unresolvable run, not a crash. ``extra="ignore"`` so a file written by a
-    later scheme with new keys still reads.
-    """
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    params: dict[str, object] = Field(default_factory=dict, alias="_params")
-    inputs: list[object] = Field(default_factory=list, alias="_inputs")
-    frame_range: list[int | None] = Field(default_factory=list, alias="_frame_range")
-    overlap_frames: int = Field(0, alias="_overlap_frames")
-    scope: _ScopeBlock = Field(default_factory=_ScopeBlock, alias="_scope")
-    resolved: list[_ResolvedRef] = Field(default_factory=list, alias="_resolved")
-    execution_id: str = Field("", alias="_execution_id")
-    mosaic_version: str = Field("", alias="_mosaic_version")
-
-    @property
-    def records_resolutions(self) -> bool:
-        """Whether the file carried a ``_resolved`` block at all.
-
-        ``run_feature`` writes the key unconditionally, empty list included, so an
-        absent one dates the file to before the block existed rather than saying
-        the run resolved nothing. The distinction is load-bearing and the default
-        erases it: both spellings arrive here as ``[]``.
-        """
-        return "resolved" in self.model_fields_set
-
-
-def _frame_range(params: _ParamsFile | None) -> tuple[int | None, int | None]:
-    if params is None or len(params.frame_range) != 2:
-        return None, None
-    return params.frame_range[0], params.frame_range[1]
-
-
-def _overlap_frames(params: _ParamsFile | None) -> int:
+def _overlap_frames(params: RunParams | None) -> int:
     """The overlap a run recorded, defaulting to none.
 
     A file written before the key existed reads as 0, which is the right answer:
@@ -191,52 +135,6 @@ def _overlap_frames(params: _ParamsFile | None) -> int:
     miss migration this repository has taken before.
     """
     return 0 if params is None else int(params.overlap_frames)
-
-
-def _entries(params: _ParamsFile | None) -> set[tuple[str, str]]:
-    if params is None:
-        return set()
-    return {(pair[0], pair[1]) for pair in params.scope.entries if len(pair) == 2}
-
-
-def _compositions(
-    params: _ParamsFile | None, entries: set[tuple[str, str]]
-) -> dict[tuple[str, str], dict[str, str]]:
-    """Rebuild ``Scope.compositions`` from ``_scope.compositions``.
-
-    The block is keyed by ``make_entry_key(group, sequence)``; the entries set
-    gives the inverse map back to the ``(group, sequence)`` tuple ``Scope`` wants,
-    so no key parsing is needed.
-    """
-    if params is None:
-        return {}
-    by_key = {make_entry_key(group, seq): (group, seq) for (group, seq) in entries}
-    out: dict[tuple[str, str], dict[str, str]] = {}
-    for entry_key, per_root in params.scope.compositions.items():
-        entry = by_key.get(entry_key)
-        if entry is not None:
-            out[entry] = dict(per_root)
-    return out
-
-
-def _resolved_variants(
-    params: _ParamsFile | None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The recorded tracks and labels variant ids, from ``_resolved``.
-
-    ``compute_run_id`` reads these off ``Scope``; ``params.json`` records them as
-    synthetic ``inputs[tracks]`` / ``inputs[labels]`` entries in ``_resolved``
-    (they are Scope terms, not ``_inputs`` fields).
-    """
-    if params is None:
-        return (), ()
-    tracks = [
-        r.run_id for r in params.resolved if r.where == "inputs[tracks]" and r.run_id
-    ]
-    labels = [
-        r.run_id for r in params.resolved if r.where == "inputs[labels]" and r.run_id
-    ]
-    return tuple(tracks), tuple(labels)
 
 
 @dataclass
@@ -300,14 +198,15 @@ class FeatureReconciler:
         slug = _slug_of(storage_name)
         scheme = read_identity_scheme(run_root)
 
-        params = self._load_params(run_root)
-        frame_start, frame_end = _frame_range(params)
+        read = read_run_params(run_root)
+        params = read.params
+        frame_start, frame_end = params.frames() if params else (None, None)
         overlap_frames = _overlap_frames(params)
-        entries = _entries(params)
-        compositions = _compositions(params, entries)
-        tracks_old, labels_old = _resolved_variants(params)
+        entries = params.entry_scope() if params else set()
+        compositions = params.entry_compositions(entries) if params else {}
+        tracks_old, labels_old = params.variant_ids() if params else ((), ())
 
-        feature, build_error, upstream = self._build(slug, params)
+        feature, build_error, upstream = self._build(slug, read)
 
         return _RunRead(
             storage_name=storage_name,
@@ -331,26 +230,23 @@ class FeatureReconciler:
             mosaic_version=params.mosaic_version if params is not None else "",
         )
 
-    def _load_params(self, run_root: Path) -> _ParamsFile | None:
-        path = run_root / "params.json"
-        if not path.exists():
-            return None
-        try:
-            return _ParamsFile.model_validate_json(path.read_text())
-        except (OSError, ValidationError):
-            return None
-
     def _build(
-        self, slug: str, params: _ParamsFile | None
+        self, slug: str, read: RunParamsRead
     ) -> tuple["Feature | None", str, tuple[str, ...]]:
         """Rebuild the ``Feature`` and collect its upstream feature run ids.
 
         Returns ``(feature, error, upstream_run_ids)``. On any failure the feature
         is ``None`` and the error is a one-line reason -- the run is then
         unresolvable, and the sweep continues.
+
+        The reason distinguishes a missing sidecar from an unreadable one, which
+        the single ``params.json missing or unreadable`` message could not: the
+        first is a run predating provenance and cannot be recovered, the second
+        is a file to go and look at.
         """
+        params = read.params
         if params is None:
-            return None, "params.json missing or unreadable", ()
+            return None, read.finding, ()
         cls = _feature_class(slug)
         if cls is None:
             return None, f"feature {slug!r} is not in the registry", ()

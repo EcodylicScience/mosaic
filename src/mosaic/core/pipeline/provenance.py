@@ -36,14 +36,14 @@ recorded value still matches; whether that justifies deleting anything is item
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
 from .dataset_indexes import feature_storages, label_kinds
 from .index import feature_index, feature_index_path, feature_run_root
+from .inventory.params import read_run_params
 from .labels_index import read_labels_index
 from .sequence_index import decode_consumed_roots, encode_entry_composition
 from .tracks_index import consumed_composition_for, read_tracks_index
@@ -273,36 +273,16 @@ def _consumed_variants(
     than a second source of truth. A run whose file is missing or unreadable
     contributes nothing, which leaves it out of the blast radius rather than
     guessing it in.
+
+    ``consumed_variants`` drops a falsy ``run_id`` where ``track_universe``'s
+    ``consumed_run_ids`` keeps one. That divergence is deliberate and is stated
+    on both methods: this walk answers a blast-radius question, and an unnamed
+    variant is not a member of one.
     """
-    path = feature_run_root(ds, storage, run_id) / "params.json"
-    parsed: object
-    try:
-        parsed = json.loads(path.read_text())
-    except (OSError, ValueError):
+    read = read_run_params(feature_run_root(ds, storage, run_id))
+    if read.params is None:
         return set()
-    if not isinstance(parsed, dict):
-        return set()
-    # Narrowed, then widened to a fully-known mapping, the way ``fit_scope``
-    # reads its own record: ``json.loads`` is untyped, so every read off the
-    # narrowed dict would otherwise be an unknown the strict checker cannot see
-    # through. A record on disk is untrusted input -- hand-edited, truncated, or
-    # written by a future version -- so every read narrows before it converts.
-    payload: Mapping[object, object] = parsed
-    entries = payload.get("_resolved")
-    if not isinstance(entries, list):
-        return set()
-    listed: list[object] = entries
-    variants: set[str] = set()
-    for item in listed:
-        if not isinstance(item, dict):
-            continue
-        reference: Mapping[object, object] = item
-        if reference.get("where") != where:
-            continue
-        variant = reference.get("run_id")
-        if isinstance(variant, str) and variant:
-            variants.add(variant)
-    return variants
+    return set(read.params.consumed_variants(where))
 
 
 def _transitive_rows(

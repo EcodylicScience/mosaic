@@ -31,8 +31,6 @@ saw first. Neither is a change from how ``build_manifest`` has always decided.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -45,6 +43,7 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.dataset_indexes import feature_storages
+from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import COLUMNS
 
@@ -138,29 +137,10 @@ def _consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[st
     which is what distinguishes "consumed the unlabelled variant" from "recorded
     no upstream at all".
     """
-    path = feature_run_root(ds, storage, run_id) / "params.json"
-    try:
-        parsed: object = json.loads(path.read_text())
-    except (OSError, ValueError):
+    read = read_run_params(feature_run_root(ds, storage, run_id))
+    if read.params is None:
         return frozenset()
-    if not isinstance(parsed, dict):
-        return frozenset()
-    payload: Mapping[object, object] = parsed
-    entries = payload.get("_resolved")
-    if not isinstance(entries, list):
-        return frozenset()
-    listed: list[object] = entries
-    consumed: set[str] = set()
-    for item in listed:
-        if not isinstance(item, dict):
-            continue
-        reference: Mapping[object, object] = item
-        upstream = reference.get("run_id")
-        if not isinstance(upstream, str):
-            continue
-        if upstream or reference.get("where") == "inputs[tracks]":
-            consumed.add(upstream)
-    return frozenset(consumed)
+    return read.params.consumed_run_ids()
 
 
 def track_universe(ds: Dataset) -> list[TrackSource]:
