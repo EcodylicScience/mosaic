@@ -17,6 +17,25 @@ implementation.
 
 from __future__ import annotations
 
+from .model import (
+    ArtifactKind,
+    ArtifactRecord,
+    ArtifactRef,
+    ArtifactStatus,
+    CameraEntry,
+    Coverage,
+    DatasetInventory,
+    Entry,
+    FeatureRunRef,
+    FrameRunRef,
+    InventoryScope,
+    LabelsVariantRef,
+    MediaDerivativeRef,
+    TrackerRunRef,
+    TracksVariantRef,
+    TrainedModelRef,
+    classify,
+)
 from .params import (
     LABELS_EDGE,
     TRACKS_EDGE,
@@ -29,12 +48,29 @@ from .params import (
 )
 
 __all__ = [
+    "ArtifactKind",
+    "ArtifactRecord",
+    "ArtifactRef",
+    "ArtifactStatus",
+    "CameraEntry",
+    "Coverage",
+    "DatasetInventory",
+    "Entry",
+    "FeatureRunRef",
+    "FrameRunRef",
+    "InventoryScope",
     "LABELS_EDGE",
+    "LabelsVariantRef",
+    "MediaDerivativeRef",
     "ParamsState",
     "ResolvedRef",
     "RunParams",
     "RunParamsRead",
     "ScopeBlock",
     "TRACKS_EDGE",
+    "TrackerRunRef",
+    "TracksVariantRef",
+    "TrainedModelRef",
+    "classify",
     "read_run_params",
 ]
