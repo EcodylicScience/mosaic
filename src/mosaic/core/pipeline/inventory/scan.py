@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "GLOBAL_ENTRY",
     "GLOBAL_MARKER",
     "CORE_KINDS",
     "entry_universe",
@@ -76,6 +77,14 @@ __all__ = [
 
 GLOBAL_MARKER = "__global__"
 """The stem a global fit writes instead of one output per entry."""
+
+GLOBAL_ENTRY: Entry = ("", GLOBAL_MARKER)
+"""The index row a global fit records beside that file, written by ``run_feature``.
+
+It is not a real entry, and treating it as one made every global fit -- t-SNE,
+k-means, Ward, keypoint-MoSeq -- report as damaged: the row named an entry the
+per-entry file set could never contain, which reads as a row with no output.
+"""
 
 CORE_KINDS: frozenset[ArtifactKind] = frozenset(
     {"feature", "tracks-variant", "labels-variant", "media-derivative"}
@@ -149,6 +158,32 @@ def narrow_target(
     )
 
 
+def _entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:
+    """Which of *candidates* the output stems account for.
+
+    An entry's output is usually one file named exactly ``make_entry_key(...)``,
+    but not always: a feature that splits an entry by individual writes
+    ``<entry key>__id0``, ``__id1`` and so on, which is how ``kpms-apply`` and
+    its kin store their results. Matching the key exactly reads those runs as
+    holding nothing at all, and their index rows then look like rows with no
+    output -- damage, where the outputs are in fact right there under a
+    convention the exact match did not know about.
+
+    Longest key first, so an entry whose key is a prefix of another's cannot
+    claim the other's files.
+    """
+    by_key = {
+        make_entry_key(group, sequence): (group, sequence)
+        for group, sequence in candidates
+    }
+    held: set[Entry] = set()
+    for key in sorted(by_key, key=len, reverse=True):
+        prefix = f"{key}__"
+        if any(stem == key or stem.startswith(prefix) for stem in stems):
+            held.add(by_key[key])
+    return held
+
+
 def run_covers(
     run_root: Path,
     target: frozenset[Entry],
@@ -181,13 +216,17 @@ def run_covers(
     stems = {
         path.stem for path in run_root.glob("*.parquet") if parquet_is_readable(path)
     }
+    held = _entries_held(stems, target | known)
     if GLOBAL_MARKER in stems:
-        return Coverage(target=target, present=target, covers_all=True)
-    by_key = {
-        make_entry_key(group, sequence): (group, sequence)
-        for group, sequence in target | known
-    }
-    held = {by_key[stem] for stem in stems if stem in by_key}
+        # The per-entry mapping still applies. A global fit may write per-entry
+        # outputs *beside* its marker -- an apply step does exactly that -- so
+        # short-circuiting here would leave those files unrecognised and their
+        # index rows reading as rows with no output.
+        return Coverage(
+            target=target,
+            present=target | frozenset(held) | {GLOBAL_ENTRY},
+            covers_all=True,
+        )
     return Coverage(target=target, present=frozenset(held))
 
 
@@ -226,11 +265,21 @@ def _status_for(
     the index proves the producer got far enough to record the entry, the file
     proves the output survived. Either alone reads complete over a run the other
     knows is not.
+
+    **Damage needs contradictory evidence, not missing evidence.** A run whose
+    outputs this could attribute to no entry at all says nothing about whether
+    its rows are honoured -- a feature storing its results as ``.npz`` beside a
+    ``seq=<name>`` filename is doing so legitimately, and calling that a row with
+    no output would report damage on a perfectly good run. So a row counts as
+    orphaned only when *some* file was attributed and the index names more: the
+    two then genuinely disagree. Attributing nothing reports the coverage
+    shortfall and stops there.
     """
+    attributed_something = bool(files) or coverage.covers_all
     return classify(
         satisfied=coverage.is_satisfied,
         any_covered=bool(coverage.covered) or coverage.covers_all,
-        orphan_rows=bool(rows - files),
+        orphan_rows=attributed_something and bool(rows - files),
         orphan_files=bool(files - rows),
         drifted=bool(drift),
         finished=finished,

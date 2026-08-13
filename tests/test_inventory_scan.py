@@ -247,3 +247,76 @@ def test_a_run_is_recognised_when_the_tracks_it_came_from_are_gone(
         "its upstream tracks moved"
     )
     assert record.orphan_rows == frozenset()
+
+
+def test_a_global_fit_is_not_reported_as_damaged(scenario_dataset: Dataset) -> None:
+    """Found on real datasets: every t-SNE, k-means, Ward and keypoint-MoSeq run
+    read as damaged.
+
+    A global fit writes one ``__global__.parquet`` and records a matching
+    ``('', '__global__')`` index row. Treating that row as a real entry made it
+    a row the per-entry file set could never contain, which reads as a row with
+    no output -- the two in fact agree exactly.
+    """
+    import pandas as pd
+
+    from mosaic.core.pipeline.inventory.scan import GLOBAL_ENTRY
+
+    run_root = scenario_dataset.get_root("features") / "fit" / "0.1-aaaaaaaaaa"
+    run_root.mkdir(parents=True)
+    pd.DataFrame({"a": [1]}).to_parquet(run_root / "__global__.parquet", index=False)
+
+    coverage = run_covers(run_root, frozenset(), known=frozenset({GLOBAL_ENTRY}))
+
+    assert coverage.covers_all
+    assert GLOBAL_ENTRY in coverage.present
+
+
+def test_per_individual_outputs_count_for_their_entry(
+    scenario_dataset: Dataset,
+) -> None:
+    """Found on a real keypoint-MoSeq apply run.
+
+    A feature that splits an entry by individual writes ``<entry key>__id0``,
+    ``__id1`` and so on. Matching the entry key exactly read those runs as
+    holding nothing, and their index rows then looked like rows with no output.
+    """
+    import pandas as pd
+
+    run_root = scenario_dataset.get_root("features") / "split" / "0.1-bbbbbbbbbb"
+    run_root.mkdir(parents=True)
+    for individual in range(3):
+        pd.DataFrame({"a": [1]}).to_parquet(
+            run_root / f"seq_a__id{individual}.parquet", index=False
+        )
+
+    coverage = run_covers(run_root, frozenset({("", "seq_a")}))
+
+    assert coverage.covered == frozenset({("", "seq_a")})
+
+
+def test_a_run_whose_outputs_are_not_parquet_is_not_called_damaged(
+    scenario_dataset: Dataset,
+) -> None:
+    """Found on a real global t-SNE run, which stores ``.npz`` and ``.joblib``.
+
+    Nothing here can attribute those to an entry, and that is missing evidence
+    rather than contradictory evidence. Reporting a row with no output would
+    claim damage on a run that is perfectly good.
+    """
+    import numpy as np
+
+    run_id = _run(scenario_dataset)
+    run_root = feature_run_root(scenario_dataset, STORAGE, run_id)
+    for parquet in run_root.glob("*.parquet"):
+        parquet.unlink()
+    np.savez(run_root / "global_coords_seq=seq_a.npz", a=np.zeros(3))
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status != "inconsistent", (
+        "attributing no files is missing evidence, not evidence of damage"
+    )
