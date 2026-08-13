@@ -148,7 +148,11 @@ def narrow_target(
     )
 
 
-def run_covers(run_root: Path, target: frozenset[Entry]) -> Coverage[Entry]:
+def run_covers(
+    run_root: Path,
+    target: frozenset[Entry],
+    known: frozenset[Entry] = frozenset(),
+) -> Coverage[Entry]:
     """Which of *target* this run root holds, as evidence rather than a verdict.
 
     Files rather than the index's ``finished_at`` flag, deliberately: that flag
@@ -160,18 +164,29 @@ def run_covers(run_root: Path, target: frozenset[Entry]) -> Coverage[Entry]:
     A ``__global__`` output sets ``covers_all``: a global fit writes one artifact
     rather than one per entry, so counting entries against it would report zero
     of ninety for a run that is complete.
+
+    *known* names entries to recognise **beyond** the target, and it is what
+    makes the empty-target rule work. An output file is a ``<group>__<sequence>``
+    stem, and that encoding does not invert -- a stem cannot be parsed back into
+    an entry unambiguously -- so an entry is only recognisable if something named
+    it first. When the target is empty, as it is on a dataset whose tracks index
+    points at files that are gone, nothing would name it and every run would read
+    as holding nothing at all. Passing the run's own index rows means the
+    question stays "which entries are on disk" rather than becoming "which
+    entries are on disk *and* still resolvable from tracks".
     """
     if not run_root.exists():
         return Coverage(target=target, present=frozenset())
-    present = {
+    stems = {
         path.stem for path in run_root.glob("*.parquet") if parquet_is_readable(path)
     }
-    if GLOBAL_MARKER in present:
+    if GLOBAL_MARKER in stems:
         return Coverage(target=target, present=target, covers_all=True)
     by_key = {
-        make_entry_key(group, sequence): (group, sequence) for group, sequence in target
+        make_entry_key(group, sequence): (group, sequence)
+        for group, sequence in target | known
     }
-    held = {by_key[stem] for stem in present if stem in by_key}
+    held = {by_key[stem] for stem in stems if stem in by_key}
     return Coverage(target=target, present=frozenset(held))
 
 
@@ -235,8 +250,10 @@ def _feature_records(
             continue
         for run_id in _run_ids(frame):
             run_root = feature_run_root(ds, name, run_id)
-            coverage = run_covers(run_root, target)
             rows = _rows_of(frame, run_id)
+            # The run's own index rows are what make its outputs recognisable
+            # when the target cannot name them -- see ``run_covers``.
+            coverage = run_covers(run_root, target, known=rows)
             files = coverage.present
             started, finished_at, finished = _finish_state(frame, run_id)
             read = read_run_params(run_root)

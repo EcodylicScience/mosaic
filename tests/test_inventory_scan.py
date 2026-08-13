@@ -217,3 +217,33 @@ def test_an_empty_dataset_reports_nothing_rather_than_raising(
     assert all(record.status == "absent" for record in found.records)
     assert all(record.coverage.target == frozenset() for record in found.records)
     assert {record.ref.kind for record in found.records} <= {"media-derivative"}
+
+
+def test_a_run_is_recognised_when_the_tracks_it_came_from_are_gone(
+    scenario_dataset: Dataset,
+) -> None:
+    """Found on a real dataset whose tracks index named files on another volume.
+
+    An output file is a ``<group>__<sequence>`` stem and that encoding does not
+    invert, so an entry is only recognisable if something named it first. When
+    the tracks are unresolvable the entry universe is empty, and measuring a run
+    against that alone made every finished run read as holding nothing -- and
+    then as ``inconsistent``, because its index rows named entries the files
+    "did not" have. The run's own rows are what keep it recognisable.
+    """
+    run_id = _run(scenario_dataset)
+    for table in (scenario_dataset.get_root("tracks")).glob("*.parquet"):
+        table.unlink()
+
+    assert entry_universe(scenario_dataset) == frozenset()
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "complete", (
+        "a run whose outputs are all present should not read as damaged because "
+        "its upstream tracks moved"
+    )
+    assert record.orphan_rows == frozenset()
