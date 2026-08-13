@@ -22,13 +22,16 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Final, TypeVar
 
 import pandas as pd
 
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, project_to_schema
+from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
+from mosaic.core.pipeline.inventory.model import ArtifactRecord, Entry, InventoryScope
 
 if TYPE_CHECKING:
+    from mosaic.core.pipeline.inventory._read import IndexReader
     from mosaic.core.dataset import Dataset
 
 __all__ = [
@@ -128,3 +131,105 @@ def list_tracker_runs(ds: Dataset, kind: str, row_cls: type[RowT]) -> pd.DataFra
     if not path.exists():
         return pd.DataFrame(columns=columns)
     return _adopt_for(row_cls)(pd.read_csv(path))
+
+
+# --- The inventory contributor for every tracker root ------------------------
+
+_ROW_CLASSES: Final[dict[str, type[TrackerRunRowBase]]] = {}
+
+
+def register_tracker_row_class(kind: str, row_cls: type[TrackerRunRowBase]) -> None:
+    """Declare which row class *kind*'s index holds.
+
+    ``list_tracker_runs`` has always taken the row class from its caller, so
+    every consumer had to name a specific tracker and no caller could ask about
+    them generically -- which is what an inventory over "every tracker run in
+    this dataset" needs. Registration rather than a table here, for the reason
+    the rest of this package registers: ``common`` is imported *by* each tracker,
+    so a table naming them would be a cycle.
+    """
+    _ROW_CLASSES[kind] = row_cls
+
+
+def tracker_row_class(kind: str) -> type[TrackerRunRowBase] | None:
+    """The registered row class for *kind*, or ``None`` if nothing registered one."""
+    return _ROW_CLASSES.get(kind)
+
+
+def registered_tracker_kinds() -> frozenset[str]:
+    """Every tracker kind some imported module can describe."""
+    return frozenset(_ROW_CLASSES)
+
+
+def _tracker_run_records(
+    ds: Dataset, scope: InventoryScope, reader: IndexReader
+) -> list[ArtifactRecord[Entry]]:
+    """Every recorded tracker and inference run, as inventory records.
+
+    A run covers the entries its own rows name -- not the dataset's universe --
+    because a tracker is legitimately pointed at a subset, and measuring one
+    against everything would report a finished run as short. What makes an entry
+    *covered* is that its recorded working directory is still there: the sweeper
+    reclaims those, so a swept run is honestly no longer holding its outputs.
+    """
+    from mosaic.core.pipeline.inventory.model import ArtifactRecord, Coverage
+    from mosaic.core.pipeline.inventory.model import TrackerRunRef, classify
+    from mosaic.core.pipeline.provenance import index_records
+
+    records: list[ArtifactRecord[Entry]] = []
+    for kind in sorted(_ROW_CLASSES):
+        row_cls = _ROW_CLASSES[kind]
+        if not ds.has_root(kind):
+            continue
+        index_path = tracker_index_path(ds, kind)
+        reader.note(index_path)
+        frame = reader.frame(
+            index_path, lambda k=kind, r=row_cls: list_tracker_runs(ds, k, r)
+        )
+        if frame.empty or "run_id" not in frame.columns:
+            continue
+        rows_by_run: dict[str, set[Entry]] = {}
+        present_by_run: dict[str, set[Entry]] = {}
+        finished_by_run: dict[str, str] = {}
+        started_by_run: dict[str, str] = {}
+        for record in index_records(frame):
+            run_id = record.get("run_id", "")
+            entry = (record.get("group", ""), record.get("sequence", ""))
+            rows_by_run.setdefault(run_id, set()).add(entry)
+            started_by_run.setdefault(run_id, record.get("started_at", ""))
+            if record.get("finished_at", ""):
+                finished_by_run.setdefault(run_id, record.get("finished_at", ""))
+            stored = record.get("abs_path", "")
+            if stored and ds.resolve_path(stored).exists():
+                present_by_run.setdefault(run_id, set()).add(entry)
+        for run_id in sorted(rows_by_run):
+            rows = frozenset(rows_by_run[run_id])
+            target = frozenset(rows if scope.entries is None else rows & scope.entries)
+            present = frozenset(present_by_run.get(run_id, set()))
+            coverage = Coverage(target=target, present=present)
+            finished = finished_by_run.get(run_id, "")
+            records.append(
+                ArtifactRecord[Entry](
+                    ref=TrackerRunRef(root_key=kind, run_id=run_id),
+                    name=kind,
+                    run_id=run_id,
+                    coverage=coverage,
+                    status=classify(
+                        satisfied=coverage.is_satisfied,
+                        any_covered=bool(coverage.covered),
+                        orphan_rows=bool(rows - present),
+                        orphan_files=False,
+                        drifted=False,
+                        finished=bool(finished),
+                    ),
+                    index_path=index_path,
+                    rows=rows,
+                    orphan_rows=rows - present,
+                    started_at=started_by_run.get(run_id, ""),
+                    finished_at=finished,
+                )
+            )
+    return records
+
+
+register_inventory_contributor("tracker-run", _tracker_run_records)

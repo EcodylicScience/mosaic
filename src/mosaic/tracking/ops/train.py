@@ -23,6 +23,9 @@ from mosaic.core.helpers import text_cell
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.inventory._read import IndexReader
+from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
+from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
@@ -607,3 +610,77 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             params.epochs,
         )
         return run_id
+
+
+def _trained_model_records(
+    ds: Dataset, scope: InventoryScope, reader: IndexReader
+) -> list[ArtifactRecord[str]]:
+    """Every trained model under ``models/<kind>/<run_id>/``.
+
+    A model is one artifact rather than a per-entry set, so its coverage is
+    itself: covered or not. Covered means what :func:`training_is_complete`
+    already means -- an index row that says finished *and* an artifact that
+    resolves -- because Ultralytics writes ``best.pt`` progressively, so the file
+    alone is not evidence the trainer returned, and a row can outlive what it
+    points at.
+
+    ``scope.entries`` does not narrow this: a model is fitted over a scope
+    recorded elsewhere, and filtering it by entry would silently drop every model
+    from a scoped query rather than reporting the ones that exist.
+    """
+    from mosaic.core.pipeline.dataset_indexes import root_subdirectories
+    from mosaic.core.pipeline.inventory.model import (
+        ArtifactRecord,
+        Coverage,
+        TrainedModelRef,
+        classify,
+    )
+    from mosaic.core.pipeline.provenance import index_records
+
+    records: list[ArtifactRecord[str]] = []
+    for kind in root_subdirectories(ds, "models"):
+        index_path = model_index_path(ds, kind)
+        reader.note(index_path)
+        frame = reader.frame(
+            index_path, lambda p=index_path: trained_model_index(p).read()
+        )
+        if frame.empty or "run_id" not in frame.columns:
+            continue
+        seen: dict[str, dict[str, str]] = {}
+        for record in index_records(frame):
+            seen.setdefault(record.get("run_id", ""), record)
+        for run_id in sorted(seen):
+            row = seen[run_id]
+            covered = training_is_complete(ds, kind, run_id)
+            coverage = Coverage(
+                target=frozenset({run_id}),
+                present=frozenset({run_id} if covered else ()),
+            )
+            records.append(
+                ArtifactRecord[str](
+                    ref=TrainedModelRef(op_kind=kind, run_id=run_id),
+                    name=kind,
+                    run_id=run_id,
+                    coverage=coverage,
+                    status=classify(
+                        satisfied=covered,
+                        any_covered=covered,
+                        orphan_rows=not covered and row.get("status", "") == "finished",
+                        orphan_files=False,
+                        drifted=False,
+                        finished=bool(row.get("finished_at", "")),
+                    ),
+                    run_root=model_run_root(ds, kind, run_id),
+                    index_path=index_path,
+                    rows=frozenset({run_id}),
+                    started_at=row.get("started_at", ""),
+                    finished_at=row.get("finished_at", ""),
+                    upstreams=tuple(
+                        value for value in (row.get("base_run_id", ""),) if value
+                    ),
+                )
+            )
+    return records
+
+
+register_inventory_contributor("trained-model", _trained_model_records)

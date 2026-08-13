@@ -63,6 +63,7 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
+    register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
     tracker_index,
@@ -485,3 +486,8 @@ def list_sleap_runs(ds: Dataset) -> pd.DataFrame:
 # Item 6.1: the reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(SLEAP_KIND, sleap_index)
+
+# The row class this root's index holds, so an inventory can ask about every
+# tracker generically. Registered rather than tabled in ``common``, which is
+# imported by this module and cannot import it back.
+register_tracker_row_class(SLEAP_KIND, SleapIndexRow)

@@ -15,6 +15,13 @@ from mosaic_media import MediaFacts
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
+from mosaic.core.pipeline.inventory._read import IndexReader
+from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
+from mosaic.core.pipeline.inventory.model import (
+    ArtifactRecord,
+    CameraEntry,
+    InventoryScope,
+)
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.media_index import media_members_from_rows
 from mosaic.core.pipeline.sequence_index import (
@@ -870,3 +877,80 @@ def get_frame_manifests(
                 data["video_path"] = str(ds.resolve_path(vp))
         manifests.append(data)
     return manifests
+
+
+def _frame_run_records(
+    ds: Dataset, scope: InventoryScope, reader: IndexReader
+) -> list[ArtifactRecord[CameraEntry]]:
+    """Every frame-extraction run, keyed by ``(group, sequence, camera)``.
+
+    The camera is part of the key rather than a detail. The cameras of one
+    recording share a ``(group, sequence)``, which is why this index dedups on
+    the four-part key -- and without the camera here, a run that extracted one
+    camera would read as covering the entry and the other would never be seen as
+    missing.
+    """
+    from mosaic.core.pipeline.inventory.model import (
+        ArtifactRecord,
+        Coverage,
+        FrameRunRef,
+        classify,
+    )
+    from mosaic.core.pipeline.provenance import index_records
+
+    records: list[ArtifactRecord[CameraEntry]] = []
+    for method in root_subdirectories(ds, "frames"):
+        index_path = frames_index_path(ds, method)
+        reader.note(index_path)
+        frame = reader.frame(index_path, lambda m=method: list_frame_runs(ds, m))
+        if frame.empty or "run_id" not in frame.columns:
+            continue
+        rows_by_run: dict[str, set[CameraEntry]] = {}
+        present_by_run: dict[str, set[CameraEntry]] = {}
+        started: dict[str, str] = {}
+        finished: dict[str, str] = {}
+        for record in index_records(frame):
+            run_id = record.get("run_id", "")
+            key: CameraEntry = (
+                record.get("group", ""),
+                record.get("sequence", ""),
+                record.get("camera", ""),
+            )
+            if scope.entries is not None and (key[0], key[1]) not in scope.entries:
+                continue
+            rows_by_run.setdefault(run_id, set()).add(key)
+            started.setdefault(run_id, record.get("started_at", ""))
+            if record.get("finished_at", ""):
+                finished.setdefault(run_id, record.get("finished_at", ""))
+            stored = record.get("abs_path", "")
+            if stored and ds.resolve_path(stored).exists():
+                present_by_run.setdefault(run_id, set()).add(key)
+        for run_id in sorted(rows_by_run):
+            rows = frozenset(rows_by_run[run_id])
+            present = frozenset(present_by_run.get(run_id, set()))
+            coverage = Coverage(target=rows, present=present)
+            records.append(
+                ArtifactRecord[CameraEntry](
+                    ref=FrameRunRef(method=method, run_id=run_id),
+                    name=method,
+                    run_id=run_id,
+                    coverage=coverage,
+                    status=classify(
+                        satisfied=coverage.is_satisfied,
+                        any_covered=bool(coverage.covered),
+                        orphan_rows=bool(rows - present),
+                        orphan_files=False,
+                        drifted=False,
+                        finished=bool(finished.get(run_id, "")),
+                    ),
+                    index_path=index_path,
+                    rows=rows,
+                    orphan_rows=rows - present,
+                    started_at=started.get(run_id, ""),
+                    finished_at=finished.get(run_id, ""),
+                )
+            )
+    return records
+
+
+register_inventory_contributor("frame-run", _frame_run_records)
