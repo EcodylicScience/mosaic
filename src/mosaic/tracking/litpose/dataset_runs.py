@@ -59,6 +59,7 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
+    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -334,6 +335,13 @@ def run_litpose(
             run_id=minted.run_id,
             group=item.group,
             sequence=item.sequence,
+            # What this entry's media was when the run read it. The
+            # tracker identity carries no media term, so without this a
+            # re-transcode leaves the run reading as current over
+            # different pixels.
+            consumed_media_composition=media_composition_cell(
+                job.ds, item.group, item.sequence
+            ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
             # From the marker, so the row names what produced the data rather
             # than what the scope resolves to now. The two can only differ when

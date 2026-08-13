@@ -255,6 +255,7 @@ def test_litpose_leaves_this_shape(
         "video_abs_path",
         "params_hash",
         "n_ids",
+        "consumed_media_composition",
         "model_id",
         "model_type",
         "csv_path",
@@ -389,6 +390,7 @@ def test_sleap_leaves_this_shape(
         "video_abs_path",
         "params_hash",
         "n_ids",
+        "consumed_media_composition",
         "model_id",
         "model_type",
         "slp_path",
@@ -562,6 +564,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
         "video_abs_path",
         "params_hash",
         "n_ids",
+        "consumed_media_composition",
         "pv_path",
         # What the run consumed, which video_abs_path cannot say for a session
         # of several clips -- it holds the first, as every tracker's does.

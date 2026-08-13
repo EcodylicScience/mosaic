@@ -75,6 +75,22 @@ class TrackerRunRowBase(RunIndexRowBase):
     video_abs_path: str
     params_hash: str
     n_ids: int = 0
+    consumed_media_composition: str = ""
+    """What this entry's media was when the run read it. Compared, never hashed.
+
+    A tracker's identity is its settings, with no term for the media it read --
+    which file it opens is decided at run time from the routing verdict on the
+    media index. So re-transcoding an entry and re-linking the derivative leaves
+    every tracker run's identifier exactly where it was, and a reader asking
+    "is this run current" got yes over pixels from a different encode.
+
+    Recorded rather than hashed, the rule ``consumed_tracks_composition``
+    already follows: one tracker identity covers many entries, so folding a
+    per-entry value into the digest would rename a whole directory because one
+    other entry's source moved. Empty means not establishable -- a run written
+    before this column, or a dataset with no ``media_raw`` -- and never "no
+    media", which is how every other composition cell here reads.
+    """
 
 
 def tracker_index_path(ds: Dataset, kind: str) -> Path:
@@ -99,6 +115,19 @@ def _adopt_for(row_cls: type[RowT]) -> Callable[[pd.DataFrame], pd.DataFrame]:
         return project_to_schema(df, columns)
 
     return adopt
+
+
+def media_composition_cell(ds: Dataset, group: str, sequence: str) -> str:
+    """The media composition to record on one entry's run row.
+
+    Per entry rather than per run because a tracker row is per entry and the
+    driver builds them one at a time. It reads the per-sequence projection
+    rather than the media index, so the cost is a small CSV beside work
+    measured in minutes.
+    """
+    from mosaic.core.pipeline.sequence_index import media_compositions_for
+
+    return media_compositions_for(ds, [(group, sequence)]).get((group, sequence), "")
 
 
 def tracker_index(path: Path, row_cls: type[RowT]) -> IndexCSV[RowT]:
@@ -161,6 +190,50 @@ def registered_tracker_kinds() -> frozenset[str]:
     return frozenset(_ROW_CLASSES)
 
 
+def drifted_media_entries(
+    ds: Dataset, kind: str, run_id: str
+) -> tuple[tuple[str, str], ...]:
+    """Entries whose media moved under a recorded tracker run.
+
+    **Compared, not hashed**, which is what makes it useful at all: a tracker's
+    identity is its settings, with no term for the media it read. Re-transcode
+    an entry, re-link the derivative, and the run identifier does not move -- so
+    a reuse gate keyed on identity alone serves the old run over pixels from a
+    different encode, and reports the work done.
+
+    Both sides must be non-empty to count, the honest-empty rule every
+    composition comparison here follows: a blank recorded cell is a run written
+    before the column existed, a blank current one is a projection that is not
+    establishable, and neither is evidence of change.
+    """
+    from mosaic.core.pipeline.index_csv import index_records
+    from mosaic.core.pipeline.sequence_index import media_compositions_for
+
+    row_cls = _ROW_CLASSES.get(kind)
+    if row_cls is None or not ds.has_root(kind):
+        return ()
+    frame = list_tracker_runs(ds, kind, row_cls)
+    if frame.empty or "consumed_media_composition" not in frame.columns:
+        return ()
+    recorded = {
+        (record.get("group", ""), record.get("sequence", "")): record.get(
+            "consumed_media_composition", ""
+        )
+        for record in index_records(frame)
+        if record.get("run_id", "") == run_id
+    }
+    if not recorded:
+        return ()
+    current = media_compositions_for(ds, recorded)
+    return tuple(
+        sorted(
+            entry
+            for entry, was in recorded.items()
+            if was and current.get(entry, "") and was != current[entry]
+        )
+    )
+
+
 def _tracker_run_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[Entry]]:
@@ -208,6 +281,7 @@ def _tracker_run_records(
             present = frozenset(present_by_run.get(run_id, set()))
             coverage = Coverage(target=target, present=present)
             finished = finished_by_run.get(run_id, "")
+            drift = drifted_media_entries(ds, kind, run_id)
             records.append(
                 ArtifactRecord[Entry](
                     ref=TrackerRunRef(root_key=kind, run_id=run_id),
@@ -219,12 +293,13 @@ def _tracker_run_records(
                         any_covered=bool(coverage.covered),
                         orphan_rows=bool(rows - present),
                         orphan_files=False,
-                        drifted=False,
+                        drifted=bool(drift),
                         finished=bool(finished),
                     ),
                     index_path=index_path,
                     rows=rows,
                     orphan_rows=rows - present,
+                    drift=drift,
                     started_at=started_by_run.get(run_id, ""),
                     finished_at=finished,
                 )

@@ -72,6 +72,7 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
+    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -131,7 +132,18 @@ class TRexIndexRow(TrackerRunRowBase):
     ``video_uuids`` is the same arrangement by content identity, comma-joined and
     **never sorted** -- sorting would make two orderings of one session record
     alike. ``media_composition`` is the digest of that arrangement, and is what
-    the reuse gate compared. Both are empty when any clip carries no identity,
+    the reuse gate compared.
+
+    **Not to be confused with ``consumed_media_composition`` on the base row**,
+    which every tracker carries. That one is the per-entry ``media_raw``
+    composition from ``sequences.csv`` -- what the *sources* were -- and answers
+    "did the media move under this run". This one is the digest of the clip
+    arrangement TREx joined, computed from the work item, and only TREx has one
+    because only TREx joins. Two similar names for two facts is the shape of
+    mistake that gets more expensive to correct, so the rename belongs on a
+    branch that can migrate the reuse gate with it.
+
+    Both are empty when any clip carries no identity,
     which is unestablishable rather than "no videos" -- and that is exactly what
     ``n_source_videos`` is for, since it is the only cell that tells the two
     apart.
@@ -657,6 +669,13 @@ def run_trex(
             run_id=minted.run_id,
             group=item.group,
             sequence=item.sequence,
+            # What this entry's media was when the run read it. The
+            # tracker identity carries no media term, so without this a
+            # re-transcode leaves the run reading as current over
+            # different pixels.
+            consumed_media_composition=media_composition_cell(
+                job.ds, item.group, item.sequence
+            ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
             # From the marker, so the row names what produced the data rather
             # than what the scope resolves to now. The two can only differ when

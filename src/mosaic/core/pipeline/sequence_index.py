@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "media_compositions_for",
     "SEQUENCE_INDEX_COLUMNS",
     "SEQUENCE_INDEX_PATH_COLUMNS",
     "SequenceIndexRow",
@@ -455,3 +456,39 @@ def read_entry_compositions(
                 continue
             found.setdefault(key, {})[root] = digest
     return found
+
+
+def media_compositions_for(
+    ds: Dataset, entries: Iterable[tuple[str, str]]
+) -> dict[tuple[str, str], str]:
+    """What each entry's media was, as one comparable cell per entry.
+
+    The media sibling of :func:`consumed_composition_for`, promoted out of the
+    frame extractor where it was written. Frames and TREx each recorded a media
+    composition for themselves; every other producer that reads media recorded
+    nothing, so a re-transcode under an unchanged recipe was invisible to them.
+
+    **Compared, never hashed.** This is the same design decision
+    ``consumed_tracks_composition`` documents: a per-entry fact must not enter a
+    run identifier, because one identity names one recipe covering many entries
+    and folding a per-entry value in would rename a whole directory because one
+    other entry's source moved.
+
+    A legacy ``media``-rooted dataset records nothing, the carve-out
+    ``Dataset._write_media_compositions`` already makes: that root holds
+    derivatives, and a derivative has no composition of its own.
+
+    Returns:
+        One cell per requested entry. Empty means *not establishable* -- a
+        dataset with no ``media_raw``, or an entry whose projection is
+        unwritten -- and never "no media", exactly as it does for every other
+        composition cell.
+    """
+    wanted = set(entries)
+    if not wanted or ds.resolve_media_root() != "media_raw":
+        return {}
+    recorded = read_entry_compositions(ds, wanted)
+    return {
+        entry: encode_entry_composition(recorded.get(entry, {}), ["media_raw"])
+        for entry in wanted
+    }

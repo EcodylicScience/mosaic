@@ -25,8 +25,7 @@ from mosaic.core.pipeline.inventory.model import (
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.media_index import media_members_from_rows
 from mosaic.core.pipeline.sequence_index import (
-    encode_entry_composition,
-    read_entry_compositions,
+    media_compositions_for,
 )
 from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, register_op, run_op
@@ -209,12 +208,9 @@ def _source_identity_maps(
                 if any(not member.uid for member in ordered)
                 else ",".join(member.uid for member in ordered)
             )
-    recorded = read_entry_compositions(ds, wanted)
-    compositions = {
-        entry: encode_entry_composition(recorded.get(entry, {}), ["media_raw"])
-        for entry in wanted
-    }
-    return uids, compositions
+    # Through the shared helper, so this and every tracker row answer "what was
+    # this entry's media" the same way rather than encoding it twice.
+    return uids, media_compositions_for(ds, wanted)
 
 
 @dataclass(frozen=True, slots=True)
