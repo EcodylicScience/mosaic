@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
+from .dataset_indexes import feature_storages, label_kinds
 from .index import feature_index, feature_index_path, feature_run_root
 from .labels_index import read_labels_index
 from .sequence_index import decode_consumed_roots, encode_entry_composition
@@ -52,7 +53,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PROVENANCE_COLUMNS",
-    "feature_storages",
     "index_records",
     "Verdict",
     "reached_by",
@@ -179,26 +179,6 @@ def _tracks_rows(
     return rows
 
 
-def _label_kinds(ds: Dataset) -> list[str]:
-    """Every converted-label kind, sorted. Empty when the ``labels`` root is unset.
-
-    A kind is a ``labels/<kind>/`` subdirectory that holds an ``index.csv`` -- the
-    variant directories one level below hold none, so they are not mistaken for a
-    kind.
-    """
-    try:
-        root = ds.get_root("labels")
-    except KeyError:
-        return []
-    if not root.exists():
-        return []
-    return sorted(
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and (child / "index.csv").exists()
-    )
-
-
 def _labels_rows(
     ds: Dataset, wanted: set[tuple[str, str]], root: str
 ) -> list[dict[str, object]]:
@@ -209,7 +189,7 @@ def _labels_rows(
     consumed root and are not reached; derived kinds record their upstream root.
     """
     rows: list[dict[str, object]] = []
-    for kind in _label_kinds(ds):
+    for kind in label_kinds(ds):
         frame = read_labels_index(ds, kind)
         for record in index_records(frame):
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))
@@ -235,23 +215,6 @@ def _labels_rows(
                 )
             )
     return rows
-
-
-def feature_storages(ds: Dataset) -> list[str]:
-    """Every feature storage directory, sorted. Empty when the root is unset.
-
-    Through ``get_root`` rather than reaching into ``ds.roots``, which is what the
-    rest of this resolution path does. It matters because ``build_manifest`` is
-    public API that dataset *stand-ins* reach -- they provide the two accessors
-    and not the field -- and item 9.4 put this function on that path.
-    """
-    try:
-        root = ds.get_root("features")
-    except KeyError:
-        return []
-    if not root.exists():
-        return []
-    return sorted(child.name for child in root.iterdir() if child.is_dir())
 
 
 def _feature_rows(

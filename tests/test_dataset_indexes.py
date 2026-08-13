@@ -14,8 +14,11 @@ import pandas as pd
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.dataset_indexes import (
+    feature_storages,
     iter_dataset_indexes,
+    label_kinds,
     reconcilable_index,
+    root_subdirectories,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
@@ -216,3 +219,116 @@ def test_every_tracker_root_registers_a_reconcilable_index() -> None:
     )
 
     assert unregistered == []
+
+
+# --- One answer to "what does this root hold" --------------------------------
+
+
+def test_a_root_that_is_unset_lists_nothing(tmp_path: Path) -> None:
+    """Not an error. A pass over a half-built dataset must not raise."""
+    manifest = new_dataset_manifest(name="bare", base_dir=tmp_path / "ds")
+    ds = Dataset(manifest_path=manifest).load(ensure_roots=False)
+    ds.roots.pop("features", None)
+
+    assert feature_storages(ds) == []
+    assert root_subdirectories(ds, "features") == []
+
+
+def test_a_root_declared_but_not_created_lists_nothing(tmp_path: Path) -> None:
+    """Declared in the manifest, never made on disk -- the ordinary early state."""
+    ds = _dataset(tmp_path)
+    features_root = ds.get_root("features")
+    if features_root.exists():
+        import shutil
+
+        shutil.rmtree(features_root)
+
+    assert feature_storages(ds) == []
+
+
+def test_children_come_back_sorted_and_files_are_not_children(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    root = ds.get_root("features")
+    for name in ("zebra", "alpha", "mid"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    (root / "index.csv").write_text("run_id\n")
+
+    assert feature_storages(ds) == ["alpha", "mid", "zebra"]
+
+
+def test_require_index_is_what_separates_a_kind_from_a_variant(
+    tmp_path: Path,
+) -> None:
+    """A ``labels/<kind>/`` holds an index; the variant dirs below it do not.
+
+    Without the filter a variant directory would be read as a kind, and
+    ``read_labels_index`` would then be asked for an index that cannot exist.
+    """
+    ds = _dataset(tmp_path)
+    labels_root = ds.get_root("labels")
+    (labels_root / "behavior").mkdir(parents=True, exist_ok=True)
+    (labels_root / "behavior" / "index.csv").write_text("run_id\n")
+    (labels_root / "behavior" / "some-variant").mkdir(parents=True, exist_ok=True)
+    (labels_root / "not-a-kind").mkdir(parents=True, exist_ok=True)
+
+    assert label_kinds(ds) == ["behavior"]
+    assert root_subdirectories(ds, "labels") == ["behavior", "not-a-kind"]
+
+
+def test_the_listing_is_written_in_exactly_one_place() -> None:
+    """The defect this retired is duplication, and duplication passes every test.
+
+    Seven call sites spelled "list a dataset root's child directories" for
+    themselves, under three mutually incompatible guards -- ``try``/``except
+    KeyError``, ``has_root``, and a truthiness test on ``ds.roots``. Guards that
+    disagree diverge silently: a root invisible to one pass and not another fails
+    nothing. Asserted over the source, because a behavioural test cannot see a
+    second copy that happens to agree today.
+
+    Detected as a function naming both ``get_root`` and ``iterdir``, which is
+    what reaching into a *dataset root's* children looks like; an ordinary
+    directory walk names no root and is not matched.
+    """
+    import ast
+
+    import mosaic
+
+    allowed = {
+        # The definition site.
+        "core/pipeline/dataset_indexes.py",
+        # Two levels deep, over run and entry directories inside one tracker
+        # root rather than over the root's own children -- a different question,
+        # and it wants Paths rather than names.
+        "core/dataset.py",
+        # Also a level deeper: the variant directories inside one label *kind*,
+        # which this removes. ``root_subdirectories`` takes a root key and
+        # cannot name a child of a child, so there is nothing here to call.
+        "core/pipeline/labels_migration.py",
+    }
+    source_root = Path(mosaic.__file__).parent
+    matched: set[str] = set()
+    for source in sorted(source_root.rglob("*.py")):
+        # A vendored virtualenv under the excluded workspace member.
+        if "feature_library/external" in source.as_posix():
+            continue
+        tree = ast.parse(source.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            named = {
+                inner.attr
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Attribute)
+            }
+            if {"get_root", "iterdir"} <= named:
+                matched.add(str(source.relative_to(source_root)))
+
+    assert sorted(matched - allowed) == [], (
+        "these list a dataset root's children themselves instead of calling "
+        f"root_subdirectories: {sorted(matched - allowed)}"
+    )
+    assert allowed - matched == set(), (
+        "expected every allowlisted module to still match, but these did not: "
+        f"{sorted(allowed - matched)} -- a rename may have made this guard scan "
+        "for something that no longer exists"
+    )

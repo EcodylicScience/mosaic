@@ -14,6 +14,7 @@ from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
+from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.media_index import media_members_from_rows
 from mosaic.core.pipeline.sequence_index import (
@@ -722,9 +723,7 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
     if not frames_root.exists():
         return pd.DataFrame(columns=FRAMES_INDEX_COLUMNS)
 
-    methods = (
-        [method] if method else [d.name for d in frames_root.iterdir() if d.is_dir()]
-    )
+    methods = [method] if method else root_subdirectories(ds, "frames")
     dfs = []
     for m in methods:
         idx_path = frames_root / m / "index.csv"

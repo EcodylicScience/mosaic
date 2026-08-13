@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from mosaic.core.pipeline.dataset_indexes import label_kinds
 from mosaic.core.pipeline.labels_identity import (
     LABELS_IDENTITY_SCHEME,
     label_convert_variant_payload,
@@ -397,27 +398,27 @@ class LabelsReconciler(_VariantReconciler):
     current_scheme = LABELS_IDENTITY_SCHEME
 
     def _sites(self) -> Iterable[_VariantSite]:
-        if not self._ds.has_root("labels"):
+        # ``label_kinds`` already requires the ``index.csv``, which is what makes
+        # a kind a kind, so the existence check this used to repeat is gone. An
+        # unset or absent root yields no kinds, so ``get_root`` below is reached
+        # only once one has resolved.
+        kinds = label_kinds(self._ds)
+        if not kinds:
             return
         labels_root = self._ds.get_root("labels")
-        if not labels_root.exists():
-            return
-        for kind_dir in sorted(labels_root.iterdir()):
-            if not kind_dir.is_dir():
-                continue
-            index_path = labels_index_path(self._ds, kind_dir.name)
-            if not index_path.exists():
-                continue
+        for kind in kinds:
+            kind_dir = labels_root / kind
+            index_path = labels_index_path(self._ds, kind)
             # read_labels_index projects onto the current schema, so a legacy flat
             # index with no run_id column reads as rows with an empty run_id (which
             # are not variants) rather than raising -- the generic IndexCSV.read
             # does not adopt, so it must not be used here.
-            frame = read_labels_index(self._ds, kind_dir.name)
+            frame = read_labels_index(self._ds, kind)
             if "run_id" not in frame.columns:
                 continue
             for run_id in sorted({str(v) for v in frame["run_id"] if str(v)}):
                 yield _VariantSite(
-                    run_id, kind_dir / run_id, index_path, kind_dir, kind_dir.name
+                    run_id, kind_dir / run_id, index_path, kind_dir, kind
                 )
 
     def _terms(self, sidecar: _VariantSidecar) -> dict[str, object]:

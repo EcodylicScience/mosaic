@@ -20,6 +20,16 @@ per subdirectory (``features/<name>/``, ``labels/<kind>/``, ``frames/<method>/``
 ``features`` and ``labels`` are both -- they carry a root-level index *and*
 per-child ones -- which is why this is a table of (root, shape) pairs rather than
 a list of roots.
+
+**And one answer to "what does a root hold".** :func:`root_subdirectories` is
+that answer, with :func:`feature_storages` and :func:`label_kinds` as its two
+named cases. The listing used to be written five times in three mutually
+incompatible spellings -- ``try``/``except KeyError`` around ``get_root``,
+``has_root``, and a truthiness test on ``ds.roots`` -- which is three answers to
+one question, diverging silently: a guard that returns early where another
+raises makes a root invisible to one pass and not another, with nothing failing.
+It lives here rather than higher up because this module already owns the
+question, and because ``feature_storages`` sits on the ``build_manifest`` path.
 """
 
 from __future__ import annotations
@@ -40,9 +50,12 @@ __all__ = [
     "DatasetIndex",
     "IndexShape",
     "ReconcilableIndex",
+    "feature_storages",
     "iter_dataset_indexes",
+    "label_kinds",
     "reconcilable_index",
     "register_reconcilable_index",
+    "root_subdirectories",
 ]
 
 IndexShape = Literal["root", "per_subdir"]
@@ -80,6 +93,58 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
 )
 
 
+def root_subdirectories(
+    ds: Dataset, root_key: str, *, require_index: bool = False
+) -> list[str]:
+    """Every child directory of *root_key*, by name, in sorted order.
+
+    Reached through ``get_root`` inside a ``try``, rather than through
+    ``has_root`` or a truthiness test on ``ds.roots``. That is the permissive
+    spelling of the three this replaced, and it is the one that has to win:
+    :func:`feature_storages` sits on the ``build_manifest`` path, which dataset
+    *stand-ins* reach, and a stand-in provides the accessors and not the
+    predicate.
+
+    Args:
+        ds: The dataset, or a stand-in providing ``get_root``.
+        root_key: Which root to list, e.g. ``"features"`` or ``"labels"``.
+        require_index: Keep only children holding an ``index.csv``. What
+            separates a label *kind* from the variant directories one level
+            below it, which hold none.
+
+    Returns:
+        Child directory names, sorted. Empty when the root is unset or when it
+        is declared but does not exist on disk -- a pass over a dataset that has
+        only been indexed must not raise on the parts not created yet.
+    """
+    try:
+        root = ds.get_root(root_key)
+    except KeyError:
+        return []
+    if not root.exists():
+        return []
+    return sorted(
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and (not require_index or (child / "index.csv").exists())
+    )
+
+
+def feature_storages(ds: Dataset) -> list[str]:
+    """Every feature storage directory, sorted. Empty when the root is unset."""
+    return root_subdirectories(ds, "features")
+
+
+def label_kinds(ds: Dataset) -> list[str]:
+    """Every converted-label kind, sorted. Empty when the ``labels`` root is unset.
+
+    A kind is a ``labels/<kind>/`` subdirectory that holds an ``index.csv`` --
+    the variant directories one level below hold none, so they are not mistaken
+    for a kind.
+    """
+    return root_subdirectories(ds, "labels", require_index=True)
+
+
 def iter_dataset_indexes(
     ds: Dataset,
     path_columns: Mapping[str, Sequence[str]] | None = None,
@@ -110,9 +175,8 @@ def iter_dataset_indexes(
         if shape == "root":
             found.append(DatasetIndex(key, root / "index.csv", columns))
             continue
-        for child in sorted(root.iterdir()):
-            if child.is_dir():
-                found.append(DatasetIndex(key, child / "index.csv", columns))
+        for name in root_subdirectories(ds, key):
+            found.append(DatasetIndex(key, root / name / "index.csv", columns))
     return found
 
 

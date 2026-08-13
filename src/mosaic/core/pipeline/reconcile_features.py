@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import Scope, atomic_write
+from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     read_identity_scheme,
@@ -277,14 +278,6 @@ class FeatureReconciler:
 
     # -- enumeration -------------------------------------------------------
 
-    def _storage_names(self) -> list[str]:
-        if not self._ds.has_root("features"):
-            return []
-        root = self._ds.get_root("features")
-        if not root.exists():
-            return []
-        return sorted(child.name for child in root.iterdir() if child.is_dir())
-
     def _run_ids(self, storage_name: str) -> list[str]:
         index_path = feature_index_path(self._ds, storage_name)
         if not index_path.exists():
@@ -373,7 +366,7 @@ class FeatureReconciler:
         del force  # features never delete; the destructive path is a later pass
         builder = PassBuilder()
         reads: list[_RunRead] = []
-        for storage_name in self._storage_names():
+        for storage_name in feature_storages(self._ds):
             for run_id in self._run_ids(storage_name):
                 try:
                     reads.append(self._read_run(storage_name, run_id))

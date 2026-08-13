@@ -1918,18 +1918,16 @@ class Dataset:
         Returns:
             ``{index_csv_path: num_rows_dropped}`` for every index with drops.
         """
+        from .pipeline.dataset_indexes import feature_storages
         from .pipeline.index import feature_index, feature_index_path
 
+        # Guarded before the named branch, not only the listing one:
+        # ``feature_storages`` answers an unset root with ``[]``, but
+        # ``feature_index_path`` would raise ``KeyError`` from ``get_root``.
         if not self.roots.get("features"):
             return {}
-        fp = self.get_root("features")
-        if not fp.exists():
-            return {}
 
-        if feature is not None:
-            names = [feature]
-        else:
-            names = sorted(sub.name for sub in fp.iterdir() if sub.is_dir())
+        names = [feature] if feature is not None else feature_storages(self)
 
         results: dict[str, int] = {}
         for name in names:

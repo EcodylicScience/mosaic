@@ -26,6 +26,7 @@ import shutil
 from typing import TYPE_CHECKING
 
 from ._utils import atomic_write
+from .dataset_indexes import label_kinds
 from .index_lock import index_lock
 from .labels_index import (
     legacy_labels_view,
@@ -58,21 +59,6 @@ _LEGACY_LABEL_COLUMNS = [
     "label_ids",
     "label_names",
 ]
-
-
-def _label_kinds(ds: Dataset) -> list[str]:
-    """Every ``labels/<kind>/`` directory holding an ``index.csv``, sorted."""
-    try:
-        root = ds.get_root("labels")
-    except KeyError:
-        return []
-    if not root.exists():
-        return []
-    return sorted(
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and (child / "index.csv").exists()
-    )
 
 
 def migrate_labels_raw(ds: Dataset) -> dict[str, int]:
@@ -115,7 +101,7 @@ def revert_labels(ds: Dataset) -> dict[str, int]:
     import pandas as pd
 
     labels_root = ds.get_root("labels")
-    kinds = _label_kinds(ds)
+    kinds = label_kinds(ds)
     for kind in kinds:
         kind_root = labels_root / kind
         resolved = legacy_labels_view(

@@ -44,7 +44,7 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_run_root,
 )
-from mosaic.core.pipeline.provenance import feature_storages
+from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import COLUMNS
 
