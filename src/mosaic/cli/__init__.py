@@ -17,6 +17,7 @@ from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
 from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
+from mosaic.cli.inventory import inventory_command
 from mosaic.cli.scan import scan_command
 from mosaic.cli.sources import sources_app
 from mosaic.cli.tags import notes_app, tags_app
@@ -53,6 +54,7 @@ app.add_typer(features_app, name="features")
 app.add_typer(tracking_app, name="tracking")
 app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
+_ = app.command(name="inventory")(inventory_command)
 
 # Dataset prep.
 _ = app.command(name="init")(init_command)

@@ -7,6 +7,9 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from mosaic.cli._features import build_feature
@@ -166,11 +169,35 @@ def test_a_kind_with_no_contributor_is_reported_not_silently_empty(
     scenario_dataset: Dataset,
 ) -> None:
     """Answering "no tracker runs" to a process that never imported the producers
-    would be a wrong answer where "nobody can tell you" is a true one."""
-    found = inventory(scenario_dataset, kinds=["tracker-run"])
+    would be a wrong answer where "nobody can tell you" is a true one.
 
-    assert found.records == ()
-    assert found.unavailable_kinds == frozenset({"tracker-run"})
+    Run in a subprocess, because registration is a process-global import side
+    effect: any other test that imports ``mosaic.tracking`` fills the registry
+    for the whole session, and in-process this would pass or fail on collection
+    order rather than on the behaviour.
+    """
+    probe = f"""
+import json
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.inventory import inventory
+
+ds = Dataset(manifest_path={str(scenario_dataset.manifest_path)!r}).load()
+found = inventory(ds, kinds=["tracker-run"])
+print(json.dumps({{
+    "records": len(found.records),
+    "unavailable": sorted(found.unavailable_kinds),
+}}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    reported = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert reported["records"] == 0
+    assert reported["unavailable"] == ["tracker-run"]
 
 
 def test_an_empty_dataset_reports_nothing_rather_than_raising(

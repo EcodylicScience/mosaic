@@ -27,11 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal, overload
+from typing import ClassVar, Final, Literal, TypeGuard, overload
 
 from .params import ParamsState, RunParams
 
 __all__ = [
+    "ARTIFACT_KINDS",
     "AnyRecord",
     "ArtifactKind",
     "ArtifactRecord",
@@ -53,6 +54,7 @@ __all__ = [
     "TrainedModelRef",
     "UnitRecord",
     "classify",
+    "is_artifact_kind",
 ]
 
 type Entry = tuple[str, str]
@@ -77,6 +79,32 @@ ArtifactKind = Literal[
     "media-derivative",
 ]
 """Every kind of artifact a dataset can hold, named once."""
+
+ARTIFACT_KINDS: Final[tuple[ArtifactKind, ...]] = (
+    "feature",
+    "tracks-variant",
+    "labels-variant",
+    "tracker-run",
+    "frame-run",
+    "trained-model",
+    "media-derivative",
+)
+"""The same vocabulary as a value, for anything that has to enumerate or check it.
+
+Spelled twice rather than derived with ``get_args``, which returns an untyped
+tuple and spreads that unknown into every caller. A test asserts the two agree,
+so the duplication cannot drift.
+"""
+
+
+def is_artifact_kind(name: str) -> TypeGuard[ArtifactKind]:
+    """Narrow a user-supplied string to a declared kind.
+
+    A guard rather than a cast: the vocabulary is checked against the
+    declaration once, instead of asserted past it at each call site.
+    """
+    return name in ARTIFACT_KINDS
+
 
 ArtifactStatus = Literal[
     "absent",

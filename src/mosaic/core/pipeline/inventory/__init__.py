@@ -17,6 +17,7 @@ implementation.
 
 from __future__ import annotations
 
+from .cache import InventoryCache, RevalidationReport
 from .contributors import (
     InventoryContributor,
     inventory_contributor,
@@ -24,6 +25,7 @@ from .contributors import (
     registered_inventory_kinds,
 )
 from .model import (
+    ARTIFACT_KINDS,
     ArtifactKind,
     ArtifactRecord,
     ArtifactRef,
@@ -41,6 +43,7 @@ from .model import (
     TracksVariantRef,
     TrainedModelRef,
     classify,
+    is_artifact_kind,
 )
 from .scan import (
     entry_universe,
@@ -60,7 +63,9 @@ from .params import (
 )
 
 __all__ = [
+    "ARTIFACT_KINDS",
     "ArtifactKind",
+    "InventoryCache",
     "InventoryContributor",
     "ArtifactRecord",
     "ArtifactRef",
@@ -85,10 +90,12 @@ __all__ = [
     "TracksVariantRef",
     "TrainedModelRef",
     "classify",
+    "is_artifact_kind",
     "entry_universe",
     "inventory",
     "inventory_contributor",
     "narrow_target",
+    "RevalidationReport",
     "read_run_params",
     "register_inventory_contributor",
     "registered_inventory_kinds",

@@ -151,3 +151,17 @@ def test_every_ref_kind_is_a_declared_artifact_kind() -> None:
         MediaDerivativeRef("analysis"),
     ]
     assert {ref.kind for ref in refs} <= declared
+
+
+def test_the_kind_vocabulary_is_spelled_once_in_two_places() -> None:
+    """The tuple and the Literal are written separately so neither is untyped.
+
+    Cheap duplication, but duplication: a kind added to one and not the other
+    would be undetectable by anything except this.
+    """
+    from typing import get_args
+
+    from mosaic.core.pipeline.inventory.model import ARTIFACT_KINDS, ArtifactKind
+
+    assert set(ARTIFACT_KINDS) == set(get_args(ArtifactKind))
+    assert len(ARTIFACT_KINDS) == len(set(ARTIFACT_KINDS))
