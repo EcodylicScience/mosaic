@@ -74,6 +74,7 @@ other -- worse than the problem it solves.
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import threading
@@ -155,6 +156,37 @@ def _open_lock_fd(resolved: Path) -> int:
 DEFAULT_TIMEOUT_S = 60.0
 
 _POLL_S = 0.01
+
+
+# What the OS says when a lock is merely *held by someone else*. Everything in
+# ``_UNSUPPORTED`` says the filesystem will not do locking at all. The split
+# matters because the two look identical from a poll loop: an ``nolock`` NFS
+# export or a FUSE mount refuses every attempt, so a loop that treats refusal as
+# contention spins the whole timeout on every index write and then reports a
+# phantom other writer.
+_CONTENDED: Final[frozenset[int]] = frozenset(
+    {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES}
+)
+
+_UNSUPPORTED: Final[frozenset[int]] = frozenset(
+    {errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS, errno.EINVAL}
+)
+
+
+class IndexLockUnsupported(RuntimeError):
+    """This filesystem will not lock, so a dataset on it cannot be written safely.
+
+    Its own type rather than a timeout, because the remedy is different in kind:
+    contention passes, and this does not. A caller can only move the dataset to a
+    mount that locks, or accept that concurrent writers will silently drop each
+    other's rows.
+
+    **Never degraded into an unlocked write.** That is the lost update this
+    module exists to prevent, and concluding "locking is unsupported" from an
+    unfamiliar error and then proceeding would cause the corruption the check
+    was added to detect. An errno this does not recognise keeps polling, which
+    is the previous behaviour and the conservative one.
+    """
 
 
 class IndexLockTimeout(RuntimeError):
@@ -263,7 +295,19 @@ def _acquire(fd: int, path: Path, timeout: float) -> None:
         try:
             _lock_exclusive_nb(fd)
             return
-        except OSError:
+        except OSError as exc:
+            if exc.errno in _UNSUPPORTED and exc.errno not in _CONTENDED:
+                # Fail now rather than at the deadline. Waiting cannot help --
+                # the mount refuses every attempt -- and the timeout message
+                # would name a competing writer that does not exist, sending a
+                # reader looking for a wedged process.
+                raise IndexLockUnsupported(
+                    f"the filesystem holding {path} does not support locking "
+                    f"({errno.errorcode.get(exc.errno, exc.errno)}). mosaic "
+                    f"refuses to write an index unlocked: concurrent writers "
+                    f"silently drop each other's rows. Move the dataset to a "
+                    f"mount with working advisory locks."
+                ) from None
             if time.monotonic() >= deadline:
                 raise IndexLockTimeout(
                     f"could not acquire the index lock for {path} within "
@@ -273,3 +317,40 @@ def _acquire(fd: int, path: Path, timeout: float) -> None:
                     f"writer's rows."
                 ) from None
             time.sleep(_POLL_S)
+
+
+def probe_lock_support(directory: Path) -> None:
+    """Check that *directory* can hold an index lock. Raises if it cannot.
+
+    For a caller that wants to know up front rather than at the first write --
+    loading a dataset, starting a worker -- because the first write may be
+    minutes of compute later and the failure is not one retrying fixes.
+
+    Takes and releases a real lock on a throwaway sidecar rather than inspecting
+    the mount: the filesystem type is not the question, and reading it would mean
+    keeping a list of which ones lock. The probe file is removed, which is safe
+    where removing a *live* index lock is not -- nothing else knows this name.
+
+    Raises:
+        IndexLockUnsupported: The filesystem refused to lock.
+    """
+    probe = directory / f".mosaic-lock-probe{LOCK_SUFFIX}"
+    fd = os.open(probe, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        try:
+            _lock_exclusive_nb(fd)
+        except OSError as exc:
+            if exc.errno in _UNSUPPORTED and exc.errno not in _CONTENDED:
+                raise IndexLockUnsupported(
+                    f"the filesystem holding {directory} does not support "
+                    f"locking ({errno.errorcode.get(exc.errno, exc.errno)}). "
+                    f"mosaic refuses to write an index unlocked: concurrent "
+                    f"writers silently drop each other's rows."
+                ) from None
+            # Anything else means the probe met a real holder, which can only
+            # happen if two probes race -- and proves locking works.
+            return
+        _release(fd)
+    finally:
+        os.close(fd)
+        probe.unlink(missing_ok=True)
