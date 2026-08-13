@@ -70,6 +70,7 @@ __all__ = [
     "inventory",
     "narrow_target",
     "parquet_is_readable",
+    "reportable_universe",
     "run_covers",
 ]
 
@@ -236,11 +237,40 @@ def _status_for(
     )
 
 
+def reportable_universe(
+    ds: Dataset, tracks_run_id: str | None = None
+) -> frozenset[Entry]:
+    """The entry universe for a *report*, which may not refuse to answer.
+
+    ``entry_universe`` resolves through ``select_variant_rows``, which raises
+    when one entry carries two genuine tracks recipes -- correctly, because
+    *executing* against an ambiguous entry has no defensible default and a guess
+    would silently read the wrong table.
+
+    An inventory is not executing. A dataset holding two recipes for an entry is
+    a legitimate state, and the one question a reader most wants answered about
+    it is what it holds. Refusing turns a describable dataset into an exception
+    and takes every other artifact's report down with it. So the ambiguity falls
+    back to the union across variants: the entry is processable, the caller just
+    has to say which variant when they come to process it.
+    """
+    try:
+        return entry_universe(ds, tracks_run_id)
+    except ValueError:
+        frame = read_tracks_index(ds)
+        return frozenset(
+            (record.get("group", ""), record.get("sequence", ""))
+            for record in index_records(frame)
+            if record.get("abs_path", "")
+            and ds.resolve_path(record["abs_path"]).exists()
+        )
+
+
 def _feature_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[Entry]]:
     """Every feature run under ``features/<name>/<run_id>/``."""
-    universe = entry_universe(ds, scope.tracks_run_id)
+    universe = reportable_universe(ds, scope.tracks_run_id)
     target = narrow_target(universe, entries=scope.entries)
     records: list[ArtifactRecord[Entry]] = []
     for name in feature_storages(ds):
