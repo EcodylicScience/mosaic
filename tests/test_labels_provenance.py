@@ -6,15 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import write_labels_row
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    return Dataset(new_dataset_manifest("t", tmp_path / "ds")).load()
+from tests.helpers import make_dataset
 
 
 def _scored_label_row(ds: Dataset, digest: str) -> None:
@@ -43,7 +40,7 @@ def _scored_label_row(ds: Dataset, digest: str) -> None:
 
 
 def test_scored_label_reached_and_current_before_change(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     _scored_label_row(ds, "deadbeef")
     reached = reached_by(ds, [("", "s")], "labels_raw")
     label_rows = reached[reached["kind"] == "labels"]
@@ -58,7 +55,7 @@ def test_scored_label_reached_and_current_before_change(tmp_path: Path) -> None:
 def test_scored_label_drifts_when_labels_raw_composition_changes(
     tmp_path: Path,
 ) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     _scored_label_row(ds, "deadbeef")
     # The source file's checksum changes (a re-score / re-upload): re-project the
     # labels_raw composition, leaving the recorded row as it was.
@@ -78,7 +75,7 @@ def test_scored_label_drifts_when_labels_raw_composition_changes(
 def test_labels_raw_change_does_not_reach_tracks_only_entries(tmp_path: Path) -> None:
     # A change under labels_raw reaches only what consumed labels_raw. An entry
     # with no label row is not in the result.
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     _scored_label_row(ds, "deadbeef")
     reached = reached_by(ds, [("", "other")], "labels_raw")
     assert reached.empty

@@ -21,9 +21,9 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm, scalable_columns
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 
-from tests.helpers import add_media_sequence
+from tests.helpers import add_media_sequence, make_dataset
 
 
 def _table(sequence: str = "seq_a", n: int = 4) -> pd.DataFrame:
@@ -112,8 +112,7 @@ def test_the_scale_is_part_of_the_run_identity() -> None:
 
 
 def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="scale", base_dir=tmp_path / "dataset")
-    ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    ds = make_dataset(tmp_path / "dataset", name="scale")
     add_media_sequence(ds, "seq_a", videos=("a.mp4",), frames=3)
     return ds
 

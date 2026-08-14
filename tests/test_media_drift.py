@@ -13,19 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.media.drift import classify_identity
 from mosaic.core.pipeline.media_index import MediaIndexScope
 from mosaic.core.pipeline.types import Inputs, Params
+from tests.helpers import make_dataset
 
 
 class _P(Params):
     pass
-
-
-def _dataset(base: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="drift", base_dir=base / "dataset")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _write(ds: Dataset, sequence: str, directory: Path) -> object:
@@ -50,7 +46,7 @@ def _clip(path: Path, shade: int, frames: int = 6) -> None:
 class TestWritePathDrift:
     def test_a_replaced_file_is_reported_as_drift(self, tmp_path: Path) -> None:
         """Different bytes under a stable path, found because the write re-probed."""
-        ds = _dataset(tmp_path)
+        ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
         _clip(directory / "a.mp4", shade=40)
         first = _write(ds, "seq_a", directory)
@@ -82,7 +78,7 @@ class TestWritePathDrift:
         cache had been removed and every file re-probed, which is the change this
         test exists to reject -- so the probe itself is made to raise.
         """
-        ds = _dataset(tmp_path)
+        ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
         _clip(directory / "a.mp4", shade=40)
         _ = _write(ds, "seq_a", directory)
@@ -106,7 +102,7 @@ class TestWritePathDrift:
         comparison at all -- while the measurement cache twenty lines below was
         already path-keyed for exactly this reason.
         """
-        ds = _dataset(tmp_path)
+        ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         first_dir = ds.get_root("media_raw") / "seq_a"
         second_dir = ds.get_root("media_raw") / "seq_b"
         _clip(first_dir / "a.mp4", shade=40)
@@ -130,7 +126,7 @@ class TestWritePathDrift:
         the only detector, which is why its no-cache rule must not be
         "optimized" into agreement with this one.
         """
-        ds = _dataset(tmp_path)
+        ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
         clip = directory / "a.mp4"
         _clip(clip, shade=40)

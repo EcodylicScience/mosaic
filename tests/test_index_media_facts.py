@@ -2,8 +2,6 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -11,12 +9,7 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, derive, probe_media
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import FACTS_COLUMNS, facts_to_row, row_to_facts
 
-
-def _cfr_mp4(path: Path, n: int = 10) -> None:
-    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(n):
-        vw.write(np.zeros((48, 64, 3), np.uint8))
-    vw.release()
+from tests.helpers import write_mpeg4_mp4
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -34,7 +27,7 @@ def _make_dataset(tmp_path: Path) -> Dataset:
 
 def test_facts_row_has_all_columns(tmp_path: Path) -> None:
     mp4 = tmp_path / "v.mp4"
-    _cfr_mp4(mp4)
+    write_mpeg4_mp4(mp4, frames=10)
     facts = probe_media(mp4)
     verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
     row = facts_to_row(facts, verdict)
@@ -45,7 +38,7 @@ def test_facts_row_has_all_columns(tmp_path: Path) -> None:
 
 def test_row_to_facts_preserves_rotation(tmp_path: Path) -> None:
     mp4 = tmp_path / "v.mp4"
-    _cfr_mp4(mp4, 4)
+    write_mpeg4_mp4(mp4, frames=4)
     rotated = replace(probe_media(mp4), rotation_degrees=90)  # coded 64x48
     row = facts_to_row(rotated, derive(rotated, CHROME_149, DEFAULT_THRESHOLDS))
     got = row_to_facts(row)
@@ -63,7 +56,7 @@ def test_index_media_facts_round_trip_through_csv(tmp_path: Path) -> None:
     search = tmp_path / "raw"
     search.mkdir()
     mp4 = search / "clip.mp4"
-    _cfr_mp4(mp4, 10)
+    write_mpeg4_mp4(mp4, frames=10)
     expected_facts = probe_media(mp4)
 
     out_csv = ds.index_media([search], extensions=(".mp4",))
@@ -101,7 +94,7 @@ def test_reindex_preserves_derivative_links(tmp_path: Path) -> None:
     )
     search = tmp_path / "raw"
     search.mkdir()
-    _cfr_mp4(search / "clip.mp4", 10)
+    write_mpeg4_mp4(search / "clip.mp4", frames=10)
 
     ds.index_media([search], extensions=(".mp4",))
     raw_index = ds.get_root("media_raw") / "index.csv"
@@ -109,8 +102,8 @@ def test_reindex_preserves_derivative_links(tmp_path: Path) -> None:
     # Stand in for the transcode job: real per-target derivatives + forward links.
     analysis_deriv = ds.get_root("media") / "clip.analysis.mp4"
     playback_deriv = ds.get_root("media") / "clip.playback.mp4"
-    _cfr_mp4(analysis_deriv, 10)
-    _cfr_mp4(playback_deriv, 10)
+    write_mpeg4_mp4(analysis_deriv, frames=10)
+    write_mpeg4_mp4(playback_deriv, frames=10)
     df = pd.read_csv(raw_index)
     for column in ("analysis_derivative_path", "playback_derivative_path"):
         df[column] = df[column].astype("object")

@@ -12,8 +12,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
@@ -26,20 +24,7 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_index_path,
 )
 
-
-def _cfr_mp4(path: Path, n: int = 6) -> None:
-    """A short video whose *content* depends on its name.
-
-    Deliberately not all-black: two byte-identical videos share one
-    ``video_uuid`` by design, so a composition over them is unchanged by a
-    reorder -- correctly, and it would make an ordering test pass vacuously.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shade = sum(path.name.encode()) % 200 + 20
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(n):
-        writer.write(np.full((48, 64, 3), shade, np.uint8))
-    writer.release()
+from tests.helpers import write_mpeg4_mp4
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -84,7 +69,7 @@ def test_a_media_write_projects_one_row_per_sequence(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
 
@@ -104,7 +89,7 @@ def test_an_identical_rewrite_leaves_the_composition_alone(tmp_path: Path) -> No
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
     first = _compositions(ds, "media_raw")
@@ -117,7 +102,7 @@ def test_reordering_a_sequence_moves_its_composition(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
     before = _compositions(ds, "media_raw")["seqA"]
@@ -133,11 +118,11 @@ def test_an_unrelated_sequence_does_not_move(tmp_path: Path) -> None:
     """
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
     before = _compositions(ds, "media_raw")["seqA"]
 
-    _cfr_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4", shade="from-name")
     _arrange(ds, "seqB", {"b.mp4": 0})
 
     after = _compositions(ds, "media_raw")
@@ -150,8 +135,8 @@ def test_a_sequence_that_goes_away_leaves_the_index(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     scanned = tmp_path / "media_raw" / "scanned"
-    _cfr_mp4(scanned / "a.mp4")
-    _cfr_mp4(scanned / "b.mp4")
+    write_mpeg4_mp4(scanned / "a.mp4", shade="from-name")
+    write_mpeg4_mp4(scanned / "b.mp4", shade="from-name")
     ds.index_media([scanned], extensions=(".mp4",))
     assert set(_compositions(ds, "media_raw")) == {"a", "b"}
 
@@ -173,11 +158,11 @@ def test_a_sequence_outside_the_scan_keeps_its_composition(tmp_path: Path) -> No
     """
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
     assert set(_compositions(ds, "media_raw")) == {"seqA"}
 
-    _cfr_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4", shade="from-name")
     ds.index_media([tmp_path / "media_raw" / "seqB"], extensions=(".mp4",))
 
     assert set(_compositions(ds, "media_raw")) == {"seqA", "b"}
@@ -263,7 +248,7 @@ def test_rebuild_reproduces_what_the_writer_wrote(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 1, "b.mp4": 0})
     written = _compositions(ds, "media_raw")
 
@@ -284,7 +269,7 @@ def test_a_legacy_media_only_dataset_gets_no_media_composition(
     )
     ds.ensure_roots()
     ds.save()
-    _cfr_mp4(tmp_path / "media" / "seqA" / "a.mp4")
+    write_mpeg4_mp4(tmp_path / "media" / "seqA" / "a.mp4", shade="from-name")
 
     ds.write_media_index(
         [
@@ -352,7 +337,7 @@ def test_two_concurrent_writes_leave_a_consistent_projection(tmp_path: Path) -> 
     ds = _make_dataset(tmp_path)
     for sequence in ("seqA", "seqB"):
         for name in ("a.mp4", "b.mp4"):
-            _cfr_mp4(tmp_path / "media_raw" / sequence / name)
+            write_mpeg4_mp4(tmp_path / "media_raw" / sequence / name, shade="from-name")
 
     gate = tmp_path / "gate"
     gate.mkdir()
@@ -394,7 +379,7 @@ def test_the_projection_is_written_after_the_index(tmp_path: Path) -> None:
     """
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
 
     index_mtime = (tmp_path / "media_raw" / "index.csv").stat().st_mtime_ns
@@ -414,7 +399,7 @@ def test_the_projection_survives_a_csv_round_trip_with_integer_counts(
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
 
     raw = pd.read_csv(sequence_index_path(ds, "media_raw"), keep_default_na=False)

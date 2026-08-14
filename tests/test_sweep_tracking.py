@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.markers import (
     PhaseMarker,
@@ -30,12 +30,9 @@ from mosaic.core.pipeline.sweep import (
     retention_days,
 )
 
+from tests.helpers import make_dataset
+
 _NOW = datetime.datetime(2026, 7, 29, 12, 0, tzinfo=datetime.timezone.utc)
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="sweep", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _entry(
@@ -130,7 +127,7 @@ def test_a_live_claim_survives_an_applied_sweep_with_no_window(tmp_path: Path) -
     afterwards. This is the overnight-batch case -- a run whose earlier entries
     are finished while a later one is still going.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     held = _entry(ds, finished_days_ago=90.0, claim_expires_in=3600.0)
 
     report = ds.sweep_tracking(
@@ -150,7 +147,7 @@ def test_an_unrowed_directory_is_refused(tmp_path: Path) -> None:
     "no row names it" is the *normal* state of a healthy run in progress --
     the opposite of what it sounds like.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     unrowed = _entry(ds, finished_days_ago=90.0, rowed=False)
 
     report = ds.sweep_tracking(
@@ -163,7 +160,7 @@ def test_an_unrowed_directory_is_refused(tmp_path: Path) -> None:
 
 def test_a_directory_with_no_marker_is_foreign_and_refused(tmp_path: Path) -> None:
     """A root pointed somewhere that is not a tracker root reclaims nothing."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     stranger = ds.get_root("trex") / "not-a-run" / "not-an-entry"
     stranger.mkdir(parents=True)
     (stranger / "somebody.txt").write_text("mine")
@@ -185,7 +182,7 @@ def test_a_finished_aged_entry_goes_with_its_row(tmp_path: Path) -> None:
 
     from mosaic.tracking.trex.dataset_runs import trex_index_path
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     old = _entry(ds, finished_days_ago=30.0)
 
     report = ds.sweep_tracking(apply=True, now=_NOW)
@@ -201,7 +198,7 @@ def test_a_finished_entry_inside_its_window_is_held_and_said_so(
     tmp_path: Path,
 ) -> None:
     """ "Would delete 0" must not read as "there was nothing here"."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     recent = _entry(ds, finished_days_ago=1.0)
 
     report = ds.sweep_tracking(apply=True, now=_NOW)
@@ -219,7 +216,7 @@ def test_a_half_finished_trex_run_is_not_complete(tmp_path: Path) -> None:
     conversion someone is still using. The registry declares both phases, so
     the question asked is "are all of them there".
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     half = ds.get_root("trex") / "trex.1.0-bbbb" / "seq_a"
     half.mkdir(parents=True)
     (half / "out.pv").write_bytes(b"x" * 16)
@@ -240,7 +237,7 @@ def test_a_half_finished_trex_run_is_not_complete(tmp_path: Path) -> None:
 
 def test_an_expired_claim_is_reclaimable(tmp_path: Path) -> None:
     """The only cross-host authority is the expiry the claim carries itself."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     _ = _entry(ds, finished_days_ago=None, claim_expires_in=1.0)
 
     report = ds.sweep_tracking(apply=False, now=_NOW + datetime.timedelta(days=365))
@@ -253,7 +250,7 @@ def test_an_expired_claim_is_reclaimable(tmp_path: Path) -> None:
 
 def test_a_legacy_layout_declines_rather_than_deleting(tmp_path: Path) -> None:
     """A tracker root still inside tracks_raw holds user uploads beneath it."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     ds.roots["trex"] = "tracks_raw/trex"
 
     report = ds.sweep_tracking(apply=True, now=_NOW)
@@ -265,7 +262,7 @@ def test_a_legacy_layout_declines_rather_than_deleting(tmp_path: Path) -> None:
 
 def test_a_root_outside_the_dataset_declines(tmp_path: Path) -> None:
     """Item 9.1's rule, enforced where being wrong costs files."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     ds.roots["trex"] = str(outside)
@@ -283,7 +280,7 @@ def test_inference_output_is_kept_for_less_time_than_tracker_output() -> None:
 
 def test_a_dry_run_removes_nothing(tmp_path: Path) -> None:
     """Dry-run is the default and must not be one in name only."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     old = _entry(ds, finished_days_ago=30.0)
 
     report = ds.sweep_tracking(apply=False, now=_NOW)
@@ -295,7 +292,7 @@ def test_a_dry_run_removes_nothing(tmp_path: Path) -> None:
 
 def test_two_runs_agree(tmp_path: Path) -> None:
     """Filesystem order is not stable, so the walk sorts and the report must too."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     for sequence in ("seq_c", "seq_a", "seq_b"):
         _ = _entry(ds, sequence=sequence, finished_days_ago=30.0)
 
@@ -325,7 +322,7 @@ def test_a_promoted_run_is_reclaimable_before_its_window(tmp_path: Path) -> None
     the question. Without this the class existed with no producer and the design's
     ordering was aspirational.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     recent = _entry(ds, finished_days_ago=1.0)
     ds.set_display_name("", "seq_a", "")
 
@@ -368,7 +365,7 @@ def test_an_applied_sweep_drops_the_row_of_a_grouped_entry(tmp_path: Path) -> No
     """
     from mosaic.tracking.trex.dataset_runs import trex_index, trex_index_path
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="sweep")
     aged = _entry(ds, group="hex", sequence="hex_3", finished_days_ago=90.0)
 
     report = ds.sweep_tracking(

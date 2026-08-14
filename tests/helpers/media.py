@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from typing import Literal
 
+import cv2
 import numpy as np
 import pandas as pd
 
@@ -20,6 +22,50 @@ from mosaic_media.transcode import Target
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from tests.helpers.environment import require_ffmpeg
+
+
+def _shade_for_name(name: str) -> int:
+    """The grey level *name* stands for, so two clips named apart look apart."""
+    return sum(name.encode()) % 200 + 20
+
+
+def write_mpeg4_mp4(
+    path: Path,
+    *,
+    frames: int = 6,
+    size: tuple[int, int] = (64, 48),
+    shade: int | Literal["from-name"] = 0,
+) -> None:
+    """Write a small MPEG-4 clip through OpenCV, parent directories created.
+
+    MPEG-4 rather than the AV1 the ``write_cfr_mp4`` fixture encodes, and the
+    codec is load-bearing rather than incidental: the read-target gate refuses an
+    ``"analysis"`` read whose verdict carries
+    ``unverified_frame_correspondence``, which every codec outside the measured
+    frame-exact set does. AV1 is inside that set and MPEG-4 is outside it, so a
+    suite measuring what mosaic does with a clip it cannot read frame-exactly
+    needs this one. A suite wanting a clip that passes the gate asks for the
+    fixture.
+
+    *shade* is the value every pixel of every frame carries. ``"from-name"``
+    derives it from the file's name, which is what a caller needs when two clips
+    must differ: two all-black clips are byte-identical and therefore share one
+    ``video_uuid`` by design, so an ordering or composition assertion over them
+    passes without measuring anything.
+
+    Guards the ffmpeg toolchain even though the write itself is OpenCV's, because
+    what these suites do with the clip -- probing it, indexing it -- shells out.
+    Without the guard a missing binary surfaced as a bare ``FileNotFoundError``
+    rather than a skip.
+    """
+    require_ffmpeg()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = _shade_for_name(path.name) if isinstance(shade, str) else shade
+    width, height = size
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, size)
+    for _ in range(frames):
+        writer.write(np.full((height, width, 3), value, np.uint8))
+    writer.release()
 
 
 def add_media_sequence(
@@ -52,7 +98,7 @@ def add_media_sequence(
     directory = dataset.get_root("media_raw") / sequence
     directory.mkdir(parents=True, exist_ok=True)
     for name in videos:
-        shade = sum(name.encode()) % 200 + 20
+        shade = _shade_for_name(name)
         with FFmpegVideoWriter(
             directory / name, width=64, height=48, fps=30.0
         ) as writer:

@@ -20,11 +20,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.pipeline.upgrade_tracks import upgrade_trex_tables
 from mosaic.core.pipeline.writers import write_parquet_atomic
+
+from tests.helpers import make_dataset
 
 
 def _legacy_trex_table(
@@ -78,13 +80,8 @@ def _legacy_trex_table(
     return out_path
 
 
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="upgrade", base_dir=tmp_path / "dataset")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
-
-
 def test_a_dry_run_reports_without_writing(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds, "seq_a", cm_per_pixel=0.25, pixels=np.linspace(0.0, 100.0, 6)
     )
@@ -97,7 +94,7 @@ def test_a_dry_run_reports_without_writing(tmp_path: Path) -> None:
 
 def test_an_upgrade_recovers_the_original_pixels(tmp_path: Path) -> None:
     """The point of the whole exercise, end to end."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     pixels = np.linspace(0.0, 100.0, 6)
     _ = _legacy_trex_table(ds, "seq_a", cm_per_pixel=0.25, pixels=pixels)
 
@@ -116,7 +113,7 @@ def test_an_upgrade_recovers_the_original_pixels(tmp_path: Path) -> None:
 
 
 def test_an_upgrade_moves_x_to_the_body_centre(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     pixels = np.linspace(0.0, 100.0, 6)
     _ = _legacy_trex_table(ds, "seq_a", cm_per_pixel=0.25, pixels=pixels)
 
@@ -131,7 +128,7 @@ def test_an_upgrade_moves_x_to_the_body_centre(tmp_path: Path) -> None:
 
 
 def test_the_upgraded_row_records_the_new_schema(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds, "seq_a", cm_per_pixel=0.5, pixels=np.linspace(0.0, 10.0, 4)
     )
@@ -144,7 +141,7 @@ def test_the_upgraded_row_records_the_new_schema(tmp_path: Path) -> None:
 
 def test_a_table_without_a_calibration_is_refused_not_assumed(tmp_path: Path) -> None:
     """Centimetres and pixels are indistinguishable once the number is lost."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds,
         "seq_a",
@@ -162,7 +159,7 @@ def test_a_table_without_a_calibration_is_refused_not_assumed(tmp_path: Path) ->
 
 def test_a_non_trex_table_is_skipped(tmp_path: Path) -> None:
     """Another converter's table is already pixels; its columns change, not its scale."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds,
         "seq_a",
@@ -179,7 +176,7 @@ def test_a_non_trex_table_is_skipped(tmp_path: Path) -> None:
 
 
 def test_an_already_converted_table_is_skipped(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds,
         "seq_a",
@@ -198,7 +195,7 @@ def test_the_target_is_where_a_reconversion_would_have_written(tmp_path: Path) -
     """So converting properly later finds it, rather than writing a second table."""
     from mosaic.core.track_converter import get_track_converter
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     _ = _legacy_trex_table(
         ds, "seq_a", cm_per_pixel=0.5, pixels=np.linspace(0.0, 10.0, 4)
     )
@@ -219,7 +216,7 @@ def test_one_bad_table_does_not_abort_the_migration(tmp_path: Path) -> None:
     half-upgraded dataset, a traceback instead of a report, and no record of
     which entry was responsible.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
     pixels = np.linspace(0.0, 100.0, 6)
     good = _legacy_trex_table(ds, "seq_ok", cm_per_pixel=0.25, pixels=pixels)
     bad = _legacy_trex_table(ds, "seq_bad", cm_per_pixel=0.25, pixels=pixels)

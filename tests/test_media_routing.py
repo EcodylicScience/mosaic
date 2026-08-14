@@ -6,8 +6,6 @@ import dataclasses
 import json
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pandas as pd
 import pytest
 from mosaic_media import MediaProbeError, probe_media
@@ -15,6 +13,8 @@ from mosaic_media import MediaProbeError, probe_media
 from mosaic.core.dataset import AmbiguousMediaMatchError, Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
+
+from tests.helpers import write_mpeg4_mp4
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -28,13 +28,6 @@ def _make_dataset(tmp_path: Path) -> Dataset:
             "tracks": str(tmp_path / "tracks"),
         },
     )
-
-
-def _write_mp4(path: Path, nframes: int = 6) -> None:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(nframes):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
 
 
 def _facts_json(path: Path) -> str:
@@ -87,7 +80,7 @@ def _write_index(path: Path, rows: list[dict[str, object]]) -> None:
 def test_clean_row_returns_original_with_stored_facts(tmp_path: Path):
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clean.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     # The stored cell deliberately disagrees with the file (a fresh probe of
     # this clip returns 6), so a returned count of 999 can only have come from
     # the stored cell, never from a re-probe.
@@ -106,7 +99,7 @@ def test_row_with_an_unreconstructable_facts_cell_raises_the_reprobe_remedy(
 ):
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clean.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clean", abs_path=original)
     # A media_facts cell written before the identity fields existed: it lacks
     # the keys MediaFacts now requires, so it cannot be reconstructed.
@@ -123,7 +116,7 @@ def test_row_with_an_unreconstructable_facts_cell_raises_the_reprobe_remedy(
 def test_row_with_no_facts_cell_raises_the_reprobe_remedy(tmp_path: Path):
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clean.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clean", abs_path=original)
     row["media_facts"] = ""
     _write_index(tmp_path / "media_raw" / "index.csv", [row])
@@ -140,7 +133,7 @@ def test_a_required_row_with_no_facts_still_reports_the_transcode_remedy(
     is the derivative, so the derivative's absence is the fault to report."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "orphan.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     row = _row(
         group="g1",
         sequence="orphan",
@@ -161,9 +154,9 @@ def test_a_required_row_with_no_facts_still_reports_the_transcode_remedy(
 def test_required_row_routes_to_derivative_with_derivative_facts(tmp_path):
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "needs.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     derivative = tmp_path / "media" / "g1__needs.analysis.mp4"
-    _write_mp4(derivative, nframes=10)
+    write_mpeg4_mp4(derivative, frames=10)
 
     _write_index(
         tmp_path / "media_raw" / "index.csv",
@@ -199,7 +192,7 @@ def test_required_row_routes_to_derivative_with_derivative_facts(tmp_path):
 def test_required_row_without_derivative_raises(tmp_path):
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "orphan.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [
@@ -235,7 +228,7 @@ def test_legacy_media_only_required_row_raises(tmp_path):
     )
     assert ds.resolve_media_root() == "media"
     original = tmp_path / "media" / "legacy.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media" / "index.csv",
         [
@@ -258,7 +251,7 @@ def test_a_sequence_never_resolves_another_sequences_media(tmp_path: Path):
     register one sequence's frames under another's name."""
     ds = _make_dataset(tmp_path)
     other = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(other, nframes=6)
+    write_mpeg4_mp4(other, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="clip_a", abs_path=other)],
@@ -273,7 +266,7 @@ def test_a_sequence_name_is_matched_literally_not_as_a_regex(tmp_path: Path):
     interpretation of the requested name makes the two meet."""
     ds = _make_dataset(tmp_path)
     other = tmp_path / "media_raw" / "clipXa.mp4"
-    _write_mp4(other, nframes=6)
+    write_mpeg4_mp4(other, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="clipXa", abs_path=other)],
@@ -291,7 +284,7 @@ def test_a_sequence_name_holding_a_regex_metacharacter_reports_no_match(
     caller expects from a lookup."""
     ds = _make_dataset(tmp_path)
     other = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(other, nframes=6)
+    write_mpeg4_mp4(other, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="clip_a", abs_path=other)],
@@ -332,7 +325,7 @@ def test_only_a_media_extension_is_stripped_from_a_request(
     """
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "trial.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="trial", abs_path=original)],
@@ -355,7 +348,7 @@ def test_an_entry_whose_own_name_ends_in_an_extension_matches_it_whole(
     resolves it."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "recording.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="trial.MP4", abs_path=original)],
@@ -369,7 +362,7 @@ def test_a_sequence_named_for_its_file_still_matches_that_row(tmp_path: Path):
     Narrowing this tier must keep it."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="clip_a", abs_path=original)],
@@ -384,7 +377,7 @@ def test_a_sequence_differing_only_in_case_still_matches_its_row(tmp_path: Path)
     so only a case-insensitive comparison resolves ``CLIP_A`` to ``clip_a``."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="clip_a", abs_path=original)],
@@ -412,8 +405,8 @@ def test_a_sequence_name_two_groups_share_raises_rather_than_guessing(
     second_dir.mkdir(parents=True)
     first = first_dir / "clip.mp4"
     second = second_dir / "clip.mp4"
-    _write_mp4(first, nframes=6)
-    _write_mp4(second, nframes=6)
+    write_mpeg4_mp4(first, frames=6)
+    write_mpeg4_mp4(second, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [
@@ -440,8 +433,8 @@ def test_a_group_named_alongside_a_shared_sequence_name_resolves_that_group(
     second_dir.mkdir(parents=True)
     first = first_dir / "clip.mp4"
     second = second_dir / "clip.mp4"
-    _write_mp4(first, nframes=6)
-    _write_mp4(second, nframes=6)
+    write_mpeg4_mp4(first, frames=6)
+    write_mpeg4_mp4(second, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [
@@ -460,7 +453,7 @@ def test_a_named_group_does_not_resolve_another_groups_file(tmp_path: Path):
     another group's row just because the file is named for the sequence."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="g1", sequence="clip_a", abs_path=original)],
@@ -475,7 +468,7 @@ def test_a_named_group_still_resolves_its_own_file(tmp_path: Path):
     the fallback still bridges the extension the ``name`` cell carries."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="g1", sequence="clip_a", abs_path=original)],
@@ -493,7 +486,7 @@ def test_a_sequence_does_not_resolve_a_row_whose_file_merely_carries_its_name(
     unrelated sequence ``trial`` that entry's media."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "trial.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [_row(group="", sequence="session1", abs_path=original)],
@@ -512,8 +505,8 @@ def test_a_chunked_sequence_resolves_every_one_of_its_files_in_order(
     ds = _make_dataset(tmp_path)
     first = tmp_path / "media_raw" / "part1.mp4"
     second = tmp_path / "media_raw" / "part2.mp4"
-    _write_mp4(first, nframes=6)
-    _write_mp4(second, nframes=6)
+    write_mpeg4_mp4(first, frames=6)
+    write_mpeg4_mp4(second, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [
@@ -538,8 +531,8 @@ def test_a_chunk_filename_does_not_resolve_the_sequence_holding_it(
     ds = _make_dataset(tmp_path)
     first = tmp_path / "media_raw" / "part1.mp4"
     second = tmp_path / "media_raw" / "part2.mp4"
-    _write_mp4(first, nframes=6)
-    _write_mp4(second, nframes=6)
+    write_mpeg4_mp4(first, frames=6)
+    write_mpeg4_mp4(second, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [
@@ -557,7 +550,7 @@ def test_an_empty_sequence_resolves_nothing_through_the_fallback(tmp_path: Path)
     Left to match, it answers for every row that shares its emptiness."""
     ds = _make_dataset(tmp_path)
     original = tmp_path / "media_raw" / "clip_a.mp4"
-    _write_mp4(original, nframes=6)
+    write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clip_a", abs_path=original)
     row["sequence"] = ""
     row["sequence_safe"] = ""
@@ -575,8 +568,8 @@ def test_a_multi_camera_sequence_reached_by_the_fallback_still_refuses(
     ds = _make_dataset(tmp_path)
     left = tmp_path / "media_raw" / "left.mp4"
     right = tmp_path / "media_raw" / "right.mp4"
-    _write_mp4(left, nframes=6)
-    _write_mp4(right, nframes=6)
+    write_mpeg4_mp4(left, frames=6)
+    write_mpeg4_mp4(right, frames=6)
     _write_index(
         tmp_path / "media_raw" / "index.csv",
         [

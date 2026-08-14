@@ -9,6 +9,8 @@ one"; this is the sanctioned one.
 What lives where:
 
 - ``datasets`` -- the `Dataset` a test runs against.
+- ``features`` -- the templates and per-sequence frames the global
+  fit-then-apply features are tested on.
 - ``tracks`` -- track tables, tracks variants, raw TREx exports.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``environment`` -- what the surrounding machine provides (the ffmpeg toolchain).
@@ -27,11 +29,17 @@ from tests.helpers.environment import (
     missing_ffmpeg_tools,
     require_ffmpeg,
 )
+from tests.helpers.features import (
+    make_sequence_df,
+    make_templates,
+    write_templates,
+)
 from tests.helpers.media import (
     add_media_sequence,
     add_transcode_derivative,
     clean_facts_cells,
     write_media_index,
+    write_mpeg4_mp4,
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.tracks import (
@@ -50,9 +58,13 @@ __all__ = [
     "add_transcode_derivative",
     "clean_facts_cells",
     "make_dataset",
+    "make_sequence_df",
+    "make_templates",
     "missing_ffmpeg_tools",
     "require_ffmpeg",
     "track_sequences",
     "write_media_index",
+    "write_mpeg4_mp4",
+    "write_templates",
     "write_trex_npz",
 ]

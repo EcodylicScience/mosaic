@@ -43,17 +43,29 @@ def make_dataset(
             that a root is *absent* passes False.
 
     Returns:
-        The dataset, loaded.
+        The dataset, ready to use.
+
+    The two branches are not two spellings of one thing, and neither can borrow
+    the other's steps. With *roots* unset, `new_dataset_manifest` has already
+    written a manifest, so the dataset is *read* -- and reading is what fills in
+    the default root set. With *roots* given there is nothing on disk yet, so
+    reading would raise, and reading is also exactly what would discard the
+    declaration: `load` replaces the manifest wholesale with the file's contents.
     """
     if roots is None:
         manifest = new_dataset_manifest(name=name, base_dir=base)
-        dataset = Dataset(manifest_path=manifest)
-    else:
-        dataset = Dataset(
-            manifest_path=base / "dataset.yaml",
-            roots={key: str(base / key) for key in roots},
-        )
-    _ = dataset.load(ensure_roots=ensure_roots)
+        dataset = Dataset(manifest_path=manifest).load(ensure_roots=ensure_roots)
+        if save:
+            dataset.save()
+        return dataset
+
+    base.mkdir(parents=True, exist_ok=True)
+    dataset = Dataset(
+        manifest_path=base / "dataset.yaml",
+        roots={key: str(base / key) for key in roots},
+    )
+    if ensure_roots:
+        dataset.ensure_roots()
     if save:
         dataset.save()
     return dataset

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.promotion import (
     correction_revision,
     next_revision,
@@ -26,12 +26,7 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
-from tests.helpers import write_trex_npz
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="promote", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+from tests.helpers import make_dataset, write_trex_npz
 
 
 def _corrected(
@@ -49,7 +44,7 @@ def _corrected(
 
 def test_a_first_promotion_lands_as_revision_one(tmp_path: Path) -> None:
     """Source, in a source root, under this sequence's own directory."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     correction = _corrected(tmp_path)
 
     report = promote_correction(
@@ -70,7 +65,7 @@ def test_a_second_correction_is_a_revision_not_a_conflict(tmp_path: Path) -> Non
     this one both revisions are on disk and addressable, which is what makes an
     earlier correction recoverable after a later one turns out worse.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
 
     first = promote_correction(
         ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
@@ -110,7 +105,7 @@ def test_a_promotion_moves_the_sequence_composition(tmp_path: Path) -> None:
     artifact built from it -- which is what makes promotion a *source* change
     rather than a new kind of thing.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     _ = promote_correction(
         ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
     )
@@ -136,7 +131,7 @@ def test_the_promoted_file_is_indexed_and_checksummed(tmp_path: Path) -> None:
 
     And the format column is what the caller named, not what promotion assumed.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
 
     _ = promote_correction(
         ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz", apply=True
@@ -157,7 +152,7 @@ def test_the_promoted_format_is_the_callers_to_name(tmp_path: Path) -> None:
     than being assumed. Only the column is under test here -- the promoted bytes
     are copied unread, so they need not be a real SLEAP export.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
 
     _ = promote_correction(
         ds,
@@ -179,7 +174,7 @@ def test_the_lineage_is_recorded_without_touching_the_label(tmp_path: Path) -> N
     things: a promotion that clears a display name, a rename that claims a
     lineage.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     ds.set_display_name("", "vid1", "Trial 1 (north tank)")
 
     _ = promote_correction(
@@ -203,7 +198,7 @@ def test_the_lineage_is_recorded_without_touching_the_label(tmp_path: Path) -> N
 
 def test_a_dry_run_promotes_nothing(tmp_path: Path) -> None:
     """Preview is the default, and it must not be one in name only."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
 
     report = promote_correction(
         ds, "", "vid1", _corrected(tmp_path), src_format="trex_npz"
@@ -220,7 +215,7 @@ def test_existing_derivatives_block_the_promotion(tmp_path: Path) -> None:
     ``reached_by`` is documented as answering *membership* when run before the
     change, which is what makes one function serve the preview and the audit.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     _prior_derivative(ds)
 
     report = promote_correction(
@@ -240,7 +235,7 @@ def test_forcing_promotes_but_deletes_nothing(tmp_path: Path) -> None:
     ``delete_set``'s gesture, behind its own force. A promote that also deleted
     would make the safer-sounding flag the more destructive one.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     derivative = _prior_derivative(ds)
 
     report = promote_correction(
@@ -260,7 +255,7 @@ def test_forcing_promotes_but_deletes_nothing(tmp_path: Path) -> None:
 
 def test_a_missing_source_raises_rather_than_reporting_success(tmp_path: Path) -> None:
     """Nothing to promote is a caller error, not an empty promotion."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
 
     with pytest.raises(FileNotFoundError, match="nothing to promote"):
         _ = promote_correction(
@@ -300,7 +295,7 @@ def test_a_multi_file_promotion_keeps_every_file(tmp_path: Path) -> None:
     survived -- with the index then recording that survivor's checksum, so
     nothing downstream could tell the others were gone.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     first = _corrected(tmp_path, name="vid1_fish0.npz", value=1.0)
     second = _corrected(tmp_path, name="vid1_fish1.npz", value=2.0)
 
@@ -348,7 +343,7 @@ def test_a_correction_converts_as_its_own_variant(tmp_path: Path) -> None:
     """
     import mosaic.core.track_library  # noqa: F401  -- registers trex_npz
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     raw = ds.get_root("tracks_raw")
     _trex_npz(raw / "vidA_fish0.npz", 1.0)
     _ = ds.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
@@ -387,7 +382,7 @@ def test_only_the_newest_correction_converts(tmp_path: Path) -> None:
     """The series is append-only history, not one variant per revision."""
     import mosaic.core.track_library  # noqa: F401
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     raw = ds.get_root("tracks_raw")
     _trex_npz(raw / "vidA_fish0.npz", 1.0)
     _ = ds.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
@@ -433,7 +428,7 @@ def test_a_second_promotion_keeps_the_first_correction_s_lineage(
     label row per sequence, so writing only the newest un-superseded the first
     correction's tracker output and quietly put it back on age-based retention.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="promote")
     correction = _corrected(tmp_path)
 
     for producer in ("trex.1.0-aaaaaaaaaa", "trex.1.0-bbbbbbbbbb"):

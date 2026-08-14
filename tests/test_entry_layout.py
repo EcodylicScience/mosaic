@@ -11,12 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.helpers import (
     entry_directory,
     make_entry_key,
@@ -24,18 +22,7 @@ from mosaic.core.helpers import (
     text_cell,
 )
 
-
-def _write_mp4(path: Path, nframes: int = 4) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(nframes):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="layout", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
 
 # --- What a cell means before it is a name ------------------------------------
@@ -144,10 +131,10 @@ def test_index_media_reads_the_sequence_from_the_directory(
     Under the stem heuristic they are two, which is the gap: the control plane
     has been writing this layout all along and nothing in mosaic could read it.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="layout")
     home = entry_directory(ds.get_root("media_raw"), "", "trial7")
-    _write_mp4(home / "part1.mp4")
-    _write_mp4(home / "part2.mp4")
+    write_mpeg4_mp4(home / "part1.mp4")
+    write_mpeg4_mp4(home / "part2.mp4")
 
     indexed = pd.read_csv(
         ds.index_media(
@@ -165,9 +152,9 @@ def test_a_grouped_entry_directory_yields_both_halves(
     tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """The group is recovered too, or the layout is only half readable."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="layout")
     home = entry_directory(ds.get_root("media_raw"), "cohortA", "trial7")
-    _write_mp4(home / "part1.mp4")
+    write_mpeg4_mp4(home / "part1.mp4")
 
     indexed = pd.read_csv(
         ds.index_media(
@@ -190,8 +177,8 @@ def test_the_flat_layout_is_grandfathered(
     flat layout; flipping the default would silently re-identify every dataset
     that relies on it.
     """
-    ds = _dataset(tmp_path)
-    _write_mp4(ds.get_root("media_raw") / "trial7.mp4")
+    ds = make_dataset(tmp_path / "ds", name="layout")
+    write_mpeg4_mp4(ds.get_root("media_raw") / "trial7.mp4")
 
     indexed = pd.read_csv(
         ds.index_media([ds.get_root("media_raw")], extensions=(".mp4",))
@@ -208,7 +195,7 @@ def test_an_unknown_layout_is_refused(tmp_path: Path) -> None:
     is for the callers whose value did not come from source: a CLI flag, a JSON
     payload, a queue spec.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="layout")
     from_the_wire: str = "per-sequence"
 
     with pytest.raises(ValueError, match="media_layout must be"):

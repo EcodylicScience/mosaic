@@ -9,8 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -26,13 +24,7 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 
-
-def _cfr_mp4(path: Path, n: int = 6) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(n):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
+from tests.helpers import write_mpeg4_mp4
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -301,8 +293,8 @@ def test_write_media_index_orders_by_position_and_stores_relative(
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
-    _cfr_mp4(seq_dir / "b.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "b.mp4")
 
     ds.write_media_index(
         [
@@ -355,7 +347,7 @@ def test_write_media_index_preserves_other_and_external_rows(
     write_media_index_rows(index_path, frame_from_rows([other, external]))
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -379,7 +371,7 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
 
     # First import: a.mp4 at position 0.
     ds.write_media_index(
@@ -391,7 +383,7 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
         extensions=(".mp4",),
     )
     # Append b.mp4; a.mp4 keeps prior order 0, b.mp4 follows.
-    _cfr_mp4(seq_dir / "b.mp4")
+    write_mpeg4_mp4(seq_dir / "b.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -417,7 +409,7 @@ def test_write_media_index_writes_a_doubly_scoped_file_once(
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     shared = tmp_path / "media_raw" / "shared"
-    _cfr_mp4(shared / "a.mp4")
+    write_mpeg4_mp4(shared / "a.mp4")
 
     ds.write_media_index(
         [
@@ -461,7 +453,7 @@ def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> N
     write_media_index_rows(index_path, frame_from_rows(untouched))
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -499,8 +491,8 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
     )
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "seqA_0.mp4")
-    _cfr_mp4(seq_dir / "seqA_1.mp4")
+    write_mpeg4_mp4(seq_dir / "seqA_0.mp4")
+    write_mpeg4_mp4(seq_dir / "seqA_1.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -525,7 +517,7 @@ def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> N
     tmp_path = tmp_path.resolve()
     ds = _make_dataset(tmp_path)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     scope = MediaIndexScope(
         directory=seq_dir, group="", sequence="seqA", order_by_name={"a.mp4": 0}
     )
@@ -568,15 +560,15 @@ def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
     )
 
     scanned = tmp_path / "media_raw" / "scanned"
-    _cfr_mp4(scanned / "known.mp4")
-    _cfr_mp4(scanned / "stranger.mp4")
+    write_mpeg4_mp4(scanned / "known.mp4")
+    write_mpeg4_mp4(scanned / "stranger.mp4")
     ds.index_media([scanned], extensions=(".mp4",))
 
     by_name = {row["name"]: row["assignment_source"] for row in ds.read_media_index()}
     assert by_name == {"known.mp4": "scan-keymap", "stranger.mp4": "scan-stem"}
 
     assigned_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(assigned_dir / "a.mp4")
+    write_mpeg4_mp4(assigned_dir / "a.mp4")
     ds.write_media_index(
         [MediaIndexScope(directory=assigned_dir, group="", sequence="seqA")],
         extensions=(".mp4",),
@@ -621,7 +613,7 @@ def test_two_finalizes_of_different_sequences_do_not_lose_rows(tmp_path: Path) -
     ds = _make_dataset(tmp_path)
     for sequence in ("seqA", "seqB"):
         for name in ("a.mp4", "b.mp4", "c.mp4"):
-            _cfr_mp4(tmp_path / "media_raw" / sequence / name)
+            write_mpeg4_mp4(tmp_path / "media_raw" / sequence / name)
 
     gate = tmp_path / "gate"
     gate.mkdir()
