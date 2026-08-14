@@ -8,6 +8,66 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — a table may declare centimetres, and three TREx readers say which
+
+**mosaic refused data it could analyse perfectly well, over a number nobody
+needed.** TRex has scaled its positional output by `cm_per_pixel` since long
+before it began *recording* the factor (2025-02-18, TRex 2.0.0), so every older
+export is centimetres with no record of by how much. Nothing can divide that back
+out. "Tracks are pixels" therefore made a whole population of real data
+unconvertible — and the workaround it invited, `cm_per_pixel = 1.0`, would have
+written centimetres into a table whose schema promised pixels, which is the exact
+silent lie the pixels rule exists to remove.
+
+**New schema `mosaic_cm_v1`.** The same contract as `trex_v2` — same required
+columns, same allowance for what TRex genuinely measures, `X`/`Y` the body
+centre — in centimetres. It is deliberately **its own schema family**, extending
+nothing: these columns mean the same *things* as `mosaic_v1`'s and not the same
+numbers, so a scope resolving both is refused by `_refuse_mixed_schemas`, naming
+both families and their entries. The required set is now shared through
+`STANDARD_COLUMNS`, because the second family cannot inherit it — extending would
+put it in the pixel family and make the two mix, which is the one thing they must
+not do.
+
+Pixels remain the default and what every modern tracker emits. `scale-to-cm`
+converts px → cm as a recorded step; nothing converts cm → px without a factor,
+because nothing can.
+
+**New converter `trex_npz_cm`**, and TRex now has three readers with one recipe
+each — `output_schema` is declared once per class, so a converter choosing its
+schema per file would make that declaration a guess:
+
+| the file | reader | emits |
+| --- | --- | --- |
+| records `cm_per_pixel` | `trex_npz` | `trex_v2`, pixels |
+| does not, factor known | `trex_npz_scaled` | `trex_v2`, pixels |
+| does not, factor gone | `trex_npz_cm` | `mosaic_cm_v1`, centimetres |
+
+`trex_npz_cm` takes no parameters and converts nothing. It does still run
+`name_the_body_centre`: the head-versus-centre defect is not a unit question and
+does not deserve to ride along with one. `MissingTrexCalibrationError` now names
+all three routes instead of one that did not exist.
+
+**Three TREx 1.x field names were unclassified, and all of them mattered.** TRex
+renamed them on the way to 2.x, and mosaic knew only the later spellings:
+
+- `frame_segments` → `tracklets` and `segment_vxys` → `tracklet_vxys` are
+  per-*tracklet*, and both are now in `OFF_AXIS_FIELDS`. Before this they were
+  padded onto the frame axis — a value on a row that denies it — and, once
+  `unscale_to_pixels` existed, refused the whole table as unclassified. Every
+  file of a 720-file archive failed on exactly this.
+- `segment_length` → `midline_segment_length` is a length in centimetres
+  (`length(seg[1].pos - seg[0].pos) * cm_per_pixel`, verified in TRex's
+  `OutputLibrary.cpp` at v1.1.9) and is now in `_LENGTH_FIELDS`, and in
+  `scale-to-cm`'s classifier so the two stay in step.
+
+**On disk:** nothing existing moves. `mosaic_cm_v1` is a new name on the
+`std_format` column, `trex_npz_cm` writes its own
+`tracks/convert-trex_npz_cm.<version>-<digest>/`, and a dataset holding both a
+centimetre and a pixel conversion of one entry has two labelled variants —
+`select_variant_rows` refuses to choose, and `Dataset.drop_entries(..., run_id=)`
+retires one.
+
 ## Unreleased — `scale-to-cm` can be chained, and a TREx reader can be told the factor
 
 **`scale-to-cm` could not be put in a pipeline, which is the one thing it is for.**

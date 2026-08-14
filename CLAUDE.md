@@ -557,7 +557,7 @@ annotation paths.
 
 ### Track schema
 
-Standardized tracks are validated by `core/schema.py`. Three schemas are
+Standardized tracks are validated by `core/schema.py`. Four schemas are
 registered, and a converter declares which it emits through
 `TrackConverter.output_schema` — a tracker through `TrackingRoot.output_schema`.
 **That declaration is the only place the name is written.** It used to be spelled
@@ -580,9 +580,18 @@ chosen names and the index row recorded only the second.
 - **`trex_v2`** — `mosaic_v1` plus what TREx genuinely measures (`SPEED`,
   `ANGLE`, `X#wcentroid`, the midline family), also in pixels. TREx's own bare
   `X`/`Y` are the *head* and are preserved as `X#head`/`Y#head`.
+- **`mosaic_cm_v1`** — the same contract as `trex_v2`, in **centimetres**, with
+  `X`/`Y` still the body centre. It exists because the unit is sometimes not
+  recoverable: TREx scaled its output long before it recorded `cm_per_pixel`
+  (2025-02-18, TREx 2.0.0), and nothing can divide back out a factor nobody
+  wrote down. Deliberately **its own schema family**, extending nothing — the
+  columns mean the same things as `mosaic_v1`'s and not the same numbers, so a
+  scope resolving both is refused. `STANDARD_COLUMNS` is shared between the two
+  families precisely because the second cannot inherit it.
 - **`trex_v1`** — the legacy schema, kept registered permanently because a real
   archived dataset is in it. Its spatial columns are **centimetres** and its `X`
-  is a head position.
+  is a head position. Not the schema for new centimetre data — it also requires
+  keypoints and does not require `X`/`Y`; `mosaic_cm_v1` is.
 
 Two rules the validator enforces beyond presence:
 

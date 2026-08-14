@@ -3,6 +3,16 @@
 Converts TRex-exported per-individual NPZ files to the standardized ``trex_v2``
 parquet schema: pixels throughout, with ``X``/``Y`` naming the body centre.
 
+**Three readers, because the unit is not always recoverable.** TRex began
+recording the factor it scaled by on 2025-02-18, in 2.0.0; before that it scaled
+just as hard and wrote nothing down. So :class:`TrexNpzConverter` reads the
+factor off the file and emits pixels; :class:`TrexNpzScaledConverter` is *told*
+the factor and emits pixels; and :class:`TrexNpzCmConverter` keeps the
+centimetres and declares them, for the export whose factor is gone and whose
+owner does not need it. One recipe each, because ``output_schema`` is declared
+once per class and a converter that chose its schema per file would make that
+declaration a guess. All three put the body centre in ``X``.
+
 **TRex reports centimetres, and mosaic tables are pixels.** TRex scales its
 positional output by ``cm_per_pixel`` internally, so ``X``, ``SPEED`` and the
 rest arrive in cm while the keypoints beside them are pixels -- one table, two
@@ -51,6 +61,7 @@ __all__ = [
     "MissingBodyCentreError",
     "MissingTrexCalibrationError",
     "TrexCalibrationConflictError",
+    "TrexNpzCmConverter",
     "TrexNpzConverter",
     "TrexNpzScaledConverter",
     "TrexScaledNpzParams",
@@ -143,6 +154,11 @@ _LENGTH_FIELDS: frozenset[str] = frozenset(
         "midline_x",
         "midline_y",
         "midline_segment_length",
+        # TREx <= 1.x's name for ``midline_segment_length``. Verified against
+        # ``OutputLibrary.cpp`` at v1.1.9, where it is
+        # ``length(seg[1].pos - seg[0].pos) * cm_per_pixel`` -- a length, in
+        # centimetres, and so one that has to be divided back out.
+        "segment_length",
     }
 )
 
@@ -214,15 +230,28 @@ def base_field(column: str) -> str:
     return _FLATTENED_INDEX.sub("", column.split("#", 1)[0])
 
 
-OFF_AXIS_FIELDS: frozenset[str] = frozenset({"tracklets", "tracklet_vxys"})
+OFF_AXIS_FIELDS: frozenset[str] = frozenset(
+    {
+        "tracklets",
+        "tracklet_vxys",
+        # The same two fields under the names TREx <= 1.x wrote them. The rename
+        # came with the 2.x "segments -> tracklets" pass, and a 1.x export
+        # therefore carried two per-tracklet arrays past a guard that only knew
+        # the later spelling: padded onto the frame axis, and -- once
+        # ``unscale_to_pixels`` existed -- refusing the whole table as
+        # unclassified. Both spellings, one rule.
+        "frame_segments",
+        "segment_vxys",
+    }
+)
 """TRex exports that are not one row per frame, and so cannot join this table.
 
 Both are per-*tracklet* rather than per-frame, and the flattener would pad them
 with NaN to the frame axis -- putting each value on a row that does not mean it.
 
-``tracklets`` is ``(n_tracklets, 2)`` of ``[start_frame, end_frame]``.
-``tracklet_vxys`` is ``(n_frames_inside_tracklets, 4)`` of
-``[frame, vx, vy, speed]``.
+``tracklets`` (TREx <= 1.x: ``frame_segments``) is ``(n_tracklets, 2)`` of
+``[start_frame, end_frame]``. ``tracklet_vxys`` (TREx <= 1.x: ``segment_vxys``)
+is ``(n_frames_inside_tracklets, 4)`` of ``[frame, vx, vy, speed]``.
 
 Dropped rather than realigned, for two reasons beyond the axis. Their velocities
 are the one thing TRex exports in ``PX_AND_SECONDS`` while ``VX``/``VY``/``SPEED``
@@ -494,12 +523,60 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
         if cm_per_pixel is None:
             raise MissingTrexCalibrationError(
                 f"{path} records no {CALIBRATION_COLUMN}, so there is no way to tell "
-                "whether its positions are centimetres or pixels, or by how much they "
-                "differ. TRex has written this field into every export since "
-                "2025-02-18; an older file has to be re-exported from its .results, or "
-                "converted by a reader that is told the factor."
+                "by how much its centimetres differ from pixels. TRex has written "
+                "this field into every export since 2025-02-18 (TRex 2.0.0); an "
+                "older one leaves three routes. Re-export it from its .results with "
+                "a current TRex and convert it here. Or, if you know the factor "
+                "TRex applied, convert with src_format='trex_npz_scaled', which is "
+                "told it. Or, if you do not know it and do not need pixels, convert "
+                "with src_format='trex_npz_cm', which keeps the centimetres and "
+                "says so in the schema."
             )
         df = unscale_to_pixels(df, cm_per_pixel)
+        df = name_the_body_centre(df, source=path)
+        df["group"] = hints.group
+        df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)
+        return df
+
+
+@register_track_converter
+class TrexNpzCmConverter(TrexNpzConverter):
+    """TRex per-id NPZ kept in the centimetres TRex wrote it in.
+
+    The reader for the case where the factor is *not* recoverable and not
+    wanted. TRex scaled its positional output by ``cm_per_pixel`` long before it
+    began recording the factor, so a pre-2.0.0 export is centimetres with no
+    record of by how much -- and nothing can divide that back out. Refusing the
+    data over it would be refusing an analysis that is perfectly well defined in
+    centimetres, for a number its owner may never need.
+
+    So this converts nothing and declares everything: no unscaling, no
+    parameter, and ``mosaic_cm_v1`` on the index row saying in as many words
+    that the table is centimetres. That declaration is what keeps it safe --
+    ``mosaic_cm_v1`` is its own schema family, so a scope resolving these tables
+    beside pixel ones is refused by name rather than averaged into nonsense.
+
+    **The landmark is still corrected.** ``X``/``Y`` are TREx's ``#wcentroid``
+    and the bare pair is preserved as ``X#head``/``Y#head``, exactly as in
+    :class:`TrexNpzConverter`. The head-versus-centre defect is not a unit
+    question and does not deserve to ride along with one: TREx's bare ``X`` is
+    the head in every version, ~0.5 cm ahead of the body centre along the fish's
+    own heading, and a map anchored on it is displaced by a heading-dependent
+    amount that reads as interaction structure.
+
+    Getting to pixels later is a re-conversion, not a migration: recover the
+    factor, convert again under ``trex_npz_scaled``, and retire this variant.
+    """
+
+    src_format = "trex_npz_cm"
+    version = "0.1"
+    output_schema = "mosaic_cm_v1"
+    Params = TrackConvertParams
+
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        df = load_npz_to_df(path)
         df = name_the_body_centre(df, source=path)
         df["group"] = hints.group
         df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)

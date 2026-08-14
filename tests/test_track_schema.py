@@ -237,6 +237,42 @@ def test_schema_family_groups_a_superset_with_its_base() -> None:
     assert schema_family("trex_v1") != schema_family("mosaic_v1")
 
 
+def test_centimetres_are_their_own_family_rather_than_a_mosaic_v1_superset() -> None:
+    """The unit is what a family separates, and it is why this cannot extend.
+
+    ``mosaic_cm_v1`` carries the same columns as ``mosaic_v1``, meaning the same
+    *things* -- and not the same numbers. Extending would put it in the pixel
+    family and make the two mix freely, which is the one thing they must not do.
+    """
+    assert schema_family("mosaic_cm_v1") == "mosaic_cm_v1"
+    assert schema_family("mosaic_cm_v1") != schema_family("mosaic_v1")
+    assert schema_family("mosaic_cm_v1") != schema_family("trex_v2")
+
+
+def test_the_two_unit_families_require_the_same_columns() -> None:
+    """Same contract, different unit -- so the requirement is shared, not copied."""
+    assert TRACK_SCHEMAS["mosaic_cm_v1"].required == TRACK_SCHEMAS["mosaic_v1"].required
+
+
+def test_centimetres_allow_what_trex_measures() -> None:
+    """Its only producer is TREx, which reports speed and heading itself."""
+    assert TRACK_SCHEMAS["mosaic_cm_v1"].allows == TRACK_SCHEMAS["trex_v2"].allows
+    assert not TRACK_SCHEMAS["mosaic_cm_v1"].forbidden
+
+
+def test_a_centimetre_table_refuses_beside_a_pixel_one(tmp_path: Path) -> None:
+    """The failure this family exists to make loud rather than plausible."""
+    ds = _dataset_mixing(tmp_path, "mosaic_cm_v1", "trex_v2")
+    with pytest.raises(ValueError, match="incompatible schemas"):
+        _ = build_manifest(ds, Inputs(("tracks",)))
+
+
+def test_two_centimetre_tables_mix_freely(tmp_path: Path) -> None:
+    ds = _dataset_mixing(tmp_path, "mosaic_cm_v1", "mosaic_cm_v1")
+    _, scope = build_manifest(ds, Inputs(("tracks",)))
+    assert scope.entries == {("", "seq_a"), ("", "seq_b")}
+
+
 def test_schema_family_classifies_an_unknown_name_rather_than_raising() -> None:
     """An index row predating the column carries ``""``; it must still classify."""
     assert schema_family("") == ""

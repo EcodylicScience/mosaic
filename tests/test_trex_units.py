@@ -38,6 +38,7 @@ from mosaic.core.track_library.trex import (
     MissingBodyCentreError,
     MissingTrexCalibrationError,
     TrexCalibrationConflictError,
+    TrexNpzCmConverter,
     TrexNpzConverter,
     TrexNpzScaledConverter,
     TrexScaledNpzParams,
@@ -444,3 +445,189 @@ def test_the_factor_is_required_rather_than_defaulted() -> None:
     """`1.0` is a scale, not an absence -- and this reader exists for the absence."""
     with pytest.raises(ValidationError):
         _ = TrexScaledNpzParams()
+
+
+# --- the reader that keeps the centimetres -----------------------------------
+#
+# TREx scaled its output long before it recorded the factor, so a pre-2.0.0
+# export is centimetres with no record of by how much. Nothing can divide that
+# back out. Refusing the data over a number its owner may never need would be
+# refusing an analysis that is perfectly well defined in centimetres.
+
+
+def _convert_cm(path: Path) -> pd.DataFrame:
+    return TrexNpzCmConverter().convert(
+        path, TrackConvertParams(), EntryHints(group="", sequence="seq")
+    )
+
+
+def test_a_file_with_no_factor_converts_in_centimetres_with_no_parameter(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    _write_uncalibrated(path, n=4)
+
+    out = _convert_cm(path)
+
+    assert TrexNpzCmConverter.output_schema == "mosaic_cm_v1"
+    assert not out.empty
+
+
+def test_the_centimetres_are_left_exactly_as_trex_wrote_them(tmp_path: Path) -> None:
+    """It converts nothing. That is the whole point, and the thing to pin."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_uncalibrated(path, n=4)
+    raw = np.load(path)
+
+    out = _convert_cm(path)
+
+    assert out["X#wcentroid"].to_numpy() == pytest.approx(raw["X#wcentroid"])
+    assert out["Y#wcentroid"].to_numpy() == pytest.approx(raw["Y#wcentroid"])
+
+
+def test_the_landmark_is_corrected_even_though_the_unit_is_not(
+    tmp_path: Path,
+) -> None:
+    """Head-versus-centre is not a unit question and does not ride along with one."""
+    path = tmp_path / "seq_fish0.npz"
+    head = np.linspace(5.0, 6.0, 4)
+    _write_uncalibrated(path, n=4, X=head, Y=head)
+    raw = np.load(path)
+
+    out = _convert_cm(path)
+
+    assert out["X"].to_numpy() == pytest.approx(raw["X#wcentroid"])
+    assert out["X#head"].to_numpy() == pytest.approx(head)
+
+
+def test_a_recorded_factor_is_not_a_reason_to_refuse(tmp_path: Path) -> None:
+    """Keeping centimetres is a choice, not a fallback -- so a factor is ignored."""
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, n=4, cm_per_pixel=0.25)
+    raw = np.load(path)
+
+    out = _convert_cm(path)
+
+    assert out["X#wcentroid"].to_numpy() == pytest.approx(raw["X#wcentroid"])
+
+
+def test_the_three_readers_are_three_variants() -> None:
+    """One recipe each: the unit a table is in is part of what produced it."""
+    from mosaic.core.pipeline.tracks_identity import converter_op
+
+    ops = {
+        converter_op(c.src_format)
+        for c in (TrexNpzConverter, TrexNpzScaledConverter, TrexNpzCmConverter)
+    }
+    assert ops == {
+        "convert-trex_npz",
+        "convert-trex_npz_scaled",
+        "convert-trex_npz_cm",
+    }
+
+
+def test_the_refusal_names_all_three_routes(tmp_path: Path) -> None:
+    """An error naming a remedy that does not exist is a defect."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_uncalibrated(path, n=4)
+
+    with pytest.raises(MissingTrexCalibrationError) as excinfo:
+        _ = _convert(path)
+
+    message = str(excinfo.value)
+    assert "re-export" in message.lower()
+    assert "trex_npz_scaled" in message
+    assert "trex_npz_cm" in message
+
+
+# --- a real TREx 1.x export, by its own field names ---------------------------
+
+
+_TREX_1X_KEYS: tuple[str, ...] = (
+    "ACCELERATION#pcentroid",
+    "ACCELERATION#wcentroid",
+    "ANGLE",
+    "ANGULAR_A#centroid",
+    "ANGULAR_V#centroid",
+    "AX",
+    "AY",
+    "BORDER_DISTANCE#pcentroid",
+    "MIDLINE_OFFSET",
+    "SPEED",
+    "SPEED#pcentroid",
+    "SPEED#smooth#wcentroid",
+    "SPEED#wcentroid",
+    "VX",
+    "VY",
+    "midline_length",
+    "midline_x",
+    "midline_y",
+    "missing",
+    "normalized_midline",
+    "num_pixels",
+    "segment_length",
+    "timestamp",
+)
+"""Every per-frame field of a real TREx 1.x export, verbatim.
+
+Taken from an archived 2019-2020 dataset of 720 files. TREx renamed three of
+these on the way to 2.x -- ``frame_segments`` -> ``tracklets``, ``segment_vxys``
+-> ``tracklet_vxys``, ``segment_length`` -> ``midline_segment_length`` -- and a
+classifier that knew only the later spellings refused every one of those files.
+"""
+
+
+def _write_trex_1x(path: Path, *, n: int = 6) -> None:
+    """A TREx 1.x export: no calibration, the 1.x spellings, no keypoints."""
+    ramp = np.linspace(0.0, 1.0, n)
+    fields: dict[str, np.ndarray] = {k: ramp.copy() for k in _TREX_1X_KEYS}
+    fields["frame"] = np.arange(n, dtype=np.int64)
+    fields["time"] = np.arange(n, dtype=float) / 30.0
+    fields["X"] = ramp.copy()
+    fields["Y"] = ramp.copy()
+    fields["X#wcentroid"] = ramp.copy()
+    fields["Y#wcentroid"] = ramp.copy()
+    # Per-tracklet, not per-frame, under the 1.x names.
+    fields["frame_segments"] = np.zeros((3, 2), dtype=np.int32)
+    fields["segment_vxys"] = np.zeros((5, 4), dtype=np.float32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **fields)
+
+
+def test_a_trex_1x_export_converts_in_centimetres(tmp_path: Path) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    _write_trex_1x(path)
+
+    out = _convert_cm(path)
+
+    assert {"X", "Y", "frame", "time", "id", "group", "sequence"} <= set(out.columns)
+
+
+def test_the_1x_per_tracklet_fields_are_dropped_not_padded(tmp_path: Path) -> None:
+    """Padded onto the frame axis they would put a value on a row that denies it."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_trex_1x(path)
+
+    out = _convert_cm(path)
+
+    stray = sorted(
+        c
+        for c in map(str, out.columns)
+        if c.startswith(("frame_segments", "segment_vxys"))
+    )
+    assert stray == []
+
+
+def test_a_trex_1x_export_unscales_when_told_the_factor(tmp_path: Path) -> None:
+    """The same file down the pixel route: every 1.x field has to classify."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_trex_1x(path)
+
+    out = _convert_scaled(path, 0.5)
+
+    # `segment_length` is 1.x's `midline_segment_length`, and TREx scales both.
+    assert out["segment_length"].to_numpy() == pytest.approx(
+        np.linspace(0.0, 1.0, 6) / 0.5
+    )
+    # `midline_length` is the one TREx leaves in pixels.
+    assert out["midline_length"].to_numpy() == pytest.approx(np.linspace(0.0, 1.0, 6))

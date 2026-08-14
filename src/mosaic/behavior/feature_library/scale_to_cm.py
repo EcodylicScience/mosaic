@@ -80,6 +80,8 @@ _LENGTH_NAMES: frozenset[str] = frozenset(
         "ACCELERATION_SMOOTH",
         "BORDER_DISTANCE",
         "NEIGHBOR_DISTANCE",
+        "midline_segment_length",
+        "segment_length",
     }
 )
 _LENGTH_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "bbox_", "midline_")

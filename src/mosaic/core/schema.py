@@ -331,18 +331,31 @@ overlooks; it is what ``allows`` is for.
 """
 
 
+STANDARD_COLUMNS: AbstractSet[str] = frozenset(
+    {
+        "frame",
+        "time",
+        "id",
+        "group",
+        "sequence",
+        "X",
+        "Y",
+    }
+)
+"""What every standard table must carry, whatever its unit.
+
+Named once because two schema *families* require it -- ``mosaic_v1`` in pixels
+and ``mosaic_cm_v1`` in centimetres. The second cannot inherit it, since
+extending would put it in the pixel family and make the two mixable, which is the
+one thing they must not be. So the set is shared here instead, and a column added
+to the contract cannot reach one family and miss the other.
+"""
+
+
 register_track_schema(
     TrackSchema(
         name="mosaic_v1",
-        required={
-            "frame",
-            "time",
-            "id",
-            "group",
-            "sequence",
-            "X",
-            "Y",
-        },
+        required=STANDARD_COLUMNS,
         forbidden=DERIVED_COLUMNS,
         description=(
             "The tracker-neutral standard: per-frame, per-id tracks in video "
@@ -372,6 +385,31 @@ register_track_schema(
             "forbidden here. `X`/`Y` carry the body centre (TREx's `#wcentroid`), "
             "and TREx's own bare `X`/`Y` -- which are the *head*, and present "
             "only where posture was calculated -- are kept as `X#head`/`Y#head`."
+        ),
+    )
+)
+
+
+register_track_schema(
+    TrackSchema(
+        name="mosaic_cm_v1",
+        required=STANDARD_COLUMNS,
+        allows=DERIVED_COLUMNS,
+        description=(
+            "The same contract as `trex_v2`, in centimetres rather than pixels. "
+            "It exists because the unit is sometimes not recoverable: TREx has "
+            "scaled its positional output by `cm_per_pixel` since long before it "
+            "began recording the factor (2025-02-18, TREx 2.0.0), so an older "
+            "export is centimetres with no record of by how much. Nothing can "
+            "divide that back out, and refusing the data over a number its owner "
+            "may never need would be refusing an analysis that is perfectly well "
+            "defined in centimetres. `X`/`Y` are the body centre here too. "
+            "Deliberately its own family, extending nothing: these columns mean "
+            "the same *things* as `mosaic_v1`'s but not the same numbers, so a "
+            "scope may never resolve both, and `_refuse_mixed_schemas` is what "
+            "says so. Pixels remain the default and what every modern tracker "
+            "emits; `scale-to-cm` converts px -> cm as a recorded step, and "
+            "nothing converts cm -> px without a factor, because nothing can."
         ),
     )
 )

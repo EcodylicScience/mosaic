@@ -17,14 +17,15 @@ skeleton to copy.
 
 They decide how much of the rest applies.
 
-1. **Can you reuse a shipped format?** Seven are registered, in six rows:
+1. **Can you reuse a shipped format?** Eight are registered, in seven rows:
 
    | `src_format`                    | Reads                                            | Schema      |
    | ------------------------------- | ------------------------------------------------ | ----------- |
    | `deeplabcut`                    | DLC `.csv` / `.h5`, single- and multi-animal; also Lightning Pose | `mosaic_v1` |
    | `sleap_analysis_h5`             | `sleap-convert --format analysis` HDF5           | `mosaic_v1` |
-   | `trex_npz`                      | TRex per-individual `.npz`                       | `trex_v2`   |
-   | `trex_npz_scaled`               | TRex per-individual `.npz` predating `cm_per_pixel`, told the factor | `trex_v2`   |
+   | `trex_npz`                      | TRex per-individual `.npz` recording `cm_per_pixel` (TRex ≥ 2.0.0) | `trex_v2`   |
+   | `trex_npz_scaled`               | the same, predating that field, **told** the factor | `trex_v2`   |
+   | `trex_npz_cm`                   | the same, factor unknown — **kept in centimetres** | `mosaic_cm_v1` |
    | `ultralytics_tracks`            | Ultralytics MOT output                           | `mosaic_v1` |
    | `calms21_npy` / `calms21_json`  | CalMS21 arrays, task1/2/3                        | `mosaic_v1` |
 
@@ -213,14 +214,27 @@ factor **from the file** and never from mosaic's settings or a default.
 classify as a length, a column it cannot classify raises rather than being scaled
 on a guess, and a file recording no factor raises `MissingTrexCalibrationError`.
 A factor that can only come from the caller is a `Params` field, and so part of
-the recipe: two calibrations, two variants. An unknown factor raises. `1.0` is a
-scale, not an absence. `trex_npz_scaled` is that case worked out: TRex has
-written `cm_per_pixel` into every export only since 2025-02-18, so an older file
-is centimetres with no record of by how much, and it is a *second registered
-format* rather than an optional field on the first — a variant identity names one
-producer, so a factor someone reconstructed stays addressable apart from a factor
-the exporter measured. It refuses when the file records a factor that disagrees
-with the one it was told.
+the recipe: two calibrations, two variants. `1.0` is a scale, not an absence.
+
+**When the factor is gone, say so rather than refusing.** TRex has written
+`cm_per_pixel` into every export only since 2025-02-18 (TRex 2.0.0), so an older
+file is centimetres with no record of by how much, and nothing can divide that
+back out. Refusing it would refuse an analysis that is perfectly well defined in
+centimetres, over a number its owner may never need. So TRex has three readers,
+one recipe each — `output_schema` is declared once per class, and a converter
+choosing its schema per file would make that declaration a guess:
+
+| the file | reader | emits |
+| -------- | ------ | ----- |
+| records the factor | `trex_npz` | `trex_v2`, pixels |
+| does not, and you know it | `trex_npz_scaled` | `trex_v2`, pixels |
+| does not, and you don't | `trex_npz_cm` | `mosaic_cm_v1`, **centimetres** |
+
+`mosaic_cm_v1` is deliberately its own schema *family*: the same columns as
+`mosaic_v1`, meaning the same things and not the same numbers, so a scope
+resolving both is refused by name rather than averaged into nonsense. Emitting a
+centimetre table under a pixel schema is the failure that arrangement exists to
+prevent — do not reach for `cm_per_pixel=1.0` to make one validate.
 
 Physical units belong downstream, in `scale-to-cm`, which takes the scale from
 the media index beside the video it describes (`Dataset.set_media_calibration`)
