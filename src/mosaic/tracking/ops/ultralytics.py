@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue
 from mosaic.tracking.common.params import TrackerOpParams
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
@@ -105,6 +105,46 @@ class UltralyticsOp(Op[UltralyticsParams]):
 
     def target(self, params: UltralyticsParams) -> str:
         return "ultralytics-track"
+
+    def plan_identity(self, ds: Dataset, params: UltralyticsParams) -> OpIdentity:
+        """What an Ultralytics tracking run with these settings will be called.
+
+        The tracker table is resolved in full rather than carried as the
+        overrides, matching ``run_ultralytics``: a caller who restates a default
+        and one who passes nothing must mint the same identifier.
+        """
+        from mosaic.core.pipeline.op_identity import parse_op_run_id
+        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_settings
+        from mosaic.tracking.ultralytics_track.tracker_defaults import (
+            resolve_tracker_config,
+        )
+
+        # Both train-pose and train-points produce runnable weights, and a run id
+        # resolves against the index its own training op wrote -- so the kind
+        # comes from the reference rather than from this tracker.
+        parsed = parse_op_run_id(str(params.model_path))
+        model_kind = parsed.kind if parsed is not None else "train-pose"
+        settings = ultralytics_settings(
+            model_id=planned_model_id(
+                ds, self.kind, [str(params.model_path)], model_kind
+            ),
+            task=params.task,
+            tracker=params.tracker,
+            tracker_config=resolve_tracker_config(
+                params.tracker, params.tracker_overrides
+            ),
+            conf=params.conf,
+            iou=params.iou,
+            imgsz=params.imgsz,
+            max_det=params.max_det,
+            classes=params.classes,
+            agnostic_nms=params.agnostic_nms,
+            start_frame=params.start_frame,
+            end_frame=params.end_frame,
+            frame_step=params.frame_step,
+        )
+        return tracker_identity(self.kind, self.version, settings)
 
     def run(self, ds: Dataset, params: UltralyticsParams, ctx: JobContext) -> str:
         # Ultralytics and torch stay inside run(), so registration is light.

@@ -14,7 +14,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 import pandas as pd
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Final, Self
 
 from pydantic import model_validator
@@ -30,7 +30,8 @@ from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
+from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.model_refs import ModelShape, resolve_model
 from mosaic.tracking.ops._common import (
     claim_run_root,
@@ -105,6 +106,56 @@ def train_run_id(
     if extra:
         payload.update(extra)
     return op_run_id(kind, version, payload)
+
+
+def planned_train_identity(
+    ds: Dataset,
+    *,
+    kind: str,
+    version: str,
+    params: Params,
+    data_path: Path,
+    fingerprint: Callable[[Path], str],
+    base_model: str,
+    extra: Mapping[str, object] | None = None,
+    require_data: bool = True,
+) -> OpIdentity:
+    """What a training run with these params will be called, without training.
+
+    Every training op mints its identifier the same way -- params, a content
+    fingerprint of the data, and what it fine-tunes from -- so this is that,
+    called by both ``plan_identity`` and ``run``.
+
+    *require_data* is what separates planning from execution. A planner asks
+    whether this run is nameable and must be told when it is not; an execution
+    already has its data, and the specific refusal for a missing file belongs to
+    the tool that reads it -- which says which file and why, where this could only
+    say that something is absent. So ``run`` passes ``False`` and computes exactly
+    the identifier it always did, and the two agree whenever the answer matters:
+    if the data is absent the run fails either way.
+
+    **The fingerprint is why a training step can be unplannable**, and it is the
+    right trade rather than a gap. Two runs over changed annotations must be two
+    models, so the data enters the identity by content; content has to be read;
+    and when the data directory is itself produced by an earlier step in the same
+    graph there is nothing there yet to read. Saying so is honest, and it costs
+    nothing at execution: the step resolves its own identity at its own start,
+    where the directory does exist.
+    """
+    if require_data and not data_path.exists():
+        raise IdentityDeferred(
+            kind,
+            f"its training data ({data_path}) is not on disk yet, and a model's "
+            f"identity covers the content of what it was trained on",
+        )
+    base_run_id = ""
+    if base_model:
+        base_run_id = planned_model_id(ds, kind, [base_model], kind)
+    run_id = train_run_id(
+        kind, version, params, fingerprint(data_path), base_run_id, extra=extra
+    )
+    # A training run and the model it produces are one artifact under one name.
+    return OpIdentity(run_id=run_id, model_run_id=run_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +443,29 @@ class TrainPoseOp(Op[PoseTrainParams]):
     version = "0.2"
     Params = PoseTrainParams
 
+    def plan_identity(
+        self, ds: Dataset, params: PoseTrainParams, *, require_data: bool = True
+    ) -> OpIdentity:
+        """What this run, and the model it produces, will be called.
+
+        *require_data* separates planning from execution. A planner asks whether
+        this run is nameable at all and must be told when it is not; an execution
+        already has its data, and the refusal for a missing file belongs to the
+        tool that reads it, which can say which file and why. The two agree
+        whenever the answer matters: if the data is absent the run fails either
+        way.
+        """
+        return planned_train_identity(
+            ds,
+            kind=self.kind,
+            version=self.version,
+            params=params,
+            data_path=Path(ds.resolve_path(params.data)),
+            fingerprint=fingerprint_yolo_dataset,
+            base_model=params.base_model,
+            require_data=require_data,
+        )
+
     def run(self, ds: Dataset, params: PoseTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.train import train_pose_model
 
@@ -409,13 +483,10 @@ class TrainPoseOp(Op[PoseTrainParams]):
             base_digest = base.digest
             model_arg = str(base.path)
 
-        run_id = train_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_yolo_dataset(data_yaml),
-            base_run_id,
-        )
+        # Through plan_identity, so this run is named in exactly one place. A
+        # second copy here would be the one that drifts when the payload changes,
+        # and it is the one a planner does not read.
+        run_id = self.plan_identity(ds, params, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
@@ -467,6 +538,29 @@ class TrainPointsOp(Op[PointTrainParams]):
     version = "0.2"  # see TrainPoseOp.version
     Params = PointTrainParams
 
+    def plan_identity(
+        self, ds: Dataset, params: PointTrainParams, *, require_data: bool = True
+    ) -> OpIdentity:
+        """What this run, and the model it produces, will be called.
+
+        *require_data* separates planning from execution. A planner asks whether
+        this run is nameable at all and must be told when it is not; an execution
+        already has its data, and the refusal for a missing file belongs to the
+        tool that reads it, which can say which file and why. The two agree
+        whenever the answer matters: if the data is absent the run fails either
+        way.
+        """
+        return planned_train_identity(
+            ds,
+            kind=self.kind,
+            version=self.version,
+            params=params,
+            data_path=Path(ds.resolve_path(params.data)),
+            fingerprint=fingerprint_yolo_dataset,
+            base_model=params.base_model,
+            require_data=require_data,
+        )
+
     def run(self, ds: Dataset, params: PointTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.train import train_point_model
 
@@ -484,13 +578,10 @@ class TrainPointsOp(Op[PointTrainParams]):
             base_digest = base.digest
             model_arg = str(base.path)
 
-        run_id = train_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_yolo_dataset(data_yaml),
-            base_run_id,
-        )
+        # Through plan_identity, so this run is named in exactly one place. A
+        # second copy here would be the one that drifts when the payload changes,
+        # and it is the one a planner does not read.
+        run_id = self.plan_identity(ds, params, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
@@ -546,6 +637,29 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
     version = "0.1"
     Params = LocalizerTrainParams
 
+    def plan_identity(
+        self, ds: Dataset, params: LocalizerTrainParams, *, require_data: bool = True
+    ) -> OpIdentity:
+        """What this run, and the model it produces, will be called.
+
+        *require_data* separates planning from execution. A planner asks whether
+        this run is nameable at all and must be told when it is not; an execution
+        already has its data, and the refusal for a missing file belongs to the
+        tool that reads it, which can say which file and why. The two agree
+        whenever the answer matters: if the data is absent the run fails either
+        way.
+        """
+        return planned_train_identity(
+            ds,
+            kind=self.kind,
+            version=self.version,
+            params=params,
+            data_path=Path(ds.resolve_path(params.dataset_dir)),
+            fingerprint=fingerprint_dataset,
+            base_model=params.base_model,
+            require_data=require_data,
+        )
+
     def run(self, ds: Dataset, params: LocalizerTrainParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.localizer_train import train_localizer
 
@@ -560,13 +674,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             base_digest = base.digest
             weights = str(base.path)
 
-        run_id = train_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_dataset(dataset_dir),
-            base_run_id,
-        )
+        run_id = self.plan_identity(ds, params, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.common.params import TrackerOpParams
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
@@ -59,6 +59,20 @@ class LitposeOp(Op[LitposeParams]):
 
     def target(self, params: LitposeParams) -> str:
         return "litpose-predict"
+
+    def plan_identity(self, ds: Dataset, params: LitposeParams) -> OpIdentity:
+        """What a Lightning Pose run with these settings will be called."""
+        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.litpose.dataset_runs import litpose_settings
+        from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
+
+        settings = litpose_settings(
+            model_id=planned_model_id(
+                ds, self.kind, [str(params.model_path)], TRAIN_LITPOSE_KIND
+            ),
+            litpose_overrides=params.litpose_overrides,
+        )
+        return tracker_identity(self.kind, self.version, settings)
 
     def run(self, ds: Dataset, params: LitposeParams, ctx: JobContext) -> str:
         # Heavy Lightning Pose imports (subprocess) stay inside run() so registration is light.

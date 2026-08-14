@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.common.params import TrackerOpParams
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
@@ -70,6 +70,35 @@ class SleapOp(Op[SleapParams]):
 
     def target(self, params: SleapParams) -> str:
         return "sleap-track"
+
+    def plan_identity(self, ds: Dataset, params: SleapParams) -> OpIdentity:
+        """What a SLEAP run with these settings will be called.
+
+        The model set resolves under the *training* kind rather than this
+        tracker's, matching ``run_sleap``: a registered reference resolves
+        against the index the training op wrote, and ``MODEL_KINDS`` declares
+        ``train-sleap`` as SLEAP's own artifact shape for exactly this.
+        """
+        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.sleap.dataset_runs import sleap_settings
+        from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
+
+        settings = sleap_settings(
+            model_id=planned_model_id(
+                ds, self.kind, list(params.model_paths), TRAIN_SLEAP_KIND
+            ),
+            tracking=params.tracking,
+            tracker=params.tracker,
+            similarity=params.similarity,
+            match=params.match,
+            track_window=params.track_window,
+            max_instances=params.max_instances,
+            max_tracking=params.max_tracking,
+            peak_threshold=params.peak_threshold,
+            analysis_range=params.analysis_range,
+            sleap_extra_settings=params.sleap_extra_settings,
+        )
+        return tracker_identity(self.kind, self.version, settings)
 
     def run(self, ds: Dataset, params: SleapParams, ctx: JobContext) -> str:
         # Heavy SLEAP imports (subprocess/h5py) stay inside run() so registration is light.

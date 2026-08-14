@@ -18,7 +18,7 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import (
@@ -28,7 +28,6 @@ from mosaic.tracking.ops._common import (
 )
 from mosaic.tracking.ops.train import (
     finalize_training,
-    train_run_id,
     training_is_complete,
 )
 from mosaic.tracking.litpose.templates import default_config_path
@@ -88,6 +87,35 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
     def target(self, params: TrainLitposeParams) -> str:
         return f"litpose-train-{params.model_type}"
 
+    def plan_identity(
+        self, ds: Dataset, params: TrainLitposeParams, *, require_data: bool = True
+    ) -> OpIdentity:
+        """What this run, and the model it produces, will be called.
+
+        The base config enters the identity as a content digest, because two
+        projects trained under different configs are different models.
+        *require_data* separates planning from execution; see
+        :func:`~mosaic.tracking.ops.train.planned_train_identity`.
+        """
+        from mosaic.tracking.ops.train import planned_train_identity
+
+        base_config = (
+            Path(ds.resolve_path(params.base_config))
+            if params.base_config
+            else default_config_path()
+        )
+        return planned_train_identity(
+            ds,
+            kind=self.kind,
+            version=self.version,
+            params=params,
+            data_path=Path(ds.resolve_path(params.project)),
+            fingerprint=fingerprint_dataset,
+            base_model=params.base_model,
+            extra={"config": file_digest(base_config)},
+            require_data=require_data,
+        )
+
     def run(self, ds: Dataset, params: TrainLitposeParams, ctx: JobContext) -> str:
         from mosaic.tracking.litpose.training import train_litpose
 
@@ -112,14 +140,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             if weights is not None:
                 overrides.setdefault("model.checkpoint", str(weights))
 
-        run_id = train_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_dataset(project),
-            base_run_id,
-            extra={"config": file_digest(base_config)},
-        )
+        run_id = self.plan_identity(ds, params, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")

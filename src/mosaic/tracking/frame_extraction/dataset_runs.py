@@ -28,7 +28,7 @@ from mosaic.core.pipeline.sequence_index import (
     media_compositions_for,
 )
 from mosaic.core.pipeline.job import Cancelled, JobContext
-from mosaic.core.pipeline.ops import Op, register_op, run_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 
 from .extraction import extract_frames as _extract_frames
@@ -469,7 +469,8 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
         raise ValueError("method must be one of: 'uniform', 'kmeans'")
 
     params_hash = hash_params(p.identity_dump())
-    run_id = frames_run_id(method_norm, p)
+    # Through the op's plan_identity, so this run is named in one place.
+    run_id = ExtractFramesOp().plan_identity(ds, p).run_id
     ctx.set_run_id(run_id)
 
     run_root = frames_run_root(ds, method_norm, run_id)
@@ -629,6 +630,17 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
 
     def target(self, params: ExtractFramesParams) -> str:
         return f"extract-{params.method}"
+
+    def plan_identity(self, ds: Dataset, params: ExtractFramesParams) -> OpIdentity:
+        """What this extraction run will be called.
+
+        Pure in the params -- no dataset read, and nothing to defer. The
+        identifier is frozen: mosaic-api embeds it mid-string in the paths of the
+        images an annotator works on, so a change here moves work somebody has
+        already done.
+        """
+        method = str(params.method).strip().lower()
+        return OpIdentity(run_id=frames_run_id(method, params))
 
     def run(self, ds: Dataset, params: ExtractFramesParams, ctx: JobContext) -> str:
         return _run_extract_frames(ds, params, ctx)

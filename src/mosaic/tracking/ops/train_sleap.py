@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import (
@@ -30,7 +30,6 @@ from mosaic.tracking.ops._common import (
 )
 from mosaic.tracking.ops.train import (
     finalize_training,
-    train_run_id,
     training_is_complete,
 )
 from mosaic.tracking.sleap.training import SleapBackbone, SleapHead
@@ -88,6 +87,27 @@ class TrainSleapOp(Op[TrainSleapParams]):
     def target(self, params: TrainSleapParams) -> str:
         return f"sleap-train-{params.head}"
 
+    def plan_identity(
+        self, ds: Dataset, params: TrainSleapParams, *, require_data: bool = True
+    ) -> OpIdentity:
+        """What this run, and the model it produces, will be called.
+
+        *require_data* separates planning from execution; see
+        :func:`~mosaic.tracking.ops.train.planned_train_identity`.
+        """
+        from mosaic.tracking.ops.train import planned_train_identity
+
+        return planned_train_identity(
+            ds,
+            kind=self.kind,
+            version=self.version,
+            params=params,
+            data_path=Path(ds.resolve_path(params.labels)),
+            fingerprint=fingerprint_dataset,
+            base_model=params.base_model,
+            require_data=require_data,
+        )
+
     def run(self, ds: Dataset, params: TrainSleapParams, ctx: JobContext) -> str:
         from mosaic.tracking.sleap.training import train_sleap
 
@@ -104,13 +124,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             weights = base.artifacts[0].file_for("weights")
             resume_from = str(weights) if weights is not None else ""
 
-        run_id = train_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_dataset(labels_path),
-            base_run_id,
-        )
+        run_id = self.plan_identity(ds, params, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")

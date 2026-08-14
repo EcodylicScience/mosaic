@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
+from mosaic.core.pipeline.ops import IdentityDeferred, OpIdentity
 from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.tracks_identity import (
     tracker_variant_payload,
@@ -35,7 +36,41 @@ from mosaic.core.pipeline.tracks_identity import (
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-__all__ = ["MintedRun", "mint_tracker_run", "tracker_run_root"]
+__all__ = [
+    "MintedRun",
+    "mint_tracker_run",
+    "planned_model_id",
+    "tracker_identity",
+    "tracker_run_root",
+]
+
+
+def tracker_identity(
+    kind: str, version: str, settings: Mapping[str, object]
+) -> OpIdentity:
+    """What a tracker run with these settings will be called. Writes nothing.
+
+    The identity half of :func:`mint_tracker_run`, split out because planning a
+    graph needs the answer without the directories, the sidecars or the run
+    root: a step's identity is what its downstream steps hash, so the whole chain
+    resolves before anything runs or it does not resolve at all.
+
+    ``mint_tracker_run`` calls this rather than repeating it, so there is one
+    place a tracker's identity is minted. Two would be the shape of mistake that
+    reports a cache hit over a different run's output, and the copy that gets
+    forgotten is always the one the planner reads.
+
+    **The variant is minted, never passed through.** It is a different question
+    from the run id -- one names the run, the other names the recipe its tables
+    belong to -- and the two are byte-identical today only because
+    ``tracker_variant_payload`` is an unwrapped passthrough its own docstring
+    calls deliberate. Calling the real payload builder stays correct whatever
+    that builder later becomes; reading one identifier as the other does not.
+    """
+    return OpIdentity(
+        run_id=op_run_id(kind, version, dict(settings)),
+        tracks_variant=tracks_run_id(kind, version, tracker_variant_payload(settings)),
+    )
 
 
 def tracker_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
@@ -93,12 +128,13 @@ def mint_tracker_run(
     if not ds.has_root(kind):
         ds.set_root(kind, tracking_root_default(kind))
 
-    run_id = op_run_id(kind, version, dict(settings))
+    identity = tracker_identity(kind, version, settings)
+    run_id = identity.run_id
     run_root = tracker_run_root(ds, kind, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
-    tracks_variant = tracks_run_id(kind, version, tracker_variant_payload(settings))
+    tracks_variant = identity.tracks_variant
     _ = write_tracks_variant(
         ds.get_root("tracks"),
         tracks_variant,
@@ -123,3 +159,31 @@ def mint_tracker_run(
         params_hash=hash_params(settings),
         tracks_variant=tracks_variant,
     )
+
+
+def planned_model_id(
+    ds: Dataset, kind: str, refs: Sequence[str], model_kind: str
+) -> str:
+    """The model identity a planned run would carry, or say why it cannot be known.
+
+    Every tracker resolves its model reference to an identity before it mints
+    anything, and a planner has to reach the same value without loading the
+    weights. It usually can: a reference that is a training run identifier *is*
+    the identity, so a ``train -> track`` edge resolves before the model exists.
+
+    A bare path, or an ordered set of several references, is identified by the
+    content digest of the bytes -- and those have to be there. When they are not,
+    the honest answer is that this step's name is not knowable yet, which is what
+    :class:`~mosaic.core.pipeline.ops.IdentityDeferred` says.
+    """
+    from mosaic.tracking.model_refs import model_id_for_ref_set
+
+    try:
+        return model_id_for_ref_set(ds, list(refs), model_kind)
+    except (FileNotFoundError, KeyError, NotADirectoryError) as exc:
+        named = ", ".join(refs) or "(none)"
+        raise IdentityDeferred(
+            kind,
+            f"the model it reads ({named}) is not on disk yet, and its identity "
+            f"is the digest of those bytes: {exc}",
+        ) from exc

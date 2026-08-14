@@ -24,6 +24,7 @@ when an optional extra is absent.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
@@ -32,6 +33,62 @@ from mosaic.core.pipeline.types import Params
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.progress import ProgressCallback
+
+
+# ---------------------------------------------------------------------------
+# Identity, resolvable before the work happens
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OpIdentity:
+    """What one op run will be called, worked out without running it.
+
+    Every op mints its own identifier, and it used to do so **inside** ``run()``
+    -- so the only way to learn what a run would be named was to perform it.
+    Planning a graph needs the answer first: a step's identity is what its
+    downstream steps hash, so a chain resolves in one topological walk or not at
+    all.
+
+    Attributes:
+        run_id: The content-addressed op run identifier.
+        tracks_variant: What names the ``tracks/`` tables this run produces, or
+            ``""`` for an op that writes none. **A different identifier from**
+            ``run_id``, even where the two coincide: the tracker variant payload
+            is an unwrapped passthrough of the settings today, so they are
+            byte-identical, and reading one as the other is a latent bug rather
+            than a shortcut.
+        model_run_id: What names the model a training op produces, or ``""``.
+            Separate because a downstream inference step references the *model*,
+            and a training run and its model need not always be one name.
+    """
+
+    run_id: str
+    tracks_variant: str = ""
+    model_run_id: str = ""
+
+
+class IdentityDeferred(Exception):
+    """This op's identity needs an artifact an upstream step has not written yet.
+
+    Not a failure and not a bug: a few ops hash the *content* of what they read
+    -- a training op fingerprints its dataset directory, so that two runs over
+    changed annotations are two models -- and when that directory is itself
+    produced by an earlier step in the same graph, there is nothing on disk to
+    fingerprint at planning time.
+
+    The honest answer is to say so. Guessing an identifier would produce one that
+    execution then contradicts, and a plan is read as a preview: a wrong
+    identifier there is a wrong answer, where an absent one is a stated
+    limitation. Nothing downstream is blocked by it, because a resolved
+    identifier is never load-bearing at execution -- every step resolves its own
+    at its own start.
+    """
+
+    def __init__(self, kind: str, because: str) -> None:
+        self.kind: str = kind
+        self.because: str = because
+        super().__init__(f"{kind}: identity is not resolvable yet -- {because}")
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +121,38 @@ class Op(Generic[P]):
     def target(self, params: P) -> str:
         """A short human label for the ``runs.target`` column."""
         return self.kind
+
+    def plan_identity(self, ds: "Dataset", params: P) -> OpIdentity:
+        """What this run will be called, without doing any of it.
+
+        **The one place this op's identity is minted**, and ``run`` calls it
+        rather than computing the same thing a second way. Two answers to "what
+        will this run be named" is the shape of mistake that reports a cache hit
+        over another run's output, and the second copy is always the one that
+        gets forgotten when a payload changes.
+
+        It may read the dataset -- a transcode identity covers the source videos'
+        recorded identities, and a tracker's covers the content digest of the
+        weights it was pointed at -- but it must not write, and it must not do
+        the work.
+
+        Args:
+            ds: The dataset, for the recorded facts the identity covers.
+            params: The validated params this run would use.
+
+        Returns:
+            The identifiers this run would produce.
+
+        Raises:
+            IdentityDeferred: The payload needs an artifact an upstream step has
+                not written yet.
+        """
+        raise NotImplementedError(
+            f"op {self.kind!r} ({type(self).__name__}) does not implement "
+            f"plan_identity, so a graph cannot say what it will produce or "
+            f"whether it has already run. Implement it, and have run() call it "
+            f"rather than minting a second identifier of its own."
+        )
 
     def run(self, ds: "Dataset", params: P, ctx: JobContext) -> str:
         """Do the work using *ctx* (progress/cancel/run_id) and return the run_id."""

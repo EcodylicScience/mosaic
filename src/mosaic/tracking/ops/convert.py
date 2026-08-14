@@ -23,7 +23,7 @@ from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.tracking.ops._common import (
     claim_run_root,
@@ -133,6 +133,32 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
     def target(self, params: ConvertPointsParams) -> str:
         return "cvat-points-polo"
 
+    def plan_identity(self, ds: Dataset, params: ConvertPointsParams) -> OpIdentity:
+        """What this conversion will be called.
+
+        Both sources enter by content, because re-exporting the same CVAT task
+        after correcting labels must produce a different dataset and a changed
+        image set must too. Content has to be read, so a conversion whose inputs
+        are an earlier step's output is not nameable until that step has run.
+        """
+        xml = Path(ds.resolve_path(params.cvat_xml))
+        images = Path(ds.resolve_path(params.images_dir))
+        for missing in (path for path in (xml, images) if not path.exists()):
+            raise IdentityDeferred(
+                self.kind,
+                f"its source ({missing}) is not on disk yet, and this run's "
+                f"identity covers the content of what it converts",
+            )
+        return OpIdentity(
+            run_id=convert_points_run_id(
+                self.kind,
+                self.version,
+                params,
+                fingerprint_dataset(xml),
+                fingerprint_dataset(images),
+            )
+        )
+
     def run(self, ds: Dataset, params: ConvertPointsParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.converters.cvat_points import (
             convert_cvat_points_polo,
@@ -143,13 +169,7 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         xml = Path(ds.resolve_path(params.cvat_xml))
         imgs = Path(ds.resolve_path(params.images_dir))
 
-        run_id = convert_points_run_id(
-            self.kind,
-            self.version,
-            params,
-            fingerprint_dataset(xml),
-            fingerprint_dataset(imgs),
-        )
+        run_id = self.plan_identity(ds, params).run_id
         ctx.set_run_id(run_id)
         out = model_run_root(ds, self.kind, run_id)
         data_yaml = out / "data.yaml"

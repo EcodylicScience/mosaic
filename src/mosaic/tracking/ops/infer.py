@@ -45,7 +45,7 @@ from mosaic.core.pipeline.tracks_identity import (
 )
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.entry import open_entry, release_entry
@@ -202,6 +202,32 @@ def _bridge_df_to_tracks(
     return int(len(df))
 
 
+def infer_identity(
+    ds: Dataset, kind: str, version: str, params: _InferParamsBase, train_kind: str
+) -> OpIdentity:
+    """What an inference run with these params will be called. Writes nothing.
+
+    The identity half of :func:`_run_inference_op`, which calls this rather than
+    computing the same two identifiers a second way. A planner needs them before
+    the run happens, because a feature step reading the produced tables hashes
+    the *variant*, so the whole chain resolves in one walk or not at all.
+
+    The model reference resolves through ``planned_model_id``, so an inference
+    step whose weights are a training step's output in the same graph is
+    resolvable before that training has run: a reference that is a run identifier
+    is its own identity, which is exactly what ``resolve_model`` returns for it.
+    """
+    from mosaic.tracking.common.mint import planned_model_id
+
+    model_id = planned_model_id(ds, kind, [params.model], train_kind)
+    return OpIdentity(
+        run_id=infer_run_id(kind, version, params, model_id),
+        tracks_variant=tracks_run_id(
+            kind, version, infer_variant_payload(params.identity_dump(), model_id)
+        ),
+    )
+
+
 def _run_inference_op(
     ds: Dataset,
     params: _InferParamsBase,
@@ -216,23 +242,22 @@ def _run_inference_op(
     if not ds.has_root(kind):
         ds.set_root(kind, tracking_root_default(kind))
 
+    # Resolved for its *artifact* -- the weights this run loads. The identity it
+    # carries comes from ``infer_identity`` below, which is the one place these
+    # two identifiers are minted; computing them here as well would be a second
+    # answer to what this run is called.
     model = resolve_model(ds, params.model, train_kind)
-    # The training run when there is one, the weights' digest otherwise -- never
-    # the path. Hashing the path meant swapping best.pt in place reused the same
-    # identifier, and moving unchanged weights minted a new one; both were wrong
-    # in the direction that reports a cache hit over the wrong model.
     model_id = model.model_id
-    run_id = infer_run_id(kind, version, params, model_id)
+    identity = infer_identity(ds, kind, version, params, train_kind)
+    run_id = identity.run_id
     ctx.set_run_id(run_id)
 
-    # The tracks variant these predictions will be bridged into, minted once for
-    # the whole run and recorded beside the tables. Same payload as the op run
-    # above, so the two identifiers coincide -- which is what makes
-    # ``predictions/<kind>/<run_id>/`` and the tracks variant obviously the same
-    # run at a glance, while the index still keeps them in separate columns.
-    tracks_variant = tracks_run_id(
-        kind, version, infer_variant_payload(params.identity_dump(), model_id)
-    )
+    # The tracks variant these predictions will be bridged into, recorded beside
+    # the tables. Same payload as the op run above, so the two identifiers
+    # coincide -- which is what makes the predictions directory and the tracks
+    # variant obviously the same run at a glance, while the index still keeps
+    # them in separate columns.
+    tracks_variant = identity.tracks_variant
     _ = write_tracks_variant(
         ds.get_root("tracks"),
         tracks_variant,
@@ -357,6 +382,10 @@ class InferPoseOp(Op[PoseInferParams]):
     version = "0.1"
     Params = PoseInferParams
 
+    def plan_identity(self, ds: Dataset, params: PoseInferParams) -> OpIdentity:
+        """What this run and the tracks variant it bridges into are called."""
+        return infer_identity(ds, self.kind, self.version, params, "train-pose")
+
     def run(self, ds: Dataset, params: PoseInferParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.inference import (
             inference_to_dataframe,
@@ -402,6 +431,10 @@ class InferPointsOp(Op[PointInferParams]):
     domain = "tracking"
     version = "0.1"
     Params = PointInferParams
+
+    def plan_identity(self, ds: Dataset, params: PointInferParams) -> OpIdentity:
+        """What this run and the tracks variant it bridges into are called."""
+        return infer_identity(ds, self.kind, self.version, params, "train-points")
 
     def run(self, ds: Dataset, params: PointInferParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.inference import (
@@ -449,6 +482,10 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     domain = "tracking"
     version = "0.1"
     Params = LocalizerInferParams
+
+    def plan_identity(self, ds: Dataset, params: LocalizerInferParams) -> OpIdentity:
+        """What this run and the tracks variant it bridges into are called."""
+        return infer_identity(ds, self.kind, self.version, params, "train-localizer")
 
     def run(self, ds: Dataset, params: LocalizerInferParams, ctx: JobContext) -> str:
         from mosaic.tracking.pose_training.localizer_inference import (

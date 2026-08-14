@@ -34,20 +34,23 @@ import yaml
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
+from mosaic.core.pipeline.op_identity import parse_op_run_id
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "Arity",
     "MODEL_IDENTITY_SCHEME",
     "MODEL_KINDS",
-    "Arity",
     "ModelArtifact",
     "ModelKindSpec",
     "ModelShape",
     "ResolvedModel",
     "Role",
     "RoleSpec",
+    "model_id_for_ref",
+    "model_id_for_ref_set",
     "resolve_model",
     "resolve_model_set",
     "spec_for",
@@ -684,3 +687,62 @@ def resolve_model_set(
         digest=_identity(artifacts, spec),
         model_type=model_type,
     )
+
+
+def model_id_for_ref(ds: Dataset | None, ref: str, kind: str) -> str:
+    """What identity will call the model *ref* names, without opening it.
+
+    The half of :func:`resolve_model` a planner needs. Resolving a reference
+    reads the artifact off disk, which is exactly right when a run is about to
+    load it and exactly wrong when a graph is being planned: the model may be the
+    output of a training step that has not run yet, and refusing to name it would
+    make a ``train -> infer`` chain unresolvable for no reason.
+
+    It does not have to be opened, because of what ``model_id`` already is. A
+    reference that *is* a training run identifier resolves to itself -- that is
+    the branch ``resolve_model`` takes through the model index, and the value it
+    returns is the reference. So the answer is the same whether the run has
+    happened or not, and no disk is touched to get it.
+
+    A bare weights path has no run to name, so its identity is the content digest
+    and there is no shortcut: those bytes have to exist. That is not a
+    limitation in practice -- a path names weights somebody already has.
+
+    Args:
+        ds: The dataset whose model index resolves a registered reference, or
+            ``None`` when only the run-identifier branch may be taken.
+        ref: A training ``run_id``, or a path to a weights artifact.
+        kind: The model kind, selecting the spec.
+
+    Returns:
+        The value identity will use: the training run, or the content digest.
+
+    Raises:
+        FileNotFoundError: A path reference naming nothing, or a registered one
+            with *ds* omitted.
+    """
+    if parse_op_run_id(ref) is not None and not Path(ref).exists():
+        # A run identifier, and not something that happens to sit at that path.
+        # `resolve_model` returns this same value through its index branch, so
+        # taking it here agrees with execution rather than approximating it.
+        return ref
+    if ds is None:
+        raise FileNotFoundError(
+            f"model reference {ref!r} is not a run identifier and no dataset was "
+            f"given to resolve it against"
+        )
+    return resolve_model(ds, ref, kind).model_id
+
+
+def model_id_for_ref_set(ds: Dataset | None, refs: Sequence[str], kind: str) -> str:
+    """The planning half of :func:`resolve_model_set`, for an ordered set.
+
+    A set assembled from several references has no single run to name, so its
+    identity is the content digest -- and a digest has to be read. The
+    single-reference case is the one that shortcuts, and it is the one that
+    matters: it is what makes ``train -> track`` resolvable before the model
+    exists.
+    """
+    if len(refs) == 1:
+        return model_id_for_ref(ds, refs[0], kind)
+    return resolve_model_set(ds, refs, kind).model_id

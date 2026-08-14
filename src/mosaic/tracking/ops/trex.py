@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.common.params import TrackerOpParams
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
@@ -93,6 +93,57 @@ class TrexOp(Op[TrexParams]):
     def target(self, params: TrexParams) -> str:
         return "trex-track"
 
+    def plan_identity(self, ds: Dataset, params: TrexParams) -> OpIdentity:
+        """What a TREx run with these settings will be called.
+
+        Both model references are resolved to an identity first, which is the
+        same ordering ``run_trex`` follows and for the same reason: what the
+        settings must carry is what a model *is*, because a bare weights path is
+        a mutable key and swapping the file in place would let two different runs
+        share one identifier.
+        """
+        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.trex.dataset_runs import trex_settings
+
+        detect_model_id = (
+            planned_model_id(
+                ds,
+                self.kind,
+                [params.detect_model],
+                _detect_model_kind(params.detect_model),
+            )
+            if params.detect_model is not None
+            else None
+        )
+        vi_model_id = (
+            planned_model_id(
+                ds,
+                self.kind,
+                [params.visual_identification_model_path],
+                "train-identity",
+            )
+            if params.visual_identification_model_path is not None
+            else None
+        )
+        settings = trex_settings(
+            detect_model=detect_model_id,
+            detect_type=params.detect_type,
+            detect_conf_threshold=params.detect_conf_threshold,
+            detect_iou_threshold=params.detect_iou_threshold,
+            cm_per_pixel=params.cm_per_pixel,
+            meta_encoding=params.meta_encoding,
+            convert_extra_settings=params.convert_extra_settings,
+            track_max_individuals=params.track_max_individuals,
+            track_max_speed=params.track_max_speed,
+            track_max_reassign_time=params.track_max_reassign_time,
+            track_trusted_probability=params.track_trusted_probability,
+            analysis_range=params.analysis_range,
+            visual_identification_model_path=vi_model_id,
+            auto_train=params.auto_train,
+            track_extra_settings=params.track_extra_settings,
+        )
+        return tracker_identity(self.kind, self.version, settings)
+
     def run(self, ds: Dataset, params: TrexParams, ctx: JobContext) -> str:
         # Heavy TREx imports (subprocess/opencv) stay inside run() so registration is light.
         from mosaic.tracking.trex.dataset_runs import run_trex
@@ -127,3 +178,19 @@ class TrexOp(Op[TrexParams]):
             # the trex runner resolves them from MOSAIC_TREX_CONDA_ENV / _BIN / _DISPLAY. This
             # keeps the run_id independent of *where* it ran.
         )
+
+
+def _detect_model_kind(ref: str | None) -> str:
+    """Which training op's index a detection-model reference resolves against.
+
+    The kind comes from the reference itself, matching ``run_trex``: both
+    ``train-pose`` and ``train-points`` produce runnable detection weights, and a
+    run identifier resolves against the index its own training op wrote. A
+    reference that is not a run identifier at all -- a bare weights path -- falls
+    back rather than guessing, because the fallback only decides which spec reads
+    the artifact and a path is read the same way either way.
+    """
+    from mosaic.core.pipeline.op_identity import parse_op_run_id
+
+    parsed = parse_op_run_id(str(ref)) if ref else None
+    return parsed.kind if parsed is not None else "train-points"
