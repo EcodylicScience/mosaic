@@ -28,25 +28,30 @@ import os as _os
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import csv
-import dataclasses
 import importlib.metadata
 import importlib.util
 import os
-import re
 import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 from mosaic_media.io.writer import FFmpegVideoWriter
-from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
+
+# The plain helpers live in `tests.helpers`; only the two the fixtures below
+# call are imported here. Test modules import from the facade, never from
+# this file.
+from tests.helpers.environment import (
+    FFMPEG_TOOLCHAIN,
+    missing_ffmpeg_tools,
+    require_ffmpeg as _require_ffmpeg,
+)
+from tests.helpers.media import add_media_sequence
+from tests.helpers.tracks import add_track_sequences
 
 # Modules the CI workflow installs through extras (`.[wavelets,imgstore,sleap]`).
 # `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
@@ -62,7 +67,14 @@ from mosaic.core.media.facts_columns import facts_to_row, store_facts
 # provenance test) skipped green. **A new optional dependency joins the install
 # line and this tuple in the same change**, or its tests stop being evidence:
 # adding it to the install alone leaves nothing to notice when it next vanishes.
-CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py")
+#
+# That rule is no longer only prose. ``test_optional_dependency_coverage.py``
+# reads the suite's own ``importorskip`` calls out of its AST and fails when one
+# names a module no tuple here requires -- which is how ``timm`` and ``tables``
+# were found, both guarded and neither installed by any job, and how ``yaml`` was
+# found being guarded despite being a *core* dependency, a guard that could never
+# fire and would have masked a broken install.
+CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py", "tables")
 
 # The same rule, scoped to one job. `torch` (via the `identity` extra) is a
 # ~200 MB wheel, so requiring it of every CI run would slow all of them down for
@@ -71,7 +83,7 @@ CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py")
 # for exactly the reason above: `pytest.importorskip("torch")` would otherwise
 # skip the T-Rex checkpoint tests green, and those are the only thing standing
 # between a refactor and a silently randomly-initialised network inside T-Rex.
-CI_IDENTITY_MODULES = ("torch",)
+CI_IDENTITY_MODULES = ("torch", "timm")
 
 # The same argument again, for the job that installs `pose`. `lap` is the one
 # that matters: Ultralytics imports it at module scope in its tracker matching
@@ -80,43 +92,74 @@ CI_IDENTITY_MODULES = ("torch",)
 # declaration that exists to stop that install happening.
 CI_TRACKING_MODULES = ("ultralytics", "lap")
 
-# The same argument, for a binary rather than a module. Probing shells out to a
-# system ffprobe, so every test that indexes real media hard-*fails* without one
+# The same argument, for binaries rather than modules. Probing shells out to the
+# system toolchain, so every test that indexes real media hard-*fails* without it
 # rather than skipping -- and the failure names a codec, not a missing tool.
-# ``requires_ffprobe`` turns that into a skip locally; under CI a missing binary
+# ``requires_ffmpeg`` turns that into a skip locally; under CI a missing binary
 # is a broken environment, exactly as a missing extra is.
-CI_REQUIRED_BINARIES = ("ffprobe",)
+#
+# **Both binaries, not just ffprobe.** The guard was named and scoped for
+# ``ffprobe`` alone, but the transcode op and the raw-H.264 packet scan shell out
+# to ``ffmpeg``, and it is the one that goes missing first: with a stripped PATH
+# the media suites died on `FileNotFoundError: 'ffmpeg'` while the guard reported
+# the toolchain present.
+#
+# The list and the probe live in `tests.helpers.environment`, because the plain
+# helpers there need the same answer and a second copy is how the two drift.
+CI_REQUIRED_BINARIES = FFMPEG_TOOLCHAIN
 
 
-def _refuse_two_opencvs() -> None:
-    """Two distributions providing ``cv2`` is a broken environment, everywhere.
+def _refuse_two_opencv_builds() -> None:
+    """Two *builds* of ``cv2`` in one environment is a broken install, everywhere.
 
     ``albumentations`` and ``albucore`` require ``opencv-python-headless``;
     ``mosaic-behavior`` and ``ultralytics`` require ``opencv-python``. Install both
-    and pip is happy: they are different distributions, so nothing conflicts -- but
-    they ship the *same* import package, so one overwrites the other's files and both
-    leave their bundled native libraries in one ``cv2/.dylibs``. That directory then
-    holds two ffmpeg builds (``libavcodec.61.19.100`` beside ``.101``), and the suite
-    dies with ``Trace/BPT trap: 5`` at a different place on every run.
+    wheels and pip is happy: they are different distributions, so nothing conflicts --
+    but they ship the *same* import package, so one overwrites the other's files and
+    both leave their bundled native libraries in one ``cv2/.dylibs``. That directory
+    then holds two ffmpeg builds (``libavcodec.61.19.100`` beside ``.101``), and the
+    suite dies with ``Trace/BPT trap: 5`` at a different place on every run.
+
+    **Counting distribution names is not the test; counting builds is.** conda-forge
+    ships one ``py-opencv`` that deliberately registers *both* ``opencv-python`` and
+    ``opencv-python-headless`` metadata for its single build -- which is exactly what
+    lets one install satisfy mosaic's requirement and albumentations' at once, with no
+    vendored ffmpeg at all because it links the environment's shared one. Refusing on
+    the name count would reject the environment that has this right and accept nothing
+    in exchange. So conda's providers collapse to the one build they describe, and
+    every wheel counts on its own. A wheel installed *over* a conda build still fails
+    the check, which is correct: it overwrites those files.
 
     Unlike the checks below this fires outside CI too, because the failure mode is a
     crash rather than a skip, and because the other half of it is silent: whichever
     wheel wins may be the headless one, which has no ``imshow``, so interactive
     playback breaks with no dependency error anywhere.
+
+    Not covered, deliberately: ``av`` and ``opencv-python`` each vendor a *complete*
+    ffmpeg, so two of those wheels collide the same way even when only one provides
+    ``cv2``. That is the environment CI installs and has never crashed on, so it is a
+    documented hazard rather than a refusal here -- see the conda-forge recipe in
+    CLAUDE.md, which is what removes it.
     """
-    providers = sorted(
-        name
-        for dist in importlib.metadata.distributions()
-        if "opencv" in (name := (dist.metadata["Name"] or "").lower())
-    )
-    if len(providers) > 1:
+    conda: list[str] = []
+    wheels: list[str] = []
+    for dist in importlib.metadata.distributions():
+        name = (dist.metadata["Name"] or "").lower()
+        if "opencv" not in name:
+            continue
+        installer = (dist.read_text("INSTALLER") or "").strip().lower()
+        (conda if installer == "conda" else wheels).append(name)
+
+    builds = sorted(wheels) + ([f"conda ({', '.join(sorted(conda))})"] if conda else [])
+    if len(builds) > 1:
         raise pytest.UsageError(
-            f"{len(providers)} distributions provide cv2 ({', '.join(providers)}). "
+            f"{len(builds)} builds of cv2 are installed ({', '.join(builds)}). "
             "They share one import package, so their bundled ffmpeg libraries land in "
             "one directory and the suite crashes nondeterministically. Keep exactly "
-            "one -- `uv pip uninstall opencv-python opencv-python-headless` then "
-            "`uv pip install 'opencv-python>=4.7'`, which is the build whose imshow "
-            "playback needs."
+            "one -- `pip uninstall opencv-python opencv-python-headless` then either "
+            "`pip install 'opencv-python>=4.7'`, or `conda install -c conda-forge "
+            "py-opencv`, which links the environment's shared ffmpeg and registers "
+            "both names for one build."
         )
 
 
@@ -127,7 +170,7 @@ def pytest_configure() -> None:
     gets skips, which is the point of ``importorskip``. Only CI, which installs
     them explicitly, treats their absence as a broken environment.
     """
-    _refuse_two_opencvs()
+    _refuse_two_opencv_builds()
     if not os.environ.get("CI"):
         return
     required = CI_REQUIRED_MODULES
@@ -151,16 +194,45 @@ def pytest_configure() -> None:
         )
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip ``media``-marked tests when the ffmpeg toolchain is absent.
+
+    The fixture below covers a test that reaches the toolchain *through* a
+    fixture. This covers the rest: a module that shells out directly marks itself
+    ``pytestmark = pytest.mark.media`` and gets the same outcome. Two routes to
+    one answer, rather than one missing binary producing a skip in some files and
+    a bare ``FileNotFoundError`` in others.
+
+    Under CI ``pytest_configure`` has already refused to start, so this is a
+    local-only path.
+    """
+    missing = missing_ffmpeg_tools()
+    if not missing:
+        return
+    skip = pytest.mark.skip(reason=f"not on PATH: {', '.join(missing)}")
+    for item in items:
+        if "media" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture
-def requires_ffprobe() -> None:
-    """Skip a test that needs to measure real media when ffprobe is absent.
+def requires_ffmpeg() -> None:
+    """Skip a test that needs the ffmpeg toolchain when it is not on ``PATH``.
 
     Requested by fixtures rather than by tests, so a test inherits the guard from
     the media it asks for. Under CI ``pytest_configure`` has already refused to
     start, so this never fires there.
+
+    Both binaries: probing shells to ``ffprobe``, while the transcode op and the
+    raw-H.264 packet scan shell to ``ffmpeg``. A PATH carrying one and not the
+    other used to produce a bare ``FileNotFoundError`` naming whichever came
+    first, from inside a test that never mentions either.
+
+    The fixture form for a test that reaches media through a fixture;
+    ``tests.helpers.require_ffmpeg`` is the same guard for a helper a test calls
+    directly. One answer, two shapes.
     """
-    if shutil.which("ffprobe") is None:
-        pytest.skip("ffprobe is not on PATH")
+    _require_ffmpeg()
 
 
 @pytest.fixture
@@ -182,7 +254,7 @@ def read_index_header() -> Callable[[Path], list[str]]:
 
 
 @pytest.fixture
-def write_cfr_mp4() -> Callable[..., None]:
+def write_cfr_mp4(requires_ffmpeg: None) -> Callable[..., None]:
     """Factory writing a small constant-frame-rate mp4 (parent dirs created).
 
     The shape every media test needs: a real file ffprobe can measure, and
@@ -213,9 +285,14 @@ def write_cfr_mp4() -> Callable[..., None]:
 
 
 @pytest.fixture
-def make_media_dataset() -> Callable[[Path], Dataset]:
+def make_media_dataset(requires_ffmpeg: None) -> Callable[[Path], Dataset]:
     """Factory building a saved Dataset with ``media_raw``, ``media`` and
     ``tracks`` roots.
+
+    Guarded on the ffmpeg toolchain because a media-shaped dataset exists to be
+    indexed, and indexing shells out. The guard used to sit only on
+    ``scenario_dataset_with_media``, so the 14 files reaching media through this
+    factory met a bare ``FileNotFoundError`` where the other files skipped.
 
     The manifest is written to disk, not merely named: ``base_dir`` treats a
     ``manifest_path`` that is not an existing file as the base directory itself
@@ -240,194 +317,6 @@ def make_media_dataset() -> Callable[[Path], Dataset]:
         return ds
 
     return _make
-
-
-def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
-    """Write a track parquet per sequence and rewrite ``tracks/index.csv``.
-
-    Sequences accumulate: calling this again with a further name leaves the
-    existing parquets in place, which is what lets a scenario widen a scope and
-    then assert what was and was not recomputed.
-
-    The group is empty, so the composite key renders as the bare sequence name
-    and the parquet is ``<sequence>.parquet``.
-
-    ``X``/``Y`` are here because the features these scenarios run need them. Without
-    them every entry's ``apply`` raised, and because a per-entity failure used to be
-    swallowed, the run reported success having computed nothing -- so tests asserted
-    on the ``params.json`` of a run with no outputs.
-    """
-    tracks = dataset.get_root("tracks")
-    tracks.mkdir(parents=True, exist_ok=True)
-    for sequence in sequences:
-        frame = np.arange(n_rows, dtype=np.int64)
-        pd.DataFrame(
-            {
-                "frame": frame,
-                "time": frame / 30.0,
-                "id": np.zeros(n_rows, dtype=np.int64),
-                "X": np.linspace(0.0, 10.0, n_rows),
-                "Y": np.linspace(10.0, 0.0, n_rows),
-                "feat_a": np.linspace(0.0, 1.0, n_rows),
-            }
-        ).to_parquet(tracks / f"{sequence}.parquet")
-    present = sorted(tracks.glob("*.parquet"))
-    index = pd.DataFrame(
-        {
-            "group": ["" for _ in present],
-            "sequence": [path.stem for path in present],
-            "abs_path": [str(path) for path in present],
-        }
-    )
-    index.to_csv(tracks / "index.csv", index=False)
-
-
-def write_trex_npz(
-    path: Path,
-    *,
-    individual: int | None = None,
-    n: int = 8,
-    cm_per_pixel: float = 1.0,
-    **columns: np.ndarray,
-) -> None:
-    """Write a per-individual TREx export carrying what TREx always writes.
-
-    Six near-identical builders used to sit in six test modules, and every one of
-    them omitted the two fields that decide what a TREx table *means*:
-    ``cm_per_pixel``, which says whether its positions are centimetres, and the
-    ``#wcentroid`` pair, which is the body centre. A file without them is not a
-    file TREx produces, so tests built on one were measuring a shape that cannot
-    occur.
-
-    ``cm_per_pixel`` and ``id`` are written as one-element arrays because that is
-    how TREx writes them -- as ``std::vector`` of one, not as scalars -- which is
-    what makes them arrive NaN-padded rather than broadcast.
-
-    The bare ``X``/``Y`` are given the same values as ``#wcentroid`` by default.
-    In a real export they differ (bare is the head), but most callers only need
-    *a* position; a caller testing the head-versus-centre distinction passes them
-    explicitly through *columns*.
-
-    ``individual`` defaults to the trailing digits of the filename, because TREx
-    names each file for the individual it holds -- ``myseq_fish0.npz`` beside
-    ``myseq_fish1.npz``. Defaulting it to a constant instead would give a
-    sequence's several files one id and quietly collapse them into one animal.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if individual is None:
-        match = re.search(r"(\d+)$", path.stem)
-        individual = int(match.group(1)) if match else 0
-    centre_x = np.linspace(0.0, 1.0, n)
-    centre_y = np.linspace(1.0, 0.0, n)
-    fields: dict[str, np.ndarray] = {
-        "frame": np.arange(n, dtype=np.int64),
-        "time": np.arange(n, dtype=float) / 30.0,
-        "id": np.array([individual]),
-        "cm_per_pixel": np.array([cm_per_pixel]),
-        "X": centre_x,
-        "Y": centre_y,
-        "X#wcentroid": centre_x,
-        "Y#wcentroid": centre_y,
-        "poseX0": centre_x,
-        "poseY0": centre_y,
-    }
-    fields.update(columns)
-    np.savez(path, **fields)
-
-
-def add_tracks_variant(
-    dataset: Dataset,
-    run_id: str,
-    *sequences: str,
-    n_rows: int = 40,
-    consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
-    std_format: str = "trex_v1",
-) -> None:
-    """Write a variant-addressed track table per sequence, through the real writer.
-
-    ``std_format`` names the schema the rows claim. It defaults to the legacy
-    ``trex_v1`` so existing callers are unchanged; a scenario about a dataset
-    part-way through a migration sets it per call, which is the only way to build
-    one index holding two schema families.
-
-    ``consumed_source_roots`` defaults to what all three conversion writers pass,
-    so a row this produces answers "which root would a change have to be under?"
-    the way a converted row does. Overridable to ``()`` for a scenario about a
-    row that predates the column.
-
-    The counterpart to :func:`add_track_sequences`, which stays deliberately
-    unlabelled -- it is the pre-Stage-3 dataset every existing analysis has, and
-    keeping one fixture in that shape is what keeps proving that such a dataset
-    still resolves and still hashes the same. This one is the shape a conversion
-    writes today: tables under ``tracks/<run_id>/`` and rows naming the recipe.
-
-    Uses ``write_tracks_row`` rather than a hand-built CSV, so the index it
-    produces is the index production produces -- including the dedup that decides
-    whether a second call adds a row or replaces one.
-    """
-    from mosaic.core.helpers import make_entry_key
-    from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-    from mosaic.core.pipeline.tracks_index import write_tracks_row
-
-    root = tracks_variant_root(dataset.get_root("tracks"), run_id)
-    root.mkdir(parents=True, exist_ok=True)
-    for sequence in sequences:
-        # A schema-valid table with two individuals, rather than the four columns
-        # ``add_track_sequences`` writes. That is what lets a *registered*
-        # feature actually run on this fixture -- including the social ones,
-        # which need a sequence to hold at least two ids -- which the
-        # chain-runner parity assertions depend on. ``feat_a`` stays for the
-        # scenario mock features that read it.
-        #
-        # X/Y are the body centre and every converter emits them. This fixture
-        # carried only the ``#wcentroid`` pair, a shape no converter produces,
-        # so tests built on it were measuring a table that cannot exist.
-        # ``#wcentroid`` stays, holding the identical values, because that is
-        # what a TREx table looks like: one body centre under both names.
-        frame = np.tile(np.arange(n_rows, dtype=np.int64), 2)
-        identity = np.repeat(np.arange(2, dtype=np.int64), n_rows)
-        total = len(frame)
-        centre_x = np.linspace(0.0, 10.0, total) + identity
-        centre_y = np.linspace(0.0, 5.0, total) + identity
-        columns: dict[str, object] = {
-            "frame": frame,
-            "time": frame / 30.0,
-            "id": identity,
-            "group": [""] * total,
-            "sequence": [sequence] * total,
-            "X": centre_x,
-            "Y": centre_y,
-            "X#wcentroid": centre_x,
-            "Y#wcentroid": centre_y,
-            "feat_a": np.linspace(0.0, 1.0, total),
-        }
-        for keypoint in range(7):
-            columns[f"poseX{keypoint}"] = np.linspace(0.0, 10.0, total) + keypoint
-            columns[f"poseY{keypoint}"] = np.linspace(0.0, 5.0, total) + keypoint
-        out_path = root / f"{make_entry_key('', sequence)}.parquet"
-        pd.DataFrame(columns).to_parquet(out_path)
-        write_tracks_row(
-            dataset,
-            run_id=run_id,
-            group="",
-            sequence=sequence,
-            out_path=out_path,
-            producer=run_id.split(".")[0],
-            std_format=std_format,
-            n_rows=n_rows,
-            consumed_source_roots=consumed_source_roots,
-        )
-
-
-def track_sequences(dataset: Dataset) -> list[str]:
-    """The sequence names the tracks index currently names.
-
-    Read from the index rather than globbed off the root, so it answers the same
-    for a flat legacy layout and for variant directories.
-    """
-    from mosaic.core.pipeline.tracks_index import read_tracks_index
-
-    return sorted({str(name) for name in read_tracks_index(dataset)["sequence"]})
 
 
 @pytest.fixture
@@ -463,8 +352,21 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
 
     Returns a callable ``(name=, nframes=, fmt=, shape=, dtype=, chunksize=,
     parent=, fill=, extra_metadata=) -> (store_dir, frames)``.
+
+    The guard stays *inside* the fixture and carries an explicit reason. It
+    cannot move to module scope -- ``conftest.py`` is imported by every run, so a
+    top-level import would make ``imgstore`` mandatory for the whole suite -- and
+    it should not move to the files that request this fixture: only 4 of
+    ``test_media_reprobe.py``'s 44 tests and 4 of
+    ``test_media_identity_matching.py``'s 9 touch a store, so a module-level
+    guard there would skip 45 tests to protect 8. What was actually wrong is that
+    the skip named nothing; ``-ra`` in ``addopts`` now prints this reason in
+    every run's summary.
     """
-    imgstore = pytest.importorskip("imgstore")
+    imgstore = pytest.importorskip(
+        "imgstore",
+        reason="the `imgstore` extra is not installed (pip install -e '.[imgstore]')",
+    )
 
     def _make(
         name: str = "store",
@@ -516,52 +418,9 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
     return _make
 
 
-def add_media_sequence(
-    dataset: Dataset,
-    sequence: str,
-    *,
-    videos: tuple[str, ...] = ("a.mp4", "b.mp4"),
-    frames: int = 6,
-) -> None:
-    """Give *sequence* real videos under ``media_raw`` and index them.
-
-    Driven through ``Dataset.write_media_index``, the assignment path the control
-    plane uses, so the media index and the composition it projects are the ones
-    production produces rather than a hand-built stand-in.
-
-    Each video's content varies with its filename. Two all-black videos are
-    byte-identical and therefore share one ``video_uuid`` by design, so a
-    composition over them is genuinely unchanged by a reorder -- which would make
-    an ordering assertion pass while testing nothing.
-    """
-    from mosaic.core.pipeline.media_index import MediaIndexScope
-
-    directory = dataset.get_root("media_raw") / sequence
-    directory.mkdir(parents=True, exist_ok=True)
-    for name in videos:
-        shade = sum(name.encode()) % 200 + 20
-        with FFmpegVideoWriter(
-            directory / name, width=64, height=48, fps=30.0
-        ) as writer:
-            for _ in range(frames):
-                writer.write(np.full((48, 64, 3), shade, np.uint8))
-
-    _ = dataset.write_media_index(
-        [
-            MediaIndexScope(
-                directory=directory,
-                group="",
-                sequence=sequence,
-                order_by_name={name: i for i, name in enumerate(videos)},
-            )
-        ],
-        extensions=(".mp4",),
-    )
-
-
 @pytest.fixture
 def scenario_dataset_with_media(
-    scenario_dataset: Dataset, requires_ffprobe: None
+    scenario_dataset: Dataset, requires_ffmpeg: None
 ) -> Dataset:
     """``scenario_dataset``, plus two videos on ``seq_a``.
 
@@ -576,154 +435,3 @@ def scenario_dataset_with_media(
     """
     add_media_sequence(scenario_dataset, "seq_a")
     return scenario_dataset
-
-
-def clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
-    """A complete, verdict-clean set of media-facts cells for one index row.
-
-    The tracker marker suites all need a media row a tracker will actually run
-    against: probed dimensions, a container and pixel format that derive to a
-    clean verdict, and -- when *video_uuid* is given -- the content identity that
-    lets a marker tell a video replaced in place from one merely renamed.
-    """
-    facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
-        codec="h264",
-        duration=100 / 30.0,
-        video_uuid=video_uuid,
-        identity_scheme="video/1" if video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def write_media_index(
-    dataset: Dataset,
-    sequences: list[str],
-    *,
-    filenames: dict[str, str] | None = None,
-    uids: dict[str, str] | None = None,
-) -> None:
-    """Index one stub video per sequence, with full facts cells.
-
-    The bytes are a placeholder: every tracker marker suite fakes the tool, so
-    nothing decodes them. *filenames* and *uids* are what the rename-versus-replace
-    scenarios vary -- the same file under a new name keeps its uid, a replacement
-    changes it.
-    """
-    media_root = dataset.get_root(dataset.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for seq in sequences:
-        filename = (filenames or {}).get(seq, f"{seq}.mp4")
-        video = media_root / filename
-        if not video.exists():
-            _ = video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": filename,
-                "group": "",
-                "sequence": seq,
-                "group_safe": "",
-                "sequence_safe": seq,
-                "abs_path": dataset.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **clean_facts_cells((uids or {}).get(seq, "")),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
-
-
-def add_transcode_derivative(
-    dataset: Dataset, sequence: str, *, target: Target = "playback"
-) -> Path:
-    """Register a derivative for *sequence*'s first video, without encoding one.
-
-    A stub, because nothing being tested reads a derivative's bytes -- what is
-    read is its *name*, so it is written under the scheme the transcode op uses
-    and the recipe is computed through the op's own function rather than
-    hard-coded (the recipe folds environment-driven thresholds, so a literal
-    would pin the suite to one machine).
-
-    Both links are written, in the order the op writes them: the back-link row
-    into the ``media`` index, then the forward-link cell onto the original.
-
-    ``playback`` by default, matching the scenario this exists for -- a proxy
-    made so a browser can play the video, which the tracker, frame extraction,
-    crops and every feature ignore.
-    """
-    from mosaic_media import CHROME_149
-    from mosaic_media.transcode import ANALYSIS_ENCODING, PLAYBACK_ENCODING
-
-    from mosaic.core.media.facts_columns import (
-        MEDIA_INDEX_COLUMNS,
-        derivative_column_for_target,
-    )
-    from mosaic.core.pipeline.media_index import (
-        frame_from_rows,
-        read_media_index,
-        write_media_index_rows,
-    )
-    from mosaic.core.pipeline.transcode import (
-        TRANSCODE_KIND_DIRECTORY,
-        TranscodeParams,
-        transcode_recipe_hash,
-    )
-    from mosaic.media_probe_config import media_thresholds
-
-    raw_index = dataset.get_root("media_raw") / "index.csv"
-    originals = [dict(row) for row in read_media_index(raw_index)]
-    matches = [row for row in originals if row.get("sequence") == sequence]
-    if not matches:
-        raise AssertionError(f"no media_raw row for sequence {sequence!r}")
-    original = matches[0]
-    video_uuid = original["video_uuid"]
-
-    recipe = transcode_recipe_hash(
-        TranscodeParams(entry=("", sequence), target=target),
-        ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
-        CHROME_149,
-        media_thresholds(),
-    )
-    transcode_root = dataset.get_root("media") / TRANSCODE_KIND_DIRECTORY
-    transcode_root.mkdir(parents=True, exist_ok=True)
-    derivative = transcode_root / f"{video_uuid}.{recipe}.{target}.mp4"
-    _ = derivative.write_bytes(b"stub")
-
-    media_index = dataset.get_root("media") / "index.csv"
-    rows = [dict(row) for row in read_media_index(media_index)]
-    row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
-    row.update(
-        {
-            "name": derivative.name,
-            "group": original.get("group", ""),
-            "sequence": sequence,
-            "abs_path": dataset.relative_to_root(str(derivative)),
-            "source_video_uuid": video_uuid,
-            "recipe_hash": recipe,
-        }
-    )
-    rows.append(row)
-    write_media_index_rows(media_index, frame_from_rows(rows))
-
-    column = derivative_column_for_target(target)
-    for candidate in originals:
-        if candidate.get("video_uuid") == video_uuid:
-            candidate[column] = f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
-    write_media_index_rows(raw_index, frame_from_rows(list(originals)))
-    return derivative

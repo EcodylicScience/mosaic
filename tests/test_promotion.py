@@ -26,7 +26,7 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 
 def _dataset(tmp_path: Path) -> Dataset:

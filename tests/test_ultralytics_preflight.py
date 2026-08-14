@@ -28,6 +28,10 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     resolve_tracker_config,
 )
 
+# Selected by CI's `tracking` job with `-m tracker` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.tracker
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -144,7 +148,6 @@ def test_each_declared_table_matches_the_installed_yaml(name: TrackerName) -> No
     knob mosaic offers and nothing reads.
     """
     _ = pytest.importorskip("ultralytics")
-    _ = pytest.importorskip("yaml")
     installed = _installed_tracker_config(name)
     declared = resolve_tracker_config(name)
 

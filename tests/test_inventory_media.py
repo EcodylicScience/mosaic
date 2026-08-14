@@ -13,7 +13,7 @@ from pathlib import Path
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.inventory import MediaDerivativeRef, inventory
 
-from tests.conftest import add_transcode_derivative, write_media_index
+from tests.helpers import add_transcode_derivative, write_media_index
 
 
 def _record(ds: Dataset, target: str = "analysis"):

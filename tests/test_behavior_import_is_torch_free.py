@@ -25,6 +25,12 @@ _BLOCK_TORCH_AND_IMPORT = """
 import importlib.abc
 import sys
 
+import pytest
+
+# Selected by CI's `identity` job with `-m identity` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.identity
+
 
 class NoTorch(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

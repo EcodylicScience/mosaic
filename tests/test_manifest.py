@@ -18,7 +18,7 @@ from mosaic.core.pipeline.manifest import (
 from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
 
 
-from tests.mock_dataset import MockDataset as _MockDataset
+from tests.helpers import MockDataset as _MockDataset
 
 
 def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:

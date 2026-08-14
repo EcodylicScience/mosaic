@@ -148,7 +148,7 @@ def test_the_exclusion_is_not_expressible_as_an_exclude_pattern(tmp_path: Path) 
 
 
 def test_the_media_scanner_does_not_descend_into_tracking(
-    tmp_path: Path, requires_ffprobe: None
+    tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """A tracker's debug frames and re-encoded clips are not source media.
 

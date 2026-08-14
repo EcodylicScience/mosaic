@@ -24,7 +24,7 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
 
-from .conftest import write_media_index
+from tests.helpers import write_media_index
 
 # The bridge reads the analysis HDF5 with h5py (a [recommended] extra); skip the
 # whole module when it is absent rather than fail a minimal install.

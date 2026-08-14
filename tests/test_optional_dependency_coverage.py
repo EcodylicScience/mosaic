@@ -1,0 +1,152 @@
+"""Every ``importorskip`` target is accounted for in exactly one place.
+
+A guarded test proves nothing unless some environment is obliged to install what
+it guards. ``tests/conftest.py`` states that rule in prose -- "a new optional
+dependency joins the install line and this tuple in the same change" -- and prose
+does not fail. This does.
+
+The guarded set is read from the suite's **own AST** rather than by grepping the
+source text, because several docstrings in ``conftest.py`` discuss
+``pytest.importorskip("torch")`` while explaining the rule; a text search reports
+those as guards and produces a covered set that is quietly wrong.
+
+Three properties, and each has already caught something real:
+
+- a guarded module that no CI job installs (found ``timm`` and ``tables``),
+- a guarded module that is a *core* dependency, so the guard can never fire and
+  would hide a broken install rather than a missing extra (found ``yaml``),
+- a required module that nothing in the suite reaches, i.e. a tuple entry kept
+  alive by nobody.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.metadata
+import re
+import tomllib
+from collections import defaultdict
+from pathlib import Path
+
+# From `conftest` rather than from `tests.helpers`: these are pytest's own
+# configuration, read by `pytest_configure`, not builders a test composes with.
+from tests.conftest import (
+    CI_IDENTITY_MODULES,
+    CI_REQUIRED_MODULES,
+    CI_TRACKING_MODULES,
+)
+
+TESTS = Path(__file__).resolve().parent
+PYPROJECT = TESTS.parent / "pyproject.toml"
+
+
+def _canonical(distribution: str) -> str:
+    """A distribution name in the one spelling both sides can be compared in.
+
+    ``opencv-python`` and ``opencv_python`` name the same thing, and metadata and
+    pyproject do not agree on which to write.
+    """
+    return distribution.lower().replace("-", "_")
+
+
+def importorskip_targets() -> dict[str, set[str]]:
+    """``{module: {test filename}}`` for every literal ``importorskip`` in tests.
+
+    A non-literal argument is deliberately not tolerated: it cannot be audited,
+    so it would silently leave a guard outside every check here.
+    """
+    found: dict[str, set[str]] = defaultdict(set)
+    for path in sorted(TESTS.glob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "importorskip"):
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            assert isinstance(first, ast.Constant) and isinstance(first.value, str), (
+                f"{path.name}:{node.lineno} calls importorskip with a non-literal "
+                "module name, which cannot be audited by this file"
+            )
+            found[first.value].add(path.name)
+    return dict(found)
+
+
+def _core_import_names() -> set[str]:
+    """Import names provided by the distributions in ``[project] dependencies``.
+
+    Resolved through installed metadata rather than a hand-written table, so the
+    ``pyyaml`` -> ``yaml`` and ``opencv-python`` -> ``cv2`` renames come from the
+    environment instead of from a list that would drift on its own.
+    """
+    with PYPROJECT.open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    assert isinstance(project, dict)
+    # The distribution name is the leading run of name characters; everything
+    # after it is an extras bracket, a version specifier or an environment
+    # marker. Parsed here rather than with `packaging`, which this project does
+    # not declare and which would make the test depend on a transitive.
+    declared = {
+        _canonical(match.group(0))
+        for spec in project["dependencies"]
+        if (match := re.match(r"[A-Za-z0-9._-]+", str(spec)))
+    }
+
+    names: set[str] = set()
+    for module, dists in importlib.metadata.packages_distributions().items():
+        if any(_canonical(dist) in declared for dist in dists):
+            names.add(module)
+    return names
+
+
+def test_every_guarded_module_is_required_by_some_ci_job() -> None:
+    covered = (
+        set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_TRACKING_MODULES)
+    )
+    guarded = importorskip_targets()
+    uncovered = {
+        name: sorted(files) for name, files in guarded.items() if name not in covered
+    }
+    assert not uncovered, (
+        f"guarded by importorskip but required by no CI job: {uncovered}. "
+        "Their tests skip green in every job, so they are not evidence. Either "
+        "add the distribution to a CI install line and its import name to the "
+        "matching tuple in tests/conftest.py, or delete the guard."
+    )
+
+
+def test_no_core_dependency_is_guarded() -> None:
+    """A core dependency behind ``importorskip`` is a guard that cannot fire.
+
+    Worse than useless: if the core install really were broken, the guard would
+    turn the failure into a skip and the suite would stay green over it.
+    """
+    guarded_core = sorted(set(importorskip_targets()) & _core_import_names())
+    assert not guarded_core, (
+        f"{guarded_core} are core dependencies but are guarded by importorskip. "
+        "Remove the guard -- a core dependency is not optional, and skipping "
+        "instead of failing hides a broken install."
+    )
+
+
+def test_every_required_module_is_reachable_from_the_suite() -> None:
+    """The other direction: a tuple entry nothing reaches is dead weight.
+
+    ``pywt`` is reached without a guard -- the wavelet features import it
+    directly, so its absence is an ImportError rather than a skip -- which is why
+    this asks whether the suite reaches a module at all, not whether it guards it.
+    """
+    required = (
+        set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_TRACKING_MODULES)
+    )
+    guarded = set(importorskip_targets())
+    reachable = guarded | {"pywt"}
+    unreached = sorted(required - reachable)
+    assert not unreached, (
+        f"{unreached} are demanded of a CI job but nothing in the suite reaches "
+        "them. Either a test needs them and should say so, or the tuple entry in "
+        "tests/conftest.py is stale."
+    )

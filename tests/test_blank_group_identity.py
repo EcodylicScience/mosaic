@@ -25,7 +25,7 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 

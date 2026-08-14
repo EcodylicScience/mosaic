@@ -23,7 +23,7 @@ import pytest
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm, scalable_columns
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 
-from .conftest import add_media_sequence
+from tests.helpers import add_media_sequence
 
 
 def _table(sequence: str = "seq_a", n: int = 4) -> pd.DataFrame:

@@ -137,7 +137,7 @@ def test_a_sequence_containing_the_separator_keeps_it(tmp_path: Path) -> None:
 
 
 def test_index_media_reads_the_sequence_from_the_directory(
-    tmp_path: Path, requires_ffprobe: None
+    tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """Two clips in one entry directory are one sequence, not two.
 
@@ -162,7 +162,7 @@ def test_index_media_reads_the_sequence_from_the_directory(
 
 
 def test_a_grouped_entry_directory_yields_both_halves(
-    tmp_path: Path, requires_ffprobe: None
+    tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """The group is recovered too, or the layout is only half readable."""
     ds = _dataset(tmp_path)
@@ -182,7 +182,7 @@ def test_a_grouped_entry_directory_yields_both_halves(
 
 
 def test_the_flat_layout_is_grandfathered(
-    tmp_path: Path, requires_ffprobe: None
+    tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """The default is unchanged, so no existing dataset is re-identified.
 

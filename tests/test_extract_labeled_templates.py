@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -89,9 +92,6 @@ class TestParams:
         )
         assert params.strategy == "farthest_first"
 
-
-from collections.abc import Callable, Iterator
-from pathlib import Path
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 

@@ -30,7 +30,7 @@ from mosaic.core.pipeline.tracks_raw_index import (
     write_tracks_raw_index_rows,
 )
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 
 def _make_dataset(base: Path) -> Dataset:

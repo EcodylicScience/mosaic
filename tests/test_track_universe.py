@@ -21,7 +21,7 @@ from mosaic.core.pipeline.track_universe import (
     track_universe,
 )
 
-from .conftest import add_track_sequences
+from tests.helpers import add_track_sequences
 
 
 def _dataset(tmp_path: Path) -> Dataset:

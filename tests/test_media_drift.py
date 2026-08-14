@@ -46,7 +46,7 @@ def _clip(path: Path, shade: int, frames: int = 6) -> None:
     writer.release()
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestWritePathDrift:
     def test_a_replaced_file_is_reported_as_drift(self, tmp_path: Path) -> None:
         """Different bytes under a stable path, found because the write re-probed."""
@@ -203,7 +203,7 @@ class _CropLike:
         return df
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 def test_the_status_display_reports_a_source_that_moved(
     scenario_dataset_with_media: Dataset,
 ) -> None:
@@ -281,7 +281,7 @@ def _crop_outputs(ds: Dataset, run_id: str) -> dict[str, int]:
     return {p.name: p.stat().st_mtime_ns for p in sorted(run_root.glob("*.parquet"))}
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestACacheHitDoesNotLaunderTheBaseline:
     """A skipped entry records what it was made from, not what is true now.
 
@@ -412,7 +412,7 @@ class TestCachedEntryDisposition:
         assert cached_entry_disposition("", "") == "undetectable"
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheRefusalInRunFeature:
     def test_an_entry_with_no_recorded_provenance_recomputes_once(
         self, scenario_dataset_with_media: Dataset

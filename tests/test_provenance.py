@@ -96,7 +96,7 @@ class TestTheSchema:
         assert reached.empty
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestScopingByRoot:
     """H3 case 2, as an assertion about the walk rather than about a delete set."""
 
@@ -152,7 +152,7 @@ class TestScopingByRoot:
         assert list(crop["sequence"]) == ["seq_a"]
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestVerdicts:
     """Before the change every row reads ``current``; after, what moved reads
     ``drifted``. One function, two moments -- which is what lets the same call
@@ -207,7 +207,7 @@ class TestTheTracksArm:
         self, scenario_dataset: Dataset
     ) -> None:
         """The tracks row records which root it read, and this is what asks it."""
-        from tests.conftest import add_tracks_variant
+        from tests.helpers import add_tracks_variant
 
         ds = scenario_dataset
         add_tracks_variant(ds, "convert-dlc.0.1-aaaaaaaaaa", "seq_a")
@@ -225,7 +225,7 @@ class TestTheTracksArm:
         A change under ``tracks_raw`` reaches every table converted from it;
         which one a feature *would* read today is a different question.
         """
-        from tests.conftest import add_tracks_variant
+        from tests.helpers import add_tracks_variant
 
         ds = scenario_dataset
         add_tracks_variant(ds, "convert-dlc.0.1-aaaaaaaaaa", "seq_a")
@@ -240,7 +240,7 @@ class TestTheTracksArm:
         }
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheTransitiveArm:
     """The arm no recorded cell can supply.
 
@@ -257,7 +257,7 @@ class TestTheTransitiveArm:
     """
 
     def _tracked_dataset(self, ds: Dataset) -> str:
-        from tests.conftest import add_tracks_variant
+        from tests.helpers import add_tracks_variant
 
         variant = "trex.0.1-aaaaaaaaaa"
         add_tracks_variant(ds, variant, "seq_a", consumed_source_roots=("media_raw",))

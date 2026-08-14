@@ -27,6 +27,10 @@ from mosaic.behavior.model_library.identity_classifier import (
 )
 from mosaic.behavior.model_library.timm_backbone import data_config_from_metadata
 
+# Selected by CI's `identity` job with `-m identity` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.identity
+
 # A tiny timm model, so the torch-backed tests stay seconds rather than minutes.
 _SMALL_BACKBONE = "resnet18"
 _SMALL_SIZE = (64, 64)

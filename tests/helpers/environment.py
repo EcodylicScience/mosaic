@@ -1,0 +1,42 @@
+"""What the surrounding machine provides, asked the same way everywhere.
+
+The ffmpeg toolchain is the one capability the suite reaches for that is neither
+a Python import nor part of the repository, so "is it here" gets one answer with
+one shape. Before this, the same missing binary produced a clean skip in the
+files that happened to request a guarding fixture and a bare ``FileNotFoundError``
+naming a codec in the ones that did not.
+
+``require_ffmpeg`` is a plain function rather than a fixture because the helpers
+that need it are plain functions too -- ``add_media_sequence`` writes videos and
+then indexes them, and a fixture cannot guard a call a test makes directly.
+``pytest.skip`` works from anywhere inside a running test, so the two forms give
+the same outcome.
+"""
+
+from __future__ import annotations
+
+import shutil
+
+import pytest
+
+# Both binaries. Probing shells out to ``ffprobe``; the transcode op and the
+# raw-H.264 packet scan shell out to ``ffmpeg``, and it is the one that goes
+# missing first.
+FFMPEG_TOOLCHAIN = ("ffmpeg", "ffprobe")
+
+
+def missing_ffmpeg_tools() -> tuple[str, ...]:
+    """Which of the ffmpeg toolchain's binaries are not on ``PATH``."""
+    return tuple(name for name in FFMPEG_TOOLCHAIN if shutil.which(name) is None)
+
+
+def require_ffmpeg() -> None:
+    """Skip the running test when the ffmpeg toolchain is not on ``PATH``.
+
+    Under CI ``pytest_configure`` has already refused to start over a missing
+    binary, so this is a local-only path: there, absence is a broken environment
+    rather than a reason to run less.
+    """
+    missing = missing_ffmpeg_tools()
+    if missing:
+        pytest.skip(f"not on PATH: {', '.join(missing)}")
