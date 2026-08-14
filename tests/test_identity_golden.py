@@ -151,6 +151,11 @@ CASES: tuple[Case, ...] = (
         params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},
     ),
     Case(
+        case_id="social-motion-summary/subgroups-group-size",
+        feature="social-motion-summary",
+        params={"subgroup_col": "group_size"},
+    ),
+    Case(
         case_id="egocentric-crop/center-mode-xy",
         feature="egocentric-crop",
         params={"center_mode": "xy"},
