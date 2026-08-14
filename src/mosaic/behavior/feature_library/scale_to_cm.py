@@ -17,14 +17,28 @@ column that quietly changed meaning.
 **Uncalibrated refuses.** A dataset that has not been told its scale cannot be
 given one by default: ``1.0`` is a scale, not an absence, and assuming it would
 reproduce exactly the failure this whole arrangement exists to remove.
+
+**Converting in place is a mode, and it does not move the invariant.** The claim
+is about *tracks*: the tables under ``tracks/``, which this feature never writes
+and which stay in pixels whatever mode it runs in. Its own output is a derived
+table like any other, and a derived table has always carried whatever unit its
+feature computed -- ``speed-angvel`` over a centimetre input reports cm/s and
+always did. What ``mode="convert"`` adds is that the derived table is also
+*track-shaped*, so a track feature can consume it and a whole pipeline can run
+downstream of the conversion rather than around it. That is the case where
+"which unit is this?" gets thin, and the answer is the same one this module is
+built on: the scale is in the run identifier, so the table is addressable rather
+than conventional, and the pixel original is still on disk, unmodified, one
+input away.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Literal, Self, final
 
 import pandas as pd
+from pydantic import model_validator
 
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
@@ -40,13 +54,43 @@ from .registry import register_feature
 
 # Column families that carry a length, and so scale. Read after stripping a
 # ``#`` suffix, so ``X``, ``X#wcentroid`` and ``X#head`` are all covered.
+#
+# Kept in step with ``mosaic.core.track_library.trex._LENGTH_FIELDS``, which is
+# the list the TREx converter divides *back out*. A name on one list and not the
+# other is a column that goes to pixels and never returns, and the number stays
+# plausible the whole way down -- a border distance in pixels compared against a
+# threshold in centimetres keeps every frame and says nothing. Two tests pin the
+# correspondence in both directions.
 _LENGTH_NAMES: frozenset[str] = frozenset(
-    {"X", "Y", "SPEED", "VX", "VY", "AX", "AY", "speed", "vx", "vy"}
+    {
+        "X",
+        "Y",
+        "SPEED",
+        "VX",
+        "VY",
+        "AX",
+        "AY",
+        "speed",
+        "vx",
+        "vy",
+        # What TREx additionally reports as a length.
+        "SPEED_SMOOTH",
+        "SPEED_OLD",
+        "ACCELERATION",
+        "ACCELERATION_SMOOTH",
+        "BORDER_DISTANCE",
+        "NEIGHBOR_DISTANCE",
+    }
 )
 _LENGTH_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "bbox_", "midline_")
 
 # Confidences share the ``pose`` prefix with the coordinates and carry no length.
-_NOT_LENGTH_PREFIXES: tuple[str, ...] = ("poseP",)
+# ``midline_length`` shares the ``midline_`` prefix with three genuine lengths
+# and carries none either: TREx's centimetre conversion for it is commented out
+# in ``OutputLibrary.cpp``, so it is pixels sitting beside ``midline_x``,
+# ``midline_y`` and ``midline_segment_length``, which are not. The prefix is
+# long enough to spare ``midline_segment_length``.
+_NOT_LENGTH_PREFIXES: tuple[str, ...] = ("poseP", "midline_length")
 
 
 def scalable_columns(columns: list[str]) -> list[str]:
@@ -69,24 +113,47 @@ def scalable_columns(columns: list[str]) -> list[str]:
 @final
 @register_feature
 class ScaleToCm:
-    """Emit centimetre copies of every length-bearing column.
+    """Convert every length-bearing column into centimetres.
 
-    Outputs one row per input row: each scaled column under its own name plus a
-    suffix, alongside the metadata columns. The pixel columns are left untouched
-    and are not copied through -- the source table remains the authority on what
-    was measured, and this run is the authority on what it means in centimetres.
+    Outputs one row per input row. **Two modes, and they are exclusive rather
+    than composable.** ``"derive"`` (the default) emits *only* the scaled
+    columns, each under its own name plus a suffix, alongside the metadata: the
+    source table remains the authority on what was measured, and this run is the
+    authority on what it means in centimetres. ``"convert"`` returns the whole
+    table with every length column converted **in place, under its own name**, so
+    the result is a track-shaped table in centimetres that a track feature can be
+    chained onto.
+
+    Emitting both at once -- ``X`` in pixels beside ``X_cm`` -- is the one thing
+    neither mode does. That is one table holding two coordinate systems with
+    nothing recording which column is which, which is the failure this whole
+    module exists to remove.
 
     Params:
         cm_per_pixel: Override the dataset's recorded scale. Hashed, so an
             override is part of the run identity. ``None`` (the default) reads
             the value from the media index for the sequence being processed.
-        suffix: Appended to each scaled column's name. Default ``"_cm"``.
+        mode: ``"derive"`` for suffixed copies of the length columns only,
+            ``"convert"`` for the whole table converted in place. Default
+            ``"derive"``.
+        suffix: Appended to each scaled column's name in ``"derive"`` mode.
+            Default ``"_cm"``. Names nothing in ``"convert"`` mode, which
+            refuses a non-default value rather than hashing one.
         columns: Restrict to these columns instead of every length-bearing one.
+            In ``"convert"`` mode naming a subset leaves the unnamed length
+            columns in pixels *inside a table whose other lengths are
+            centimetres* -- a mixed table this feature will not otherwise
+            produce.
     """
 
     category = "per-frame"
     name = "scale-to-cm"
-    version = "0.1"
+    # 0.2: the length classifier gained the six fields TREx reports as lengths
+    # and lost ``midline_length``, which TREx never scales. That changes what a
+    # *default-params* run emits, and ``scalable_columns`` is a module function
+    # rather than a Params field, so no digest can see it. The version is the
+    # only mechanism that can. ``mode`` is hashed and needed no bump of its own.
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = (
@@ -99,8 +166,27 @@ class ScaleToCm:
 
     class Params(Params):
         cm_per_pixel: float | None = None
+        mode: Literal["derive", "convert"] = "derive"
         suffix: str = "_cm"
         columns: list[str] | None = None
+
+        @model_validator(mode="after")
+        def _a_suffix_names_nothing_in_convert_mode(self) -> Self:
+            """Refuse a suffix that would enter the identity and name no column.
+
+            ``suffix`` is hashed. In ``convert`` mode it renames nothing, so two
+            spellings would mint two run identifiers for one byte-identical
+            table -- the same hole a throughput knob in the digest opens, and
+            cheaper to close here than to document.
+            """
+            if self.mode == "convert" and self.suffix != "_cm":
+                raise ValueError(
+                    "scale-to-cm: mode='convert' converts every length column "
+                    f"in place and renames none, so suffix={self.suffix!r} "
+                    "names no column while still entering the run identity -- "
+                    "two identifiers for one table. Drop it."
+                )
+            return self
 
     def __init__(
         self,
@@ -149,6 +235,18 @@ class ScaleToCm:
             )
 
         scale = self._scale_for(df)
+
+        if p.mode == "convert":
+            # In place, under the same names, with every other column carried
+            # through: the output is a track-shaped table in centimetres, which
+            # is what a track feature downstream can consume. Column order is
+            # the input's, so a reader matching a column by shape rather than by
+            # name -- a border-distance column, say -- sees the same first match.
+            out = df.copy()
+            for name in wanted:
+                out[name] = df[name] * scale
+            return out
+
         out = pd.DataFrame(
             {f"{name}{p.suffix}": df[name] * scale for name in wanted},
             index=df.index,

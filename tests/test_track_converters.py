@@ -56,10 +56,14 @@ def test_no_converter_can_hash_an_entry_name(src_format: str) -> None:
     """No registered converter has an entry-identity field in its params.
 
     Checked over ``identity_dump()`` rather than the field list, since that is
-    the payload the tracks hash is built from.
+    the payload the tracks hash is built from. Built with ``model_construct``
+    rather than the validating constructor, because a converter is allowed a
+    *required* parameter -- ``trex_npz_scaled`` has one, being the reader that is
+    told a factor its files do not record -- and this asks what a payload may
+    contain, not whether a default instance exists.
     """
     params_cls = TRACK_CONVERTERS[src_format].Params
-    hashed = set(params_cls().identity_dump())
+    hashed = set(params_cls.model_construct().identity_dump())
 
     assert not (hashed & ENTRY_KEYS), (
         f"{src_format} would hash entry identity: {sorted(hashed & ENTRY_KEYS)}"

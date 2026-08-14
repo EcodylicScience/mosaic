@@ -30,13 +30,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from mosaic.core.track_converter import EntryHints, TrackConvertParams
 from mosaic.core.track_library.trex import (
     CALIBRATION_COLUMN,
     MissingBodyCentreError,
     MissingTrexCalibrationError,
+    TrexCalibrationConflictError,
     TrexNpzConverter,
+    TrexNpzScaledConverter,
+    TrexScaledNpzParams,
     UnknownTrexUnitsError,
     load_npz_to_df,
     calibration_from_frame,
@@ -337,3 +341,106 @@ def test_an_unclassified_field_still_refuses_a_calibrated_table(
     )
     with pytest.raises(UnknownTrexUnitsError, match="some_new_trex_field"):
         _ = _convert(path)
+
+
+# --- the reader that is told the factor --------------------------------------
+#
+# TRex has written `cm_per_pixel` into every export since 2025-02-18. An older
+# export is centimetres with no record of by how much, and `MissingTrexCalibration
+# Error` names the remedy: "converted by a reader that is told the factor". These
+# are the two halves of that promise.
+
+
+def _write_uncalibrated(path: Path, *, n: int = 8, **columns: np.ndarray) -> None:
+    """A pre-2025 export: everything TRex writes today, minus the factor."""
+    write_trex_npz(path, n=n, **columns)
+    kept = {k: v for k, v in np.load(path).items() if k != CALIBRATION_COLUMN}
+    np.savez(path, **kept)
+
+
+def _convert_scaled(path: Path, factor: float) -> pd.DataFrame:
+    return TrexNpzScaledConverter().convert(
+        path,
+        TrexScaledNpzParams(cm_per_pixel=factor),
+        EntryHints(group="", sequence="seq"),
+    )
+
+
+def test_a_file_with_no_factor_refuses_under_trex_npz_and_converts_told(
+    tmp_path: Path,
+) -> None:
+    """The refusal names a remedy; this is the remedy existing."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_uncalibrated(path, n=4)
+
+    with pytest.raises(MissingTrexCalibrationError, match=CALIBRATION_COLUMN):
+        _ = _convert(path)
+
+    out = _convert_scaled(path, 0.25)
+    assert not out.empty
+
+
+def test_the_stated_factor_is_the_one_applied(tmp_path: Path) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    _write_uncalibrated(path, n=4)
+    raw = np.load(path)
+
+    out = _convert_scaled(path, 0.25)
+
+    assert out["X#wcentroid"].to_numpy() == pytest.approx(raw["X#wcentroid"] / 0.25)
+    assert out["Y#wcentroid"].to_numpy() == pytest.approx(raw["Y#wcentroid"] / 0.25)
+
+
+def test_x_is_the_body_centre_and_the_head_survives(tmp_path: Path) -> None:
+    """Same landmark rule as the calibrated reader: bare X is the *head*."""
+    path = tmp_path / "seq_fish0.npz"
+    head = np.linspace(5.0, 6.0, 4)
+    _write_uncalibrated(path, n=4, X=head, Y=head)
+    raw = np.load(path)
+
+    out = _convert_scaled(path, 0.5)
+
+    assert out["X"].to_numpy() == pytest.approx(raw["X#wcentroid"] / 0.5)
+    assert out["X#head"].to_numpy() == pytest.approx(head / 0.5)
+    assert out["Y#head"].to_numpy() == pytest.approx(head / 0.5)
+
+
+def test_a_recorded_factor_that_disagrees_refuses(tmp_path: Path) -> None:
+    """One of the two is wrong about this recording, and neither is a default."""
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, n=4, cm_per_pixel=0.25)
+
+    with pytest.raises(TrexCalibrationConflictError, match="0.25"):
+        _ = _convert_scaled(path, 0.5)
+
+
+def test_a_recorded_factor_that_agrees_converts_identically(tmp_path: Path) -> None:
+    """Being told what the file already says is not a conflict, and not a difference."""
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, n=4, cm_per_pixel=0.25)
+
+    told = _convert_scaled(path, 0.25)
+    read = _convert(path)
+
+    pd.testing.assert_frame_equal(told, read)
+
+
+def test_the_two_readers_are_two_variants(tmp_path: Path) -> None:
+    """A variant names one producer, so a reconstructed factor is addressable apart."""
+    from mosaic.core.pipeline.tracks_identity import converter_op
+
+    assert converter_op(TrexNpzScaledConverter.src_format) == "convert-trex_npz_scaled"
+    assert converter_op(TrexNpzConverter.src_format) == "convert-trex_npz"
+
+
+def test_two_factors_are_two_recipes() -> None:
+    """The factor is a claim about the world, so it belongs in the identity."""
+    one = TrexScaledNpzParams(cm_per_pixel=0.25).identity_dump()
+    other = TrexScaledNpzParams(cm_per_pixel=0.5).identity_dump()
+    assert one != other
+
+
+def test_the_factor_is_required_rather_than_defaulted() -> None:
+    """`1.0` is a scale, not an absence -- and this reader exists for the absence."""
+    with pytest.raises(ValidationError):
+        _ = TrexScaledNpzParams()

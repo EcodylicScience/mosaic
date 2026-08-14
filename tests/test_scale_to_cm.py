@@ -166,3 +166,71 @@ def test_a_frame_spanning_two_sequences_refuses() -> None:
     feature.bind_dataset(object())
     with pytest.raises(ValueError, match="one sequence per call"):
         _ = feature.apply(mixed)
+
+
+# --- convert mode: the output a track feature can be chained onto -------------
+
+
+def test_convert_mode_returns_a_track_shaped_table_in_centimetres() -> None:
+    """The point of the mode: `X`/`Y` survive under their own names.
+
+    ``derive`` emits ``X_cm`` and drops ``ANGLE``, so a track feature chained
+    onto it finds no position to smooth and no heading to rotate into, and says
+    nothing about either -- it simply computes on columns that are not there.
+    """
+    out = ScaleToCm(params={"cm_per_pixel": 0.25, "mode": "convert"}).apply(_table())
+
+    assert out["X"].to_numpy() == pytest.approx(np.linspace(0.0, 2.5, 4))
+    assert out["poseX0"].to_numpy() == pytest.approx(np.linspace(0.0, 2.5, 4))
+    assert "X_cm" not in out.columns  # in place, not beside
+    assert out["ANGLE"].to_numpy() == pytest.approx(np.full(4, 0.5))  # untouched
+    assert out["poseP0"].to_numpy() == pytest.approx(np.full(4, 0.9))  # untouched
+    assert list(out.columns) == list(_table().columns)  # order preserved
+
+
+def test_convert_mode_never_emits_both_spellings() -> None:
+    """One table, two coordinate systems, is the failure this module removes."""
+    out = ScaleToCm(params={"cm_per_pixel": 0.25, "mode": "convert"}).apply(_table())
+    assert [str(c) for c in out.columns if str(c).endswith("_cm")] == []
+
+
+def test_a_suffix_names_nothing_in_convert_mode() -> None:
+    """It would still be hashed: two identifiers for one byte-identical table."""
+    with pytest.raises(ValueError, match="names no column"):
+        _ = ScaleToCm.Params.from_overrides({"mode": "convert", "suffix": "_mm"})
+
+
+def test_the_two_modes_are_two_run_identities() -> None:
+    derive = ScaleToCm(params={"cm_per_pixel": 0.25})
+    convert = ScaleToCm(params={"cm_per_pixel": 0.25, "mode": "convert"})
+    assert derive.params.identity_dump() != convert.params.identity_dump()
+
+
+def test_convert_mode_still_refuses_a_table_with_nothing_to_scale() -> None:
+    """A table with no length is a mistake in either mode."""
+    bare = _table()[["frame", "time", "id", "group", "sequence", "ANGLE"]]
+    feature = ScaleToCm(params={"cm_per_pixel": 0.25, "mode": "convert"})
+    with pytest.raises(ValueError, match="no length-bearing column"):
+        _ = feature.apply(bare)
+
+
+# --- the correspondence with the converter's own classifier -------------------
+#
+# The TREx converter divides a named set of columns *out* into pixels. Anything
+# on that list this feature does not multiply back is a column stuck in pixels
+# inside a centimetre table, and it stays a plausible float the whole way down.
+
+
+def test_every_length_trex_divides_out_is_one_this_multiplies_back() -> None:
+    from mosaic.core.track_library.trex import _LENGTH_FIELDS
+
+    stranded = sorted(f for f in _LENGTH_FIELDS if not scalable_columns([f]))
+    assert stranded == []
+
+
+def test_nothing_trex_calls_dimensionless_is_scaled_here() -> None:
+    """`midline_length` is pixels sitting under a name that reads like a length."""
+    from mosaic.core.track_library.trex import _DIMENSIONLESS_FIELDS
+
+    scaled = sorted(f for f in _DIMENSIONLESS_FIELDS if scalable_columns([f]))
+    assert scaled == []

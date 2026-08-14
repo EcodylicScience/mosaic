@@ -31,10 +31,12 @@ already reads ``X#wcentroid`` keeps working.
 """
 
 from __future__ import annotations
+import math
 from pathlib import Path
 import re
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.track_library.helpers import column_array, column_names
 from mosaic.core.track_converter import (
@@ -48,7 +50,10 @@ __all__ = [
     "CALIBRATION_COLUMN",
     "MissingBodyCentreError",
     "MissingTrexCalibrationError",
+    "TrexCalibrationConflictError",
     "TrexNpzConverter",
+    "TrexNpzScaledConverter",
+    "TrexScaledNpzParams",
     "UnknownTrexUnitsError",
     "calibration_from_frame",
     "load_npz_to_df",
@@ -78,6 +83,16 @@ class MissingTrexCalibrationError(ValueError):
     Fatal rather than assumed away. Defaulting to ``1.0`` would read a calibrated
     file's centimetres as pixels and be wrong by exactly the factor the file
     failed to mention -- and wrong quietly, since every number stays plausible.
+    """
+
+
+class TrexCalibrationConflictError(ValueError):
+    """A file records a factor, and the caller stated a different one.
+
+    Refused rather than silently preferring either. The file's value is what TRex
+    *applied*; the parameter is what a human believes. When both exist and they
+    disagree, one of them is wrong about this recording, and picking the wrong
+    one is a constant-factor error in every distance downstream.
     """
 
 
@@ -485,6 +500,90 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
                 "converted by a reader that is told the factor."
             )
         df = unscale_to_pixels(df, cm_per_pixel)
+        df = name_the_body_centre(df, source=path)
+        df["group"] = hints.group
+        df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)
+        return df
+
+
+class TrexScaledNpzParams(TrackConvertParams):
+    """The factor a pre-2025 export did not record.
+
+    Required, and a plain ``float`` rather than an optional one: this converter
+    exists precisely for the files that carry no ``cm_per_pixel``, so there is
+    nothing to fall back to, and ``1.0`` is a scale rather than an absence.
+
+    Required also decides *where* it fails. ``Dataset._converter_params`` runs
+    outside ``convert_all_tracks``'s per-entry try/except, so a missing factor
+    raises once, before a single file is opened. An optional field checked inside
+    ``convert`` would instead be caught by the loop's failure collector and
+    reported as one skipped sequence per entry.
+    """
+
+    cm_per_pixel: float = Field(gt=0.0)
+
+
+@register_track_converter
+class TrexNpzScaledConverter(TrexNpzConverter):
+    """TRex per-id NPZ from before TRex wrote its factor down, told the factor.
+
+    TRex has written ``cm_per_pixel`` into every export since 2025-02-18. An
+    older export is centimetres with no record of by how much, which
+    :class:`TrexNpzConverter` refuses -- correctly, since the whole difficulty is
+    that centimetres and pixels are indistinguishable once the number is lost.
+    This is the reader that refusal names: the same conversion, the same schema
+    and the same per-individual merge, with the factor supplied as a parameter
+    instead of read off the table.
+
+    **A separate ``src_format``, not a flag on the other one.** A tracks variant
+    identity names exactly one producer, and ``converter_op`` puts the format in
+    the directory name, so tables whose factor came from a human are addressable
+    apart from tables whose factor came from the file. That difference is worth
+    keeping visible: one is a measurement the exporter made, the other is a claim
+    someone reconstructed. It is the same reason ``calms21_json`` is a class
+    rather than a branch.
+
+    Recovering the factor for a file that does not state it is possible, and is
+    how the parameter is meant to be obtained: TRex exports ``tracklet_vxys`` in
+    px/s while ``SPEED#wcentroid`` beside it is cm/s (see
+    :data:`OFF_AXIS_FIELDS`), so their ratio *is* the applied ``cm_per_pixel``.
+    That recovery is deliberately **not** done here. It is a float division of
+    noisy quantities, so two individuals of one recording would differ in the
+    last digits and scale their halves of one merged table by subtly different
+    numbers -- and the recipe would then depend on arithmetic noise rather than
+    on a number somebody wrote down. A caller recovers it once, reads it, rounds
+    it and states it; ``params.json`` records what was used.
+    """
+
+    src_format = "trex_npz_scaled"
+    version = "0.1"
+    output_schema = "trex_v2"
+    Params = TrexScaledNpzParams
+
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        # Declared as the base's params rather than narrowed to this class's:
+        # a subclass that accepted less than its base would be unsound, and
+        # ``Params`` above is already what ``_converter_params`` constructs. The
+        # check is for a caller building one by hand, which the tests do.
+        if not isinstance(params, TrexScaledNpzParams):
+            raise TypeError(
+                f"{self.src_format} is the reader that is told the factor, so it "
+                f"needs {TrexScaledNpzParams.__name__} with cm_per_pixel set; got "
+                f"{type(params).__name__}."
+            )
+        df = load_npz_to_df(path)
+        recorded = calibration_from_frame(df)
+        stated = float(params.cm_per_pixel)
+        if recorded is not None and not math.isclose(recorded, stated, rel_tol=1e-9):
+            raise TrexCalibrationConflictError(
+                f"{path} records {CALIBRATION_COLUMN}={recorded}, but this "
+                f"conversion was told {stated}. The file's value is the one TRex "
+                f"applied. Convert it with src_format={TrexNpzConverter.src_format!r}, "
+                "which reads the factor off the table, or correct the parameter."
+            )
+        df = unscale_to_pixels(df, stated)
         df = name_the_body_centre(df, source=path)
         df["group"] = hints.group
         df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)

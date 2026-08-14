@@ -8,6 +8,78 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — `scale-to-cm` can be chained, and a TREx reader can be told the factor
+
+**`scale-to-cm` could not be put in a pipeline, which is the one thing it is for.**
+It returned only the scaled columns joined to the five metadata ones, so `ANGLE`,
+`X#head`, the keypoint confidences and everything else non-length were dropped —
+and `X`/`Y` came back as `X_cm`/`Y_cm`. A track feature chained onto that output
+does not fail: `trajectory-smooth` reads `X`/`Y` literally and every positional
+step is guarded on their presence, so it emits its input unchanged and reports
+success. Nothing in the tree had ever chained it, and nothing had noticed.
+
+A new `mode` decides. `"derive"` is the old behaviour and stays the default.
+`"convert"` returns the **whole** table with every length column converted in
+place under its own name, so the result is track-shaped and a whole pipeline can
+run downstream of the conversion rather than around it. Emitting both spellings
+at once — `X` in pixels beside `X_cm` — is the one thing neither mode does; that
+is one table holding two coordinate systems, which is the failure the feature
+exists to remove. `suffix` names nothing in `convert` mode and is refused there
+rather than hashed, since two spellings would otherwise mint two identifiers for
+one byte-identical table.
+
+The invariant does not move. It is about *tracks*: the tables under `tracks/`,
+which this feature never writes and which stay pixels in either mode. Its own
+output is a derived table, and a derived table has always carried whatever unit
+its feature computed.
+
+**Its length classifier disagreed with the converter's, in both directions.**
+`_LENGTH_NAMES` was missing `SPEED_SMOOTH`, `SPEED_OLD`, `ACCELERATION`,
+`ACCELERATION_SMOOTH`, `BORDER_DISTANCE` and `NEIGHBOR_DISTANCE` — six columns the
+TREx converter divides out into pixels and this never multiplied back, so a border
+distance in pixels would be compared against a threshold in centimetres and keep
+every frame while saying nothing. And it scaled `midline_length`, which TREx never
+scales (its conversion is commented out in `OutputLibrary.cpp`), because that name
+shares the `midline_` prefix with three genuine lengths. Both are fixed and two
+tests now pin the correspondence in each direction; the second fails on the old
+code.
+
+**`scale-to-cm` 0.1 → 0.2.** The classifier is a module function, not a `Params`
+field, so no digest can see that a default-params run now emits a different column
+set. `"scale-to-cm/default"` in the golden corpus moves, and it is the only line
+that does. No stored run is re-addressed: nothing in the corpus had run it.
+
+**New `trex_npz_scaled` converter.** `MissingTrexCalibrationError` has always
+ended by naming a remedy — "an older file has to be re-exported from its
+`.results`, or **converted by a reader that is told the factor**" — and that
+reader did not exist. It does now: the same conversion, schema and per-individual
+merge as `trex_npz`, with a **required** `cm_per_pixel` param instead of a value
+read off the table. Required rather than optional so a missing factor raises once,
+before any file is opened, rather than being collected by the conversion loop and
+reported as one skipped sequence per entry. A file that *does* record a factor and
+disagrees raises `TrexCalibrationConflictError` rather than either value winning
+silently.
+
+A second `src_format`, not a flag on the first: a tracks variant identity names
+exactly one producer and `converter_op` puts the format in the directory name, so
+tables whose factor a human reconstructed stay addressable apart from tables whose
+factor the exporter measured. Same reason `calms21_json` is a class rather than a
+branch.
+
+**On disk:** nothing existing moves. `trex_npz_scaled` writes to its own
+`tracks/convert-trex_npz_scaled.<version>-<digest>/`, and two factors are two
+variants. A dataset converting the same entries under both readers holds two
+labelled variants, which `select_variant_rows` refuses to choose between —
+retire one with `Dataset.drop_entries(..., run_id=...)`.
+
+**For a caller with pre-2025 exports:** the factor is recoverable from the file
+even though TRex did not write it down. TRex exports `tracklet_vxys` in px/s while
+`SPEED#wcentroid` beside it is cm/s, so their ratio is the applied `cm_per_pixel`.
+The converter deliberately does not do that division itself — it is noisy, and two
+individuals of one recording would scale their halves of a merged table by subtly
+different numbers. Recover it once, round it, state it; `params.json` records what
+was used.
+
 ## Unreleased — `overlap_frames` reads across a continuous recording, or refuses
 
 **`overlap_frames` did not do what it said, and said nothing about it.** It

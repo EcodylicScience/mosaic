@@ -17,13 +17,14 @@ skeleton to copy.
 
 They decide how much of the rest applies.
 
-1. **Can you reuse a shipped format?** Six are registered, in five rows:
+1. **Can you reuse a shipped format?** Seven are registered, in six rows:
 
    | `src_format`                    | Reads                                            | Schema      |
    | ------------------------------- | ------------------------------------------------ | ----------- |
    | `deeplabcut`                    | DLC `.csv` / `.h5`, single- and multi-animal; also Lightning Pose | `mosaic_v1` |
    | `sleap_analysis_h5`             | `sleap-convert --format analysis` HDF5           | `mosaic_v1` |
    | `trex_npz`                      | TRex per-individual `.npz`                       | `trex_v2`   |
+   | `trex_npz_scaled`               | TRex per-individual `.npz` predating `cm_per_pixel`, told the factor | `trex_v2`   |
    | `ultralytics_tracks`            | Ultralytics MOT output                           | `mosaic_v1` |
    | `calms21_npy` / `calms21_json`  | CalMS21 arrays, task1/2/3                        | `mosaic_v1` |
 
@@ -213,12 +214,22 @@ classify as a length, a column it cannot classify raises rather than being scale
 on a guess, and a file recording no factor raises `MissingTrexCalibrationError`.
 A factor that can only come from the caller is a `Params` field, and so part of
 the recipe: two calibrations, two variants. An unknown factor raises. `1.0` is a
-scale, not an absence.
+scale, not an absence. `trex_npz_scaled` is that case worked out: TRex has
+written `cm_per_pixel` into every export only since 2025-02-18, so an older file
+is centimetres with no record of by how much, and it is a *second registered
+format* rather than an optional field on the first — a variant identity names one
+producer, so a factor someone reconstructed stays addressable apart from a factor
+the exporter measured. It refuses when the file records a factor that disagrees
+with the one it was told.
 
 Physical units belong downstream, in `scale-to-cm`, which takes the scale from
-the media index beside the video it describes (`Dataset.set_media_calibration`),
-records it in a run identifier, and refuses on an uncalibrated dataset. Never
-write centimeters into `X`.
+the media index beside the video it describes (`Dataset.set_media_calibration`)
+or from an explicit `cm_per_pixel`, records it in a run identifier, and refuses
+on an uncalibrated dataset. Never write centimeters into `X`. Its `mode="convert"`
+returns a whole track-shaped table in centimetres, which is what lets a pipeline
+run *downstream* of the conversion rather than around it; the default
+`mode="derive"` emits suffixed copies of the length columns only, and cannot be
+chained.
 
 ## Wiring it up
 

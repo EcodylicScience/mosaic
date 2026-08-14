@@ -47,7 +47,7 @@
   "pair-position/default": "0.1-684f4115dc",
   "pair-wavelet/default": "0.1-0fbf2d766d",
   "pair-wavelet/params-nfreq": "0.1-9221abe0f4",
-  "scale-to-cm/default": "0.1-bff70ad577",
+  "scale-to-cm/default": "0.2-c4a726ae48",
   "social-motion-summary/default": "0.2-d100e039c5",
   "social-motion-summary/subgroups-group-size": "0.2-fd2a79e43d",
   "speed-angvel/default": "0.2-6ce34fc21e",
