@@ -8,6 +8,7 @@ from typing import Literal, final
 import pandas as pd
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputStream,
     Params,
@@ -39,6 +40,7 @@ class MovementSmooth:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "as-input"
 
     class Inputs(TrackInputs):
         pass

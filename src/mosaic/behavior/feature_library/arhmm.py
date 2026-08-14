@@ -23,6 +23,7 @@ from pydantic import Field
 from sklearn.decomposition import PCA
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     HASH_EXCLUDE,
     InputRequire,
@@ -121,7 +122,7 @@ class ArHmmFeature:
         False  # decodes a whole sequence at once, so context is not a window
     )
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "individual"
     ModelArtifact = ArHmmModelArtifact
 
     class Inputs(Inputs[Result]):

@@ -16,6 +16,7 @@ from scipy.spatial.distance import pdist
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputStream,
     Params,
@@ -55,6 +56,7 @@ class BodyScaleFeature:
     scope_dependent = False
     accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(TrackInputs):
         pass

@@ -39,6 +39,7 @@ import pandas as pd
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -103,6 +104,7 @@ class PairFacing:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "pair"
 
     class Inputs(TrackInputs):
         pass

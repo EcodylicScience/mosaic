@@ -22,6 +22,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -239,6 +240,7 @@ class CollectiveMotionMetrics:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "unidentified"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

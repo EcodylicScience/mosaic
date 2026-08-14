@@ -18,6 +18,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -196,7 +197,7 @@ class GlobalTSNE:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = TSNEModelArtifact
     TSNECoordsArtifact = TSNECoordsArtifact
 

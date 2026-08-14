@@ -10,6 +10,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -73,7 +74,7 @@ class ExtractTemplates:
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     TemplatesArtifact = TemplatesArtifact
     ProvenanceArtifact = ProvenanceArtifact
 

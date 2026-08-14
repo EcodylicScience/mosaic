@@ -11,6 +11,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -215,6 +216,7 @@ class FFGroups:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(TrackInputs):
         pass

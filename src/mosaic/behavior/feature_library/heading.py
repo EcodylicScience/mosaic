@@ -31,6 +31,7 @@ from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputStream,
     Params,
@@ -71,6 +72,7 @@ class HeadingFeature:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(TrackInputs):
         pass

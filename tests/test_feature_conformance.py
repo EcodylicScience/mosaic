@@ -20,6 +20,10 @@ import pytest
 
 from mosaic.behavior.feature_library.registry import FEATURES
 
+EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
+"""Spelled out rather than derived from the type alias, so a value silently
+added to the alias still has to be added here deliberately."""
+
 FEATURE_CLASSES = sorted(FEATURES.values(), key=lambda cls: cls.__name__)
 FEATURE_IDS = [cls.__name__ for cls in FEATURE_CLASSES]
 
@@ -107,4 +111,33 @@ def test_a_feature_accepting_overlap_never_reads_row_zero_identity(cls: type) ->
         f"{offenders} from row 0 of the frame apply() was given, which under "
         f"overlap belongs to the previous sequence. Take identity per frame "
         f"instead."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_feature_declares_what_it_emits(cls: type) -> None:
+    """At what entity level a feature's output is keyed is not a default.
+
+    It is what lets a chain be refused before it runs. ``alignment_verdict``
+    reads the level off the identity columns of a produced parquet; before
+    anything has run there is no parquet, so the declaration is the only source.
+    And the mistake it exists to catch is the expensive one: joining an
+    individual-level output to a pair-level one shares no identity column, so
+    the merge pairs every row of one with every row of the other and nothing
+    raises.
+
+    An undeclared feature would have to be assumed passthrough, which is wrong
+    in the dangerous direction -- a pair-producing feature read as passthrough
+    has its cartesian join permitted rather than refused.
+    """
+    assert hasattr(cls, "emits"), (
+        f"{cls.__name__} declares no 'emits'. Declare it: 'individual' for one "
+        f"row per (frame, id), 'pair' for one row per pair, 'unidentified' for "
+        f"an aggregate carrying no per-animal identity, 'as-input' when the "
+        f"level follows whatever was handed in."
+    )
+    declared: object = getattr(cls, "emits")
+    assert declared in EMITS_LEVELS, (
+        f"{cls.__name__} declares emits = {declared!r}, which is not one of "
+        f"{sorted(EMITS_LEVELS)}."
     )

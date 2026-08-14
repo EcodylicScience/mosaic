@@ -42,6 +42,7 @@ from pydantic import Field, model_validator
 from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
     DependencyLookup,
     HASH_EXCLUDE,
     InputRequire,
@@ -360,6 +361,7 @@ class FeralFeature:
         False  # takes its context from the crop video, not from this frame
     )
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "as-input"
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"

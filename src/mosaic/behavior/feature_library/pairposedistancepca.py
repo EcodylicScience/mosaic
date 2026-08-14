@@ -14,6 +14,7 @@ from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -78,6 +79,7 @@ class PairPoseDistancePCA:
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "pair"
 
     class Inputs(TrackInputs):
         pass

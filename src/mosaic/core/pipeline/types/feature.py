@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Protocol, final
+from typing import Literal, Protocol, final
 
 import pandas as pd
 
@@ -10,6 +10,9 @@ from mosaic.core.pipeline.types.inputs import InputsLike
 from mosaic.core.pipeline.types.params import Params
 
 DependencyLookup = dict[tuple[str, str], Path]
+
+type EmitsLevel = Literal["individual", "pair", "unidentified", "as-input"]
+"""At what entity level a feature's output is keyed. See ``Feature.emits``."""
 
 
 @final
@@ -65,6 +68,43 @@ class Feature(Protocol):
     It has no default, for the reason ``scope_dependent`` has none: a default
     would let the next feature ship without answering, and the wrong answer is
     silent in one direction.
+    """
+
+    emits: EmitsLevel
+    """At what entity level this feature's output is keyed.
+
+    What lets a chain be checked **before it runs**. ``alignment_verdict``
+    decides whether two inputs can be joined, and it decides from the identity
+    columns each one carries -- so on a produced parquet it needs no declaration
+    at all. Before anything has run there is no parquet, and the commonest real
+    mistake is exactly the one that check exists to catch: joining an
+    individual-level output to a pair-level one shares no identity column, so
+    the merge pairs every row of one with every row of the other. Declaring the
+    level is what moves that from a runtime surprise to a refused connection.
+
+    The four values, and which identity columns each one means:
+
+    - ``"individual"`` -- one row per ``(frame, id)``, or per ``id`` for a
+      per-sequence summary. ``speed-angvel``, ``nearest-neighbor``, ``arhmm``.
+    - ``"pair"`` -- one row per ordered or unordered pair, whatever the pair
+      columns are spelled. The ``pair-*`` family, ``orientation-rel``,
+      ``interaction-crop-pipeline``.
+    - ``"unidentified"`` -- no per-animal identity at all: a per-frame or
+      per-chunk aggregate over everyone present. ``collective-motion-metrics``,
+      ``frame-aggregate``.
+    - ``"as-input"`` -- whatever came in goes out. The global fitters augment
+      the frame they were given rather than re-keying it, and ``temporal-stack``
+      and ``feral`` branch on whether their input carries a pair.
+
+    **No default**, for the reason ``scope_dependent`` and ``accepts_overlap``
+    have none: a default would let the next feature ship without answering, and
+    the wrong answer here is silent in the dangerous direction -- a
+    pair-producing feature that read as passthrough would have its cartesian
+    join *permitted* rather than refused.
+
+    Declare ``"as-input"`` only where the level genuinely follows the input.
+    A feature that always produces the same level declares that level, even
+    where its only legal input happens to share it.
     """
 
     consumed_roots: tuple[str, ...]

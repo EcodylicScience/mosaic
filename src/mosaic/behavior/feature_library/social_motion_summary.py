@@ -10,6 +10,7 @@ from pydantic import model_validator
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -292,6 +293,7 @@ class SocialMotionSummary:
     # belongs to the neighbouring sequence.
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

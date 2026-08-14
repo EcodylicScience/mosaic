@@ -19,7 +19,12 @@ from mosaic.core.pipeline.types.data_config import (
     PoseConfig,
     resolve_order_col,
 )
-from mosaic.core.pipeline.types.feature import DependencyLookup, Feature, InputStream
+from mosaic.core.pipeline.types.feature import (
+    DependencyLookup,
+    EmitsLevel,
+    Feature,
+    InputStream,
+)
 from mosaic.core.pipeline.types.inputs import (
     InputItem,
     InputRequire,
@@ -53,6 +58,7 @@ __all__ = [
     "COLUMNS",
     "Columns",
     "DependencyLookup",
+    "EmitsLevel",
     "Feature",
     "FeatureLabelsSource",
     "GlobalModelParams",

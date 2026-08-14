@@ -31,6 +31,7 @@ from pydantic import Field
 
 from mosaic.behavior.model_library.identity_embedding import DEFAULT_MODEL_NAME
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -163,7 +164,7 @@ class GlobalIdentityEmbedding:
         False  # trains per entry; a neighbour's rows carry another entry's labels
     )
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = EmbeddingIdentityArtifact
 
     class Inputs(Inputs[Result]):

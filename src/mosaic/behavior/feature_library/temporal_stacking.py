@@ -16,6 +16,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -227,6 +228,7 @@ class TemporalStackingFeature:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "as-input"
 
     class Inputs(Inputs[Result]):
         pass

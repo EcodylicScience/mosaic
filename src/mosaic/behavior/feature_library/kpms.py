@@ -28,6 +28,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     HASH_EXCLUDE,
     DependencyLookup,
     InputStream,
@@ -320,7 +321,7 @@ class KpmsFeature:
         False  # decodes a whole sequence at once, so context is not a window
     )
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "individual"
     KpmsModelBundle = KpmsModelBundle
     KpmsModelArtifact = KpmsModelArtifact
 

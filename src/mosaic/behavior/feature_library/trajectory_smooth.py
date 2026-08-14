@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.signal import savgol_filter
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     COLUMNS,
     DependencyLookup,
     InputStream,
@@ -76,6 +77,7 @@ class TrajectorySmooth:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(TrackInputs):
         pass

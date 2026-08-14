@@ -23,6 +23,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     BodyScaleResult,
@@ -207,6 +208,7 @@ class LocalOrderMetrics:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "individual"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

@@ -11,6 +11,7 @@ from xgboost import XGBClassifier
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -84,7 +85,7 @@ class XgboostFeature:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = XgboostModelArtifact
 
     class Inputs(Inputs[Result]):

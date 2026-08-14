@@ -22,6 +22,7 @@ from pydantic import Field
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     COLUMNS,
     Inputs,
     Params,
@@ -140,6 +141,7 @@ class EgocentricCrop:
     scope_dependent = False
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
+    emits: EmitsLevel = "individual"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

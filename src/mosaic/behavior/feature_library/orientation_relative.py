@@ -17,6 +17,7 @@ from scipy.spatial.distance import pdist
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     BodyScaleResult,
@@ -52,6 +53,7 @@ class OrientationRelativeFeature:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "pair"
 
     class Inputs(TrackInputs):
         pass

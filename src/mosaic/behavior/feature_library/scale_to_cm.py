@@ -42,6 +42,7 @@ from pydantic import model_validator
 
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     Inputs,
     InputStream,
@@ -162,6 +163,7 @@ class ScaleToCm:
         False  # resolves one entry's calibration, and refuses a multi-entry frame
     )
     consumed_roots: tuple[str, ...] = ("media_raw",)
+    emits: EmitsLevel = "individual"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

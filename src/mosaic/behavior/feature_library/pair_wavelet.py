@@ -12,6 +12,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -80,6 +81,7 @@ class PairWavelet:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "pair"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

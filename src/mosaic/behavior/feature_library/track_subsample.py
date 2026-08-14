@@ -33,6 +33,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     COLUMNS,
     DependencyLookup,
     InputStream,
@@ -105,6 +106,7 @@ class TrackSubsample:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "as-input"
 
     class Inputs(TrackInputs):
         pass

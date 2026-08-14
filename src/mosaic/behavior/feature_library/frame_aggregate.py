@@ -23,6 +23,7 @@ import pandas as pd
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -93,6 +94,7 @@ class FrameAggregate:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "unidentified"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

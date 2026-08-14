@@ -10,6 +10,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     Inputs,
     InputStream,
@@ -142,6 +143,7 @@ class NearestNeighborDeltaBins:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    emits: EmitsLevel = "unidentified"
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

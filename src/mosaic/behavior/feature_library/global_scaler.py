@@ -9,6 +9,7 @@ from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -71,7 +72,7 @@ class GlobalScaler:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ScalerModelArtifact = ScalerModelArtifact
     ScaledTemplatesArtifact = ScaledTemplatesArtifact
 

@@ -32,6 +32,7 @@ from pydantic import Field
 
 from mosaic.behavior.model_library.timm_backbone import DEFAULT_MODEL_NAME
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -162,7 +163,7 @@ class GlobalIdentityModel:
         False  # trains per entry; a neighbour's rows carry another entry's labels
     )
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = ClassifierIdentityArtifact
 
     class Inputs(Inputs[Result]):

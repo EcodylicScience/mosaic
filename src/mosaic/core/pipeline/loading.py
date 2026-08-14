@@ -63,6 +63,15 @@ def entity_level_of(columns: Iterable[str]) -> str:
     what lets a submit-time check resolve a run's level cheaply. The value-sniffing
     twin, :func:`normalize_identity_columns`, additionally distinguishes a pair
     frame whose second id is all-null; this does not, and does not need to.
+
+    **The pair spellings below are not every pair spelling in the library.**
+    ``pair-facing`` and ``attention-target`` write ``focal_id`` with a target
+    column, which none of these match, so both read as ``"global"`` -- no
+    identity -- and a join against an individual-level input is then permitted
+    on ``frame`` alone. Both features declare ``emits = "pair"``, so a chain
+    checked before it runs refuses that edge; this predicate, which runs at the
+    merge itself, still does not. Widening it touches every multi-input run, so
+    it is a change of its own rather than one made in passing.
     """
     present = set(columns)
     for a, b in (("id1", "id2"), ("id_a", "id_b"), ("id_A", "id_B")):

@@ -33,6 +33,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -162,7 +163,7 @@ class GlobalIdentityDinoV2Temporal:
     scope_dependent = True
     accepts_overlap = False  # cuts clips within an entry, never across a boundary
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = DinoV2TemporalIdentityArtifact
 
     class Inputs(Inputs[Result]):

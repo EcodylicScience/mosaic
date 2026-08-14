@@ -31,6 +31,7 @@ from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -134,7 +135,7 @@ class LightningActionFeature:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = LightningActionModelArtifact
 
     class Inputs(Inputs[Result]):

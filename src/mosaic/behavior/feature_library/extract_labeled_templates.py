@@ -12,6 +12,7 @@ from pydantic import Field, model_validator
 from mosaic.core.helpers import load_labels_for_feature_frames
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -98,7 +99,7 @@ class ExtractLabeledTemplates:
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     LabeledTemplatesArtifact = LabeledTemplatesArtifact
     LabeledProvenanceArtifact = LabeledProvenanceArtifact
 

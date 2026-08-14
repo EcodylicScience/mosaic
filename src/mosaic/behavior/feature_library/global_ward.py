@@ -20,6 +20,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
+    EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -79,7 +80,7 @@ class GlobalWardClustering:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-
+    emits: EmitsLevel = "as-input"
     ModelArtifact = WardModelArtifact
 
     class Inputs(Inputs[Result]):
