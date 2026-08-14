@@ -27,12 +27,25 @@ Public docs: <https://ecodylicscience.github.io/mosaic/>.
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[recommended]"
 ```
 
 `ffmpeg` (with `ffprobe`) must be on `PATH` — it is used by media indexing and
 raw H.264 frame counting.
+
+**`av` and `py-opencv` come from conda so that the environment holds one ffmpeg.**
+The PyPI wheels for both vendor a complete ffmpeg build of their own, and two of
+them in one process crash it nondeterministically — see pitfall 8. The conda-forge
+builds link the `ffmpeg` installed on the line above instead, so there is one
+`libavdevice` and one `libSvtAv1Enc`. Nothing here is pinned: `av` satisfies
+`av>=18,<19` and `py-opencv` registers both `opencv-python` and
+`opencv-python-headless`, so the `pip install` that follows finds every requirement
+already met and installs neither wheel. Order matters — conda first, pip second.
+
+A `uv venv` cannot take conda packages, so a checkout that wants this needs a conda
+environment. `conda create -p ./.venv python=3.12` puts one at the path
+`[tool.basedpyright]` and the editor integration already expect.
 
 Python `>=3.12` is required (`pyproject.toml`).
 
@@ -56,6 +69,13 @@ table, see [README.md](README.md). Notable points:
   extra, so undeclared it gets pip-installed mid-run, and the four newer
   tracker backends only exist from 8.4.63. `polo` carries `lap` too.
 - `lightning-action` and `gpu` are intentionally excluded from `recommended`.
+- `yolo-augment` installs `albumentations`, which Ultralytics picks up on its own
+  and uses to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO
+  training. It is opt-in and outside `pose` / `polo` / `recommended` because
+  `albumentations` requires `opencv-python-headless` while mosaic requires
+  `opencv-python`, and installing both breaks the environment — see pitfall 8.
+  Installing it changes what a training run does, and nothing records which way a
+  run went, so the choice is deliberate rather than a default.
 - `gpu` installs `faiss-cpu` by default; on Linux + CUDA, install `faiss-gpu`
   manually for GPU-accelerated kNN in `global-tsne`.
 - `imgstore` adds native support for imgstore (Motif / Loopbio) recordings — a
@@ -88,11 +108,28 @@ Pytest is configured in `pyproject.toml`. Slow tests are deselected by default.
 pytest                                      # all tests except those marked slow
 pytest -m slow                              # slow tests only
 pytest -m "slow or not slow"                # everything
+pytest -m identity                          # what CI's identity job runs
+pytest -m tracker                           # what CI's tracking job runs
 pytest tests/test_run_feature.py            # one file
 pytest tests/test_run_feature.py::test_x    # one test
 pytest -k "feature_params"                  # name pattern
 pytest -v                                   # verbose
 ```
+
+Four markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
+(needs `ffmpeg` **and** `ffprobe` on PATH), `tracker` and `identity`. The last two
+are how CI selects its extra jobs, so a new test file in either area is covered
+the day it lands rather than when someone remembers to edit the workflow.
+
+`-m` on the command line **replaces** the `-m "not slow"` in `addopts` rather than
+intersecting with it. That is what makes `pytest -m slow` work, and it also means
+`pytest -m "not media"` quietly re-enables the slow tests.
+`tests/test_pytest_config.py` pins the default so that stays deliberate.
+
+Two tests exist to keep the suite honest about its own environment:
+`tests/test_optional_dependency_coverage.py` reads the suite's `importorskip`
+calls out of its AST and fails when one names a module no CI job installs, and
+`tests/test_pytest_config.py` asserts the configuration above.
 
 ### Linting and formatting
 
@@ -142,15 +179,15 @@ and pull request. There is no `.pre-commit-config.yaml`.
 - **`tracking`** — the ultralytics preflight and marker suites under a `pose`
   environment, for the same reason: without `ultralytics` and `lap` installed they
   would skip green and prove nothing.
-- **`lint-changed`** — `uvx ruff check` **and** `uvx ruff format --check` over
-  every changed `.py` file. Formatting is a merge gate, not a suggestion.
+- **`lint`** — `uvx ruff check` **and** `uvx ruff format --check` over `src` and
+  `tests`, on push as well as on pull request. Formatting is a merge gate, not a
+  suggestion. It was once scoped to the files a pull request touched, which meant
+  it never ran at all on a repository that pushes to `main`.
 
-Not gated: project-wide `ruff check` / `ruff format --check` and `basedpyright`,
-all three of which carry a pre-existing backlog. So before reporting work done,
-run what CI will not:
+Not gated: `basedpyright`, which carries a pre-existing backlog of ~11k
+strict-mode errors. So before reporting work done, run what CI will not:
 
 ```bash
-ruff check && ruff format --check   # gated for changed files only
 basedpyright                        # not gated at all
 pytest -m "slow or not slow"        # CI skips the slow ones
 ```
@@ -876,14 +913,33 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
    changes still warrant explicit discussion in an issue first.
 
-8. **Exactly one distribution may provide `cv2`.** `albumentations` requires
-   `opencv-python-headless` and mosaic + `ultralytics` require `opencv-python`; pip
-   installs both without complaint because they are different distributions, then
-   they overwrite each other's files and merge two ffmpeg builds into one
-   `cv2/.dylibs`. The suite then dies with `Trace/BPT trap: 5` somewhere different
-   every run, and whichever wheel wins may be the headless one, which has no
-   `imshow` -- silently breaking playback. `tests/conftest.py` refuses to start when
-   both are present. Keep `opencv-python`.
+8. **One ffmpeg build per environment.** Two independent copies of ffmpeg in one
+   process crash it: the suite dies with `Trace/BPT trap: 5` at a different point
+   every run, and on macOS the Objective-C runtime warns on every import that
+   `AVFFrameReceiver` is implemented twice. There are two ways to get there, and
+   both are handled above rather than worked around:
+
+   - **Two wheels providing `cv2`.** `albumentations` requires
+     `opencv-python-headless` while mosaic and `ultralytics` require
+     `opencv-python`. pip installs both without complaint -- they are different
+     distributions -- and they then overwrite each other's files and merge two
+     ffmpeg builds into one `cv2/.dylibs`. Whichever wheel wins may be the headless
+     one, which has no `imshow`, silently breaking playback. `albumentations` is
+     therefore in its own `yolo-augment` extra rather than in `pose` / `polo` /
+     `recommended`, and `tests/conftest.py` refuses to start when two *wheels*
+     provide `cv2`.
+   - **`av` and `opencv-python` each vendoring their own ffmpeg.** Both PyPI wheels
+     bundle a complete build, so even a correct single-OpenCV install holds two
+     (`av/.dylibs/libSvtAv1Enc.4.1.0` against `cv2/.dylibs/libSvtAv1Enc.3.0.2`).
+     The documented environment takes both from conda-forge instead, where they link
+     the environment's one shared `ffmpeg`. That is why "Environment setup" installs
+     `av` and `py-opencv` with conda before pip runs.
+
+   conda-forge's `py-opencv` registers *two* pip distributions
+   (`opencv-python` and `opencv-python-headless`) for its single build, which is
+   what lets pip leave both requirements satisfied. The conftest guard tells that
+   case apart by `INSTALLER`, so it stays loud about the wheel collision it exists
+   for.
 
 ## Pointers to Deeper Docs
 

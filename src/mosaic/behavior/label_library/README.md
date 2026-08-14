@@ -27,15 +27,14 @@ computes an output path, writes an `.npz`, or handles overwrite.
    from mosaic.core.label_converter import register_label_converter
    from . import my_converter
 
-   my_converter.MyConverter = register_label_converter(
-       my_converter.MyConverter
-   )
+   my_converter.MyConverter = register_label_converter(my_converter.MyConverter)
    ```
 
 4. Index the raw files, then convert:
    ```python
-   dataset.index_labels_raw(["/path/to/annotations"], patterns="*.csv",
-                            src_format="my_custom_format")
+   dataset.index_labels_raw(
+       ["/path/to/annotations"], patterns="*.csv", src_format="my_custom_format"
+   )
    dataset.convert_all_labels(kind="behavior", source_format="my_custom_format")
    ```
 
@@ -62,8 +61,8 @@ LabelEntry(
     group="",
     sequence="video_001",
     payload={
-        "frames": [0, 1, 2, ..., 599],     # Frame indices
-        "labels": [0, 1, 1, ..., 0],       # Per-frame behavior IDs
+        "frames": [0, 1, 2, ..., 599],  # Frame indices
+        "labels": [0, 1, 1, ..., 0],  # Per-frame behavior IDs
         "label_names": ["none", "grooming", "eating", "jump"],
         "fps": 30.0,
     },
@@ -87,37 +86,48 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from mosaic.core.label_converter import (
-    LabelConvertParams, LabelConverter, LabelEntry,
+    LabelConvertParams,
+    LabelConverter,
+    LabelEntry,
 )
 
 
 class MyParams(LabelConvertParams):
-    fps: float = 30.0            # Hashed: changes the labels.
+    fps: float = 30.0  # Hashed: changes the labels.
 
 
 class MyConverter(LabelConverter[MyParams]):
-    src_format = "my_format"     # Matches labels_raw/index.csv src_format.
-    label_kind = "behavior"      # The labels/<kind>/ subdirectory.
+    src_format = "my_format"  # Matches labels_raw/index.csv src_format.
+    label_kind = "behavior"  # The labels/<kind>/ subdirectory.
     label_format = "my_format_v1"  # Payload format a reader dispatches on.
-    version = "0.1"              # Declared compatibility version.
+    version = "0.1"  # Declared compatibility version.
     Params = MyParams
 
-    def convert(self, src_path: Path, params: MyParams,
-                raw_row: Mapping[str, object]) -> list[LabelEntry]:
+    def convert(
+        self, src_path: Path, params: MyParams, raw_row: Mapping[str, object]
+    ) -> list[LabelEntry]:
         ...
-        return [LabelEntry(group=..., sequence=..., payload=..., n_frames=...,
-                           label_ids=..., label_names=...)]
+        return [
+            LabelEntry(
+                group=...,
+                sequence=...,
+                payload=...,
+                n_frames=...,
+                label_ids=...,
+                label_names=...,
+            )
+        ]
 ```
 
 ### Required Class Attributes
 
 ```python
 class MyConverter(LabelConverter[MyParams]):
-    src_format = "my_format"       # Passed as source_format to convert_all_labels.
-    label_kind = "behavior"        # Usually "behavior" or "id_tags".
+    src_format = "my_format"  # Passed as source_format to convert_all_labels.
+    label_kind = "behavior"  # Usually "behavior" or "id_tags".
     label_format = "my_format_v1"  # On-disk payload format.
-    version = "0.1"                # Bump by hand when output semantics change.
-    Params = MyParams              # The typed parameter model.
+    version = "0.1"  # Bump by hand when output semantics change.
+    Params = MyParams  # The typed parameter model.
 ```
 
 `(src_format, label_kind)` is the registry key -- one raw format can feed two
@@ -140,8 +150,8 @@ class MyParams(LabelConvertParams):
     # group_from and strict_schema are ALREADY on LabelConvertParams -- do not
     # redeclare them.
 
-    fps: float = 30.0                          # Hashed: changes the labels.
-    background_label: str = "none"             # Hashed.
+    fps: float = 30.0  # Hashed: changes the labels.
+    background_label: str = "none"  # Hashed.
 
     verbose: Annotated[bool, HASH_EXCLUDE] = False  # Excluded: a throughput knob.
 ```
@@ -186,11 +196,14 @@ Load your annotation file in whatever format it is.
 def _load_source_file(self, src_path: Path):
     return pd.read_csv(src_path)
 
+
 # JSON
 def _load_source_file(self, src_path: Path):
     import json
+
     with open(src_path) as f:
         return json.load(f)
+
 
 # Excel
 def _load_source_file(self, src_path: Path):
@@ -210,6 +223,7 @@ def _build_label_map(self, data, params):
     behaviors = [params.background_label] + behaviors
     return {i: name for i, name in enumerate(behaviors)}
 
+
 # Hardcoded
 def _build_label_map(self, data, params):
     return {0: "none", 1: "grooming", 2: "eating", 3: "resting"}
@@ -226,14 +240,14 @@ This is the **KEY METHOD**. Extract your annotations into a standard structure.
 ```python
 [
     {
-        "sequence_name": "video_001",           # REQUIRED: Unique name
-        "annotations": [                        # REQUIRED: List of events
-            (0.0, 5.2, "grooming"),            # (start, stop, behavior)
+        "sequence_name": "video_001",  # REQUIRED: Unique name
+        "annotations": [  # REQUIRED: List of events
+            (0.0, 5.2, "grooming"),  # (start, stop, behavior)
             (10.5, 15.0, "eating"),
-            (20.0, 20.0, "jump"),              # Point event: start == stop
+            (20.0, 20.0, "jump"),  # Point event: start == stop
         ],
-        "fps": 30.0,                           # OPTIONAL: Override default FPS
-        "metadata": {"animal_id": "A12"},      # OPTIONAL: Extra metadata
+        "fps": 30.0,  # OPTIONAL: Override default FPS
+        "metadata": {"animal_id": "A12"},  # OPTIONAL: Extra metadata
     }
 ]
 ```
@@ -244,14 +258,16 @@ This is the **KEY METHOD**. Extract your annotations into a standard structure.
 # Simple: Single sequence from DataFrame
 def _extract_annotations(self, data, src_path, raw_row, params):
     annotations = [
-        (row["start"], row["stop"], row["behavior"])
-        for _, row in data.iterrows()
+        (row["start"], row["stop"], row["behavior"]) for _, row in data.iterrows()
     ]
-    return [{
-        "sequence_name": "recording_001",
-        "annotations": annotations,
-        "fps": params.fps,
-    }]
+    return [
+        {
+            "sequence_name": "recording_001",
+            "annotations": annotations,
+            "fps": params.fps,
+        }
+    ]
+
 
 # Multiple videos
 def _extract_annotations(self, data, src_path, raw_row, params):
@@ -261,11 +277,13 @@ def _extract_annotations(self, data, src_path, raw_row, params):
             (row["start"], row["stop"], row["behavior"])
             for _, row in group_df.iterrows()
         ]
-        sequences.append({
-            "sequence_name": video_name,
-            "annotations": annotations,
-            "fps": group_df["fps"].iloc[0],
-        })
+        sequences.append(
+            {
+                "sequence_name": video_name,
+                "annotations": annotations,
+                "fps": group_df["fps"].iloc[0],
+            }
+        )
     return sequences
 ```
 
@@ -301,10 +319,12 @@ class SimpleCSVConverter(CustomLabelConverter):
             (row["time_start"], row["time_end"], row["behavior"])
             for _, row in data.iterrows()
         ]
-        return [{
-            "sequence_name": src_path.stem,
-            "annotations": annotations,
-        }]
+        return [
+            {
+                "sequence_name": src_path.stem,
+                "annotations": annotations,
+            }
+        ]
 ```
 
 ### Use Case 2: Video Snippets with Time Offsets
@@ -317,8 +337,8 @@ class SimpleCSVConverter(CustomLabelConverter):
 
 ```python
 class SnippetBorisParams(CustomLabelParams):
-    time_offset: float = 0.0   # Hashed: shifts every timestamp.
-    animal_id: str = "unknown" # Hashed: names the sequence.
+    time_offset: float = 0.0  # Hashed: shifts every timestamp.
+    animal_id: str = "unknown"  # Hashed: names the sequence.
 
 
 class SnippetBorisConverter(CustomLabelConverter):
@@ -345,11 +365,13 @@ class SnippetBorisConverter(CustomLabelConverter):
             stop = row["Stop (s)"] + offset
             annotations.append((start, stop, row["Behavior"]))
 
-        return [{
-            "sequence_name": f"{src_path.stem}_{animal_id}",
-            "annotations": annotations,
-            "metadata": {"animal_id": animal_id, "time_offset": offset},
-        }]
+        return [
+            {
+                "sequence_name": f"{src_path.stem}_{animal_id}",
+                "annotations": annotations,
+                "metadata": {"animal_id": animal_id, "time_offset": offset},
+            }
+        ]
 ```
 
 **Usage:**
@@ -357,7 +379,7 @@ class SnippetBorisConverter(CustomLabelConverter):
 # Convert a snippet that starts at 2:30 in the full video, animal A12.
 dataset.convert_all_labels(
     source_format="snippet_boris",
-    time_offset=150.0,      # 2:30 = 150 seconds
+    time_offset=150.0,  # 2:30 = 150 seconds
     animal_id="mouse_A12",
     fps=30.0,
 )
@@ -395,11 +417,13 @@ class MultiAnimalConverter(CustomLabelConverter):
                 (row["time"], row["time"], row["behavior"])  # Point events
                 for _, row in animal_df.iterrows()
             ]
-            sequences.append({
-                "sequence_name": f"{src_path.stem}_{animal_id}",
-                "annotations": annotations,
-                "metadata": {"animal_id": animal_id},
-            })
+            sequences.append(
+                {
+                    "sequence_name": f"{src_path.stem}_{animal_id}",
+                    "annotations": annotations,
+                    "metadata": {"animal_id": animal_id},
+                }
+            )
         return sequences
 ```
 
@@ -427,6 +451,7 @@ class NestedJSONConverter(CustomLabelConverter):
 
     def _load_source_file(self, src_path):
         import json
+
         with open(src_path) as f:
             return json.load(f)
 
@@ -447,12 +472,14 @@ class NestedJSONConverter(CustomLabelConverter):
                 (event["start"], event["end"], event["type"])
                 for event in animal_data["behaviors"]
             ]
-            sequences.append({
-                "sequence_name": f"{session_id}_{animal_id}",
-                "annotations": annotations,
-                "fps": fps,
-                "metadata": {"session_id": session_id, "animal_id": animal_id},
-            })
+            sequences.append(
+                {
+                    "sequence_name": f"{session_id}_{animal_id}",
+                    "annotations": annotations,
+                    "fps": fps,
+                    "metadata": {"session_id": session_id, "animal_id": animal_id},
+                }
+            )
         return sequences
 ```
 
@@ -468,9 +495,9 @@ from mosaic.core.pipeline.types import HASH_EXCLUDE
 
 
 class MyParams(CustomLabelParams):
-    time_offset: float = 0.0            # Hashed.
-    scale_factor: float = 1.0           # Hashed.
-    ignore_behaviors: list[str] = []    # Hashed: changes which events survive.
+    time_offset: float = 0.0  # Hashed.
+    scale_factor: float = 1.0  # Hashed.
+    ignore_behaviors: list[str] = []  # Hashed: changes which events survive.
     verbose: Annotated[bool, HASH_EXCLUDE] = False  # Excluded.
 
 
@@ -551,11 +578,13 @@ class MappedAnimalConverter(CustomLabelConverter):
         if date:
             metadata["date"] = date
 
-        return [{
-            "sequence_name": f"{date}_{animal_id}_{src_path.name}",
-            "annotations": annotations,
-            "metadata": metadata,
-        }]
+        return [
+            {
+                "sequence_name": f"{date}_{animal_id}_{src_path.name}",
+                "annotations": annotations,
+                "metadata": metadata,
+            }
+        ]
 ```
 
 **Usage:**
@@ -580,9 +609,7 @@ from mosaic.core.label_converter import register_label_converter
 from . import my_converter
 
 # Add registration
-my_converter.MyConverter = register_label_converter(
-    my_converter.MyConverter
-)
+my_converter.MyConverter = register_label_converter(my_converter.MyConverter)
 
 # Add to __all__
 __all__ = [
@@ -606,7 +633,7 @@ dataset = Dataset("/path/to/dataset")
 
 # Scan a directory for annotation files and record them in labels_raw.
 dataset.index_labels_raw(
-    ["/path/to/annotations"],       # Directories to scan.
+    ["/path/to/annotations"],  # Directories to scan.
     patterns="*.csv",
     src_format="my_custom_format",  # Must match the converter's src_format.
 )
@@ -668,14 +695,14 @@ Each `LabelEntry.payload` is the `.npz` contents the `Dataset` writes.
 
 ```python
 {
-    "group": str,                   # Group name
-    "sequence": str,                # Sequence name
-    "sequence_key": str,            # Same as sequence
-    "frames": np.ndarray,           # Frame indices [0, 1, 2, ..., n-1]
-    "labels": np.ndarray,           # Per-frame behavior IDs (integers)
-    "label_ids": np.ndarray,        # Valid behavior IDs [0, 1, 2, ...]
-    "label_names": np.ndarray,      # Behavior names ["none", "groom", ...]
-    "fps": float,                   # Frames per second
+    "group": str,  # Group name
+    "sequence": str,  # Sequence name
+    "sequence_key": str,  # Same as sequence
+    "frames": np.ndarray,  # Frame indices [0, 1, 2, ..., n-1]
+    "labels": np.ndarray,  # Per-frame behavior IDs (integers)
+    "label_ids": np.ndarray,  # Valid behavior IDs [0, 1, 2, ...]
+    "label_names": np.ndarray,  # Behavior names ["none", "groom", ...]
+    "fps": float,  # Frames per second
 }
 ```
 
@@ -687,7 +714,7 @@ Add custom metadata (the `CustomLabelConverter` base folds a sequence's
 ```python
 {
     # ... required fields above ...
-    "meta_animal_id": str,          # Your custom fields
+    "meta_animal_id": str,  # Your custom fields
     "meta_time_offset": float,
 }
 ```
@@ -715,7 +742,8 @@ dataset = Dataset("/tmp/test_dataset")
 
 # Index the test file into labels_raw.
 dataset.index_labels_raw(
-    ["/path/to"], patterns="test_annotation.csv",
+    ["/path/to"],
+    patterns="test_annotation.csv",
     src_format="my_custom_format",
 )
 
@@ -724,6 +752,7 @@ dataset.convert_all_labels(source_format="my_custom_format", fps=30.0)
 
 # Verify.
 from mosaic.core.pipeline.labels_index import read_labels_index
+
 print(read_labels_index(dataset, "behavior"))
 ```
 
@@ -827,20 +856,25 @@ class MyConverter(CustomLabelConverter):
         return {0: "none", 1: "behavior_a", 2: "behavior_b"}
 
     def _extract_annotations(self, data, src_path, raw_row, params):
-        return [{
-            "sequence_name": src_path.stem,
-            "annotations": [(0.0, 5.0, "behavior_a")],
-        }]
+        return [
+            {
+                "sequence_name": src_path.stem,
+                "annotations": [(0.0, 5.0, "behavior_a")],
+            }
+        ]
+
 
 # 2. Register in __init__.py
 from mosaic.core.label_converter import register_label_converter
 from . import my_converter
+
 my_converter.MyConverter = register_label_converter(my_converter.MyConverter)
 
 # 3. Index, then convert. Step 2 first: indexing refuses a format no
 #    registered converter claims.
-dataset.index_labels_raw(["/path/to/annotations"], patterns="*.csv",
-                         src_format="my_format")
+dataset.index_labels_raw(
+    ["/path/to/annotations"], patterns="*.csv", src_format="my_format"
+)
 dataset.convert_all_labels(source_format="my_format")
 ```
 
