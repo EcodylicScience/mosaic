@@ -185,6 +185,26 @@ markers = [
     "tracker: exercises an integrated tracker's run loop behind a fake tool",
     "identity: needs torch and timm, i.e. the `identity` extra",
 ]
+# A warning is a failure, so that the next one becomes visible at the commit that
+# introduces it rather than joining a running total nobody reads. The suite emits
+# 178 today and they are four things, each listed here with why it is allowed.
+filterwarnings = [
+    "error",
+    # Mosaic's own, and deliberate: a read of an unprocessed original whose verdict
+    # requires an analysis transcode. Two tests assert it is raised, so it must stay
+    # a warning rather than become an error.
+    "default:raw read of:UserWarning",
+    # imgstore 0.4 stamps its stores with `datetime.utcnow()`. Third party, on the
+    # path of every store this suite builds, and not fixable here.
+    "ignore:datetime.datetime.utcnow:DeprecationWarning",
+    # joblib assigns to `ndarray.shape` when unpickling, which NumPy 2.5 deprecated.
+    # Third party, reached by every feature that saves a model.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
+    # `ffgroups` smooths a padded pairwise-distance stack with a sliding `nanmean`,
+    # so a window lying entirely in the NaN pad has nothing to average. NaN is the
+    # right answer there, and the warning is numpy narrating it.
+    "ignore:Mean of empty slice:RuntimeWarning",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

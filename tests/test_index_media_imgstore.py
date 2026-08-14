@@ -43,6 +43,8 @@ def _write_plain_mp4(path: Path, nframes: int = 6) -> None:
     writer.release()
 
 
+# Probes the store's video chunk to measure it, which shells out.
+@pytest.mark.media
 def test_index_media_discovers_store_and_excludes_chunks(tmp_path, make_imgstore):
     ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"

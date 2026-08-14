@@ -38,6 +38,19 @@ from mosaic.core.pipeline.transcode import (
 )
 from mosaic.media_probe_config import media_thresholds
 
+# Every transcode here leaks one file descriptor, and it is not this suite's doing.
+# `mosaic_media.transcode.convert._run_ffmpeg` starts ffmpeg with
+# `stdout=subprocess.PIPE, text=True`, hands the pipe to a draining thread, and
+# never closes it -- `process.wait()` does not close stdout -- so the
+# `TextIOWrapper` is finalized by the garbage collector and Python reports the
+# leak. Harmless across a test run; a long-lived transcode worker walks toward its
+# descriptor limit.
+#
+# Scoped to this module rather than allowed in the suite-wide `filterwarnings`, so
+# that an unclosed file anywhere else still fails. Remove once mosaic-media closes
+# the pipe.
+pytestmark = pytest.mark.filterwarnings("ignore:unclosed file:ResourceWarning")
+
 
 def _write_analysis_required_mp4(path: Path, duration: str = "2") -> None:
     """Write a variable-frame-rate mp4 that ``derive`` marks analysis-required.
