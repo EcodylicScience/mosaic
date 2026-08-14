@@ -26,6 +26,21 @@ implementation.
 
 from __future__ import annotations
 
+from .compatibility import (
+    ConsumerDecl,
+    Declaration,
+    DeclarationCatalog,
+    EntityLevel,
+    ProducerDecl,
+    TRACKS_DECLARATION,
+    Verdict,
+    can_connect,
+    can_join,
+    compatible_consumers,
+    compatible_producers,
+    possible_connections,
+    resolve_emits,
+)
 from .digest import canonical_json, canonical_recipe, recipe_digest
 from .model import (
     SCHEMA_VERSION,
@@ -40,6 +55,7 @@ from .model import (
     TRACKS_INPUT,
     params_step_refs,
 )
+from .resolve import declaration_catalog, feature_class_for_slug
 from .storage import storage_name_of
 from .store import (
     load_recipe,
@@ -64,9 +80,14 @@ from .topo import (
 
 __all__ = [
     "BoundRef",
+    "ConsumerDecl",
+    "Declaration",
+    "DeclarationCatalog",
     "Edge",
+    "EntityLevel",
     "FeatureStepSpec",
     "OpStepSpec",
+    "ProducerDecl",
     "Recipe",
     "RecipeCycle",
     "Request",
@@ -74,22 +95,32 @@ __all__ = [
     "Step",
     "StepRef",
     "StepRun",
+    "TRACKS_DECLARATION",
     "TRACKS_INPUT",
+    "Verdict",
     "ancestors_of",
+    "can_connect",
+    "can_join",
     "canonical_json",
     "canonical_recipe",
     "children_of",
+    "compatible_consumers",
+    "compatible_producers",
+    "declaration_catalog",
     "descendants_of",
     "edges",
+    "feature_class_for_slug",
     "load_recipe",
     "load_request",
     "params_step_refs",
     "parents_of",
     "pipelines_root",
+    "possible_connections",
     "recipe_digest",
     "recipe_path",
     "request_path",
     "requests_root",
+    "resolve_emits",
     "save_recipe",
     "save_request",
     "storage_name_of",
