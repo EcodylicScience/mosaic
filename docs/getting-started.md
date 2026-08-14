@@ -7,14 +7,21 @@ This guide walks through a typical mosaic workflow from raw data to feature extr
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[recommended]"
 ```
 
-Frame decoding runs in-process via the `av` wheel (installed with
-`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
-`ffprobe` is still used for media indexing and probing, and system `ffmpeg`
->= 5.1 is required for transcoding. Installing `ffmpeg` via conda covers both.
+Frame decoding runs in-process via `av`, so no `ffmpeg` binary is required to
+read video. System `ffprobe` is still used for media indexing and probing, and
+system `ffmpeg` >= 5.1 is required for transcoding. Installing `ffmpeg` via conda
+covers both.
+
+`av` and `py-opencv` come from conda so the environment holds **one** ffmpeg.
+Their PyPI wheels each bundle a complete build of their own, and two in one
+process crash it nondeterministically. Nothing is pinned -- the `pip install`
+that follows finds both requirements already satisfied and installs neither
+wheel. Order matters: conda first, pip second.
+
 The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer; see
 the [project README](https://github.com/EcodylicScience/mosaic#installation)
 for finer-grained options.

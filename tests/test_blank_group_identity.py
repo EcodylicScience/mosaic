@@ -25,23 +25,11 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 
-from tests.helpers import write_trex_npz
+from tests.helpers import make_dataset, write_trex_npz
 
 _BODYPARTS = ["snout", "midbody", "tailtip"]
-
-
-def _make_dataset(base: Path) -> Dataset:
-    base.mkdir(parents=True, exist_ok=True)
-    ds = Dataset(
-        manifest_path=base / "dataset.yaml",
-        roots={
-            "tracks_raw": str(base / "tracks_raw"),
-            "tracks": str(base / "tracks"),
-        },
-    )
-    ds.ensure_roots()
-    ds.save()
-    return ds
+# Only the two roots a conversion touches: raw rows in, standardized tables out.
+_ROOTS = ("tracks_raw", "tracks")
 
 
 def _dlc_csv(path: Path, n_frames: int = 6) -> None:
@@ -100,7 +88,7 @@ def test_a_blank_group_never_reaches_a_filename(tmp_path: Path) -> None:
     this is the plain one-file-one-sequence conversion -- the branch that read
     the group cell a second time and spelled it ``"nan"``.
     """
-    ds = _make_dataset((tmp_path / "ds").resolve())
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
     _dlc_csv(ds.base_dir / "raw" / "myseq.csv")
 
     ds.index_tracks_raw(
@@ -120,7 +108,7 @@ def test_a_blank_group_survives_a_merge_turned_off(tmp_path: Path) -> None:
     A merging format asked not to merge lands in the same single-file branch, so
     the two ways of reaching it have to answer alike.
     """
-    ds = _make_dataset((tmp_path / "ds").resolve())
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
     _trex_npz(ds.base_dir / "raw" / "myseq_fish0.npz", individual=0)
 
     ds.index_tracks_raw(
@@ -144,7 +132,7 @@ def test_a_merge_still_reads_two_spellings_of_one_group_as_one(
     names the same output, so the first lands and the second is skipped as
     already written -- half a merge, silently.
     """
-    ds = _make_dataset((tmp_path / "ds").resolve())
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
     _trex_npz(ds.base_dir / "raw" / "myseq_fish0.npz", individual=0, n=5)
     _trex_npz(ds.base_dir / "raw" / "myseq_fish1.npz", individual=1, n=5)
 
@@ -177,7 +165,7 @@ def test_a_file_holding_several_sequences_does_not_borrow_a_blank_group(
     and a NaN spelled ``"nan"`` is truthy -- so the policy fired on a group that
     was not there and overwrote the real one the file carries.
     """
-    ds = _make_dataset((tmp_path / "ds").resolve())
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
     _calms21_npy(ds.base_dir / "raw" / "task1.npy", {"annotator0": {"seq_a": 4}})
 
     ds.index_tracks_raw(
@@ -195,7 +183,7 @@ def test_a_file_holding_several_sequences_does_not_borrow_a_blank_group(
 
 def test_an_unhashed_source_records_no_checksum(tmp_path: Path) -> None:
     """``md5`` is the same empty column, and reached the index the same way."""
-    ds = _make_dataset((tmp_path / "ds").resolve())
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
     _dlc_csv(ds.base_dir / "raw" / "myseq.csv")
 
     ds.index_tracks_raw(

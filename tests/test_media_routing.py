@@ -10,24 +10,18 @@ import pandas as pd
 import pytest
 from mosaic_media import MediaProbeError, probe_media
 
-from mosaic.core.dataset import AmbiguousMediaMatchError, Dataset
+from mosaic.core.dataset import AmbiguousMediaMatchError
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    for sub in ("media_raw", "media", "tracks"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    return Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-        },
-    )
+# Routing is the choice between an original and its derivative, so both roots are
+# declared: ``resolve_media_root`` lands on ``media_raw`` and the derivative index
+# is read from ``media``. The manifest is never saved because every row these
+# tests write carries an absolute ``abs_path``, so the base directory never enters
+# the answer.
+_ROOTS = ("media_raw", "media", "tracks")
 
 
 def _facts_json(path: Path) -> str:
@@ -78,7 +72,7 @@ def _write_index(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def test_clean_row_returns_original_with_stored_facts(tmp_path: Path):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clean.mp4"
     write_mpeg4_mp4(original, frames=6)
     # The stored cell deliberately disagrees with the file (a fresh probe of
@@ -97,7 +91,7 @@ def test_clean_row_returns_original_with_stored_facts(tmp_path: Path):
 def test_row_with_an_unreconstructable_facts_cell_raises_the_reprobe_remedy(
     tmp_path: Path,
 ):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clean.mp4"
     write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clean", abs_path=original)
@@ -114,7 +108,7 @@ def test_row_with_an_unreconstructable_facts_cell_raises_the_reprobe_remedy(
 
 
 def test_row_with_no_facts_cell_raises_the_reprobe_remedy(tmp_path: Path):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clean.mp4"
     write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clean", abs_path=original)
@@ -131,7 +125,7 @@ def test_a_required_row_with_no_facts_still_reports_the_transcode_remedy(
     """A required-and-unlinked row that also carries no facts reports the
     transcode remedy, not the reprobe remedy: the file the caller would open
     is the derivative, so the derivative's absence is the fault to report."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "orphan.mp4"
     write_mpeg4_mp4(original, frames=6)
     row = _row(
@@ -152,7 +146,7 @@ def test_a_required_row_with_no_facts_still_reports_the_transcode_remedy(
 
 
 def test_required_row_routes_to_derivative_with_derivative_facts(tmp_path):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "needs.mp4"
     write_mpeg4_mp4(original, frames=6)
     derivative = tmp_path / "media" / "g1__needs.analysis.mp4"
@@ -190,7 +184,7 @@ def test_required_row_routes_to_derivative_with_derivative_facts(tmp_path):
 
 
 def test_required_row_without_derivative_raises(tmp_path):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "orphan.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -217,15 +211,7 @@ def test_legacy_media_only_required_row_raises(tmp_path):
     the user to adopt the media_raw/media split and transcode, rather than
     opening the defective original.
     """
-    (tmp_path / "media").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "tracks").mkdir(parents=True, exist_ok=True)
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-        },
-    )
+    ds = make_dataset(tmp_path, roots=("media", "tracks"), save=False)
     assert ds.resolve_media_root() == "media"
     original = tmp_path / "media" / "legacy.mp4"
     write_mpeg4_mp4(original, frames=6)
@@ -249,7 +235,7 @@ def test_a_sequence_never_resolves_another_sequences_media(tmp_path: Path):
     """A sequence with no row of its own must not borrow one whose filename
     merely contains its name. Resolving ``clip`` to ``clip_a.mp4`` would
     register one sequence's frames under another's name."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     other = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(other, frames=6)
     _write_index(
@@ -264,7 +250,7 @@ def test_a_sequence_never_resolves_another_sequences_media(tmp_path: Path):
 def test_a_sequence_name_is_matched_literally_not_as_a_regex(tmp_path: Path):
     """``clip.a`` is not a literal substring of ``clipXa.mp4``; only regex
     interpretation of the requested name makes the two meet."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     other = tmp_path / "media_raw" / "clipXa.mp4"
     write_mpeg4_mp4(other, frames=6)
     _write_index(
@@ -282,7 +268,7 @@ def test_a_sequence_name_holding_a_regex_metacharacter_reports_no_match(
     """An unmatched sequence reports no match whatever characters it holds. A
     name compiled as a pattern fails with a regex error instead, which no
     caller expects from a lookup."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     other = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(other, frames=6)
     _write_index(
@@ -323,7 +309,7 @@ def test_only_a_media_extension_is_stripped_from_a_request(
     against the row's own file, so a caller naming a derivative's ``.mp4`` still
     reaches an entry whose original is raw ``.h264``.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "trial.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -346,7 +332,7 @@ def test_an_entry_whose_own_name_ends_in_an_extension_matches_it_whole(
     names -- and stripping the extension leaves ``trial``, which is a different
     entry. Only comparing the request whole, alongside the stripped form,
     resolves it."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "recording.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -360,7 +346,7 @@ def test_an_entry_whose_own_name_ends_in_an_extension_matches_it_whole(
 def test_a_sequence_named_for_its_file_still_matches_that_row(tmp_path: Path):
     """A request carrying a file name where the row records the bare entry name.
     Narrowing this tier must keep it."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -375,7 +361,7 @@ def test_a_sequence_named_for_its_file_still_matches_that_row(tmp_path: Path):
 def test_a_sequence_differing_only_in_case_still_matches_its_row(tmp_path: Path):
     """The fallback's other legitimate shape: safe names are case-preserving,
     so only a case-insensitive comparison resolves ``CLIP_A`` to ``clip_a``."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -398,7 +384,7 @@ def test_a_sequence_name_two_groups_share_raises_rather_than_guessing(
     The refusal is a :class:`MediaProbeError`, so a sweep that reports faults
     per entry vents it and keeps going rather than aborting.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     first_dir = tmp_path / "media_raw" / "one"
     second_dir = tmp_path / "media_raw" / "two"
     first_dir.mkdir(parents=True)
@@ -426,7 +412,7 @@ def test_a_group_named_alongside_a_shared_sequence_name_resolves_that_group(
 ):
     """Naming the group answers the refusal above: the fallback narrows to that
     group first, so only one entry survives and there is nothing to refuse."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     first_dir = tmp_path / "media_raw" / "one"
     second_dir = tmp_path / "media_raw" / "two"
     first_dir.mkdir(parents=True)
@@ -451,7 +437,7 @@ def test_a_named_group_does_not_resolve_another_groups_file(tmp_path: Path):
     """A request naming a group asks for that group's media. The fallback
     answers on a filename, which carries no group, so it must not hand back
     another group's row just because the file is named for the sequence."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -466,7 +452,7 @@ def test_a_named_group_does_not_resolve_another_groups_file(tmp_path: Path):
 def test_a_named_group_still_resolves_its_own_file(tmp_path: Path):
     """The group check narrows across groups only: within the requested group
     the fallback still bridges the extension the ``name`` cell carries."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -484,7 +470,7 @@ def test_a_sequence_does_not_resolve_a_row_whose_file_merely_carries_its_name(
     """A row's ``name`` is a filename, not an identity: entry ``session1`` may
     well hold a file called ``trial.mp4``. Matching on the file would hand the
     unrelated sequence ``trial`` that entry's media."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "trial.mp4"
     write_mpeg4_mp4(original, frames=6)
     _write_index(
@@ -502,7 +488,7 @@ def test_a_chunked_sequence_resolves_every_one_of_its_files_in_order(
     """A sequence spanning several files is one entry, so the fallback must
     return all of its rows in ``video_order`` -- not the one whose filename
     happens to answer -- and must not read one entry's rows as two."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     first = tmp_path / "media_raw" / "part1.mp4"
     second = tmp_path / "media_raw" / "part2.mp4"
     write_mpeg4_mp4(first, frames=6)
@@ -528,7 +514,7 @@ def test_a_chunk_filename_does_not_resolve_the_sequence_holding_it(
     """Naming one file of a chunked sequence asks for something that is not an
     entry. Answering with that chunk alone would present a fragment of the
     recording as the whole of it."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     first = tmp_path / "media_raw" / "part1.mp4"
     second = tmp_path / "media_raw" / "part2.mp4"
     write_mpeg4_mp4(first, frames=6)
@@ -548,7 +534,7 @@ def test_a_chunk_filename_does_not_resolve_the_sequence_holding_it(
 def test_an_empty_sequence_resolves_nothing_through_the_fallback(tmp_path: Path):
     """An empty sequence names no entry, so the fallback has nothing to compare.
     Left to match, it answers for every row that shares its emptiness."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     original = tmp_path / "media_raw" / "clip_a.mp4"
     write_mpeg4_mp4(original, frames=6)
     row = _row(group="g1", sequence="clip_a", abs_path=original)
@@ -565,7 +551,7 @@ def test_a_multi_camera_sequence_reached_by_the_fallback_still_refuses(
 ):
     """The camera rule survives the fallback: concatenating two cameras would
     fabricate a timeline whichever tier selected the rows."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     left = tmp_path / "media_raw" / "left.mp4"
     right = tmp_path / "media_raw" / "right.mp4"
     write_mpeg4_mp4(left, frames=6)

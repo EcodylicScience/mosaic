@@ -6,23 +6,9 @@ import pandas as pd
 import pytest
 
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, derive, probe_media
-from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import FACTS_COLUMNS, facts_to_row, row_to_facts
 
-from tests.helpers import write_mpeg4_mp4
-
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    for sub in ("media", "tracks", "frames"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    return Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-            "frames": str(tmp_path / "frames"),
-        },
-    )
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
 
 def test_facts_row_has_all_columns(tmp_path: Path) -> None:
@@ -52,7 +38,9 @@ def test_index_media_facts_round_trip_through_csv(tmp_path: Path) -> None:
     resulting index.csv back with pandas.read_csv (the same untyped path the
     rest of mosaic uses), and reconstructs MediaFacts from the persisted row.
     """
-    ds = _make_dataset(tmp_path)
+    # No ``media_raw``: ``index_media`` resolves through ``resolve_media_root``,
+    # so the index it writes is ``media/index.csv``.
+    ds = make_dataset(tmp_path, roots=("media", "tracks", "frames"), save=False)
     search = tmp_path / "raw"
     search.mkdir()
     mp4 = search / "clip.mp4"
@@ -82,16 +70,9 @@ def test_reindex_preserves_derivative_links(tmp_path: Path) -> None:
     derivative links (a transcode decision, not a measurement) must survive it,
     while a link whose derivative file was deleted is dropped.
     """
-    for sub in ("media_raw", "media", "tracks"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-        },
-    )
+    # ``media_raw`` holds the originals index the reindex rewrites; ``media``
+    # holds the derivatives its links point at.
+    ds = make_dataset(tmp_path, roots=("media_raw", "media", "tracks"), save=False)
     search = tmp_path / "raw"
     search.mkdir()
     write_mpeg4_mp4(search / "clip.mp4", frames=10)

@@ -121,7 +121,7 @@ Every feature run is tagged with a hash-based `run_id` (`<version>-<SHA1(params)
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[recommended]"
 ```
 

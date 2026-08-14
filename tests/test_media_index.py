@@ -3,6 +3,11 @@ assignment-driven ``Dataset.write_media_index`` projection, and its invariants
 (root-relative-in-tree ``abs_path``, preserved rows, derivative-link carry
 forward). The densifier cases mirror the upload finalize contract the API drives
 through ``write_media_index``.
+
+Every dataset here is *saved* before it is written to, as the API seeds a manifest
+before finalizing an upload: without one, ``base_dir`` resolves to the manifest
+path rather than its directory and every root-relative ``abs_path`` lands a level
+too deep.
 """
 
 import subprocess
@@ -11,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
@@ -24,23 +28,13 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-        },
-    )
-    ds.ensure_roots()
-    # Seed the manifest so base_dir resolves to the manifest's parent (the API
-    # always seeds it before writing the index); without it _dataset_base_dir
-    # would treat the missing manifest path itself as the base directory.
-    ds.save()
-    return ds
+# ``media_raw`` is declared so ``resolve_media_root`` lands there and the
+# originals index is written to ``media_raw/index.csv``; ``media`` is the
+# derivative root the carry-forward case points a routing link into. Two tests
+# add ``tracks`` themselves, because a keymap is what they are exercising.
+_ROOTS = ("media_raw", "media")
 
 
 def _order_row(
@@ -291,7 +285,7 @@ def test_write_media_index_orders_by_position_and_stores_relative(
     # (manifest parent) and abs_path.resolve() agree; production roots are real
     # paths, so in-tree files are stored root-relative there without this.
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
     write_mpeg4_mp4(seq_dir / "a.mp4")
     write_mpeg4_mp4(seq_dir / "b.mp4")
@@ -321,7 +315,7 @@ def test_write_media_index_preserves_other_and_external_rows(
     tmp_path: Path,
 ) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     index_path = tmp_path / "media_raw" / "index.csv"
 
     # Seed: one already-indexed sequence (seqB) and one external NAS reference.
@@ -369,7 +363,7 @@ def test_write_media_index_preserves_other_and_external_rows(
 
 def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
     write_mpeg4_mp4(seq_dir / "a.mp4")
 
@@ -407,7 +401,7 @@ def test_write_media_index_writes_a_doubly_scoped_file_once(
     sequences' media compositions.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     shared = tmp_path / "media_raw" / "shared"
     write_mpeg4_mp4(shared / "a.mp4")
 
@@ -432,7 +426,7 @@ def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> N
     renumbered by filename -- during someone else's upload.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     index_path = tmp_path / "media_raw" / "index.csv"
 
     seeded: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
@@ -480,7 +474,7 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
     content change.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     ds.set_root("tracks", str(tmp_path / "tracks"))
     ds.ensure_roots()
     # index_media derives (group, sequence) from the tracks keymap, so the two
@@ -515,7 +509,7 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
 
 def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
     write_mpeg4_mp4(seq_dir / "a.mp4")
     scope = MediaIndexScope(
@@ -552,7 +546,7 @@ def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
     test has an empty or absent tracks index and takes the fallback path.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     ds.set_root("tracks", str(tmp_path / "tracks"))
     ds.ensure_roots()
     (tmp_path / "tracks" / "index.csv").write_text(
@@ -610,7 +604,7 @@ def test_two_finalizes_of_different_sequences_do_not_lose_rows(tmp_path: Path) -
     serialization the second preserves a snapshot taken before the first wrote.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for sequence in ("seqA", "seqB"):
         for name in ("a.mp4", "b.mp4", "c.mp4"):
             write_mpeg4_mp4(tmp_path / "media_raw" / sequence / name)

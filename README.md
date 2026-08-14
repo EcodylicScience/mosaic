@@ -35,19 +35,32 @@ If pose tracks are not yet available, the package also provides:
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[recommended]"
 ```
 
-Frame decoding runs in-process via the `av` wheel (installed with
-`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
-`ffprobe` is still used for media indexing and probing (`mosaic_media.probe_media`),
-and system `ffmpeg` >= 5.1 is required for the transcode path (`mosaic media
-transcode`). Installing `ffmpeg` via conda covers both.
+Frame decoding runs in-process via `av`, so no `ffmpeg` binary is required to
+read video. System `ffprobe` is still used for media indexing and probing
+(`mosaic_media.probe_media`), and system `ffmpeg` >= 5.1 is required for the
+transcode path (`mosaic media transcode`). Installing `ffmpeg` via conda covers
+both.
+
+**`av` and `py-opencv` come from conda so the environment holds one ffmpeg.**
+Their PyPI wheels each bundle a complete ffmpeg build of their own, and two of
+those in one process crash it at a different point on every run -- on macOS the
+Objective-C runtime warns about it on every import. The conda-forge builds link
+the `ffmpeg` on the same line instead. Nothing is pinned: `av` satisfies mosaic's
+requirement, and one `py-opencv` registers both `opencv-python` and
+`opencv-python-headless`, so the `pip install` that follows finds them satisfied
+and installs neither wheel. Order matters -- conda first, pip second.
 
 The `recommended` extra bundles wavelets, YOLO pose training/inference, and the
-PyTorch localizer. For lighter or alternative installs, select extras
-individually:
+PyTorch localizer. It deliberately excludes `yolo-augment`: `albumentations`
+requires `opencv-python-headless` while mosaic requires `opencv-python`, and pip
+installs both without complaint even though they ship the same `cv2` package.
+Installing `yolo-augment` also changes what a YOLO or POLO training run does,
+and nothing records which way a run went, so it is opt-in. For lighter or
+alternative installs, select extras individually:
 
 | Extra              | Adds                                                                                |
 | ------------------ | ----------------------------------------------------------------------------------- |
@@ -61,7 +74,9 @@ individually:
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
 | `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
+| `deeplabcut`       | PyTables, to read DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra |
 | `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
+| `yolo-augment`     | `albumentations`, which Ultralytics picks up on its own to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO training |
 
 `pose`, `polo`, and `recommended` install Ultralytics, which is AGPL-3.0. That
 matters more than it looks: AGPL section 13 extends the duty to offer
