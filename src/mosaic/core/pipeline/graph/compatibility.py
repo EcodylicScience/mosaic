@@ -159,6 +159,21 @@ class Declaration:
     emits: EmitsLevel
     """As declared, before resolution. ``"as-input"`` survives here and not on
     ``produces``, so a caller resolving a chain has the original to work from."""
+    category: str = ""
+    """What sort of work this is -- the feature's category, or the op's.
+
+    Display, and one decision: a GPU op splits by category so fair-share can pool
+    training separately from inference.
+    """
+    resource_class: str = "cpu"
+    """The bottleneck this step contends for: ``gpu``, ``heavy`` or ``cpu``.
+
+    Read from what the step declares, so a new heavy step routes correctly by
+    declaring rather than by being added to a list. It rides on the declaration
+    rather than being looked up where it is needed, because the lookup would
+    otherwise need the feature registry -- and deciding a lane is one of the read
+    paths that must not pay for it.
+    """
 
 
 @dataclass(frozen=True, slots=True)

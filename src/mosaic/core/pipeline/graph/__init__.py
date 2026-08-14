@@ -42,6 +42,13 @@ from .compatibility import (
     resolve_emits,
 )
 from .digest import canonical_json, canonical_recipe, recipe_digest
+from .lanes import (
+    DEFAULT_LANE,
+    GPU_INFER_LANE,
+    GPU_TRAIN_LANE,
+    lane_for,
+    resource_class_of,
+)
 from .model import (
     SCHEMA_VERSION,
     BoundRef,
@@ -81,11 +88,14 @@ from .topo import (
 __all__ = [
     "BoundRef",
     "ConsumerDecl",
+    "DEFAULT_LANE",
     "Declaration",
     "DeclarationCatalog",
     "Edge",
     "EntityLevel",
     "FeatureStepSpec",
+    "GPU_INFER_LANE",
+    "GPU_TRAIN_LANE",
     "OpStepSpec",
     "ProducerDecl",
     "Recipe",
@@ -110,6 +120,7 @@ __all__ = [
     "descendants_of",
     "edges",
     "feature_class_for_slug",
+    "lane_for",
     "load_recipe",
     "load_request",
     "params_step_refs",
@@ -121,6 +132,7 @@ __all__ = [
     "request_path",
     "requests_root",
     "resolve_emits",
+    "resource_class_of",
     "save_recipe",
     "save_request",
     "storage_name_of",

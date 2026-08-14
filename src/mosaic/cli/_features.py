@@ -18,7 +18,7 @@ Two footguns worth surfacing to users (documented in ``describe`` / the README):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from mosaic.cli._io import fail
 
@@ -40,16 +40,20 @@ def available_slugs() -> list[str]:
 
 
 def feature_class_for_slug(slug: str) -> "type[Feature]":
-    """Resolve a discovery slug (``cls.name``) to its feature class.
+    """Resolve a discovery slug (``cls.name``) to its feature class, or exit.
 
-    ``FEATURES`` is keyed by class name, so we scan values by ``.name``.
+    The lookup itself lives in the graph package, which is where a recipe and a
+    lane both need it too; this adds the CLI's own refusal, which lists what is
+    available. Three copies of the scan existed -- here, in recipe resolution,
+    and in mosaic-api's lane routing -- and a fourth would have been written the
+    next time something had to turn a slug into a class.
     """
-    from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.pipeline.graph import feature_class_for_slug as lookup
 
-    for cls in FEATURES.values():
-        if getattr(cls, "name", None) == slug:
-            return cls
-    fail(f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}")
+    found = lookup(slug)
+    if found is None:
+        fail(f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}")
+    return cast("type[Feature]", found)
 
 
 def build_feature(

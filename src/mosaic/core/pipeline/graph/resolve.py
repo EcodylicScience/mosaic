@@ -131,6 +131,10 @@ def _feature_declaration(cls: type) -> Declaration:
             reads_media="media_raw" in roots,
         ),
         emits=emits,
+        category=str(getattr(cls, "category", "")),
+        # Optional on a feature and defaulted to cpu, which is what every
+        # feature but a declared-heavy one is.
+        resource_class=str(getattr(cls, "resource_class", "") or "cpu"),
     )
 
 
@@ -146,6 +150,7 @@ def _op_declaration(kind: str, op_cls: type) -> Declaration:
     a producer must appear in to bridge into ``tracks/`` at all, and
     ``writes_media`` from the op's own declared category. Neither is a name list.
     """
+    from mosaic.core.pipeline.ops import op_resource_class
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
     bridges_tracks = kind in TRACKING_ROOTS
@@ -169,6 +174,8 @@ def _op_declaration(kind: str, op_cls: type) -> Declaration:
             reads_media=bridges_tracks,
         ),
         emits="individual",
+        category=str(getattr(op_cls, "category", "")),
+        resource_class=op_resource_class(kind),
     )
 
 

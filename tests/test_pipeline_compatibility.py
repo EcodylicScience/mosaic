@@ -337,3 +337,51 @@ def test_a_mismatched_join_is_refused_with_no_dataset_constructed() -> None:
         f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
     )
     assert "OK" in proc.stdout
+
+
+# --- lanes --------------------------------------------------------------------
+
+
+def test_a_lane_is_decided_from_what_a_step_declares() -> None:
+    """GPU work splits by category; everything else takes the default lane.
+
+    The values are pinned against the rule this replaced, which lived in
+    mosaic-api and read the same op registry -- a step must not change lane
+    merely by the rule having moved.
+    """
+    from mosaic.core.pipeline.graph import lane_for
+
+    catalog = declaration_catalog()
+    expected = {
+        "speed-angvel": "feature-compute",
+        "transcode": "feature-compute",
+        "train-pose": "gpu-train",
+        "train-sleap": "gpu-train",
+        "infer-pose": "gpu-infer",
+        "trex": "gpu-infer",
+    }
+    for name, lane in expected.items():
+        declared = catalog.get(name)
+        assert declared is not None
+        assert lane_for(declared) == lane, name
+
+
+def test_trex_takes_a_gpu_lane_from_its_own_declaration() -> None:
+    """Its category is 'convert', which would not imply a GPU; it says so itself."""
+    from mosaic.core.pipeline.graph import resource_class_of
+
+    declared = declaration_catalog().get("trex")
+    assert declared is not None
+    assert declared.category == "convert"
+    assert resource_class_of(declared) == "gpu"
+
+
+def test_every_declaration_resolves_to_a_lane() -> None:
+    """A step planned without a lane has nowhere to be offered."""
+    from mosaic.core.pipeline.graph import lane_for
+
+    catalog = declaration_catalog()
+    for name in catalog.names():
+        declared = catalog.get(name)
+        assert declared is not None
+        assert lane_for(declared)
