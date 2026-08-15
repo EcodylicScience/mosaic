@@ -64,14 +64,20 @@ def entity_level_of(columns: Iterable[str]) -> str:
     twin, :func:`normalize_identity_columns`, additionally distinguishes a pair
     frame whose second id is all-null; this does not, and does not need to.
 
-    **The pair spellings below are not every pair spelling in the library.**
-    ``pair-facing`` and ``attention-target`` write ``focal_id`` with a target
-    column, which none of these match, so both read as ``"global"`` -- no
-    identity -- and a join against an individual-level input is then permitted
-    on ``frame`` alone. Both features declare ``emits = "pair"``, so a chain
-    checked before it runs refuses that edge; this predicate, which runs at the
-    merge itself, still does not. Widening it touches every multi-input run, so
-    it is a change of its own rather than one made in passing.
+    **The pair spellings below are not every pair spelling in the library, and
+    the fix is not to add one.** ``pair-facing`` and ``attention-target`` write
+    ``focal_id`` with a target column, which none of these match, so both read
+    as ``"global"`` -- no identity -- and a join against an individual-level
+    input is then permitted on ``frame`` alone. Both declare ``emits = "pair"``,
+    so a chain checked before it runs refuses that edge; this predicate, which
+    runs at the merge itself, still does not.
+
+    Those two features are to emit ``id1`` / ``id2`` like every other pair-level
+    feature, with ``id1`` the focal individual and ``id2`` the target. A fourth
+    spelling here would make this a list of names that grows every time a
+    feature invents one, and each addition is a chance to forget; one spelling is
+    what makes it a rule. The rename changes what those features *write*, so it
+    is a change of its own.
     """
     present = set(columns)
     for a, b in (("id1", "id2"), ("id_a", "id_b"), ("id_A", "id_B")):
