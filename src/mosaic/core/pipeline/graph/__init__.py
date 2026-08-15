@@ -9,9 +9,10 @@ dataset and recipe: what to run, under what identity, and what is already done.
 Deliberately separate from the live-object
 :class:`~mosaic.core.pipeline.pipeline.Pipeline`, which holds feature *classes*
 and a ``CallbackStep`` wrapping a live callable and therefore has no wire form.
-The two do not fork on substance: ``Pipeline`` is a thin caller of
-``plan_pipeline`` over a recipe built in memory, so there is one answer to "what
-``run_id`` will this step have".
+The two do not fork on substance: both resolve identity through
+:func:`~mosaic.core.pipeline.run.resolve_feature_identity`, so there is one
+answer to "what ``run_id`` will this step have" -- and the notebooks drive
+``Pipeline``, so a second answer would be the one users meet first.
 
 **Only :mod:`~mosaic.core.pipeline.graph.resolve` may import ``FEATURES``.**
 Importing the feature library costs seconds of wall clock, and parsing a recipe,

@@ -69,6 +69,7 @@ nav:
       - Pipeline:
           - Overview: api/pipeline/index.md
           - Inventory: api/pipeline/inventory.md
+          - Graphs: api/pipeline/graph.md
       - Behavior:
           - Feature Library: api/behavior/feature-library.md
           - Label Library: api/behavior/label-library.md

@@ -5,6 +5,19 @@ automatic caching and dependency tracking. Instead of manually chaining
 `ds.run_feature()` calls, you declare a graph of named steps and let the
 pipeline handle execution order, caching, and staleness propagation.
 
+There are two ways to spell the same graph, and they resolve identity through
+one shared site so they cannot disagree about what a step will be called:
+
+- **`Pipeline`**, on this page — a live object holding feature *classes*, with a
+  `CallbackStep` escape hatch for a plain function between layers. Reach for it
+  in a notebook, where the graph is code you are editing anyway.
+- **A recipe file** — the same graph as JSON, portable across datasets, checked
+  before it runs, and drivable from `mosaic pipeline`. Reach for it when the
+  graph outlives the session: to review it, hand it to somebody else, run it on a
+  machine with no notebook, or include tracker and transcode steps, which
+  `Pipeline` cannot express. See [pipeline
+  graphs](api/pipeline/graph.md).
+
 ## Quick start
 
 ```python
