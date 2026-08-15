@@ -1,239 +1,119 @@
-# mosaic
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pipeline-dark.svg">
+    <img alt="Video feeds the trackers mosaic drives; their output becomes one standardized tracks table, from which mosaic computes features, fits models, and renders annotated video." src="docs/assets/pipeline-light.svg" width="880">
+  </picture>
+</p>
 
-A Python toolkit for animal behavior analysis: track standardization, behavioral
-feature extraction, unsupervised embedding and clustering, supervised classifier
-training, and annotated video output.
+<h1 align="center">mosaic</h1>
+<p align="center"><strong>Behavior analysis for any animal, end to end.</strong></p>
 
-**Documentation:** <https://ecodylicscience.github.io/mosaic/>
+<p align="center">
+  <a href="https://github.com/EcodylicScience/mosaic/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EcodylicScience/mosaic/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/EcodylicScience/mosaic/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/EcodylicScience/mosaic/actions/workflows/docs.yml/badge.svg"></a>
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-blue">
+  <img alt="AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue">
+</p>
 
-## Overview
+mosaic drives the pose trackers you already use — **TRex, SLEAP, DeepLabCut, Lightning
+Pose, Ultralytics** — and turns their output into behavioral features, unsupervised
+syllables, trained classifiers, and annotated video. One dataset, one CLI, one
+standardized table underneath.
 
-Given pose tracks (per-frame keypoints with identities), mosaic produces:
+Every result is content-addressed: the same inputs and parameters produce the same
+`run_id`, so re-running is a no-op, parameter sweeps organize themselves, and
+`mosaic inventory` can tell you exactly what a dataset already holds.
 
-- standardized parquet track tables from CalMS21, TREx, SLEAP,
-  Lightning Pose, DeepLabCut, Ultralytics, or user-defined formats;
-- per-frame and per-sequence behavioral features — kinematic, social, spectral,
-  and reduction;
-- unsupervised embeddings and clusters (t-SNE, k-means, Ward, ARHMM,
-  [keypoint-MoSeq](https://keypoint-moseq.readthedocs.io/) — non-commercial
-  license, see [Licensing](docs/licensing.md));
-- supervised classifiers (XGBoost, Lightning-Action, FERAL) trained from manual
-  labels;
-- visual identification models from egocentric crops;
-- annotated overlay videos, embedding scatters, and behavior timelines.
+**Documentation: <https://ecodylicscience.github.io/mosaic/>**
 
-If pose tracks are not yet available, the package also provides:
+## What it does
 
-- frame sampling for annotation (uniform or k-means diversity);
-- pose-model training from CVAT, COCO, or Lightning Pose annotations using
-  YOLO pose, POLO point detection, or a PyTorch heatmap localizer.
+| Step | What mosaic does |
+| --- | --- |
+| **Track** | Run **4 integrated trackers** over your videos from one command — or import tracks you already have, from **8 formats** |
+| **Standardize** | Every tracker's output becomes one validated schema: video pixels, `X`/`Y` at the body centre, keypoints optional |
+| **Feature** | **45 registered features** — kinematic, social, collective-motion, spectral, reduction, temporal context |
+| **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
+| **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |
+| **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
+| **Operate** | **24 CLI commands** and **16 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
-## Installation
+Built for group-living animals: identities, pairs and neighbors are first-class
+throughout, not an afterthought bolted onto single-animal tracking.
 
-`pyproject.toml` is the canonical dependency source.
+## Install
+
+`mosaic` is not on PyPI, so install it from a checkout:
 
 ```bash
+git clone https://github.com/EcodylicScience/mosaic.git
+cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[recommended]"
 ```
 
-Frame decoding runs in-process via `av`, so no `ffmpeg` binary is required to
-read video. System `ffprobe` is still used for media indexing and probing
-(`mosaic_media.probe_media`), and system `ffmpeg` >= 5.1 is required for the
-transcode path (`mosaic media transcode`). Installing `ffmpeg` via conda covers
-both.
+`av` and `py-opencv` come from conda deliberately — their PyPI wheels each bundle a
+complete ffmpeg, and two in one process crash it. The
+[installation guide](https://ecodylicscience.github.io/mosaic/installation/)
+explains that, the full extras table, the two components that want an environment
+of their own, and Windows/WSL2 support.
 
-**`av` and `py-opencv` come from conda so the environment holds one ffmpeg.**
-Their PyPI wheels each bundle a complete ffmpeg build of their own, and two of
-those in one process crash it at a different point on every run -- on macOS the
-Objective-C runtime warns about it on every import. The conda-forge builds link
-the `ffmpeg` on the same line instead. Nothing is pinned: `av` satisfies mosaic's
-requirement, and one `py-opencv` registers both `opencv-python` and
-`opencv-python-headless`, so the `pip install` that follows finds them satisfied
-and installs neither wheel. Order matters -- conda first, pip second.
+## In 60 seconds
 
-The `recommended` extra bundles wavelets, YOLO pose training/inference, and the
-PyTorch localizer. It deliberately excludes `yolo-augment`: `albumentations`
-requires `opencv-python-headless` while mosaic requires `opencv-python`, and pip
-installs both without complaint even though they ship the same `cv2` package.
-Installing `yolo-augment` also changes what a YOLO or POLO training run does,
-and nothing records which way a run went, so it is opt-in. For lighter or
-alternative installs, select extras individually:
+```bash
+mosaic init study --name "Cage A"
 
-| Extra              | Adds                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------- |
-| `recommended`      | `wavelets` + `pose` + `localizer`                                                   |
-| `wavelets`         | PyWavelets for spectral features                                                    |
-| `pose`             | Ultralytics YOLO pose training and inference, and `mosaic track ultralytics` (six multi-object trackers, in process) |
-| `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
-| `localizer`        | PyTorch heatmap localizer training                                                  |
-| `identity`         | Image-backbone identity models (trained classifier, frozen timm backbones, DINOv2 + temporal); `torch` + `timm` |
-| `lightning-action` | Lightning-Action temporal action classifier                                         |
-| `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
-| `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
-| `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
-| `hdf5`             | PyTables, which pandas dispatches `read_hdf` to, for DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra. Installs no DeepLabCut code |
-| `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference); install it in an environment of its own, see below |
-| `yolo-augment`     | `albumentations`, which Ultralytics picks up on its own to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO training |
+# Point the dataset at video that can live anywhere -- a NAS, another volume.
+mosaic sources add -m study/dataset.yaml --kind media \
+    --path /data/cage-a --extensions .mp4
+mosaic scan -m study/dataset.yaml
 
-`pose`, `polo`, and `recommended` install Ultralytics, which is AGPL-3.0. That
-matters more than it looks: AGPL section 13 extends the duty to offer
-Corresponding Source to anyone who interacts with the program over a network, so
-a commercial deployment is reached without ever redistributing a copy.
-Ultralytics sells an Enterprise license for use that cannot meet those terms,
-but it covers Ultralytics' own distribution only — `polo` is a third-party fork,
-so it is AGPL-only. Mosaic is AGPL-3.0-or-later itself, so nothing here is
-incompatible; the question is whether *your* use of the combined work can meet
-the obligations. See [Licensing](docs/licensing.md).
+# Track it, then derive something from the result.
+mosaic track trex -m study/dataset.yaml --set track_max_individuals=4
+mosaic run  -m study/dataset.yaml --feature speed-angvel
 
-`feral` wants an environment of its own. FERAL pins its dependency versions
-exactly — `opencv-python`, `pandas`, `scikit-learn`, `timm`, `matplotlib`,
-`transformers` — while every mosaic requirement is a lower bound, so pip resolves
-the two together without complaint and downgrades each one. The `opencv-python`
-pin is the one that does damage: it installs a wheel over the conda-forge
-`py-opencv` the setup above asks for, which puts a second ffmpeg build in the
-process beside `av` and crashes it nondeterministically. Install `feral` into a
-separate environment and point it at the same datasets.
-
-There is deliberately no `kpms` extra. keypoint-MoSeq cannot share an
-environment with mosaic, so the `kpms` feature drives it in a separate one that
-you build yourself — and it is licensed for non-commercial research and academic
-use only. See [Licensing](docs/licensing.md) for the terms and
-[`external/README.md`](src/mosaic/behavior/feature_library/external/README.md)
-for the setup.
-
-### Platform support
-
-mosaic runs natively on **macOS** and **Linux**. On **Windows**, the core
-analysis pipeline runs natively, but several features depend on components with
-no native-Windows build and need **WSL2** (or Linux):
-
-| Capability                                                        | Native Windows          | WSL2 / Linux | macOS |
-| ----------------------------------------------------------------- | ----------------------- | ------------ | ----- |
-| Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
-| keypoint-MoSeq (`kpms`) -- JAX + Unix sockets                     | No                      | Yes          | Yes   |
-| FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
-| GPU kNN (`gpu`, `faiss-gpu`)                                      | No (`faiss-cpu` works)  | Yes          | n/a   |
-| imgstore read/write (`imgstore`)                                  | Partial                 | Yes          | Yes   |
-| TREx tracking and pose-model training                             | Partial                 | Yes          | Yes   |
-
-Native-Windows support for the core is new; for any **No** / **Partial**
-capability, or if anything misbehaves natively, use **WSL2** (`wsl --install` in
-an admin PowerShell), then follow the Linux setup above inside Ubuntu. Keeping
-the repository and your datasets on the WSL filesystem (for example `~/mosaic`)
-rather than under `/mnt/c` is still much faster -- `drvfs` I/O is roughly an
-order of magnitude slower than ext4 -- but it is no longer a correctness
-requirement: index writes work on a `/mnt/*` mount. One caveat remains: a lock
-taken from WSL and one taken by a native-Windows process are different lock
-namespaces and do not see each other, so do not run both against one dataset at
-the same time.
-
-## Quick start
-
-The [CalMS21 template notebook](notebooks/calms21-template.ipynb) is the
-canonical end-to-end example. It walks through:
-
-1. building a `Dataset` from a manifest;
-2. computing `pair-egocentric` and `pair-posedistance-pca` features;
-3. wavelet expansion, global scaling, and t-SNE embedding;
-4. k-means and Ward clustering with cluster-to-label agreement metrics;
-5. supervised classification via `extract-labeled-templates` and XGBoost,
-   with optional temporal-context stacking;
-6. visualization of predictions on the embedding.
-
-## Concepts
-
-Every transformation in mosaic is registered as a **feature** and executed
-through a single `Dataset` orchestrator. Each feature implements a four-method
-protocol (`load_state`, `fit`, `apply`, `save_state`) and declares a name,
-version, and parallelizability.
-
-Features are either:
-
-- **per-frame / per-sequence** — stateless transforms of tracks or upstream
-  feature output (e.g. `speed-angvel`, `pair-egocentric`, `nearest-neighbor`,
-  `pair-wavelet`, `temporal-stack`, `body-scale`);
-- **global** — fit-then-apply transforms trained on a collection of sequences
-  (e.g. `global-scaler`, `global-tsne`, `global-kmeans`, `global-ward`,
-  `xgboost`, `arhmm`, `kpms`\*, `lightning-action`, `feral`,
-  `global-identity-model`, `global-identity-embedding`,
-  `global-identity-dinov2-temporal`).
-
-\* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
-and academic use only. See [Licensing](docs/licensing.md); `arhmm` is the
-unrestricted alternative.
-
-`global-identity-embedding` loads whatever image backbone you name, and mosaic
-distributes no weights — each carries its own license. Its default is
-permissive; `BVRA/MegaDescriptor-L-384` is the strongest option for academic
-wildlife re-identification and is non-commercial. See
-[Licensing](docs/licensing.md).
-
-The crop features (`egocentric-crop`, `interaction-crop-pipeline`) share the same
-caching and reproducibility machinery. Rendering a sequence's tracks over its
-video is not a feature — it is `playback.play_video(...)`, a plain function.
-
-The full registry is documented in the
-[feature library reference](docs/api/behavior/feature-library.md).
-
-## Pipeline
-
-`Dataset` manages named roots and produces deterministic, versioned outputs.
-Each feature run is tagged with a `run_id` of the form
-`<version>-<SHA1(params)>`; identical inputs and parameters resolve to the same
-`run_id`, so re-runs are no-ops and parameter sweeps stay organized.
-
-```
-video files
-   ├─ scan_media()                     → media_raw/index.csv  (probed via mosaic_media/ffprobe)
-   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
-
-raw tracks/labels
-   ├─ scan_tracks()          → tracks_raw/index.csv
-   ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
-   └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
-
-run_feature(...)             → features/<name>/<run_id>/*.parquet
+# What does this dataset now hold, and is any of it stale?
+mosaic inventory -m study/dataset.yaml
 ```
 
-`group` in the `<group>__<seq>` name is an optional namespace (it may be empty),
-not the canonical grouping — flexible, redefinable grouping of sequences is done
-with tags, and a feature can be run over an arbitrary subset of sequences via
-`run_feature(ds, feature, entries=[(group, sequence), ...])`.
+Already have tracks? Skip the tracker: declare them as a `--kind tracks` source with
+their `--src-format`, and `mosaic convert-tracks` standardizes them.
 
-## Repository layout
+## Documentation
 
-```
-src/mosaic/
-├── core/        # Dataset orchestrator, pipeline engine, schema, media I/O (core/media/)
-├── behavior/    # feature_library, label_library, visualization_library
-└── tracking/    # pose-model training/inference and annotation converters
-```
+| | |
+| --- | --- |
+| [**Get started**](https://ecodylicscience.github.io/mosaic/getting-started/) | Install, build a dataset, run your first feature |
+| [**Reference**](https://ecodylicscience.github.io/mosaic/reference/) | Every feature, op, CLI command and track format — generated from the code |
+| [**Extend**](https://ecodylicscience.github.io/mosaic/adding-a-converter/) | Add a track converter, a tracker, or a feature |
+
+Worked examples live in [`notebooks/`](notebooks/): an end-to-end
+[CalMS21 template](notebooks/calms21-template.ipynb), and collective motion on
+[shiners](notebooks/collective-motion-shiners.ipynb) and
+[zebrafish](notebooks/collective-motion-zebrafish.ipynb). They read data that is not
+bundled with the repository, so treat them as illustrated results rather than as
+runnable tutorials.
 
 ## Status
 
-Mosaic is in early development (0.x). Public APIs, feature names, and on-disk
-layouts may change between releases.
+Early development (0.x). Public APIs, feature names, and on-disk layouts may change
+between releases; [CHANGELOG.md](CHANGELOG.md) records what moved and why.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please open an issue before making
-large changes.
-
-Working with Claude Code or another AI coding agent? See [CLAUDE.md](CLAUDE.md)
-for repo orientation, development commands, and architectural conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md), and please open an issue before making large
+changes. Working with an AI coding agent? [CLAUDE.md](CLAUDE.md) is the repository
+orientation.
 
 ## License
 
-GNU Affero General Public License v3 or later (AGPLv3+). See
-[LICENSE](LICENSE), and [NOTICE](NOTICE) for the third-party attributions that
-must be preserved with it.
+GNU Affero General Public License v3 or later. See [LICENSE](LICENSE), and
+[NOTICE](NOTICE) for the third-party attributions that must travel with it.
 
-Mosaic bundles no third-party source and no model weights, but it drives tools
-whose terms differ from its own — keypoint-MoSeq prohibits commercial use
-outright, TRex requires a paid license for company use, and Ultralytics is
-AGPL-3.0. [Licensing](docs/licensing.md) states which components carry
-restrictions and what mosaic does about them.
-
+mosaic bundles no third-party source and no model weights, but it drives tools whose
+terms differ from its own — keypoint-MoSeq prohibits commercial use, TRex requires a
+paid license for company use, and Ultralytics is AGPL-3.0.
+[Licensing](https://ecodylicscience.github.io/mosaic/licensing/) states which
+components carry restrictions and what mosaic does about each.
