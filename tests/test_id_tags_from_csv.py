@@ -18,11 +18,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 
-
-def _dataset(tmp_path: Path) -> Dataset:
-    return Dataset(new_dataset_manifest("t", tmp_path / "ds")).load(ensure_roots=True)
+from tests.helpers import make_dataset
 
 
 def _csv(path: Path, text: str) -> Path:
@@ -53,7 +51,7 @@ def _tags(path: Path) -> dict[object, dict[str, object]]:
 
 def test_a_blank_group_still_gets_its_tags(tmp_path: Path) -> None:
     """The common case: no group column filled in, one file per sequence."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "cats.csv",
         """
@@ -72,7 +70,7 @@ group,sequence,id,category
 
 def test_several_fields_still_reach_a_blank_group(tmp_path: Path) -> None:
     """The second groupby, which dropped the same rows for the same reason."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "meta.csv",
         """
@@ -93,7 +91,7 @@ group,sequence,id,strain,sex
 
 def test_a_group_that_is_named_still_names_the_file(tmp_path: Path) -> None:
     """The path that already worked, so the fix is not a trade."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "cats.csv",
         """
@@ -118,7 +116,7 @@ def test_a_numeric_sequence_name_keeps_its_zeros(tmp_path: Path) -> None:
     The numeric names are the CalMS21 and MABe convention, so this is reachable
     rather than theoretical.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "cats.csv",
         """
@@ -135,7 +133,7 @@ group,sequence,id,category
 
 def test_a_focal_row_names_its_sequence_as_written(tmp_path: Path) -> None:
     """The per-row branch reads the same two cells and must answer alike."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "focal.csv",
         """
@@ -161,7 +159,7 @@ def test_a_row_naming_no_sequence_is_refused(tmp_path: Path) -> None:
     ``make_entry_key("", "")`` and write ``.npz`` with no stem. Saying so beats
     trading one silent outcome for another.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "cats.csv",
         """
@@ -188,7 +186,7 @@ def test_an_id_stays_the_number_it_was(tmp_path: Path) -> None:
     would attach nothing while appearing to succeed. This is green today and
     exists to go red if that read is ever widened.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "cats.csv",
         """
@@ -209,7 +207,7 @@ def test_a_missing_focal_id_is_left_missing(tmp_path: Path) -> None:
     ``int("")`` raises, so a whole-CSV text read would turn a sequence with no
     focal individual recorded into a crash.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds")
     csv = _csv(
         tmp_path / "focal.csv",
         """

@@ -3,17 +3,19 @@ assignment-driven ``Dataset.write_media_index`` projection, and its invariants
 (root-relative-in-tree ``abs_path``, preserved rows, derivative-link carry
 forward). The densifier cases mirror the upload finalize contract the API drives
 through ``write_media_index``.
+
+Every dataset here is *saved* before it is written to, as the API seeds a manifest
+before finalizing an upload: without one, ``base_dir`` resolves to the manifest
+path rather than its directory and every root-relative ``abs_path`` lands a level
+too deep.
 """
 
 import subprocess
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
@@ -26,29 +28,13 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
-def _cfr_mp4(path: Path, n: int = 6) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(n):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
-
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-        },
-    )
-    ds.ensure_roots()
-    # Seed the manifest so base_dir resolves to the manifest's parent (the API
-    # always seeds it before writing the index); without it _dataset_base_dir
-    # would treat the missing manifest path itself as the base directory.
-    ds.save()
-    return ds
+# ``media_raw`` is declared so ``resolve_media_root`` lands there and the
+# originals index is written to ``media_raw/index.csv``; ``media`` is the
+# derivative root the carry-forward case points a routing link into. Two tests
+# add ``tracks`` themselves, because a keymap is what they are exercising.
+_ROOTS = ("media_raw", "media")
 
 
 def _order_row(
@@ -299,10 +285,10 @@ def test_write_media_index_orders_by_position_and_stores_relative(
     # (manifest parent) and abs_path.resolve() agree; production roots are real
     # paths, so in-tree files are stored root-relative there without this.
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
-    _cfr_mp4(seq_dir / "b.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "b.mp4")
 
     ds.write_media_index(
         [
@@ -329,7 +315,7 @@ def test_write_media_index_preserves_other_and_external_rows(
     tmp_path: Path,
 ) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     index_path = tmp_path / "media_raw" / "index.csv"
 
     # Seed: one already-indexed sequence (seqB) and one external NAS reference.
@@ -355,7 +341,7 @@ def test_write_media_index_preserves_other_and_external_rows(
     write_media_index_rows(index_path, frame_from_rows([other, external]))
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -377,9 +363,9 @@ def test_write_media_index_preserves_other_and_external_rows(
 
 def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
 
     # First import: a.mp4 at position 0.
     ds.write_media_index(
@@ -391,7 +377,7 @@ def test_write_media_index_appends_keeping_prior_order(tmp_path: Path) -> None:
         extensions=(".mp4",),
     )
     # Append b.mp4; a.mp4 keeps prior order 0, b.mp4 follows.
-    _cfr_mp4(seq_dir / "b.mp4")
+    write_mpeg4_mp4(seq_dir / "b.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -415,9 +401,9 @@ def test_write_media_index_writes_a_doubly_scoped_file_once(
     sequences' media compositions.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     shared = tmp_path / "media_raw" / "shared"
-    _cfr_mp4(shared / "a.mp4")
+    write_mpeg4_mp4(shared / "a.mp4")
 
     ds.write_media_index(
         [
@@ -440,7 +426,7 @@ def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> N
     renumbered by filename -- during someone else's upload.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     index_path = tmp_path / "media_raw" / "index.csv"
 
     seeded: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
@@ -461,7 +447,7 @@ def test_write_media_index_leaves_an_unnamed_sequence_alone(tmp_path: Path) -> N
     write_media_index_rows(index_path, frame_from_rows(untouched))
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -488,7 +474,7 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
     content change.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     ds.set_root("tracks", str(tmp_path / "tracks"))
     ds.ensure_roots()
     # index_media derives (group, sequence) from the tracks keymap, so the two
@@ -499,8 +485,8 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
     )
 
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "seqA_0.mp4")
-    _cfr_mp4(seq_dir / "seqA_1.mp4")
+    write_mpeg4_mp4(seq_dir / "seqA_0.mp4")
+    write_mpeg4_mp4(seq_dir / "seqA_1.mp4")
     ds.write_media_index(
         [
             MediaIndexScope(
@@ -523,9 +509,9 @@ def test_index_media_keeps_the_order_an_arranged_write_gave(tmp_path: Path) -> N
 
 def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     seq_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(seq_dir / "a.mp4")
+    write_mpeg4_mp4(seq_dir / "a.mp4")
     scope = MediaIndexScope(
         directory=seq_dir, group="", sequence="seqA", order_by_name={"a.mp4": 0}
     )
@@ -560,7 +546,7 @@ def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
     test has an empty or absent tracks index and takes the fallback path.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     ds.set_root("tracks", str(tmp_path / "tracks"))
     ds.ensure_roots()
     (tmp_path / "tracks" / "index.csv").write_text(
@@ -568,15 +554,15 @@ def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
     )
 
     scanned = tmp_path / "media_raw" / "scanned"
-    _cfr_mp4(scanned / "known.mp4")
-    _cfr_mp4(scanned / "stranger.mp4")
+    write_mpeg4_mp4(scanned / "known.mp4")
+    write_mpeg4_mp4(scanned / "stranger.mp4")
     ds.index_media([scanned], extensions=(".mp4",))
 
     by_name = {row["name"]: row["assignment_source"] for row in ds.read_media_index()}
     assert by_name == {"known.mp4": "scan-keymap", "stranger.mp4": "scan-stem"}
 
     assigned_dir = tmp_path / "media_raw" / "seqA"
-    _cfr_mp4(assigned_dir / "a.mp4")
+    write_mpeg4_mp4(assigned_dir / "a.mp4")
     ds.write_media_index(
         [MediaIndexScope(directory=assigned_dir, group="", sequence="seqA")],
         extensions=(".mp4",),
@@ -618,10 +604,10 @@ def test_two_finalizes_of_different_sequences_do_not_lose_rows(tmp_path: Path) -
     serialization the second preserves a snapshot taken before the first wrote.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for sequence in ("seqA", "seqB"):
         for name in ("a.mp4", "b.mp4", "c.mp4"):
-            _cfr_mp4(tmp_path / "media_raw" / sequence / name)
+            write_mpeg4_mp4(tmp_path / "media_raw" / sequence / name)
 
     gate = tmp_path / "gate"
     gate.mkdir()

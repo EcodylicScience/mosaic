@@ -7,6 +7,12 @@ import pytest
 
 from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
 
+# Both tests here shell out to the toolchain directly rather than reaching it
+# through a guarded helper -- `_write_raw_h264` invokes `ffmpeg` itself, because a
+# raw H.264 stream is exactly what no in-process writer produces. So the guard is
+# the marker rather than a fixture.
+pytestmark = pytest.mark.media
+
 
 def _write_cfr_mp4(path: Path, n: int = 12, w: int = 64, h: int = 48) -> None:
     vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (w, h))

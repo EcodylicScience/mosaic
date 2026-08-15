@@ -33,6 +33,10 @@ from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.run import compute_run_id
 
+# Selected by CI's `identity` job with `-m identity` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.identity
+
 GOLDEN_PATH = Path(__file__).parent / "data" / "identity_golden.json"
 UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
 

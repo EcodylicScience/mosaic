@@ -13,19 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.ops import run_op
 from mosaic.tracking import register_ops
 from mosaic.tracking.litpose import training as training_module
 from mosaic.tracking.ops.train import trained_model_index
 
+from tests.helpers import make_dataset
+
 register_ops()
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _base_config(tmp_path: Path) -> Path:
@@ -75,7 +71,7 @@ def _point_at_litpose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_it_registers_a_directory_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
 
@@ -100,7 +96,7 @@ def test_the_recorded_model_type_comes_from_the_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The fake writes heatmap_mhcrnn whatever it is asked for."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch, model_type="heatmap_mhcrnn")
 
@@ -121,7 +117,7 @@ def test_the_head_and_backbone_reach_the_trainer_as_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Lightning Pose is configured by Hydra assignment, so these must be argv."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     seen = _fake_trainer(monkeypatch)
 
@@ -147,7 +143,7 @@ def test_the_trained_model_resolves_back_as_a_litpose_model(
 ) -> None:
     from mosaic.tracking.model_refs import resolve_model
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
 
@@ -170,7 +166,7 @@ def test_a_directory_that_is_not_a_project_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No config.yaml means Lightning Pose has nothing to read."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
     bare = tmp_path / "bare"
@@ -253,7 +249,7 @@ def test_an_unset_base_config_uses_the_vendored_template(
 
     assert default_config_path().is_file(), "the template must ship, not just exist"
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     seen = _fake_trainer(monkeypatch)
     _ = run_op(ds, "train-litpose", {"project": str(_project(tmp_path))})

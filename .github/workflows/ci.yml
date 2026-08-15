@@ -1,14 +1,21 @@
 name: CI
 
-# Gates on the test suite, and on lint for the files a pull request touches.
+# Gates on the test suite and on project-wide lint.
 #
-# Deliberately NOT gating on project-wide `ruff check`, `ruff format --check`, or
-# `basedpyright`: all three carry a large pre-existing backlog (99 lint findings,
-# 89 files pending a format pass, ~9k strict-mode type errors). Making any of
-# them a gate would put CI permanently red, which trains everyone to ignore it.
-# Scoping lint to changed files encodes the rule the repository actually follows
-# -- new and touched code is clean -- and ratchets on its own. Adding a
-# project-wide type gate needs the backlog paid down first.
+# `ruff` is a gate over the whole tree, not over the files a pull request happens
+# to touch. It was scoped to changed files while a backlog existed; that backlog
+# is paid down (formatting is clean tree-wide and `ruff check` finds nothing), so
+# the scoping now only costs coverage. It also never ran: the changed-files job
+# was `pull_request`-only and this repository pushes to `main`, so across its
+# first 22 runs it executed once. Lint runs on push for that reason.
+#
+# The rules ruff enforces are worth the gate beyond style: `F821` catches a name
+# that does not resolve, which is what a stray edit at module scope produces, and
+# a collection-time `NameError` takes the whole test job with it.
+#
+# Still NOT gated: `basedpyright`. Strict mode reports ~11k errors against this
+# tree, so making it a gate would put CI permanently red, which trains everyone
+# to ignore it. That one needs the backlog paid down first.
 
 on:
   push:
@@ -64,7 +71,7 @@ jobs:
           # without extras and prune what it considers extraneous, undoing the
           # two installs below.
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5]'
           uv pip install pytest ruff
 
       - name: Test
@@ -116,7 +123,7 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,identity]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,identity]'
           uv pip install pytest
 
       - name: Test identity checkpoints
@@ -125,15 +132,13 @@ jobs:
           PYTHONHASHSEED: random
           # Promotes a missing torch from "skip" to "broken environment".
           MOSAIC_CI_IDENTITY: "1"
-        # `-m "slow or not slow"` because the tests that construct a real
-        # backbone are slow-marked, and those are the ones this job exists for.
-        run: |
-          uv run --no-sync pytest -q -m "slow or not slow" \
-            tests/test_identity_classifier.py \
-            tests/test_identity_embedding_backbone.py \
-            tests/test_behavior_import_is_torch_free.py \
-            tests/test_identity_model_artifact.py \
-            tests/test_identity_golden.py
+        # `-m identity` rather than a list of filenames: the list was a second
+        # place to remember, and a new identity test file was invisible to CI
+        # until someone edited this workflow. It also *replaces* the `-m "not
+        # slow"` in `addopts`, which is what this job needs -- the tests that
+        # construct a real backbone are slow-marked, and they are the ones it
+        # exists for.
+        run: uv run --no-sync pytest -q -m identity
 
   tracking:
     runs-on: ubuntu-latest
@@ -164,7 +169,7 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,pose]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,pose]'
           uv pip install pytest
 
       - name: Test ultralytics tracking
@@ -174,33 +179,26 @@ jobs:
           # Promotes a missing ultralytics or lap from "skip" to "broken
           # environment".
           MOSAIC_CI_TRACKING: "1"
-        run: |
-          uv run --no-sync pytest -q -m "slow or not slow" \
-            tests/test_ultralytics_preflight.py \
-            tests/test_ultralytics_run_markers.py
+        # `-m tracker` for the same reason as the identity job above.
+        run: uv run --no-sync pytest -q -m tracker
 
-  lint-changed:
+  # Runs on push as well as on pull request. `uvx` resolves the newest ruff at
+  # run time, so a rule set widening upstream surfaces here rather than on
+  # whichever machine happens to upgrade first; `[tool.ruff.lint] select` in
+  # pyproject pins which rules are in force against that drift.
+  lint:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
 
-      - name: Lint the files this pull request touches
+      # `src/` and `tests/` rather than `.`: the notebooks under `notebooks/` are
+      # worked examples that carry unused imports and re-imports on purpose, and
+      # linting them would gate the suite on prose rather than on code.
+      - name: Lint
         run: |
-          base="origin/${{ github.base_ref }}"
-          mapfile -t changed < <(
-            git diff --name-only --diff-filter=ACMR "$base"...HEAD -- '*.py'
-          )
-          if [ ${#changed[@]} -eq 0 ]; then
-            echo "No Python files changed."
-            exit 0
-          fi
-          printf 'Checking:\n%s\n' "${changed[*]}"
-          uvx ruff check "${changed[@]}"
-          uvx ruff format --check "${changed[@]}"
+          uvx ruff check src tests
+          uvx ruff format --check src tests

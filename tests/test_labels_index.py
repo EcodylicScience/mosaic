@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
@@ -18,10 +17,7 @@ from mosaic.core.pipeline.labels_index import (
     write_labels_row,
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    return Dataset(new_dataset_manifest("t", tmp_path / "ds")).load()
+from tests.helpers import make_dataset
 
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -32,7 +28,7 @@ def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
 
 
 def test_absent_index_reads_as_empty_full_schema(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     frame = read_labels_index(ds, "behavior")
     assert frame.empty
     assert list(frame.columns) == LABELS_INDEX_COLUMNS
@@ -100,7 +96,7 @@ def test_empty_frame_stays_empty() -> None:
 
 
 def test_write_labels_row_records_labels_raw_composition(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     # A labels_raw composition for the entry, as index_labels_raw would project.
     members = [SourceMember(name="s.csv", digest="deadbeef", algo="md5")]
     comp = labels_raw_composition(members)
@@ -130,7 +126,7 @@ def test_write_labels_row_records_labels_raw_composition(tmp_path: Path) -> None
 
 
 def test_authored_row_records_no_source_root(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     out_path = ds.get_root("labels") / "id_tags" / "s.npz"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, ids=np.array([0]))
@@ -158,7 +154,7 @@ def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
     and ``str()`` of that is the word -- which passes ``validate_entry_name`` and
     then names an entry nothing else knows about.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     out_path = ds.get_root("labels") / "behavior" / "v1" / "s.npz"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, labels=np.array([0]))
@@ -184,7 +180,7 @@ def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
 
 
 def test_convert_all_labels_hash_dir_and_reconvert(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     src = tmp_path / "uploads"
     src.mkdir()
     np.save(
@@ -222,7 +218,7 @@ def test_convert_all_labels_hash_dir_and_reconvert(tmp_path: Path) -> None:
 
 
 def test_load_labels_resolves_and_reads(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     src = tmp_path / "uploads"
     src.mkdir()
     np.save(
@@ -249,7 +245,7 @@ def test_an_unregistered_label_format_names_the_ones_that_exist(
     ``src_format`` filter skips it -- forever, and without a report naming the
     rows no converter can reach.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     src = tmp_path / "uploads"
     src.mkdir()
     (src / "f1.csv").write_text("a,b\n1,2\n")
@@ -266,7 +262,7 @@ def test_a_track_only_format_is_not_a_label_format(tmp_path: Path) -> None:
     ``deeplabcut`` is a registered *track* converter and no label converter at
     all, so it is exactly the case a track-registry lookup would wave through.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     src = tmp_path / "uploads"
     src.mkdir()
     (src / "f1.csv").write_text("a,b\n1,2\n")
@@ -276,7 +272,7 @@ def test_a_track_only_format_is_not_a_label_format(tmp_path: Path) -> None:
 
 
 def test_a_registered_label_format_still_indexes(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
     src = tmp_path / "uploads"
     src.mkdir()
     np.save(src / "f1.npy", {"g": {"s1": {"annotations": [0]}}}, allow_pickle=True)

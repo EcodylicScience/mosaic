@@ -31,7 +31,7 @@ def _order(ds: Dataset, sequence: str = "seq_a") -> list[str]:
     return [Path(str(row["abs_path"])).name for row in rows]
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestPreviewIsTheDefault:
     def test_a_preview_writes_nothing(
         self, scenario_dataset_with_media: Dataset
@@ -66,7 +66,7 @@ class TestPreviewIsTheDefault:
         assert list(report.reached.columns) == PROVENANCE_COLUMNS
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestThePreviewCarriesTheBlastRadius:
     def test_a_reached_feature_is_named_before_anything_moves(
         self, scenario_dataset_with_media: Dataset
@@ -88,7 +88,7 @@ class TestThePreviewCarriesTheBlastRadius:
         assert not report.applied
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestBlocks:
     def _add_labels(self, ds: Dataset, sequence: str = "seq_a") -> Path:
         index_path = ds.get_root("labels") / "behavior" / "index.csv"
@@ -141,7 +141,7 @@ class TestBlocks:
         )
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheScopeRefusal:
     """Not a block: no force flag should be able to merge two sequences."""
 
@@ -179,7 +179,7 @@ class TestTheScopeRefusal:
             )
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheReadabilityRule:
     """Block a regression, never a sequence that was already broken.
 

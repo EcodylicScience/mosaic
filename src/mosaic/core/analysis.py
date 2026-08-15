@@ -18,8 +18,6 @@ from .dataset import Dataset
 from .helpers import (
     to_safe_name,
     load_labels_auto,
-    detect_label_format,
-    expand_labels_to_dense,
     load_labels_for_feature_frames,
 )
 

@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.global_scaler import GlobalScaler
+from tests.helpers import make_sequence_df, make_templates, write_templates
 
 
 def _make_feature(
@@ -19,57 +19,10 @@ def _make_feature(
     return GlobalScaler(inputs=inputs, params=params)
 
 
-def _make_templates(
-    n_rows: int = 100,
-    n_features: int = 3,
-    offset: float = 5.0,
-    scale: float = 2.0,
-) -> pd.DataFrame:
-    """Build a templates DataFrame with known mean/std."""
-    rng = np.random.default_rng(42)
-    data: dict[str, object] = {}
-    for i in range(n_features):
-        data[f"feat_{i}"] = rng.standard_normal(n_rows) * scale + offset
-    return pd.DataFrame(data)
-
-
-def _make_sequence_df(
-    n_rows: int = 50,
-    n_features: int = 3,
-    offset: float = 5.0,
-    scale: float = 2.0,
-    sequence: str = "seq_a",
-    group: str = "grp_a",
-) -> pd.DataFrame:
-    """Build a per-sequence DataFrame with metadata + feature columns."""
-    rng = np.random.default_rng(99)
-    data: dict[str, object] = {
-        "frame": np.arange(n_rows),
-        "time": np.arange(n_rows, dtype=float) / 30.0,
-        "id": np.zeros(n_rows, dtype=int),
-        "group": [group] * n_rows,
-        "sequence": [sequence] * n_rows,
-    }
-    for i in range(n_features):
-        data[f"feat_{i}"] = rng.standard_normal(n_rows) * scale + offset
-    return pd.DataFrame(data)
-
-
-def _setup_templates_dir(
-    tmp_path: Path,
-    templates: pd.DataFrame,
-) -> Path:
-    """Write templates.parquet and return the directory."""
-    template_dir = tmp_path / "templates_run"
-    template_dir.mkdir()
-    templates.to_parquet(template_dir / "templates.parquet", index=False)
-    return template_dir
-
-
 class TestFitAndSave:
     def test_fit_produces_scaler_and_scaled_templates(self, tmp_path: Path) -> None:
-        templates = _make_templates(100, 3)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(100, 3, offset=5.0, scale=2.0)
+        template_path = write_templates(tmp_path, templates)
 
         feat = _make_feature(
             params={
@@ -81,7 +34,7 @@ class TestFitAndSave:
         )
         feat.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat.fit(lambda: iter([]))
@@ -96,8 +49,8 @@ class TestFitAndSave:
         assert list(scaled.columns) == list(templates.columns)
 
     def test_scaled_templates_are_standardized(self, tmp_path: Path) -> None:
-        templates = _make_templates(200, 4, offset=10.0, scale=3.0)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(200, 4, offset=10.0, scale=3.0)
+        template_path = write_templates(tmp_path, templates)
 
         feat = _make_feature(
             params={
@@ -109,7 +62,7 @@ class TestFitAndSave:
         )
         feat.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat.fit(lambda: iter([]))
@@ -124,8 +77,8 @@ class TestFitAndSave:
             assert abs(stds[col] - 1.0) < 0.1
 
     def test_model_bundle_contents(self, tmp_path: Path) -> None:
-        templates = _make_templates(50, 2)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(50, 2, offset=5.0, scale=2.0)
+        template_path = write_templates(tmp_path, templates)
 
         feat = _make_feature(
             params={
@@ -137,7 +90,7 @@ class TestFitAndSave:
         )
         feat.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat.fit(lambda: iter([]))
@@ -153,8 +106,8 @@ class TestFitAndSave:
 
 class TestApply:
     def test_apply_scales_feature_columns(self, tmp_path: Path) -> None:
-        templates = _make_templates(100, 3, offset=5.0, scale=2.0)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(100, 3, offset=5.0, scale=2.0)
+        template_path = write_templates(tmp_path, templates)
 
         feat = _make_feature(
             params={
@@ -166,12 +119,12 @@ class TestApply:
         )
         feat.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat.fit(lambda: iter([]))
 
-        df = _make_sequence_df(50, 3, offset=5.0, scale=2.0)
+        df = make_sequence_df(50, 3, offset=5.0, scale=2.0)
         result = feat.apply(df)
 
         # Metadata columns preserved
@@ -184,8 +137,8 @@ class TestApply:
             assert abs(result[col].mean()) < abs(df[col].mean())
 
     def test_apply_preserves_metadata(self, tmp_path: Path) -> None:
-        templates = _make_templates(100, 3)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(100, 3, offset=5.0, scale=2.0)
+        template_path = write_templates(tmp_path, templates)
 
         feat = _make_feature(
             params={
@@ -197,12 +150,12 @@ class TestApply:
         )
         feat.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat.fit(lambda: iter([]))
 
-        df = _make_sequence_df(30, 3)
+        df = make_sequence_df(30, 3, offset=5.0, scale=2.0)
         result = feat.apply(df)
 
         pd.testing.assert_series_equal(result["frame"], df["frame"])
@@ -218,15 +171,15 @@ class TestApply:
                 },
             }
         )
-        df = _make_sequence_df(10, 3)
+        df = make_sequence_df(10, 3, offset=5.0, scale=2.0)
         with pytest.raises(RuntimeError, match="Not fitted"):
             feat.apply(df)
 
 
 class TestSaveLoadRoundTrip:
     def test_round_trip(self, tmp_path: Path) -> None:
-        templates = _make_templates(100, 3)
-        template_dir = _setup_templates_dir(tmp_path, templates)
+        templates = make_templates(100, 3, offset=5.0, scale=2.0)
+        template_path = write_templates(tmp_path, templates)
 
         # Fit and save
         feat1 = _make_feature(
@@ -239,7 +192,7 @@ class TestSaveLoadRoundTrip:
         )
         feat1.load_state(
             tmp_path / "run",
-            {"templates": template_dir / "templates.parquet"},
+            {"templates": template_path},
             {},
         )
         feat1.fit(lambda: iter([]))
@@ -258,7 +211,7 @@ class TestSaveLoadRoundTrip:
         assert loaded is True
 
         # Apply should produce same results
-        df = _make_sequence_df(50, 3)
+        df = make_sequence_df(50, 3, offset=5.0, scale=2.0)
         result1 = feat1.apply(df)
         result2 = feat2.apply(df)
         pd.testing.assert_frame_equal(result1, result2)

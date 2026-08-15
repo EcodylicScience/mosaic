@@ -13,16 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import (
-    Dataset,
-    new_dataset_manifest,
-    validate_root_inside,
-)
+from mosaic.core.dataset import new_dataset_manifest, validate_root_inside
 
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="pinned", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+from tests.helpers import make_dataset
 
 
 # --- Roots are pinned --------------------------------------------------------
@@ -30,7 +23,7 @@ def _dataset(tmp_path: Path) -> Dataset:
 
 def test_a_root_outside_the_dataset_is_refused(tmp_path: Path) -> None:
     """An outside root puts that root's own index.csv outside the dataset too."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
@@ -45,7 +38,7 @@ def test_an_absolute_root_inside_the_dataset_is_accepted(tmp_path: Path) -> None
     for no gain: the portability pass relativizes an inside-absolute root on its
     next run.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
     inside = ds.base_dir / "extra"
 
     ds.set_root("features", str(inside))
@@ -55,7 +48,7 @@ def test_an_absolute_root_inside_the_dataset_is_accepted(tmp_path: Path) -> None
 
 def test_a_traversal_out_of_the_dataset_is_refused(tmp_path: Path) -> None:
     """Both sides resolve, or ``..`` leaves while reading as though it stayed."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
 
     with pytest.raises(ValueError, match="would resolve outside the dataset"):
         ds.set_root("features", "../sneaky")
@@ -83,7 +76,7 @@ def test_a_legacy_outside_root_still_resolves(tmp_path: Path) -> None:
     a legacy dataset raises. What refuses to *act* on one is the sweeper, which
     declines rather than deleting.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
     elsewhere = tmp_path / "legacy-elsewhere"
     elsewhere.mkdir()
     # On a *tracker* root, because that is where being wrong costs files: the
@@ -119,7 +112,7 @@ def test_an_index_row_may_point_at_a_file_outside_the_dataset(tmp_path: Path) ->
     precisely so that works; making it refuse would delete the arrangement O2
     chose, not enforce P7.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
     other_dataset = tmp_path / "dataset-a" / "media_raw"
     other_dataset.mkdir(parents=True)
     shared = other_dataset / "video1.mp4"
@@ -133,7 +126,7 @@ def test_an_index_row_may_point_at_a_file_outside_the_dataset(tmp_path: Path) ->
 
 def test_a_file_inside_the_dataset_is_still_stored_relative(tmp_path: Path) -> None:
     """The negative half: external addressing is the exception, not the default."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="pinned")
     own = ds.get_root("media_raw") / "video1.mp4"
     own.parent.mkdir(parents=True, exist_ok=True)
     own.write_bytes(b"frames")

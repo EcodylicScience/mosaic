@@ -23,7 +23,7 @@ from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.labels_index import _ambiguous_label_variant_message
 from mosaic.core.pipeline.run import load_values
 from mosaic.core.pipeline.types import GroundTruthLabelsSource, TracksColumn
-from tests.mock_dataset import MockDataset
+from tests.helpers import MockDataset
 
 
 def test_the_refusal_names_a_keyword_the_caller_can_pass() -> None:

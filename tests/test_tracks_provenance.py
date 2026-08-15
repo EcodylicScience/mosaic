@@ -23,7 +23,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 
 def _dataset(base: Path) -> Dataset:

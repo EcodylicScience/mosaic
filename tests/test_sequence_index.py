@@ -12,8 +12,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
@@ -26,36 +24,11 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_index_path,
 )
 
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
-def _cfr_mp4(path: Path, n: int = 6) -> None:
-    """A short video whose *content* depends on its name.
-
-    Deliberately not all-black: two byte-identical videos share one
-    ``video_uuid`` by design, so a composition over them is unchanged by a
-    reorder -- correctly, and it would make an ordering test pass vacuously.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shade = sum(path.name.encode()) % 200 + 20
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(n):
-        writer.write(np.full((48, 64, 3), shade, np.uint8))
-    writer.release()
-
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-            "tracks_raw": str(tmp_path / "tracks_raw"),
-            # index_media reads the tracks index to derive each file's identity.
-            "tracks": str(tmp_path / "tracks"),
-        },
-    )
-    ds.ensure_roots()
-    ds.save()
-    return ds
+# The roots every projection test runs over. ``tracks`` is here because
+# ``index_media`` reads the tracks index to derive each file's identity.
+_ROOTS = ("media_raw", "media", "tracks_raw", "tracks")
 
 
 def _compositions(ds: Dataset, root: str) -> dict[str, str]:
@@ -82,9 +55,9 @@ def _arrange(ds: Dataset, sequence: str, order: dict[str, int]) -> None:
 
 def test_a_media_write_projects_one_row_per_sequence(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
 
@@ -102,9 +75,9 @@ def test_a_media_write_projects_one_row_per_sequence(tmp_path: Path) -> None:
 def test_an_identical_rewrite_leaves_the_composition_alone(tmp_path: Path) -> None:
     """A churning digest is the failure mode; only ``computed_at`` may move."""
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
     first = _compositions(ds, "media_raw")
@@ -115,9 +88,9 @@ def test_an_identical_rewrite_leaves_the_composition_alone(tmp_path: Path) -> No
 def test_reordering_a_sequence_moves_its_composition(tmp_path: Path) -> None:
     """The change a media composition exists to detect."""
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
 
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
     before = _compositions(ds, "media_raw")["seqA"]
@@ -132,12 +105,12 @@ def test_an_unrelated_sequence_does_not_move(tmp_path: Path) -> None:
     everything it did not touch exactly where it was.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    ds = make_dataset(tmp_path, roots=_ROOTS)
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
     before = _compositions(ds, "media_raw")["seqA"]
 
-    _cfr_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4", shade="from-name")
     _arrange(ds, "seqB", {"b.mp4": 0})
 
     after = _compositions(ds, "media_raw")
@@ -148,10 +121,10 @@ def test_an_unrelated_sequence_does_not_move(tmp_path: Path) -> None:
 def test_a_sequence_that_goes_away_leaves_the_index(tmp_path: Path) -> None:
     """A projection, not an accumulation -- which is why ``replace`` is used."""
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     scanned = tmp_path / "media_raw" / "scanned"
-    _cfr_mp4(scanned / "a.mp4")
-    _cfr_mp4(scanned / "b.mp4")
+    write_mpeg4_mp4(scanned / "a.mp4", shade="from-name")
+    write_mpeg4_mp4(scanned / "b.mp4", shade="from-name")
     ds.index_media([scanned], extensions=(".mp4",))
     assert set(_compositions(ds, "media_raw")) == {"a", "b"}
 
@@ -172,12 +145,12 @@ def test_a_sequence_outside_the_scan_keeps_its_composition(tmp_path: Path) -> No
     visible later as a moved identity hash.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    ds = make_dataset(tmp_path, roots=_ROOTS)
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
     assert set(_compositions(ds, "media_raw")) == {"seqA"}
 
-    _cfr_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4")
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqB" / "b.mp4", shade="from-name")
     ds.index_media([tmp_path / "media_raw" / "seqB"], extensions=(".mp4",))
 
     assert set(_compositions(ds, "media_raw")) == {"seqA", "b"}
@@ -188,7 +161,7 @@ def test_a_sequence_outside_the_scan_keeps_its_composition(tmp_path: Path) -> No
 
 def test_a_tracks_raw_scan_projects_its_checksums(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     src = tmp_path / "tracks_raw" / "seqA"
     src.mkdir(parents=True)
     (src / "seqA.npy").write_bytes(b"payload")
@@ -205,7 +178,7 @@ def test_a_tracks_raw_scan_projects_its_checksums(tmp_path: Path) -> None:
 def test_checksums_off_leaves_the_composition_unestablishable(tmp_path: Path) -> None:
     """An honest empty, with the count still saying how much was there."""
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     src = tmp_path / "tracks_raw" / "seqA"
     src.mkdir(parents=True)
     (src / "seqA.npy").write_bytes(b"payload")
@@ -221,7 +194,7 @@ def test_checksums_off_leaves_the_composition_unestablishable(tmp_path: Path) ->
 
 def test_a_changed_source_file_moves_the_composition(tmp_path: Path) -> None:
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     src = tmp_path / "tracks_raw" / "seqA"
     src.mkdir(parents=True)
     (src / "seqA.npy").write_bytes(b"payload")
@@ -244,7 +217,7 @@ def test_an_unindexed_root_reads_as_a_full_schema_empty_frame(tmp_path: Path) ->
     ``KeyError: 'group'`` at the first filter.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     frame = read_sequence_index(ds, "tracks_raw")
     assert frame.empty
     assert list(frame.columns) == SEQUENCE_INDEX_COLUMNS
@@ -261,9 +234,9 @@ def test_an_unset_root_reads_as_empty_rather_than_raising(tmp_path: Path) -> Non
 def test_rebuild_reproduces_what_the_writer_wrote(tmp_path: Path) -> None:
     """The oracle: projecting from committed rows and from disk must agree."""
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 1, "b.mp4": 0})
     written = _compositions(ds, "media_raw")
 
@@ -278,13 +251,8 @@ def test_a_legacy_media_only_dataset_gets_no_media_composition(
 ) -> None:
     """``media/`` holds derivatives, and a derivative has no composition (P6)."""
     tmp_path = tmp_path.resolve()
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={"media": str(tmp_path / "media")},
-    )
-    ds.ensure_roots()
-    ds.save()
-    _cfr_mp4(tmp_path / "media" / "seqA" / "a.mp4")
+    ds = make_dataset(tmp_path, roots=("media",))
+    write_mpeg4_mp4(tmp_path / "media" / "seqA" / "a.mp4", shade="from-name")
 
     ds.write_media_index(
         [
@@ -304,7 +272,7 @@ def test_a_blank_sequence_row_composes_nothing(tmp_path: Path) -> None:
     mint a value describing no sequence in particular.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     src = tmp_path / "tracks_raw" / "batch"
     src.mkdir(parents=True)
     (src / "everything.npy").write_bytes(b"payload")
@@ -349,10 +317,10 @@ def test_two_concurrent_writes_leave_a_consistent_projection(tmp_path: Path) -> 
     every sequence the index holds must have a row.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for sequence in ("seqA", "seqB"):
         for name in ("a.mp4", "b.mp4"):
-            _cfr_mp4(tmp_path / "media_raw" / sequence / name)
+            write_mpeg4_mp4(tmp_path / "media_raw" / sequence / name, shade="from-name")
 
     gate = tmp_path / "gate"
     gate.mkdir()
@@ -393,8 +361,8 @@ def test_the_projection_is_written_after_the_index(tmp_path: Path) -> None:
     index state that never committed -- a confident value nothing supports.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
-    _cfr_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4")
+    ds = make_dataset(tmp_path, roots=_ROOTS)
+    write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / "a.mp4", shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0})
 
     index_mtime = (tmp_path / "media_raw" / "index.csv").stat().st_mtime_ns
@@ -412,9 +380,9 @@ def test_the_projection_survives_a_csv_round_trip_with_integer_counts(
     integer.
     """
     tmp_path = tmp_path.resolve()
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS)
     for name in ("a.mp4", "b.mp4"):
-        _cfr_mp4(tmp_path / "media_raw" / "seqA" / name)
+        write_mpeg4_mp4(tmp_path / "media_raw" / "seqA" / name, shade="from-name")
     _arrange(ds, "seqA", {"a.mp4": 0, "b.mp4": 1})
 
     raw = pd.read_csv(sequence_index_path(ds, "media_raw"), keep_default_na=False)

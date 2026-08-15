@@ -10,10 +10,15 @@ Requires:
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    # Annotation-only. ``load_training_curves`` imports pandas inside its body so
+    # that importing this module costs nothing for the training paths that never
+    # read a results.csv; the name still has to resolve for a type checker.
+    import pandas as pd
 
 
 def _require_ultralytics():

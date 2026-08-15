@@ -13,8 +13,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
-pytest.importorskip("PIL")
 from PIL import Image
 
 from mosaic.core.annotations import KeypointSchema

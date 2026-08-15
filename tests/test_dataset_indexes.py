@@ -22,10 +22,7 @@ from mosaic.core.pipeline.dataset_indexes import (
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="reconcile", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+from tests.helpers import make_dataset
 
 
 def _trex_row(ds: Dataset, run_id: str, sequence: str, output: Path) -> None:
@@ -57,7 +54,7 @@ def _trex_row(ds: Dataset, run_id: str, sequence: str, output: Path) -> None:
 
 def test_every_tracking_root_is_enumerated(tmp_path: Path) -> None:
     """The roots that no reindex, prune or portability pass reached before."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
 
     reached = {index.root_key for index in iter_dataset_indexes(ds)}
 
@@ -70,7 +67,7 @@ def test_a_root_with_both_shapes_yields_both(tmp_path: Path) -> None:
     A list of roots cannot express that, which is why the table is (root, shape)
     pairs. Losing the distinction drops one index or the other silently.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     (ds.get_root("features") / "speed-angvel__from__tracks").mkdir(parents=True)
 
     paths = [i.path for i in iter_dataset_indexes(ds) if i.root_key == "features"]
@@ -94,7 +91,7 @@ def test_an_unset_root_is_skipped_rather_than_raising(tmp_path: Path) -> None:
 
 def test_the_enumeration_is_stable(tmp_path: Path) -> None:
     """Filesystem order is not, so a report built on this must sort."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     for name in ("z-feature", "a-feature", "m-feature"):
         (ds.get_root("features") / name).mkdir(parents=True)
 
@@ -126,7 +123,7 @@ def test_a_tracker_row_naming_a_deleted_directory_is_dropped(tmp_path: Path) -> 
     Before this, the ``_tracking`` indexes were reached by no reconcile pass, so
     a working directory deleted by hand left its row naming it forever.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     gone = ds.get_root("trex") / "trex.1.0-aaaa" / "seq_a"
     gone.mkdir(parents=True)
     _trex_row(ds, "trex.1.0-aaaa", "seq_a", gone)
@@ -142,7 +139,7 @@ def test_a_tracker_row_naming_a_deleted_directory_is_dropped(tmp_path: Path) -> 
 
 def test_a_present_directory_keeps_its_row(tmp_path: Path) -> None:
     """The negative half: reconciling is not "drop everything"."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     kept = ds.get_root("trex") / "trex.1.0-bbbb" / "seq_a"
     kept.mkdir(parents=True)
     _trex_row(ds, "trex.1.0-bbbb", "seq_a", kept)
@@ -156,7 +153,7 @@ def test_a_present_directory_keeps_its_row(tmp_path: Path) -> None:
 
 def test_a_dry_run_reports_without_writing(tmp_path: Path) -> None:
     """Dry-run is the default, and it must not be a dry-run in name only."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     gone = ds.get_root("trex") / "trex.1.0-cccc" / "seq_a"
     gone.mkdir(parents=True)
     _trex_row(ds, "trex.1.0-cccc", "seq_a", gone)
@@ -175,7 +172,7 @@ def test_a_dry_run_reports_without_writing(tmp_path: Path) -> None:
 
 def test_restricting_to_one_root_leaves_the_others_alone(tmp_path: Path) -> None:
     """``--root`` is a filter on the walk, not on the report."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     gone = ds.get_root("trex") / "trex.1.0-dddd" / "seq_a"
     gone.mkdir(parents=True)
     _trex_row(ds, "trex.1.0-dddd", "seq_a", gone)
@@ -190,7 +187,7 @@ def test_restricting_to_one_root_leaves_the_others_alone(tmp_path: Path) -> None
 
 def test_a_root_with_no_registered_opener_is_left_alone(tmp_path: Path) -> None:
     """``media_raw`` is raw pandas, not an ``IndexCSV``; a wrong pass is worse."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
 
     assert reconcilable_index("media_raw") is None
     assert ds.reindex("media_raw", dry_run=False) == {}
@@ -236,7 +233,7 @@ def test_a_root_that_is_unset_lists_nothing(tmp_path: Path) -> None:
 
 def test_a_root_declared_but_not_created_lists_nothing(tmp_path: Path) -> None:
     """Declared in the manifest, never made on disk -- the ordinary early state."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     features_root = ds.get_root("features")
     if features_root.exists():
         import shutil
@@ -247,7 +244,7 @@ def test_a_root_declared_but_not_created_lists_nothing(tmp_path: Path) -> None:
 
 
 def test_children_come_back_sorted_and_files_are_not_children(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     root = ds.get_root("features")
     for name in ("zebra", "alpha", "mid"):
         (root / name).mkdir(parents=True, exist_ok=True)
@@ -264,7 +261,7 @@ def test_require_index_is_what_separates_a_kind_from_a_variant(
     Without the filter a variant directory would be read as a kind, and
     ``read_labels_index`` would then be asked for an index that cannot exist.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     labels_root = ds.get_root("labels")
     (labels_root / "behavior").mkdir(parents=True, exist_ok=True)
     (labels_root / "behavior" / "index.csv").write_text("run_id\n")
@@ -340,7 +337,7 @@ def test_the_listing_is_written_in_exactly_one_place() -> None:
 def test_labels_raw_is_enumerated(tmp_path: Path) -> None:
     """Written by ``index_labels_raw`` and read by ``convert_all_labels``, but
     invisible to every portability, reindex and reconcile pass before this."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
 
     reached = {index.root_key for index in iter_dataset_indexes(ds)}
 
@@ -354,7 +351,7 @@ def test_a_labels_raw_row_is_made_portable(tmp_path: Path) -> None:
     because enumerating a root that no pass then rewrites would satisfy the
     test above and fix nothing.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
     raw_root = ds.get_root("labels_raw")
     raw_root.mkdir(parents=True, exist_ok=True)
     labels_file = raw_root / "scored.csv"

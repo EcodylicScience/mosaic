@@ -41,6 +41,10 @@ from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import Scope
 from mosaic.core.pipeline.run import compute_run_id
 
+# Selected by CI's `identity` job with `-m identity` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.identity
+
 # The three identity models all consume egocentric crops, never tracks.
 CROP_INPUTS: list[object] = [{"feature": "egocentric-crop"}]
 

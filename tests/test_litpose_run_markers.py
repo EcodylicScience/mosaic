@@ -24,7 +24,7 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run_root
 from mosaic.tracking.litpose.run import LitposePredictResult
 
-from .conftest import write_media_index
+from tests.helpers import write_media_index
 
 _BODYPARTS = ("nose", "tail")
 

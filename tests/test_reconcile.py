@@ -47,7 +47,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 
-from .conftest import add_tracks_variant
+from tests.helpers import add_tracks_variant
 
 
 class _ReconcileFeature:

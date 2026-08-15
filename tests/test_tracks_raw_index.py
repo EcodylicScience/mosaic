@@ -6,6 +6,10 @@ atomic write that ``Dataset.index_tracks_raw`` now enforces (the scan/identity
 logic -- TREx suffix strip, ``multi_sequences_per_file`` grouping -- is asserted
 unchanged), and the propagation of that relative form into the merged
 ``tracks/index.csv`` ``source_abs_path`` written by ``convert_all_tracks``.
+
+Every dataset here is saved before it is used, because ``index_tracks_raw``
+measures its root-relative ``abs_path`` against ``base_dir`` -- which an unsaved
+manifest resolves to the manifest path rather than its parent.
 """
 
 import os
@@ -18,7 +22,6 @@ import pandas as pd
 import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz converter
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_raw_index import (
     TRACKS_RAW_INDEX_COLUMNS,
     TracksRawIndexScope,
@@ -30,23 +33,12 @@ from mosaic.core.pipeline.tracks_raw_index import (
     write_tracks_raw_index_rows,
 )
 
-from .conftest import write_trex_npz
+from tests.helpers import make_dataset, write_trex_npz
 
-
-def _make_dataset(base: Path) -> Dataset:
-    base.mkdir(parents=True, exist_ok=True)
-    ds = Dataset(
-        manifest_path=base / "dataset.yaml",
-        roots={
-            "tracks_raw": str(base / "tracks_raw"),
-            "tracks": str(base / "tracks"),
-        },
-    )
-    ds.ensure_roots()
-    # Seed the manifest so base_dir resolves to the manifest's parent (the same
-    # thing index_tracks_raw's relative_to_root measures against).
-    ds.save()
-    return ds
+# The raw uploads and the tables converted from them, and nothing else: no test
+# here reads media, and a root a test never touches would only obscure which
+# ``abs_path`` is being measured against what.
+RAW_AND_CONVERTED = ("tracks_raw", "tracks")
 
 
 def _trex_npz(
@@ -209,7 +201,7 @@ def test_write_is_atomic_leaves_no_temp_orphans_and_overwrites(tmp_path: Path) -
 
 def test_index_tracks_raw_stores_relative_for_in_tree_files(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "a.npy").write_bytes(b"aa")
@@ -227,7 +219,7 @@ def test_index_tracks_raw_stores_relative_for_in_tree_files(tmp_path: Path) -> N
 
 def test_index_tracks_raw_keeps_external_files_absolute(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     external = (tmp_path / "outside").resolve()
     external.mkdir(parents=True)
     (external / "c.npy").write_bytes(b"cccc")
@@ -246,7 +238,7 @@ def test_index_tracks_raw_trex_suffix_strip_and_group_pattern(tmp_path: Path) ->
     # The scan/identity logic is unchanged: per-id TREx files collapse to one
     # sequence and the group pattern still applies -- only the path form changed.
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "hex_7_fish0.npz").write_bytes(b"x")
@@ -268,7 +260,7 @@ def test_index_tracks_raw_trex_suffix_strip_and_group_pattern(tmp_path: Path) ->
 
 def test_index_tracks_raw_multi_sequences_per_file_grouping(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     bundle_dir = base / "raw_src" / "sessionX"
     bundle_dir.mkdir(parents=True)
     (bundle_dir / "bundle.npy").write_bytes(b"x")
@@ -293,7 +285,7 @@ def test_index_tracks_raw_multi_sequences_per_file_grouping(tmp_path: Path) -> N
 
 def test_convert_all_tracks_merge_source_abs_path_is_relative(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     _trex_npz(src / "myseq_fish0.npz", n=5, seed=0)
     _trex_npz(src / "myseq_fish1.npz", n=5, seed=1)
@@ -334,7 +326,7 @@ def test_a_merge_takes_the_union_of_the_columns_its_files_carry(
     covered the alignment before.
     """
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     _trex_npz(
         src / "myseq_fish0.npz",
@@ -384,7 +376,7 @@ def test_one_row_of_another_format_does_not_turn_merging_off(
     Two individuals silently became one.
     """
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     _trex_npz(src / "myseq_fish0.npz", n=5, seed=0)
     _trex_npz(src / "myseq_fish1.npz", n=5, seed=1)
@@ -440,7 +432,7 @@ def test_write_tracks_raw_index_assigns_scope_identity_and_stores_relative(
     tmp_path: Path,
 ) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     seq_dir = base / "tracks_raw" / "seqA"
     seq_dir.mkdir(parents=True)
     (seq_dir / "a.npy").write_bytes(b"aa")
@@ -472,7 +464,7 @@ def test_write_tracks_raw_index_multi_file_sequence_takes_scope_id_no_strip(
     # Assignment analog of the _fishN-strip test: per-id files in one scope dir
     # all take the scope's sequence VERBATIM -- no _fishN strip, not the stems.
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     seq_dir = base / "tracks_raw" / "myseq"
     seq_dir.mkdir(parents=True)
     (seq_dir / "myseq_fish0.npz").write_bytes(b"x")
@@ -496,7 +488,7 @@ def test_write_tracks_raw_index_preserves_other_and_external_rows(
     tmp_path: Path,
 ) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     index_path = ds.get_root("tracks_raw") / "index.csv"
 
     # Seed: one already-indexed in-tree sequence (seqB) and one external ref.
@@ -537,7 +529,7 @@ def test_write_tracks_raw_index_preserves_other_and_external_rows(
 
 def test_write_tracks_raw_index_reimport_replaces_a_scopes_rows(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     seq_dir = base / "tracks_raw" / "seqA"
     seq_dir.mkdir(parents=True)
     (seq_dir / "a.npy").write_bytes(b"a")
@@ -559,7 +551,7 @@ def test_write_tracks_raw_index_external_scope_dir_stays_absolute(
     tmp_path: Path,
 ) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     external = (tmp_path / "outside").resolve()
     external.mkdir(parents=True)
     (external / "c.npy").write_bytes(b"cccc")
@@ -590,7 +582,7 @@ def test_write_tracks_raw_index_hashes_by_default_and_can_be_turned_off(
     slow to hash, and what it buys is an honest empty rather than a wrong value.
     """
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     seq_dir = base / "tracks_raw" / "seqA"
     seq_dir.mkdir(parents=True)
     (seq_dir / "a.npy").write_bytes(b"payload")
@@ -615,7 +607,7 @@ def test_write_tracks_raw_index_carries_a_digest_forward(
     reproduce digests it already had.
     """
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     seq_dir = base / "tracks_raw" / "seqA"
     seq_dir.mkdir(parents=True)
     (seq_dir / "a.npy").write_bytes(b"payload")
@@ -644,7 +636,7 @@ def test_write_tracks_raw_index_empty_scopes_rewrites_existing_verbatim(
     tmp_path: Path,
 ) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     index_path = ds.get_root("tracks_raw") / "index.csv"
     seeded: dict[str, object] = {column: "" for column in TRACKS_RAW_INDEX_COLUMNS}
     row = {
@@ -670,7 +662,7 @@ def test_index_tracks_raw_skips_resource_forks_and_sorts(tmp_path: Path) -> None
     # The shared scanner now skips macOS ._* files and yields deterministically
     # sorted output -- both benign improvements over the prior inline scan.
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "b.npy").write_bytes(b"bb")
@@ -701,7 +693,7 @@ def test_group_from_path_expresses_a_rule_a_regex_cannot(tmp_path: Path) -> None
     # express. Before this seam such a dataset had to patch index.csv after the
     # fact -- which conversion could not see and the next re-index undid.
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     for name in (
@@ -739,7 +731,7 @@ def test_group_from_path_reaches_the_composition_projection(tmp_path: Path) -> N
     from mosaic.core.pipeline.sequence_index import read_sequence_index
 
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "guppy_1_t1_d1_control_20190101_000000_fish0.npz").write_bytes(b"x")
@@ -754,7 +746,7 @@ def test_group_from_path_reaches_the_composition_projection(tmp_path: Path) -> N
 
 def test_group_from_path_supersedes_group_from(tmp_path: Path) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     bundle = base / "raw_src" / "sessionX"
     bundle.mkdir(parents=True)
     (bundle / "bundle.npy").write_bytes(b"x")
@@ -777,7 +769,7 @@ def test_group_from_path_and_group_pattern_are_mutually_exclusive(
     tmp_path: Path,
 ) -> None:
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "hex_7_fish0.npz").write_bytes(b"x")
@@ -795,7 +787,7 @@ def test_group_from_path_and_group_pattern_are_mutually_exclusive(
 def test_group_from_path_error_propagates(tmp_path: Path) -> None:
     # A file the rule cannot classify is an error worth seeing, not a silent "".
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "unparseable.npz").write_bytes(b"x")
@@ -812,7 +804,7 @@ def test_group_from_path_error_propagates(tmp_path: Path) -> None:
 def test_group_from_path_rejects_a_group_with_a_separator(tmp_path: Path) -> None:
     # An entry name is one path component; the write boundary still enforces it.
     base = (tmp_path / "ds").resolve()
-    ds = _make_dataset(base)
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
     src = base / "raw_src"
     src.mkdir(parents=True)
     (src / "a_fish0.npz").write_bytes(b"x")

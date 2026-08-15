@@ -10,14 +10,21 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.helpers import make_dataset
+
 pytest.importorskip("imgstore")
 
 from mosaic_media import MediaProbeError  # noqa: E402
 
-from mosaic.core.dataset import Dataset  # noqa: E402
 from mosaic.core.media.imgstore_io import imgstore_store_identity  # noqa: E402
 
 _SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
+
+# No ``media_raw``: ``index_media`` resolves through ``resolve_media_root``, so a
+# dataset declaring only ``media`` writes the originals index to
+# ``media/index.csv``, which is where these tests read it back from. ``frames``
+# is where ``extract_frames`` lands its PNGs.
+_ROOTS = ("media", "tracks", "frames")
 
 
 def _camera_meta(serial: str, uuid: str) -> dict[str, object]:
@@ -29,19 +36,6 @@ def _camera_meta(serial: str, uuid: str) -> dict[str, object]:
     }
 
 
-def _make_dataset(tmp_path: Path) -> Dataset:
-    for sub in ("media", "tracks", "frames"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-    return Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={
-            "media": str(tmp_path / "media"),
-            "tracks": str(tmp_path / "tracks"),
-            "frames": str(tmp_path / "frames"),
-        },
-    )
-
-
 def _write_plain_mp4(path: Path, nframes: int = 6) -> None:
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
     for _ in range(nframes):
@@ -49,8 +43,10 @@ def _write_plain_mp4(path: Path, nframes: int = 6) -> None:
     writer.release()
 
 
+# Probes the store's video chunk to measure it, which shells out.
+@pytest.mark.media
 def test_index_media_discovers_store_and_excludes_chunks(tmp_path, make_imgstore):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(name="rec1", nframes=12, parent=search)
     _write_plain_mp4(search / "plain.mp4")
@@ -82,7 +78,7 @@ def test_index_media_discovers_store_and_excludes_chunks(tmp_path, make_imgstore
 
 
 def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(name="seqA", nframes=8, parent=search)
     ds.index_media([search])
@@ -95,7 +91,7 @@ def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
 @pytest.mark.slow
 def test_index_media_excludes_mp4_chunks_from_video_store(tmp_path, make_imgstore):
     """A VideoImgStore has real .mp4 chunks inside it; they must not be indexed."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(
         name="vid_store", nframes=12, fmt="avc1/mp4", chunksize=5, parent=search
@@ -116,7 +112,7 @@ def test_index_media_excludes_mp4_chunks_from_video_store(tmp_path, make_imgstor
 
 def test_index_media_synced_cameras_collapse_to_one_sequence(tmp_path, make_imgstore):
     """Two Motif stores sharing a synchronizationuuid are one sequence, two cameras."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     make_imgstore(
         name="rec.CAMA", parent=search, extra_metadata=_camera_meta("CAMA", _SYNC_UUID)
@@ -150,7 +146,7 @@ def test_index_media_gives_each_store_its_own_mint(tmp_path, make_imgstore):
     different on every run -- which is itself the limitation
     ``STORE_IDENTITY_SCHEME`` exists to advertise.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     dirs = {
         serial: make_imgstore(
@@ -184,7 +180,7 @@ def test_index_media_gives_each_store_its_own_mint(tmp_path, make_imgstore):
 
 def test_index_media_unsynced_stores_stay_separate_sequences(tmp_path, make_imgstore):
     """Non-Motif stores (no sync metadata) each stay their own sequence."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     make_imgstore(name="alpha", parent=search)
     make_imgstore(name="beta", parent=search)
@@ -205,7 +201,7 @@ def test_index_media_dotted_name_no_sync_keeps_full_name(tmp_path, make_imgstore
     sequence ``session01.cam``, not ``session01`` (which would silently merge
     distinct recordings).
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     make_imgstore(name="session01.cam", parent=search)
 
@@ -220,7 +216,7 @@ def test_index_media_dotted_name_no_sync_keeps_full_name(tmp_path, make_imgstore
 
 def test_resolve_media_multicamera_requires_camera(tmp_path, make_imgstore):
     """A camera-less resolve over a synced recording fails loud; camera= selects one."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     for serial in ("CAMA", "CAMB"):
         make_imgstore(
@@ -249,7 +245,7 @@ def test_extract_frames_runs_per_camera(tmp_path, make_imgstore):
     from mosaic.tracking import extract_frames
     from mosaic.tracking.frame_extraction.dataset_runs import get_frame_paths
 
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     (tmp_path / "frames").mkdir(exist_ok=True)
     search = tmp_path / "raw"
     for serial in ("CAMA", "CAMB"):

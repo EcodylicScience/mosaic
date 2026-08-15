@@ -32,7 +32,11 @@ from mosaic.tracking.ultralytics_track.dataset_runs import (
 )
 from mosaic.tracking.ultralytics_track.run import UltralyticsTrackResult
 
-from .conftest import write_media_index
+from tests.helpers import write_media_index
+
+# Selected by CI's `tracking` job with `-m tracker` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.tracker
 
 _N_KEYPOINTS = 2
 

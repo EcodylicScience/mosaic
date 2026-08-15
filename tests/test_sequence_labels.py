@@ -21,15 +21,11 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_label_path,
 )
 
+from tests.helpers import make_dataset
 
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={"tracks": str(tmp_path / "tracks")},
-    )
-    ds.ensure_roots()
-    ds.save()
-    return ds
+# Only ``tracks`` is declared: a label is a property of the sequence, and these
+# tests read it beside the one index that names sequences.
+TRACKS_ONLY = ("tracks",)
 
 
 def _add_tracks(ds: Dataset, *entries: tuple[str, str]) -> None:
@@ -58,7 +54,7 @@ def test_an_unlabelled_sequence_is_called_by_its_token(tmp_path: Path) -> None:
     Every dataset predating this file is in exactly this state, so it has to read
     the way it always did with no caller branching.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     assert ds.display_name("", "seqA") == "seqA"
     assert ds.display_name("g", "seqA") == "g__seqA"
     assert ds.display_names() == {}
@@ -68,7 +64,7 @@ def test_an_unlabelled_sequence_is_called_by_its_token(tmp_path: Path) -> None:
 def test_a_label_displaces_the_token_for_a_human_and_nothing_else(
     tmp_path: Path,
 ) -> None:
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     _add_tracks(ds, ("", "seqA"))
     before = sorted(p.name for p in ds.get_root("tracks").iterdir())
 
@@ -82,7 +78,7 @@ def test_a_label_displaces_the_token_for_a_human_and_nothing_else(
 
 
 def test_relabelling_replaces_rather_than_accumulates(tmp_path: Path) -> None:
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     ds.set_display_name("", "seqA", "first")
     ds.set_display_name("", "seqA", "second")
 
@@ -92,7 +88,7 @@ def test_relabelling_replaces_rather_than_accumulates(tmp_path: Path) -> None:
 
 
 def test_clearing_a_label_returns_the_sequence_to_its_token(tmp_path: Path) -> None:
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     ds.set_display_name("", "seqA", "named")
     ds.set_display_name("", "seqA", "")
     assert ds.display_name("", "seqA") == "seqA"
@@ -102,7 +98,7 @@ def test_two_groups_may_label_the_same_sequence_name_differently(
     tmp_path: Path,
 ) -> None:
     """The token is ``(group, sequence)``, so the label is keyed on both."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     ds.set_display_name("control", "trial1", "Control, trial 1")
     ds.set_display_name("exp", "trial1", "Experimental, trial 1")
 
@@ -112,14 +108,14 @@ def test_two_groups_may_label_the_same_sequence_name_differently(
 
 def test_a_label_may_contain_what_a_token_may_not(tmp_path: Path) -> None:
     """Spaces, slashes, punctuation -- it never becomes a path component."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     ds.set_display_name("", "seqA", "Fish 3 / 2026-07-14 (re-run)")
     assert ds.display_name("", "seqA") == "Fish 3 / 2026-07-14 (re-run)"
 
 
 def test_the_token_is_still_validated_as_one_path_component(tmp_path: Path) -> None:
     """Labelling is not a way to smuggle a slash into an entry name."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     with pytest.raises(ValueError, match="may not contain"):
         ds.set_display_name("", "a/b", "anything")
 
@@ -131,7 +127,7 @@ def test_the_label_file_lives_at_the_dataset_root(tmp_path: Path) -> None:
     sequence. On a per-root row, a sequence with media and tracks would carry two
     labels that could disagree.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     ds.set_display_name("", "seqA", "named")
 
     path = sequence_label_path(ds)
@@ -143,7 +139,7 @@ def test_get_sequence_metadata_carries_the_label_beside_the_token(
     tmp_path: Path,
 ) -> None:
     """Additive: every existing column is a join key and none of them moves."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     _add_tracks(ds, ("", "seqA"), ("", "seqB"))
     ds.set_display_name("", "seqA", "Trial 1")
 
@@ -158,7 +154,7 @@ def test_parse_hierarchy_still_reads_the_token(tmp_path: Path) -> None:
     ``validate_entry_name``'s error text steers users to encode hierarchy in the
     token with ``__``; that is where ``level_names`` keeps reading it.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
     _add_tracks(ds, ("", "fish3__fast"))
     ds.set_display_name("", "fish3__fast", "something entirely different")
 

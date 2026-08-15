@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.ops import run_op
 from mosaic.tracking import register_ops
@@ -23,12 +22,9 @@ from mosaic.tracking.ops.train import trained_model_index
 from mosaic.tracking.sleap import training as training_module
 from mosaic.tracking.sleap.training import sleap_train_config
 
+from tests.helpers import make_dataset
+
 register_ops()
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _fake_trainer(monkeypatch: pytest.MonkeyPatch, head: str = "centered_instance"):
@@ -152,7 +148,7 @@ def test_it_registers_a_directory_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The reason the model reference had to stop being a single file."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
     labels = tmp_path / "session.slp"
@@ -179,7 +175,7 @@ def test_the_recorded_head_comes_from_the_artifact_not_the_request(
     The fake writes a centroid config whatever it is told, so a row echoing the
     request would say ``bottomup`` here.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch, head="centroid")
     labels = tmp_path / "session.slp"
@@ -198,7 +194,7 @@ def test_the_trained_model_resolves_back_as_a_sleap_model(
     """The handoff the whole branch exists for: train here, track with it there."""
     from mosaic.tracking.model_refs import resolve_model
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
     labels = tmp_path / "session.slp"
@@ -215,7 +211,7 @@ def test_the_trained_model_resolves_back_as_a_sleap_model(
 def test_different_labels_are_a_different_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
     first = tmp_path / "a.slp"
@@ -232,7 +228,7 @@ def test_absent_labels_abort_before_anything_is_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A recorded run naming labels that were never there describes nothing."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
 

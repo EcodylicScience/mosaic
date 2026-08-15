@@ -14,9 +14,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.inventory import TrackerRunRef, inventory
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from tests.helpers import make_dataset
 
 
 @pytest.fixture(autouse=True)
@@ -25,11 +26,6 @@ def _producers_imported() -> None:
     from mosaic.tracking import register_ops
 
     register_ops()
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="ops", base_dir=tmp_path / "ds")
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _trex_run(ds: Dataset, run_id: str, sequence: str, *, present: bool) -> None:
@@ -75,7 +71,7 @@ def test_every_tracker_root_can_be_described(tmp_path: Path) -> None:
 
 
 def test_a_tracker_run_is_reported(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     _trex_run(ds, "trex.1.0-aaaaaaaaaa", "seq_a", present=True)
 
     record = inventory(ds, kinds=["tracker-run"]).record(
@@ -93,7 +89,7 @@ def test_a_swept_run_is_honestly_no_longer_holding_its_outputs(
     """``mosaic sweep-tracking`` reclaims working directories on purpose, so a
     row whose directory is gone is a fact about the dataset rather than damage
     the inventory should hide."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     _trex_run(ds, "trex.1.0-bbbbbbbbbb", "seq_a", present=False)
 
     record = inventory(ds, kinds=["tracker-run"]).record(
@@ -114,7 +110,7 @@ def test_a_frame_run_is_keyed_by_camera(tmp_path: Path) -> None:
         frames_index_path,
     )
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     run_id = "uniform-aaaaaaaaaa"
     idx = frames_index(frames_index_path(ds, "uniform"))
     idx.ensure()
@@ -153,7 +149,7 @@ def test_a_trained_model_is_one_artifact(tmp_path: Path) -> None:
     )
     from mosaic.core.pipeline.models import model_index_path, model_run_root
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     kind, run_id = "train-pose", "train-pose.1.0-aaaaaaaaaa"
     run_root = model_run_root(ds, kind, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
@@ -193,7 +189,7 @@ def test_a_model_whose_weights_are_gone_is_not_complete(tmp_path: Path) -> None:
     )
     from mosaic.core.pipeline.models import model_index_path, model_run_root
 
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     kind, run_id = "train-pose", "train-pose.1.0-bbbbbbbbbb"
     run_root = model_run_root(ds, kind, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
@@ -225,7 +221,7 @@ def test_every_kind_is_reachable_once_the_producers_are_imported(
     tmp_path: Path,
 ) -> None:
     """The whole point of the seam: one call answers for features and ops alike."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
 
     found = inventory(ds)
 
@@ -237,7 +233,7 @@ def test_a_malformed_index_costs_its_kind_and_not_the_answer(
 ) -> None:
     """An inventory that raises because one tracker root is corrupt tells a user
     nothing about the rest of their dataset."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path / "ds", name="ops")
     _trex_run(ds, "trex.1.0-cccccccccc", "seq_a", present=True)
     from mosaic.tracking.trex.dataset_runs import trex_index_path
 

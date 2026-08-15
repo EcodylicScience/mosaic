@@ -48,7 +48,7 @@ from mosaic.core.track_library.trex import (
     unscale_to_pixels,
 )
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 
 def _convert(path: Path) -> pd.DataFrame:

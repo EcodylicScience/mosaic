@@ -271,7 +271,7 @@ def test_a_plain_video_is_refused_rather_than_exported(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
     write_cfr_mp4: Callable[..., None],
-    requires_ffprobe: None,
+    requires_ffmpeg: None,
 ) -> None:
     """An entry with nothing to export errors rather than re-encoding a video.
 
@@ -287,7 +287,7 @@ def test_a_plain_video_is_refused_rather_than_exported(
 
     with pytest.raises(TranscodeError, match="no imgstore rows"):
         _export(ds, str(row["group"]), str(row["sequence"]))
-    del requires_ffprobe
+    del requires_ffmpeg
 
 
 # --- the tracker-side boundary -------------------------------------------

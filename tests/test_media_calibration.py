@@ -25,7 +25,7 @@ import pytest
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 
-from .conftest import add_media_sequence
+from tests.helpers import add_media_sequence
 
 
 def _dataset_with_media(tmp_path: Path) -> tuple[Dataset, str, str]:

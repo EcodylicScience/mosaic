@@ -2,29 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
 import pytest
 from mosaic_media import probe_media
-from mosaic_media.io.writer import FFmpegVideoWriter
 
 import mosaic.core.media.read_target as read_target
 import mosaic.core.media.video_io as video_io
 from mosaic.tracking.frame_extraction import extract_frames_single
 
-
-def _write_mp4(path: Path, nframes: int = 6) -> None:
-    """Write a clip these tests can take an *analysis* read of.
-
-    AV1 through the toolkit's own writer rather than an OpenCV ``mp4v``, which
-    encodes MPEG-4: that is outside the measured frame-exact set, so the
-    analysis gate raises ``unverified_frame_correspondence`` before any of these
-    tests reaches the injection behavior it exists to check.
-    """
-    with FFmpegVideoWriter(path, width=64, height=48, fps=30.0) as writer:
-        for _ in range(nframes):
-            writer.write(np.zeros((48, 64, 3), np.uint8))
+# The AV1 the fixture writes is what makes these tests reach the behavior they
+# exist to check: MPEG-4 is outside the measured frame-exact set, so the
+# analysis gate would raise ``unverified_frame_correspondence`` first.
+VideoWriter = Callable[..., None]
 
 
 class _ProbeCalled(RuntimeError):
@@ -44,10 +35,10 @@ def _forbid_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_open_frame_reader_injected_facts_skips_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_cfr_mp4: VideoWriter
 ) -> None:
     video = tmp_path / "clip.mp4"
-    _write_mp4(video)
+    write_cfr_mp4(video)
     facts = probe_media(video)
 
     _forbid_probe(monkeypatch)
@@ -59,10 +50,10 @@ def test_open_frame_reader_injected_facts_skips_probe(
 
 
 def test_open_frame_reader_without_facts_probes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_cfr_mp4: VideoWriter
 ) -> None:
     video = tmp_path / "clip.mp4"
-    _write_mp4(video)
+    write_cfr_mp4(video)
 
     def _boom(*_args: object, **_kwargs: object):
         raise _ProbeCalled("probe_media was called despite injected facts")
@@ -77,10 +68,10 @@ def test_open_frame_reader_without_facts_probes(
 
 
 def test_extract_candidate_features_injected_facts_skips_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_cfr_mp4: VideoWriter
 ) -> None:
     video = tmp_path / "clip.mp4"
-    _write_mp4(video, nframes=8)
+    write_cfr_mp4(video, frames=8)
     facts = probe_media(video)
 
     _forbid_probe(monkeypatch)
@@ -101,10 +92,13 @@ def test_extract_candidate_features_injected_facts_skips_probe(
 
 @pytest.mark.parametrize("method", ["uniform", "kmeans"])
 def test_extract_frames_single_injected_facts_skips_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    write_cfr_mp4: VideoWriter,
 ) -> None:
     video = tmp_path / "clip.mp4"
-    _write_mp4(video, nframes=12)
+    write_cfr_mp4(video, frames=12)
     facts = probe_media(video)
 
     _forbid_probe(monkeypatch)

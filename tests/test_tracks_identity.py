@@ -17,7 +17,6 @@ import json
 import re
 from pathlib import Path
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
@@ -35,6 +34,8 @@ from mosaic.core.track_library.sleap import (
     SleapConvertParams,
 )
 from mosaic.core.track_library.trex import TrexNpzConverter
+
+from tests.helpers import make_dataset
 
 VARIANT = re.compile(r"^[a-z0-9_-]+\.[0-9]+(?:\.[0-9]+)*-[0-9a-f]{10}$")
 
@@ -158,18 +159,13 @@ def test_recording_a_variant_twice_is_idempotent(tmp_path: Path) -> None:
 # --- The dataset seam ---------------------------------------------------------
 
 
-def _dataset(tmp_path: Path, name: str) -> Dataset:
-    manifest = new_dataset_manifest(name=name, base_dir=tmp_path / name)
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
-
-
 def test_one_recipe_is_one_variant_across_every_sequence(tmp_path: Path) -> None:
     """The point of a params-only, scope-free identity.
 
     A per-sequence value would mint as many variants as there are sequences,
     which is what P2d says an identifier must not do.
     """
-    dataset = _dataset(tmp_path, "one-recipe")
+    dataset = make_dataset(tmp_path / "one-recipe", name="one-recipe")
     converter = SleapAnalysisH5Converter()
     params = SleapConvertParams(fps=30.0)
 
@@ -180,7 +176,7 @@ def test_one_recipe_is_one_variant_across_every_sequence(tmp_path: Path) -> None
 
 
 def test_two_converters_are_two_variants(tmp_path: Path) -> None:
-    dataset = _dataset(tmp_path, "two-converters")
+    dataset = make_dataset(tmp_path / "two-converters", name="two-converters")
 
     sleap = dataset._tracks_variant(SleapAnalysisH5Converter(), SleapConvertParams())
     trex = dataset._tracks_variant(TrexNpzConverter(), TrackConvertParams())
@@ -194,7 +190,7 @@ def test_validation_strictness_does_not_mint_a_second_variant(
     tmp_path: Path,
 ) -> None:
     """``strict_schema`` is HASH_EXCLUDE, so it reaches no identity."""
-    dataset = _dataset(tmp_path, "strictness")
+    dataset = make_dataset(tmp_path / "strictness", name="strictness")
     converter = SleapAnalysisH5Converter()
 
     lenient = dataset._tracks_variant(
@@ -207,7 +203,7 @@ def test_validation_strictness_does_not_mint_a_second_variant(
 
 def test_converting_records_the_variant_beside_the_tracks(tmp_path: Path) -> None:
     """Explicable from disk, not merely comparable."""
-    dataset = _dataset(tmp_path, "recorded")
+    dataset = make_dataset(tmp_path / "recorded", name="recorded")
     run_id = dataset._tracks_variant(
         SleapAnalysisH5Converter(), SleapConvertParams(fps=30.0)
     )

@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.tracking.model_refs import (
     MODEL_KINDS,
@@ -26,15 +25,7 @@ from mosaic.tracking.model_refs import (
     spec_for,
 )
 
-
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={"models": str(tmp_path / "models")},
-    )
-    ds.ensure_roots()
-    ds.save()
-    return ds
+from tests.helpers import make_dataset
 
 
 def _sleap_model(directory: Path, weights: bytes, head: str = "centroid") -> Path:
@@ -159,7 +150,9 @@ def test_a_prefix_resolves_the_file_beside_it(tmp_path: Path) -> None:
     weights.write_bytes(b"identity weights")
 
     resolved = resolve_model(
-        _make_dataset(tmp_path), str(run_root / "identity_model"), "train-identity"
+        make_dataset(tmp_path, roots=("models",)),
+        str(run_root / "identity_model"),
+        "train-identity",
     )
 
     assert resolved.path == run_root / "identity_model", "the stem, as TREx wants it"
@@ -173,7 +166,9 @@ def test_a_prefix_naming_nothing_still_raises(tmp_path: Path) -> None:
     run_root.mkdir()
     with pytest.raises(FileNotFoundError, match="names no file"):
         _ = resolve_model(
-            _make_dataset(tmp_path), str(run_root / "identity_model"), "train-identity"
+            make_dataset(tmp_path, roots=("models",)),
+            str(run_root / "identity_model"),
+            "train-identity",
         )
 
 
@@ -186,7 +181,9 @@ def test_only_a_prefix_kind_probes_for_siblings(tmp_path: Path) -> None:
     assert spec_for("train-pose").shape == "file"
     assert spec_for("not-a-registered-kind").shape == "file"
     with pytest.raises(FileNotFoundError, match="does not exist"):
-        _ = resolve_model(_make_dataset(tmp_path), "train-pose.0.1-abcdef0123", "x")
+        _ = resolve_model(
+            make_dataset(tmp_path, roots=("models",)), "train-pose.0.1-abcdef0123", "x"
+        )
 
 
 # --- role resolution --------------------------------------------------------
@@ -296,7 +293,9 @@ def test_an_unregistered_kind_is_a_single_weights_file(tmp_path: Path) -> None:
     weights = tmp_path / "best.pt"
     weights.write_bytes(b"yolo weights")
 
-    resolved = resolve_model(_make_dataset(tmp_path), str(weights), "train-pose")
+    resolved = resolve_model(
+        make_dataset(tmp_path, roots=("models",)), str(weights), "train-pose"
+    )
     assert resolved.path == weights
     assert resolved.significant_files == (weights,)
     assert resolved.digest == file_digest(weights), "the plain file digest, unwrapped"
