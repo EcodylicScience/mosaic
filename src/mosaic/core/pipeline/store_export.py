@@ -53,7 +53,7 @@ from mosaic.core.media.facts_columns import (
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.pipeline._utils import hash_params
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.transcode import (
     TRANSCODE_KIND_DIRECTORY,
     relative_to_anchor,
@@ -146,6 +146,55 @@ def export_run_id(recipe_hash: str, source_uuids: list[str]) -> str:
     return f"export-store-{hash_params(fingerprint)}"
 
 
+def _stores_for(
+    ds: "Dataset", params: StoreExportParams
+) -> list[tuple[int, Path, "pd.Series"]]:
+    """The imgstore recordings one export would read, in index order.
+
+    ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
+    (``video_uuid``, ``video_order``, ``media_type``), and it takes a camera
+    without raising on a multi-camera sequence the way ``resolve_media`` does. A
+    camera of ``None`` means every camera of the entry, which is what a caller
+    exporting a whole recording wants.
+    """
+    group, sequence = params.entry
+    matched = ds.match_media_rows(group, sequence, params.camera)
+    stores: list[tuple[int, Path, "pd.Series"]] = []
+    for _, row in matched.iterrows():
+        cells = row_mapping(row)
+        if str(cells.get("media_type", "")) != "imgstore":
+            continue
+        video_order = int(str(cells.get("video_order", "") or 0))
+        stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
+    if not stores:
+        camera_note = f" camera {params.camera}" if params.camera else ""
+        raise TranscodeError(
+            f"{group}/{sequence}{camera_note}: no imgstore rows to export; "
+            f"a plain video needs no export and is read directly"
+        )
+    return stores
+
+
+def _store_uuids(ds: "Dataset", params: StoreExportParams) -> list[str]:
+    """Each store's identity, read from the index rather than probed.
+
+    Resolved before any encoding, so a corpus that has not been re-probed fails
+    immediately -- and so a planner can ask what this run will be called without
+    opening a store.
+    """
+    group, sequence = params.entry
+    uuids: list[str] = []
+    for _, store, row in _stores_for(ds, params):
+        source_uuid = media_row_uuid(row_mapping(row))
+        if not source_uuid:
+            raise TranscodeError(
+                f"{group}/{sequence}: {store} has no video_uuid in the media "
+                f"index; run 'mosaic reprobe-media --apply' before exporting"
+            )
+        uuids.append(source_uuid)
+    return uuids
+
+
 @register_op
 class StoreExportOp(Op[StoreExportParams]):
     """Export one entry's imgstore recordings as plain video and link them."""
@@ -162,6 +211,18 @@ class StoreExportOp(Op[StoreExportParams]):
     def target(self, params: StoreExportParams) -> str:
         group, sequence = params.entry
         return f"{group}/{sequence}"
+
+    def plan_identity(self, ds: "Dataset", params: StoreExportParams) -> OpIdentity:
+        """What this export will be called, without encoding anything.
+
+        The recipe plus the identities of the stores it will read, both of which
+        the media index already holds -- so nothing is deferred. Like a
+        transcode's, this value addresses nothing: the filename carries the
+        recipe, so it names the attempt rather than the output.
+        """
+        return OpIdentity(
+            run_id=export_run_id(export_recipe_hash(params), _store_uuids(ds, params))
+        )
 
     def run(self, ds: "Dataset", params: StoreExportParams, ctx: "JobContext") -> str:
         group, sequence = params.entry
@@ -183,38 +244,12 @@ class StoreExportOp(Op[StoreExportParams]):
         # raising on a multi-camera sequence the way resolve_media does. A
         # camera of None means every camera of the entry, which is what a caller
         # exporting a whole recording wants.
-        matched = ds.match_media_rows(group, sequence, params.camera)
-        stores: list[tuple[int, Path, "pd.Series"]] = []
-        for _, row in matched.iterrows():
-            # Through row_mapping rather than indexing the Series: a Series
-            # subscript is untyped, and every cell here is read as a declared
-            # type rather than whatever pandas inferred for the column.
-            cells = row_mapping(row)
-            if str(cells.get("media_type", "")) != "imgstore":
-                continue
-            video_order = int(str(cells.get("video_order", "") or 0))
-            stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
-        if not stores:
-            camera_note = f" camera {params.camera}" if params.camera else ""
-            message = (
-                f"{group}/{sequence}{camera_note}: no imgstore rows to export; "
-                f"a plain video needs no export and is read directly"
-            )
-            raise TranscodeError(message)
-
-        source_uuids: list[str] = []
-        for _, store, row in stores:
-            source_uuid = media_row_uuid(row_mapping(row))
-            if not source_uuid:
-                message = (
-                    f"{group}/{sequence}: {store} has no video_uuid in the media "
-                    f"index; run 'mosaic reprobe-media --apply' before exporting"
-                )
-                raise TranscodeError(message)
-            source_uuids.append(source_uuid)
+        stores = _stores_for(ds, params)
+        source_uuids = _store_uuids(ds, params)
 
         recipe_hash = export_recipe_hash(params)
-        run_id = export_run_id(recipe_hash, source_uuids)
+        # Named in one place, so a planner and this run cannot disagree.
+        run_id = self.plan_identity(ds, params).run_id
         ctx.set_run_id(run_id)
 
         media_root = ds.get_root("media")

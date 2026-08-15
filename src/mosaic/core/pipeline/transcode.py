@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Self
 
 import pandas as pd
 from mosaic_media import (
@@ -53,7 +53,7 @@ from mosaic_media.transcode import (
     run_transcode,
 )
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.media.facts_columns import (
     MEDIA_INDEX_COLUMNS,
     derivative_cell,
@@ -65,14 +65,16 @@ from mosaic.core.media.facts_columns import (
 )
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.media_index import (
     build_media_index_row,
     load_media_index_frame,
     write_media_index_rows,
 )
-from mosaic.core.pipeline.ops import Op, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.media_probe_config import media_thresholds
+from pydantic import Field, model_validator
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -91,10 +93,23 @@ TRANSCODE_KIND_DIRECTORY = "transcode"
 
 
 class TranscodeParams(Params):
-    """Parameters for one entry's transcode job."""
+    """What to transcode, and into what.
 
-    # entry selects WHICH videos are transcoded, and the identities of those
-    # videos are hashed in its place, so a sequence rename does not move the run.
+    **One job covers as many entries as it is given.** It used to cover exactly
+    one, which made a transcode step in a graph an exception to the rule every
+    other step follows -- one job per step with an entry list -- and would have
+    meant a request file mapping one step to many attempts. Naming the entries
+    here keeps the step singular, and costs nothing on disk: the run identifier
+    addresses nothing, so widening what it covers moves no file.
+
+    The trade is real and worth stating: a job over five hundred videos holds one
+    queue slot for as long as it takes, where five hundred jobs would spread
+    across machines. Narrow the entry list to shard it.
+    """
+
+    # entry/entries select WHICH videos are transcoded, and the identities of
+    # those videos are hashed in their place, so a sequence rename does not move
+    # the run.
     #
     # allow_hardware is excluded provisionally, and the reasoning cuts both ways.
     # A hardware encode and a CPU encode of the same source are not
@@ -107,9 +122,39 @@ class TranscodeParams(Params):
     # when both produced identical CPU output, and claiming two match when one
     # used the hardware encoder. The honest discriminator is the encoder actually
     # selected, which nothing records; this exclusion holds until it does.
-    entry: Annotated[tuple[str, str], HASH_EXCLUDE]
+    entry: Annotated[tuple[str, str] | None, HASH_EXCLUDE] = None
+    entries: Annotated[list[tuple[str, str]], HASH_EXCLUDE] = Field(
+        default_factory=list
+    )
     target: Target = "analysis"
     allow_hardware: Annotated[bool, HASH_EXCLUDE] = False
+
+    @model_validator(mode="after")
+    def _some_entry_is_named(self) -> Self:
+        """One of the two has to say what to transcode.
+
+        Both are optional so either spelling stands alone, and neither has a
+        default that would quietly mean "everything": a transcode with no scope
+        is a job that re-encodes a whole corpus because a field was omitted.
+        """
+        if self.entry is None and not self.entries:
+            raise ValueError(
+                "transcode needs something to transcode: pass 'entry' for one "
+                "(group, sequence), or 'entries' for several"
+            )
+        return self
+
+    def all_entries(self) -> list[tuple[str, str]]:
+        """Every entry this job covers, deduplicated, in the order given.
+
+        The singular and the plural are one list rather than two code paths, so
+        nothing downstream has to ask which spelling was used.
+        """
+        found: list[tuple[str, str]] = []
+        for entry in ([self.entry] if self.entry is not None else []) + self.entries:
+            if entry not in found:
+                found.append(entry)
+        return found
 
 
 def relative_to_anchor(path: Path, anchor: Path) -> str:
@@ -319,6 +364,74 @@ def set_back_link(
         write_media_index_rows(index_path, combined)
 
 
+def _refuse_without_media_raw(
+    ds: "Dataset", entries: Sequence[tuple[str, str]]
+) -> None:
+    """Decline a dataset where a derivative would be written and never read.
+
+    Without this it ran and quietly did harm. On a dataset with no ``media_raw``,
+    ``get_root("media")`` and the originals index are the same file, so the
+    back-link appended a derivative row *into* the originals index and the
+    forward link went to the same place. ``route_derivatives`` is then False, so
+    nothing ever read what was produced: the encode was wasted and the originals
+    index was left holding rows that only the recipe hash distinguishes from
+    originals. That is also the one dataset shape ``prune-media`` must decline,
+    so refusing here keeps its decline a statement about history rather than
+    about damage still being done.
+    """
+    if ds.resolve_media_root() == "media_raw":
+        return
+    named = ", ".join(f"{group}/{sequence}" for group, sequence in entries)
+    raise TranscodeError(
+        f"{named}: this dataset has no media_raw root, so media/index.csv is "
+        f"its originals index; a derivative written there would never be read"
+    )
+
+
+def _sources_for(
+    ds: "Dataset", entry: tuple[str, str]
+) -> list[tuple[int, Path, "pd.Series"]]:
+    """One entry's source videos, in the order the index records."""
+    group, sequence = entry
+    matched = ds.match_media_rows(group, sequence)
+    return [
+        (int(row.get("video_order", 0) or 0), ds.resolve_path(row["abs_path"]), row)
+        for _, row in matched.iterrows()
+    ]
+
+
+def _source_uuids_for(ds: "Dataset", entry: tuple[str, str]) -> list[str]:
+    """Every source's identity for one entry, read from the index rather than probed.
+
+    The index is what routing reads, and keeping it current is the re-probe
+    command's job. Resolved before any encoding, so a corpus that has not been
+    re-probed fails immediately rather than half way through -- and so a planner
+    can ask what a run will be called without opening a video.
+    """
+    group, sequence = entry
+    uuids: list[str] = []
+    for _, source_path, row in _sources_for(ds, entry):
+        cells = row_mapping(row)
+        # An explicit refusal, not an implicit one. Until a store minted a
+        # video_uuid the empty-uuid check below was the only thing keeping one
+        # out of this path -- and ffmpeg would have been handed a directory. Now
+        # that check passes, so the kind has to be named. Whether a store can be
+        # transcoded at all is a separate question.
+        if str(cells.get("media_type", "")) == "imgstore":
+            raise TranscodeError(
+                f"{group}/{sequence}: {source_path} is an imgstore, which has "
+                f"no elementary stream to transcode"
+            )
+        source_uuid = media_row_uuid(cells)
+        if not source_uuid:
+            raise TranscodeError(
+                f"{group}/{sequence}: {source_path} has no video_uuid in the "
+                f"media index; re-probe the index before transcoding"
+            )
+        uuids.append(source_uuid)
+    return uuids
+
+
 @register_op
 class TranscodeOp(Op[TranscodeParams]):
     """Transcode one entry's originals for a target and link the derivatives both ways."""
@@ -336,76 +449,108 @@ class TranscodeOp(Op[TranscodeParams]):
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams) -> str:
-        group, sequence = params.entry
-        return f"{group}/{sequence}"
+        entries = params.all_entries()
+        if len(entries) == 1:
+            group, sequence = entries[0]
+            return f"{group}/{sequence}"
+        return f"{len(entries)} entries: {params.target}"
 
-    def run(self, ds: "Dataset", params: TranscodeParams, ctx: "JobContext") -> str:
-        group, sequence = params.entry
-        # A second explicit refusal, for the same reason as the imgstore one
-        # below: without it this ran and quietly did harm. On a dataset with no
-        # `media_raw`, `get_root("media")` and the originals index are the same
-        # file, so the back-link appended a derivative row *into* the originals
-        # index and the forward link went to the same place. `route_derivatives`
-        # is then False (`Dataset.media_routing_context`), so nothing ever read
-        # what was produced: the encode was wasted and the originals index was
-        # left holding rows that only `recipe_hash` distinguishes from originals.
-        # That is also the one dataset shape `prune-media` must decline, so
-        # refusing here keeps its decline a statement about history rather than
-        # about damage still being done.
-        if ds.resolve_media_root() != "media_raw":
-            message = (
-                f"{group}/{sequence}: this dataset has no media_raw root, so "
-                f"media/index.csv is its originals index; a derivative written "
-                f"there would never be read"
-            )
-            raise TranscodeError(message)
-        matched = ds.match_media_rows(group, sequence)
-        sources = [
-            (int(row.get("video_order", 0) or 0), ds.resolve_path(row["abs_path"]), row)
-            for _, row in matched.iterrows()
+    def plan_identity(self, ds: "Dataset", params: TranscodeParams) -> OpIdentity:
+        """What this transcode will be called, without encoding anything.
+
+        The identity is the recipe plus the identities of every source it will
+        read, so both halves are readable at planning time: the recipe is the
+        params, and the sources are ``video_uuid`` cells the media index already
+        holds. Nothing here is deferred -- a transcode reads originals, which
+        exist before any graph runs.
+
+        It **addresses nothing**: the derivative's filename carries the recipe
+        and the source uuid, and reuse is gated on that plus the forward link. So
+        this value names the attempt for the run log and the queue, and widening
+        what one run covers moves no file.
+        """
+        _refuse_without_media_raw(ds, params.all_entries())
+        source_uuids = [
+            uuid
+            for entry in params.all_entries()
+            for uuid in _source_uuids_for(ds, entry)
         ]
-        # Every source's identity, read from the index rather than probed: the
-        # index is what routing reads, and keeping it current is the re-probe
-        # command's job. Resolved before any encoding so a corpus that has not
-        # been re-probed fails immediately rather than half way through.
-        source_uuids: list[str] = []
-        for _, source_path, row in sources:
-            cells = row_mapping(row)
-            # An explicit refusal, not an implicit one. Until open item O5 a
-            # store carried no video_uuid, so the empty-uuid check below was the
-            # only thing keeping one out of this path -- and ffmpeg would have
-            # been handed a directory. Now that a store mints its uuid that check
-            # passes, so the kind has to be named. Whether a store can be
-            # transcoded at all is a separate question O5 does not decide.
-            if str(cells.get("media_type", "")) == "imgstore":
-                message = (
-                    f"{group}/{sequence}: {source_path} is an imgstore, which "
-                    f"has no elementary stream to transcode"
-                )
-                raise TranscodeError(message)
-            source_uuid = media_row_uuid(cells)
-            if not source_uuid:
-                message = (
-                    f"{group}/{sequence}: {source_path} has no video_uuid in the "
-                    f"media index; re-probe the index before transcoding"
-                )
-                raise TranscodeError(message)
-            source_uuids.append(source_uuid)
+        thresholds = media_thresholds()
+        encoding = (
+            ANALYSIS_ENCODING if params.target == "analysis" else PLAYBACK_ENCODING
+        )
+        recipe_hash = transcode_recipe_hash(params, encoding, CHROME_149, thresholds)
+        return OpIdentity(run_id=transcode_run_id(recipe_hash, source_uuids))
+
+    def run(self, ds: "Dataset", params: "TranscodeParams", ctx: "JobContext") -> str:
+        entries = params.all_entries()
+        _refuse_without_media_raw(ds, entries)
+
+        # Named in one place, and before any encoding: a corpus that has not been
+        # re-probed fails here rather than half way through.
+        run_id = self.plan_identity(ds, params).run_id
+        ctx.set_run_id(run_id)
 
         encoding = (
             ANALYSIS_ENCODING if params.target == "analysis" else PLAYBACK_ENCODING
         )
         thresholds = media_thresholds()
         recipe_hash = transcode_recipe_hash(params, encoding, CHROME_149, thresholds)
-        run_id = transcode_run_id(recipe_hash, source_uuids)
-        ctx.set_run_id(run_id)
 
-        n_sources = len(sources)
         media_root = ds.get_root("media")
         transcode_root = media_root / TRANSCODE_KIND_DIRECTORY
         transcode_root.mkdir(parents=True, exist_ok=True)
 
-        ctx.set_total(n_sources * _TICKS_PER_SOURCE)
+        per_entry = [(entry, _sources_for(ds, entry)) for entry in entries]
+        ctx.set_total(sum(len(sources) for _, sources in per_entry) * _TICKS_PER_SOURCE)
+
+        done_ticks = 0
+        for (group, sequence), sources in per_entry:
+            try:
+                done_ticks = self._transcode_entry(
+                    ds,
+                    ctx,
+                    params,
+                    group=group,
+                    sequence=sequence,
+                    sources=sources,
+                    encoding=encoding,
+                    thresholds=thresholds,
+                    recipe_hash=recipe_hash,
+                    media_root=media_root,
+                    transcode_root=transcode_root,
+                    done_ticks=done_ticks,
+                )
+            except Cancelled:
+                raise
+            except Exception as exc:
+                # One unreadable video must not end a batch of five hundred. The
+                # entry is recorded as lost and the rest carry on, which is the
+                # same split every per-entry producer makes: coverage describes
+                # the artifact, the exit code describes the attempt.
+                ctx.entry_failed(make_entry_key(group, sequence), exc)
+                done_ticks += len(sources) * _TICKS_PER_SOURCE
+                ctx.heartbeat(done=done_ticks)
+        return run_id
+
+    def _transcode_entry(
+        self,
+        ds: "Dataset",
+        ctx: "JobContext",
+        params: TranscodeParams,
+        *,
+        group: str,
+        sequence: str,
+        sources: "list[tuple[int, Path, pd.Series]]",
+        encoding: "EncodingParameters",
+        thresholds: "Thresholds",
+        recipe_hash: str,
+        media_root: Path,
+        transcode_root: Path,
+        done_ticks: int,
+    ) -> int:
+        """Transcode one entry's sources, returning the progress ticks so far."""
+        source_uuids = _source_uuids_for(ds, (group, sequence))
         for i, (video_order, source, row) in enumerate(sources):
             ctx.check_cancel()
             ctx.progress.on_phase(
@@ -440,13 +585,17 @@ class TranscodeOp(Op[TranscodeParams]):
                 ctx.progress.on_phase(
                     "transcode", f"{group}/{sequence}[{i}]: {params.target} reused"
                 )
-                ctx.heartbeat(done=(i + 1) * _TICKS_PER_SOURCE)
+                ctx.heartbeat(done=done_ticks + (i + 1) * _TICKS_PER_SOURCE)
                 continue
 
-            def _on_progress(progress: TranscodeProgress, index: int = i) -> None:
+            def _on_progress(
+                progress: TranscodeProgress, index: int = i, base: int = done_ticks
+            ) -> None:
                 if progress.fraction is not None:
-                    done = index * _TICKS_PER_SOURCE + int(
-                        progress.fraction * _TICKS_PER_SOURCE
+                    done = (
+                        base
+                        + index * _TICKS_PER_SOURCE
+                        + int(progress.fraction * _TICKS_PER_SOURCE)
                     )
                     ctx.heartbeat(done=done)
 
@@ -464,7 +613,7 @@ class TranscodeOp(Op[TranscodeParams]):
                 cancel_check=ctx.cancel_token.is_cancelled,
             )
 
-            ctx.heartbeat(done=(i + 1) * _TICKS_PER_SOURCE)
+            ctx.heartbeat(done=done_ticks + (i + 1) * _TICKS_PER_SOURCE)
             if not result.performed or result.output_path is None:
                 continue
             if result.output_facts is None or result.output_verdict is None:
@@ -495,4 +644,4 @@ class TranscodeOp(Op[TranscodeParams]):
             )
             set_forward_link(ds, source, source_uuids[i], derivative_rel, params.target)
 
-        return run_id
+        return done_ticks + len(sources) * _TICKS_PER_SOURCE
