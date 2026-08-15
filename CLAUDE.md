@@ -182,8 +182,21 @@ mkdocs serve     # live-reload at http://127.0.0.1:8000/
 mkdocs build     # static site into ./site/
 ```
 
-API pages under `docs/api/` are auto-generated, so updating a docstring
-updates the published docs.
+Two different things are generated, and the difference matters:
+
+- **`docs/reference/` is generated wholesale** by `scripts/gen_docs_reference.py`
+  from the live registries and the Typer app — features, ops, the CLI, and the track
+  formats. Never edit those files. Run the script with `--write` after changing a
+  registry, and commit the result; the docs workflow runs it with `--check` and fails
+  when a committed page no longer matches the code.
+- **`docs/api/` pages are hand-written mkdocstrings stubs.** Only their *contents*
+  come from docstrings. A new public module gets no page at all until someone adds
+  the file and a `nav:` entry.
+
+The site deploys from `.github/workflows/docs.yml` on every push to `main`, and
+builds with `--strict` on every pull request. Do not run `mkdocs gh-deploy`: Pages is
+fed from Actions, and a local deploy would publish whatever untracked internal docs
+happen to be in the working tree.
 
 ### CI
 
@@ -369,12 +382,22 @@ recorded reads blank and is refused; `ds.measure_frame_extents()` fills it in.
 mosaic uses decorator-based registries; new functionality almost always means
 "register a new plugin," not "edit a hot path."
 
-| Decorator                  | Registry            | Lives in                          |
+| Registrar                  | Registry            | Lives in                          |
 | -------------------------- | ------------------- | --------------------------------- |
 | `@register_feature`        | `FEATURES`          | `behavior/feature_library/`       |
 | `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_converter.py` (impls in `core/track_library/`) |
-| `@register_label_converter`| `LABEL_CONVERTERS`  | `core/label_converter.py` (impls in `behavior/label_library/`) |
+| `register_label_converter` | `LABEL_CONVERTERS`  | `core/label_converter.py` (impls in `behavior/label_library/`) |
 | `@register_op`             | `OPS`               | `core/pipeline/ops.py`            |
+
+**`register_label_converter` is called, never decorated.**
+`behavior/label_library/__init__.py` imports each converter module and then calls it
+on the class, rebinding the result — so importing a converter module does not
+register it, and the registry holds exactly what that file names. A label converter
+class carrying a decorator instead will not appear.
+
+`register_track_converter` accepts both spellings and is mostly used as a decorator
+(`track_library/deeplabcut.py:213`); `track_library/calms21.py` uses both, calling it
+for one class and decorating the other.
 
 ### Feature protocol
 

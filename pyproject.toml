@@ -46,13 +46,24 @@ dev = [
     "basedpyright>=1.38.2",
     "joblib-stubs>=1.4.2.5.20240918",
     "microsoft-python-type-stubs",
-    "mkdocs>=1.6,<2",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
     "pandas-stubs>=2.2.2.240807",
     "pytest>=8.0",
     "ruff>=0.15.4",
     "scipy-stubs>=1.17.1.1",
+    { include-group = "docs" },
+]
+
+# Its own group so the docs workflow can install what it needs without the type
+# stubs and the test runner. `dev` includes it, so a contributor's environment is
+# unchanged and the versions are still declared once.
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+    # Not a linter here. mkdocstrings formats rendered signatures with Black or
+    # Ruff if either is importable, and falls back to one unwrapped line if
+    # neither is; `separate_signature` above is what makes that visible.
+    "ruff>=0.15.4",
 ]
 
 [project.optional-dependencies]

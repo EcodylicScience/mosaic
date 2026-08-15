@@ -1,0 +1,125 @@
+name: Docs
+
+# Builds the documentation site, checks that the generated reference pages still
+# match the registries they came from, and publishes to GitHub Pages.
+#
+# Separate from `ci.yml` because of the deploy. It needs `pages: write` and
+# `id-token: write`, which nothing in `ci.yml` should carry, and it needs
+# `cancel-in-progress: false` -- cancelling a Pages deployment part way leaves
+# the `github-pages` environment claimed by a run that will never report, and
+# every job in `ci.yml` wants the opposite.
+#
+# Pages is fed from Actions rather than from a `gh-pages` branch. `mkdocs
+# gh-deploy` is a command any laptop can run, and until `exclude_docs` landed
+# that command published the internal issue tracker -- a local build indexed
+# 1045 documents. Publishing through a workflow makes the config that excludes
+# them the only path to the live site, needs no `contents: write`, and keeps a
+# branch of built HTML out of the clone.
+#
+# No `paths:` filter. The pages under `docs/reference/` are generated from the
+# live registries and from the Typer app, so a pull request that touches only
+# `src/` can invalidate them -- which is the single case the check below exists
+# to catch.
+#
+# Action pins match `ci.yml` (`checkout@v4`, `setup-uv@v5`) rather than the
+# newest releases, so the two workflows move together; bumping them is its own
+# change.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Monday morning, for the external-link check only.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # No ffmpeg and no mosaic-media checkout, unlike every job in `ci.yml`.
+      # Nothing here decodes a frame: the generator imports the registries and
+      # the Typer app, and mkdocstrings analyses `src/` statically without
+      # importing anything.
+      #
+      # mosaic-media resolves from PyPI, which is deliberate -- the published
+      # CLI reference should describe the `mosaic media` subcommands a normal
+      # install provides, not the ones an unreleased sibling checkout would.
+      # The cost is that a mosaic-media release inside `>=0.3.0,<0.4.0` which
+      # changes that group turns this job red on the next pull request. That is
+      # a true statement about the CLI surface, and the failure names the one
+      # command that fixes it.
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e '.'
+          uv pip install --group docs
+
+      # Writes nothing: regenerates in memory and prints a unified diff of
+      # whatever no longer matches what is committed.
+      - name: Check generated reference pages
+        run: uv run --no-sync python scripts/gen_docs_reference.py --check
+
+      # `--strict` promotes every warning to a failure. With the `validation:`
+      # block in mkdocs.yml that now covers a page in neither `nav` nor
+      # `exclude_docs`, a dead relative link, and a dead anchor.
+      - name: Build
+        run: uv run --no-sync mkdocs build --strict
+
+      # Uploaded on pull requests too, and deliberately not gated on the event:
+      # downloading this artifact is the only way to look at a proposed site
+      # before it is live.
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Overrides the workflow-level group above, which cancels in progress.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  # External URLs only. `mkdocs build --strict` already refuses to build on a
+  # dead internal link or anchor; nothing checks that a vendor's documentation
+  # still exists where `docs/licensing.md` cites it. Weekly rather than per pull
+  # request, because link rot is not the author's fault and someone else's rate
+  # limiter should not block a merge.
+  external-links:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress --accept 200,206,429 --max-concurrency 4
+            './docs/**/*.md' './README.md' './CONTRIBUTING.md'
+          fail: true
