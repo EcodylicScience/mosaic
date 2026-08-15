@@ -1,0 +1,16 @@
+/* The half of the light/dark image switch that Material does not ship.
+ *
+ * Material's own stylesheet carries exactly two selectors for this:
+ *
+ *   [data-md-color-scheme=default] img[src$="#only-dark"],
+ *   [data-md-color-scheme=default] img[src$="#gh-dark-mode-only"] { display: none }
+ *
+ * Both hide the *dark* variant in the *light* scheme. Nothing hides the light
+ * variant in the slate scheme, so a page offering both -- as the landing page's
+ * hero does -- renders them stacked once the reader switches to dark. This is
+ * the mirror rule.
+ */
+[data-md-color-scheme="slate"] img[src$="#only-light"],
+[data-md-color-scheme="slate"] img[src$="#gh-light-mode-only"] {
+  display: none;
+}

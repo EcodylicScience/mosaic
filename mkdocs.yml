@@ -4,6 +4,41 @@ site_url: https://ecodylicscience.github.io/mosaic/
 repo_url: https://github.com/EcodylicScience/mosaic
 repo_name: EcodylicScience/mosaic
 
+# mkdocs derives `edit/master/docs/` from a github.com `repo_url` when this is
+# unset, and the default branch here is `main`. Nothing rendered an edit link
+# until now -- Material only shows one with `content.action.edit`, enabled
+# below -- so setting this and enabling the button are one change, not two.
+edit_uri: edit/main/docs/
+
+# What lives under `docs/` and must not be published. Every path here is
+# gitignored, and every one of them was being built: a local `site/` indexed
+# 1045 documents, the whole internal issue tracker among them, and listed them
+# in `sitemap.xml`. No mkdocs default would have caught it, because a page
+# absent from `nav` is an INFO and `--strict` only promotes WARNING. A build
+# from a clean CI checkout never saw these, which is exactly why the leak could
+# sit unnoticed in every local build.
+exclude_docs: |
+  plans/
+  issues/
+  specs/
+  assessments/
+
+# mkdocs leaves these at INFO, where `--strict` cannot see them. Raised to
+# warnings, they make the build fail on a page that is in neither `nav` nor
+# `exclude_docs`, and on a link to a heading that has been renamed -- which
+# resolves to a 200 and silently lands the reader at the top of the page, so
+# nothing else catches it.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
 theme:
   name: material
   palette:
@@ -20,11 +55,22 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
   features:
+    # Tabs rather than one flat sidebar: the nav has eleven top-level sections,
+    # and `navigation.expand` is deliberately absent -- it would open every
+    # sub-tree at once, and the generated feature reference alone contributes
+    # 44 anchors.
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
+    - navigation.top
+    - toc.follow
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
@@ -32,8 +78,32 @@ plugins:
       default_handler: python
       handlers:
         python:
+          # Pins which copy of the source griffe reads. The handler analyses
+          # `src/` statically rather than importing the package, so without this
+          # it would document whichever `mosaic` the environment resolved --
+          # which is the checkout today only by coincidence of the editable
+          # install.
+          paths: [src]
           options:
             docstring_style: google
+            # Docstring *parsing* warnings are off; every other warning still
+            # fails the build under `--strict`. Without this the site cannot be
+            # built strictly at all: the tree produces 562 of them, and none
+            # describes a broken document.
+            #
+            # Two pre-existing conventions cause all of it. 280 feature classes
+            # document their nested pydantic model under a `Params:` heading,
+            # which griffe reads as an alias for `Args:` and then checks against
+            # `__init__`, so every field is reported as an undeclared, unannotated
+            # parameter. And 122 docstring sections are NumPy-style
+            # (`Parameters` over a rule) in a tree configured for Google style,
+            # so they parse as prose. Both render imperfectly and neither is a
+            # navigation defect, which is what `--strict` is here to catch; the
+            # generated reference under `docs/reference/` now carries the
+            # authoritative parameter tables regardless. Tracked in
+            # `docs/issues/two-docstring-conventions-fight-the-parser.md`.
+            docstring_options:
+              warnings: false
             show_source: true
             show_root_heading: true
             show_root_full_path: false
@@ -46,19 +116,43 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - pymdownx.superfences
+  # `attr_list` sizes the hero image and drives Material's `#only-light` /
+  # `#only-dark` variants; `md_in_html` lets a `<figure>` wrapper hold markdown.
+  - attr_list
+  - md_in_html
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - toc:
       permalink: true
 
+# Organized by what a reader is trying to do, rather than by the package's module
+# tree. The six pages that predate this arrangement keep their paths: they carry
+# inbound relative links from each other and from `api/**`, and moving them in the
+# same change that first publishes the site would make the first deploy a URL
+# migration as well. New sections get new directories.
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - Pipeline Guide: guide-pipeline.md
-  - Adding a Tracker: adding-a-tracker.md
-  - Adding a Converter: adding-a-converter.md
-  - Licensing: licensing.md
+  - Get started:
+      - First run: getting-started.md
+      - Installation: installation.md
+  - Track: track/index.md
+  - Analyze:
+      - Overview: analyze/index.md
+      - Pipelines: guide-pipeline.md
+      - Examples: analyze/examples.md
+  - Model: model/index.md
+  - Visualize: visualize/index.md
+  - Operate: operate/index.md
+  - Extend:
+      - Add a tracker: adding-a-tracker.md
+      - Add a track converter: adding-a-converter.md
+  - Reference:
+      - Overview: reference/index.md
+      - Features: reference/features.md
+      - Ops: reference/ops.md
+      - CLI: reference/cli.md
+      - Track formats: reference/track-formats.md
   - API Reference:
       - Core:
           - Dataset: api/core/dataset.md
@@ -79,3 +173,4 @@ nav:
       - Tracking:
           - Frame Extraction: api/tracking/frame-extraction.md
           - Pose Training: api/tracking/pose-training.md
+  - Licensing: licensing.md

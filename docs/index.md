@@ -1,137 +1,105 @@
 # Mosaic
 
-A Python toolkit for end-to-end animal behavior analysis: video processing,
-pose estimation, track standardization, behavioral feature extraction, model
-training, and visualization.
+**Behavior analysis for any animal, end to end.**
 
-For an introduction aimed at researchers, see the [project README on
-GitHub](https://github.com/EcodylicScience/mosaic#readme). This site is the
-developer-facing reference: how the pipeline is structured, how to add
-features, and the API.
+![The mosaic pipeline](assets/pipeline-light.svg#only-light){ width="880" }
+![The mosaic pipeline](assets/pipeline-dark.svg#only-dark){ width="880" }
 
-## Package structure
+mosaic drives the pose trackers you already use — TRex, SLEAP, DeepLabCut, Lightning
+Pose, Ultralytics — and turns their output into behavioral features, unsupervised
+syllables, trained classifiers, and annotated video. One dataset, one CLI, one
+standardized table underneath.
+
+Every result is content-addressed: the same inputs and parameters produce the same
+`run_id`, so re-running is a no-op, parameter sweeps organize themselves, and
+`mosaic inventory` can tell you exactly what a dataset already holds.
+
+<div class="grid cards" markdown>
+
+-   **Get started**
+
+    ---
+
+    Install mosaic, build a dataset from video you already have, and run a feature
+    over it.
+
+    [Installation and first run](getting-started.md)
+
+-   **Reference**
+
+    ---
+
+    Every feature, op, CLI command and track format, generated from the registries
+    so it cannot fall behind the code.
+
+    [Browse the reference](reference/index.md)
+
+-   **Extend**
+
+    ---
+
+    mosaic is plugins most of the way down. Add a track converter for a format it
+    does not read, or wire in a tracker it does not drive.
+
+    [Add a converter](adding-a-converter.md) &middot;
+    [Add a tracker](adding-a-tracker.md)
+
+</div>
+
+## What mosaic is for
+
+Group-living animals. Identities, pairs and neighbors are first-class throughout —
+not an afterthought bolted onto single-animal tracking. A sequence is a recording
+with several individuals in it, and most of the feature library is about what they
+do relative to each other.
+
+It is a platform rather than a tracker. Pose estimation is a *step*, and mosaic
+drives four different tools for it rather than replacing them. What it owns is
+everything around that step: where the data comes from, what the output means, what
+was computed from it, and whether any of that is now stale.
+
+## The parts
+
+| Section | What it covers |
+| --- | --- |
+| [**Track**](track/index.md) | Run an integrated tracker, import tracks you already have, or train a pose model first |
+| [**Analyze**](analyze/index.md) | Compute features over standardized tracks, and chain them into pipelines |
+| [**Model**](model/index.md) | Embed, cluster, and classify behavior; train visual identity models |
+| [**Visualize**](visualize/index.md) | Overlay tracks and predictions onto video; cut egocentric crops |
+| [**Operate**](operate/index.md) | Run things, see what ran, and keep a dataset honest as it grows |
+
+## How a dataset is organized
+
+`dataset.yaml` is what makes a directory a mosaic dataset. It names the roots that
+hold data, and the **sources** each scan reads:
 
 ```
-src/mosaic/
-├── core/
-│   ├── dataset.py       # Dataset orchestrator
-│   ├── pipeline/        # Feature execution engine + typed protocol
-│   ├── schema.py        # Track schema validation
-│   ├── analysis.py      # Clustering metrics
-│   ├── helpers.py       # Label loading, safe name encoding
-│   └── track_library/   # Track format converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
-├── behavior/
-│   ├── feature_library/ # ~30 registered feature implementations
-│   ├── model_library/   # Legacy — being phased out (see repo summary)
-│   ├── label_library/   # Label converters (BORIS, CalMS21)
-│   └── visualization_library/  # Overlay, playback, egocentric crops, timeline plots
-├── tracking/
-│   └── pose_training/   # YOLO pose, POLO point-detection, localizer heatmap training
-│       └── converters/  # CVAT, Lightning Pose, COCO format converters
-└── media/
-    ├── video_io.py      # Video I/O with raw H.264 fallback
-    ├── extraction.py    # Frame extraction (uniform / k-means)
-    └── sampling.py      # Frame selection algorithms
+dataset.yaml          what this dataset is, and where its files come from
+media_raw/            the originals index -- rows may point outside the dataset
+media/                transcodes, extracted frames
+tracks_raw/           raw tracker output as uploaded
+tracks/<variant>/     standardized <group>__<sequence>.parquet, one dir per recipe
+labels/<kind>/        converted manual annotations
+features/<name>/<run_id>/   one directory per feature run
+models/<name>/<run_id>/     one directory per trained model
 ```
 
-## High-level workflow
+Roots live **inside** the dataset, so an `index.csv` travels with it when the dataset
+is copied or archived. Sources deliberately do not: a source may point at a NAS or
+another volume, and its files are recorded by absolute path into an index that stays
+inside.
 
-Data flows through the `Dataset` orchestrator (everything is versioned by `run_id`):
+## Reproducibility
 
-```
-video files
-   │
-   ├─ scan_media()                        → media_raw/index.csv  (probed via mosaic_media/ffprobe)
-   ├─ tracking.extract_frames(ds, …)      → media/frames/    (uniform or k-means sampled PNGs)
-   │
-raw tracks/labels
-   │
-   ├─ scan_tracks()          → tracks_raw/index.csv
-   ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet  (standardized)
-   ├─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
-   │
-   └─ run_feature()          → features/<name>/<run_id>/*.parquet
-         per-frame:    speed-angvel, pair-egocentric, nearest-neighbor, ...
-         spectral:     pair-wavelet
-         reduction:    pair-posedistance-pca
-         context:      temporal-stack
-         templates:    extract-templates, extract-labeled-templates
-         global:       global-scaler, global-tsne, global-kmeans, global-ward
-         trainable:    xgboost, arhmm, feral, kpms*, lightning-action,
-                       global-identity-model, global-identity-embedding,
-                       global-identity-dinov2-temporal
-         media:        egocentric-crop, interaction-crop-pipeline
-```
+Every feature run is tagged `run_id = "<version>-<hash>"`, where the hash covers the
+feature's parameters, its inputs, and the frame range. Identical inputs and
+parameters give an identical `run_id`, so:
 
-\* `kpms` drives keypoint-MoSeq, which is licensed for non-commercial research
-and academic use only. See [Licensing](licensing.md).
+- re-running costs nothing — the run is already there;
+- a parameter sweep lands in `features/<name>/<run_id>/` per setting, with no naming
+  scheme to invent;
+- `mosaic inventory` can report an artifact as `complete-but-drifted` when the code
+  that produced it has moved.
 
-## Core concepts
-
-### Dataset
-
-[`mosaic.core.Dataset`](api/core/dataset.md) is the central orchestrator. It manages named roots (`media`, `tracks_raw`, `tracks`, `labels`, `features`, `models`) and provides methods for every pipeline stage. Manifests are YAML or JSON.
-
-```python
-from mosaic.core.dataset import Dataset
-
-ds = Dataset(manifest_path="path/to/dataset.yaml")
-ds.load()
-```
-
-### Features and global features
-
-Everything in mosaic is a feature, registered via `@register_feature`. Each feature implements a 4-method protocol (`load_state`, `fit`, `apply`, `save_state`) plus a few attributes (`name`, `version`, `parallelizable`, `scope_dependent`).
-
-Two flavors:
-
-- **Per-frame / per-sequence features** — stateless transforms of tracks or upstream feature output.
-- **Global features** — trainable, fit-then-apply features that learn from a collection of sequences (or labeled examples) and then map per-sequence. This is where mosaic's "models" live.
-
-| Category | Examples |
-|----------|----------|
-| Per-frame kinematic | speed-angvel, body-scale, orientation-rel |
-| Per-frame spatial | pair-egocentric, pair-position, approach-avoidance |
-| Per-frame social | nearest-neighbor, ffgroups, ffgroups-metrics, nn-delta-response, nn-delta-bins |
-| Collective motion | collective-motion-metrics, local-order-metrics |
-| Track preprocessing | trajectory-smooth, movement-smooth, movement-filter-interpolate, pair-interaction-filter, id-tag-columns |
-| Spectral | pair-wavelet |
-| Reduction | pair-posedistance-pca |
-| Context | temporal-stack |
-| Templates | extract-templates, extract-labeled-templates |
-| **Global (trainable)** | global-scaler, global-tsne, global-kmeans, global-ward, xgboost, arhmm, feral, kpms, lightning-action, global-identity-model, global-identity-embedding, global-identity-dinov2-temporal |
-| **Media** (crops other features read) | egocentric-crop, interaction-crop-pipeline |
-
-!!! warning "kpms is non-commercial only"
-
-    `kpms` drives keypoint-MoSeq, licensed by the Harvard University Office of
-    Technology Development for non-commercial research and academic use only.
-    Commercial use is prohibited, and mosaic will not run it until you confirm
-    the terms apply to your use. `arhmm` fits a comparable model in mosaic's own
-    code with no such restriction. See [Licensing](licensing.md).
-
-See the [Feature Library API](api/behavior/feature-library.md) for details.
-
-### Run IDs and reproducibility
-
-Every feature run is tagged with a hash-based `run_id` (`<version>-<SHA1(params)>`). Outputs live under `features/<name>/<run_id>/`. Feature params are captured in `params.json`. Identical params + identical inputs always produce the same `run_id`, so re-running is a no-op and parameter sweeps stay organized automatically.
-
-## Installation
-
-```bash
-conda create -n mosaic python=3.12 -y
-conda activate mosaic
-conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
-```
-
-Frame decoding runs in-process via the `av` wheel (installed with
-`mosaic-media[io]`), so no `ffmpeg` binary is required to read video. System
-`ffprobe` is still used for media indexing and probing, and system `ffmpeg`
->= 5.1 is required for transcoding. Installing `ffmpeg` via conda covers both.
-
-The `recommended` bundle covers the typical research workflow (wavelets +
-YOLO pose + PyTorch localizer). See the [project
-README](https://github.com/EcodylicScience/mosaic#installation) for the full
-extras matrix and notes on the mutually exclusive `pose` / `polo` ultralytics
-pins.
+Throughput knobs — worker counts, batch sizes — are tagged out of the hash, so
+retuning them never invalidates a cache.

@@ -4,7 +4,13 @@ This guide walks through a typical mosaic workflow from raw data to feature extr
 
 ## Installation
 
+mosaic is not published on PyPI, so it installs from a checkout. The clone is part
+of the instructions, not an assumed step -- `pip install -e .` has nothing to install
+from an empty directory.
+
 ```bash
+git clone https://github.com/EcodylicScience/mosaic.git
+cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
@@ -22,13 +28,10 @@ process crash it nondeterministically. Nothing is pinned -- the `pip install`
 that follows finds both requirements already satisfied and installs neither
 wheel. Order matters: conda first, pip second.
 
-The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer; see
-the [project README](https://github.com/EcodylicScience/mosaic#installation)
-for finer-grained options.
-
-**Windows:** the core analysis pipeline runs natively, but keypoint-MoSeq,
-FERAL, GPU faiss, imgstore, and TREx tracking need WSL2 or Linux. See the
-[platform support matrix](https://github.com/EcodylicScience/mosaic#platform-support).
+The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer.
+[Installation](installation.md) has the full extras table, the reason each one is
+in or out of `recommended`, the two that want an environment of their own
+(`feral` and `kpms`), and the platform-support matrix for Windows and WSL2.
 
 ## Create a dataset
 
