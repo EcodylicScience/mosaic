@@ -198,6 +198,10 @@ def _bridge_df_to_tracks(
         producer_run_id=producer_run_id,
         source=seq_dir,
         consumed_source_roots=consumed_roots_for(ds, [video_path, model_pt]),
+           # A bridge opens the entry's media, so its row records what that
+        # media was. The variant identity has no term for the pixels, so
+        # this cell is the only thing that notices a re-transcode.
+        records_media=True,
     )
     return int(len(df))
 

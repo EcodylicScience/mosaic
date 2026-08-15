@@ -172,6 +172,7 @@ class TracksIndexRow(RunIndexRowBase):
     n_rows: int = 0
     n_keypoints: int = 0
     consumed_composition: str = ""
+    consumed_media_composition: str = ""
     frame_min: str = ""
     frame_max: str = ""
 
@@ -686,6 +687,7 @@ def write_tracks_row(
     source: Path | str = "",
     source_md5: str = "",
     consumed_source_roots: Sequence[str] = (),
+    records_media: bool = False,
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
@@ -707,6 +709,14 @@ def write_tracks_row(
     entry. ``str()`` alone was not enough: it spells a blank group -- a float
     NaN off a CSV -- as the word "nan", which then names an entry that has no
     composition recorded under it.
+
+    ``records_media`` says whether this producer read video. A **bridge** did --
+    a tracker or an inference run opens the entry's media -- so its row records
+    what that media was, and a re-transcode then shows as drift rather than as a
+    current run over different pixels. A **conversion** did not: it read an
+    uploaded table, so recording a media composition for it would be a claim
+    about something it never opened. Passed rather than inferred, because only
+    the caller knows which it is.
 
     Paths are stored root-relative via ``Dataset.relative_to_root`` so the index
     survives a move or a sync between machines. Call this *after* writing the
@@ -738,6 +748,11 @@ def write_tracks_row(
         consumed_composition=consumed_composition_for(
             ds, entry_group, entry_sequence, consumed_source_roots
         ),
+        consumed_media_composition=(
+            media_composition_for(ds, entry_group, entry_sequence)
+            if records_media
+            else ""
+        ),
         frame_min="" if extent is None else str(extent[0]),
         frame_max="" if extent is None else str(extent[1]),
     )
@@ -747,6 +762,56 @@ def write_tracks_row(
 # Item 6.1: reconciled through the shared registry, beside the tracker
 # indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
 register_reconcilable_index("tracks", tracks_index)
+
+
+def media_composition_for(ds: Dataset, group: str, sequence: str) -> str:
+    """What one entry's media was, as one cell. Empty when not establishable.
+
+    Reads the per-sequence projection rather than the media index, so it answers
+    for the entry whatever file the routing verdict sent a producer to -- which
+    is the point: a producer reading a transcode derivative reads under a
+    *derived* root, and every root-filtered composition records nothing for it.
+    """
+    from mosaic.core.pipeline.sequence_index import media_compositions_for
+
+    return media_compositions_for(ds, [(group, sequence)]).get((group, sequence), "")
+
+
+def drifted_media_entries(ds: Dataset, run_id: str) -> tuple[tuple[str, str], ...]:
+    """Entries of one tracks variant whose media has moved since it was written.
+
+    **Compared, not hashed.** A bridged variant's identity is its params plus its
+    model, with no term for the pixels it read, so a re-transcode leaves the
+    identifier exactly where it was -- and a reuse gate keyed on identity alone
+    serves the old tables over a different encode and reports the work done.
+
+    Both sides must be non-empty to count, the honest-empty rule every
+    composition comparison follows: a blank recorded cell is a row written before
+    the column existed, a blank current one is a projection that is not
+    establishable, and neither is evidence of change.
+    """
+    from mosaic.core.pipeline.sequence_index import media_compositions_for
+
+    frame = read_tracks_index(ds)
+    if frame.empty or "consumed_media_composition" not in frame.columns:
+        return ()
+    recorded = {
+        (str(record.get("group", "")), str(record.get("sequence", ""))): str(
+            record.get("consumed_media_composition", "")
+        )
+        for record in index_records(frame)
+        if str(record.get("run_id", "")) == run_id
+    }
+    if not recorded:
+        return ()
+    current = media_compositions_for(ds, recorded)
+    return tuple(
+        sorted(
+            entry
+            for entry, was in recorded.items()
+            if was and current.get(entry, "") and was != current[entry]
+        )
+    )
 
 
 def tracks_compositions(

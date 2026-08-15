@@ -158,6 +158,10 @@ def publish_tracks_table(
         producer_run_id=producer_run_id,
         source=source,
         consumed_source_roots=consumed_roots_for(ds, list(consumed)),
+           # A bridge opens the entry's media, so its row records what that
+        # media was. The variant identity has no term for the pixels, so
+        # this cell is the only thing that notices a re-transcode.
+        records_media=True,
     )
     return counts
 

@@ -30,6 +30,7 @@ from mosaic.core.pipeline.index import (
 from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_index
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.tracks_index import (
+    drifted_media_entries,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -371,6 +372,14 @@ def _variant_records(
     A variant's target is the entries its own rows name, not the dataset's
     universe: two recipes legitimately cover different entries, and measuring
     one against the other's rows would report a complete conversion as short.
+
+    A **bridged** variant also carries what the media it read was, so an entry
+    whose video has been re-transcoded since reads as drifted rather than as
+    current. Nothing in the variant identity notices that on its own -- it is
+    params plus the model, with no term for the pixels -- so without the
+    comparison a re-encode is served as a cache hit over different frames. A
+    converted variant records no media composition and so never drifts here,
+    which is right: it opened no video.
     """
     index_path = tracks_index_path(ds)
     frame = reader.frame(index_path, lambda: read_tracks_index(ds))
@@ -385,17 +394,19 @@ def _variant_records(
         )
         coverage = Coverage(target=target, present=files)
         started, finished_at, finished = _finish_state(frame, run_id)
+        drift = drifted_media_entries(ds, run_id)
         records.append(
             ArtifactRecord[Entry](
                 ref=TracksVariantRef(run_id=run_id),
                 name="tracks",
                 run_id=run_id,
                 coverage=coverage,
-                status=_status_for(coverage, rows, files, (), finished),
+                status=_status_for(coverage, rows, files, drift, finished),
                 index_path=index_path,
                 rows=rows,
                 orphan_rows=rows - files,
                 orphan_files=frozenset(),
+                drift=drift,
                 started_at=started,
                 finished_at=finished_at,
             )
