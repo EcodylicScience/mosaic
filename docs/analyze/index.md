@@ -16,11 +16,11 @@ mosaic run -m dataset.yaml --feature speed-angvel
 or from Python, which is what a notebook does:
 
 ```python
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import open_dataset
 from mosaic.core.pipeline import run_feature
 from mosaic.behavior.feature_library import SpeedAngvel
 
-ds = Dataset("dataset.yaml").load()
+ds = open_dataset("dataset.yaml")
 result = run_feature(ds, SpeedAngvel(), entries=[("", "trial01")])
 ```
 

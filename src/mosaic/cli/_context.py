@@ -18,13 +18,18 @@ if TYPE_CHECKING:
 
 
 def load_dataset(manifest: Path) -> "Dataset":
-    """Load the dataset at *manifest* (``Dataset(manifest_path=...).load()``)."""
-    from mosaic.core.dataset import Dataset
+    """Load the dataset at *manifest*, reporting a failure as a clean exit.
+
+    The opening itself is :func:`~mosaic.core.dataset.open_dataset`. What stays
+    here is the presentation: a CLI reports a missing or unreadable manifest as
+    a one-line message and a non-zero exit, not as a traceback.
+    """
+    from mosaic.core.dataset import open_dataset
 
     if not manifest.exists():
         fail(f"Manifest not found: {manifest}")
     try:
-        return Dataset(manifest_path=manifest).load()
+        return open_dataset(manifest)
     except Exception as exc:  # noqa: BLE001 - surface any load failure cleanly
         fail(f"Failed to load dataset from {manifest}: {exc}")
 

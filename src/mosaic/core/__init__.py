@@ -1,7 +1,7 @@
 """Core data contracts, schemas, and dataset orchestration."""
 
 from . import track_library  # triggers track converter registration
-from .dataset import Dataset
+from .dataset import Dataset, open_dataset
 from .helpers import from_safe_name, to_safe_name
 
 
@@ -15,6 +15,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "Dataset",
+    "open_dataset",
     "register_feature",
     "to_safe_name",
     "from_safe_name",

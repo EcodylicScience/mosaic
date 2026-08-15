@@ -17,8 +17,8 @@ To create a new label converter:
 
 Usage from a ``Dataset`` (unchanged by the new contract):
 
-    >>> from mosaic.core import Dataset
-    >>> dataset = Dataset("/path/to/dataset")
+    >>> from mosaic.core import open_dataset
+    >>> dataset = open_dataset("/path/to/dataset")
     >>> # Index the raw annotation files into labels_raw/index.csv. This is the
     >>> # label sibling of index_tracks_raw -- raw labels no longer share the
     >>> # tracks_raw root.

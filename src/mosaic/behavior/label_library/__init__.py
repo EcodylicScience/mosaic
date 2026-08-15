@@ -27,8 +27,8 @@ accessible from mosaic.core.dataset module.
 
 Usage
 -----
->>> from mosaic.core import Dataset
->>> dataset = Dataset("/path/to/dataset")
+>>> from mosaic.core import open_dataset
+>>> dataset = open_dataset("/path/to/dataset")
 >>>
 >>> # Convert CalMS21 labels
 >>> dataset.convert_all_labels(

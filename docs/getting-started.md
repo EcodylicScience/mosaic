@@ -104,9 +104,9 @@ it, not discovered later.
 ## Convert tracks
 
 ```python
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import open_dataset
 
-ds = Dataset(manifest_path="my_project/dataset.yaml").load()
+ds = open_dataset("my_project/dataset.yaml")
 ds.convert_all_tracks()   # -> tracks/<variant>/<group>__<seq>.parquet
 ```
 

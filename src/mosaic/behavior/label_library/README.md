@@ -627,9 +627,9 @@ Raw label files are indexed into `labels_raw/index.csv` with `index_labels_raw`
 `tracks_raw` root):
 
 ```python
-from mosaic.core import Dataset
+from mosaic.core import open_dataset
 
-dataset = Dataset("/path/to/dataset")
+dataset = open_dataset("/path/to/dataset")
 
 # Scan a directory for annotation files and record them in labels_raw.
 dataset.index_labels_raw(
@@ -736,9 +736,9 @@ python -m py_compile my_converter.py
 Create a minimal annotation file and run the flow:
 
 ```python
-from mosaic.core import Dataset
+from mosaic.core import open_dataset
 
-dataset = Dataset("/tmp/test_dataset")
+dataset = open_dataset("/tmp/test_dataset")
 
 # Index the test file into labels_raw.
 dataset.index_labels_raw(

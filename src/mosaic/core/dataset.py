@@ -344,6 +344,55 @@ def _dataset_base_dir(ds) -> Path:
     return base
 
 
+def _unresolved_root_message(
+    key: str, roots: Mapping[str, str], manifest_path: Path
+) -> str:
+    """Why ``get_root`` could not resolve *key*, and the verb that repairs it.
+
+    Three faults used to share one sentence, and the sentence described the
+    rarest: it called the root "not set in manifest" and then listed that same
+    root among the "available" ones. A ``Dataset`` is built around a manifest
+    *path* and starts from :func:`~mosaic.core.manifest.empty_root_template` --
+    every declared key present, every value empty -- so the reader was sent to a
+    manifest file that was correct, when what was missing was the load.
+
+    So the state picks the sentence, and the key that failed never appears
+    inside a list the reader will scan as "roots that work":
+
+    - Nothing anywhere holds a value: the ``Dataset`` nobody loaded. Lists
+      nothing, and names both ways a dataset comes to have roots.
+    - Declared with an empty value: the manifest's own spelling of unset. Lists
+      the roots that do hold a value.
+    - Not declared: a misspelling, or a root this manifest predates. Lists the
+      declared keys, which is where a near miss shows.
+
+    The text carries no ``"`` and no newline. ``KeyError`` reprs its argument, so
+    either one would be escaped back at the reader instead of read.
+    """
+    if not any(roots.values()):
+        return (
+            f"dataset root {key!r} cannot be resolved: this dataset declares "
+            "no roots at all. Constructing a Dataset only points at a manifest "
+            f"-- read {manifest_path} with open_dataset() or load() to pick up "
+            "the roots it declares, or pass roots= to the constructor when the "
+            "dataset is not on disk yet."
+        )
+    if key in roots:
+        with_values = ", ".join(sorted(name for name, value in roots.items() if value))
+        return (
+            f"dataset root {key!r} is declared with an empty value, which reads "
+            f"as unset. Roots that hold a value: {with_values}. Give it a path "
+            "with set_root(), or test has_root() first where an unset root is a "
+            "state the caller expects."
+        )
+    declared = ", ".join(sorted(roots))
+    return (
+        f"dataset root {key!r} is not declared by this manifest. Declared "
+        f"roots: {declared}. Check the spelling against that list, or declare "
+        "the root with set_root()."
+    )
+
+
 ############# DATASET
 
 _RAW_ROOT_FOR_KIND: Final[Mapping[str, str]] = {
@@ -419,6 +468,32 @@ def new_dataset_manifest(
     target = Path(outfile) if outfile is not None else base_dir / "dataset.yaml"
     write_manifest(target, manifest)
     return target
+
+
+def open_dataset(path: str | Path, *, ensure_roots: bool = True) -> Dataset:
+    """Open the dataset at *path* -- ``Dataset(path).load()`` as one call.
+
+    The constructor deliberately reads nothing: it takes a manifest *path*, so a
+    caller can point at a dataset that does not exist yet and create it. That
+    makes ``Dataset(path)`` alone a working expression yielding an object whose
+    roots are all empty, and every accessor on it then fails against a manifest
+    file that is perfectly correct. This is the front door for the far more
+    common intent, and the counterpart to :func:`new_dataset_manifest`: that one
+    creates a dataset, this one opens one.
+
+    Args:
+        path: The manifest file, or the directory holding it.
+        ensure_roots: Create the declared root directories. Pass ``False`` on a
+            read-only mount, or wherever opening a dataset must not write to it.
+
+    Returns:
+        The loaded dataset.
+
+    Raises:
+        FileNotFoundError: If no manifest is at *path*.
+        ManifestVersionError: If the manifest is newer than this mosaic.
+    """
+    return Dataset(manifest_path=path).load(ensure_roots=ensure_roots)
 
 
 # --------------------------
@@ -1373,13 +1448,15 @@ class Dataset:
             Absolute path to the root directory.
 
         Raises:
-            KeyError: If *key* is not set in the manifest.
+            KeyError: If *key* does not resolve to a root. The message
+                distinguishes the three ways that happens -- undeclared,
+                declared with an empty value, and a ``Dataset`` whose roots are
+                empty throughout because nothing has read the manifest yet --
+                and names the repair for each.
         """
         if key not in self.roots or not self.roots[key]:
-            raise KeyError(
-                f"Root '{key}' is not set in manifest. "
-                f"Available roots: {list(self.roots.keys())}"
-            )
+            msg = _unresolved_root_message(key, self.roots, self.manifest_path)
+            raise KeyError(msg)
         p = Path(self.roots[key])
         if not p.is_absolute():
             return (_dataset_base_dir(self) / p).resolve()
