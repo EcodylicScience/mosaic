@@ -62,13 +62,14 @@ from .manifest import (
     OverlapUnsupported,
     build_manifest,
     iter_manifest,
+    tracks_variants_for,
     verify_overlap_supported,
 )
 from .op_identity import parse_op_run_id
 from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
-from .sequence_index import encode_entry_composition
+from .sequence_index import encode_entry_composition, read_entry_compositions
 from .tracks_index import tracks_compositions
 from .types.data_config import META_COLS
 from .types import (
@@ -750,6 +751,82 @@ def compute_run_id(
         hashable["_overlap_frames"] = int(overlap_frames)
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
+
+
+def resolve_feature_identity(
+    ds: Dataset,
+    feature: Feature,
+    entries: Iterable[tuple[str, str]],
+    *,
+    tracks_run_id: str | None = None,
+    labels_run_id: str | None = None,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+    overlap_frames: int = 0,
+) -> tuple[str, Scope]:
+    """What a run of *feature* over *entries* will be called, without running it.
+
+    **The one place a predicted identity is built**, and both predictors call it:
+    the graph planner walking a recipe, and the live ``Pipeline`` previewing its
+    steps. Two implementations is the shape of mistake that reports a cache hit
+    over another run's outputs, and the copy that gets forgotten is always the
+    one a user meets first -- the notebooks are the documented reference.
+
+    It mirrors ``_run_feature_impl`` term for term, and the one place the two
+    deliberately differ is the point of the function. Execution resolves its
+    scope from a manifest, which is what is *there*; prediction is handed the
+    entries a run **will** see. Building a manifest to predict reports an empty
+    scope whenever the upstream index does not exist yet, so a cold
+    ``scope_dependent`` step predicted an identifier naming a directory nothing
+    would ever write.
+
+    Args:
+        ds: The dataset, for the variants and compositions the terms read.
+        feature: The constructed feature, with its references already pinned --
+            call ``resolve_references`` first, exactly as execution does.
+        entries: The ``(group, sequence)`` pairs this run will cover. Ignored by
+            a scope-free feature, which is most of them.
+        tracks_run_id: Which tracks variant the ``"tracks"`` input resolves to,
+            or ``None`` for whichever variant each entry has.
+        labels_run_id: The same, for a labels-consuming feature's params.
+        frame_start: The resolved first frame, or ``None``.
+        frame_end: The resolved last frame, or ``None``.
+        overlap_frames: The neighbour context width, which changes the output
+            near a sequence boundary and so enters the identity.
+
+    Returns:
+        The ``run_id`` and the ``Scope`` it was computed from, so a caller that
+        needs to explain the answer has the terms rather than only the digest.
+    """
+    wanted = {(str(group), str(sequence)) for group, sequence in entries}
+    if feature.inputs.is_empty:
+        # A feature reading nothing resolves no scope at all, which is what
+        # execution gives it -- and handing it the graph's entries would move a
+        # scope-dependent identifier for a run that never looks at them.
+        scope = Scope()
+    else:
+        reads_tracks = any(item == "tracks" for item in feature.inputs.root)
+        scope = Scope(
+            entries=wanted,
+            # Set only by a ``tracks`` input, which is the rule the manifest
+            # applies: a feature reading another feature's output inherits no
+            # variant, because its upstream already hashed the one it read. A
+            # pinned variant is taken as given, so an edge from a producer that
+            # has not run yet still resolves.
+            tracks_variants=(
+                ((tracks_run_id,) if tracks_run_id else tracks_variants_for(ds, None))
+                if reads_tracks
+                else ()
+            ),
+            # From the source roots, which exist before any of this runs, so the
+            # term is exact rather than predicted.
+            compositions=read_entry_compositions(ds, wanted),
+        )
+    scope.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
+    run_id, _ = compute_run_id(
+        feature, frame_start, frame_end, scope, overlap_frames=overlap_frames
+    )
+    return run_id, scope
 
 
 IDX_FLUSH_EVERY: Final = 10

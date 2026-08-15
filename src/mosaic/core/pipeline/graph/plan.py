@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from mosaic.core.helpers import resolve_frame_range
 
-from .._utils import Scope
 from ..inventory.cache import InventoryCache
 from ..inventory.model import (
     ArtifactRef,
@@ -49,15 +48,12 @@ from ..inventory.model import (
     TrainedModelRef,
     classify,
 )
-from ..manifest import tracks_variants_for
 from ..ops import IdentityDeferred, OpIdentity
 from ..resolve import resolve_references
-from ..run import compute_run_id, resolve_labels_variants
-from ..sequence_index import read_entry_compositions
+from ..run import resolve_feature_identity
 from .digest import recipe_digest
 from .lanes import lane_for
 from .model import (
-    TRACKS_INPUT,
     BoundRef,
     FeatureStepSpec,
     OpStepSpec,
@@ -84,7 +80,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline.types import Feature, Params
+    from mosaic.core.pipeline.types import Params
 
     from ..inventory.model import DatasetInventory
     from .compatibility import DeclarationCatalog
@@ -601,20 +597,20 @@ def _resolve_feature_step(
         spec.filter_start_time,
         spec.filter_end_time,
     )
-    scope = Scope(
-        entries=set(target),
+    run_id, _ = resolve_feature_identity(
+        ds,
+        feature,
+        target,
+        # The upstream's **minted** variant where the step names a producer,
+        # rather than whatever the index holds. That is what lets an
+        # op-to-feature edge resolve before the op has run: the variant payload
+        # is params-only, so the identifier is knowable now, and reading it back
+        # off an index with no rows in it yet would hash an empty term where
+        # execution hashes a real one.
+        tracks_run_id=spec.tracks_run_id,
         frame_start=frame_start,
         frame_end=frame_end,
-        tracks_variants=_tracks_variants(ds, feature, spec),
-        labels_variants=resolve_labels_variants(ds, feature),
-        # Read from the source roots, which exist before any of this graph runs,
-        # so the term is exact rather than predicted. A feature declaring no
-        # roots -- which is every ``scope_dependent`` feature today -- reduces it
-        # to the entry names alone.
-        compositions=read_entry_compositions(ds, target),
-    )
-    run_id, _ = compute_run_id(
-        feature, frame_start, frame_end, scope, overlap_frames=spec.overlap_frames
+        overlap_frames=spec.overlap_frames,
     )
     return _Resolution(
         step=PlannedStep(
@@ -628,27 +624,6 @@ def _resolve_feature_step(
         ),
         scope_dependent=bool(getattr(feature, "scope_dependent", False)),
     )
-
-
-def _tracks_variants(ds: Dataset, feature: Feature, spec: StepSpec) -> tuple[str, ...]:
-    """The ``_tracks`` term: which tracks recipes this step will read.
-
-    Set **only** by a ``tracks`` input, which is the rule the manifest applies: a
-    feature reading another feature's output inherits no variant, because its
-    upstream already hashed the one it read.
-
-    A step whose ``tracks`` reference names a producing step takes that step's
-    **minted** variant rather than whatever the index holds. That is what lets an
-    op-to-feature edge resolve before the op has run: the variant payload is
-    params-only, so the identifier is knowable now, and reading it back off an
-    index with no rows in it yet would hash an empty term where execution hashes
-    a real one.
-    """
-    if not any(item == TRACKS_INPUT for item in feature.inputs.root):
-        return ()
-    if spec.tracks_run_id:
-        return (spec.tracks_run_id,)
-    return tracks_variants_for(ds, spec.tracks_run_id)
 
 
 def _resolve_op_step(

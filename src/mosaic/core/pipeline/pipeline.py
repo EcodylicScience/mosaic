@@ -23,7 +23,7 @@ import pandas as pd
 
 from mosaic.core.helpers import resolve_frame_range
 
-from ._utils import Scope, derive_storage_name
+from ._utils import derive_storage_name
 from .inventory.scan import entry_universe, narrow_target, run_covers
 from .index import (
     drifted_entries,
@@ -32,9 +32,8 @@ from .index import (
     feature_run_root,
     list_feature_runs,
 )
-from .manifest import build_manifest
 from .resolve import resolve_references
-from .run import compute_run_id
+from .run import resolve_feature_identity
 from .types import Feature, Inputs, Result, TrackLike
 
 if TYPE_CHECKING:
@@ -209,22 +208,17 @@ class Pipeline:
     def _resolve_step_cache(self, dataset: Dataset) -> list[dict]:
         """Compute expected run_ids and check cache state for all steps.
 
-        **Known residual: a cold ``scope_dependent`` step still predicts an
-        identifier it will not execute.** Its scope comes from
-        ``build_manifest`` over the upstream's index, and on a cold dataset that
-        index does not exist, so ``_scope_entries`` predicts empty while
-        execution hashes the real entries. Item 1.1 does not reach this: the
-        divergence is in the *scope* term, not ``_inputs``. Closing it means
-        predicting the entry set of a run that has not happened -- propagating
-        each step's ``target`` down the DAG as a predicted scope -- which is a
-        new prediction mechanism with its own drift surface and belongs with the
-        chain-runner work (item 9.6).
+        Identity comes from :func:`resolve_feature_identity`, which is also what
+        the graph planner calls. **One answer to "what will this step be
+        called"**, because two would eventually disagree and the divergent one
+        would be the answer users meet first -- the notebooks drive this class.
 
-        It cannot cause a wrong execution. An uncached upstream marks this step
-        stale, ``cached`` is forced False, and ``run()`` takes the execute
-        branch, where inputs come from real ``Result``s. The predicted
-        identifier gates a skip only when the upstream *is* cached, and then the
-        index it was resolved from exists.
+        That shared site is also what closed the cold-``scope_dependent`` gap
+        this walk used to carry. The scope came from a manifest built over the
+        upstream's index, and on a cold dataset that index does not exist, so
+        the entry term predicted empty while execution hashed the real entries.
+        Prediction is now handed the entries a run *will* see: the same
+        ``target`` this method already computes for the completeness check.
         """
         mock_results: dict[str, Result] = {}
         stale_steps: set[str] = set()
@@ -352,46 +346,33 @@ class Pipeline:
                 entries=_as_entry_set(kwargs.get("entries")),
             )
 
-            # Identity comes from compute_run_id -- the same function
-            # run_feature calls, over a Scope resolved the same way (P2e).
-            # This prediction is load-bearing for *execution*, not display:
-            # when the predicted directory reads complete, run() skips
-            # run_feature entirely and pins the predicted identifier into
-            # the next step's inputs. A second implementation that drifted
-            # would report "cached" over stale results.
+            # Identity comes from the one site that answers this question, which
+            # the graph planner calls too. The prediction is load-bearing for
+            # *execution*, not display: when the predicted directory reads
+            # complete, run() skips run_feature entirely and pins the predicted
+            # identifier into the next step's inputs, so a second implementation
+            # that drifted would report "cached" over stale results.
             #
-            # The build_manifest call is not optional and is not narrowed to
-            # scope_dependent features. compute_run_id takes a *resolved*
-            # Scope and cannot resolve one itself, and deciding here which
-            # features need a scope would put the rule back in two places.
-            # It is cheap to be faithful: compute_run_id ignores the scope
-            # for a scope-free feature, and build_manifest returns an empty
-            # scope for a not-yet-computed upstream rather than raising.
-            #
-            # Inputs are pinned here for the same reason run_feature pins them:
+            # Inputs are pinned first, for the same reason run_feature pins them:
             # a params-level reference (a global fitter's `templates`) that
             # identity saw as None would predict one identifier and execute
             # another. Chain inputs arrive already pinned from mock_results
-            # below, so this pass covers the params half. `on_missing_run` is
-            # "empty" because a prediction legitimately names runs that do not
-            # exist yet -- after a params change the upstream index holds only
-            # the previous run, and reading that as a failure would take
-            # `status()` down on an ordinary dataset.
+            # below, so this pass covers the params half.
+            #
+            # The entries handed over are this step's `target` -- what the run
+            # *will* see -- rather than what a manifest resolves today. A
+            # manifest reports an empty scope for an upstream that has not been
+            # computed, which is right for reading and wrong for predicting.
             _ = resolve_references(dataset, feature)
-            if feature.inputs.is_empty:
-                scope = Scope()
-            else:
-                _, scope = build_manifest(
-                    dataset,
-                    feature.inputs,
-                    _as_set(kwargs.get("groups")),
-                    _as_set(kwargs.get("sequences")),
-                    _as_entry_set(kwargs.get("entries")),
-                    tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
-                    on_missing_run="empty",
-                )
-            expected_run_id, _ = compute_run_id(
-                feature, frame_start, frame_end, scope, overlap_frames=step_overlap
+            expected_run_id, _ = resolve_feature_identity(
+                dataset,
+                feature,
+                target,
+                tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
+                labels_run_id=_as_run_id(kwargs.get("labels_run_id")),
+                frame_start=frame_start,
+                frame_end=frame_end,
+                overlap_frames=step_overlap,
             )
 
             # Check cache on disk: cached only when the run is *complete*

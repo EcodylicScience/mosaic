@@ -566,6 +566,57 @@ def test_a_dataset_with_neither_tracks_nor_media_plans_over_nothing(
     assert plan.step("trex").run_id is not None, "a tracker's identity is its settings"
 
 
+def test_the_live_pipeline_and_the_planner_agree(tracked: Dataset) -> None:
+    """One answer to what a step will be called, held by a test rather than a rule.
+
+    The notebooks drive the live ``Pipeline``, so a second resolver that drifted
+    would be the answer users meet first. Both go through the same identity site
+    now, and this is what notices if one of them stops.
+    """
+    from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
+
+    live = Pipeline()
+    _ = live.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
+    _ = live.add(
+        FeatureStep(
+            "templates",
+            FEATURES["ExtractTemplates"],
+            {"n_templates": 4},
+            input_names=["speed"],
+        )
+    )
+    graph = plan_pipeline(
+        tracked,
+        Recipe.model_validate(
+            {
+                "steps": [
+                    {
+                        "id": "speed",
+                        "type": "feature",
+                        "feature": "speed-angvel",
+                        "inputs": ["tracks"],
+                    },
+                    {
+                        "id": "templates",
+                        "type": "feature",
+                        "feature": "extract-templates",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"n_templates": 4},
+                    },
+                ]
+            }
+        ),
+    )
+
+    resolved = live._resolve_step_cache(tracked)  # pyright: ignore[reportPrivateUsage]
+
+    assert [info["expected_run_id"] for info in resolved] == [
+        graph.step("speed").run_id,
+        graph.step("templates").run_id,
+    ]
+
+
 # --- planning writes nothing ----------------------------------------------------
 
 

@@ -503,31 +503,28 @@ def test_a_prediction_survives_an_upstream_that_holds_only_older_runs(
     assert resolved[1]["cached"] is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A cold scope_dependent step predicts an empty scope term: its scope "
-        "comes from build_manifest over an upstream index that does not exist "
-        "yet, while execution hashes the real entries. Item 1.1 does not reach "
-        "this -- the divergence is in the scope term, not _inputs. Closing it "
-        "means predicting the entry set of a run that has not happened. "
-        "**Nobody is scheduled to.** It named implementation item 9.6, and M5 "
-        "removed that item from the programme: the front-end scope it was "
-        "written for changed, so the chain runner is not becoming the primary "
-        "execution surface and the prediction has no owner. Kept red rather "
-        "than deleted, because the residual is real and worth stating -- and "
-        "harmless, for the reason it always gave: an uncached upstream forces "
-        "cached=False, so the predicted identifier gates no skip."
-    ),
-)
 def test_a_cold_scope_dependent_step_predicts_its_scope(
     scenario_dataset: Dataset,
 ) -> None:
-    """The residual M1 leaves behind, recorded rather than remembered.
+    """A step whose identity covers its scope predicts it before anything runs.
+
+    Long the one residual in this walk, and long unowned. Its scope came from a
+    manifest built over the upstream's index, and on a cold dataset that index
+    does not exist -- so the entry term predicted empty while execution hashed
+    the real entries, and the identifier named a directory nothing would write.
+
+    Closing it needed no propagation mechanism, which is why it stayed open
+    under a description that made it sound expensive. The scope term is the
+    sorted entry names plus, for a feature declaring source roots, a per-entry
+    composition digest; every ``scope_dependent`` feature declares none, and
+    where roots *are* declared the compositions come from source roots that
+    exist before any of this runs. So the entry set a step will see was
+    knowable all along: it is the ``target`` this walk already computed for the
+    completeness check.
 
     Asserted against what execution *would* hash rather than by running the
     chain, because the synthetic fixture carries no pose columns -- and a test
-    that dies before its assertion is an xfail that proves nothing.
+    that dies before its assertion proves nothing either way.
     """
     pipeline = Pipeline()
     _ = pipeline.add(FeatureStep("speed", FEATURES["SpeedAngvel"], None))
