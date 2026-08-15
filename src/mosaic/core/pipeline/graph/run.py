@@ -320,4 +320,14 @@ def _execute(ds: Dataset, planned: PlannedStep, *, owner: str) -> str:
         filter_end_time=spec.filter_end_time,
         owner=owner,
     )
+    if result.run_id is None:
+        # ``Result.run_id`` is optional because a *reference* may name the latest
+        # run rather than one identifier; a Result that a run just produced always
+        # carries the name it produced it under. Refused rather than coerced,
+        # because an outcome recording an empty identifier is a lie about what is
+        # on disk, and every step below reads it.
+        raise RuntimeError(
+            f"step {planned.step_id!r} ran but recorded no run_id, so nothing "
+            f"below it can name what it produced"
+        )
     return result.run_id

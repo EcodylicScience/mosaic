@@ -6,7 +6,7 @@ This module contains the high-level playback orchestrator:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, Optional, Iterable, Any, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Iterable, Any, Tuple
 import cv2
 
 from mosaic.core.pipeline.loading import pose_column_pairs
@@ -17,17 +17,20 @@ from .overlay import prepare_overlay, _remap_overlay_labels
 from .video_stream import render_stream
 from .visual_spec import apply_visualization_spec, playback_kwargs_from_spec
 
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
 
 def build_overlay(
-    ds,
+    ds: "Dataset",
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],
     label_kind: Optional[str] = "behavior",
     color_by: Optional[str] = None,
-    label_maps: Optional[Dict[str, dict]] = None,
+    label_maps: Optional[Dict[str, dict[Any, Any]]] = None,
     hide_unlabeled: bool = False,
-    visualization_spec: Optional[dict] = None,
+    visualization_spec: Optional[dict[str, Any]] = None,
     tracks_run_id: Optional[str] = None,
 ) -> Tuple[dict, Any, Dict[str, Any]]:
     """Build a base overlay (and optional spec layers), returning overlay/tracks/labels."""
@@ -62,15 +65,15 @@ def build_overlay(
 
 
 def play_video(
-    ds,
+    ds: "Dataset",
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],
     label_kind: Optional[str] = "behavior",
     color_by: Optional[str] = None,
-    label_maps: Optional[Dict[str, dict]] = None,
+    label_maps: Optional[Dict[str, dict[Any, Any]]] = None,
     hide_unlabeled: bool = False,
-    overlay_data: Optional[dict] = None,
+    overlay_data: Optional[dict[str, Any]] = None,
     start: int = 0,
     end: Optional[int] = None,
     downscale: float = 1.0,
@@ -82,7 +85,7 @@ def play_video(
     output_path: Optional[Path | str] = None,
     show_window: bool = True,
     window_name: Optional[str] = None,
-    visualization_spec: Optional[dict] = None,
+    visualization_spec: Optional[dict[str, Any]] = None,
     tracks_run_id: Optional[str] = None,
     camera: Optional[str] = None,
 ) -> Optional[Path]:
@@ -278,7 +281,7 @@ def play_video(
 
 
 def play_video_with_spec(
-    ds,
+    ds: "Dataset",
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],

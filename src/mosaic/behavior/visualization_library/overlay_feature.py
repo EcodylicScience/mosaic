@@ -166,7 +166,7 @@ class Overlay:
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         """Render this entry's video, and record what was drawn."""
-        if df is None or df.empty:
+        if df.empty:
             return pd.DataFrame()
         if self._ds is None or self._run_root is None:
             raise RuntimeError(
