@@ -213,8 +213,8 @@ class CollectiveMotionMetrics:
 
         ``centroid_heading`` is named to match ``FFGroupsMetrics``'s
         ``centroid_heading_col`` default, so the two features compose. ``state``
-        is auto-detected as the label column by ``viz-timeline``, which renders a
-        collective-state timeline with no further wiring.
+        is the per-frame collective state, in the column name the overlay reads
+        as a label with no further wiring.
 
         **Every row reduced together must share one coordinate frame.** That
         holds by construction today -- no track converter emits a ``camera``

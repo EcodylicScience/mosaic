@@ -465,8 +465,8 @@ def test_metadata_and_composition_names() -> None:
     assert (out["sequence"] == "S1").all()
     assert (out["group"] == "G").all()
     assert "time" in out.columns
-    # ffgroups-metrics reads this exact name, and viz-timeline auto-detects
-    # "state" as a label column.
+    # ffgroups-metrics reads this exact name, and the overlay reads "state" as
+    # a label column.
     assert "centroid_heading" in out.columns
     assert "state" in out.columns
 

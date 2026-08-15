@@ -108,6 +108,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "nn-delta-bins",
     "nn-delta-response",
     "orientation-rel",
+    "overlay",
     "pair-egocentric",
     "pair-facing",
     "pair-interaction-filter",

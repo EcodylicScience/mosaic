@@ -37,6 +37,7 @@
   "nn-delta-bins/default": "0.1-cf58aa878c",
   "nn-delta-response/default": "0.3-20fdca9f70",
   "orientation-rel/default": "0.1-fad9155a97",
+  "overlay/default": "0.1-f65505be41",
   "pair-egocentric/default": "0.1-926e064596",
   "pair-facing/default": "0.1-fc3a017269",
   "pair-interaction-filter/default": "0.1-0dd4b4ee95",

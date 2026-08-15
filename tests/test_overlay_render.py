@@ -291,3 +291,116 @@ def test_a_multicamera_sequence_must_name_a_camera(
             show_window=False,
             tracks_run_id="ultralytics.8.4-aaaaaaaaaa",
         )
+
+
+# --- the same render, as a step a graph can end on -----------------------------
+
+
+def _feature_dataset(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> Dataset:
+    """A store-backed dataset that can also hold a feature run.
+
+    The media factory declares the roots a *render* needs. A render that is a
+    feature also writes into `features/`, so that root is added here rather than
+    widened onto every media test.
+    """
+    ds = _store_dataset(tmp_path, make_media_dataset, make_imgstore, [""])
+    ds.roots["features"] = str(Path(ds.base_dir) / "features")
+    ds.ensure_roots()
+    ds.save()
+    return ds
+
+
+def test_the_overlay_feature_writes_a_marked_video_into_its_run_root(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """Rendering has an identity now, so a graph can end on the deliverable.
+
+    Every real workflow used to stop one step short of the artifact a biologist
+    looks at: the pipeline produced a table and somebody opened a notebook. The
+    video is addressed by ``run_id`` like everything else, which is what makes it
+    cacheable, plannable, and something a queue can be asked for.
+    """
+    pytest.importorskip("imgstore")
+    from mosaic.behavior.visualization_library import Overlay
+    from mosaic.core.pipeline.index import feature_run_root
+    from mosaic.core.pipeline.run import run_feature
+
+    ds = _feature_dataset(tmp_path, make_media_dataset, make_imgstore)
+    variant = "trex.0.1-bbbbbbbbbb"
+    _add_variant(ds, variant, pose=False)
+
+    result = run_feature(
+        ds, Overlay(params={"label_kind": None}), tracks_run_id=variant, track=False
+    )
+
+    run_root = feature_run_root(ds, "overlay__from__tracks", result.run_id)
+    written = run_root / "seq.mp4"
+    assert written.is_file(), sorted(p.name for p in run_root.iterdir())
+    with open_frame_reader(written, target="raw") as reader:
+        rendered = [frame for _, frame in reader]
+    with open_frame_reader(
+        ds.resolve_media("", "seq").paths[0], target="raw"
+    ) as reader:
+        source = [frame for _, frame in reader]
+    assert _changed_pixels(rendered, source) > 0
+
+
+def test_the_overlay_feature_is_a_cache_hit_the_second_time(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """Same tracks, same params, same identifier -- and so no second encode."""
+    pytest.importorskip("imgstore")
+    from mosaic.behavior.visualization_library import Overlay
+    from mosaic.core.pipeline.run import run_feature
+
+    ds = _feature_dataset(tmp_path, make_media_dataset, make_imgstore)
+    variant = "trex.0.1-bbbbbbbbbb"
+    _add_variant(ds, variant, pose=False)
+
+    first = run_feature(
+        ds, Overlay(params={"label_kind": None}), tracks_run_id=variant, track=False
+    )
+    again = run_feature(
+        ds, Overlay(params={"label_kind": None}), tracks_run_id=variant, track=False
+    )
+
+    assert again.run_id == first.run_id
+
+
+def test_a_changed_drawing_is_a_different_artifact(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """Every params field changes the pixels, so every one is in the identity.
+
+    Without that a re-render under different settings would overwrite the first
+    at the same address, and nothing on disk would record which one is there.
+    """
+    pytest.importorskip("imgstore")
+    from mosaic.behavior.visualization_library import Overlay
+    from mosaic.core.pipeline.run import run_feature
+
+    ds = _feature_dataset(tmp_path, make_media_dataset, make_imgstore)
+    variant = "trex.0.1-bbbbbbbbbb"
+    _add_variant(ds, variant, pose=False)
+
+    plain = run_feature(
+        ds, Overlay(params={"label_kind": None}), tracks_run_id=variant, track=False
+    )
+    boxless = run_feature(
+        ds,
+        Overlay(params={"label_kind": None, "show_individual_bboxes": False}),
+        tracks_run_id=variant,
+        track=False,
+    )
+
+    assert boxless.run_id != plain.run_id

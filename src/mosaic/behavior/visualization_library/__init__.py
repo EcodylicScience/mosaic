@@ -3,14 +3,17 @@
 Two unrelated things live here, and the distinction matters:
 
 - **The overlay renderer** -- ``load_tracks_and_labels`` -> ``prepare_overlay``
-  -> ``render_stream`` -> ``play_video``. Plain functions, not features. This is
-  the one presentational thing the toolkit keeps: a headless "draw this
-  sequence's tracks on its video" is how you check a tracker actually worked,
-  and it is what a CLI or queue context cannot get from a web interface.
-- **The crop features** -- ``egocentric-crop`` and ``interaction-crop-pipeline``.
-  Despite living here, these produce *data*: egocentric crops are the input all
-  three identity models read. They are categorized ``media``, not as
-  visualization, for exactly that reason.
+  -> ``render_stream`` -> ``play_video``. Plain functions, and the one
+  presentational thing the toolkit keeps: a headless "draw this sequence's
+  tracks on its video" is how you check a tracker actually worked, and it is
+  what a CLI or queue context cannot get from a web interface.
+- **The media features** -- ``overlay``, ``egocentric-crop`` and
+  ``interaction-crop-pipeline``. Despite living here, these write *artifacts*
+  something else reads: egocentric crops are the input all three identity models
+  take, and the annotated video is the thing a biologist looks at. They are
+  categorized ``media`` rather than as visualization for that reason, and
+  ``overlay`` is a feature so that a graph can end on the deliverable rather
+  than one step short of it.
 
 Static plotting is deliberately absent. ``viz-timeline`` and
 ``viz-global-colored`` wrote matplotlib PNGs from a compute backend and were
@@ -32,6 +35,7 @@ from . import (
     helpers,
     interaction_crop,
     overlay,
+    overlay_feature,
     playback,
     video_stream,
     visual_spec,
@@ -52,6 +56,9 @@ from .interaction_crop import (
 from .overlay import (
     draw_frame,
     prepare_overlay,
+)
+from .overlay_feature import (
+    Overlay,
 )
 from .playback import (
     build_overlay,
@@ -77,6 +84,7 @@ __all__ = [
     "visual_spec",
     "egocentric_crop",
     "interaction_crop",
+    "overlay_feature",
     # Functions
     "load_tracks_and_labels",
     "load_ground_truth_labels",
@@ -93,4 +101,5 @@ __all__ = [
     # Classes
     "EgocentricCrop",
     "InteractionCropPipeline",
+    "Overlay",
 ]
