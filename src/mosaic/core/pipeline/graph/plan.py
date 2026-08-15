@@ -762,6 +762,12 @@ def _entries_for(
 
     An op step is all-or-nothing for the same reason turned around: its scope
     lives in its own params, and the ops that read one read the whole of it.
+
+    The completeness branch is not the same test as an empty remainder, and the
+    case that separates them is a global fit: one artifact answers for every
+    entry, so it is complete over a scope naming an entry it never saw, and its
+    *missing* set names that entry all the same. Asking it to compute the entry
+    would ask it to be a different artifact.
     """
     if isinstance(step, OpStepSpec) or resolution.scope_dependent:
         return tuple(sorted(target))
