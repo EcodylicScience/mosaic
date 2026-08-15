@@ -1,23 +1,18 @@
 # Feature Library
 
-Mosaic's feature library provides 40+ registered feature implementations
-organized by output type. Features are composable pipeline stages that
-read from tracks or upstream feature outputs and produce per-sequence
-parquet files.
+Features are composable pipeline stages that read from tracks or upstream feature
+outputs and produce per-sequence parquet files.
 
-## Feature categories
+!!! tip "The list of features lives in [the reference](../../reference/features.md)"
 
-| Category | Features |
-|----------|----------|
-| Per-frame kinematic | SpeedAngvel, BodyScale, OrientationRelative |
-| Per-frame spatial | PairEgocentric, PairPosition, PairInteractionFilter, ApproachAvoidance |
-| Per-frame social | NearestNeighbor, FFGroups, FFGroupsMetrics, NNDeltaResponse, NNDeltaBins |
-| Collective motion | CollectiveMotionMetrics, LocalOrderMetrics |
-| Per-frame context | TemporalStacking, PairWavelet |
-| Dimensionality reduction | PairPoseDistancePCA, GlobalScaler |
-| Embedding & clustering | GlobalTSNE, GlobalKMeansClustering, GlobalWardClustering, ExtractTemplates, ExtractLabeledTemplates |
-| Sequence models | ArHmmFeature, KpmsFeature |
-| Classification | XgboostFeature, FeralFeature |
+    This page renders the library's classes from their docstrings. For the roster --
+    every registered feature, its version, its category and its parameters -- see the
+    generated [features reference](../../reference/features.md), which is derived
+    from the registry itself and checked in continuous integration.
+
+    A hand-written table used to sit here. It said "40+", listed 28, and disagreed
+    with the two other hand-written lists elsewhere in this documentation; the
+    registry held 44.
 
 !!! warning "KpmsFeature is non-commercial only"
 

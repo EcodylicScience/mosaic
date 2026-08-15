@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Written by scripts/gen_docs_reference.py, never by hand. Collapsed by default
+# in a pull request diff, because a feature version bump moves hundreds of lines
+# here and none of them is the change under review -- but still tracked, so that
+# a change to what the docs claim is visible beside the code that caused it.
+docs/reference/*.md linguist-generated=true
