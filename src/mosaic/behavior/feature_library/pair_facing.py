@@ -98,6 +98,7 @@ class PairFacing:
         Pose column prefixes (default "poseX", "poseY", matching PoseConfig).
     """
 
+    category = "per-frame"
     name = "pair-facing"
     version = "0.1"
     parallelizable = True

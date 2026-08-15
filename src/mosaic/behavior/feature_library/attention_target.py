@@ -77,6 +77,7 @@ class AttentionTarget:
         "none" (no facing target) or "unknown" (target picked).
     """
 
+    category = "per-frame"
     name = "attention-target"
     version = "0.1"
     parallelizable = True

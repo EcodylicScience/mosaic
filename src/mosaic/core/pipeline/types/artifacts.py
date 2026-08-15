@@ -28,9 +28,11 @@ R = TypeVar("R", default=object, covariant=True)
 class ArtifactSpec(Result[str], Generic[L, R]):
     """Reference to a feature artifact with load specification.
 
-    Type parameters:
-        L: Load spec type (NpzLoadSpec, ParquetLoadSpec, JoblibLoadSpec).
-        R: Return type of from_path(). Defaults to object.
+    `L` is the load spec type -- `NpzLoadSpec`, `ParquetLoadSpec` or
+    `JoblibLoadSpec` -- and `R` is the return type of `from_path()`, which
+    defaults to `object`. Both are declared through `Generic[L, R]` rather than
+    the PEP 695 form, because each carries a `default=` that PEP 696 makes
+    available only from Python 3.13 and this package targets 3.12.
 
     Attributes:
         load: How to load the matched files.

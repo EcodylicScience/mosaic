@@ -351,7 +351,14 @@ class FeralFeature:
         Training hyperparameters. None = inference-only mode.
     """
 
-    category = "per-frame"
+    # Global, like `xgboost` and `lightning-action`: it fits a classifier over a
+    # collection of labeled sequences and then applies it per sequence. It was
+    # declared per-frame, which put it in the wrong group everywhere the category
+    # is read -- the pipeline diagram's colors and `mosaic features list` -- and
+    # disagreed with both the README and CLAUDE.md, which have always called it
+    # a global fit-then-apply feature. The attribute carries no execution
+    # meaning, so this changes what is displayed and nothing about what runs.
+    category = "global"
     name = "feral"
     version = "0.1"
     parallelizable = False

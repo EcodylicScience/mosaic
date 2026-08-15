@@ -622,6 +622,8 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
 
 @register_op
 class ExtractFramesOp(Op[ExtractFramesParams]):
+    """Sample representative video frames as PNGs for annotation."""
+
     kind = "extract-frames"
     category = "extract"
     domain = "tracking"

@@ -380,6 +380,8 @@ def _run_inference_op(
 
 @register_op
 class InferPoseOp(Op[PoseInferParams]):
+    """Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``."""
+
     kind = "infer-pose"
     category = "infer"
     domain = "tracking"
@@ -430,6 +432,8 @@ class InferPoseOp(Op[PoseInferParams]):
 
 @register_op
 class InferPointsOp(Op[PointInferParams]):
+    """Run a trained POLO point model over scoped videos, bridging into ``tracks/``."""
+
     kind = "infer-points"
     category = "infer"
     domain = "tracking"
@@ -481,6 +485,8 @@ class InferPointsOp(Op[PointInferParams]):
 
 @register_op
 class InferLocalizerOp(Op[LocalizerInferParams]):
+    """Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``."""
+
     kind = "infer-localizer"
     category = "infer"
     domain = "tracking"

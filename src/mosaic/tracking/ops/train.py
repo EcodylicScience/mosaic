@@ -433,6 +433,8 @@ class LocalizerTrainParams(Params):
 
 @register_op
 class TrainPoseOp(Op[PoseTrainParams]):
+    """Train a YOLO pose model, registering the directory it produces."""
+
     kind = "train-pose"
     category = "train"
     domain = "tracking"
@@ -532,6 +534,8 @@ class TrainPoseOp(Op[PoseTrainParams]):
 
 @register_op
 class TrainPointsOp(Op[PointTrainParams]):
+    """Train a POLO point-detection model, registering the directory it produces."""
+
     kind = "train-points"
     category = "train"
     domain = "tracking"
@@ -631,6 +635,8 @@ class TrainPointsOp(Op[PointTrainParams]):
 
 @register_op
 class TrainLocalizerOp(Op[LocalizerTrainParams]):
+    """Train the heatmap localizer, registering the directory it produces."""
+
     kind = "train-localizer"
     category = "train"
     domain = "tracking"

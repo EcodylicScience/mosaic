@@ -429,17 +429,12 @@ def draw_frame(
     hide_individual_bboxes_for_pair: bool = False,
     font_scale: float = 1.0,
 ) -> np.ndarray:
-    """
-    Draw pose points, bounding boxes, and labels for a single frame.
+    """Draw pose points, bounding boxes, and labels for a single frame.
 
-    Parameters
-    ----------
-    image : np.ndarray (H,W,3)
-        Video frame in BGR order.
-    frame_overlay : dict
-        Entry from overlay_data["per_frame"][frame].
-    id_colors : dict
-        Mapping produced by prepare_overlay.
+    Args:
+        image: Video frame of shape `(H, W, 3)` in BGR order.
+        frame_overlay: One entry of `overlay_data["per_frame"]`, keyed by frame.
+        id_colors: Per-id color mapping, as produced by `prepare_overlay`.
     """
     canvas = image.copy()
     sx, sy = scale

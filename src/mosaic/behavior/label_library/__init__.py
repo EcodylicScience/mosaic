@@ -2,8 +2,11 @@
 Label converter library for behavior datasets.
 
 This module provides a plugin architecture for converting various label formats
-to the standardized behavior dataset format. Converters are automatically
-registered via the @register_label_converter decorator.
+to the standardized behavior dataset format. Registration is **not** automatic
+and ``register_label_converter`` is **not** used as a decorator here: this module
+imports each converter and then calls it on the class, rebinding the result (see
+the calls below). Registration therefore happens only for converters this file
+names, which is what keeps the registry's contents explicit.
 
 Adding a New Label Converter
 -----------------------------
@@ -14,8 +17,8 @@ Adding a New Label Converter
    - label_kind: str (e.g., "behavior", "id_tags")
    - label_format: str (version identifier)
 4. Implement the convert() method
-5. Decorate with @register_label_converter
-6. Import the module here to register it
+5. Import the module here, and call ``register_label_converter`` on the class,
+   rebinding the result onto the module as the calls below do
 
 Available Converters
 --------------------
@@ -54,8 +57,7 @@ Usage
 # ``dataset`` to break the converter/dataset import cycle, as tracks did).
 from mosaic.core.label_converter import register_label_converter
 
-# Import all converters to trigger registration
-# Each converter module should define a class decorated with @register_label_converter
+# Importing a converter module does not register it; the calls below do.
 from . import calms21_behavior
 from . import boris_aggregated_csv
 from . import boris_pandas_pickle
