@@ -62,7 +62,14 @@ from .model import (
     TRACKS_INPUT,
     params_step_refs,
 )
-from .resolve import declaration_catalog, feature_class_for_slug
+from .resolve import (
+    ResolvedStep,
+    StepSpec,
+    declaration_catalog,
+    feature_class_for_slug,
+    resolve_step_spec,
+)
+from .scope import graph_writes_tracks, intended_scope, media_universe
 from .storage import storage_name_of
 from .store import (
     load_recipe,
@@ -101,10 +108,12 @@ __all__ = [
     "Recipe",
     "RecipeCycle",
     "Request",
+    "ResolvedStep",
     "SCHEMA_VERSION",
     "Step",
     "StepRef",
     "StepRun",
+    "StepSpec",
     "TRACKS_DECLARATION",
     "TRACKS_INPUT",
     "Verdict",
@@ -120,9 +129,12 @@ __all__ = [
     "descendants_of",
     "edges",
     "feature_class_for_slug",
+    "graph_writes_tracks",
+    "intended_scope",
     "lane_for",
     "load_recipe",
     "load_request",
+    "media_universe",
     "params_step_refs",
     "parents_of",
     "pipelines_root",
@@ -132,6 +144,7 @@ __all__ = [
     "request_path",
     "requests_root",
     "resolve_emits",
+    "resolve_step_spec",
     "resource_class_of",
     "save_recipe",
     "save_request",

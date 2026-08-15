@@ -21,7 +21,15 @@ all.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import TYPE_CHECKING, Literal, cast
+
+from mosaic.core.json_value import JsonValue
+
+if TYPE_CHECKING:
+    from pydantic.fields import FieldInfo
 
 from ..types.feature import EmitsLevel
 from .compatibility import (
@@ -32,9 +40,22 @@ from .compatibility import (
     ProducerDecl,
     resolve_emits,
 )
-from .model import TRACKS_INPUT
+from .model import (
+    TRACKS_INPUT,
+    BoundRef,
+    OpStepSpec,
+    Recipe,
+    params_step_refs,
+)
+from .storage import storage_name_of
 
-__all__ = ["declaration_catalog", "feature_class_for_slug"]
+__all__ = [
+    "ResolvedStep",
+    "StepSpec",
+    "declaration_catalog",
+    "feature_class_for_slug",
+    "resolve_step_spec",
+]
 
 _EMITS_LEVELS: frozenset[str] = frozenset(
     {"individual", "pair", "unidentified", "as-input"}
@@ -207,3 +228,234 @@ def declaration_catalog() -> DeclarationCatalog:
     for kind, op_cls in OPS.items():
         entries[kind] = _op_declaration(kind, op_cls)
     return DeclarationCatalog(entries=entries)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedStep:
+    """What an earlier step in the walk turned out to be.
+
+    What a later step substitutes its references from. Kept apart from the plan
+    record because resolution needs only these four facts, and taking the whole
+    record would let a substitution depend on coverage -- which would make the
+    identity of a step depend on how much of its upstream happened to be done.
+
+    Attributes:
+        step_id: The step this describes.
+        storage_name: Where a feature step's outputs live, which is what a
+            downstream ``Result`` names -- not the slug. A chain three deep
+            nests its suffixes, so this is carried rather than recomputed.
+        run_id: The identifier, or ``None`` when it could not be resolved.
+        tracks_variant: What an op step's tables are named by, empty otherwise.
+        model_run_id: What names a training step's model, empty otherwise.
+    """
+
+    step_id: str
+    storage_name: str = ""
+    run_id: str | None = None
+    tracks_variant: str = ""
+    model_run_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StepSpec:
+    """Exactly what it takes to run one step, and nothing about how.
+
+    The hand-off out of planning: mapped to ``mosaic run``'s arguments by
+    anything that starts a process, and to a queue's job spec by anything that
+    schedules one. It carries no coverage, no status and no lane -- those are the
+    plan's, and a spec that carried them would invite a runner to act on a view
+    of the world it did not read itself.
+    """
+
+    step_id: str
+    kind: Literal["feature", "op"]
+    feature: str = ""
+    op_kind: str = ""
+    inputs: tuple[JsonValue, ...] = ()
+    params: Mapping[str, JsonValue] = field(
+        default_factory=lambda: cast("dict[str, JsonValue]", {})
+    )
+    tracks_run_id: str | None = None
+    entries: tuple[tuple[str, str], ...] = ()
+    """What this step should compute, already narrowed.
+
+    A step must not re-request its whole scope: it is the scope minus what is
+    covered and minus what is quarantined. Empty means everything in scope, which
+    is what a first run of a cold step gets.
+    """
+    filter_start_frame: int | None = None
+    filter_end_frame: int | None = None
+    filter_start_time: float | None = None
+    filter_end_time: float | None = None
+    overlap_frames: int = 0
+
+    @property
+    def storage_name(self) -> str:
+        """Where this step's outputs land, for a feature step."""
+        return storage_name_of(
+            self.feature, [_input_name(item) for item in self.inputs]
+        )
+
+
+def _input_name(item: JsonValue) -> str:
+    """The storage name an input contributes to a downstream storage suffix."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return str(item.get("feature", ""))
+    return ""
+
+
+def _params_field_types(kind: str, name: str) -> dict[str, object]:
+    """The declared type of each top-level params field of a step.
+
+    What decides how a reference is substituted. Read from the model rather than
+    from a label the recipe author wrote, so a reference lands in the shape its
+    consumer actually declares -- an ``ArtifactSpec`` field gets a reference with
+    a pattern, a ``str`` field gets a bare identifier, and neither is a choice
+    the file gets to make.
+    """
+    if kind == "feature":
+        cls = feature_class_for_slug(name)
+        params_cls = getattr(cls, "Params", None) if cls is not None else None
+    else:
+        from mosaic.core.pipeline.ops import OPS
+
+        op_cls = OPS.get(name)
+        params_cls = getattr(op_cls, "Params", None) if op_cls is not None else None
+    declared: object = getattr(params_cls, "model_fields", None)
+    if not isinstance(declared, dict):
+        return {}
+    typed = cast("dict[str, FieldInfo]", declared)
+    return {key: info.annotation for key, info in typed.items()}
+
+
+def _is_reference_field(annotation: object) -> bool:
+    """Does this declared type hold a run reference rather than a bare value?"""
+    from mosaic.core.pipeline.types import Result
+
+    candidates = [annotation, *getattr(annotation, "__args__", ())]
+    return any(
+        isinstance(candidate, type) and issubclass(candidate, Result)
+        for candidate in candidates
+    )
+
+
+def resolve_step_spec(
+    recipe: Recipe,
+    step_id: str,
+    resolved: Mapping[str, ResolvedStep],
+    *,
+    bind: Mapping[str, BoundRef] | None = None,
+    entries: Sequence[tuple[str, str]] = (),
+) -> StepSpec:
+    """Substitute every reference in one step from what is already resolved.
+
+    Called in topological order, so every step this one names has been resolved
+    before it is reached. Substitution is decided by the **declared field type**,
+    never by a label in the file:
+
+    - an ``inputs`` reference becomes ``{feature, run_id}`` naming the upstream's
+      *storage* name, which is what a ``Result`` carries;
+    - the step-level ``tracks`` reference becomes the upstream's tracks
+      **variant**, which is a different identifier from its run id;
+    - a params field declared as a ``Result`` or ``ArtifactSpec`` becomes
+      ``{feature, run_id}`` plus the reference's pattern when it gave one;
+    - a params field declared as a plain ``str`` becomes the bare identifier,
+      which is how a model is named.
+
+    Only top-level params fields are scanned, matching ``resolve_references`` and
+    ``Params.identity_dump()``, neither of which recurses -- so finding a
+    reference deeper would promise a substitution nothing performs.
+
+    *bind* is applied first and is never overridden: an out-of-graph artifact the
+    submission pinned is already resolved when the walk reaches it.
+    """
+    step = recipe.step(step_id)
+    bound = (bind or {}).get(step_id)
+
+    if isinstance(step, OpStepSpec):
+        types = _params_field_types("op", step.kind)
+        params = dict(step.params)
+        for name, reference in params_step_refs(step.params).items():
+            upstream = resolved.get(reference.step)
+            if upstream is None:
+                continue
+            # An op names a model by a bare identifier: the training run when
+            # there is one, which is what resolve_model returns for it.
+            params[name] = (
+                upstream.model_run_id or upstream.run_id or ""
+                if not _is_reference_field(types.get(name))
+                else {"feature": upstream.storage_name, "run_id": upstream.run_id}
+            )
+        return StepSpec(
+            step_id=step_id,
+            kind="op",
+            op_kind=step.kind,
+            params=params,
+            entries=tuple(entries),
+        )
+
+    types = _params_field_types("feature", step.feature)
+    inputs: list[JsonValue] = []
+    for item in step.inputs:
+        if isinstance(item, str):
+            inputs.append(item)
+            continue
+        upstream = resolved.get(item.step)
+        inputs.append(
+            {
+                # The storage name, not the slug: a Result names where the output
+                # lives, and a chain three deep nests its suffixes.
+                "feature": upstream.storage_name if upstream else "",
+                "run_id": upstream.run_id if upstream else None,
+            }
+        )
+
+    params = dict(step.params)
+    for name, reference in params_step_refs(step.params).items():
+        upstream = resolved.get(reference.step)
+        if upstream is None:
+            continue
+        if _is_reference_field(types.get(name)):
+            payload: dict[str, JsonValue] = {
+                "feature": upstream.storage_name,
+                "run_id": upstream.run_id,
+            }
+            # Pinned only when the recipe said so. ArtifactSpec defaults its glob
+            # to *.parquet, which silently resolves the wrong file out of a
+            # producer that writes more than one -- so the author pins it, and
+            # leaving it unset here keeps the model's own default in force rather
+            # than substituting a guess.
+            if reference.pattern:
+                payload["pattern"] = reference.pattern
+            params[name] = payload
+        else:
+            params[name] = upstream.run_id or ""
+
+    tracks_run_id: str | None = None
+    if step.tracks is not None:
+        upstream = resolved.get(step.tracks.step)
+        # The variant, never the op run id. They coincide today only because the
+        # tracker variant payload is an unwrapped passthrough of the settings.
+        tracks_run_id = upstream.tracks_variant if upstream else None
+
+    if bound is not None:
+        # An out-of-graph pin resolves the step outright; nothing derived above
+        # may override it, because the submission chose it deliberately.
+        inputs = [{"feature": bound.feature, "run_id": bound.run_id}]
+
+    return StepSpec(
+        step_id=step_id,
+        kind="feature",
+        feature=step.feature,
+        inputs=tuple(inputs),
+        params=params,
+        tracks_run_id=tracks_run_id,
+        entries=tuple(entries),
+        filter_start_frame=step.run.filter_start_frame,
+        filter_end_frame=step.run.filter_end_frame,
+        filter_start_time=step.run.filter_start_time,
+        filter_end_time=step.run.filter_end_time,
+        overlap_frames=step.run.overlap_frames,
+    )
