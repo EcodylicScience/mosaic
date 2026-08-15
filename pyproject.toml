@@ -100,12 +100,21 @@ localizer = ["torch>=2.0", "h5py>=3.0"]
 # read the analysis `.h5` its converter consumes. Named for the integration
 # rather than for the library, like `localizer`.
 sleap = ["h5py>=3.0"]
-# Reading DeepLabCut's HDF5 export, not running DeepLabCut. `deeplabcut.py`
-# calls `pd.read_hdf` for a `.h5` / `.hdf5` / `.hdf` path, and pandas dispatches
-# that to PyTables -- so without this a DLC user with HDF5 output meets an
-# ImportError from inside pandas, naming a package mosaic never mentions.
-# Named for the integration, like `sleap` and `localizer`.
-deeplabcut = ["tables>=3.8"]
+# PyTables, which is what pandas dispatches `read_hdf` to. The DeepLabCut
+# converter accepts a `.h5` / `.hdf5` / `.hdf` path, so without this a user with a
+# DeepLabCut HDF5 export meets an ImportError from inside pandas, naming a package
+# mosaic never mentions.
+#
+# Named for the format rather than for the tool, unlike `sleap` and `localizer`.
+# `[deeplabcut]` would read as "installs DeepLabCut" to a person and to a license
+# scanner, and it installs no DeepLabCut code at all: mosaic reads an exported
+# file, and a file format carries no license.
+#
+# Not a duplicate of `sleap`, which also reads HDF5. That one needs `h5py`
+# because SLEAP's analysis file is opened directly; this one needs PyTables
+# because the DeepLabCut export is opened through pandas. Two libraries, two
+# readers, one container format.
+hdf5 = ["tables>=3.8"]
 # Frozen image-backbone identity models. `identity` covers both: the timm
 # backbone loader (`global-identity-embedding`, any timm architecture tag or
 # Hugging Face hub id) and the DINOv2 + temporal head. `torch` ships via

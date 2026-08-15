@@ -74,7 +74,7 @@ alternative installs, select extras individually:
 | `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
 | `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
-| `deeplabcut`       | PyTables, to read DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra |
+| `hdf5`             | PyTables, which pandas dispatches `read_hdf` to, for DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra. Installs no DeepLabCut code |
 | `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
 | `yolo-augment`     | `albumentations`, which Ultralytics picks up on its own to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO training |
 

@@ -71,7 +71,7 @@ jobs:
           # without extras and prune what it considers extraneous, undoing the
           # two installs below.
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,deeplabcut]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5]'
           uv pip install pytest ruff
 
       - name: Test
@@ -123,7 +123,7 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,deeplabcut,identity]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,identity]'
           uv pip install pytest
 
       - name: Test identity checkpoints
@@ -169,7 +169,7 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,deeplabcut,pose]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,pose]'
           uv pip install pytest
 
       - name: Test ultralytics tracking
