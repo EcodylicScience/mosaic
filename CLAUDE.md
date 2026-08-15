@@ -82,8 +82,23 @@ table, see [README.md](README.md). Notable points:
   store *directory* is indexed and read as a normal media entry (see "imgstore
   support" below). Not bundled in `recommended`.
 - `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
-  infer) from a git pin (`Skovorp/feral@main`). It runs in-process (not
-  sandboxed like keypoint-MoSeq) and is deliberately excluded from `recommended`.
+  infer) from PyPI, as `feral>=1.0,<2`. It runs in-process (not sandboxed like
+  keypoint-MoSeq) and is deliberately excluded from `recommended`. Two things
+  the bound and the exclusion are actually about:
+  - **It wants an environment of its own.** FERAL pins its dependencies exactly
+    — `opencv-python==4.13.0.92`, `pandas`, `scikit-learn`, `timm`, `matplotlib`,
+    `transformers` — and every mosaic requirement is a floor, so pip resolves the
+    pair happily and downgrades each one. The opencv pin lays a wheel over the
+    conda-forge `py-opencv` the documented environment installs, which puts a
+    vendored ffmpeg beside conda's `av`: pitfall 8, and `tests/conftest.py`
+    refuses to start pytest once it happens. The pins are FERAL's own and predate
+    the PyPI release; what changed is that `pip install -e ".[feral]"` is now the
+    obvious thing to type.
+  - **The upper bound is load-bearing.** Mosaic builds its own training loop out
+    of FERAL's pieces, importing thirteen symbols from `feral.model`,
+    `feral.dataset`, `feral.utils`, `feral.metrics` and `feral.backbones` — ten
+    of them submodule internals outside that package's `__all__`. The `feral` CI
+    job exists to make a release that moves one of them fail here.
 - `identity` installs `torch` + `timm` for all three image-backbone identity
   models — `global-identity-model` (trains a classification head),
   `global-identity-embedding` (frozen backbone, prototype k-NN, trains nothing)
@@ -110,16 +125,18 @@ pytest -m slow                              # slow tests only
 pytest -m "slow or not slow"                # everything
 pytest -m identity                          # what CI's identity job runs
 pytest -m tracker                           # what CI's tracking job runs
+pytest -m feral                             # what CI's feral job runs
 pytest tests/test_run_feature.py            # one file
 pytest tests/test_run_feature.py::test_x    # one test
 pytest -k "feature_params"                  # name pattern
 pytest -v                                   # verbose
 ```
 
-Four markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
-(needs `ffmpeg` **and** `ffprobe` on PATH), `tracker` and `identity`. The last two
-are how CI selects its extra jobs, so a new test file in either area is covered
-the day it lands rather than when someone remembers to edit the workflow.
+Five markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
+(needs `ffmpeg` **and** `ffprobe` on PATH), `tracker`, `identity` and `feral`. The
+last three are how CI selects its extra jobs, so a new test file in any of those
+areas is covered the day it lands rather than when someone remembers to edit the
+workflow.
 
 `-m` on the command line **replaces** the `-m "not slow"` in `addopts` rather than
 intersecting with it. That is what makes `pytest -m slow` work, and it also means
@@ -127,9 +144,11 @@ intersecting with it. That is what makes `pytest -m slow` work, and it also mean
 `tests/test_pytest_config.py` pins the default so that stays deliberate.
 
 Two tests exist to keep the suite honest about its own environment:
-`tests/test_optional_dependency_coverage.py` reads the suite's `importorskip`
-calls out of its AST and fails when one names a module no CI job installs, and
-`tests/test_pytest_config.py` asserts the configuration above.
+`tests/test_optional_dependency_coverage.py` reads the suite's guards out of its
+AST — both `importorskip` calls and the literal `find_spec` probes that back a
+two-directional `skipif`, as `feral`'s do — and fails when one names a module no
+CI job installs; and `tests/test_pytest_config.py` asserts the configuration
+above.
 
 ### Linting and formatting
 
@@ -168,7 +187,7 @@ updates the published docs.
 
 ### CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs four jobs on push
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs five jobs on push
 and pull request. There is no `.pre-commit-config.yaml`.
 
 - **`test`** — `uv run --no-sync pytest -q`. It inherits `addopts = "-m 'not slow'"`,
@@ -179,6 +198,10 @@ and pull request. There is no `.pre-commit-config.yaml`.
 - **`tracking`** — the ultralytics preflight and marker suites under a `pose`
   environment, for the same reason: without `ultralytics` and `lap` installed they
   would skip green and prove nothing.
+- **`feral`** — the FERAL-marked suites under a `feral` environment. Mosaic
+  imports ten symbols FERAL's `__all__` does not carry, so this is what notices a
+  release that moves one. Its own runner because FERAL's exact dependency pins
+  would otherwise re-resolve the environment the other jobs share.
 - **`lint`** — `uvx ruff check` **and** `uvx ruff format --check` over `src` and
   `tests`, on push as well as on pull request. Formatting is a merge gate, not a
   suggestion. It was once scoped to the files a pull request touched, which meant

@@ -203,9 +203,11 @@ FERAL. Copyright (c) Peter Skovorodnikov. Authors Peter Skovorodnikov and
 Jacopo Razzauti (Rockefeller University), equal contribution. MIT License.
 https://github.com/Skovorp/feral
 
-Installed from git by the [feral] extra. MIT imposes no obligation beyond
+Installed from PyPI by the [feral] extra. MIT imposes no obligation beyond
 preserving the copyright and permission notices, which travel with the
-installed package.
+installed package. The project publishes its license as free text rather than
+as a PEP 639 expression or a classifier, so the identifier above is read from
+its LICENSE.
 
 Fetched. FERAL builds its backbone from weights downloaded from the
 HuggingFace hub at first use. Mosaic redistributes none of them, and no hub

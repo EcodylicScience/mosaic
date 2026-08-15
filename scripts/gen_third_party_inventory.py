@@ -137,8 +137,11 @@ _POLO_NOTE: Final = (
     "same name and version, so it is never queried for this entry."
 )
 _FERAL_NOTE: Final = (
-    "Downloads backbone weights from the HuggingFace hub at first use; those "
-    "carry their own terms -- see docs/licensing.md."
+    "Read from the project's own LICENSE, because its PyPI metadata carries no "
+    "license identifier -- no expression and no classifier, only the MIT text in "
+    "the free-text field, which this script reports truncated and flags for a "
+    "human. Also downloads backbone weights from the HuggingFace hub at first "
+    "use; those carry their own terms -- see docs/licensing.md."
 )
 _KPMS_NOTE: Final = (
     "Read from the project's own LICENSE.md, which PyPI does not carry: "
@@ -157,6 +160,12 @@ OVERRIDES: Final[dict[str, Override]] = {
         obligation="strong-copyleft",
         note=_POLO_NOTE,
     ),
+    # FERAL released to PyPI at 1.0.0 and the extra names it from there, so new
+    # locks resolve it from the registry and answer from REGISTRY_OVERRIDES
+    # below. This entry is for a lock that still carries the git reference, which
+    # includes the one in the tree: it cannot be regenerated while `pose`'s
+    # `ultralytics>=8.4.63` floor and `polo`'s fork of the same distribution name
+    # are both resolvable in one universal lock. Remove it with the relock.
     "https://github.com/Skovorp/feral.git": Override(
         expression="MIT",
         obligation="permissive",
@@ -175,11 +184,22 @@ OVERRIDES: Final[dict[str, Override]] = {
 # document in its repository. Reporting "unknown" for keypoint-moseq would be
 # accurate about PyPI and useless about the obligation, which is the sharpest
 # one in the whole tree.
+#
+# `feral` is the milder version of the same problem. It publishes its license
+# only as free text, which is the tier this script reports truncated and marks
+# as needing a human -- an answer that is accurate about the metadata and says
+# nothing about the obligation. It moved here from OVERRIDES when FERAL began
+# releasing to PyPI, since a registry source never reaches that table.
 REGISTRY_OVERRIDES: Final[dict[str, Override]] = {
     "keypoint-moseq": Override(
         expression="Harvard OTD Non-Commercial Research and Academic Use",
         obligation="non-commercial",
         note=_KPMS_NOTE,
+    ),
+    "feral": Override(
+        expression="MIT",
+        obligation="permissive",
+        note=_FERAL_NOTE,
     ),
 }
 

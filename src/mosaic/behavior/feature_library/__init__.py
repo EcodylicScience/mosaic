@@ -136,7 +136,8 @@ try:
 except ImportError:
     pass
 
-# FERAL V-JEPA behavior classifier (optional: requires `pip install 'mosaic[feral]'`)
+# FERAL V-JEPA behavior classifier
+# (optional: requires `pip install 'mosaic-behavior[feral]'`)
 try:
     from . import feral_feature
     from .feral_feature import FeralFeature, FeralTrainingConfig, feral_setup_check

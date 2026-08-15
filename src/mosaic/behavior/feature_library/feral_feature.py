@@ -21,9 +21,9 @@ and ``config.json`` from a previous training run.
 Output follows the same pattern as XgboostFeature: per-frame rows with
 ``prob_<class>`` probability columns and a ``predicted_label`` column.
 
-Requires the FERAL package (``pip install 'mosaic[feral]'``, which pulls
-https://github.com/Skovorp/feral). Optionally set ``feral_code_dir`` to a
-local checkout of the package to override the installed one.
+Requires the FERAL package (``pip install 'mosaic-behavior[feral]'``).
+Optionally set ``feral_code_dir`` to a local checkout of the package to
+override the installed one.
 """
 
 from __future__ import annotations
@@ -65,10 +65,10 @@ log = logging.getLogger(__name__)
 def _import_feral(feral_code_dir: str | Path | None = None):
     """Ensure the installed ``feral`` package is importable and return its modules.
 
-    FERAL is a pip-installable package (``pip install 'mosaic[feral]'``, which
-    pulls https://github.com/Skovorp/feral). ``feral_code_dir`` is an *optional*
-    ``sys.path`` override for a local editable/pinned checkout of the package;
-    when ``None`` the already-installed ``feral`` package is used.
+    FERAL is a pip-installable package (``pip install 'mosaic-behavior[feral]'``).
+    ``feral_code_dir`` is an *optional* ``sys.path`` override for a local
+    editable/pinned checkout of the package; when ``None`` the already-installed
+    ``feral`` package is used.
 
     Returns a namespace exposing the ``model``, ``dataset``, ``utils`` and
     ``metrics`` submodules so callers can reach e.g. ``f.model.FeralModel``.
@@ -87,9 +87,9 @@ def _import_feral(feral_code_dir: str | Path | None = None):
         from feral import dataset, metrics, model, utils
     except ImportError as e:
         raise ImportError(
-            "FERAL is not installed. Install it with `pip install 'mosaic[feral]'` "
-            "(pulls feral from https://github.com/Skovorp/feral), or set "
-            "feral_code_dir to a local checkout of the package."
+            "FERAL is not installed. Install it with "
+            "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
+            "local checkout of the package."
         ) from e
     return SimpleNamespace(model=model, dataset=dataset, utils=utils, metrics=metrics)
 
@@ -182,8 +182,7 @@ def _check_feral(feral_code_dir: str | Path | None = None) -> None:
     except ImportError:
         raise ImportError(
             "FERAL is required for FeralFeature. Install it with "
-            "`pip install 'mosaic[feral]'` (pulls feral from "
-            "https://github.com/Skovorp/feral), or set feral_code_dir to a "
+            "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
             "local checkout of the package."
         ) from None
 
@@ -368,7 +367,7 @@ class FeralFeature:
 
     class Params(Params):
         # Optional sys.path override for a local checkout of the `feral`
-        # package; None uses the pip-installed package (mosaic[feral]).
+        # package; None uses the pip-installed package (mosaic-behavior[feral]).
         feral_code_dir: Path | None = None
         # Shared model config. The backbone also selects the pretrained weights
         # FERAL downloads from the HuggingFace hub on first use. The default's

@@ -182,6 +182,58 @@ jobs:
         # `-m tracker` for the same reason as the identity job above.
         run: uv run --no-sync pytest -q -m tracker
 
+  # FERAL is a moving target mosaic reaches deep into: the feature builds its own
+  # training loop out of thirteen symbols from `feral.model`, `feral.dataset`,
+  # `feral.utils`, `feral.metrics` and `feral.backbones`, and ten of those are
+  # submodule internals the package's `__all__` does not carry and its authors owe
+  # nobody. This job is what turns a release that moves one of them red here
+  # rather than on someone's GPU box mid-run.
+  #
+  # It is deliberately the last job of its kind rather than a line added to
+  # `test`: FERAL pins its dependencies exactly -- `opencv-python`, `pandas`,
+  # `scikit-learn`, `timm`, `matplotlib`, `transformers` -- so installing it beside
+  # the other extras would silently re-resolve the environment every other job
+  # shares. On its own runner those pins win uncontested, and its single
+  # `opencv-python` build keeps conftest's two-builds guard satisfied.
+  feral:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mosaic
+
+      - uses: actions/checkout@v4
+        with:
+          repository: EcodylicScience/mosaic-media
+          path: mosaic-media
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install
+        working-directory: mosaic
+        run: |
+          uv venv
+          uv pip install -e '../mosaic-media[io,cli]'
+          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,feral]'
+          uv pip install pytest
+
+      - name: Test feral integration
+        working-directory: mosaic
+        env:
+          PYTHONHASHSEED: random
+          # Promotes a missing feral from "skip" to "broken environment". The
+          # guard is a `find_spec` probe rather than `importorskip`, because the
+          # same file also asserts the ImportError raised in feral's absence.
+          MOSAIC_CI_FERAL: "1"
+        # `-m feral` for the same reason as the identity job above.
+        run: uv run --no-sync pytest -q -m feral
+
   # Runs on push as well as on pull request. `uvx` resolves the newest ruff at
   # run time, so a rule set widening upstream surfaces here rather than on
   # whichever machine happens to upgrade first; `[tool.ruff.lint] select` in

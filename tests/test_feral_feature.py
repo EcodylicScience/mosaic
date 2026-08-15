@@ -85,12 +85,12 @@ class TestImportGuard:
 
     @pytest.mark.skipif(_HAS_FERAL, reason="feral is installed")
     def test_check_feral_raises_helpful_error(self) -> None:
-        with pytest.raises(ImportError, match=r"mosaic\[feral\]"):
+        with pytest.raises(ImportError, match=r"mosaic-behavior\[feral\]"):
             _check_feral()
 
     @pytest.mark.skipif(_HAS_FERAL, reason="feral is installed")
     def test_instantiation_raises_without_feral(self) -> None:
-        with pytest.raises(ImportError, match=r"mosaic\[feral\]"):
+        with pytest.raises(ImportError, match=r"mosaic-behavior\[feral\]"):
             FeralFeature(
                 FeralFeature.Inputs((Result(feature="upstream"),)),
                 {"model_dir": "/tmp/does-not-matter"},
@@ -102,8 +102,9 @@ class TestPathResolution:
 
     Exercised through the module-level helper rather than the class on purpose:
     ``FeralFeature.__init__`` raises without the optional ``feral`` package, which
-    CI does not install, so a class-routed test would be permanently skipped there
-    -- and this is a correctness fix that needs coverage everywhere.
+    only the ``feral`` CI job installs, so a class-routed test would be skipped in
+    every other one -- and this is a correctness fix that needs coverage
+    everywhere.
     """
 
     @staticmethod
@@ -150,6 +151,7 @@ class TestPathResolution:
         )
 
 
+@pytest.mark.feral
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 class TestLoadStateResolvesModelDir:
     """``load_state`` reaches the resolved directory, not a CWD-relative one."""
@@ -196,6 +198,7 @@ class TestLoadStateResolvesModelDir:
         assert feature._video_dir == clips
 
 
+@pytest.mark.feral
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 class TestResolveBackboneKey:
     """`_resolve_backbone_key` accepts a BACKBONES key or a HuggingFace slug."""

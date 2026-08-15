@@ -75,7 +75,7 @@ alternative installs, select extras individually:
 | `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
 | `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
 | `hdf5`             | PyTables, which pandas dispatches `read_hdf` to, for DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra. Installs no DeepLabCut code |
-| `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference)              |
+| `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference); install it in an environment of its own, see below |
 | `yolo-augment`     | `albumentations`, which Ultralytics picks up on its own to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO training |
 
 `pose`, `polo`, and `recommended` install Ultralytics, which is AGPL-3.0. That
@@ -87,6 +87,15 @@ but it covers Ultralytics' own distribution only — `polo` is a third-party for
 so it is AGPL-only. Mosaic is AGPL-3.0-or-later itself, so nothing here is
 incompatible; the question is whether *your* use of the combined work can meet
 the obligations. See [Licensing](docs/licensing.md).
+
+`feral` wants an environment of its own. FERAL pins its dependency versions
+exactly — `opencv-python`, `pandas`, `scikit-learn`, `timm`, `matplotlib`,
+`transformers` — while every mosaic requirement is a lower bound, so pip resolves
+the two together without complaint and downgrades each one. The `opencv-python`
+pin is the one that does damage: it installs a wheel over the conda-forge
+`py-opencv` the setup above asks for, which puts a second ffmpeg build in the
+process beside `av` and crashes it nondeterministically. Install `feral` into a
+separate environment and point it at the same datasets.
 
 There is deliberately no `kpms` extra. keypoint-MoSeq cannot share an
 environment with mosaic, so the `kpms` feature drives it in a separate one that

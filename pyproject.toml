@@ -127,11 +127,28 @@ gpu = ["faiss-cpu>=1.7"]  # use faiss-gpu on Linux+CUDA for GPU-accelerated kNN 
 # media entries (indexing, reading, tracking inference). Deliberately NOT in
 # `recommended` — only needed for imgstore-format recordings.
 imgstore = ["imgstore>=0.4"]
-# FERAL V-JEPA video behavior classifier (FeralFeature, training + inference).
-# Pulls the feral package (which declares its own torch/transformers/timm/decord
-# deps); tracks main like `polo`. Deliberately NOT in `recommended` (large model
-# stack, GPU-oriented).
-feral = ["feral @ git+https://github.com/Skovorp/feral.git@main"]
+# FERAL V-JEPA video behavior classifier (FeralFeature, training + inference),
+# from PyPI as of its 1.0.0 release. It was a bare `main` reference before that,
+# which is what `polo` still is.
+#
+# The upper bound is load-bearing rather than cautious. Mosaic builds its own
+# training loop out of FERAL's pieces, so it imports thirteen symbols from
+# `feral.model`, `feral.dataset`, `feral.utils`, `feral.metrics` and
+# `feral.backbones`, and ten of them are submodule internals that FERAL's
+# `__all__` does not carry. A major release is free to move any of them.
+#
+# **This extra wants an environment of its own.** FERAL pins its dependencies
+# exactly -- `opencv-python==4.13.0.92`, `pandas`, `scikit-learn`, `timm`,
+# `matplotlib`, `transformers` -- and every mosaic requirement is a floor, so pip
+# resolves the pair happily and downgrades each one. The opencv pin is the
+# damaging one: it lays a wheel over the conda-forge `py-opencv` the documented
+# environment installs, which puts a vendored ffmpeg beside conda's `av` and
+# reintroduces the crash pitfall 8 in CLAUDE.md exists to prevent. The pins are
+# FERAL's own and were the same in the git tree; what the PyPI route changes is
+# that `pip install -e ".[feral]"` is now the obvious thing to type.
+#
+# Deliberately NOT in `recommended` for that reason and for its size.
+feral = ["feral>=1.0,<2"]
 # Curated bundle for typical research workflows. Excludes `polo` (incompatible
 # ultralytics pin with `pose`), `lightning-action` (large standalone dep),
 # `gpu` (platform-specific), and `yolo-augment` (it would reintroduce the
@@ -193,6 +210,7 @@ markers = [
     "media: needs the ffmpeg toolchain (both `ffmpeg` and `ffprobe`) on PATH",
     "tracker: exercises an integrated tracker's run loop behind a fake tool",
     "identity: needs torch and timm, i.e. the `identity` extra",
+    "feral: needs the feral package, i.e. the `feral` extra",
 ]
 # A warning is a failure, so that the next one becomes visible at the commit that
 # introduces it rather than joining a running total nobody reads. The suite emits

@@ -1,9 +1,16 @@
-"""Every ``importorskip`` target is accounted for in exactly one place.
+"""Every guarded optional dependency is accounted for in exactly one place.
 
 A guarded test proves nothing unless some environment is obliged to install what
 it guards. ``tests/conftest.py`` states that rule in prose -- "a new optional
 dependency joins the install line and this tuple in the same change" -- and prose
 does not fail. This does.
+
+The suite guards two ways, and both are audited here: ``pytest.importorskip``,
+and a module-level ``importlib.util.find_spec`` probe fed to ``skipif``. The
+second exists for a guard that has to work in both directions -- ``feral``'s
+tests assert the ImportError raised in its *absence* as well as the behavior
+present in its presence -- which ``importorskip`` cannot express. Auditing only
+the first would leave that whole file's dependency outside every check below.
 
 The guarded set is read from the suite's **own AST** rather than by grepping the
 source text, because several docstrings in ``conftest.py`` discuss
@@ -31,6 +38,7 @@ from pathlib import Path
 # From `conftest` rather than from `tests.helpers`: these are pytest's own
 # configuration, read by `pytest_configure`, not builders a test composes with.
 from tests.conftest import (
+    CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
     CI_REQUIRED_MODULES,
     CI_TRACKING_MODULES,
@@ -49,12 +57,8 @@ def _canonical(distribution: str) -> str:
     return distribution.lower().replace("-", "_")
 
 
-def importorskip_targets() -> dict[str, set[str]]:
-    """``{module: {test filename}}`` for every literal ``importorskip`` in tests.
-
-    A non-literal argument is deliberately not tolerated: it cannot be audited,
-    so it would silently leave a guard outside every check here.
-    """
+def _probe_targets(attribute: str, *, literal_required: bool) -> dict[str, set[str]]:
+    """``{module: {test filename}}`` for every ``<obj>.<attribute>("name")`` call."""
     found: dict[str, set[str]] = defaultdict(set)
     for path in sorted(TESTS.glob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -62,17 +66,64 @@ def importorskip_targets() -> dict[str, set[str]]:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Attribute) and func.attr == "importorskip"):
+            if not (isinstance(func, ast.Attribute) and func.attr == attribute):
                 continue
             if not node.args:
                 continue
             first = node.args[0]
-            assert isinstance(first, ast.Constant) and isinstance(first.value, str), (
-                f"{path.name}:{node.lineno} calls importorskip with a non-literal "
-                "module name, which cannot be audited by this file"
-            )
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                assert not literal_required, (
+                    f"{path.name}:{node.lineno} calls {attribute} with a non-literal "
+                    "module name, which cannot be audited by this file"
+                )
+                continue
             found[first.value].add(path.name)
     return dict(found)
+
+
+def importorskip_targets() -> dict[str, set[str]]:
+    """``{module: {test filename}}`` for every literal ``importorskip`` in tests.
+
+    A non-literal argument is deliberately not tolerated: it cannot be audited,
+    so it would silently leave a guard outside every check here.
+    """
+    return _probe_targets("importorskip", literal_required=True)
+
+
+def find_spec_targets() -> dict[str, set[str]]:
+    """``{module: {test filename}}`` for every literal ``find_spec`` probe in tests.
+
+    The second way the suite guards on an optional dependency, and it exists
+    because ``importorskip`` can only express *skip when absent*. ``feral`` needs
+    both directions -- two tests assert the ImportError that fires when the
+    package is missing -- so it is probed once into a module-level flag and used
+    with ``skipif`` either way round.
+
+    Unlike ``importorskip`` above, a non-literal argument is passed over rather
+    than refused. ``find_spec`` has a second caller that is not a guard at all:
+    ``conftest.pytest_configure`` loops it over the CI tuples to turn a missing
+    module into an error, and its argument is the loop variable.
+    """
+    return _probe_targets("find_spec", literal_required=False)
+
+
+def guarded_targets() -> dict[str, set[str]]:
+    """Every module the suite guards on, by either mechanism."""
+    merged: dict[str, set[str]] = defaultdict(set)
+    for targets in (importorskip_targets(), find_spec_targets()):
+        for name, files in targets.items():
+            merged[name] |= files
+    return dict(merged)
+
+
+def _ci_modules() -> set[str]:
+    """Every module some CI job is obliged to install."""
+    return (
+        set(CI_REQUIRED_MODULES)
+        | set(CI_IDENTITY_MODULES)
+        | set(CI_TRACKING_MODULES)
+        | set(CI_FERAL_MODULES)
+    )
 
 
 def _core_import_names() -> set[str]:
@@ -103,15 +154,14 @@ def _core_import_names() -> set[str]:
 
 
 def test_every_guarded_module_is_required_by_some_ci_job() -> None:
-    covered = (
-        set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_TRACKING_MODULES)
-    )
-    guarded = importorskip_targets()
+    covered = _ci_modules()
     uncovered = {
-        name: sorted(files) for name, files in guarded.items() if name not in covered
+        name: sorted(files)
+        for name, files in guarded_targets().items()
+        if name not in covered
     }
     assert not uncovered, (
-        f"guarded by importorskip but required by no CI job: {uncovered}. "
+        f"guarded but required by no CI job: {uncovered}. "
         "Their tests skip green in every job, so they are not evidence. Either "
         "add the distribution to a CI install line and its import name to the "
         "matching tuple in tests/conftest.py, or delete the guard."
@@ -124,9 +174,9 @@ def test_no_core_dependency_is_guarded() -> None:
     Worse than useless: if the core install really were broken, the guard would
     turn the failure into a skip and the suite would stay green over it.
     """
-    guarded_core = sorted(set(importorskip_targets()) & _core_import_names())
+    guarded_core = sorted(set(guarded_targets()) & _core_import_names())
     assert not guarded_core, (
-        f"{guarded_core} are core dependencies but are guarded by importorskip. "
+        f"{guarded_core} are core dependencies but are guarded anyway. "
         "Remove the guard -- a core dependency is not optional, and skipping "
         "instead of failing hides a broken install."
     )
@@ -139,12 +189,8 @@ def test_every_required_module_is_reachable_from_the_suite() -> None:
     directly, so its absence is an ImportError rather than a skip -- which is why
     this asks whether the suite reaches a module at all, not whether it guards it.
     """
-    required = (
-        set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_TRACKING_MODULES)
-    )
-    guarded = set(importorskip_targets())
-    reachable = guarded | {"pywt"}
-    unreached = sorted(required - reachable)
+    reachable = set(guarded_targets()) | {"pywt"}
+    unreached = sorted(_ci_modules() - reachable)
     assert not unreached, (
         f"{unreached} are demanded of a CI job but nothing in the suite reaches "
         "them. Either a test needs them and should say so, or the tuple entry in "

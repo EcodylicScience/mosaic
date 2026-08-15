@@ -92,6 +92,17 @@ CI_IDENTITY_MODULES = ("torch", "timm")
 # declaration that exists to stop that install happening.
 CI_TRACKING_MODULES = ("ultralytics", "lap")
 
+# And again for the job that installs `feral`, which became possible at all only
+# when FERAL started publishing to PyPI. `feral` is probed with
+# ``importlib.util.find_spec`` rather than ``pytest.importorskip``, because two of
+# the tests assert the *absence* path -- the ImportError naming the extra -- which
+# ``importorskip`` cannot express. That probe is audited the same way; see
+# ``test_optional_dependency_coverage.py``.
+#
+# Its own job for the usual reason and one more: FERAL pins its dependencies
+# exactly, so the environment it produces is not the one the other jobs install.
+CI_FERAL_MODULES = ("feral",)
+
 # The same argument, for binaries rather than modules. Probing shells out to the
 # system toolchain, so every test that indexes real media hard-*fails* without it
 # rather than skipping -- and the failure names a codec, not a missing tool.
@@ -178,6 +189,8 @@ def pytest_configure() -> None:
         required += CI_IDENTITY_MODULES
     if os.environ.get("MOSAIC_CI_TRACKING"):
         required += CI_TRACKING_MODULES
+    if os.environ.get("MOSAIC_CI_FERAL"):
+        required += CI_FERAL_MODULES
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         raise pytest.UsageError(
