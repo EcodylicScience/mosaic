@@ -92,6 +92,12 @@ from .resolve import (
     params_reference_site,
     resolve_step_spec,
 )
+from .run import (
+    CoverageShortfall,
+    PipelineRun,
+    StepOutcome,
+    run_pipeline,
+)
 from .scope import graph_writes_tracks, intended_scope, media_universe
 from .storage import storage_name_of
 from .store import (
@@ -128,6 +134,7 @@ __all__ = [
     "COMPLETE_STATUSES",
     "ConsumerDecl",
     "CoverageShort",
+    "CoverageShortfall",
     "DEFAULT_LANE",
     "Declaration",
     "DeclarationCatalog",
@@ -143,6 +150,7 @@ __all__ = [
     "MISSING_SAMPLE",
     "OVERWRITE_PARAM",
     "OpStepSpec",
+    "PipelineRun",
     "Plan",
     "PlannedStep",
     "Problem",
@@ -158,6 +166,7 @@ __all__ = [
     "Stalled",
     "Step",
     "StepBuildError",
+    "StepOutcome",
     "StepRef",
     "StepRun",
     "StepSpec",
@@ -204,6 +213,7 @@ __all__ = [
     "resolve_emits",
     "resolve_step_spec",
     "resource_class_of",
+    "run_pipeline",
     "save_recipe",
     "save_request",
     "storage_name_of",

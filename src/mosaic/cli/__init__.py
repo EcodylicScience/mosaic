@@ -21,6 +21,7 @@ from mosaic.cli.inventory import inventory_command
 from mosaic.cli.scan import scan_command
 from mosaic.cli.sources import sources_app
 from mosaic.cli.tags import notes_app, tags_app
+from mosaic.cli.pipeline import pipeline_app
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reconcile import reconcile_command
 from mosaic.cli.reindex import reindex_command
@@ -55,6 +56,7 @@ app.add_typer(tracking_app, name="tracking")
 app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
 _ = app.command(name="inventory")(inventory_command)
+app.add_typer(pipeline_app, name="pipeline")
 
 # Dataset prep.
 _ = app.command(name="init")(init_command)

@@ -47,6 +47,7 @@ from ..inventory.model import (
     MediaDerivativeRef,
     TracksVariantRef,
     TrainedModelRef,
+    classify,
 )
 from ..manifest import tracks_variants_for
 from ..ops import IdentityDeferred, OpIdentity
@@ -344,6 +345,7 @@ def plan_pipeline(
     inventory: InventoryCache | None = None,
     quarantined: Iterable[Entry] = (),
     catalog: DeclarationCatalog | None = None,
+    recorded: Mapping[str, str] | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -365,6 +367,13 @@ def plan_pipeline(
             89 sequences is a different model from one fitted on 90.
         catalog: The declarations to resolve against. Built from the registries
             when not given.
+        recorded: What a step's run was actually called, for the steps that have
+            already run. **A resolved identifier is a prediction and a recorded
+            one is a fact**, so where the two differ the fact governs -- for that
+            step and for everything hashing it. It is how a caller executing a
+            graph keeps the rest of it addressable after a step legitimately
+            landed somewhere else, which is what a ``scope_dependent`` step does
+            whenever fewer entries complete than were intended.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -408,6 +417,7 @@ def plan_pipeline(
             bind=bind,
             resolved=resolved,
             planned=planned,
+            recorded=recorded or {},
         )
         planned[step.id] = step_plan
         steps.append(step_plan)
@@ -433,6 +443,7 @@ def _plan_step(
     bind: Mapping[str, BoundRef],
     resolved: Mapping[str, ResolvedStep],
     planned: Mapping[str, PlannedStep],
+    recorded: Mapping[str, str],
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established."""
     declared = catalog.entries[
@@ -461,6 +472,7 @@ def _plan_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
         base = resolution.step
+        base = _as_recorded(base, recorded.get(step.id, ""))
 
     coverage, status, drift = _coverage_of(inv, base.artifact, target)
     return replace(
@@ -475,6 +487,25 @@ def _plan_step(
         status=status,
         drift=drift,
         reason=_reason_for(base, parents, planned, coverage, status),
+    )
+
+
+def _as_recorded(base: PlannedStep, run_id: str) -> PlannedStep:
+    """Replace a feature step's resolved identity with the one it actually got.
+
+    Feature steps only, and the asymmetry is not an omission. An op's identity is
+    a function of its params -- its settings, the recipe it encodes, the recorded
+    identities of the videos it reads -- and the plan passes execution those same
+    params, so the two cannot differ. A ``scope_dependent`` feature's identity
+    covers the entry set it was fitted over, and *that* can differ from what was
+    intended whenever some of the intended entries turn out not to be there.
+    """
+    if not run_id or base.kind != "feature" or run_id == base.run_id:
+        return base
+    return replace(
+        base,
+        run_id=run_id,
+        artifact=FeatureRunRef(name=base.storage_name, run_id=run_id),
     )
 
 
@@ -722,7 +753,21 @@ def _coverage_of(
         coverage = Coverage[Entry](
             target=target, present=frozenset(), covers_all=record.coverage.is_satisfied
         )
-    return coverage, record.status, record.drift
+    # Re-derived rather than taken from the record, and the two are not the same
+    # answer: the record's status is measured against the *dataset's* universe,
+    # and this one against the entries the submission asked for. A run holding
+    # every entry the dataset can process reads complete to an inventory and is
+    # genuinely short of a scope naming one more -- and taking the record's word
+    # for it would report a step as done while its coverage said two of three.
+    status = classify(
+        satisfied=coverage.is_satisfied,
+        any_covered=bool(coverage.covered) or coverage.covers_all,
+        orphan_rows=bool(record.orphan_rows),
+        orphan_files=bool(record.orphan_files),
+        drifted=bool(record.drift),
+        finished=bool(record.finished_at),
+    )
+    return coverage, status, record.drift
 
 
 def _entries_for(
