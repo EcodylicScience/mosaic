@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING, Literal, cast
 from mosaic.core.json_value import JsonValue
 
 if TYPE_CHECKING:
+    from pydantic import ValidationError
     from pydantic.fields import FieldInfo
+
+    from mosaic.core.pipeline.ops import Op
+    from mosaic.core.pipeline.types import Feature, Params
 
 from ..types.feature import EmitsLevel
 from .compatibility import (
@@ -50,10 +54,18 @@ from .model import (
 from .storage import storage_name_of
 
 __all__ = [
+    "ReferenceSite",
     "ResolvedStep",
+    "StepBuildError",
     "StepSpec",
+    "build_feature",
+    "build_op_params",
+    "build_step_feature",
+    "build_step_op_params",
     "declaration_catalog",
     "feature_class_for_slug",
+    "op_class_for_kind",
+    "params_reference_site",
     "resolve_step_spec",
 ]
 
@@ -90,6 +102,161 @@ def feature_class_for_slug(slug: str) -> type | None:
         if getattr(cls, "name", None) == slug:
             return cls
     return None
+
+
+def op_class_for_kind(kind: str) -> "type[Op[Params]] | None":
+    """The registered op class for *kind*, or ``None``.
+
+    Registers the tracking ops first, because the generic registry holds no
+    tracking kinds until their subpackages are imported -- so a lookup made
+    before anything else touched them would report a real op as unknown. The
+    call is idempotent and is what every other reader of ``OPS`` does.
+    """
+    from mosaic.core.pipeline.ops import OPS
+    from mosaic.tracking import register_ops
+
+    register_ops()
+    return OPS.get(kind)
+
+
+class StepBuildError(ValueError):
+    """A step cannot be constructed from what the recipe declares.
+
+    Carries *stage* so a caller can phrase its own refusal without parsing the
+    message: the CLI names the available slugs for an unknown one and points at
+    ``--inputs`` or ``--params`` for the other two, while recipe validation names
+    the step the fault sits in.
+    """
+
+    def __init__(self, stage: "BuildStage", name: str, detail: str) -> None:
+        self.stage: BuildStage = stage
+        self.name: str = name
+        self.detail: str = detail
+        super().__init__(f"{name}: {detail}")
+
+
+type BuildStage = Literal["slug", "inputs", "params"]
+"""Which half of a step's declaration was rejected."""
+
+
+def _compact(exc: "ValidationError") -> str:
+    """Render a pydantic ``ValidationError`` as ``field: message; ...``."""
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(part) for part in err.get("loc", ()))
+        message = str(err.get("msg", ""))
+        parts.append(f"{loc}: {message}" if loc else message)
+    return "; ".join(parts)
+
+
+def build_feature(
+    slug: str,
+    inputs_payload: object | None,
+    params: object | None,
+) -> "Feature":
+    """Construct a runnable feature from a slug plus JSON inputs and params.
+
+    **The one place a feature is built from a document.** The CLI builds one
+    from ``--inputs`` / ``--params``, recipe validation builds one to find out
+    whether a step is well formed, and planning builds one to hash -- and three
+    constructions would be three answers to what a step means, of which the
+    validating one would be the answer nobody meets.
+
+    Args:
+        slug: The feature's ``name``.
+        inputs_payload: The inputs as JSON -- a list of ``"tracks"`` literals and
+            ``{"feature", "run_id"}`` mappings. ``None`` means the default
+            ``["tracks"]``, which is what a feature reading tracks gets.
+        params: The params as a mapping, or ``None`` for the defaults. Passed
+            through ``from_overrides``, so a partial mapping for a field with a
+            default factory is merged onto that default rather than replacing it
+            -- which is what reconstructs an artifact reference from a bare
+            ``{"feature", "run_id"}``.
+
+    Raises:
+        StepBuildError: The slug names nothing, the inputs are not admissible,
+            or the params do not validate.
+    """
+    from pydantic import BaseModel, ValidationError
+
+    cls = feature_class_for_slug(slug)
+    if cls is None:
+        raise StepBuildError("slug", slug, f"no registered feature is named {slug!r}")
+
+    inputs_cls: object = getattr(cls, "Inputs", None)
+    if not (isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel)):
+        raise StepBuildError("inputs", slug, "the feature declares no Inputs model")
+    if inputs_payload is not None and not isinstance(inputs_payload, list):
+        raise StepBuildError(
+            "inputs",
+            slug,
+            'inputs must be a list, e.g. ["tracks"] or [{"feature": "speed-angvel"}]',
+        )
+    try:
+        inputs_obj = inputs_cls.model_validate(
+            ["tracks"] if inputs_payload is None else inputs_payload
+        )
+    except ValidationError as exc:
+        raise StepBuildError("inputs", slug, _compact(exc)) from exc
+
+    if params is not None and not isinstance(params, dict):
+        raise StepBuildError("params", slug, "params must be a mapping")
+    try:
+        # The uniform feature constructor, which every feature follows:
+        # ``FeatureCls(inputs, params: dict | None)``. ``Feature`` is a Protocol
+        # and declares no ``__init__``, hence the targeted ignore.
+        return cls(inputs_obj, params)  # pyright: ignore[reportCallIssue]
+    except ValidationError as exc:
+        raise StepBuildError("params", slug, _compact(exc)) from exc
+
+
+def build_op_params(
+    kind: str,
+    params: Mapping[str, JsonValue],
+    entries: Sequence[tuple[str, str]] = (),
+) -> "Params":
+    """Validate one op step's params against the op's own model.
+
+    The op half of :func:`build_feature`, and the same single-site rule: this is
+    what ``run_op`` does with the same mapping, so a recipe that validates here is
+    one that runs.
+
+    *entries* is what the plan is running this step over, handed to the op's own
+    :meth:`~mosaic.core.pipeline.ops.Op.scoped_params` so it lands in whichever
+    field that op reads a scope from. An op step's scope comes from the plan
+    rather than from the recipe, which is what lets one recipe run over several
+    datasets.
+
+    Raises:
+        StepBuildError: The kind names nothing, or the params do not validate.
+    """
+    from pydantic import ValidationError
+
+    op_cls = op_class_for_kind(kind)
+    if op_cls is None:
+        raise StepBuildError("slug", kind, f"no registered op is named {kind!r}")
+    try:
+        return op_cls.Params.model_validate(op_cls.scoped_params(params, entries))
+    except ValidationError as exc:
+        raise StepBuildError("params", kind, _compact(exc)) from exc
+
+
+def build_step_feature(spec: "StepSpec") -> "Feature":
+    """The feature one resolved feature step would run.
+
+    Raises:
+        StepBuildError: As :func:`build_feature`.
+    """
+    return build_feature(spec.feature, list(spec.inputs), dict(spec.params))
+
+
+def build_step_op_params(spec: "StepSpec") -> "Params":
+    """The validated params one resolved op step would run under.
+
+    Raises:
+        StepBuildError: As :func:`build_op_params`.
+    """
+    return build_op_params(spec.op_kind, spec.params, spec.entries)
 
 
 def _accepts(inputs_cls: type, payload: list[object]) -> bool:
@@ -339,6 +506,42 @@ def _is_reference_field(annotation: object) -> bool:
         isinstance(candidate, type) and issubclass(candidate, Result)
         for candidate in candidates
     )
+
+
+def _is_identifier_field(annotation: object) -> bool:
+    """Does this declared type hold a bare identifier -- how a model is named?"""
+    candidates = [annotation, *getattr(annotation, "__args__", ())]
+    return any(candidate is str for candidate in candidates)
+
+
+type ReferenceSite = Literal["result", "identifier", "unsupported", "unknown"]
+"""What a params field can be substituted with, read off its declared type.
+
+``result`` takes ``{feature, run_id}`` -- a ``Result`` or an ``ArtifactSpec``.
+``identifier`` takes the bare upstream identifier, which is how a model is named.
+``unsupported`` is a field that holds neither, so a reference landing there would
+be substituted into a number or a boolean and rejected by the model with a
+message about the substituted value rather than about the reference. ``unknown``
+is a field the model does not declare at all.
+"""
+
+
+def params_reference_site(kind: str, name: str, field_name: str) -> ReferenceSite:
+    """How a reference in *field_name* of this step's params would substitute.
+
+    The question ``validate`` asks before substituting anything, so a reference
+    in a field that cannot hold one is refused as what it is rather than as a
+    type error two layers down.
+    """
+    types = _params_field_types(kind, name)
+    if field_name not in types:
+        return "unknown"
+    annotation = types[field_name]
+    if _is_reference_field(annotation):
+        return "result"
+    if _is_identifier_field(annotation):
+        return "identifier"
+    return "unsupported"
 
 
 def resolve_step_spec(

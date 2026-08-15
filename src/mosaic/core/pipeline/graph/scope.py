@@ -49,10 +49,20 @@ def media_universe(ds: Dataset) -> frozenset[tuple[str, str]]:
     tracks table is addressed by ``(group, sequence)`` and a graph is planned in
     those terms. The camera axis matters to what a *frame run* covers, and this
     is not that.
+
+    **A dataset with no media index has no media, which is an answer.** The
+    accessor raises for it, correctly, because a caller about to *read* media
+    needs to be told to index first. This caller is deciding what a graph would
+    cover, and a graph over a dataset with neither tracks nor media covers
+    nothing -- so refusing here would take a whole plan down over the honest
+    empty case, including the plan that would have said which steps could not
+    run.
     """
-    return frozenset(
-        (entry.group, entry.sequence) for entry in ds.resolve_media_scope(None, None)
-    )
+    try:
+        scope = ds.resolve_media_scope(None, None)
+    except FileNotFoundError:
+        return frozenset()
+    return frozenset((entry.group, entry.sequence) for entry in scope)
 
 
 def graph_writes_tracks(recipe: Recipe, produces_tracks: Iterable[str]) -> bool:

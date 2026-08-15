@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING, cast
 from mosaic.cli._io import fail
 
 if TYPE_CHECKING:
-    from pydantic import ValidationError
-
     from mosaic.core.pipeline.types import Feature
 
 
@@ -61,48 +59,28 @@ def build_feature(
     inputs_json: object | None,
     params_dict: object | None,
 ) -> "Feature":
-    """Construct a runnable feature instance from a slug + JSON inputs/params."""
-    from pydantic import BaseModel, ValidationError
+    """Construct a runnable feature instance from a slug + JSON inputs/params.
 
-    cls = feature_class_for_slug(slug)
+    The construction itself lives in the graph package, which is where a recipe
+    is validated and where a plan hashes one -- three constructions would be
+    three answers to what a step means. What is here is the CLI's own refusal:
+    the available slugs for an unknown one, and which flag to look at for the
+    other two, phrased off the ``stage`` the error carries rather than by
+    reading its text.
+    """
+    from mosaic.core.pipeline.graph import StepBuildError
+    from mosaic.core.pipeline.graph import build_feature as construct
 
-    inputs_cls = getattr(cls, "Inputs", None)
-    if not (isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel)):
-        fail(f"Feature '{slug}' has no Inputs model.")
-
-    # Build the Inputs via model_validate (works for both the default tracks
-    # payload and an explicit --inputs list; RootModel validates the root value).
-    inputs_payload: object = ["tracks"] if inputs_json is None else inputs_json
-    if inputs_json is not None and not isinstance(inputs_json, list):
-        fail(
-            '--inputs must be a JSON array, e.g. ["tracks"] or [{"feature":"speed-angvel"}].'
-        )
     try:
-        inputs_obj = inputs_cls.model_validate(inputs_payload)
-    except ValidationError as exc:
+        return construct(slug, inputs_json, params_dict)
+    except StepBuildError as exc:
+        if exc.stage == "slug":
+            fail(f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}")
+        if exc.stage == "params":
+            fail(f"Invalid --params for '{slug}': {exc.detail}")
         if inputs_json is None:
             fail(
                 f"Feature '{slug}' does not read from tracks by default; pass "
                 f'--inputs (e.g. --inputs \'[{{"feature":"<upstream-slug>"}}]\').'
             )
-        fail(f"Invalid --inputs for '{slug}': {_compact(exc)}")
-
-    if params_dict is not None and not isinstance(params_dict, dict):
-        fail("--params must be a JSON object.")
-
-    try:
-        # Uniform feature constructor: (inputs, params_dict). Feature is a
-        # Protocol (no declared __init__), hence the targeted ignore.
-        return cls(inputs_obj, params_dict)  # pyright: ignore[reportCallIssue]
-    except ValidationError as exc:
-        fail(f"Invalid --params for '{slug}': {_compact(exc)}")
-
-
-def _compact(exc: "ValidationError") -> str:
-    """Render a pydantic ValidationError as ``field: message; ...``."""
-    parts: list[str] = []
-    for err in exc.errors():
-        loc = ".".join(str(p) for p in err.get("loc", ()))
-        msg = str(err.get("msg", ""))
-        parts.append(f"{loc}: {msg}" if loc else msg)
-    return "; ".join(parts)
+        fail(f"Invalid --inputs for '{slug}': {exc.detail}")

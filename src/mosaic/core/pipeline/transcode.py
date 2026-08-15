@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Any, Self, override
 
 import pandas as pd
 from mosaic_media import (
@@ -454,6 +454,27 @@ class TranscodeOp(Op[TranscodeParams]):
             group, sequence = entries[0]
             return f"{group}/{sequence}"
         return f"{len(entries)} entries: {params.target}"
+
+    @classmethod
+    @override
+    def scoped_params(
+        cls, params: Mapping[str, Any], entries: Sequence[tuple[str, str]]
+    ) -> dict[str, Any]:
+        """The entries a plan is transcoding, written where this op reads them.
+
+        The one op that overrides this, for two reasons that both come from the
+        same place: its params refuse an unscoped run, so a recipe step carrying
+        only ``{"target": "analysis"}`` is not valid until a plan says what to
+        transcode; and its identity covers the source videos' recorded uuids, so
+        the entries decide what the run is called rather than merely what it does.
+
+        An empty *entries* leaves the params as written, so a step that named its
+        own scope keeps it and one that named none is refused by the model with
+        its own message rather than by a silent empty list here.
+        """
+        if not entries:
+            return dict(params)
+        return {**params, "entries": [[group, sequence] for group, sequence in entries]}
 
     def plan_identity(self, ds: "Dataset", params: TranscodeParams) -> OpIdentity:
         """What this transcode will be called, without encoding anything.

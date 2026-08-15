@@ -31,6 +31,8 @@ from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
 from mosaic.core.pipeline.types import Params
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.progress import ProgressCallback
 
@@ -121,6 +123,38 @@ class Op(Generic[P]):
     def target(self, params: P) -> str:
         """A short human label for the ``runs.target`` column."""
         return self.kind
+
+    @classmethod
+    def scoped_params(
+        cls, params: "Mapping[str, Any]", entries: "Sequence[tuple[str, str]]"
+    ) -> dict[str, Any]:
+        """*params* narrowed to the entries a plan is running this step over.
+
+        **An op step's scope comes from the plan, not from the recipe**, and that
+        is what keeps a recipe portable: a file naming ``(group, sequence)`` pairs
+        is about one dataset, while the same graph is meant to run over several.
+        So the entry list arrives here, and each op says how it spells one --
+        which differs, because the scope fields grew per op rather than from a
+        shared vocabulary.
+
+        The default keeps *params* as written, which is the all-or-nothing
+        statement for every op whose params already say what it reads: a tracker
+        with no ``entries`` covers all indexed media, and a training op reads a
+        directory rather than a scope at all. Narrowing those is the same job the
+        feature side does with its own entry list, and it is not done here.
+
+        ``TranscodeOp`` overrides it, because it is the one op whose params refuse
+        an unscoped run -- a transcode with no scope re-encodes a corpus because a
+        field was omitted -- and the one whose identity moves with what it covers.
+
+        Args:
+            params: The step's params as the recipe wrote them.
+            entries: What this step is planned to cover, possibly empty.
+
+        Returns:
+            A new mapping; *params* is never mutated.
+        """
+        return dict(params)
 
     def plan_identity(self, ds: "Dataset", params: P) -> OpIdentity:
         """What this run will be called, without doing any of it.

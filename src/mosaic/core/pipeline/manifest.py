@@ -603,6 +603,25 @@ def _resolve_tracks(
     )
 
 
+def tracks_variants_for(
+    ds: Dataset, tracks_run_id: str | None = None
+) -> tuple[str, ...]:
+    """Which tracks recipes this dataset's tables answer to under *tracks_run_id*.
+
+    The ``_tracks`` term of a run identifier, asked without building a manifest.
+    A planner needs exactly this and nothing else a manifest carries: it is
+    hashing what a run *would* read, and the paths it would read them from are
+    not part of the answer.
+
+    It goes through the resolver rather than reading the index itself, because
+    which rows count is a rule with two halves that must not drift -- a variant
+    is collected before the scope narrowing, and only from rows whose table is
+    actually on disk. A second reader would eventually disagree with the first,
+    and the way it would show is a hash that moved without the data moving.
+    """
+    return _resolve_tracks(ds, tracks_run_id, None, None, None, "empty").tracks_variants
+
+
 def _refuse_mixed_schemas(
     scoped: set[tuple[str, str]],
     schema_by_entry: dict[tuple[str, str], str],
