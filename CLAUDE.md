@@ -372,11 +372,14 @@ Two flavors:
   `global-identity-model`). `kpms` is license-restricted — see
   "`feature_library/external/` is sandboxed" below.
 
-The crop features (`egocentric-crop`, `interaction-crop-pipeline`) use the same
-protocol and caching machinery. They live under `visualization_library/` for
-historical reasons but are categorized `media`, not visualization: they write
-image and video artifacts that other features read, and egocentric crops are the
-input all three identity models take.
+The `media` features (`overlay`, `egocentric-crop`, `interaction-crop-pipeline`)
+use the same protocol and caching machinery. They live under
+`visualization_library/` but are categorized `media`, not visualization: they
+write image and video artifacts something else reads. Egocentric crops are the
+input all three identity models take, and `overlay` renders the annotated video a
+biologist looks at — a feature so that a graph can end on the deliverable rather
+than one step short of it, and so that the video is addressed by `run_id` like
+everything else.
 
 `feral` (the FERAL V-JEPA behavior classifier) is a global fit-then-apply
 feature but runs **in-process** — it imports the installed `feral` package
@@ -384,9 +387,10 @@ directly, unlike the sandboxed keypoint-MoSeq runner in
 `feature_library/external/`. Each feature also declares a `category` used for
 grouping/display; beyond per-frame and global, the taxonomy includes `summary`
 (per-sequence aggregations, e.g. `frame-aggregate`), `tag` (e.g.
-`id-tag-columns`) and `media` (writes crops or clips another feature reads, e.g.
-`egocentric-crop`). There is deliberately no visualization category: rendering
-lives in `visualization_library/` as plain functions rather than as features.
+`id-tag-columns`) and `media` (writes an image or video artifact something else
+reads, e.g. `egocentric-crop`, `overlay`). There is deliberately no visualization
+category: a rendered artifact is `media` like any other, and a second,
+non-artifact status mechanism beside the first is what that avoids.
 
 ### Pipeline package
 
@@ -428,6 +432,61 @@ reporting *attempts*) and `mosaic features list` (the registry) each do not.
   so a run root with none is a real state. It is tolerant by design: a block it
   cannot read is dropped and the rest is returned.
 
+### The graph: a pipeline as a file
+
+[`core/pipeline/graph/`](src/mosaic/core/pipeline/graph/) is the pipeline as a
+**document**: a JSON recipe of steps and the references between them, validated
+against the real registries, resolved against a dataset into a plan, and run.
+Deliberately separate from the live-object `Pipeline`, which holds feature
+*classes* and a `CallbackStep` wrapping a live callable and so has no wire form.
+`mosaic pipeline validate|plan|show|run --recipe @file.json` at the CLI.
+
+- **The recipe is portable; the request beside it holds a submission's choices.**
+  A recipe never carries a resolved `run_id` (those are dataset state) and never
+  carries an entry list (those are about one dataset), so the same file runs over
+  several. `Request` holds the narrowing, `bind` (an out-of-graph artifact pinned
+  by the submission), `allow_partial` and the resolved feature versions. A
+  `<digest>.json` copy lands under `<dataset>/.mosaic/pipelines/` on first use.
+- **One place per fact.** Cross-step references sit at the exact site they
+  substitute, so there is no `edges` array to drift from the bodies; `edges()` is
+  a derived read-only view. The one explicit list is `after`, which is
+  ordering-only and corresponds to nothing in any payload.
+- **`plan_pipeline(ds, recipe)` resolves every step in one topological walk and
+  submits nothing.** Step A's identity is a function of its params, B's of its
+  params plus A's identity, C's of B's. It closes because every term is in the
+  recipe or on disk beforehand: a feature-to-feature edge reads nothing, a tracks
+  variant is *minted* from the recipe's settings rather than read back from
+  tables an op has not written, and a `scope_dependent` step's entry set comes
+  from `intended_scope`.
+- **A resolved `run_id` is never load-bearing at execution.** It drives the
+  preview, the estimate, validation and the decision to enqueue; it never skips a
+  step and never enters a downstream job's payload. Every step resolves its own
+  identity at its own start. Do not "optimize" this away by trusting a submitted
+  identifier.
+- **One answer to what a step will be called.** `resolve_feature_identity`
+  ([run.py](src/mosaic/core/pipeline/run.py)) is that answer, and both the graph
+  planner and the live `Pipeline` call it.
+- **Only `resolve.py` may import `FEATURES`,** and only inside its functions.
+  Parsing a recipe, ordering it, listing parents, deciding a lane and rendering a
+  status view must not pay the multi-second feature-library import, because the
+  gate runs far more often than a submit does.
+  `tests/test_graph_imports.py` holds the line.
+- **`can_connect` / `can_join` answer with no dataset at all**, from declarations
+  (`declaration_catalog()`), so a canvas refuses a wire as it is drawn. The
+  sharpest refusal is `can_join`'s: a multi-input join of mismatched entity
+  granularity is a silent per-frame cartesian product.
+- **`reject_unless_valid` runs before the dataset is touched** and reports every
+  problem rather than the first. `overwrite` is refused in `params` on presence,
+  and `extract-frames` is excluded by *ownership* -- mosaic-api embeds its frozen
+  identifier in annotation image paths.
+- **An op step's scope comes from the plan, not the recipe**, through
+  `Op.scoped_params`. `TranscodeOp` overrides it, being the one op whose params
+  refuse an unscoped run and whose identity moves with what it covers.
+- **A `scope_dependent` step is asked for all of its scope, never the
+  remainder** -- its identity *is* its scope, so a fit over what is left under
+  the name of a fit over everything is exactly what the scheme prevents. A
+  scope-free step gets the remainder, as it should.
+
 ### `run_id` reproducibility
 
 Each feature run is tagged with `run_id = "<version>-<hash>"`, where `<hash>`
@@ -455,6 +514,7 @@ src/mosaic/
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
 │   │   ├── index_csv.py        # generic typed IndexCSV + index_records
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
+│   │   ├── graph/              # a pipeline as a file: recipe, validate, plan, run
 │   │   ├── writers.py          # parquet output writing, overlap trimming
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
 │   ├── media/                  # foundational media I/O (read/decode/encode frames)
@@ -472,7 +532,7 @@ src/mosaic/
 │   │   └── external/           # keypoint-moseq subprocess runner (own venv)
 │   ├── label_library/          # label converters (BORIS, CalMS21)
 │   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
-│   └── visualization_library/  # overlay, playback, egocentric crops, timelines
+│   └── visualization_library/  # overlay renderer + the media features (overlay, crops)
 └── tracking/
     ├── ops/                    # @register_op layer behind `mosaic run --kind`
     ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
@@ -550,6 +610,12 @@ Models follow the same shape: `models/<name>/<run_id>/`.
 
 `inventory(ds)` reads across all of the above and reports what is there; it
 writes nothing. `mosaic inventory --json` is the same answer at the CLI.
+
+A recipe drives any run of the above as one graph. `plan_pipeline(ds, recipe)`
+says what each step would be called and what is already done, `run_pipeline`
+executes it here, and `mosaic pipeline validate|plan|show|run` is the same at the
+CLI. The recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json` on first
+use, so the dataset records which pipelines were applied to it.
 
 Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
 sidecar, created on the first locked write and **never removed**. It is not
