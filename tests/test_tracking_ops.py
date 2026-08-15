@@ -35,6 +35,8 @@ from mosaic.core.pipeline.run_log import (
 from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
+from tests.helpers import make_dataset
+
 
 # --- fixtures --------------------------------------------------------------
 
@@ -80,8 +82,7 @@ def _clean_facts_cells(
 
 
 def _make_dataset(tmp_path: Path, seqs=("vid1", "vid2")) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    ds = Dataset(manifest_path=manifest).load()
+    ds = make_dataset(tmp_path)
     media_root = ds.get_root(ds.resolve_media_root())
     media_root.mkdir(parents=True, exist_ok=True)
     rows = []

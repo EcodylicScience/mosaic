@@ -12,8 +12,6 @@ import fnmatch
 import subprocess
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pandas as pd
 import pytest
 import yaml
@@ -32,15 +30,9 @@ from mosaic.core.pipeline.tracking_roots import (
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 
+from tests.helpers import write_mpeg4_mp4
+
 _REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "mosaic"
-
-
-def _write_mp4(path: Path, nframes: int = 4) -> None:
-    """A tiny real video, so ffprobe has something to measure."""
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(nframes):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
 
 
 # --- The registry ------------------------------------------------------------
@@ -148,7 +140,7 @@ def test_the_exclusion_is_not_expressible_as_an_exclude_pattern(tmp_path: Path) 
 
 
 def test_the_media_scanner_does_not_descend_into_tracking(
-    tmp_path: Path, requires_ffprobe: None
+    tmp_path: Path, requires_ffmpeg: None
 ) -> None:
     """A tracker's debug frames and re-encoded clips are not source media.
 
@@ -168,10 +160,10 @@ def test_the_media_scanner_does_not_descend_into_tracking(
             "tracks": str(base / "tracks"),
         },
     )
-    _write_mp4(base / "media_raw" / "seq_a.mp4")
+    write_mpeg4_mp4(base / "media_raw" / "seq_a.mp4")
     debug = base / TRACKING_ROOT / "trex" / "run" / "seq_a"
     debug.mkdir(parents=True)
-    _write_mp4(debug / "debug.mp4")
+    write_mpeg4_mp4(debug / "debug.mp4")
 
     indexed = pd.read_csv(dataset.index_media([base], extensions=(".mp4",)))
 

@@ -24,6 +24,10 @@ from mosaic.behavior.model_library.timm_backbone import (
     resolve_timm_model_id,
 )
 
+# Selected by CI's `identity` job with `-m identity` rather than by a filename
+# list in the workflow, so a new file here is covered the day it lands.
+pytestmark = pytest.mark.identity
+
 # What ``timm.data.resolve_model_data_config`` returns for
 # ``BVRA/MegaDescriptor-L-384``, transcribed from that repository's config.json.
 MEGADESCRIPTOR_CFG: dict[str, object] = {

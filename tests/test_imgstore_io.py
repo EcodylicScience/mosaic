@@ -321,6 +321,9 @@ def test_native_store_npy_random_and_sequential(make_imgstore):
     store.close()
 
 
+# Reads a video-codec chunk back, which decodes through the ffmpeg toolchain
+# rather than through the numpy path the raw-pixel formats take.
+@pytest.mark.media
 def test_native_store_video_matches_imgstore_package(make_video_imgstore):
     """For a video-format store, NativeStore matches the imgstore package.
 
@@ -358,6 +361,9 @@ def test_native_store_video_matches_imgstore_package(make_video_imgstore):
         package.close()
 
 
+# Reads a video-codec chunk back, which decodes through the ffmpeg toolchain
+# rather than through the numpy path the raw-pixel formats take.
+@pytest.mark.media
 def test_video_chunk_reads_are_gated_as_raw(
     make_video_imgstore: Callable[[], Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -387,6 +393,9 @@ def test_video_chunk_reads_are_gated_as_raw(
     assert recorded_path == dest / "000000.avi"
 
 
+# Reads a video-codec chunk back, which decodes through the ffmpeg toolchain
+# rather than through the numpy path the raw-pixel formats take.
+@pytest.mark.media
 def test_a_video_chunk_is_probed_once_per_store_instance(
     make_video_imgstore: Callable[[], Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

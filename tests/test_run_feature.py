@@ -22,7 +22,7 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
-from tests.mock_dataset import MockDataset
+from tests.helpers import MockDataset
 
 # --- Helpers ---
 

@@ -29,7 +29,7 @@ def _reorder(ds: Dataset, sequence: str = "seq_a") -> None:
     )
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestDryRunFirst:
     def test_a_preview_deletes_nothing(
         self, scenario_dataset_with_media: Dataset
@@ -97,7 +97,7 @@ class TestDryRunFirst:
         assert untouched.exists(), "a sequence nothing changed lost its output"
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheCarveOuts:
     """H4: neither can appear, and neither is filtered out to achieve that."""
 
@@ -128,7 +128,7 @@ class TestTheCarveOuts:
         assert not any("labels" in c.abs_path for c in report.candidates)
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestDeclines:
     def test_a_partly_reached_scope_dependent_run_is_declined(
         self, scenario_dataset_with_media: Dataset, monkeypatch: pytest.MonkeyPatch
@@ -199,7 +199,7 @@ class TestDeclines:
         )
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestTheSafeguard:
     def test_a_path_outside_the_roots_raises(
         self, scenario_dataset_with_media: Dataset, monkeypatch: pytest.MonkeyPatch
@@ -232,7 +232,7 @@ class TestTheSafeguard:
             _ = delete_set_mod.delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
 
 
-@pytest.mark.usefixtures("requires_ffprobe")
+@pytest.mark.usefixtures("requires_ffmpeg")
 class TestUnknownIsNeverDeleted:
     """Fail closed means decline, not delete.
 

@@ -12,7 +12,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX, file_digest
 from mosaic.tracking.model_refs import (
     ModelArtifact,
@@ -20,6 +19,8 @@ from mosaic.tracking.model_refs import (
     resolve_model,
     resolve_model_set,
 )
+
+from tests.helpers import make_dataset
 
 
 def test_the_digest_is_stable_and_content_addressed(tmp_path: Path) -> None:
@@ -46,23 +47,13 @@ def test_the_digest_spans_chunk_boundaries(tmp_path: Path) -> None:
     assert file_digest(path) != before
 
 
-def _make_dataset(tmp_path: Path) -> Dataset:
-    ds = Dataset(
-        manifest_path=tmp_path / "dataset.yaml",
-        roots={"models": str(tmp_path / "models")},
-    )
-    ds.ensure_roots()
-    ds.save()
-    return ds
-
-
 def test_a_bare_path_is_named_by_its_bytes_not_its_location(tmp_path: Path) -> None:
     """The defect item 4.6 closes, stated as a test.
 
     Two different weights files at one path used to mint one identifier, and
     unchanged weights at two paths used to mint two.
     """
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=("models",))
     weights = tmp_path / "best.pt"
     weights.write_bytes(b"first weights")
     first = resolve_model(ds, str(weights), "train-pose")
@@ -83,7 +74,7 @@ def test_a_bare_path_carries_no_lineage_but_is_still_identifiable(
     tmp_path: Path,
 ) -> None:
     """``run_id`` is honestly empty; ``model_id`` falls back to the digest."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=("models",))
     weights = tmp_path / "best.pt"
     weights.write_bytes(b"weights")
 
@@ -95,7 +86,7 @@ def test_a_bare_path_carries_no_lineage_but_is_still_identifiable(
 
 def test_a_registered_model_is_named_by_its_run(tmp_path: Path) -> None:
     """The run when there is one: readable, and stable across a copy or a move."""
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=("models",))
     weights = tmp_path / "models" / "train-pose" / "r1" / "best.pt"
     weights.parent.mkdir(parents=True)
     weights.write_bytes(b"weights")
@@ -132,7 +123,7 @@ def test_the_model_id_is_never_the_path() -> None:
 
 
 def test_an_unresolvable_reference_still_raises(tmp_path: Path) -> None:
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path, roots=("models",))
     with pytest.raises(FileNotFoundError, match="does not"):
         _ = resolve_model(ds, "train-pose.0.1-nope", "train-pose")
 

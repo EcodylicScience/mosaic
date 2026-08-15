@@ -30,7 +30,7 @@ from mosaic.core.pipeline.run_log import (
     run_log_path,
 )
 from mosaic.core.pipeline.types import Inputs, InputStream, Params, Result, TrackInput
-from tests.mock_dataset import MockDataset
+from tests.helpers import MockDataset
 
 
 # --- Minimal mock dataset + feature (mirrors tests/test_run_feature.py) ---

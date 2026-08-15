@@ -222,6 +222,9 @@ install before relying on any row.
 | Backbone weights for `global-identity-embedding` | `identity` extra, fetched at run time from the hub id you name | whatever that repository states; the default is MIT | See the table above |
 | FFmpeg / ffprobe | system binaries you install; invoked, never bundled | LGPL-2.1-or-later, or GPL if built with GPL-only components | Permitted. A redistributor who bundles an `ffmpeg` build must observe that build's terms |
 | PyAV (`av`) | `mosaic-media[io]`, for in-process frame decoding | BSD-3-Clause | Permitted |
+| PyTables (`tables`) | `hdf5` extra, so pandas can dispatch `read_hdf` for a DeepLabCut HDF5 export | BSD-3-Clause | Permitted |
+| Pillow | required dependency; the YOLO-pose annotation reader opens each image to read its size | MIT-CMU | Permitted |
+| OpenCV (`opencv-python`, or conda-forge `py-opencv`) | required dependency | Apache-2.0 | Permitted |
 | `mosaic-media` | required dependency, same authors | Apache-2.0 | Permitted |
 
 Two rows deserve a second look if you are working commercially.

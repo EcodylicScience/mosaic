@@ -36,7 +36,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 
-from .conftest import (
+from tests.helpers import (
     add_media_sequence,
     add_track_sequences,
     add_tracks_variant,
@@ -415,7 +415,7 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
     from mosaic.core.pipeline.delete_set import delete_set
     from mosaic.core.pipeline.media_index import MediaIndexScope
 
-    from tests.conftest import add_tracks_variant, add_transcode_derivative
+    from tests.helpers import add_tracks_variant, add_transcode_derivative
     from tests.test_provenance import PlainFeature
 
     ds = scenario_dataset_with_media
@@ -467,7 +467,7 @@ def test_h3_case3_only_the_branch_whose_source_changed_is_invalidated(
     """
     from mosaic.core.pipeline.provenance import reached_by
 
-    from tests.conftest import add_tracks_variant
+    from tests.helpers import add_tracks_variant
 
     ds = scenario_dataset_with_media
     converted = "convert-dlc.0.1-aaaaaaaaaa"

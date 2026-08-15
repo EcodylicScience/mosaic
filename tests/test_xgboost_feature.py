@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from xgboost import XGBClassifier
 
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
 from mosaic.core.pipeline.types import InputStream, Result
@@ -52,9 +53,6 @@ class TestXgboostParams:
             }
         )
         assert params.decision_threshold == {0: 0.5, 1: 0.8}
-
-
-from xgboost import XGBClassifier
 
 
 def _make_templates_parquet(

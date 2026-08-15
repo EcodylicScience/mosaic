@@ -20,18 +20,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+from tests.helpers import make_dataset
 
 RUN_ID = "train-litpose.0.1-abcdef0123"
-
-
-def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("m", base_dir=tmp_path)
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
 
 
 def _litpose_artifact(run_root: Path) -> Path:
@@ -75,7 +71,7 @@ def _register(ds: Dataset, *, absolute: bool) -> Path:
 
 def test_the_model_indexes_are_enumerated(tmp_path: Path) -> None:
     """The shape fix, stated directly: ``models/<kind>/index.csv`` is now visited."""
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, name="m", save=False)
     _ = _register(ds, absolute=False)
 
     visited = [index.path for index in iter_dataset_indexes(ds)]
@@ -83,7 +79,7 @@ def test_the_model_indexes_are_enumerated(tmp_path: Path) -> None:
 
 
 def test_a_directory_shaped_model_resolves_by_its_run(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, name="m", save=False)
     run_root = _register(ds, absolute=False)
 
     resolved = resolve_model(ds, RUN_ID, "train-litpose")
@@ -93,7 +89,7 @@ def test_a_directory_shaped_model_resolves_by_its_run(tmp_path: Path) -> None:
 
 
 def test_make_portable_relativizes_the_model_paths(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, name="m", save=False)
     _ = _register(ds, absolute=True)
     index_path = model_index_path(ds, "train-litpose")
 
@@ -111,7 +107,7 @@ def test_a_registered_model_survives_the_dataset_moving(tmp_path: Path) -> None:
     """The point of the two fixes, end to end."""
     origin = tmp_path / "origin"
     origin.mkdir()
-    ds = _dataset(origin)
+    ds = make_dataset(origin, name="m", save=False)
     _ = _register(ds, absolute=True)
     _ = ds.make_portable()
 
@@ -130,7 +126,7 @@ def test_a_row_without_an_artifact_path_still_resolves(tmp_path: Path) -> None:
     An empty cell also reads back from pandas as ``NaN``, which is truthy -- so
     the fallback has to test the value, not merely its presence.
     """
-    ds = _dataset(tmp_path)
+    ds = make_dataset(tmp_path, name="m", save=False)
     weights = ds.get_root("models") / "train-pose" / "r1" / "best.pt"
     weights.parent.mkdir(parents=True)
     _ = weights.write_bytes(b"yolo weights")

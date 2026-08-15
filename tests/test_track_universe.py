@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.track_universe import (
     AmbiguousTrackLeaf,
     is_track_shaped,
@@ -21,12 +21,11 @@ from mosaic.core.pipeline.track_universe import (
     track_universe,
 )
 
-from .conftest import add_track_sequences
+from tests.helpers import add_track_sequences, make_dataset
 
 
 def _dataset(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest(name="universe", base_dir=tmp_path / "ds")
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path / "ds", name="universe")
     add_track_sequences(dataset, "seq_a")
     return dataset
 
@@ -218,8 +217,7 @@ def test_two_leaves_refuse_rather_than_pick(tmp_path: Path) -> None:
 
 def test_a_dataset_with_no_tracks_says_so(tmp_path: Path) -> None:
     """ "No leaf" and "two leaves" are different failures with different repairs."""
-    manifest = new_dataset_manifest(name="bare", base_dir=tmp_path / "bare")
-    ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    ds = make_dataset(tmp_path / "bare", name="bare")
 
     with pytest.raises(LookupError, match="no track-shaped artifact"):
         _ = track_leaf(ds)

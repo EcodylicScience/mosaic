@@ -11,9 +11,14 @@ Provides curated augmentation configurations for the three model types:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    # Annotation-only. torch arrives through the `localizer` extra, and this
+    # module is imported by the YOLO presets above, which do not need it.
+    import torch
 
 
 # --------------------------------------------------------------------------- #

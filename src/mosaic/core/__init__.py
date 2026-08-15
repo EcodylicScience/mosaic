@@ -13,4 +13,12 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["Dataset", "register_feature", "to_safe_name", "from_safe_name"]
+__all__ = [
+    "Dataset",
+    "register_feature",
+    "to_safe_name",
+    "from_safe_name",
+    # Imported for its registration side effect rather than for a name, and
+    # exported so that reading as unused is not the same as being unused.
+    "track_library",
+]

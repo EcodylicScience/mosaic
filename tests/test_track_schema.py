@@ -36,7 +36,7 @@ from mosaic.core.schema import (
     schema_family,
 )
 
-from .conftest import add_tracks_variant
+from tests.helpers import add_tracks_variant
 
 
 def _minimal_trex_v1_frame() -> pd.DataFrame:

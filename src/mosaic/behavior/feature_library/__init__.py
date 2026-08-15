@@ -172,6 +172,7 @@ __all__ = [
     # Feature classes
     "ArHmmFeature",
     "ApproachAvoidance",
+    "AttentionTarget",
     "BodyScaleFeature",
     "HeadingFeature",
     "CollectiveMotionMetrics",
@@ -196,6 +197,7 @@ __all__ = [
     "NearestNeighborDeltaBins",
     "OrientationRelativeFeature",
     "PairEgocentricFeatures",
+    "PairFacing",
     "PairInteractionFilter",
     "PairPositionFeatures",
     "PairPoseDistancePCA",
@@ -207,14 +209,22 @@ __all__ = [
     "TrackSubsample",
     "TrajectorySmooth",
     "XgboostFeature",
+    # Optional, present only when their extra is installed. Named here anyway,
+    # matching how the feral and lightning-action entries below are already
+    # declared: the list is what this package exports when it can, not what a
+    # particular environment happens to hold.
+    "MovementFilterInterpolate",
+    "MovementSmooth",
     "FeralFeature",
     "FeralTrainingConfig",
     "feral_setup_check",
+    "feral_feature",
     "LightningActionFeature",
     "lightning_action_feature",
     # Submodules
     "arhmm",
     "approach_avoidance",
+    "attention_target",
     "body_scale",
     "collective_motion_metrics",
     "dinov2_temporal_identity_model",
@@ -238,6 +248,7 @@ __all__ = [
     "nn_delta_response",
     "orientation_relative",
     "pair_egocentric",
+    "pair_facing",
     "pair_interaction_filter",
     "pair_position",
     "pair_wavelet",

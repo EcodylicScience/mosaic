@@ -14,9 +14,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
+
+if TYPE_CHECKING:
+    # Annotation-only, and deferred for a second reason: `augmentation` is
+    # imported inside `resolve_augmentation` rather than at module scope, so a
+    # caller who passes `augment=False` never pays for it.
+    from .augmentation import LocalizerAugmentConfig
 
 
 def _require_torch():

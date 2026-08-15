@@ -387,7 +387,7 @@ def test_chain_runner_prediction_honours_the_tracks_selector(tmp_path: Path) -> 
     """
     from mosaic.core.dataset import new_dataset_manifest
 
-    from .conftest import add_tracks_variant
+    from tests.helpers import add_tracks_variant
 
     manifest = new_dataset_manifest(name="pinned", base_dir=tmp_path / "dataset")
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)

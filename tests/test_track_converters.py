@@ -41,7 +41,7 @@ from mosaic.core.track_library.sleap import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
-from .conftest import write_trex_npz
+from tests.helpers import write_trex_npz
 
 # What entry identity is spelled as. A converter may accept these as hints; none
 # may accept them as parameters.
