@@ -36,7 +36,7 @@ Every result is content-addressed: the same inputs and parameters produce the sa
 | **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
 | **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |
 | **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
-| **Operate** | **24 CLI commands** and **16 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
+| **Operate** | **24 CLI commands** and **17 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
 Built for group-living animals: identities, pairs and neighbors are first-class
 throughout, not an afterthought bolted onto single-animal tracking.

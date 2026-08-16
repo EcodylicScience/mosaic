@@ -334,20 +334,29 @@ def _op_declaration(kind: str, op_cls: type) -> Declaration:
     the step's ``tracks`` field -- so its producer record exists to say that, and
     to carry the two facts an ordering-only edge is checked against.
 
-    ``writes_tracks`` comes from the tracking-roots registry, which is the table
-    a producer must appear in to bridge into ``tracks/`` at all, and
-    ``writes_media`` from the op's own declared category. Neither is a name list.
+    ``writes_tracks`` is the op's own declaration, falling back to membership of
+    the tracking-roots registry -- the table a producer must appear in to *bridge
+    from a tracker run root*, which is what every tracks producer did until one
+    arrived that reads a tracks table and writes another. ``writes_media`` comes
+    from the op's declared category. Neither is a name list.
+
+    ``reads_media`` stays tied to the registry rather than following
+    ``writes_tracks``: it is true because bridging into tracks means opening the
+    entry's video, which is exactly what a tracks-to-tracks producer does not do.
     """
     from mosaic.core.pipeline.ops import op_resource_class
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
     bridges_tracks = kind in TRACKING_ROOTS
+    declared_tracks = getattr(op_cls, "writes_tracks", None)
     return Declaration(
         produces=ProducerDecl(
             name=kind,
             kind="op",
             level="individual",
-            writes_tracks=bridges_tracks,
+            writes_tracks=bridges_tracks
+            if declared_tracks is None
+            else bool(declared_tracks),
             writes_media=str(getattr(op_cls, "category", "")) == "transcode",
         ),
         consumes=ConsumerDecl(

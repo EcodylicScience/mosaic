@@ -118,6 +118,14 @@ class Op(Generic[P]):
     # :func:`op_resource_class`; an op overrides it when category is misleading (e.g. TREx
     # is category "convert" but needs the GPU for YOLO detection, so it declares "gpu").
     resource_class: ClassVar[str] = ""
+    # Whether this op writes into ``tracks/``, which is what lets a downstream
+    # recipe step wire its ``tracks`` reference to this one. Declared rather than
+    # inferred: it used to be read as ``kind in TRACKING_ROOTS``, which is the
+    # table a producer must appear in to *bridge from a tracker run root* -- true
+    # of every tracks producer there was, and false for one that reads a tracks
+    # table and writes another. ``None`` keeps the old inference, so no existing
+    # op declares anything and none of their declarations move.
+    writes_tracks: ClassVar[bool | None] = None
     Params: ClassVar[type[Params]]
 
     def target(self, params: P) -> str:

@@ -44,6 +44,7 @@ __all__ = [
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
+    "resample_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
     "tracks_variant_root",
@@ -164,6 +165,24 @@ def infer_variant_payload(
     reports a cache hit over another model's output.
     """
     return {"params": dict(params_identity), "model": model_id}
+
+
+def resample_variant_payload(
+    params_identity: Mapping[str, object],
+) -> dict[str, object]:
+    """What determines a table re-gridded from another tracks variant.
+
+    Its op params and nothing else -- because the *other* half of what determines
+    it, the variant it was computed from, is the ``upstream`` term
+    :func:`tracks_run_id` adds separately. Keeping the two apart is what lets one
+    resampling recipe be recognised as the same recipe applied to two different
+    sources, which a payload that folded the source in would hide.
+
+    A fourth named wrapper for the reason the other three give: the golden corpus
+    pins the wrapper, so a later change to how a resampled variant is addressed
+    fails there rather than silently moving every such directory on disk.
+    """
+    return {"params": dict(params_identity)}
 
 
 def converter_op(src_format: str) -> str:

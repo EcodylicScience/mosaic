@@ -246,6 +246,14 @@ OP_CASES: tuple[OpCase, ...] = (
             radii={"bee": 10.0, "feeder": 30.0},
         ),
     ),
+    OpCase(
+        case_id="resample-tracks/30fps",
+        params=_op_params("resample-tracks", target_fps=30.0),
+    ),
+    OpCase(
+        case_id="resample-tracks/30fps-prefiltered",
+        params=_op_params("resample-tracks", target_fps=30.0, prefilter=40.0),
+    ),
     # --- infer ----------------------------------------------------------------
     OpCase(
         case_id="infer-pose/model",
@@ -321,6 +329,47 @@ def _infer_variant() -> str:
         "infer-points",
         "0.1",
         infer_variant_payload({"conf": 0.5}, "train-points.0.1-aaaaaaaaaa"),
+    )
+
+
+def _resample_variant() -> str:
+    """A re-gridded variant: the resampling params, plus the source it chains from.
+
+    The only production caller of ``tracks_run_id``'s ``upstream`` term, so this
+    is what pins that the term is *added* rather than folded into the payload.
+    The two are not interchangeable: an ``upstream`` inside the payload would
+    make one resampling recipe unrecognisable as itself across two sources, and a
+    corpus built from a hand-written payload would not notice the difference.
+    """
+    from mosaic.core.pipeline.tracks_identity import resample_variant_payload
+    from mosaic.tracking.ops.resample import ResampleTracksOp
+
+    return tracks_run_id(
+        ResampleTracksOp.kind,
+        ResampleTracksOp.version,
+        resample_variant_payload(
+            ResampleTracksOp.Params(target_fps=30.0).identity_dump()
+        ),
+        upstream="convert-trex_npz.0.2-aaaaaaaaaa",
+    )
+
+
+def _resample_variant_other_upstream() -> str:
+    """The same recipe over a different source, which must be a different variant.
+
+    Asserted as a distinct golden entry rather than as an inequality, so the pair
+    also pins *which* of the two moves if the term is ever dropped.
+    """
+    from mosaic.core.pipeline.tracks_identity import resample_variant_payload
+    from mosaic.tracking.ops.resample import ResampleTracksOp
+
+    return tracks_run_id(
+        ResampleTracksOp.kind,
+        ResampleTracksOp.version,
+        resample_variant_payload(
+            ResampleTracksOp.Params(target_fps=30.0).identity_dump()
+        ),
+        upstream="trex.0.4-bbbbbbbbbb",
     )
 
 
@@ -647,6 +696,8 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/litpose-variant": _litpose_variant,
     "tracks/ultralytics-variant": _ultralytics_variant,
     "tracks/infer-variant": _infer_variant,
+    "tracks/resample-variant": _resample_variant,
+    "tracks/resample-variant-other-upstream": _resample_variant_other_upstream,
     "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
     "sleap/run-id-settings": _sleap_run_id_settings,
@@ -710,6 +761,7 @@ def test_every_family_is_covered() -> None:
         "train-sleap",
         "train-litpose",
         "convert-points",
+        "resample-tracks",
         "infer-pose",
         "infer-points",
         "infer-localizer",

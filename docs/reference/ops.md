@@ -3,7 +3,7 @@
 
 # Ops
 
-16 ops are registered. An op is the unit `mosaic run --kind <kind>`
+17 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -64,6 +64,22 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 ??? note "`JsonValue`"
 
     No parameters.
+
+#### `resample-tracks`
+
+Version `0.1` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
+
+Place a dataset's tracks tables on one uniform frame rate.
+
+| Parameter | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `target_fps` | `number` | _required_ |  |
+| `source_tracks_run_id` | `string` \| `None` | `null` |  |
+| `prefilter` | `number` \| `None` | `null` |  |
+| `groups` | list of `string` \| `None` | `null` |  |
+| `sequences` | list of `string` \| `None` | `null` |  |
+| `entries` | list of `string` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 
 #### `sleap`
 
