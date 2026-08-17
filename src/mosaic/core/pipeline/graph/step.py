@@ -568,7 +568,14 @@ def _cached(
     It still writes a run-log. A queue releases a child on its parent's terminal
     record and a child pins its parent's identity from the same file, so a step
     that legitimately did nothing must be as legible as one that did everything.
+
+    ``entries_written`` is the artifact's coverage -- the same number the outcome
+    reports as ``covered``, by the same rule -- so the log and the outcome cannot
+    disagree about one step. Deliberately not zero: the field counts what the scope
+    holds at the end of the attempt, cache hits included, and a cached step holds
+    all of it. Zero would read as a step that lost everything.
     """
+    covered = len(planned.coverage.target)
     _record_terminal(
         ds,
         attempt,
@@ -576,8 +583,9 @@ def _cached(
         target=planned.storage_name or planned.runs,
         owner=owner,
         run_id=planned.run_id or "",
+        cache_hit=True,
+        entries_written=covered,
     )
-    covered = len(planned.coverage.target)
     return StepOutcome(
         step_id=planned.step_id,
         kind=planned.kind,
@@ -598,6 +606,10 @@ def _stalled(
     Distinct from a failure on purpose. A step whose remaining entries are all
     held back has not gone wrong -- somebody decided to proceed without them --
     and reporting it as an error would invite a retry that cannot succeed.
+
+    ``entries_written`` is what the scope already holds, matching the ``covered``
+    on the outcome below. A stall is not a cache hit: the work was not found done,
+    it was found unattemptable.
     """
     _record_terminal(
         ds,
@@ -606,6 +618,7 @@ def _stalled(
         target=planned.storage_name or planned.runs,
         owner=owner,
         run_id=planned.run_id or "",
+        entries_written=len(planned.coverage.covered),
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -628,20 +641,29 @@ def _record_terminal(
     owner: str,
     run_id: str = "",
     error_json: str = "",
+    cache_hit: bool = False,
+    entries_written: int = 0,
 ) -> None:
     """Write a whole attempt record for a step that runs nothing itself.
 
-    The two cases are a refusal and a cache hit, and both need a run-log for the
-    same reason: it is the release signal and the identity a child pins. Written
-    directly rather than through ``job_context`` because that context brackets an
-    attempt that *does* work, and a second writer on one file is what the run-log
-    format rules out.
+    The three cases are a refusal, a cache hit and a stall, and each needs a
+    run-log for the same reason: it is the release signal and the identity a child
+    pins. Written directly rather than through ``job_context`` because that context
+    brackets an attempt that *does* work, and a second writer on one file is what
+    the run-log format rules out.
+
+    Every fact is written *before* the terminal event. A queue projects an attempt
+    the moment it sees one, so anything appended after it is a fact that exists on
+    disk and never reaches the ledger.
     """
     log = JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id)
     try:
         log.started(kind=kind, target=target, owner=owner, host=socket.gethostname())
         if run_id:
             log.set_run_id(run_id)
+        if cache_hit:
+            log.cache_hit()
+        log.entries_written(entries_written)
         if error_json:
             log.failed(error_json)
         else:

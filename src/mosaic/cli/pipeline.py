@@ -379,7 +379,12 @@ def status_command(
                 "status": rollup.status,
                 "terminal": rollup.is_terminal,
                 "steps": [
-                    {**row, "error_json": attempt.error_json}
+                    {
+                        **row,
+                        "error_json": attempt.error_json,
+                        "entries_written": attempt.entries_written,
+                        "cache_hit": attempt.cache_hit,
+                    }
                     for row, attempt in zip(rows, rollup.steps, strict=True)
                 ],
             }

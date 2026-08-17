@@ -127,6 +127,7 @@ Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ### `movement-filter-interpolate`
 
@@ -221,6 +222,7 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ### `pair-egocentric`
 
@@ -438,6 +440,7 @@ Build temporal context windows over per-sequence feature data.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ### `track-subsample`
 
@@ -602,6 +605,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"arhmm_model.joblib"` |  |
 
@@ -694,6 +698,7 @@ Subsample per-sequence data into a representative template matrix.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ??? note "`PoolConfig`"
 
@@ -789,6 +794,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"dinov2_temporal_identity_model.joblib"` |  |
 
@@ -827,6 +833,7 @@ Train an identity model from frozen backbone embeddings + k-NN.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"identity_embedding_model.joblib"` |  |
 
@@ -869,6 +876,7 @@ Train a visual identity model from individual animal sequences.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"identity_classifier_model.joblib"` |  |
 
@@ -906,6 +914,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -925,6 +934,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"model.joblib"` |  |
 
@@ -937,6 +947,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ??? note "`ParquetLoadSpec`"
 
@@ -969,6 +980,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -999,6 +1011,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"scaler.joblib"` |  |
 
@@ -1028,6 +1041,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -1080,6 +1094,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"embedding.joblib"` |  |
 
@@ -1106,6 +1121,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -1125,6 +1141,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
 
 ??? note "`ParquetLoadSpec`"
 
@@ -1146,6 +1163,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"model.joblib"` |  |
 
@@ -1194,6 +1212,7 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"kpms_model.joblib"` |  |
 
@@ -1245,6 +1264,7 @@ Supervised temporal action segmentation via lightning-action.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -1264,6 +1284,7 @@ Supervised temporal action segmentation via lightning-action.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"lightning_action_model.joblib"` |  |
 
@@ -1310,6 +1331,7 @@ XGBoost behavior classifier as a pipeline feature.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `ParquetLoadSpec` | _required_ |  |
     | `pattern` | `string` | `""` |  |
 
@@ -1340,6 +1362,7 @@ XGBoost behavior classifier as a pipeline feature.
     | `execution_id` | `string` \| `None` | `null` |  |
     | `cache_hit` | `boolean` | `false` |  |
     | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"xgboost_model.joblib"` |  |
 

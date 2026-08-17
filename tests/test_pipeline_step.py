@@ -106,6 +106,59 @@ def test_a_step_pins_its_parent_from_that_parent_s_run_log(
     assert speed.run_id in _params_text(tracked, templates.run_id)
 
 
+def test_a_feature_step_records_the_tracks_variant_it_read(tracked: Dataset) -> None:
+    """Which tables a step read, on the step's own record.
+
+    The queue cannot derive this from the spec: a step-addressed argv carries no
+    ``--tracks-run-id`` at all, because the step resolves its own variant out of
+    the recipe. So mosaic is the only party that can put it on the wire, and it
+    goes on early -- beside the identity -- so a run killed halfway still says
+    what it was reading.
+    """
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _ = execute_step(tracked, request, "speed")
+    _ = execute_step(tracked, request, "templates")
+
+    speed_log = read_run(run_log_dir(tracked.base_dir), request.execution_of("speed"))
+    assert speed_log is not None
+    assert speed_log["tracks_variant"] == VARIANT
+
+    # A feature reading another feature's output read no tracks, and says so
+    # rather than inheriting its parent's answer.
+    templates_log = read_run(
+        run_log_dir(tracked.base_dir), request.execution_of("templates")
+    )
+    assert templates_log is not None
+    assert templates_log["tracks_variant"] == ""
+
+
+def test_a_cached_step_records_a_cache_hit_and_what_its_artifact_holds(
+    tracked: Dataset,
+) -> None:
+    """A step that ran nothing is as legible as one that ran everything.
+
+    ``entries_written`` is deliberately the artifact's coverage rather than zero:
+    the field counts what the scope holds at the end of the attempt, and a cached
+    step holds all of it. Zero would read as a step that lost everything, which is
+    the misreading the field exists to prevent.
+    """
+    first = submit_request(tracked, Recipe.model_validate(_chain())).request
+    ran = execute_step(tracked, first, "speed")
+    assert ran.state == "ran"
+
+    second = submit_request(tracked, Recipe.model_validate(_chain())).request
+    cached = execute_step(tracked, second, "speed")
+    assert cached.state == "cached"
+
+    logged = read_run(run_log_dir(tracked.base_dir), second.execution_of("speed"))
+    assert logged is not None
+    assert logged["status"] == "finished"
+    assert logged["cache_hit"] is True
+    # The log and the outcome cannot disagree about one step: both come from the
+    # same coverage expression.
+    assert logged["entries_written"] == cached.covered
+
+
 def test_two_requests_on_one_dataset_each_bind_to_their_own_upstream(
     tracked: Dataset,
 ) -> None:
@@ -264,6 +317,10 @@ def test_a_refusal_is_recorded_as_a_failed_attempt_carrying_its_reason(
     assert logged is not None
     assert logged["status"] == "failed"
     assert json.loads(logged["error_json"])["reason"] == "coverage_shortfall"
+    # A step that refused before planning claims nothing about coverage. Zero here
+    # is the honest answer, not a report that its artifact is empty.
+    assert logged["entries_written"] == 0
+    assert logged["cache_hit"] is False
 
 
 def test_a_finished_upstream_that_wrote_nothing_stops_its_consumer(

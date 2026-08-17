@@ -26,7 +26,7 @@ from typing import Annotated
 
 import typer
 
-from mosaic.cli._context import entry_failure_status, load_dataset
+from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._io import emit_json, fail, log, stdout_to_stderr
 from mosaic.cli._render import render_kv
 
@@ -180,7 +180,7 @@ def track_command(
         "execution_id": exec_id,
         "kind": kind,
         "run_id": run_id,
-        **entry_failure_status(ds, exec_id),
+        **attempt_facts(ds, exec_id),
     }
     if as_json:
         emit_json(payload)

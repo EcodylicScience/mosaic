@@ -118,6 +118,35 @@ def test_an_identical_resubmission_does_not_retrain(
     assert len(rows) == 1
 
 
+def test_a_reused_training_run_records_the_cache_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An op that reused a trained model says so on its own run-log.
+
+    Until now the reuse was a ``print`` and an early ``return run_id``, so it
+    reached nothing: ``run_op`` returns a bare identifier, and widening that
+    signature is not available because mosaic-queue and mosaic-api call it too.
+    Without this a resubmitted training step is indistinguishable in the ledger
+    from one that spent the GPU time again.
+    """
+    from mosaic.runlog import read_run, run_log_dir
+
+    ds = _make_dataset(tmp_path)
+    trainer = _Counter()
+    trainer.install(monkeypatch)
+    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+
+    _ = run_op(ds, "train-pose", dict(params), execution_id="EXECTRAINFIRST")
+    _ = run_op(ds, "train-pose", dict(params), execution_id="EXECTRAINSECOND")
+    assert trainer.calls == 1
+
+    first = read_run(run_log_dir(ds.base_dir), "EXECTRAINFIRST")
+    second = read_run(run_log_dir(ds.base_dir), "EXECTRAINSECOND")
+    assert first is not None and second is not None
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+
+
 def test_overwrite_retrains(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The escape hatch: a caller who means it can force the work again."""
     ds = _make_dataset(tmp_path)

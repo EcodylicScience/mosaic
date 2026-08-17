@@ -4,7 +4,7 @@ This command is the executor's *unit of work* -- the Layer-2 executor shells out
 to ``mosaic run --json`` in its own process group. It pre-mints the ULID
 ``execution_id`` so it can be printed up front (and injected via ``--execution-id``
 by the executor), installs a SIGTERM/SIGINT -> cooperative-cancel handler, and
-prints ``{execution_id, feature|kind, run_id, status, cache_hit}``.
+prints ``{execution_id, feature|kind, run_id, status, cache_hit, entries_written}``.
 
 The third form, ``--graph-request <id> --step <id>``, is **step-addressed**: it
 names a step of a submitted pipeline and lets the step read the rest out of the
@@ -25,7 +25,7 @@ from typing import Annotated, cast
 
 import typer
 
-from mosaic.cli._context import entry_failure_status, load_dataset
+from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
     emit_json,
@@ -225,6 +225,7 @@ def run_command(
                 "status": "partial" if result.failed_entries else "finished",
                 "cache_hit": result.cache_hit,
                 "failed_entries": list(result.failed_entries),
+                "entries_written": result.entries_written,
             }
         else:
             if entries:
@@ -265,8 +266,7 @@ def run_command(
                 "execution_id": exec_id,
                 "kind": op_kind,
                 "run_id": run_id,
-                **entry_failure_status(ds, exec_id),
-                "cache_hit": None,
+                **attempt_facts(ds, exec_id),
             }
     except Cancelled:
         if as_json:

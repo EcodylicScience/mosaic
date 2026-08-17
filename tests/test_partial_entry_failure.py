@@ -143,6 +143,11 @@ def test_one_failed_entity_is_not_a_finished_run(
     snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
     assert snapshot is not None
     assert snapshot["entries_failed"] == 1
+    # Both halves of the partial outcome are on the record: one entry published,
+    # one lost. A reader that saw only the failure could not tell this from a run
+    # that lost everything.
+    assert snapshot["entries_written"] == 1
+    assert result.entries_written == 1
 
 
 def test_every_entity_failing_is_a_failed_run(tmp_path: Path) -> None:
@@ -162,6 +167,11 @@ def test_every_entity_failing_is_a_failed_run(tmp_path: Path) -> None:
     assert snapshot is not None
     assert snapshot["status"] == "failed"
     assert snapshot["entries_failed"] == 2
+    # Recorded even though ``AllEntriesFailed`` was raised: the count is emitted
+    # before that raise, so a run that lost everything still says what it holds.
+    # Pair this with the partial case above, where the same code path reports a
+    # non-zero -- a missing emission and a true zero look alike here alone.
+    assert snapshot["entries_written"] == 0
 
 
 def test_an_empty_scope_is_not_an_all_entries_failure(tmp_path: Path) -> None:

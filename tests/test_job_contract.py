@@ -173,6 +173,18 @@ def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
     assert len(attempts) == 2
     assert {a["status"] for a in attempts} == {"finished"}
 
+    # Only the second claims the cache.
+    by_attempt = {a["execution_id"]: a for a in attempts}
+    assert by_attempt[r1.execution_id]["cache_hit"] is False
+    assert by_attempt[r2.execution_id]["cache_hit"] is True
+
+    # And both report the same count. ``entries_written`` is what the scope
+    # *holds*, not what the attempt computed, so a run that did the work and a
+    # run that found it done answer alike -- which is what lets one number drive
+    # a coverage bar without the reader knowing which kind of run it was.
+    assert r1.entries_written == r2.entries_written == 2
+    assert {a["entries_written"] for a in attempts} == {2}
+
 
 # --- cancellation ----------------------------------------------------------
 
@@ -260,7 +272,11 @@ def test_track_false_writes_no_log(tmp_path: Path):
 def test_attempt_fields_do_not_perturb_downstream_run_id():
     bare = Result(feature="f", run_id="0.1-abc")
     rich = Result(
-        feature="f", run_id="0.1-abc", execution_id=new_execution_id(), cache_hit=True
+        feature="f",
+        run_id="0.1-abc",
+        execution_id=new_execution_id(),
+        cache_hit=True,
+        entries_written=7,
     )
     assert Inputs((bare,)).model_dump() == Inputs((rich,)).model_dump()
     assert hash_params({"_inputs": Inputs((bare,)).model_dump()}) == hash_params(
@@ -335,6 +351,84 @@ def test_reduce_tolerates_partial_last_line(tmp_path: Path):
     assert snap is not None
     assert snap["kind"] == "feature"  # the complete line parsed
     assert snap["status"] == "running"  # torn line ignored, not crashed on
+
+
+def test_a_log_predating_the_new_events_folds_to_their_zero_defaults(tmp_path: Path):
+    """A log written before these events existed reads as "not reported".
+
+    The compatibility contract mosaic-queue relies on. There is no schema version
+    anywhere in the run-log, so the guarantee has to be that an *absent* event
+    folds to a value a reader can act on rather than raising or reading as a
+    claim. Zero / ``False`` / ``""`` are deliberately indistinguishable from a
+    genuine zero here -- the tracks index makes the same trade for ``n_keypoints``.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"t": "2026-01-01T00:00:00+00:00", "ev": "started", "kind": "feature", '
+        '"target": "t"}\n'
+        '{"t": "2026-01-01T00:00:01+00:00", "ev": "total", "total": 9}\n'
+        '{"t": "2026-01-01T00:00:02+00:00", "ev": "finished"}\n'
+    )
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["entries_written"] == 0
+    assert snap["cache_hit"] is False
+    assert snap["tracks_variant"] == ""
+    # and the fields that did exist are untouched by the new branches
+    assert snap["status"] == "finished"
+    assert int(snap["progress_total"]) == 9
+
+
+def test_the_writer_records_the_three_attempt_facts(tmp_path: Path):
+    """The encoding, pinned: a count, a presence flag, and a sorted joined cell."""
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="feature", target="t", owner="", host="h")
+    log.entries_written(4)
+    log.cache_hit()
+    # unordered, duplicated, and carrying an empty entry: one set of variants must
+    # have one spelling however the caller happened to hold it.
+    log.tracks_variant(
+        ["convert-trex.0.2-bbb", "convert-trex.0.2-aaa", "", "convert-trex.0.2-bbb"]
+    )
+    log.finished()
+    log.close()
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["entries_written"] == 4
+    assert snap["cache_hit"] is True
+    assert snap["tracks_variant"] == "convert-trex.0.2-aaa,convert-trex.0.2-bbb"
+
+
+def test_an_unrecognised_event_only_advances_liveness(tmp_path: Path):
+    """The property that makes adding an event kind safe for an older reader.
+
+    ``reduce_run_log`` is an if/elif fold, so an ``ev`` it does not know falls off
+    the end having touched nothing but ``heartbeat_at``. That is what lets mosaic
+    emit a new fact without every consumer being upgraded first.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"t": "2026-01-01T00:00:00+00:00", "ev": "started", "kind": "feature", '
+        '"target": "t"}\n'
+        '{"t": "2026-01-01T00:00:05+00:00", "ev": "a_fact_from_the_future", '
+        '"payload": 12}\n'
+    )
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["heartbeat_at"] == "2026-01-01T00:00:05+00:00"
+    assert snap["status"] == "running"
+    assert snap["kind"] == "feature"
+    assert snap["entries_written"] == 0
+    assert snap["cache_hit"] is False
 
 
 # --- completeness gate (now filesystem-driven) -----------------------------

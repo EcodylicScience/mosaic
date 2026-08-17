@@ -1057,9 +1057,9 @@ def run_feature(
     Returns
     -------
     Result
-        Carries ``feature`` and ``run_id`` (the content id), plus ``execution_id``
-        and ``cache_hit`` (excluded from serialization, so they never perturb a
-        downstream feature's ``run_id``).
+        Carries ``feature`` and ``run_id`` (the content id), plus ``execution_id``,
+        ``cache_hit``, ``failed_entries`` and ``entries_written`` (excluded from
+        serialization, so they never perturb a downstream feature's ``run_id``).
     """
     storage_feature_name = derive_storage_name(
         feature.name, feature.inputs.storage_suffix()
@@ -1207,6 +1207,11 @@ def _run_feature_impl(
     )
     ctx.set_run_id(run_id)
     ctx.set_total(len(manifest))
+    # Beside the identity rather than at the end: which tables this run read is
+    # exactly what is wanted from an attempt that was killed halfway, and a fact
+    # written at the end is one such an attempt never records. A global feature's
+    # Scope is empty and honestly records none.
+    ctx.tracks_variant(scope.tracks_variants)
 
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
@@ -1490,6 +1495,9 @@ def _run_feature_impl(
         and len(manifest) > 0
         and len(skip_keys) == len(manifest)
     )
+    if cache_hit:
+        # Emitted where it is decided, so the claim and its record cannot drift.
+        ctx.cache_hit()
 
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
@@ -1665,6 +1673,10 @@ def _run_feature_impl(
             executor.shutdown(wait=True)
     except Cancelled:
         _flush_idx()
+        # A cancelled run that wrote 40 of 100 entries has 40 durable on disk, and
+        # "how far did it get" is the question an operator resubmits on. Recorded
+        # here because the flush above is the last moment the count is true.
+        ctx.entries_written(_total_written)
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
         raise
@@ -1704,6 +1716,10 @@ def _run_feature_impl(
 
     # Finalize — flush any remaining rows
     _flush_idx()
+    # After the last flush, so the count is final, and before the all-failed raise
+    # below, so a run that lost every entity it attempted still records the entries
+    # an earlier attempt had already left on disk.
+    ctx.entries_written(_total_written)
     # Mark the run finished only when every manifest entry's output parquet is on
     # disk. The filesystem is the source of truth (same disk check the Pipeline
     # cache gate uses): under concurrency the last finisher sees all files and
@@ -1738,6 +1754,7 @@ def _run_feature_impl(
         execution_id=ctx.execution_id,
         cache_hit=cache_hit,
         failed_entries=failed_entries,
+        entries_written=_total_written,
     )
 
 

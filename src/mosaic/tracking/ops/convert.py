@@ -177,6 +177,7 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         # Content-addressed cache hit: an identical (params, xml, images) run already
         # produced this data.yaml. Re-running is a no-op unless overwrite is set.
         if data_yaml.exists() and not params.overwrite:
+            ctx.cache_hit()
             return run_id
 
         # Claimed before the rmtree, not after: two executions of this identifier

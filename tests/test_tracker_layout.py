@@ -766,6 +766,17 @@ def test_a_lost_entry_is_recorded_and_the_others_still_publish(
 
     snapshot = _snapshot_for(ds, "exec-partial")
     assert snapshot["entries_failed"] == 1
+    # Both halves on the record, and the pin for *what* is counted. A failed
+    # bridge still writes an index row -- the tool output is durable and
+    # adoptable -- so the run's own closing line says "2/2 sequences" while only
+    # one tracks table exists. ``entries_written`` must be the published count,
+    # so it is attempted-minus-lost and not ``len(rows)``; the two agree on every
+    # clean run and differ on exactly this one.
+    assert snapshot["entries_written"] == 1
+    # Also the pin for *where* it is emitted: in the driver's ``finally``, inside
+    # the job context. Once that context exits it has written its terminal event
+    # and closed the log, and ``JsonlRunLog._emit`` returns silently on a closed
+    # file, so a count written beside the closing ``print`` would vanish here.
     # `finished` in the log on purpose: `partial` is absent from
     # TERMINAL_STATUSES because mosaic-api's sweeper reaps that set, so the
     # word is computed for display and never written as a terminal status.
@@ -895,3 +906,29 @@ def test_an_entry_with_no_detections_is_a_success_not_a_loss(
     _ = trex_runs.run_trex(ds, execution_id="exec-empty")
 
     assert _snapshot_for(ds, "exec-empty")["entries_failed"] == 0
+    # A published table of zero rows is still a published entry: the count is of
+    # entries that hold output, not of individuals found in them.
+    assert _snapshot_for(ds, "exec-empty")["entries_written"] == 1
+
+
+def test_a_tracker_records_how_many_entries_it_published(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean run over two entries reports both.
+
+    ``len(rows)`` is the tracker's equivalent of a feature's index-append count,
+    and until now it reached only the closing ``print`` -- destroyed under the
+    queue, which gives the child's stdout and stderr to DEVNULL.
+    """
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    _add_second_entry(ds)
+    fake = _FakeTrex()
+    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
+    monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
+
+    _ = trex_runs.run_trex(ds, execution_id="exec-two")
+
+    snapshot = _snapshot_for(ds, "exec-two")
+    assert snapshot["entries_written"] == 2
+    assert snapshot["entries_failed"] == 0

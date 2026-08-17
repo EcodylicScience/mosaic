@@ -492,6 +492,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            ctx.cache_hit()
             return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
@@ -589,6 +590,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            ctx.cache_hit()
             return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
@@ -684,6 +686,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
+            ctx.cache_hit()
             return run_id
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)

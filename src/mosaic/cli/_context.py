@@ -51,8 +51,8 @@ def run_log_dir_for(ds: "Dataset") -> Path:
     return run_log_dir(ds.base_dir)
 
 
-def entry_failure_status(ds: "Dataset", execution_id: str) -> dict[str, object]:
-    """``status`` and ``entries_failed`` for an attempt, read back from its log.
+def attempt_facts(ds: "Dataset", execution_id: str) -> dict[str, object]:
+    """What an attempt's own run-log says it did, as CLI payload keys.
 
     An op that lost some entities but not all is ``partial``, not ``finished``:
     it exited 0, and saying ``finished`` would report a run that published
@@ -68,6 +68,17 @@ def entry_failure_status(ds: "Dataset", execution_id: str) -> dict[str, object]:
     ``partial`` is deliberately **not** a terminal status and is absent from
     ``runlog.TERMINAL_STATUSES``: mosaic-api's sweeper treats that set as
     terminal and would reap a live run. It is a reporting word, computed here.
+
+    ``cache_hit`` and ``entries_written`` ride the same one read. They were
+    ``None`` and absent while nothing on the op path could know either: ``run_op``
+    returns a bare ``run_id``, and widening that signature is not available --
+    mosaic-queue and mosaic-api call it too. The reuse sites say so on the log
+    instead, which is again the channel that survives DEVNULL.
+
+    ``cache_hit`` is ``False`` for an attempt that made no claim. Silence and a
+    denial are not the same thing, but no consumer of this payload can act on the
+    difference, and a tri-state in a machine payload is a shape every reader would
+    have to special-case.
     """
     from mosaic.core.pipeline.run_log import read_run
 
@@ -76,4 +87,6 @@ def entry_failure_status(ds: "Dataset", execution_id: str) -> dict[str, object]:
     return {
         "status": "partial" if failed else "finished",
         "entries_failed": failed,
+        "cache_hit": bool(snapshot["cache_hit"]) if snapshot else False,
+        "entries_written": int(snapshot["entries_written"]) if snapshot else 0,
     }

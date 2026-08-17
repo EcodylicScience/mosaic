@@ -1038,6 +1038,29 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   `entry_error` run-log event and surfaced as `Result.failed_entries` plus
   `"status": "partial"`; losing every entity raises. Do not add `partial` to
   `runlog.TERMINAL_STATUSES` -- mosaic-api's sweeper reaps that set.
+- **A run also reports what it holds, and the run-log is the only place it can.**
+  `entries_written`, `cache_hit` and `tracks_variant` fold onto `RunLogSnapshot`
+  beside `entries_failed`, because a queue spawns `mosaic run` with stdout *and*
+  stderr on `DEVNULL` and so can never see a stdout payload or a returned
+  `Result`. Three points a change must not undo:
+  - **`entries_written` counts what the scope holds, cache hits included** -- so a
+    resumed run and a fresh one report the same number, which is what lets one
+    value be read as coverage without knowing which kind of run wrote it. It is
+    last-write-wins, where `entries_failed` accumulates. For a *tracker* it is
+    attempted-minus-lost, **not** the index-row count: a failed bridge still
+    writes a row, because the tool output is durable and a re-run adopts it and
+    redoes only the conversion.
+  - **`tracks_variant` is what a run read**, never what an op produced. Those are
+    different relations and one key cannot hold both.
+  - **Zero / `False` / `""` mean *not reported*.** A job that never asked the
+    question writes nothing, the same convention as the tracks index's blank
+    `n_keypoints` cell meaning *unknown* rather than zero.
+  Adding an event kind is safe for an older reader by construction --
+  `reduce_run_log` is an if/elif fold, so an unrecognised `ev` advances liveness
+  and changes nothing else. Emit **before** the terminal event and before the
+  context closes: `JsonlRunLog._emit` returns silently on a closed file, so a late
+  write is dropped without an error, and anything after `finished` never reaches
+  the ledger.
 - **Inputs align at one entity level.** `alignment_verdict` decides; the merge
   raises from it. Joining individual-level to pair-level output is a cartesian
   product, not an alignment. `loading.CROSS_JOIN_FEATURES` is the closed escape.

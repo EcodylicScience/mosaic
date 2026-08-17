@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -183,6 +183,36 @@ class JobContext:
         self.failed_keys.append(key)
         if self.run_log is not None:
             self.run_log.entry_failed(key, _capture_error(exc))
+
+    def entries_written(self, count: int) -> None:
+        """Record how many entries this attempt leaves holding an output row.
+
+        Reported by the job rather than counted by a reader, for the reason the
+        run-log exists at all: ``mosaic-queue`` gives the child's stdout *and*
+        stderr to DEVNULL, so the ``Result`` a library caller gets back never
+        crosses the process boundary and the log is the only channel out.
+        """
+        if self.run_log is not None:
+            self.run_log.entries_written(count)
+
+    def cache_hit(self) -> None:
+        """Record that this attempt found the whole of its work already done.
+
+        The whole-run claim only. A per-entry reuse is already an index row, and
+        an attempt that recomputed one of five entries did work.
+        """
+        if self.run_log is not None:
+            self.run_log.cache_hit()
+
+    def tracks_variant(self, variants: Sequence[str]) -> None:
+        """Record which tracks recipes this attempt reads.
+
+        Silent when there are none. A run over an empty set read no tracks at all
+        -- a global feature, an op -- and an event carrying ``""`` would put that
+        on the record as though the question had been asked and answered.
+        """
+        if variants and self.run_log is not None:
+            self.run_log.tracks_variant(variants)
 
     def check_cancel(self) -> None:
         """Raise :class:`Cancelled` if a cancel has been requested."""

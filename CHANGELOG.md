@@ -62,6 +62,41 @@ driven by a shell loop or a job array with no queue involved; `status` reads the
 steps' run-logs and says how far the submission got, without touching the feature
 registry.
 
+**The run-log carries three more facts, because it is the only channel that can.**
+`entries_written`, `cache_hit` and `tracks_variant` join `entries_failed` on
+`RunLogSnapshot`. All three were already known inside a run and reached nothing:
+`cache_hit` rode a non-serialized `Result` field, the entry count lived in a local
+variable, and which tracks recipe a run read was recorded nowhere at all. A queue
+cannot recover any of them — it spawns `mosaic run` with stdout *and* stderr on
+`DEVNULL`, deliberately, because an undrained pipe deadlocks a chatty child — so
+the run-log is where they have to be.
+
+Three new event kinds rather than three new columns on an existing one, because
+their knowers differ: an op reusing a trained model has a `cache_hit` and no
+entry count, a partial feature run has a count and no claim to make, and the
+variant is known at the start while the count is only final at the end. Nothing
+joins `runlog.TERMINAL_STATUSES`, and an older reader is unaffected — an `ev` it
+does not recognise falls off the end of the fold having advanced liveness and
+changed nothing, which is the same property that made `entry_failed` safe to add.
+
+**`entries_written` counts what the scope holds, not what the attempt computed.**
+Cache hits count, so a resumed run and a fresh one report the same number over the
+same scope — the point being that one number can drive a coverage reading without
+the reader knowing which kind of run produced it. Two consequences worth stating:
+it is last-write-wins where `entries_failed` accumulates, and for a tracker it is
+attempted-minus-lost rather than the index-row count, because a failed bridge
+still writes a row (the tool output is durable and adoptable, so a re-run redoes
+only the conversion) and the two numbers therefore differ on exactly the partial
+run where it matters.
+
+`tracks_variant` is what a run **read**, never what an op produced. The queue
+cannot derive it from the job spec: a step-addressed argv carries no
+`--tracks-run-id`, because the step resolves its own variant out of the recipe.
+
+`mosaic run --json` reports `entries_written` on the feature path, and the op path
+stops reporting `cache_hit: null` — it now reads both back from its own log, which
+is why `entry_failure_status` is now `attempt_facts`.
+
 ## Unreleased — a table may declare centimetres, and three TREx readers say which
 
 **mosaic refused data it could analyse perfectly well, over a number nobody

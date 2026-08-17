@@ -53,6 +53,8 @@ class StepAttempt:
         run_id: What it recorded producing, or ``""``.
         error_json: What it recorded going wrong, or ``""``.
         entries_failed: How many entities it lost while carrying on.
+        entries_written: How many entries it left holding an output row.
+        cache_hit: Whether it found the whole of its work already done.
     """
 
     step_id: str
@@ -61,6 +63,8 @@ class StepAttempt:
     run_id: str = ""
     error_json: str = ""
     entries_failed: int = 0
+    entries_written: int = 0
+    cache_hit: bool = False
 
     @property
     def started(self) -> bool:
@@ -125,6 +129,8 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         run_id=snapshot["run_id"],
         error_json=snapshot["error_json"],
         entries_failed=snapshot["entries_failed"],
+        entries_written=snapshot["entries_written"],
+        cache_hit=snapshot["cache_hit"],
     )
 
 

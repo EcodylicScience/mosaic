@@ -171,6 +171,25 @@ def run_tracker(
             if rows:
                 index.append(rows)
                 index.mark_finished(minted.run_id)
+            # Counted against this run's own entries rather than `failed_keys`
+            # wholesale: the op path may hand in a JobContext that already carries
+            # failures from an earlier stage of the same attempt.
+            lost = {key for key in job.failed_keys if key in attempted}
+            # Attempted-minus-lost, deliberately **not** `len(rows)`. An entry
+            # whose bridge failed still gets an index row -- the tool output is
+            # real and adoptable, which is what lets a re-run redo only the
+            # conversion -- so `rows` counts tracking done, while
+            # `entries_written` means tracks tables published. The two differ on
+            # exactly the partial run where the number matters.
+            #
+            # In the `finally` and inside the `with`, for two further reasons. A
+            # run killed halfway has still published what it finished, and that
+            # is what an operator resubmits on. And once the context exits,
+            # `job_context` has emitted its terminal event and closed the log --
+            # `_emit` then returns silently, so a count written after the block
+            # would be dropped with no error, and one written after `finished`
+            # would never reach the ledger anyway.
+            job.entries_written(len(attempted) - len(lost))
 
         # Losing every entry means the run produced nothing, and reporting that
         # as finished is the defect AllEntriesFailed exists to close -- the CLI
@@ -180,11 +199,6 @@ def run_tracker(
         # table published. Raised after the `finally` above, so the rows for the
         # tracking that *did* happen are already durable and a re-run adopts the
         # finished directories rather than recomputing them.
-        #
-        # Counted against this run's own entries rather than `failed_keys`
-        # wholesale: the op path may hand in a JobContext that already carries
-        # failures from an earlier stage of the same attempt.
-        lost = {key for key in job.failed_keys if key in attempted}
         if attempted and lost == attempted:
             raise AllEntriesFailed(
                 f"[{kind}] every one of {len(attempted)} attempted entries failed "

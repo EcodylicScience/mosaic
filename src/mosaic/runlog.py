@@ -43,6 +43,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, TypedDict, cast
 
@@ -72,6 +73,28 @@ class RunLogSnapshot(TypedDict):
     on. A non-zero count on an otherwise ``finished`` run is the partial outcome:
     the run did what it could and lost the rest. Consumers index this TypedDict
     with ``.get``, so the key is additive rather than breaking.
+
+    ``entries_written`` counts the entries the attempt leaves holding a valid
+    output row -- cache hits included, so a resumed run and a fresh one report the
+    same number over the same scope. Note the asymmetry with the field above it:
+    ``entries_failed`` *accumulates* one per event, while ``entries_written`` is
+    last-write-wins, because a writer reports a total it already holds rather than
+    an increment it would have to be trusted to add up.
+
+    ``cache_hit`` is the attempt's own claim that it found the whole of its work
+    already done. A job that never considered the question writes nothing and
+    folds to ``False``: silence and a denial are not the same thing, but no
+    consumer can act on the difference and a tri-state would make every reader
+    special-case it.
+
+    ``tracks_variant`` names the tracks recipes the attempt *read*, comma-joined
+    and sorted, empty for a run that reads none. Never what an op *produced* --
+    those are different relations and one key cannot hold both, which is what
+    would make a downstream column unqueryable.
+
+    Zero, ``False`` and ``""`` are indistinguishable from "not reported", the same
+    convention as the tracks index's blank ``n_keypoints`` cell meaning *unknown*
+    rather than zero.
     """
 
     execution_id: str
@@ -90,6 +113,9 @@ class RunLogSnapshot(TypedDict):
     progress_done: int
     progress_total: int
     entries_failed: int
+    entries_written: int
+    cache_hit: bool
+    tracks_variant: str
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +279,61 @@ class JsonlRunLog:
         """
         self._emit("entry_error", key=key, error=error_json)
 
+    def entries_written(self, count: int) -> None:
+        """How many entries this attempt leaves holding a valid output row.
+
+        Cache hits are counted. The question a reader asks is "what does this
+        run's scope hold now", and a resumed run that recomputed two of five
+        entries holds five -- so a fresh run and a resumed one over one scope
+        report one number. That is why the count comes from the single index-row
+        choke point rather than from work done.
+
+        Deliberately not derivable from ``progress_done``: a trainer overwrites
+        that with an epoch cursor, a feature writing one global artifact never
+        advances it at all, and neither sees the entries a manifest dropped for
+        having no table.
+
+        An ordinary event kind, for the reason :meth:`entry_failed` gives at
+        length: an ``ev`` a reader does not recognise falls off the end of
+        ``reduce_run_log``'s if/elif chain, advancing liveness and changing
+        nothing else.
+        """
+        self._emit("entries_written", entries_written=count)
+
+    def cache_hit(self) -> None:
+        """This attempt found the whole of its work already done.
+
+        A presence event carrying no payload, like ``finished`` and
+        ``cancelled``: a writer either makes the claim or stays silent, and the
+        fold defaults it to ``False`` -- so a job that never asked the question is
+        not recorded as having answered no.
+
+        Separate from :meth:`entries_written` rather than one combined event
+        because the two have separate knowers. An op reusing a trained model knows
+        it was a cache hit and has no entry count at all; a partial feature run has
+        a count and no claim to make.
+        """
+        self._emit("cache_hit")
+
+    def tracks_variant(self, variants: Sequence[str]) -> None:
+        """Which tracks recipes this attempt read.
+
+        Sorted, deduplicated and joined into one cell, so one set of variants has
+        one spelling however the caller ordered them. That is the
+        ``consumed_source_roots`` rule from the tracks index, re-spelled rather
+        than imported: ``encode_source_roots`` sits beside pandas and this module
+        is stdlib-only on purpose (see the module docstring).
+
+        Emitted early, beside :meth:`set_run_id`, rather than at the end. Which
+        tables a run was reading is exactly what is wanted from an attempt that
+        was killed halfway, and a fact written at the end is one such an attempt
+        never records.
+        """
+        self._emit(
+            "tracks_variant",
+            tracks_variant=",".join(sorted({v for v in variants if v})),
+        )
+
     # -- progress protocol --------------------------------------------------
 
     def on_entry_start(self, index: int, total: int, key: str) -> None:
@@ -356,6 +437,9 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "progress_done": 0,
         "progress_total": 0,
         "entries_failed": 0,
+        "entries_written": 0,
+        "cache_hit": False,
+        "tracks_variant": "",
     }
     records = _iter_records(path)
     if not records:
@@ -388,6 +472,14 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["progress_total"] = rec.get("total_epochs", snap["progress_total"])
         elif ev == "entry_error":
             snap["entries_failed"] += 1
+        elif ev == "entries_written":
+            snap["entries_written"] = rec.get(
+                "entries_written", snap["entries_written"]
+            )
+        elif ev == "cache_hit":
+            snap["cache_hit"] = True
+        elif ev == "tracks_variant":
+            snap["tracks_variant"] = rec.get("tracks_variant", snap["tracks_variant"])
         elif ev in TERMINAL_STATUSES:
             snap["status"] = ev
             snap["finished_at"] = ts

@@ -116,6 +116,11 @@ def test_second_identical_run_is_cache_hit(dataset: tuple[Path, Dataset]) -> Non
     assert second["cache_hit"] is True
     assert second["run_id"] == first["run_id"]
     assert second["execution_id"] != first["execution_id"]
+    # The count is of what the scope *holds*, not of work done, so a cache hit
+    # reports the same number as the run that did the computing. A version that
+    # counted work would report 0 here, and a coverage bar built on it would show
+    # a fully-computed dataset as empty the moment nothing was left to do.
+    assert second["entries_written"] == first["entries_written"] == 2
 
 
 def test_json_stream_separation(dataset: tuple[Path, Dataset]) -> None:
@@ -133,12 +138,17 @@ def test_json_stream_separation(dataset: tuple[Path, Dataset]) -> None:
         "status",
         "cache_hit",
         "failed_entries",
+        "entries_written",
     }
     # ``failed_entries`` is always present rather than only when non-empty: this
     # payload is a machine contract, so a consumer should not have to tell an
     # absent key from an empty one to know whether a run lost anything.
     assert obj["status"] == "finished"
     assert obj["failed_entries"] == []
+    # ``entries_written`` is present for the same reason, and carries the count
+    # rather than a flag: "how much of this scope holds output now" is the
+    # question, and a boolean cannot answer it for a partial run.
+    assert obj["entries_written"] == 2
     # the execution_id breadcrumb went to stderr.
     assert "execution_id=" in result.stderr
 
