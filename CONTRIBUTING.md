@@ -69,7 +69,7 @@ By submitting a contribution, you confirm that:
 
 Contributions are provided under the AGPL-3.0-or-later license in `LICENSE`. The additional grant above lets Ecodylic Science also distribute this project under other terms; it changes neither the license under which you received this repository nor the license under which any contribution reaches a recipient of it.
 
-Third-party components that mosaic invokes, optionally installs, or downloads weights from carry their own licenses, and some carry obligations the AGPL does not — keypoint-MoSeq prohibits commercial use outright, and TRex requires a paid license for company use. See [NOTICE](NOTICE) and [Licensing](docs/licensing.md).
+Third-party components that mosaic invokes, optionally installs, or downloads weights from carry their own licenses, and some carry obligations the AGPL does not — keypoint-MoSeq prohibits commercial use outright, and TRex requires a paid license for company use. See [NOTICE](NOTICE).
 
 ## Security
 

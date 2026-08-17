@@ -62,9 +62,8 @@ def test_unset_refuses_and_says_why() -> None:
     assert KPMS_LICENSE_ENV in message
     assert "non-commercial" in message
     assert "commercial use is expressly prohibited" in message
-    # The terms themselves, and the unrestricted alternative.
+    # The terms themselves, so the reader can decide rather than take our word.
     assert "keypoint-moseq/blob/main/LICENSE.md" in message
-    assert "arhmm" in message
 
 
 def test_accepts_exactly_one(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +101,7 @@ def test_missing_interpreter_says_how_to_get_one() -> None:
     message = str(exc.value)
     assert "never bundled" in message
     assert KPMS_PYTHON_ENV in message
-    assert "docs/licensing.md" in message
+    assert "external/README.md" in message
 
 
 def test_env_var_beats_the_bundled_environment(

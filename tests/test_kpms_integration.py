@@ -46,7 +46,7 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         os.environ.get(KPMS_LICENSE_ENV, "").strip() != "1",
-        reason=f"{KPMS_LICENSE_ENV}=1 not set; see docs/licensing.md",
+        reason=f"{KPMS_LICENSE_ENV}=1 not set; see NOTICE for the terms",
     ),
 ]
 

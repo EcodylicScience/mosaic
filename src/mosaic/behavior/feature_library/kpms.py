@@ -83,16 +83,15 @@ LICENSE_NOTICE = (
     "commercial rights to the sponsor or collaborator.\n"
     "Read the terms at "
     "https://github.com/dattalab/keypoint-moseq/blob/main/LICENSE.md, then set "
-    f"{KPMS_LICENSE_ENV}=1 to confirm your use is permitted.\n"
-    "The `arhmm` feature fits a comparable autoregressive model in mosaic's own "
-    "code and carries no such restriction.  See docs/licensing.md."
+    f"{KPMS_LICENSE_ENV}=1 to confirm your use is permitted."
 )
 
 _NOT_FOUND_HELP = (
     "keypoint-moseq is not installed with mosaic and is never bundled in a "
     "mosaic distribution: it lives in its own environment, which you build "
-    "yourself.  See docs/licensing.md for the setup command, or point "
-    f"{KPMS_PYTHON_ENV} at an interpreter that already has it."
+    "yourself.  See external/README.md beside this module for the setup "
+    f"command, or point {KPMS_PYTHON_ENV} at an interpreter that already "
+    "has it."
 )
 
 
@@ -264,11 +263,8 @@ class KpmsFeature:
         mosaic does not install, bundle, or import keypoint-moseq. It runs in a
         separate environment you build yourself, reached over a socket, and
         will not start until you set ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` to
-        confirm your use is permitted. See
-        [Licensing](../../licensing.md) for the terms and the setup command.
-
-        The `arhmm` feature fits a comparable autoregressive model in mosaic's
-        own code and carries no such restriction.
+        confirm your use is permitted. ``external/README.md`` in this package
+        is the setup, and ``NOTICE`` records the terms.
 
     Params:
         model: Pre-fitted KpmsModelArtifact to load (skip fit). Default:

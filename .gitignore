@@ -32,6 +32,11 @@ docs/assessments/
 docs/issues/
 docs/specs/
 
+# Pages held back from the published site while they are still being written.
+# They stay on disk and are reachable from a checkout; `exclude_docs` in
+# mkdocs.yml keeps them out of the build.
+docs/drafts/
+
 # Local notebooks / scratch files
 notebooks/trex-bees.ipynb
 sync-to-remote.ipynb

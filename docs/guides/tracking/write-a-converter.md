@@ -1,11 +1,10 @@
-# Adding a track converter
+# Write a converter for your format
 
 Reading tracker output you already have on disk: raw files in, one schema-valid
 `tracks/<variant>/<group>__<seq>.parquet` per entry out, under a recipe identity
-that names what produced it. This page is for **files**;
-[Adding a tracker](adding-a-tracker.md) is for a tool mosaic *runs*. The two meet
-here, since a tracker integration bridges its raw output through a converter, so
-what you write here is the same object `tracking/<tool>/dataset_runs.py` hands to
+that names what produced it. This page is for **files** you already
+have. An integrated tracker bridges its raw output through a converter too, so what
+you write here is the same object `tracking/<tool>/dataset_runs.py` hands to
 `publish_tracks_table`.
 
 Read [`deeplabcut.py`][deeplabcut] first, the smallest complete converter, then
@@ -176,8 +175,9 @@ properties of `Params`:
 validates the frame you return against it and records that name on the index row,
 so a converter cannot claim one schema while its rows are recorded under another.
 What `mosaic_v1` requires, what it forbids and why, and what to do when your tool
-genuinely measures a forbidden quantity are stated once under `output_schema` in
-[Adding a tracker](adding-a-tracker.md). Below is what only a converter hits.
+genuinely measures a forbidden quantity are in
+[What a tracker reports, and in what units](../../concepts/tracks.md). Below is what only a
+converter hits.
 
 **The default is `trex_v1`, and the consequence of forgetting it is silent.**
 `trex_v1` describes what a converter written before schemas existed emits:
@@ -263,7 +263,7 @@ matching no `.npz` at all, and a source matching nothing scans and converts zero
 rows without failing.
 
 Out of the tree, the same three steps from Python, in a process that imported
-your module (for `ds` itself see [Getting started](getting-started.md)):
+your module (for `ds` itself see [The mosaic dataset](../../dataset.md)):
 
 ```python
 from mosaic.core.manifest import TracksScanSource

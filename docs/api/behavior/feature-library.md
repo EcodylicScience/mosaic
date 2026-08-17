@@ -14,17 +14,6 @@ outputs and produce per-sequence parquet files.
     with the two other hand-written lists elsewhere in this documentation; the
     registry held 44.
 
-!!! warning "KpmsFeature is non-commercial only"
-
-    keypoint-MoSeq is licensed by the Harvard University Office of Technology
-    Development for **non-commercial research and academic use only**, and
-    commercial use is prohibited. It runs in a separate environment you build
-    yourself, and mosaic will not start it until you confirm the terms apply to
-    your use. See [Licensing](../../licensing.md).
-
-    `ArHmmFeature` fits a comparable autoregressive model in mosaic's own code
-    and carries no such restriction.
-
 ## Registry
 
 ::: mosaic.behavior.feature_library

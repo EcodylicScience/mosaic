@@ -118,7 +118,7 @@ gates reading a file the user already has, and the three are ~30 MB together.
   mosaic imports thirteen symbols from FERAL's submodules, ten of them outside
   that package's `__all__`, and the `feral` CI job exists to make a release that
   moves one fail here.
-- Mosaic ships no weights — see [docs/licensing.md](docs/licensing.md).
+- Mosaic ships no weights — see [NOTICE](NOTICE).
 
 ### Smoke import
 
@@ -993,9 +993,10 @@ is the documented bootstrap, with the license terms attached to that step.
 matching the `MOSAIC_TREX_BIN` / `MOSAIC_SLEAP_BIN` convention. The check sits
 at the spawn and deliberately not in `__init__`, because constructing a feature
 (as `mosaic reconcile` does for every run it re-addresses) is not use of
-keypoint-MoSeq. [`docs/licensing.md`](docs/licensing.md) is the user-facing
-page, and covers the other third-party terms too — notably TRex, which requires
-a paid license for company use.
+keypoint-MoSeq. [NOTICE](NOTICE) records this arrangement and the other
+third-party terms — notably TRex, which requires a paid license for company use.
+A reader-facing licensing page is being written and is not yet published, so
+nothing under `docs/` carries these terms today.
 
 ## Working with Notebooks
 

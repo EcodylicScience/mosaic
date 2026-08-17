@@ -121,10 +121,11 @@ jobs:
         uses: actions/deploy-pages@v5
 
   # External URLs only. `mkdocs build --strict` already refuses to build on a
-  # dead internal link or anchor; nothing checks that a vendor's documentation
-  # still exists where `docs/licensing.md` cites it. Weekly rather than per pull
-  # request, because link rot is not the author's fault and someone else's rate
-  # limiter should not block a merge.
+  # dead internal link or anchor; nothing checks that a third party's page still
+  # exists where a guide cites it -- the tracker guides alone link four vendors'
+  # documentation, and every source link points into this repository's own tree
+  # on GitHub. Weekly rather than per pull request, because link rot is not the
+  # author's fault and someone else's rate limiter should not block a merge.
   external-links:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest

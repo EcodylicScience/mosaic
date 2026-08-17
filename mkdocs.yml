@@ -1,5 +1,5 @@
 site_name: Mosaic
-site_description: Behavior analysis toolkit for animal tracking, feature extraction, and modeling
+site_description: A platform for behavior analysis
 site_url: https://ecodylicscience.github.io/mosaic/
 repo_url: https://github.com/EcodylicScience/mosaic
 repo_name: EcodylicScience/mosaic
@@ -22,6 +22,7 @@ exclude_docs: |
   issues/
   specs/
   assessments/
+  drafts/
 
 # mkdocs leaves these at INFO, where `--strict` cannot see them. Raised to
 # warnings, they make the build fail on a page that is in neither `nav` nor
@@ -55,10 +56,9 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
   features:
-    # Tabs rather than one flat sidebar: the nav has eleven top-level sections,
-    # and `navigation.expand` is deliberately absent -- it would open every
-    # sub-tree at once, and the generated feature reference alone contributes
-    # 44 anchors.
+    # Tabs rather than one flat sidebar, and `navigation.expand` is deliberately
+    # absent -- it would open every sub-tree at once, and the generated feature
+    # reference alone contributes 45 anchors.
     - navigation.tabs
     - navigation.tabs.sticky
     - navigation.sections
@@ -126,51 +126,61 @@ markdown_extensions:
   - toc:
       permalink: true
 
-# Organized by what a reader is trying to do, rather than by the package's module
-# tree. The six pages that predate this arrangement keep their paths: they carry
-# inbound relative links from each other and from `api/**`, and moving them in the
-# same change that first publishes the site would make the first deploy a URL
-# migration as well. New sections get new directories.
+# Named for what a reader is looking for, not for the framework that governs the
+# pages. Diataxis is the editorial test -- one reader-need per page, enforced in
+# review -- and its own guidance is not to put its vocabulary in the nav: "It
+# certainly does not mean that you should create empty structures ... Don't do
+# that. It's horrible." Almost all of this content is *doing*, so a literal split
+# would give one enormous how-to section beside three thin ones.
+#
+# Guides follow the three stages of the pipeline diagram -- media, tracking,
+# analysis -- with Pipelines as a fourth section rather than a corner of
+# Analysis, because a recipe step may be an op as easily as a feature.
 nav:
   - Home: index.md
-  - Get started:
-      - First run: getting-started.md
-      - Installation: installation.md
-  - Track: track/index.md
-  - Analyze:
-      - Overview: analyze/index.md
-      - Pipelines: guide-pipeline.md
-      - Examples: analyze/examples.md
-  - Model: model/index.md
-  - Visualize: visualize/index.md
-  - Operate: operate/index.md
-  - Extend:
-      - Add a tracker: adding-a-tracker.md
-      - Add a track converter: adding-a-converter.md
+  - Getting Started:
+      - Install mosaic: installation.md
+      - The mosaic dataset: dataset.md
+  - Guides:
+      - Overview: guides/index.md
+      - Tracking:
+          - Import tracks you already have: guides/tracking/import.md
+          - Run a tracker: guides/tracking/run-a-tracker.md
+          - Train a pose model: guides/tracking/train-a-pose-model.md
+          - Write a converter for your format: guides/tracking/write-a-converter.md
+      - Analysis:
+          - Features: guides/analysis/features.md
+          - Write your own feature: guides/analysis/write-your-own-feature.md
+          - Unsupervised and supervised models: guides/analysis/models.md
+      - Pipelines:
+          - Chain steps into a recipe: guides/pipelines/chain-steps.md
+          - Run work and see what ran: guides/pipelines/run-and-see-what-ran.md
+          - Keep a dataset organized: guides/pipelines/keep-organized.md
+  - Concepts:
+      - Datasets, roots and sources: concepts/datasets.md
+      - What a tracker reports: concepts/tracks.md
+      - Features and composition: concepts/features.md
+      - Reproducibility and caching: concepts/reproducibility.md
+      - Pipelines as documents: concepts/pipelines.md
   - Reference:
-      - Overview: reference/index.md
-      - Features: reference/features.md
-      - Ops: reference/ops.md
-      - CLI: reference/cli.md
-      - Track formats: reference/track-formats.md
-  - API Reference:
-      - Core:
+      - What is where: reference/index.md
+      - Registries:
+          - Features: reference/features.md
+          - Ops: reference/ops.md
+          - CLI: reference/cli.md
+          - Track formats: reference/track-formats.md
+      - Python API:
           - Dataset: api/core/dataset.md
           - Manifest: api/core/manifest.md
           - Typed attributes: api/core/typed-attribute.md
           - Schema: api/core/schema.md
           - Helpers: api/core/helpers.md
-      - Pipeline:
-          - Overview: api/pipeline/index.md
+          - Pipeline: api/pipeline/index.md
           - Inventory: api/pipeline/inventory.md
           - Graphs: api/pipeline/graph.md
-      - Behavior:
-          - Feature Library: api/behavior/feature-library.md
-          - Label Library: api/behavior/label-library.md
+          - Feature library: api/behavior/feature-library.md
+          - Label library: api/behavior/label-library.md
           - Visualization: api/behavior/visualization.md
-      - Media:
           - Video I/O: api/media/video-io.md
-      - Tracking:
-          - Frame Extraction: api/tracking/frame-extraction.md
-          - Pose Training: api/tracking/pose-training.md
-  - Licensing: licensing.md
+          - Frame extraction: api/tracking/frame-extraction.md
+          - Pose training: api/tracking/pose-training.md
