@@ -91,7 +91,12 @@ jobs:
 
   deploy:
     needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Manual only, while the documentation is being restructured on
+    # `docs/restructure`. A push to `main` still builds with `--strict` and still
+    # runs the generated-reference check, so nothing about the safety net changes
+    # -- it just does not publish. Restore `github.event_name == 'push' ||` here
+    # when the restructure lands, and the site resumes deploying on every merge.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       pages: write
