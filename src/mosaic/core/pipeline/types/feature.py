@@ -43,7 +43,7 @@ class InputStream:
 
 
 class Feature(Protocol):
-    """Feature protocol -- 6 attributes, 4 methods."""
+    """Feature protocol -- 7 attributes, 4 methods."""
 
     name: str
     version: str

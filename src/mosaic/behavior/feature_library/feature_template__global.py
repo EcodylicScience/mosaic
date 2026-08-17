@@ -3,8 +3,9 @@ Template for a global feature (clustering, embedding, dimensionality reduction).
 
 Copy this file, rename the class and `name`, and fill in your logic.
 
-Protocol (4 attributes + 4 methods):
-  - name, version, parallelizable, scope_dependent
+Protocol (7 attributes + 4 methods):
+  - name, version, parallelizable, scope_dependent, accepts_overlap, emits,
+    consumed_roots
   - load_state(run_root, artifact_paths, dependency_lookups) -> bool
   - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
   - save_state(run_root) -> None
@@ -32,6 +33,7 @@ import pandas as pd
 # from .registry import register_feature  # <-- uncomment when ready
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    EmitsLevel,
     InputRequire,
     Inputs,
     InputStream,
@@ -66,6 +68,10 @@ class MyGlobalFeature:
     parallelizable = False
     scope_dependent = False
     accepts_overlap = False  # the template declares the conservative answer
+    # "individual" / "pair" / "unidentified" / "as-input". A global fitter
+    # augments the frame it was handed rather than re-keying it, so it passes
+    # its input's level through. Change this if yours does re-key.
+    emits: EmitsLevel = "as-input"
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):

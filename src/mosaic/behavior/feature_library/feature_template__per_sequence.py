@@ -3,8 +3,9 @@ Template for a per-sequence feature.
 
 Copy this file, rename the class and `name`, and fill in your logic.
 
-Protocol (4 attributes + 4 methods):
-  - name, version, parallelizable, scope_dependent
+Protocol (7 attributes + 4 methods):
+  - name, version, parallelizable, scope_dependent, accepts_overlap, emits,
+    consumed_roots
   - load_state(run_root, artifact_paths, dependency_lookups) -> bool
   - fit(inputs: factory returning iterator of (entry_key, DataFrame)) -> None
   - save_state(run_root) -> None
@@ -29,6 +30,7 @@ import pandas as pd
 from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
+    EmitsLevel,
     InputStream,
     Params,
     TrackInputs,
@@ -62,6 +64,11 @@ class MyPerSequenceFeature:
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # the template declares the conservative answer
+    # "individual" / "pair" / "unidentified" / "as-input". This is what lets a
+    # chain be refused before it runs, so declare what your apply() actually
+    # keys its rows by -- a pair-producing feature left on "individual" has its
+    # cartesian join permitted rather than caught.
+    emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):
