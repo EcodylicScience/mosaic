@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Final, Literal
 
+from mosaic.user_paths import user_path
+
 __all__ = [
     "BinMode",
     "ToolEnv",
@@ -188,8 +190,8 @@ def _conda_env_executable(conda: str, env_name: str, executable: str) -> Path | 
     roots: list[Path] = []
     for entry in os.environ.get("CONDA_ENVS_DIRS", "").split(os.pathsep):
         if entry:
-            roots.append(Path(entry) / env_name)
-    base = Path(conda).resolve().parent.parent
+            roots.append(user_path(entry) / env_name)
+    base = user_path(conda).resolve().parent.parent
     roots.append(base / "envs" / env_name)
     roots.append(base)
     for prefix in roots:
@@ -227,6 +229,9 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
             f"'{env_name}'. Set {env.bin_var} to an explicit path instead, or "
             f"make conda available."
         )
+    # `shutil.which` already returns an absolute path; the `CONDA_EXE` fallback
+    # does not, and this value becomes argv[0] below.
+    conda = str(user_path(conda))
     resolved = _conda_env_executable(conda, env_name, executable)
     target = str(resolved) if resolved is not None else executable
     return [conda, "run", "--no-capture-output", "-n", env_name, target]
@@ -271,10 +276,18 @@ def tool_invocation(
 
 
 def _from_bin(env: ToolEnv, bin_path: str | Path, executable: str) -> str:
-    """Read an explicit ``bin`` value according to the tool's :class:`BinMode`."""
+    """Read an explicit ``bin`` value according to the tool's :class:`BinMode`.
+
+    Expanded but never resolved. These values arrive from ``MOSAIC_<TOOL>_BIN``,
+    which no shell expands -- it is the value of a variable, not a word being
+    expanded -- so an unexpanded ``~/bin/trex`` becomes ``argv[0]`` verbatim and
+    fails with ENOENT. Resolving would break the other supported spelling: a bare
+    ``MOSAIC_TREX_BIN=trex`` is a name for ``$PATH`` to find, and resolving it
+    would turn it into ``$CWD/trex``.
+    """
     if env.bin_mode == "direct":
-        return str(bin_path)
-    return str(Path(bin_path).parent / executable)
+        return str(user_path(bin_path))
+    return str(user_path(bin_path).parent / executable)
 
 
 # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into

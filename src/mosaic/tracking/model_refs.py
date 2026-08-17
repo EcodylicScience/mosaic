@@ -32,6 +32,7 @@ import pandas as pd
 import yaml
 
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.user_paths import user_path
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.op_identity import parse_op_run_id
@@ -608,7 +609,11 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         KeyError: A ``run_id`` absent from the index.
     """
     spec = spec_for(kind)
-    reference = Path(ref)
+    # Only the filesystem probe is expanded. `ref` itself stays as given, because
+    # it is also the registry key below and a run identifier never carries a `~`.
+    # Unexpanded, `~/models/best.pt` fails `exists()` and falls through to the
+    # index, reporting a missing run_id for what is plainly a path.
+    reference = user_path(ref)
     # A prefix never exists, so the spec decides before the filesystem does.
     if spec.shape == "prefix" or reference.exists():
         artifact = _resolve_artifact(reference, spec)
@@ -664,7 +669,7 @@ def resolve_model_set(
     registered: list[str] = []
     model_type = ""
     for ref in refs:
-        reference = Path(ref)
+        reference = user_path(ref)
         if spec.shape != "prefix" and not reference.exists():
             if ds is None:
                 raise FileNotFoundError(
@@ -721,7 +726,7 @@ def model_id_for_ref(ds: Dataset | None, ref: str, kind: str) -> str:
         FileNotFoundError: A path reference naming nothing, or a registered one
             with *ds* omitted.
     """
-    if parse_op_run_id(ref) is not None and not Path(ref).exists():
+    if parse_op_run_id(ref) is not None and not user_path(ref).exists():
         # A run identifier, and not something that happens to sit at that path.
         # `resolve_model` returns this same value through its index branch, so
         # taking it here agrees with execution rather than approximating it.

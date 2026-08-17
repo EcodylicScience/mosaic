@@ -13,6 +13,7 @@ import uuid
 
 import numpy as np
 from mosaic_media import MediaFacts, probe_media
+from mosaic.user_paths import user_path
 
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import (
@@ -143,7 +144,7 @@ def extract_frames(
     # this one measurement instead of each probing the file again.
     resolved_facts = facts
     if resolved_facts is None and not is_imgstore(video_path):
-        resolved_facts = probe_media(Path(video_path).expanduser().resolve())
+        resolved_facts = probe_media(user_path(video_path).resolve())
     meta = video_metadata_or_probe(video_path, resolved_facts)
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
@@ -197,17 +198,12 @@ def extract_frames(
 
     run = run_id or _make_run_id()
     if output_dir is not None:
-        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir = user_path(output_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         if output_root is None:
             raise ValueError("Either output_root or output_dir must be provided.")
-        out_dir = (
-            Path(output_root).expanduser().resolve()
-            / meta.path.stem
-            / method_norm
-            / run
-        )
+        out_dir = user_path(output_root).resolve() / meta.path.stem / method_norm / run
         out_dir.mkdir(parents=True, exist_ok=False)
 
     file_records = save_frames_as_png(
@@ -353,12 +349,12 @@ def extract_frames_multi(
 
     run = run_id or _make_run_id()
     if output_dir is not None:
-        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir = user_path(output_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         if output_root is None:
             raise ValueError("Either output_root or output_dir must be provided.")
-        out_dir = Path(output_root).expanduser().resolve() / "multi" / method_norm / run
+        out_dir = user_path(output_root).resolve() / "multi" / method_norm / run
         out_dir.mkdir(parents=True, exist_ok=False)
 
     # save_frames_as_png_multi seeks internally; no need to reopen
@@ -407,5 +403,5 @@ def extract_frames_multi(
 
 def load_extraction_manifest(path: Path | str) -> dict[str, Any]:
     """Load a saved JSON manifest from a previous extraction run."""
-    p = Path(path).expanduser().resolve()
+    p = user_path(path).resolve()
     return json.loads(p.read_text())

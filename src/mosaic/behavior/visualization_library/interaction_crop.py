@@ -46,6 +46,7 @@ from mosaic.behavior.visualization_library.helpers import (
     require_pixel_positions,
     safe_crop_with_padding,
 )
+from mosaic.user_paths import user_path
 
 
 @final
@@ -597,7 +598,7 @@ class InteractionCropPipeline:
 
     def _get_output_dir(self, group: str, sequence: str) -> Path:
         if self.params.output_root:
-            return Path(self.params.output_root)
+            return user_path(self.params.output_root)
         if self._run_root is not None:
             return self._run_root
         media_root = Path(self._ds.get_root("media"))

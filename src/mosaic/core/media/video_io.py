@@ -10,6 +10,7 @@ from typing import Any, Iterator, Optional, Protocol, Sequence
 import cv2
 import numpy as np
 from mosaic_media import MediaFacts, MediaProbeError, probe_media
+from mosaic.user_paths import user_path
 from mosaic_media.io import FFmpegVideoWriter as FFmpegVideoWriter
 from mosaic_media.io import MultiVideoReader as _PlainMultiReader
 from mosaic_media.io import SeekIndex
@@ -141,7 +142,7 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
         # ffprobe-based probe, so dispatch before that probe.
         return imgstore_metadata(video_path)
 
-    path = Path(video_path).expanduser().resolve()
+    path = user_path(video_path).resolve()
     try:
         facts = probe_media(path)
     except MediaProbeError as exc:
@@ -163,7 +164,7 @@ def video_metadata_or_probe(
     """
     if facts is None:
         return get_video_metadata(video_path)
-    return facts_to_video_metadata(Path(video_path).expanduser().resolve(), facts)
+    return facts_to_video_metadata(user_path(video_path).resolve(), facts)
 
 
 def normalize_frame_range(
@@ -261,7 +262,7 @@ def extract_candidate_features(
     if resize[0] <= 0 or resize[1] <= 0:
         raise ValueError("resize must be (width>0, height>0)")
 
-    resolved = Path(video_path).expanduser().resolve()
+    resolved = user_path(video_path).resolve()
     indices: list[int] = []
     features: list[np.ndarray] = []
     max_n = None if max_candidates is None else max(1, int(max_candidates))
@@ -339,10 +340,10 @@ def save_frames_as_png(
     """
     from .imgstore_io import ImgStoreCapture, is_imgstore
 
-    out_dir = Path(output_dir).expanduser().resolve()
+    out_dir = user_path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    resolved = Path(video_path).expanduser().resolve()
+    resolved = user_path(video_path).resolve()
     target_indices = sorted(set(int(i) for i in frame_indices))
     records: list[dict[str, Any]] = []
     if not target_indices:
@@ -804,7 +805,7 @@ def save_frames_as_png_multi(
     Every backend (imgstore or plain video) seeks directly to each target
     frame; the reader owns any GOP-aware seek strategy internally.
     """
-    out_dir = Path(output_dir).expanduser().resolve()
+    out_dir = user_path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     target_indices = sorted(set(int(i) for i in frame_indices))

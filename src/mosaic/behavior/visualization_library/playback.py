@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Iterable, Any, Tuple
 import cv2
 
 from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
 from .helpers import require_pixel_positions
@@ -216,7 +217,7 @@ def play_video(
     writer = None
     out_path = None
     if output_path:
-        out_path = Path(output_path).expanduser()
+        out_path = user_path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         frame_size = getattr(stream, "frame_size", (0, 0))

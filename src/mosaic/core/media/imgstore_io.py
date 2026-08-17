@@ -39,6 +39,7 @@ import cv2
 import numpy as np
 import yaml
 from mosaic_media import Verdict
+from mosaic.user_paths import user_path
 
 from .facts_columns import ProbeMetadata, facts_to_row, store_facts
 from .imgstore_native import NativeStore
@@ -246,7 +247,7 @@ def imgstore_metadata(path: Path | str) -> VideoMetadata:
     store an explicit fps; see :func:`_fps_from_duration`); it is ``0.0`` for
     stores with no usable timestamps.
     """
-    p = Path(path).expanduser().resolve()
+    p = user_path(path).resolve()
     m = _read_store_meta(p)
     return VideoMetadata(
         path=p,
@@ -428,7 +429,7 @@ class ImgStoreFrameReader:
         resize: tuple[int, int] | None = None,
         hwaccel: bool = False,
     ):
-        self._path = Path(video_path).expanduser().resolve()
+        self._path = user_path(video_path).resolve()
         self._cap = ImgStoreCapture(self._path)
         self._source_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self._source_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

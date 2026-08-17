@@ -193,6 +193,7 @@ from .pipeline.tracks_raw_index import (
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline._utils import atomic_savez
+from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
     from .pipeline.job import CancelToken
@@ -217,7 +218,7 @@ def _normalize_path_map(path_map: Mapping[str, str]) -> list[tuple[Path, Path]]:
     for src, dst in path_map.items():
         if not src or not dst:
             continue
-        normalized.append((Path(src).expanduser(), Path(dst).expanduser()))
+        normalized.append((user_path(src), user_path(dst)))
     normalized = [pair for pair in normalized if pair[0] != pair[1]]
     normalized.sort(key=lambda pair: len(pair[0].as_posix()), reverse=True)
     return normalized
@@ -449,11 +450,14 @@ def new_dataset_manifest(
     Raises:
         ValueError: If a root resolves outside *base_dir*.
     """
-    base_dir = Path(base_dir).resolve()
+    base_dir = user_path(base_dir).resolve()
     normalized: dict[str, str] = {}
     for key, declared in roots.items():
-        _ = validate_root_inside(base_dir, declared, key)
-        full = (base_dir / Path(declared)).resolve()
+        # The validator's return value is what gets joined, not `declared`: it is
+        # the expanded spelling, and rebuilding from the raw one would put back
+        # the `~` the validator just judged.
+        checked = validate_root_inside(base_dir, declared, key)
+        full = (base_dir / checked).resolve()
         full.mkdir(parents=True, exist_ok=True)
         normalized[key] = str(full.relative_to(base_dir))
 
@@ -465,7 +469,7 @@ def new_dataset_manifest(
         tags=tags,
         sources=sources,
     )
-    target = Path(outfile) if outfile is not None else base_dir / "dataset.yaml"
+    target = user_path(outfile) if outfile is not None else base_dir / "dataset.yaml"
     write_manifest(target, manifest)
     return target
 
@@ -703,7 +707,7 @@ class Dataset:
             meta: Structured metadata, when constructing without loading.
             manifest: A manifest to adopt wholesale. Overrides the other fields.
         """
-        self.manifest_path: Path = Path(manifest_path)
+        self.manifest_path: Path = user_path(manifest_path)
         if manifest is not None:
             self.manifest: DatasetManifest = manifest
         else:
@@ -1457,7 +1461,7 @@ class Dataset:
         if key not in self.roots or not self.roots[key]:
             msg = _unresolved_root_message(key, self.roots, self.manifest_path)
             raise KeyError(msg)
-        p = Path(self.roots[key])
+        p = user_path(self.roots[key])
         if not p.is_absolute():
             return (_dataset_base_dir(self) / p).resolve()
         return p
@@ -1513,9 +1517,12 @@ class Dataset:
         self._ensure_roots()
 
     def _ensure_roots(self) -> None:
+        # Expanded, not refused: a `~` root cannot be written any more, but a
+        # dataset that already holds one must keep loading. Validated on write,
+        # tolerated on read -- the same rule an outside root already follows.
         for p in self.roots.values():
             if p:
-                path = Path(p)
+                path = user_path(p)
                 if not path.is_absolute():
                     path = _dataset_base_dir(self) / path
                 path.mkdir(parents=True, exist_ok=True)
@@ -1538,7 +1545,7 @@ class Dataset:
         for key, raw_path in self.roots.items():
             if not raw_path:
                 continue
-            current = Path(raw_path).expanduser()
+            current = user_path(raw_path)
             new_value = _remap_single_path(current, normalized)
             if new_value is not None:
                 updated[key] = str(new_value)
@@ -1557,7 +1564,7 @@ class Dataset:
         Returns:
             Remapped path, or the original if no mapping applies.
         """
-        p = Path(str(path).strip())
+        p = user_path(path)
         if not self._path_map:
             return p
         new_value = _remap_single_path(p, self._path_map)
@@ -1570,7 +1577,7 @@ class Dataset:
         Absolute paths that exist are returned as-is; absolute paths that don't
         exist are tried through this dataset's ``path_map``.
         """
-        p = Path(str(stored_path).strip())
+        p = user_path(stored_path)
         # _dataset_base_dir() creates the directory it returns, so the default
         # anchor is resolved only when a relative path actually needs one; the
         # resolver never reads the anchor for an absolute path.
@@ -1599,7 +1606,7 @@ class Dataset:
         (:meth:`resolve_path`) reverses it. External paths (outside the dataset
         tree) are returned absolute unchanged.
         """
-        return self._relative_to_root(Path(path))
+        return self._relative_to_root(user_path(path))
 
     def rewrite_index_paths(
         self, path_map: Mapping[str, str], dry_run: bool = False
@@ -1642,7 +1649,7 @@ class Dataset:
                     if pd.isna(p) or not str(p):
                         new_paths.append(p)
                         continue
-                    remapped = _remap_single_path(Path(str(p)), normalized)
+                    remapped = _remap_single_path(user_path(str(p)), normalized)
                     if remapped is not None and str(remapped) != p:
                         new_paths.append(str(remapped))
                         col_changed += 1
@@ -2406,7 +2413,7 @@ class Dataset:
             is_imgstore,
         )
 
-        search = [Path(d) for d in search_dirs]
+        search = [user_path(d) for d in search_dirs]
 
         # Discover imgstore directories first. A store is a directory (not a file
         # with an extension) that contains its own chunk video files -- so we
@@ -2634,9 +2641,14 @@ class Dataset:
                 "match_mode": sequence_match_mode,
             }
         )
-        rows = self._scan_media_dirs(list(search_dirs), recipe)
+        # Materialized once. `search_dirs` is an Iterable, and this used to be
+        # consumed twice -- a list here and a generator in the claim below -- so
+        # a generator argument produced an empty claim, and the write silently
+        # became an append instead of the replace it reports.
+        search = [user_path(d) for d in search_dirs]
+        rows = self._scan_media_dirs(search, recipe)
         if claim is None:
-            claim = ScanClaim.over_directories(Path(d) for d in search_dirs)
+            claim = ScanClaim.over_directories(search)
         return self._write_scanned_media(
             rows,
             claim=claim,
@@ -4076,7 +4088,7 @@ class Dataset:
 
     def _resolve_declared_path(self, path: str) -> Path:
         """A declared source path as an absolute one, creating and checking nothing."""
-        declared = Path(path).expanduser()
+        declared = user_path(path)
         return declared if declared.is_absolute() else self.base_dir / declared
 
     def resolve_source_path(self, source: ScanSource) -> Path:
@@ -4963,6 +4975,9 @@ class Dataset:
                 return ""
             return carried.get(path.resolve()) or _md5(path)
 
+        # Materialized once: `search_dirs` is an Iterable read both here and by
+        # the claim below, so a generator argument left the claim empty.
+        search = [user_path(d) for d in search_dirs]
         pat_list = _normalize_patterns(patterns)
         exc_list = _normalize_patterns(exclude_patterns)
         if group_pattern and group_from_path is not None:
@@ -4974,7 +4989,7 @@ class Dataset:
         group_re = re.compile(group_pattern) if group_pattern else None
 
         for p, st in iter_track_files(
-            map(Path, search_dirs),
+            search,
             pat_list,
             recursive=recursive,
             exclude_patterns=exc_list,
@@ -5024,7 +5039,7 @@ class Dataset:
         # lets one dataset hold two source formats: scanning a trex directory and
         # then a CalMS21 one used to leave only the second.
         if claim is None:
-            claim = ScanClaim.over_directories(Path(d) for d in search_dirs)
+            claim = ScanClaim.over_directories(search)
         # The same widening the media scan applies, for the same reason: a
         # symlinked raw file records its target, which the directory claim does
         # not cover, and the scan would preserve the row it had just written.
@@ -6329,7 +6344,7 @@ class Dataset:
         ...     field_columns=["strain", "treatment", "sex"],
         ... )
         """
-        csv_path = Path(csv_path)
+        csv_path = user_path(csv_path)
         if not csv_path.exists():
             raise FileNotFoundError(f"CSV file not found: {csv_path}")
 

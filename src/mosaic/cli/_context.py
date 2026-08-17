@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.cli._io import fail
+from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -26,6 +27,10 @@ def load_dataset(manifest: Path) -> "Dataset":
     """
     from mosaic.core.dataset import open_dataset
 
+    # Every `--manifest` in the CLI arrives here, so this is the one place the
+    # tilde is expanded. A shell expands an unquoted `~` itself, but not a quoted
+    # one, and not one that reached the argument from a script or a config file.
+    manifest = user_path(manifest)
     if not manifest.exists():
         fail(f"Manifest not found: {manifest}")
     try:

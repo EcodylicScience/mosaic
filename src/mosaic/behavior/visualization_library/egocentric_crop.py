@@ -31,6 +31,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.pipeline.types.feature import DependencyLookup
+from mosaic.user_paths import user_path
 
 from ..feature_library.registry import register_feature
 from .helpers import (
@@ -871,7 +872,7 @@ class EgocentricCrop:
         Can be overridden via ``output_root`` param.
         """
         if self.params.output_root:
-            return Path(self.params.output_root) / f"{group}__{sequence}"
+            return user_path(self.params.output_root) / f"{group}__{sequence}"
         if self._run_root is not None:
             return self._run_root / f"{group}__{sequence}"
         media_root = Path(self._ds.get_root("media"))

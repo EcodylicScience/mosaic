@@ -5,16 +5,19 @@ tree and absolute otherwise, so reading one back is a two-case rule rather than 
 plain ``Path()``. That rule is shared by the dataset layer and by the media
 tooling underneath it, and a second copy of it would be free to drift.
 
-Deliberately stdlib-only and free of dataset concepts: it holds the *mechanism*,
+Deliberately dependency-free and free of dataset concepts: it holds the *mechanism*,
 while which remapping applies and when it is established stays with the dataset
 that owns the manifest. ``core.helpers`` is not a home for this -- it pulls numpy
-and pandas, and a caller that needs one path rule should not pay for those.
+and pandas, and a caller that needs one path rule should not pay for those. Its
+one import, ``mosaic.user_paths``, is a leaf of the same shape.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+
+from mosaic.user_paths import user_path
 
 
 def remap_single_path(path: Path, mapping: Sequence[tuple[Path, Path]]) -> Path | None:
@@ -49,8 +52,13 @@ def resolve_stored_path(
     it is a path recorded on another machine or before a move, so *path_map* --
     when the caller has one -- gets to rewrite it; an unmapped path is returned
     unchanged rather than raising, leaving the caller to report the miss.
+
+    A ``~`` is expanded before either test. ``Path("~/x").is_absolute()`` is
+    False, so an unexpanded cell would take the relative branch and be anchored
+    into ``<anchor>/~/x`` -- a plausible path naming nothing. Cells mosaic writes
+    never begin with ``~``; ones reaching this through an op's params can.
     """
-    path = Path(str(stored).strip())
+    path = user_path(stored)
     if not path.is_absolute():
         return (anchor / path).resolve()
     if path.exists():

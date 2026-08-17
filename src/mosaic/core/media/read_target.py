@@ -42,6 +42,7 @@ from mosaic_media import (
 from mosaic_media.transcode import Target
 
 from mosaic.media_probe_config import media_thresholds
+from mosaic.user_paths import user_path
 
 type ReadTarget = Target | Literal["raw"]
 
@@ -98,9 +99,9 @@ def verified_read_facts(
     any probe runs, so a mismatched call cannot burn a full-file scan first.
     """
     if isinstance(paths, (str, Path)):
-        resolved_paths = [Path(paths).expanduser().resolve()]
+        resolved_paths = [user_path(paths).resolve()]
     else:
-        resolved_paths = [Path(path).expanduser().resolve() for path in paths]
+        resolved_paths = [user_path(path).resolve() for path in paths]
 
     if isinstance(facts, MediaFacts):
         facts_list: list[MediaFacts] | None = [facts]

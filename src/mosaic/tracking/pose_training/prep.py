@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.frame_extraction import get_frame_manifests
 from mosaic.core.annotations.split import default_group_key, split_filenames
+from mosaic.user_paths import user_path
 
 
 # --------------------------------------------------------------------------- #
@@ -576,7 +577,7 @@ def check_dataset(
     out_dir: str, splits: Sequence[str] = ("train", "valid", "test")
 ) -> None:
     """Print a summary of class counts for a prepared dataset."""
-    out_path = Path(out_dir).resolve()
+    out_path = user_path(out_dir).resolve()
     print(f"Dataset: {out_path}")
 
     found_any_split = False

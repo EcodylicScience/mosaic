@@ -19,6 +19,7 @@ from mosaic.core.json_value import JsonValue
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, terse
+from mosaic.user_paths import user_path
 
 notes_app = typer.Typer(
     name="notes",
@@ -74,9 +75,10 @@ def set_notes(
     if (text is None) == (from_file is None):
         fail("Pass either the text (or '-') or --from-file, not both and not neither.")
     if from_file is not None:
-        if not from_file.exists():
-            fail(f"Notes file not found: {from_file}")
-        body = from_file.read_text(encoding="utf-8")
+        notes_path = user_path(from_file)
+        if not notes_path.exists():
+            fail(f"Notes file not found: {notes_path}")
+        body = notes_path.read_text(encoding="utf-8")
     else:
         body = sys.stdin.read() if text == "-" else str(text)
     try:

@@ -15,6 +15,7 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, terse
+from mosaic.user_paths import user_path
 
 sources_app = typer.Typer(
     name="sources",
@@ -202,11 +203,12 @@ def add_source(
 
     listed = list(file or [])
     if files_from is not None:
-        if not files_from.exists():
-            fail(f"File list not found: {files_from}")
+        list_path = user_path(files_from)
+        if not list_path.exists():
+            fail(f"File list not found: {list_path}")
         listed.extend(
             line.strip()
-            for line in files_from.read_text(encoding="utf-8").splitlines()
+            for line in list_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         )
 

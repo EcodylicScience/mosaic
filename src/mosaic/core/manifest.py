@@ -52,6 +52,7 @@ from pydantic import (
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.user_paths import user_path
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
 from mosaic.core.typed_attribute import (
     TypedAttributeType,
@@ -252,6 +253,13 @@ def validate_root_inside(base_dir: Path, path: str | Path, key: str) -> Path:
     how it is written -- and the portability pass relativizes an inside-absolute
     root on its next run anyway.
 
+    A ``~`` is expanded before the rule is applied, so it is judged on where it
+    lands. Unexpanded it would be judged on how it is written: ``~/elsewhere`` is
+    not absolute, so it would be read as a path *relative* to the dataset, land
+    inside, and pass -- and the literal ``~`` would then be persisted as a root
+    and recreated under the dataset on every load. Expanded, it is an outside
+    root and refused like any other.
+
     The comparison resolves both sides. An unnormalized ``..`` or a symlink would
     otherwise let a root leave the dataset while reading as though it stayed.
 
@@ -266,7 +274,7 @@ def validate_root_inside(base_dir: Path, path: str | Path, key: str) -> Path:
     Raises:
         ValueError: If *path* resolves outside *base_dir*.
     """
-    candidate = Path(path)
+    candidate = user_path(path)
     absolute = candidate if candidate.is_absolute() else base_dir / candidate
     resolved = absolute.resolve()
     root = base_dir.resolve()

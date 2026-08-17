@@ -12,13 +12,13 @@ import contextlib
 import json
 import sys
 from collections.abc import Generator
-from pathlib import Path
 from typing import NoReturn
 
 import typer
 from pydantic import ValidationError
 
 from mosaic.core.helpers import parse_entry_tokens
+from mosaic.user_paths import user_path
 
 
 @contextlib.contextmanager
@@ -81,7 +81,10 @@ def load_json_arg(value: str | None) -> object | None:
         raw = sys.stdin.read()
         source = "<stdin>"
     elif value.startswith("@"):
-        path = Path(value[1:])
+        # No shell expands the tilde in `@~/params.json` -- expansion applies to
+        # the start of a word, and here the word starts with `@` -- so this form
+        # only works if it is expanded here.
+        path = user_path(value[1:])
         if not path.exists():
             fail(f"JSON file not found: {path}")
         raw = path.read_text()

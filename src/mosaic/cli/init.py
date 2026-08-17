@@ -13,6 +13,7 @@ from typing import Annotated
 import typer
 
 from mosaic.cli._io import emit_json, fail, terse
+from mosaic.user_paths import user_path
 
 
 def _parse_assignments(pairs: list[str] | None, what: str) -> dict[str, str]:
@@ -74,7 +75,7 @@ def init_command(
     from mosaic.core.dataset import new_dataset_manifest
     from mosaic.core.manifest import DatasetTag, default_roots
 
-    target = directory.expanduser().resolve()
+    target = user_path(directory).resolve()
     manifest_path = target / "dataset.yaml"
     if manifest_path.exists() and not force:
         fail(f"{manifest_path} already exists; pass --force to overwrite it.")
@@ -83,9 +84,10 @@ def init_command(
         fail("Pass --note or --notes-file, not both.")
     notes = note or ""
     if notes_file is not None:
-        if not notes_file.exists():
-            fail(f"Notes file not found: {notes_file}")
-        notes = notes_file.read_text(encoding="utf-8")
+        notes_path = user_path(notes_file)
+        if not notes_path.exists():
+            fail(f"Notes file not found: {notes_path}")
+        notes = notes_path.read_text(encoding="utf-8")
 
     roots = dict(default_roots)
     roots.update(_parse_assignments(root, "root"))

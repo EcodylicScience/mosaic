@@ -28,6 +28,7 @@ from mosaic.core.media.video_io import (
     prefetch_batches,
     video_metadata_or_probe,
 )
+from mosaic.user_paths import user_path
 
 
 class _InferenceResult(Protocol):
@@ -1078,7 +1079,7 @@ def visualize_inference(
     writer = None
     out_path = None
     if output_path is not None:
-        out_path = Path(output_path).expanduser().resolve()
+        out_path = user_path(output_path).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             writer = FFmpegVideoWriter(

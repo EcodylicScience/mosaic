@@ -27,6 +27,7 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.user_paths import user_path
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     HASH_EXCLUDE,
@@ -66,9 +67,9 @@ log = logging.getLogger(__name__)
 _KPMS_SERVER_SCRIPT = Path(__file__).parent / "external" / "kpms_server.py"
 _EXTERNAL_VENV_PYTHON = Path(__file__).parent / "external" / ".venv" / "bin" / "python"
 
-# Read at point of use with a bare ``os.environ.get``, the convention every
-# externally-installed tool follows (MOSAIC_TREX_BIN, MOSAIC_SLEAP_BIN,
-# MOSAIC_LITPOSE_BIN).
+# Read at point of use with a bare ``os.environ.get`` and expanded through
+# ``user_path``, the convention every externally-installed tool follows
+# (MOSAIC_TREX_BIN, MOSAIC_SLEAP_BIN, MOSAIC_LITPOSE_BIN).
 KPMS_PYTHON_ENV = "MOSAIC_KPMS_PYTHON"
 KPMS_LICENSE_ENV = "MOSAIC_KPMS_LICENSE_ACCEPTED"
 
@@ -148,7 +149,7 @@ def resolve_kpms_python(kpms_python: str | None = None) -> Path:
         KpmsNotFoundError: if the resolved path does not exist.
     """
     candidate = kpms_python or os.environ.get(KPMS_PYTHON_ENV)
-    resolved = Path(candidate).expanduser() if candidate else _EXTERNAL_VENV_PYTHON
+    resolved = user_path(candidate) if candidate else _EXTERNAL_VENV_PYTHON
     if not resolved.exists():
         msg = f"[kpms] Python interpreter not found: {resolved}.  {_NOT_FOUND_HELP}"
         raise KpmsNotFoundError(msg)
