@@ -369,12 +369,24 @@ def test_a_request_round_trips(tmp_path: Path, worked: Recipe) -> None:
         entries=[("", "seq_a")],
         allow_partial=True,
         step_executions={"speed": "01ABC"},
-        feature_versions={"speed": "0.3"},
+        step_versions={"speed": "0.3", "trex": "0.2"},
     )
     _ = save_request(tmp_path, request)
     read_back = load_request(tmp_path, "req-1")
     assert read_back == request
     assert read_back.entry_set() == frozenset({("", "seq_a")})
+    assert read_back.execution_of("speed") == "01ABC"
+
+
+def test_a_request_names_the_step_it_assigned_no_attempt(worked: Recipe) -> None:
+    """An unassigned step is a malformed request, not a step yet to start.
+
+    Returning an empty identifier would be read as "no attempt yet" by a step
+    pinning its parent, which is the one reading that must not be guessable.
+    """
+    request = Request(request_id="r", recipe_digest=recipe_digest(worked))
+    with pytest.raises(KeyError, match="assigns no execution id to step 'speed'"):
+        _ = request.execution_of("speed")
 
 
 def test_a_recipe_never_carries_a_resolved_run_id(worked: Recipe) -> None:

@@ -27,6 +27,7 @@ implementation.
 
 from __future__ import annotations
 
+from .claims import FileFailureStore, claims_root
 from .compatibility import (
     ConsumerDecl,
     Declaration,
@@ -43,6 +44,14 @@ from .compatibility import (
     resolve_emits,
 )
 from .digest import canonical_json, canonical_recipe, recipe_digest
+from .failures import (
+    QUARANTINE_AFTER,
+    EntryFailureKey,
+    Exclusions,
+    FailureRecord,
+    FailureStore,
+    StepFailureKey,
+)
 from .lanes import (
     DEFAULT_LANE,
     GPU_INFER_LANE,
@@ -53,6 +62,7 @@ from .lanes import (
 from .plan import (
     COMPLETE_STATUSES,
     MISSING_SAMPLE,
+    ArtifactView,
     CoverageShort,
     DepsIncomplete,
     HeldOnParents,
@@ -62,8 +72,23 @@ from .plan import (
     Reason,
     Stalled,
     WaitingOnResource,
+    coverage_against,
     is_stalled,
     plan_pipeline,
+)
+from .preflight import (
+    REFUSED_EXIT_CODE,
+    CoverageShortfall,
+    RefusalReason,
+    StepRefused,
+    preflight,
+    refuse_mixed_schemas,
+)
+from .request import (
+    SubmittedRequest,
+    load_recipe_for_request,
+    step_argv,
+    submit_request,
 )
 from .model import (
     SCHEMA_VERSION,
@@ -88,17 +113,15 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    declared_version,
     feature_class_for_slug,
     op_class_for_kind,
     params_reference_site,
     resolve_step_spec,
 )
-from .run import (
-    CoverageShortfall,
-    PipelineRun,
-    StepOutcome,
-    run_pipeline,
-)
+from .rollup import RequestRollup, RequestStatus, StepAttempt, request_rollup
+from .run import PipelineRun, run_pipeline
+from .step import STEP_RUN_KIND, StepOutcome, execute_step
 from .scope import graph_writes_tracks, intended_scope, media_universe
 from .storage import storage_name_of
 from .store import (
@@ -131,6 +154,7 @@ from .validate import (
 )
 
 __all__ = [
+    "ArtifactView",
     "BoundRef",
     "COMPLETE_STATUSES",
     "ConsumerDecl",
@@ -143,7 +167,12 @@ __all__ = [
     "EXCLUDED_KINDS",
     "Edge",
     "EntityLevel",
+    "EntryFailureKey",
+    "Exclusions",
+    "FailureRecord",
+    "FailureStore",
     "FeatureStepSpec",
+    "FileFailureStore",
     "GPU_INFER_LANE",
     "GPU_TRAIN_LANE",
     "HeldOnParents",
@@ -156,21 +185,31 @@ __all__ = [
     "PlannedStep",
     "Problem",
     "ProducerDecl",
+    "QUARANTINE_AFTER",
+    "REFUSED_EXIT_CODE",
     "Reason",
     "Recipe",
     "RecipeCycle",
     "RecipeInvalid",
     "ReferenceSite",
+    "RefusalReason",
     "Request",
+    "RequestRollup",
+    "RequestStatus",
     "ResolvedStep",
     "SCHEMA_VERSION",
+    "STEP_RUN_KIND",
     "Stalled",
     "Step",
+    "StepAttempt",
     "StepBuildError",
+    "StepFailureKey",
     "StepOutcome",
     "StepRef",
+    "StepRefused",
     "StepRun",
     "StepSpec",
+    "SubmittedRequest",
     "TRACKS_DECLARATION",
     "TRACKS_INPUT",
     "Verdict",
@@ -186,17 +225,22 @@ __all__ = [
     "canonical_recipe",
     "check_recipe",
     "children_of",
+    "claims_root",
     "compatible_consumers",
     "compatible_producers",
+    "coverage_against",
     "declaration_catalog",
+    "declared_version",
     "descendants_of",
     "edges",
+    "execute_step",
     "feature_class_for_slug",
     "graph_writes_tracks",
     "intended_scope",
     "is_stalled",
     "lane_for",
     "load_recipe",
+    "load_recipe_for_request",
     "load_request",
     "media_universe",
     "op_class_for_kind",
@@ -206,10 +250,13 @@ __all__ = [
     "pipelines_root",
     "plan_pipeline",
     "possible_connections",
+    "preflight",
     "recipe_digest",
     "recipe_path",
+    "refuse_mixed_schemas",
     "reject_unless_valid",
     "request_path",
+    "request_rollup",
     "requests_root",
     "resolve_emits",
     "resolve_step_spec",
@@ -217,6 +264,8 @@ __all__ = [
     "run_pipeline",
     "save_recipe",
     "save_request",
+    "step_argv",
     "storage_name_of",
+    "submit_request",
     "topological_order",
 ]

@@ -87,6 +87,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COMPLETE_STATUSES",
+    "ArtifactView",
     "CoverageShort",
     "DepsIncomplete",
     "HeldOnParents",
@@ -97,6 +98,7 @@ __all__ = [
     "Reason",
     "Stalled",
     "WaitingOnResource",
+    "coverage_against",
     "is_stalled",
     "plan_pipeline",
 ]
@@ -255,6 +257,10 @@ class PlannedStep:
             says instead, because those are not addressed by entry.
         drift: Entries whose recorded sources have moved underneath the run.
         status: Derived from coverage and consistency, never stored anywhere.
+        finished: Whether the artifact records having finished. Beside the status
+            rather than folded into it, because "never ran" and "ran and produced
+            nothing" both read as ``absent`` and only one of them is a fault a
+            consumer must refuse to chain onto.
         reason: Why this step is not simply running, or ``None``.
     """
 
@@ -274,6 +280,7 @@ class PlannedStep:
     )
     drift: tuple[Entry, ...] = ()
     status: ArtifactStatus = "absent"
+    finished: bool = False
     reason: Reason | None = None
 
     @property
@@ -470,19 +477,20 @@ def _plan_step(
         base = resolution.step
         base = _as_recorded(base, recorded.get(step.id, ""))
 
-    coverage, status, drift = _coverage_of(inv, base.artifact, target)
+    view = coverage_against(inv, base.artifact, target)
     return replace(
         base,
         parents=parents,
         lane=lane_for(declared),
         spec=replace(
             base.spec,
-            entries=_entries_for(step, resolution, target, coverage, status),
+            entries=_entries_for(step, resolution, target, view.coverage, view.status),
         ),
-        coverage=coverage,
-        status=status,
-        drift=drift,
-        reason=_reason_for(base, parents, planned, coverage, status),
+        coverage=view.coverage,
+        status=view.status,
+        drift=view.drift,
+        finished=view.finished,
+        reason=_reason_for(base, parents, planned, view.coverage, view.status),
     )
 
 
@@ -700,9 +708,32 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     return None
 
 
-def _coverage_of(
+@dataclass(frozen=True, slots=True)
+class ArtifactView:
+    """What the dataset holds for one step, measured against that step's target."""
+
+    coverage: Coverage[Entry]
+    status: ArtifactStatus
+    drift: tuple[Entry, ...] = ()
+    finished: bool = False
+
+    @property
+    def held(self) -> int:
+        """How much of the target this artifact answers for.
+
+        A complete artifact answers for all of it, including the kinds whose
+        coverage is not keyed by entry at all -- counting a trained model's
+        covered entries would report a finished model as zero, and read every run
+        that produced one as having made no progress.
+        """
+        if self.status in COMPLETE_STATUSES:
+            return len(self.coverage.target)
+        return len(self.coverage.covered)
+
+
+def coverage_against(
     inv: DatasetInventory, ref: ArtifactRef | None, target: frozenset[Entry]
-) -> tuple[Coverage[Entry], ArtifactStatus, tuple[Entry, ...]]:
+) -> ArtifactView:
     """What the dataset already holds for one step, measured against its target.
 
     The coverage is rebuilt against the *plan's* target rather than reported as
@@ -717,7 +748,10 @@ def _coverage_of(
     """
     record = inv.record(ref) if ref is not None else None
     if record is None:
-        return Coverage[Entry](target=target, present=frozenset()), "absent", ()
+        return ArtifactView(
+            coverage=Coverage[Entry](target=target, present=frozenset()),
+            status="absent",
+        )
     if isinstance(ref, FeatureRunRef | TracksVariantRef):
         coverage = Coverage[Entry](
             target=target,
@@ -742,7 +776,12 @@ def _coverage_of(
         drifted=bool(record.drift),
         finished=bool(record.finished_at),
     )
-    return coverage, status, record.drift
+    return ArtifactView(
+        coverage=coverage,
+        status=status,
+        drift=record.drift,
+        finished=bool(record.finished_at),
+    )
 
 
 def _entries_for(

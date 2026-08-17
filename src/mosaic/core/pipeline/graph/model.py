@@ -310,12 +310,17 @@ class Request(GraphModel):
     second later. Naming the parent's attempt removes the ambiguity: a step reads
     *its own parent's* run-log for the identity to pin.
 
-    ``feature_versions`` is why a request survives an upgrade. The recipe digest
+    ``step_versions`` is why a request survives an upgrade. The recipe digest
     identifies the *recipe*; only this map identifies *what ran*, because a
-    mosaic upgrade that bumps a feature's ``version`` moves every identifier
+    mosaic upgrade that bumps a producer's ``version`` moves every identifier
     below it. Resolved once at request start and read from here by a step
     re-planning itself, so one request cannot span two identity regimes with its
     early steps under the old versions and its later ones under the new.
+
+    It covers **every** step rather than only the feature ones. An op's version
+    is a visible segment of its run identifier rather than a hash term, so a bump
+    there makes the step read as absent instead of as complete -- waste rather
+    than corruption, but the same request spanning two regimes either way.
     """
 
     request_id: str
@@ -335,7 +340,9 @@ class Request(GraphModel):
     """
     max_concurrent_steps: int | None = None
     step_executions: dict[str, str] = Field(default_factory=dict)
-    feature_versions: dict[str, str] = Field(default_factory=dict)
+    """Which attempt each step is, assigned before anything runs."""
+    step_versions: dict[str, str] = Field(default_factory=dict)
+    """The version each step's producer declared when this request was made."""
 
     @model_validator(mode="after")
     def _bind_targets_are_named(self) -> Self:
@@ -351,3 +358,19 @@ class Request(GraphModel):
     def entry_set(self) -> frozenset[tuple[str, str]] | None:
         """The narrowing as a set, or ``None`` when the whole dataset is meant."""
         return None if self.entries is None else frozenset(self.entries)
+
+    def execution_of(self, step_id: str) -> str:
+        """Which attempt *step_id* is, or ``KeyError``.
+
+        Raised rather than returning ``""``, because an empty execution id would
+        be read as "no attempt yet" by a caller pinning a parent -- and a step
+        this request never assigned an id to is a malformed request, not a step
+        that has not started.
+        """
+        try:
+            return self.step_executions[step_id]
+        except KeyError:
+            raise KeyError(
+                f"request {self.request_id!r} assigns no execution id to step "
+                f"{step_id!r}. Assigned: {sorted(self.step_executions)}"
+            ) from None

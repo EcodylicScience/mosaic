@@ -622,6 +622,33 @@ def tracks_variants_for(
     return _resolve_tracks(ds, tracks_run_id, None, None, None, "empty").tracks_variants
 
 
+def refuse_mixed_track_schemas(
+    ds: Dataset,
+    *,
+    tracks_run_id: str | None = None,
+    entries: set[tuple[str, str]] | None = None,
+) -> None:
+    """Raise if this scope resolves tracks tables of incompatible schemas.
+
+    The same question ``build_manifest`` asks on its way to loading, asked on its
+    own so a caller can refuse *before* doing work rather than partway through
+    it. Going through the resolver rather than reading the index directly is what
+    keeps it one question: a second implementation would eventually disagree with
+    the first about which rows count, and the disagreement would show as a run
+    that loaded a mixture the check said was fine.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        tracks_run_id: Which variant to resolve, or ``None`` for whichever each
+            entry carries.
+        entries: The scope to check, or ``None`` for everything.
+
+    Raises:
+        ValueError: Naming the families and a sample of the entries in each.
+    """
+    _ = _resolve_tracks(ds, tracks_run_id, None, None, entries, "empty")
+
+
 def _refuse_mixed_schemas(
     scoped: set[tuple[str, str]],
     schema_by_entry: dict[tuple[str, str], str],

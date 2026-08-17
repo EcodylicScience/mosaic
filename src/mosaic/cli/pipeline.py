@@ -1,10 +1,16 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Four verbs over one recipe file, and the split between them is the split the
+Six verbs over one recipe file, and the split between them is the split the
 library makes. ``validate`` asks only about the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
 executes it here, in this process, one step after another -- which is what a
 notebook or a bare compute node has, and is not a lesser path than a queue.
+
+``submit`` and ``status`` are the other half of that last point: ``submit``
+records the pipeline against the dataset, assigns every step an attempt id, and
+prints the command each step is run by, so a graph can be driven by anything that
+starts processes in order -- a shell loop, a job array, a scheduler. ``status``
+then says how far that submission got, reading only the attempts' own logs.
 
 ``--recipe`` takes the same ``@file.json`` / inline-JSON argument every other
 JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
@@ -12,6 +18,7 @@ JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -185,7 +192,7 @@ def run_command(
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done."""
-    from mosaic.core.pipeline.graph import CoverageShortfall, run_pipeline
+    from mosaic.core.pipeline.graph import StepRefused, run_pipeline
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe)
@@ -198,8 +205,8 @@ def run_command(
                 allow_partial=allow_partial,
                 owner=owner,
             )
-    except CoverageShortfall as exc:
-        fail(str(exc))
+    except StepRefused as refusal:
+        fail(str(refusal))
 
     rows = [
         {
@@ -213,10 +220,17 @@ def run_command(
     if as_json:
         emit_json(
             {
+                "request_id": done.request_id,
                 "recipe_digest": done.recipe_digest,
                 "scope": sorted(list(pair) for pair in done.scope),
                 "steps": [
-                    {**row, "planned_run_id": outcome.planned_run_id}
+                    {
+                        **row,
+                        "planned_run_id": outcome.planned_run_id,
+                        "execution_id": outcome.execution_id,
+                        "covered": outcome.covered,
+                        "target": outcome.target,
+                    }
                     for row, outcome in zip(rows, done.outcomes, strict=True)
                 ],
             }
@@ -232,6 +246,147 @@ def run_command(
                 f"note: step {outcome.step_id!r} recorded {outcome.run_id}, "
                 f"where the plan resolved {outcome.planned_run_id}"
             )
+
+
+def submit_command(
+    recipe: RecipeOption,
+    manifest: ManifestOption,
+    entry: EntriesOption = None,
+    allow_partial: Annotated[
+        bool,
+        typer.Option(
+            "--allow-partial",
+            help="Let a step proceed when it would run over less than planned.",
+        ),
+    ] = False,
+    max_concurrent_steps: Annotated[
+        int | None,
+        typer.Option(
+            "--max-concurrent-steps",
+            help="How many of this request's steps may run at once. Advisory here.",
+        ),
+    ] = None,
+    owner: Annotated[
+        str, typer.Option("--owner", help="Recorded on the request and its attempts.")
+    ] = "",
+    as_json: JsonOption = False,
+) -> None:
+    """Record a submission of a recipe, and print the command for every step.
+
+    Writes the recipe and a request beside it into the dataset, assigns one
+    attempt id per step, and pins the version every step's producer declares.
+    Nothing is executed: the printed commands are, and any driver that can run
+    them in dependency order will run the graph correctly.
+    """
+    from mosaic.core.pipeline.graph import step_argv, submit_request
+
+    ds = load_dataset(manifest)
+    parsed = _recipe(recipe)
+    with stdout_to_stderr():
+        submitted = submit_request(
+            ds,
+            parsed,
+            entries=_entries(entry),
+            allow_partial=allow_partial,
+            max_concurrent_steps=max_concurrent_steps,
+            owner=owner,
+        )
+    request = submitted.request
+    steps = [
+        {
+            "step": planned.step_id,
+            "type": planned.kind,
+            "runs": planned.runs,
+            "execution_id": request.execution_of(planned.step_id),
+            "lane": planned.lane,
+            "run_id": planned.run_id or "-",
+            "status": planned.status,
+            "parents": list(planned.parents),
+            "depends_on": [request.execution_of(parent) for parent in planned.parents],
+            "argv": step_argv(ds.manifest_path, request, planned.step_id),
+        }
+        for planned in submitted.plan.steps
+    ]
+    if as_json:
+        emit_json(
+            {
+                "request_id": request.request_id,
+                "recipe_digest": request.recipe_digest,
+                "recipe_path": str(submitted.recipe_path),
+                "request_path": str(submitted.request_path),
+                "allow_partial": request.allow_partial,
+                "max_concurrent_steps": request.max_concurrent_steps,
+                "scope": sorted(list(pair) for pair in submitted.plan.scope),
+                "steps": steps,
+            }
+        )
+        return
+    typer.echo(f"request {request.request_id}  recipe {request.recipe_digest}")
+    render_table(
+        [
+            {
+                "step": row["step"],
+                "runs": row["runs"],
+                "execution_id": row["execution_id"],
+                "lane": row["lane"],
+                "status": row["status"],
+            }
+            for row in steps
+        ],
+        ["step", "runs", "execution_id", "lane", "status"],
+    )
+    for row in steps:
+        argv = row["argv"]
+        assert isinstance(argv, list)
+        typer.echo(" ".join(shlex.quote(str(word)) for word in argv))
+
+
+def status_command(
+    manifest: ManifestOption,
+    request_id: Annotated[
+        str, typer.Option("--request", help="Which submission to report on.")
+    ],
+    as_json: JsonOption = False,
+) -> None:
+    """Say how far one submission got, from its steps' own attempt logs.
+
+    Deliberately not a coverage report: whether every step's *work* is done is a
+    question about artifacts, which ``plan`` answers. This one is about attempts,
+    so it stays cheap enough to poll.
+    """
+    from mosaic.core.pipeline.graph import load_request, request_rollup
+
+    ds = load_dataset(manifest)
+    try:
+        request = load_request(ds.base_dir, request_id)
+    except FileNotFoundError as exc:
+        fail(str(exc))
+    rollup = request_rollup(ds.base_dir, request)
+    rows = [
+        {
+            "step": attempt.step_id,
+            "execution_id": attempt.execution_id,
+            "status": attempt.status or "-",
+            "run_id": attempt.run_id or "-",
+            "entries_failed": attempt.entries_failed,
+        }
+        for attempt in rollup.steps
+    ]
+    if as_json:
+        emit_json(
+            {
+                "request_id": rollup.request_id,
+                "status": rollup.status,
+                "terminal": rollup.is_terminal,
+                "steps": [
+                    {**row, "error_json": attempt.error_json}
+                    for row, attempt in zip(rows, rollup.steps, strict=True)
+                ],
+            }
+        )
+        return
+    typer.echo(f"request {rollup.request_id}: {rollup.status}")
+    render_table(rows, ["step", "execution_id", "status", "run_id", "entries_failed"])
 
 
 def _runs(step: object) -> str:
@@ -318,4 +473,6 @@ def _reason_cell(planned: "PlannedStep") -> str:
 _ = pipeline_app.command(name="validate")(validate_command)
 _ = pipeline_app.command(name="plan")(plan_command)
 _ = pipeline_app.command(name="show")(show_command)
+_ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)
+_ = pipeline_app.command(name="status")(status_command)

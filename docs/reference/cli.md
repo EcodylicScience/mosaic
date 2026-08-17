@@ -17,7 +17,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `run`: Run a feature (--feature) or an op...
+* `run`: Run a feature (--feature), an op (--kind),...
 * `status`: Show the status of one run attempt by...
 * `runs`: List run attempts, optionally filtered by...
 * `cancel`: Request cancellation of a running attempt...
@@ -44,7 +44,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 ## `mosaic run`
 
-Run a feature (--feature) or an op (--kind) under the Job Contract.
+Run a feature (--feature), an op (--kind), or one step of a request.
 
 **Usage**:
 
@@ -57,6 +57,8 @@ $ mosaic run [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--feature <str>`: Feature slug to run, e.g. 'speed-angvel'.
 * `--kind <str>`: Op kind to run, e.g. 'infer-pose' or 'transcode'.
+* `--graph-request <str>`: Run one step of this submitted pipeline request. The request is read from the dataset that --manifest names.
+* `--step <str>`: Which step of --graph-request to run.
 * `--params <str>`: Params as inline JSON, @file.json, or @- (stdin).
 * `--inputs <str>`: Feature inputs as JSON (default ["tracks"]). Feature runs only.
 * `--entries <str>`: Restrict to group:sequence (repeatable). Feature runs only.
@@ -678,7 +680,9 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `validate`: Check a recipe against the registries.
 * `plan`: Resolve a recipe against a dataset:...
 * `show`: Print a recipe's steps and the references...
+* `submit`: Record a submission of a recipe, and print...
 * `run`: Run every step of a recipe here, in order,...
+* `status`: Say how far one submission got, from its...
 
 ### `mosaic pipeline validate`
 
@@ -730,6 +734,32 @@ $ mosaic pipeline show [OPTIONS]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
+### `mosaic pipeline submit`
+
+Record a submission of a recipe, and print the command for every step.
+
+Writes the recipe and a request beside it into the dataset, assigns one
+attempt id per step, and pins the version every step's producer declares.
+Nothing is executed: the printed commands are, and any driver that can run
+them in dependency order will run the graph correctly.
+
+**Usage**:
+
+```console
+$ mosaic pipeline submit [OPTIONS]
+```
+
+**Options**:
+
+* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--allow-partial`: Let a step proceed when it would run over less than planned.
+* `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
+* `--owner <str>`: Recorded on the request and its attempts.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
 ### `mosaic pipeline run`
 
 Run every step of a recipe here, in order, skipping what is already done.
@@ -747,6 +777,27 @@ $ mosaic pipeline run [OPTIONS]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
 * `--owner <str>`: Recorded on each attempt.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline status`
+
+Say how far one submission got, from its steps' own attempt logs.
+
+Deliberately not a coverage report: whether every step's *work* is done is a
+question about artifacts, which ``plan`` answers. This one is about attempts,
+so it stays cheap enough to poll.
+
+**Usage**:
+
+```console
+$ mosaic pipeline status [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--request <str>`: Which submission to report on.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

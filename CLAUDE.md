@@ -491,8 +491,61 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   A recipe never carries a resolved `run_id` (those are dataset state) and never
   carries an entry list (those are about one dataset), so the same file runs over
   several. `Request` holds the narrowing, `bind` (an out-of-graph artifact pinned
-  by the submission), `allow_partial` and the resolved feature versions. A
-  `<digest>.json` copy lands under `<dataset>/.mosaic/pipelines/` on first use.
+  by the submission), `allow_partial`, `max_concurrent_steps`, the `step_id →
+  execution_id` map and the resolved `step_versions`. `submit_request` writes
+  both files — a `<digest>.json` copy under `<dataset>/.mosaic/pipelines/` and
+  the request under `.../requests/<rid>.json` — and assigns every step its
+  attempt id **before anything runs**, which is what makes the document complete
+  at submit rather than filled in as work lands.
+- **A step is addressed by name, not spelled out.**
+  `mosaic run --manifest <path> --graph-request <rid> --step <id> --execution-id
+  <eid>` is strictly more expressive than the spelled-out form, because several
+  arguments that reach a feature's identity have no flag at all — the entry
+  narrowing, the frame filters, the overlap width — and a step re-planning itself
+  reads all of them out of the recipe. **The request path is derived from
+  `--manifest`'s parent and there is deliberately no second path flag**: a path
+  mosaic-queue does not know about is one `translate_manifest_path` cannot
+  rewrite for a substrate that mounts the dataset elsewhere. `--overwrite` stays
+  an argv flag, being a property of an attempt rather than of the recipe, and is
+  now *refused* with `--kind` rather than accepted and dropped.
+- **One step body, two drivers.** `execute_step` is what a queued job runs and
+  what `run_pipeline` loops over, so the preflight, the parent pinning and the
+  failure record cannot drift by being edited on one path only.
+- **A step pins its parents from their run-logs, and only the feature ones.**
+  Resolving an input by feature *name* falls through to
+  `track_universe.current_run_id`, whose sibling rule is wall clock — so two
+  requests running one feature with different params on one dataset would
+  cross-bind. **Every ancestor is pinned, not only the immediate parents**,
+  because identity chains. An op parent is not pinned (its identity is a function
+  of the params the plan handed it, so the two cannot differ); what it *is*
+  checked for is the tracks variant it produced, via `variant_for_producer_run`.
+  An ancestor with no run-log is a cache hit from an earlier request, not a
+  fault.
+- **A refusal is a reserved exit code, never a new terminal status.**
+  `REFUSED_EXIT_CODE = 65`, the run-log status stays `failed`, and the reason
+  travels in `error_json` as one of a closed `RefusalReason` set. Do **not** add
+  a member to `runlog.TERMINAL_STATUSES` — three repositories read it and
+  mosaic-api's sweeper reaps it, which is why `partial` was kept out too.
+- **`allow_partial` answers exactly one refusal.** A shortfall is a question
+  about *how much*; a digest mismatch, a moved version, a disagreeing variant and
+  an upstream that finished having written nothing are not, and no flag unlocks
+  them.
+- **Waiting and quarantined are different, and collapsing them is expensive.** An
+  entry inside its backoff needs a few more seconds and simply narrows this
+  attempt; an entry past `QUARANTINE_AFTER` will not succeed and is what
+  `allow_partial` decides about. Treating a wait as a verdict would let one
+  gesture permanently drop an entry from a fit.
+- **The failure record is the one durable non-derived state**, under
+  `<dataset>/.mosaic/claims/`: attempts keyed `(storage_name, run_id, group,
+  sequence)` **accumulate across resubmits** (a counter reset by the cheap
+  recovery would bound nothing), while the *exclusion decision* is request-scoped
+  desired state, so one request's scientific call cannot bind another's. The
+  lease is the existing `try_create_inflight` over the run root, reused rather
+  than reinvented — which is what already makes two concurrent training
+  dispatches safe. G4 forbids stored *status*, not this.
+- **A request is one-shot.** `request_rollup` reads the steps' run-logs only —
+  no registry, no planning — and closes on `finished` / `failed` / `cancelled`. A
+  branch that failed while a sibling is still running is **not** terminal yet.
 - **One place per fact.** Cross-step references sit at the exact site they
   substitute, so there is no `edges` array to drift from the bodies; `edges()` is
   a derived read-only view. The one explicit list is `after`, which is
@@ -560,7 +613,7 @@ src/mosaic/
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
 │   │   ├── index_csv.py        # generic typed IndexCSV + index_records
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
-│   │   ├── graph/              # a pipeline as a file: recipe, validate, plan, run
+│   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
 │   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
 │   ├── media/                  # foundational media I/O (read/decode/encode frames)
@@ -659,9 +712,20 @@ writes nothing. `mosaic inventory --json` is the same answer at the CLI.
 
 A recipe drives any run of the above as one graph. `plan_pipeline(ds, recipe)`
 says what each step would be called and what is already done, `run_pipeline`
-executes it here, and `mosaic pipeline validate|plan|show|run` is the same at the
-CLI. The recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json` on first
-use, so the dataset records which pipelines were applied to it.
+executes it here, and `mosaic pipeline validate|plan|show|submit|run|status` is
+the same at the CLI. The recipe is copied to
+`<dataset>/.mosaic/pipelines/<digest>.json` on first use, so the dataset records
+which pipelines were applied to it, and each submission lands beside it:
+
+```
+mosaic pipeline submit           → .mosaic/pipelines/<digest>.json      (the recipe)
+                                 → .mosaic/pipelines/requests/<rid>.json (the submission)
+mosaic run --graph-request <rid> --step <id>
+                                 → .mosaic/runs/<execution_id>.jsonl    (the attempt)
+                                 → features/<name>/<run_id>/            (the work)
+   ↑ failures counted under .mosaic/claims/, which is the only durable state
+     that cannot be re-derived from the artifacts
+```
 
 Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
 sidecar, created on the first locked write and **never removed**. It is not

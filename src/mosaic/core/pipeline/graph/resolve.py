@@ -63,6 +63,7 @@ __all__ = [
     "build_step_feature",
     "build_step_op_params",
     "declaration_catalog",
+    "declared_version",
     "feature_class_for_slug",
     "op_class_for_kind",
     "params_reference_site",
@@ -117,6 +118,29 @@ def op_class_for_kind(kind: str) -> "type[Op[Params]] | None":
 
     register_ops()
     return OPS.get(kind)
+
+
+def declared_version(kind: Literal["feature", "op"], name: str) -> str:
+    """The version the producer behind a step declares, or ``""`` when unknown.
+
+    What a request pins so it cannot span two identity regimes. A mosaic upgrade
+    that bumps a version moves every identifier below it, and a request resolving
+    its early steps under the old versions and its later ones under the new would
+    read as half-absent with no fault anywhere -- so the version is resolved once,
+    at submit, and a step re-planning itself checks against what was resolved
+    rather than against what is installed now.
+
+    ``""`` for a name no registry holds, rather than raising: the caller that
+    cares about an unknown slug is recipe validation, which names the step.
+    """
+    if kind == "feature":
+        cls = feature_class_for_slug(name)
+    else:
+        cls = op_class_for_kind(name)
+    if cls is None:
+        return ""
+    version = getattr(cls, "version", "")
+    return version if isinstance(version, str) else ""
 
 
 class StepBuildError(ValueError):

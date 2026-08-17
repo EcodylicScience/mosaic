@@ -8,6 +8,60 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — a graph step names itself, and says no before doing the work
+
+**No identifier moves.** What changes is the surface another repository sees: a
+new argv form, a reserved exit code, two new file layouts under `.mosaic/`, and
+one field renamed in a document nothing outside mosaic had yet written.
+
+**A step is addressed rather than spelled out.**
+`mosaic run --manifest <path> --graph-request <rid> --step <id> --execution-id
+<eid>` runs one step of one submitted pipeline. It is strictly more expressive
+than the spelled-out form: `--groups`, `--sequences`, the four frame filters and
+`overlap_frames` all reach a feature's identity and none of them has a flag, so a
+step that re-plans itself reads what a caller could not pass. **The request is
+found from the manifest's parent, and there is deliberately no second path
+flag** — a path mosaic-queue does not know about is one it cannot rewrite for a
+substrate that mounts the dataset somewhere else, which would break precisely on
+the machine a GPU step lands on.
+
+**A refusal is a reserved exit code, not a new terminal status.** A step that
+declines before doing any work exits **65** with `error_json` carrying
+`{"reason": …}` from a closed set — `coverage_shortfall`, `upstream_empty`,
+`schema_family_mismatch`, `variant_mismatch`, `version_moved`,
+`parent_unrecorded`, `recipe_missing`, `digest_mismatch`. `terminal_status_for_exit`
+maps 65 to `failed`, which is what it is. Nothing joins
+`runlog.TERMINAL_STATUSES`: three repositories read that set and mosaic-api's
+sweeper reaps it, the same reason `partial` was kept out of it.
+
+**Two new places under `.mosaic/`.** `pipelines/requests/<request-id>.json` is
+one submission — its narrowing, its `bind` pins, `allow_partial`,
+`max_concurrent_steps`, the `step_id → execution_id` map and the version every
+step's producer declared, all assigned before anything runs. `claims/` holds what
+has been *tried*: per-entry and per-step failure counts under `entries/` and
+`steps/`, and per-request exclusion decisions under `requests/`. That last split
+is load-bearing — attempts are global so a resubmit does not reset the only bound
+on retrying a sequence that cannot succeed, while the decision to proceed without
+an entry is a scientific one and must not leak from one request to another.
+
+**`Request.feature_versions` is now `step_versions`**, and covers op steps too.
+The old name described only half of what belongs in it, and nothing outside
+mosaic had written a request file yet, so the rename costs nothing now and would
+have been a wire break later.
+
+**Two behaviours that were wrong and are now refused by name.** `mosaic run
+--kind ... --overwrite` accepted the flag and dropped it — `run_op` has no
+overwrite — so it promised a recompute that never happened; it now fails. And a
+dataset whose tracks tables span two schema families is refused with the families
+named, at submit and at each step's start, instead of raising out of the middle
+of an identifier hash.
+
+`mosaic pipeline` gains `submit` and `status`. `submit` records the pipeline
+against the dataset and prints the command each step is run by, so a graph can be
+driven by a shell loop or a job array with no queue involved; `status` reads the
+steps' run-logs and says how far the submission got, without touching the feature
+registry.
+
 ## Unreleased — a table may declare centimetres, and three TREx readers say which
 
 **mosaic refused data it could analyse perfectly well, over a number nobody

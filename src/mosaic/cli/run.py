@@ -1,10 +1,21 @@
-"""``mosaic run``: execute a feature or op as a tracked Job-Contract attempt.
+"""``mosaic run``: execute a feature, an op, or one step of a pipeline request.
 
 This command is the executor's *unit of work* -- the Layer-2 executor shells out
 to ``mosaic run --json`` in its own process group. It pre-mints the ULID
 ``execution_id`` so it can be printed up front (and injected via ``--execution-id``
 by the executor), installs a SIGTERM/SIGINT -> cooperative-cancel handler, and
 prints ``{execution_id, feature|kind, run_id, status, cache_hit}``.
+
+The third form, ``--graph-request <id> --step <id>``, is **step-addressed**: it
+names a step of a submitted pipeline and lets the step read the rest out of the
+request and the recipe. That is strictly more expressive than spelling the run
+out, because several of the arguments that reach a feature's identity have no
+flag here at all -- the entry narrowing, the frame filters, the overlap width.
+
+**The request is found from the manifest's parent, and there is deliberately no
+second path flag.** A path the queue does not know about is one it cannot
+translate for a substrate that mounts the dataset somewhere else, and that would
+break precisely where it is hardest to see.
 """
 
 from __future__ import annotations
@@ -43,6 +54,20 @@ def run_command(
         typer.Option(
             "--kind", help="Op kind to run, e.g. 'infer-pose' or 'transcode'."
         ),
+    ] = None,
+    graph_request: Annotated[
+        str | None,
+        typer.Option(
+            "--graph-request",
+            help=(
+                "Run one step of this submitted pipeline request. The request is "
+                "read from the dataset that --manifest names."
+            ),
+        ),
+    ] = None,
+    step: Annotated[
+        str | None,
+        typer.Option("--step", help="Which step of --graph-request to run."),
     ] = None,
     params: Annotated[
         str | None,
@@ -105,13 +130,17 @@ def run_command(
         ),
     ] = False,
 ) -> None:
-    """Run a feature (--feature) or an op (--kind) under the Job Contract."""
-    if (feature is None) == (kind is None):
-        fail("Provide exactly one of --feature or --kind.")
+    """Run a feature (--feature), an op (--kind), or one step of a request."""
+    named = [feature is not None, kind is not None, graph_request is not None]
+    if sum(named) != 1:
+        fail("Provide exactly one of --feature, --kind or --graph-request.")
+    if (graph_request is not None) != (step is not None):
+        fail("--graph-request and --step are used together, or not at all.")
 
     from pydantic import ValidationError
 
     from mosaic.core.pipeline._utils import new_execution_id
+    from mosaic.core.pipeline.graph import REFUSED_EXIT_CODE, StepRefused
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
 
     ds = load_dataset(manifest)
@@ -129,7 +158,41 @@ def run_command(
 
     payload: dict[str, object]
     try:
-        if feature is not None:
+        if graph_request is not None:
+            from mosaic.core.pipeline.graph import (
+                execute_step,
+                load_request,
+            )
+
+            # The request is found from the manifest's parent rather than from a
+            # flag of its own: a second path is one a queue cannot translate for
+            # a substrate that mounts the dataset somewhere else.
+            request = load_request(ds.base_dir, graph_request)
+            step_id = cast("str", step)
+            log(f"[mosaic] execution_id={exec_id} running step {step_id}")
+            with stdout_to_stderr():
+                outcome = execute_step(
+                    ds,
+                    request,
+                    step_id,
+                    execution_id=exec_id,
+                    overwrite=overwrite,
+                    owner=owner,
+                    cancel_token=token,
+                )
+            payload = {
+                "execution_id": exec_id,
+                "request_id": request.request_id,
+                "step": outcome.step_id,
+                "run_id": outcome.run_id,
+                "status": "partial" if outcome.failed_entries else "finished",
+                "state": outcome.state,
+                "cache_hit": outcome.state == "cached",
+                "covered": outcome.covered,
+                "target": outcome.target,
+                "failed_entries": list(outcome.failed_entries),
+            }
+        elif feature is not None:
             entry_pairs = parse_entries(entries)
             feat = build_feature(feature, load_json_arg(inputs), params_dict)
             from mosaic.core.pipeline.run import run_feature
@@ -175,6 +238,14 @@ def run_command(
                     "--tracks-run-id / --labels-run-id are not supported with --kind; "
                     "an op produces these rather than reading them."
                 )
+            if overwrite:
+                # Refused rather than ignored. An op decides reuse from its own
+                # markers and ``run_op`` takes no overwrite at all, so accepting
+                # the flag promised a recompute that never happened.
+                fail(
+                    "--overwrite is not supported with --kind; an op decides reuse "
+                    "from its own markers. Clear its run root to recompute it."
+                )
             op_kind = cast("str", kind)
             from mosaic.core.pipeline.ops import run_op
             from mosaic.tracking import register_ops
@@ -203,6 +274,24 @@ def run_command(
         else:
             log(f"[mosaic] cancelled {exec_id}")
         raise typer.Exit(code=130) from None
+    except StepRefused as refusal:
+        # A reserved exit code rather than a new terminal status: that set is
+        # read by three repositories and mosaic-api's sweeper reaps it, so the
+        # ledger row stays ``failed`` and the reason travels in ``error_json``,
+        # which this attempt's run-log already carries.
+        if as_json:
+            emit_json(
+                {
+                    "execution_id": exec_id,
+                    "status": "refused",
+                    "reason": refusal.reason,
+                    "step": refusal.step_id,
+                    "error_json": refusal.error_json(),
+                }
+            )
+        else:
+            log(f"[mosaic] refused ({refusal.reason}): {refusal}")
+        raise typer.Exit(code=REFUSED_EXIT_CODE) from None
     except KeyError as exc:
         fail(str(exc))
     except ImportError as exc:

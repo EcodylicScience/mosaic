@@ -10,6 +10,8 @@ mosaic pipeline validate --recipe @recipe.json                     # no dataset
 mosaic pipeline show     --recipe @recipe.json                     # no dataset
 mosaic pipeline plan     --recipe @recipe.json -m dataset.yaml
 mosaic pipeline run      --recipe @recipe.json -m dataset.yaml
+mosaic pipeline submit   --recipe @recipe.json -m dataset.yaml     # record it, run nothing
+mosaic pipeline status   --request <id>       -m dataset.yaml
 ```
 
 ```python
@@ -144,6 +146,86 @@ ninetieth arrives later under the same one. A scope-dependent step over 89 write
 `allow_partial` is where the decision to proceed is recorded.
 
 ::: mosaic.core.pipeline.graph.run
+    options:
+      show_source: false
+      members_order: source
+
+## Running one step at a time
+
+The same graph, driven by anything that can start processes in order — a shell
+loop, a job array, a scheduler. `submit` records the pipeline against the dataset
+and assigns every step its attempt id **before anything runs**; each step is then
+run by naming itself:
+
+```bash
+mosaic pipeline submit --recipe @recipe.json -m dataset.yaml --json > request.json
+mosaic run -m dataset.yaml --graph-request <request-id> --step speed --execution-id <eid>
+```
+
+The command is **step-addressed** rather than spelled out, and that is strictly
+more expressive: several of the arguments reaching a feature's identity have no
+flag on `mosaic run` at all, and a step re-planning itself reads all of them out
+of the recipe. The request is found from the manifest's parent, never from a path
+flag of its own — a path a queue does not know about is one it cannot translate
+for a substrate that mounts the dataset somewhere else.
+
+At its own start a step reads the request, checks that the recipe still digests
+to the name it was submitted under, pins each feature ancestor's identity from
+**that ancestor's run-log**, re-plans itself against what is now on disk, and
+runs its preflight. Pinning is what stops two requests on one dataset from
+cross-binding: resolving an input by feature *name* falls through to the
+latest-run rule, which is wall clock, so the second step of one request would
+pick up the other's output because its index row landed a second later.
+
+::: mosaic.core.pipeline.graph.request
+    options:
+      show_source: false
+      members_order: source
+
+::: mosaic.core.pipeline.graph.step
+    options:
+      show_source: false
+      members_order: source
+
+## Refusing before doing the work
+
+A step about to compute something is the last party in a position to notice that
+what it is about to read is not what was intended. Coverage counts cannot see
+wrongness — 120 parquets of NaN is 120 of 120 — so the preflight runs the
+predicates that can, where a refusal is still free.
+
+A refusal is an ordinary failure carrying a reason: a reserved exit code, the
+run-log status left at `failed`, and the reason in `error_json`. There is no new
+terminal status, because that set is read across three repositories and adding to
+it would make a live run reap as finished.
+
+::: mosaic.core.pipeline.graph.preflight
+    options:
+      show_source: false
+      members_order: source
+
+## What has been tried
+
+The one piece of state that cannot be re-derived from the artifacts:
+absent-because-quarantined and absent-because-never-run are the same observation
+on disk. It is also the only bound on retrying a sequence that cannot succeed.
+
+Attempts are global and survive a resubmit — a counter reset by the cheap
+recovery would bound nothing. The decision to proceed *without* an entry is per
+request, because it is a scientific choice: a model fitted on 89 sequences is a
+different model from one fitted on 90.
+
+::: mosaic.core.pipeline.graph.failures
+    options:
+      show_source: false
+      members_order: source
+
+::: mosaic.core.pipeline.graph.claims
+    options:
+      show_source: false
+      members_order: source
+
+::: mosaic.core.pipeline.graph.rollup
     options:
       show_source: false
       members_order: source
