@@ -189,7 +189,9 @@ def test_a_stored_cell_with_a_tilde_is_not_anchored_into_the_dataset(
 
     assert resolve_stored_path("~/videos/a.mp4", anchor) == home / "videos" / "a.mp4"
     # Unchanged for the two cases mosaic itself writes.
-    assert resolve_stored_path("tracks/a.parquet", anchor) == anchor / "tracks/a.parquet"
+    assert (
+        resolve_stored_path("tracks/a.parquet", anchor) == anchor / "tracks/a.parquet"
+    )
     assert resolve_stored_path(str(home / "a.mp4"), anchor) == home / "a.mp4"
 
 
