@@ -1174,17 +1174,24 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 
 ## Pointers to Deeper Docs
 
-- [`docs/getting-started.md`](docs/getting-started.md) — installation and first run.
-- [`docs/guide-pipeline.md`](docs/guide-pipeline.md) — pipeline guide.
-- [`docs/adding-a-tracker.md`](docs/adding-a-tracker.md) — wiring a new
-  external tracker in. `tracking/common/` owns the run loop; a tracker supplies
-  its argv, its settings, its phases and its converter, plus one `TrackingRoot`
-  row. `tests/test_tracker_conformance.py` is parametrized over every tracker
-  root, so a half-implemented one fails by name.
-- [`docs/adding-a-converter.md`](docs/adding-a-converter.md) — writing a track
-  converter for files you already have: the file-to-sequence declarations, params
-  versus hints, `output_schema`, and where a converter or a custom schema has to
-  be registered to reach the CLI.
+- [`docs/installation.md`](docs/installation.md) — the environment, the extras, and
+  the four tools mosaic drives but does not install.
+- [`docs/dataset.md`](docs/dataset.md) — what a dataset is: the manifest, the named
+  roots, the indexes, and how a derived directory gets its name.
+- [`docs/guides/`](docs/guides/) — tracking, analysis and pipelines, one page per
+  thing a reader is trying to do. `guides/pipelines/chain-steps.md` replaced the
+  old `guide-pipeline.md`.
+- [`docs/guides/tracking/write-a-converter.md`](docs/guides/tracking/write-a-converter.md)
+  — writing a track converter for files you already have: the file-to-sequence
+  declarations, params versus hints, `output_schema`, and where a converter or a
+  custom schema has to be registered to reach the CLI.
+- [`docs/concepts/`](docs/concepts/) — why the structure is the way it is: tracks
+  and units, feature composition, reproducibility, pipelines as documents.
+- Wiring a **new external tracker** in is not a published page. `tracking/common/`
+  owns the run loop; a tracker supplies its argv, its settings, its phases and its
+  converter, plus one `TrackingRoot` row. `tests/test_tracker_conformance.py` is
+  parametrized over every tracker root, so a half-implemented one fails by name,
+  and it reads `docs/drafts/adding-a-tracker.md` when that draft is present.
 - [`docs/api/`](docs/api/) — auto-generated API reference (core, pipeline,
   behavior, media, tracking).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.

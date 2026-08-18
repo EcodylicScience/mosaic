@@ -19,7 +19,7 @@ Adding a New Track Converter
    ``multi_sequences_per_file=True`` or the expansion never runs.
 5. Import the module here and add its name to ``__all__``.
 
-See docs/adding-a-converter.md for the full contract.
+See docs/guides/tracking/write-a-converter.md for the full contract.
 
 Available Converters
 --------------------
