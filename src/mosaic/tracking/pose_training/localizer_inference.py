@@ -9,6 +9,8 @@ Requires: ``torch >= 2.0``
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from pathlib import Path
 from typing import Any
 
@@ -19,18 +21,11 @@ from mosaic_media import MediaFacts
 from scipy.ndimage import maximum_filter
 
 from mosaic.core.media.video_io import open_frame_reader
+from mosaic.optional_dependency import require
 
 
-def _require_torch():
-    try:
-        import torch
-
-        return torch
-    except ImportError:
-        raise ImportError(
-            "PyTorch is required for localizer inference. "
-            "Install with: pip install mosaic-behavior[localizer]"
-        )
+def _require_torch() -> ModuleType:
+    return require("torch", "deep-learning", "localizer inference")
 
 
 # --------------------------------------------------------------------------- #

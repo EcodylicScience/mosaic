@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -9,19 +10,14 @@ import pandas as pd
 
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS
+from mosaic.optional_dependency import require
 
 
-def _ensure_movement():
+def _ensure_movement() -> ModuleType:
     """Lazily import movement, raising a clear error if not installed."""
-    try:
-        import movement  # noqa: F401
-
-        return movement
-    except ImportError:
-        raise ImportError(
-            "The 'movement' package is required for this feature. "
-            "Install with: pip install 'mosaic[movement]'"
-        ) from None
+    return require(
+        "movement", "movement", "the movement-library filtering and smoothing features"
+    )
 
 
 def to_movement_dataset(

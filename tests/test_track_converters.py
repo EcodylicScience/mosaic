@@ -545,7 +545,6 @@ def _two_track_fixture() -> tuple[np.ndarray, np.ndarray]:
 
 
 def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
-    pytest.importorskip("h5py")
     from mosaic.core.track_library.sleap import (
         SleapAnalysisH5Converter,
         SleapConvertParams,
@@ -588,7 +587,6 @@ def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
 def test_sleap_converter_reorders_by_dims_matlab_equals_standard(
     tmp_path: Path,
 ) -> None:
-    pytest.importorskip("h5py")
     from mosaic.core.track_library.sleap import (
         SleapAnalysisH5Converter,
         SleapConvertParams,
@@ -611,7 +609,6 @@ def test_sleap_converter_reorders_by_dims_matlab_equals_standard(
 
 
 def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -> None:
-    pytest.importorskip("h5py")
     from mosaic.core.track_library.sleap import (
         SleapAnalysisH5Converter,
         SleapConvertParams,

@@ -747,7 +747,6 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     tmp_path: Path,
 ) -> None:
     """The SLEAP bridge writes the fifth tracks producer path with full provenance."""
-    pytest.importorskip("h5py")
     from mosaic.tracking.sleap.dataset_runs import _bridge_analysis_h5_to_tracks
 
     ds = _dataset(tmp_path)

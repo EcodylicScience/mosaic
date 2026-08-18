@@ -28,7 +28,7 @@ Public docs: <https://ecodylicscience.github.io/mosaic/>.
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
+pip install -e ".[all]"
 ```
 
 `ffmpeg` (with `ffprobe`) must be on `PATH` — it is used by media indexing and
@@ -59,53 +59,66 @@ the sibling. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Optional extras
 
-`[recommended]` bundles `wavelets` + `pose` + `localizer`. For the full extras
-table, see [README.md](README.md). Notable points:
+**A bare `pip install -e .` is a complete analysis install.** Converters,
+features, wavelets, clustering, classifiers, overlays and crops all work with no
+extra at all, because PyWavelets, h5py and PyTables are base dependencies -- each
+gates reading a file the user already has, and the three are ~30 MB together.
+`[all]` adds the deep-learning surface. For the full table, see
+[docs/installation.md](docs/installation.md). Notable points:
 
+- **`deep-learning` (`torch` + `timm`) is the one gate on PyTorch.** It powers
+  the heatmap localizer and all three identity models, and replaced the separate
+  `localizer` and `identity` extras, which installed near-identical environments
+  once h5py moved to the base. On Linux torch pulls the whole `nvidia-cu12`
+  stack -- about 4 GB of wheels -- which is the entire reason the default install
+  does not carry it.
 - `pose` and `polo` cannot be installed in the same environment — both ship
-  under the `ultralytics` distribution name. `pose` also carries `lap` and an
-  `ultralytics>=8.4.63` floor, which is what `mosaic track ultralytics` needs:
-  `lap` is the tracker's linear-assignment solver and is in no ultralytics
-  extra, so undeclared it gets pip-installed mid-run, and the four newer
-  tracker backends only exist from 8.4.63. `polo` carries `lap` too.
-- `lightning-action` and `gpu` are intentionally excluded from `recommended`.
+  under the `ultralytics` distribution name. Both self-reference
+  `deep-learning`, so choosing the fork does not cost the identity models.
+  `pose` carries `lap` and an `ultralytics>=8.4.63` floor, which is what
+  `mosaic track ultralytics` needs: `lap` is the tracker's linear-assignment
+  solver and is in no ultralytics extra, so undeclared it gets pip-installed
+  mid-run, and the four newer tracker backends only exist from 8.4.63. `polo`
+  carries `lap` too.
+- **`all` is self-referential** (`["mosaic-behavior[pose,faiss]"]`), so a bundle
+  cannot drift from its parts. It excludes `polo` (mutually exclusive with
+  `pose`), `yolo-augment` (changes what a training run does),
+  `lightning-action` and `movement` (heavy, single-purpose), and `feral` (wants
+  its own environment).
 - `yolo-augment` installs `albumentations`, which Ultralytics picks up on its own
   and uses to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO
-  training. It is opt-in and outside `pose` / `polo` / `recommended` because
-  `albumentations` requires `opencv-python-headless` while mosaic requires
-  `opencv-python`, and installing both breaks the environment — see pitfall 8.
-  Installing it changes what a training run does, and nothing records which way a
-  run went, so the choice is deliberate rather than a default.
-- `gpu` installs `faiss-cpu` by default; on Linux + CUDA, install `faiss-gpu`
-  manually for GPU-accelerated kNN in `global-tsne`.
-- `imgstore` adds native support for imgstore (Motif / Loopbio) recordings — a
-  store *directory* is indexed and read as a normal media entry (see "imgstore
-  support" below). Not bundled in `recommended`.
+  training. **It is opt-in because it changes what a run does** and nothing
+  records which way a run went — not for packaging reasons. It does require
+  `opencv-python-headless`, but the documented conda environment satisfies that
+  with no wheel; see pitfall 8, which now names the two ffmpeg hazards apart.
+- `lightning-action` is capped at `<1.1`: 1.1.0 requires `nvidia-dali-cuda110`
+  unconditionally, and PyPI serves it as an sdist only, so without the cap the
+  extra fails to install anywhere without CUDA.
+- `movement` declares the movement-library integration behind
+  `movement-smooth` and `movement-filter-interpolate`. Before it existed those
+  were two registered features with no declared dependency at all.
+- `faiss` (formerly `gpu`, which promised a GPU and installed `faiss-cpu`) adds
+  the `"faiss"` kNN backend for `global-tsne`; the default backend is `"annoy"`
+  and needs nothing. On Linux + CUDA, install `faiss-gpu` manually.
+- **`imgstore` is not an extra.** Reading a store is native — the package is
+  needed only to *write* the fixture stores the suite builds — so it lives in
+  the `test` dependency group, which every CI job installs.
+- `recommended`, `identity`, `localizer` and `gpu` survive as self-referential
+  aliases through 0.12 and are removed in 0.13. They exist only because pip
+  *warns* about an unknown extra and carries on: a saved `.[recommended]` would
+  otherwise produce a working install with no torch in it and no error to say
+  so. `wavelets`, `sleap` and `hdf5` are not aliased — the base provides them,
+  so the warning is harmless.
 - `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
   infer) from PyPI, as `feral>=1.0,<2`. It runs in-process (not sandboxed like
-  keypoint-MoSeq) and is deliberately excluded from `recommended`. Two things
-  the bound and the exclusion are actually about:
-  - **It wants an environment of its own.** FERAL pins its dependencies exactly
-    — `opencv-python==4.13.0.92`, `pandas`, `scikit-learn`, `timm`, `matplotlib`,
-    `transformers` — and every mosaic requirement is a floor, so pip resolves the
-    pair happily and downgrades each one. The opencv pin lays a wheel over the
-    conda-forge `py-opencv` the documented environment installs, which puts a
-    vendored ffmpeg beside conda's `av`: pitfall 8, and `tests/conftest.py`
-    refuses to start pytest once it happens. The pins are FERAL's own and predate
-    the PyPI release; what changed is that `pip install -e ".[feral]"` is now the
-    obvious thing to type.
-  - **The upper bound is load-bearing.** Mosaic builds its own training loop out
-    of FERAL's pieces, importing thirteen symbols from `feral.model`,
-    `feral.dataset`, `feral.utils`, `feral.metrics` and `feral.backbones` — ten
-    of them submodule internals outside that package's `__all__`. The `feral` CI
-    job exists to make a release that moves one of them fail here.
-- `identity` installs `torch` + `timm` for all three image-backbone identity
-  models — `global-identity-model` (trains a classification head),
-  `global-identity-embedding` (frozen backbone, prototype k-NN, trains nothing)
-  and `global-identity-dinov2-temporal` (frozen DINOv2 plus a trained temporal
-  head over clips). The first two take any timm architecture tag or Hugging Face
-  hub id. Also excluded from `recommended`. Mosaic ships no weights — see
-  [docs/licensing.md](docs/licensing.md).
+  keypoint-MoSeq) and **wants an environment of its own, for a different reason
+  from everything above**: FERAL pins its dependencies exactly while every
+  mosaic requirement is a floor, so pip resolves the pair happily and downgrades
+  each one. No install layout fixes that. The upper bound is load-bearing:
+  mosaic imports thirteen symbols from FERAL's submodules, ten of them outside
+  that package's `__all__`, and the `feral` CI job exists to make a release that
+  moves one fail here.
+- Mosaic ships no weights — see [docs/licensing.md](docs/licensing.md).
 
 ### Smoke import
 
@@ -143,12 +156,18 @@ intersecting with it. That is what makes `pytest -m slow` work, and it also mean
 `pytest -m "not media"` quietly re-enables the slow tests.
 `tests/test_pytest_config.py` pins the default so that stays deliberate.
 
-Two tests exist to keep the suite honest about its own environment:
+Three tests keep the suite honest about its own environment.
 `tests/test_optional_dependency_coverage.py` reads the suite's guards out of its
 AST — both `importorskip` calls and the literal `find_spec` probes that back a
 two-directional `skipif`, as `feral`'s do — and fails when one names a module no
-CI job installs; and `tests/test_pytest_config.py` asserts the configuration
-above.
+CI job installs, **or when one guards a module that is a base dependency**, since
+a guard that can never fire masks a broken install.
+`tests/test_optional_dependency_messages.py` checks the other direction: every
+extra named in a `pip install "mosaic-behavior[...]"` hint or passed to
+`optional_dependency.require` must be declared, and every self-referential extra
+must resolve — a dangling one would make pip warn and install the base, which is
+a silently torch-less environment. And `tests/test_pytest_config.py` asserts the
+configuration above.
 
 ### Linting and formatting
 
@@ -201,13 +220,15 @@ happen to be in the working tree.
 ### CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs five jobs on push
-and pull request. There is no `.pre-commit-config.yaml`.
+and pull request. There is no `.pre-commit-config.yaml`. **Every job installs
+the `test` dependency group**, because `tests/conftest.py` demands `imgstore` of
+any run with `CI` set and a job without it fails at collection.
 
 - **`test`** — `uv run --no-sync pytest -q`. It inherits `addopts = "-m 'not slow'"`,
   so **slow-marked tests never run in CI**. A change that only breaks a slow test
   goes green; run them locally.
-- **`identity`** — five named test files under a torch-bearing environment, so
-  `pytest.importorskip("torch")` cannot silently skip them.
+- **`identity`** — the identity-marked suites under a `deep-learning`
+  environment, so `pytest.importorskip("torch")` cannot silently skip them.
 - **`tracking`** — the ultralytics preflight and marker suites under a `pose`
   environment, for the same reason: without `ultralytics` and `lap` installed they
   would skip green and prove nothing.
@@ -917,8 +938,9 @@ excluded), and reading dispatches transparently:
 - Frame addressing: the track-table `frame` column is the 0-based contiguous
   video frame index, which maps to imgstore's `frame_index` (**not** the
   camera-provided `frame_number`). Detection (`is_imgstore`) is import-free;
-  reading a store no longer needs the `imgstore` package (native decode), so
-  `[imgstore]` is only for writing stores, as the test fixtures do.
+  reading a store no longer needs the `imgstore` package (native decode). The
+  package is needed only to *write* stores, as the test fixtures do, so it sits
+  in the `test` dependency group rather than in an extra.
 
 ### Params are Pydantic
 
@@ -1107,38 +1129,47 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 5. **Schema-valid tracks only.** Track converters that emit non-schema columns
    will fail validation downstream. Test new converters against
    `core/schema.py` before relying on them.
-6. **`recommended` is curated.** It deliberately omits `polo`,
-   `lightning-action`, and `gpu`. Don't quietly fold them in.
+6. **`all` is what belongs in one environment, not everything.** It resolves to
+   `pose` + `faiss`. `polo` is excluded because it cannot coexist with `pose`,
+   `yolo-augment` because it changes what a training run does, `movement` and
+   `lightning-action` because they are heavy and single-purpose, and `feral`
+   because it re-resolves the environment. Each exclusion has its own reason;
+   don't quietly fold any of them in, and don't restate the reasons as one.
 7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
    changes still warrant explicit discussion in an issue first.
 
 8. **One ffmpeg build per environment.** Two independent copies of ffmpeg in one
    process crash it: the suite dies with `Trace/BPT trap: 5` at a different point
    every run, and on macOS the Objective-C runtime warns on every import that
-   `AVFFrameReceiver` is implemented twice. There are two ways to get there, and
-   both are handled above rather than worked around:
+   `AVFFrameReceiver` is implemented twice. **These are two different hazards
+   with different blast radii, and running them together is what once put
+   `albumentations` in quarantine for a reason that does not apply:**
 
-   - **Two wheels providing `cv2`.** `albumentations` requires
+   - **Two wheels providing `cv2` — plain pip only.** `albumentations`,
+     `lightning-action` and `movement` (via `pyvideoreader`) require
      `opencv-python-headless` while mosaic and `ultralytics` require
      `opencv-python`. pip installs both without complaint -- they are different
      distributions -- and they then overwrite each other's files and merge two
-     ffmpeg builds into one `cv2/.dylibs`. Whichever wheel wins may be the headless
-     one, which has no `imshow`, silently breaking playback. `albumentations` is
-     therefore in its own `yolo-augment` extra rather than in `pose` / `polo` /
-     `recommended`, and `tests/conftest.py` refuses to start when two *wheels*
-     provide `cv2`.
-   - **`av` and `opencv-python` each vendoring their own ffmpeg.** Both PyPI wheels
-     bundle a complete build, so even a correct single-OpenCV install holds two
+     ffmpeg builds into one `cv2/.dylibs`. **The documented conda environment is
+     immune**: one conda-forge `py-opencv` registers *both* pip distribution
+     names for its single build, so those extras resolve with no wheel installed
+     at all. `tests/conftest.py` refuses to start when it finds two *builds*, and
+     tells conda's one-build-two-names case apart by `INSTALLER`.
+   - **`av` and any `cv2` wheel each vendoring their own ffmpeg.** Both bundle a
+     complete build, so two collide even when only one provides `cv2`
      (`av/.dylibs/libSvtAv1Enc.4.1.0` against `cv2/.dylibs/libSvtAv1Enc.3.0.2`).
-     The documented environment takes both from conda-forge instead, where they link
-     the environment's one shared `ffmpeg`. That is why "Environment setup" installs
-     `av` and `py-opencv` with conda before pip runs.
+     **Unaffected by which `cv2` flavor you pick** -- the wheels carry the same
+     payload -- so no dependency edit fixes it. It does not arise on Windows,
+     where OpenCV's ffmpeg is a separate lazily-loaded DLL.
 
-   conda-forge's `py-opencv` registers *two* pip distributions
-   (`opencv-python` and `opencv-python-headless`) for its single build, which is
-   what lets pip leave both requirements satisfied. The conftest guard tells that
-   case apart by `INSTALLER`, so it stays loud about the wheel collision it exists
-   for.
+   **Conda is one route to one ffmpeg, not the only one.** conda-forge's `av` and
+   `py-opencv` link the `ffmpeg` installed beside them rather than vendoring
+   their own, which is why "Environment setup" installs them before pip runs. But
+   `apt install python3-av python3-opencv` and `pip install av --no-binary av`
+   reach the same invariant, and mosaic's **Linux CI installs `av` and
+   `opencv-python` as plain wheels against an apt `ffmpeg`, on every job, and has
+   never crashed**. Treat conda as required on a macOS workstation and as one
+   option elsewhere.
 
 ## Pointers to Deeper Docs
 

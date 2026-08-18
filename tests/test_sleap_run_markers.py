@@ -28,7 +28,6 @@ from tests.helpers import write_media_index
 
 # The bridge reads the analysis HDF5 with h5py (a [recommended] extra); skip the
 # whole module when it is absent rather than fail a minimal install.
-pytest.importorskip("h5py")
 
 
 # --- fixtures --------------------------------------------------------------

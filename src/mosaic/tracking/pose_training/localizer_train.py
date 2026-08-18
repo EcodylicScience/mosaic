@@ -8,6 +8,8 @@ Requires: ``torch >= 2.0``
 
 from __future__ import annotations
 
+from types import ModuleType
+
 import csv
 import json
 import time
@@ -18,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
+from mosaic.optional_dependency import require
+
 if TYPE_CHECKING:
     # Annotation-only, and deferred for a second reason: `augmentation` is
     # imported inside `resolve_augmentation` rather than at module scope, so a
@@ -25,16 +29,8 @@ if TYPE_CHECKING:
     from .augmentation import LocalizerAugmentConfig
 
 
-def _require_torch():
-    try:
-        import torch
-
-        return torch
-    except ImportError:
-        raise ImportError(
-            "PyTorch is required for localizer training. "
-            "Install with: pip install mosaic-behavior[localizer]"
-        )
+def _require_torch() -> ModuleType:
+    return require("torch", "deep-learning", "localizer training")
 
 
 @dataclass

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, final
+from typing import final
 
 import numpy as np
 import pandas as pd
@@ -28,15 +28,7 @@ from .helpers import ensure_columns
 from .registry import register_feature
 from .types import SamplingConfig
 
-if TYPE_CHECKING:
-    import pywt
-
-try:
-    import pywt  # pyright: ignore[reportUnknownVariableType]
-
-    _has_pywt = True
-except ImportError:
-    _has_pywt = False
+import pywt  # pyright: ignore[reportUnknownVariableType]
 
 
 @final
@@ -101,10 +93,6 @@ class PairWavelet:
         inputs: PairWavelet.Inputs,
         params: dict[str, object] | None = None,
     ):
-        if not _has_pywt:
-            raise ImportError(
-                "PyWavelets (pywt) not available. Install with `pip install PyWavelets`."
-            )
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._cache_key: tuple[str, float, float, int, float] | None = None

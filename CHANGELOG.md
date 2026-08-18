@@ -8,6 +8,72 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.12.0 — the install has a default worth having
+
+**No identifier moves, and no run on disk is re-addressed.** What changes is what
+`pip install` brings and what the extras are called.
+
+**A bare `pip install -e .` is now a complete analysis install.** PyWavelets,
+h5py and PyTables became base dependencies: each gates *reading a file you
+already have* — a spectral feature, a SLEAP analysis export, a DeepLabCut HDF5 —
+and the three are about 30 MB together, which is not worth a way to get the
+install wrong. `psutil` joined them because `temporal-stack`'s memory-headroom
+check used to inherit it from `ultralytics` and would otherwise have become a
+silent no-op. `seaborn` and `networkx` left; nothing imported either.
+
+**Thirteen extras became nine, and the choice became two.** Install nothing, or
+`[all]`. `wavelets`, `sleap` and `hdf5` are base now. `localizer` and `identity`
+were both, once h5py moved, essentially "torch", so they merged into
+`deep-learning`, which `pose` and `polo` both self-reference — choosing the POLO
+fork no longer costs you the identity models. `gpu` became `faiss`, being what it
+installs. `imgstore` left the extras entirely for the `test` dependency group:
+reading a store has been native for some time, and the package is needed only to
+*write* the fixture stores the suite builds.
+
+**`recommended` became `all`, and bundles are now self-referential.**
+`all = ["mosaic-behavior[pose,faiss]"]` cannot drift from its parts, where a
+copied list could. `recommended`, `identity`, `localizer` and `gpu` still resolve
+as aliases and are removed in 0.13 — they are kept only because pip *warns* about
+an unknown extra and carries on, so a saved `.[recommended]` would otherwise
+produce a working install with no torch in it and nothing to say so.
+
+**A new `movement` extra declares a dependency that was never declared.**
+`movement-smooth` and `movement-filter-interpolate` are registered
+unconditionally and import `movement` lazily, so the package had no entry in
+`pyproject.toml` at all, and the error message pointed at
+`pip install 'mosaic[movement]'` — the wrong distribution name and an extra that
+has never existed.
+
+**`lightning-action` is capped at `<1.1`.** 1.1.0 requires `nvidia-dali-cuda110`
+unconditionally and PyPI serves that as an sdist only, so the extra could not
+install anywhere without CUDA, for a reason nothing named.
+
+**One place now decides what a missing dependency says.**
+`mosaic.optional_dependency.require` replaces ten hand-written `ImportError`
+messages in four shapes, and `tests/test_optional_dependency_messages.py` checks
+every extra a message names against what `pyproject.toml` declares. Two guards
+that never existed were added — `global-tsne`'s faiss import raised a bare
+`ModuleNotFoundError`, and the DeepLabCut `read_hdf` path is now covered by
+PyTables being a base dependency rather than by a guard. Three `try/except
+ImportError` blocks around the movement, lightning-action and feral imports were
+deleted: none of those modules imports its optional dependency at module scope,
+so the blocks caught nothing they were written for and would have swallowed a
+real error, dropping a feature from the registry.
+
+**The two-OpenCV story was told wrong, and is now told as two.** Installing
+`albumentations`, `lightning-action` or `movement` beside mosaic is safe on the
+documented conda environment — one conda-forge `py-opencv` registers both
+distribution names for its single build, so they resolve with no wheel at all.
+That collision is a plain-pip hazard. The separate hazard, `av` and any `cv2`
+wheel each vendoring a complete ffmpeg, is unaffected by which OpenCV flavor is
+installed and is not fixed by any dependency edit. `yolo-augment` stays opt-in
+for the reason that was always sufficient: it changes what a YOLO or POLO
+training run does, and nothing records which way a run went.
+
+**Known, and pre-existing: `uv lock` does not resolve.** `ultralytics` publishes
+nothing for win32 on Python 3.14, which `requires-python` admits, so `uv.lock`
+is stale and `NOTICE` cannot be regenerated with it. No CI job reads the lock.
+
 ## Unreleased — a graph step names itself, and says no before doing the work
 
 **No identifier moves.** What changes is the surface another repository sees: a

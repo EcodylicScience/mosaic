@@ -7,7 +7,7 @@ Inference:  test trained models on video (non-production; production uses TRex).
 Requires optional dependency:
     Pose:       pip install mosaic-behavior[pose]
     POLO:       pip install mosaic-behavior[polo]
-    Localizer:  pip install mosaic-behavior[localizer]
+    Localizer:  pip install mosaic-behavior[deep-learning]
 """
 
 from mosaic.core.annotations import KeypointSchema

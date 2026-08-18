@@ -208,21 +208,21 @@ install before relying on any row.
 | --------- | --------------- | ------- | -------------- |
 | keypoint-MoSeq | environment you build under `feature_library/external`, run as a subprocess | Harvard OTD Non-Commercial Research and Academic Use | **Prohibited.** No paid exception exists |
 | TRex | external binary in its own environment | AGPL-3.0-or-later (the `Application/src/commons` subtree under GPL-3.0) | **Company use requires a paid commercial license** from the authors |
-| Ultralytics YOLO | `pose` extra, included in `recommended`; also what `mosaic track ultralytics` drives | AGPL-3.0 | Permitted under AGPL terms; an Enterprise license is sold for use that cannot meet them |
+| Ultralytics YOLO | `pose` extra, included in `all`; also what `mosaic track ultralytics` drives | AGPL-3.0 | Permitted under AGPL terms; an Enterprise license is sold for use that cannot meet them |
 | `ultralytics-thop` | transitive dependency of Ultralytics; named in no `pyproject.toml` | AGPL-3.0-or-later | As Ultralytics |
-| `lap` | `pose`, `polo` and `recommended` extras | BSD-2-Clause | Permitted |
+| `lap` | `pose` and `polo` extras, and `all` through `pose` | BSD-2-Clause | Permitted |
 | POLO | `polo` extra | AGPL-3.0 (fork of Ultralytics) | Permitted under AGPL terms. The Ultralytics Enterprise license covers Ultralytics' own distribution and does not extend to a third-party fork |
 | SLEAP | external binary in its own environment | BSD 3-Clause Clear | Permitted |
 | Lightning Pose | external binary in its own environment | MIT | Permitted |
 | lightning-action | `lightning-action` extra | MIT | Permitted |
 | FERAL | `feral` extra | MIT | Permitted |
 | FERAL backbone weights | fetched at run time from the HuggingFace hub | per backbone; the default is MIT | See the backbone table below |
-| DINOv2 (`dinov2_vits14`, `dinov2_vitb14`) | `identity` extra, fetched through `torch.hub` | Apache-2.0, code and weights | Permitted |
-| timm | `identity` extra; the loader, not the weights | Apache-2.0 | Permitted |
-| Backbone weights for `global-identity-embedding` | `identity` extra, fetched at run time from the hub id you name | whatever that repository states; the default is MIT | See the table above |
+| DINOv2 (`dinov2_vits14`, `dinov2_vitb14`) | `deep-learning` extra, fetched through `torch.hub` | Apache-2.0, code and weights | Permitted |
+| timm | `deep-learning` extra; the loader, not the weights | Apache-2.0 | Permitted |
+| Backbone weights for `global-identity-embedding` | `deep-learning` extra, fetched at run time from the hub id you name | whatever that repository states; the default is MIT | See the table above |
 | FFmpeg / ffprobe | system binaries you install; invoked, never bundled | LGPL-2.1-or-later, or GPL if built with GPL-only components | Permitted. A redistributor who bundles an `ffmpeg` build must observe that build's terms |
 | PyAV (`av`) | `mosaic-media[io]`, for in-process frame decoding | BSD-3-Clause | Permitted |
-| PyTables (`tables`) | `hdf5` extra, so pandas can dispatch `read_hdf` for a DeepLabCut HDF5 export | BSD-3-Clause | Permitted |
+| PyTables (`tables`) | required dependency, so pandas can dispatch `read_hdf` for a DeepLabCut HDF5 export | BSD-3-Clause | Permitted |
 | Pillow | required dependency; the YOLO-pose annotation reader opens each image to read its size | MIT-CMU | Permitted |
 | OpenCV (`opencv-python`, or conda-forge `py-opencv`) | required dependency | Apache-2.0 | Permitted |
 | `mosaic-media` | required dependency, same authors | Apache-2.0 | Permitted |
@@ -234,11 +234,14 @@ requiring a paid commercial license. Unlike keypoint-MoSeq, that restriction
 *can* be cured by paying. Mosaic never bundles TRex — it invokes a binary you
 installed — so it carries no gate here, but the obligation is yours.
 
-**Ultralytics** ships in the curated `recommended` bundle under AGPL-3.0, and
+**Ultralytics** ships in the `all` bundle under AGPL-3.0, and
 Ultralytics sells an Enterprise license to users who cannot meet AGPL's terms.
 Mosaic is AGPL-3.0-or-later itself, so there is no incompatibility; the question
 is whether *your* use of the combined work can meet AGPL's obligations,
 including its network-use provision.
+
+A bare `pip install -e .` reaches neither Ultralytics nor POLO: the default
+install carries no AGPL-licensed dependency, and `[all]` is what adds one.
 
 ## The tracker default tables
 

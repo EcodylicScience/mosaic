@@ -12,6 +12,7 @@ every run identifier already on disk, so it needs a decision at upgrade time.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import cast
@@ -38,6 +39,34 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # --- the declaration, checkable without Ultralytics ------------------------
 
 
+def _resolve_extra(extras: dict[str, list[str]], name: str) -> list[str]:
+    """Every requirement `name` pulls in, following ``mosaic-behavior[...]`` edges.
+
+    Bundles are declared by self-reference (``all = ["mosaic-behavior[pose,faiss]"]``)
+    so they cannot drift from their parts. That is exactly what defeats a
+    text scan of one extra's own list: ``all`` reaches an Ultralytics tracker and
+    names nothing but itself. Resolving the edges is what keeps the assertion
+    below meaning what it says.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def walk(extra: str) -> None:
+        if extra in seen:
+            return
+        seen.add(extra)
+        for spec in extras.get(extra, []):
+            inner = re.fullmatch(r"mosaic-behavior\[([a-z0-9,\-]+)\]", spec.strip())
+            if inner is None:
+                out.append(spec)
+                continue
+            for referenced in inner.group(1).split(","):
+                walk(referenced.strip())
+
+    walk(name)
+    return out
+
+
 def test_mosaic_declares_lap_rather_than_letting_ultralytics_install_it() -> None:
     """``lap`` is named by every extra that can reach a tracker backend.
 
@@ -46,13 +75,25 @@ def test_mosaic_declares_lap_rather_than_letting_ultralytics_install_it() -> Non
     queued job, and an outright failure in a locked environment. With ``lap``
     present the hazard is invisible, so reading the declaration is the only
     thing that can catch its removal.
+
+    Asked of every extra that resolves to Ultralytics rather than of a hardcoded
+    list, so a new bundle carrying it is covered the day it lands.
     """
     pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
-    extras = pyproject["project"]["optional-dependencies"]
-    for extra in ("pose", "polo", "recommended"):
-        declared = cast(list[str], extras[extra])
+    extras = cast(dict[str, list[str]], pyproject["project"]["optional-dependencies"])
+
+    reaching: dict[str, list[str]] = {}
+    for name in extras:
+        resolved = _resolve_extra(extras, name)
+        if any(
+            spec.split(">=")[0].split("@")[0].strip() == "ultralytics"
+            for spec in resolved
+        ):
+            reaching[name] = resolved
+    assert reaching, "no extra resolves to ultralytics; this test has lost its subject"
+    for name, declared in sorted(reaching.items()):
         assert any(spec.startswith("lap") for spec in declared), (
-            f"[{extra}] can reach an Ultralytics tracker but does not declare lap"
+            f"[{name}] can reach an Ultralytics tracker but does not declare lap"
         )
 
 

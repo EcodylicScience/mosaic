@@ -51,14 +51,17 @@ cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
+pip install -e ".[all]"
 ```
 
-`av` and `py-opencv` come from conda deliberately — their PyPI wheels each bundle a
-complete ffmpeg, and two in one process crash it. The
+`pip install -e .` alone is a complete analysis install — converters, features,
+clustering, classifiers, overlays. `[all]` adds the deep-learning surface (YOLO
+pose, `mosaic track ultralytics`, the localizer, the identity models), which
+means PyTorch. `av` and `py-opencv` come from conda deliberately: their PyPI
+wheels each bundle a complete ffmpeg, and two in one process crash it. The
 [installation guide](https://ecodylicscience.github.io/mosaic/installation/)
-explains that, the full extras table, the two components that want an environment
-of their own, and Windows/WSL2 support.
+explains that, the full extras table, a CPU-only PyTorch line, the two components
+that want an environment of their own, and Windows/WSL2 support.
 
 ## In 60 seconds
 

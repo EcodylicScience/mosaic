@@ -30,6 +30,7 @@ from mosaic.core.pipeline.types import (
     NpzLoadSpec,
     Result,
 )
+from mosaic.optional_dependency import require
 
 from .helpers import ensure_columns
 from .registry import register_feature
@@ -76,7 +77,11 @@ class _FaissKNNIndex:
 
     def build(self) -> tuple[np.ndarray, np.ndarray]:
         """Build FAISS index and return kNN for the training data."""
-        import faiss
+        # Guarded rather than a bare import: `knn_method` defaults to "annoy",
+        # so this is reached only by a run that asked for faiss by name, and an
+        # unguarded ModuleNotFoundError names a package no install instruction
+        # here ever mentions.
+        faiss = require("faiss", "faiss", 'the "faiss" kNN backend of global-tsne')
 
         d = self.data.shape[1]
         index = faiss.IndexFlatL2(d)

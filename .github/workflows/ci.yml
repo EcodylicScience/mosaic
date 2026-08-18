@@ -71,8 +71,12 @@ jobs:
           # without extras and prune what it considers extraneous, undoing the
           # two installs below.
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,hdf5]'
-          uv pip install pytest ruff
+          uv pip install -e '.'
+          # `imgstore` and the runner arrive through the `test` group, which
+          # every job installs: conftest demands imgstore of any run with CI
+          # set, so a job without it fails at collection.
+          uv pip install --group test
+          uv pip install ruff
 
       - name: Test
         working-directory: mosaic
@@ -82,14 +86,15 @@ jobs:
           PYTHONHASHSEED: random
         # `--no-sync` is load-bearing. `uv run` syncs the project environment
         # from the tracked `uv.lock` by default, which installs the project
-        # *without* extras and prunes what it considers extraneous -- undoing
-        # the `[wavelets,imgstore]` install above. `pytest` survives only
-        # because it is in `[dependency-groups] dev`, so the loss is invisible:
-        # the 35 imgstore tests reach `pytest.importorskip` and skip, and CI
-        # reports green while running less than this workflow installs for.
+        # *without* extras or groups and prunes what it considers extraneous --
+        # undoing the `--group test` install above. The loss would be invisible:
+        # the imgstore tests reach `pytest.importorskip` and skip, and CI reports
+        # green while running less than this workflow installs for. (The lock is
+        # also stale and cannot currently be regenerated; see CONTRIBUTING.md.)
         run: uv run --no-sync pytest -q
 
-  # The identity tests need torch and timm, ~200 MB of wheels that nothing else
+  # The identity tests need torch and timm, via the `deep-learning` extra, which
+  # nothing else
   # in the suite requires. Their own job keeps `test` fast while still making
   # them real evidence: `pytest.importorskip` would otherwise skip them green,
   # and they are the only guard on a checkpoint still loading into the network
@@ -123,8 +128,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,identity]'
-          uv pip install pytest
+          uv pip install -e '.[deep-learning]'
+          uv pip install --group test
 
       - name: Test identity checkpoints
         working-directory: mosaic
@@ -169,8 +174,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,pose]'
-          uv pip install pytest
+          uv pip install -e '.[pose]'
+          uv pip install --group test
 
       - name: Test ultralytics tracking
         working-directory: mosaic
@@ -220,8 +225,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[wavelets,imgstore,sleap,hdf5,feral]'
-          uv pip install pytest
+          uv pip install -e '.[feral]'
+          uv pip install --group test
 
       - name: Test feral integration
         working-directory: mosaic

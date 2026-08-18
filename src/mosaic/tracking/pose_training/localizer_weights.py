@@ -11,19 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
-
-
-def _require_h5py():
-    try:
-        import h5py
-
-        return h5py
-    except ImportError:
-        raise ImportError(
-            "h5py is required for Keras weight conversion. "
-            "Install with: pip install h5py"
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -42,7 +31,6 @@ def _extract_keras_weights(h5_path: Path) -> list[np.ndarray]:
         Flat list of weight arrays in model layer order: conv kernels,
         biases, BN gamma/beta/mean/var, etc.
     """
-    h5py = _require_h5py()
 
     weights: list[np.ndarray] = []
 

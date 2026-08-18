@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mosaic-behavior"
-version = "0.11.0"
+version = "0.12.0"
 description = "Mosaic — behavior analysis toolkit for animal tracking, feature extraction, and modeling."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,10 +25,13 @@ dependencies = [
     "scikit-learn>=1.2",
     "scipy>=1.10",
     "numba>=0.58",
-    "seaborn>=0.12",
     "matplotlib>=3.7",
     "openTSNE>=0.6",
-    "opencv-python>=4.7",
+    # Bounded deliberately. `>=4.7` alone now resolves to OpenCV 5, so the
+    # major version this project is tested against was being chosen by the
+    # resolver rather than declared. Raise the ceiling on purpose, with a run
+    # of the media suites behind it.
+    "opencv-python>=4.7,<6",
     # `core/annotations/readers/yolo_pose.py` opens each image with PIL to read
     # its size. Core rather than an extra: reading annotations is not gated on
     # any integration, and it arrived only transitively through `ultralytics`,
@@ -36,7 +39,19 @@ dependencies = [
     "pillow>=10.0",
     "imbalanced-learn>=0.11",
     "xgboost>=1.7",
-    "networkx>=3.2.1",
+    # Spectral features (`pair-wavelet`), the SLEAP analysis reader, and the
+    # DeepLabCut HDF5 export reader. Core rather than extras: all three are
+    # numpy-only and about 30 MB together, and each one gates *reading a file
+    # the user already has* rather than an integration they opted into. An
+    # extra that cheap buys nothing but a way to get the install wrong.
+    "PyWavelets>=1.4",
+    "h5py>=3.0",
+    "tables>=3.8",
+    # `behavior/feature_library/temporal_stacking.py` sizes its stack against
+    # free memory through it. It used to arrive transitively from
+    # `ultralytics`; with the deep-learning surface out of the default install
+    # an undeclared psutil turns that check into a silent no-op.
+    "psutil>=5.9",
     "typer>=0.12",
     "mosaic-media[io,cli]>=0.3.0,<0.4.0",
 ]
@@ -47,10 +62,21 @@ dev = [
     "joblib-stubs>=1.4.2.5.20240918",
     "microsoft-python-type-stubs",
     "pandas-stubs>=2.2.2.240807",
-    "pytest>=8.0",
     "ruff>=0.15.4",
     "scipy-stubs>=1.17.1.1",
     { include-group = "docs" },
+    { include-group = "test" },
+]
+
+# Its own group for the same reason `docs` is one: every CI job needs the
+# runner and the fixture-writing dependency, and none of them needs the type
+# stubs. `imgstore` lives here rather than in an extra because `src/` never
+# imports it -- reading a store is native, and `export-store` writes through
+# mosaic-media -- so the only thing that needs the package is the suite,
+# which writes the fixture stores it then reads.
+test = [
+    "pytest>=8.0",
+    "imgstore>=0.4",
 ]
 
 # Its own group so the docs workflow can install what it needs without the type
@@ -67,80 +93,77 @@ docs = [
 ]
 
 [project.optional-dependencies]
-wavelets = ["PyWavelets>=1.4"]
+# The deep-learning surface: the torch runtime and the image backbones. Shared
+# by the heatmap localizer and by all three identity models, which is why it is
+# one extra rather than the two (`localizer`, `identity`) it replaces -- with
+# h5py in the base they installed near-identical environments.
+#
+# On Linux this is where the size is: torch pulls the whole nvidia-cu12 stack,
+# about 4 GB of wheels. docs/installation.md carries the CPU-only index line for
+# anyone without a GPU.
+deep-learning = ["torch>=2.0", "timm>=1.0"]
+
+# `pose` and `polo` both install a distribution named `ultralytics` -- upstream
+# against a full third-party fork -- and pip resolves only one, so they are
+# permanently mutually exclusive. Both build on `deep-learning`, so choosing the
+# fork does not cost a user the identity models.
+#
 # `lap` is Ultralytics' linear-assignment solver, imported at module scope by
 # `ultralytics.trackers.utils.matching` and reached by every one of the six
-# tracker backends. It appears in no Ultralytics extra: without it, Ultralytics
-# pip-installs it *during the run*, which is a network write inside a queued job
-# and a failure in a locked environment. Declared here so it arrives at install
-# time. The `>=8.4.63` floor is where the last four tracker backends
+# tracker backends. Undeclared, Ultralytics pip-installs it *during the run*,
+# which is a network write inside a queued job and a failure in a locked
+# environment. The `>=8.4.63` floor is where the last four tracker backends
 # (ocsort / deepocsort / fasttrack / tracktrack) landed; below it only botsort
 # and bytetrack exist.
-pose = ["ultralytics>=8.4.63", "lap>=0.5.12"]
-# POLO is a full fork and ships the tracker backends its fork point carried, so
-# `lap` is needed here for the same reason. The pin stays a bare git reference:
-# pairing a direct reference with a version specifier for one distribution is
-# unresolvable, which is why the floor above lives on `pose` alone.
+pose = ["mosaic-behavior[deep-learning]", "ultralytics>=8.4.63", "lap>=0.5.12"]
+# The POLO pin stays a bare git reference: pairing a direct reference with a
+# version specifier for one distribution is unresolvable, which is why the floor
+# above lives on `pose` alone.
 polo = [
+    "mosaic-behavior[deep-learning]",
     "ultralytics @ git+https://github.com/mooch443/POLO.git",
     "lap>=0.5.12",
 ]
-# Ultralytics' optional photometric augmentation block, opt-in and deliberately
-# outside `pose` / `polo` / `recommended`.
+
+# Optional kNN backend for `global-tsne` (`knn_method="faiss"`; the default is
+# "annoy", which needs nothing). Named for what it installs -- the old `gpu`
+# name promised a GPU and delivered `faiss-cpu`. On Linux + CUDA install
+# `faiss-gpu` manually instead.
+faiss = ["faiss-cpu>=1.7"]
+
+# The movement-library integration behind `movement-smooth` and
+# `movement-filter-interpolate`. Both features are registered unconditionally
+# and import `movement` lazily, so before this extra existed they were two
+# registered features with no declared dependency at all.
 #
-# `albumentations` requires `opencv-python-headless` while mosaic and Ultralytics
-# require `opencv-python`. pip installs both without complaint -- they are
-# different distributions -- and they then ship the *same* `cv2` import package,
-# so one overwrites the other's files and both leave their bundled ffmpeg builds
-# in a single `cv2/.dylibs`. Two ffmpeg builds in one process crash it at a
-# different point on every run, and whichever wheel wins may be the headless one,
-# which has no `imshow`. Declaring it in `pose` therefore made
-# `pip install -e ".[recommended]"` produce a broken environment.
-#
-# Installing this changes what YOLO / POLO training does: Ultralytics builds its
+# Outside `all` for its weight rather than any hazard: it pulls xarray, netCDF4,
+# pynwb, sleap-io and napari-video for two filtering wrappers.
+movement = ["movement>=0.17"]
+
+# Opt-in because it CHANGES WHAT A TRAINING RUN DOES. Ultralytics builds its
 # `Albumentations` transform whenever the package is importable and swallows the
-# ImportError when it is not, so with it present a pose run additionally applies
-# Blur, MedianBlur, ToGray and CLAHE at p=0.01 each. Mosaic's own presets in
-# `tracking/pose_training/augmentation.py` set none of those, and nothing records
-# which way a run went -- so the choice belongs to the person installing.
+# ImportError when it is not, so with it present a YOLO or POLO run additionally
+# applies Blur, MedianBlur, ToGray and CLAHE at p=0.01 each. Mosaic's own presets
+# in `tracking/pose_training/augmentation.py` set none of those, and nothing
+# records which way a run went -- so the choice belongs to the person installing,
+# and it stays out of `all`.
+#
+# It also requires `opencv-python-headless`, but that is not why it is separate:
+# the conda-forge `py-opencv` the install docs prescribe registers both
+# distribution names for its single build, so this resolves with no wheel and no
+# second ffmpeg. That collision is a plain-pip hazard; see pitfall 8 in
+# CLAUDE.md, which now names the two ffmpeg hazards separately.
 yolo-augment = ["albumentations>=1.3"]
-lightning-action = ["lightning-action>=1.0"]
-localizer = ["torch>=2.0", "h5py>=3.0"]
-# Reading SLEAP output, not running SLEAP. The tracker is an external binary in
-# its own environment and mosaic never imports it; what mosaic needs is HDF5, to
-# read the analysis `.h5` its converter consumes. Named for the integration
-# rather than for the library, like `localizer`.
-sleap = ["h5py>=3.0"]
-# PyTables, which is what pandas dispatches `read_hdf` to. The DeepLabCut
-# converter accepts a `.h5` / `.hdf5` / `.hdf` path, so without this a user with a
-# DeepLabCut HDF5 export meets an ImportError from inside pandas, naming a package
-# mosaic never mentions.
-#
-# Named for the format rather than for the tool, unlike `sleap` and `localizer`.
-# `[deeplabcut]` would read as "installs DeepLabCut" to a person and to a license
-# scanner, and it installs no DeepLabCut code at all: mosaic reads an exported
-# file, and a file format carries no license.
-#
-# Not a duplicate of `sleap`, which also reads HDF5. That one needs `h5py`
-# because SLEAP's analysis file is opened directly; this one needs PyTables
-# because the DeepLabCut export is opened through pandas. Two libraries, two
-# readers, one container format.
-hdf5 = ["tables>=3.8"]
-# Frozen image-backbone identity models. `identity` covers both: the timm
-# backbone loader (`global-identity-embedding`, any timm architecture tag or
-# Hugging Face hub id) and the DINOv2 + temporal head. `torch` ships via
-# [localizer]/[recommended]; `timm` is what the backbone loader needs. DINOv2
-# loads via torch.hub and needs no extra dep. Mosaic distributes no weights --
-# each backbone is fetched at run time under its own license.
-identity = ["torch>=2.0", "timm>=1.0"]
-gpu = ["faiss-cpu>=1.7"]  # use faiss-gpu on Linux+CUDA for GPU-accelerated kNN in global-tsne
-# Native imgstore (Motif / Loopbio) video support: directory-based stores work as
-# media entries (indexing, reading, tracking inference). Deliberately NOT in
-# `recommended` — only needed for imgstore-format recordings.
-imgstore = ["imgstore>=0.4"]
+
+# Capped at <1.1 on purpose: 1.1.0 requires `nvidia-dali-cuda110` with no
+# environment marker, and PyPI serves that as an sdist only. Without the cap
+# `pip install "mosaic-behavior[lightning-action]"` tries to build NVIDIA DALI
+# from source and fails anywhere without CUDA, for a reason nothing here names.
+# Lift the cap only alongside a GPU image.
+lightning-action = ["lightning-action>=1.0,<1.1"]
+
 # FERAL V-JEPA video behavior classifier (FeralFeature, training + inference),
-# from PyPI as of its 1.0.0 release. It was a bare `main` reference before that,
-# which is what `polo` still is.
+# from PyPI as of its 1.0.0 release.
 #
 # The upper bound is load-bearing rather than cautious. Mosaic builds its own
 # training loop out of FERAL's pieces, so it imports thirteen symbols from
@@ -148,29 +171,38 @@ imgstore = ["imgstore>=0.4"]
 # `feral.backbones`, and ten of them are submodule internals that FERAL's
 # `__all__` does not carry. A major release is free to move any of them.
 #
-# **This extra wants an environment of its own.** FERAL pins its dependencies
-# exactly -- `opencv-python==4.13.0.92`, `pandas`, `scikit-learn`, `timm`,
-# `matplotlib`, `transformers` -- and every mosaic requirement is a floor, so pip
-# resolves the pair happily and downgrades each one. The opencv pin is the
-# damaging one: it lays a wheel over the conda-forge `py-opencv` the documented
-# environment installs, which puts a vendored ffmpeg beside conda's `av` and
-# reintroduces the crash pitfall 8 in CLAUDE.md exists to prevent. The pins are
-# FERAL's own and were the same in the git tree; what the PyPI route changes is
-# that `pip install -e ".[feral]"` is now the obvious thing to type.
-#
-# Deliberately NOT in `recommended` for that reason and for its size.
+# **This extra wants an environment of its own**, and for a different reason
+# from anything above: FERAL pins its dependencies exactly -- `opencv-python`,
+# `pandas`, `scikit-learn`, `timm`, `matplotlib`, `transformers` -- while every
+# mosaic requirement is a floor, so pip resolves the pair happily and downgrades
+# each one. No install layout fixes that; install it into its own environment
+# and point it at the same datasets.
 feral = ["feral>=1.0,<2"]
-# Curated bundle for typical research workflows. Excludes `polo` (incompatible
-# ultralytics pin with `pose`), `lightning-action` (large standalone dep),
-# `gpu` (platform-specific), and `yolo-augment` (it would reintroduce the
-# two-OpenCV install this bundle exists to be safe from).
-recommended = [
-    "PyWavelets>=1.4",
-    "ultralytics>=8.4.63",
-    "lap>=0.5.12",
-    "torch>=2.0",
-    "h5py>=3.0",
-]
+
+# The documented install: everything that belongs in one general-purpose
+# environment. Self-referential rather than a copied list, so it cannot drift
+# from its parts -- which is what `recommended` was one careless edit away from
+# at all times.
+#
+# Excludes, each for its own reason stated above: `polo` (mutually exclusive
+# with `pose`), `yolo-augment` (changes what a training run does),
+# `lightning-action` and `movement` (heavy and single-purpose), `feral` (wants
+# its own environment).
+all = ["mosaic-behavior[pose,faiss]"]
+
+# Deprecated in 0.12, removed in 0.13. Kept only where the name's absence would
+# leave a *silently wrong* environment: pip warns about an unknown extra and
+# carries on, so a saved `pip install -e ".[recommended]"` would otherwise
+# produce a working install with no torch in it and no error to say so.
+#
+# `wavelets`, `sleap`, `hdf5` and `imgstore` are deliberately NOT aliased. The
+# first three are base dependencies now, so the warning is harmless and the
+# environment is right either way; `imgstore` moved to the `test` dependency
+# group, being needed only to write the fixture stores the suite builds.
+recommended = ["mosaic-behavior[all]"]
+identity = ["mosaic-behavior[deep-learning]"]
+localizer = ["mosaic-behavior[deep-learning]"]
+gpu = ["mosaic-behavior[faiss]"]
 
 [project.scripts]
 mosaic = "mosaic.cli:app"
@@ -220,7 +252,7 @@ markers = [
     "slow: takes seconds to minutes; deselected by the default invocation",
     "media: needs the ffmpeg toolchain (both `ffmpeg` and `ffprobe`) on PATH",
     "tracker: exercises an integrated tracker's run loop behind a fake tool",
-    "identity: needs torch and timm, i.e. the `identity` extra",
+    "identity: needs torch and timm, i.e. the `deep-learning` extra",
     "feral: needs the feral package, i.e. the `feral` extra",
 ]
 # A warning is a failure, so that the next one becomes visible at the commit that

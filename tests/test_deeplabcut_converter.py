@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import EntryHints
@@ -137,7 +136,6 @@ def test_dlc_converter_multi_animal(tmp_path: Path) -> None:
 
 def test_dlc_converter_csv_h5_roundtrip(tmp_path: Path) -> None:
     """A DLC export saved as HDF5 yields the same poses as the CSV form."""
-    pytest.importorskip("tables")
     csv = tmp_path / "single.csv"
     _write_single_animal_csv(csv, n_frames=12)
 

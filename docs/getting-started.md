@@ -14,7 +14,7 @@ cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
+pip install -e ".[all]"
 ```
 
 Frame decoding runs in-process via `av`, so no `ffmpeg` binary is required to
@@ -28,10 +28,12 @@ process crash it nondeterministically. Nothing is pinned -- the `pip install`
 that follows finds both requirements already satisfied and installs neither
 wheel. Order matters: conda first, pip second.
 
-The `recommended` extra bundles wavelets + YOLO pose + PyTorch localizer.
-[Installation](installation.md) has the full extras table, the reason each one is
-in or out of `recommended`, the two that want an environment of their own
-(`feral` and `kpms`), and the platform-support matrix for Windows and WSL2.
+`pip install -e .` alone installs the whole analysis pipeline; `[all]` adds the
+deep-learning surface (YOLO pose, `mosaic track ultralytics`, the localizer and
+the identity models), which means PyTorch and, on Linux, about 4 GB of CUDA
+wheels. [Installation](installation.md) has the full extras table, a CPU-only
+PyTorch line, the two components that want an environment of their own (`feral`
+and `kpms`), and the platform-support matrix for Windows and WSL2.
 
 ## Create a dataset
 
@@ -243,8 +245,8 @@ uv tool install "sleap[nn]"                 # puts sleap-track / sleap-convert o
 mosaic finds the console scripts on `$PATH` by default; point it elsewhere with
 `sleap_conda_env=`/`MOSAIC_SLEAP_CONDA_ENV` or `sleap_bin=`/`MOSAIC_SLEAP_BIN`.
 Unlike TRex, SLEAP inference is headless and needs no `Xvfb`. Reading SLEAP's
-analysis HDF5 in the mosaic env needs `h5py` (bundled in the `[recommended]`
-extra); no SLEAP package is imported on the mosaic side.
+analysis HDF5 in the mosaic env needs `h5py`, which is a base dependency; no
+SLEAP package is imported on the mosaic side.
 
 ### Tracking videos with Lightning Pose (optional)
 

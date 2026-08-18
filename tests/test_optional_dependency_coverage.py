@@ -185,11 +185,12 @@ def test_no_core_dependency_is_guarded() -> None:
 def test_every_required_module_is_reachable_from_the_suite() -> None:
     """The other direction: a tuple entry nothing reaches is dead weight.
 
-    ``pywt`` is reached without a guard -- the wavelet features import it
-    directly, so its absence is an ImportError rather than a skip -- which is why
-    this asks whether the suite reaches a module at all, not whether it guards it.
+    Every entry is guarded today. ``pywt`` used to be the exception -- reached
+    without a guard, because the wavelet features imported it directly -- and it
+    was carried here by name for that. It is a base dependency now, so it left
+    the tuple and the exception left with it.
     """
-    reachable = set(guarded_targets()) | {"pywt"}
+    reachable = set(guarded_targets())
     unreached = sorted(_ci_modules() - reachable)
     assert not unreached, (
         f"{unreached} are demanded of a CI job but nothing in the suite reaches "

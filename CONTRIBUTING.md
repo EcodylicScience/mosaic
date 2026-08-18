@@ -34,11 +34,18 @@ Order matters only in that the editable install wins whenever it is the later
 one. CI does exactly this, so the suite runs against that repository's `main`
 rather than its last release.
 
-Prefer `uv pip install` over `uv sync`. The lock cannot resolve on every
-platform — `lightning-action` depends on `nvidia-dali-cuda110`, which publishes
-no macOS distribution — and `uv sync` installs the project without extras and
-prunes anything it considers extraneous, silently undoing an extras install.
-Regenerating `uv.lock` therefore has to happen on Linux.
+Prefer `uv pip install` over `uv sync`. `uv sync` installs the project without
+extras and prunes anything it considers extraneous, silently undoing an extras
+install.
+
+**`uv lock` currently does not resolve at all**, on any platform: `ultralytics`
+publishes nothing for win32 on Python 3.14, and mosaic's `requires-python` admits
+it, so the resolver reports the split unsatisfiable. `uv.lock` is therefore stale
+and cannot be regenerated until that is settled — by bounding `requires-python`,
+by marker-gating the requirement, or by upstream shipping the wheel. Nothing in
+the repository consumes the lock: every CI job installs with `uv pip install`,
+and `scripts/gen_third_party_inventory.py` is the one reader, so `NOTICE`
+regeneration is blocked with it.
 
 ## Code and Review Expectations
 

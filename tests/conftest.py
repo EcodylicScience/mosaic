@@ -53,20 +53,21 @@ from tests.helpers.environment import (
 from tests.helpers.media import add_media_sequence
 from tests.helpers.tracks import add_track_sequences
 
-# Modules the CI workflow installs through extras (`.[wavelets,imgstore,sleap]`).
+# Modules every CI job must have, installed through the `test` dependency group.
 # `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
 # presents as a skip rather than a failure -- a green CI that ran less than the
 # workflow installed for. That is not hypothetical: the test step used to invoke
 # `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
 # both extras before the first test ran.
 #
-# `h5py` is here because the list was already one module behind the suite: the
-# SLEAP integration arrived depending on it, correctly guarded by
-# ``importorskip``, and CI neither installed it nor demanded it -- so nine tests
-# (every SLEAP marker and reuse test, the three converter tests, and the SLEAP
-# provenance test) skipped green. **A new optional dependency joins the install
-# line and this tuple in the same change**, or its tests stop being evidence:
-# adding it to the install alone leaves nothing to notice when it next vanishes.
+# **A new optional dependency joins the install line and this tuple in the same
+# change**, or its tests stop being evidence: adding it to the install alone
+# leaves nothing to notice when it next vanishes.
+#
+# `pywt`, `h5py` and `tables` used to be here. They are base dependencies now, so
+# requiring them of CI would assert something `pip install -e .` already
+# guarantees -- and guarding them in a test is an error the coverage suite below
+# reports, because a guard that can never fire masks a broken install.
 #
 # That rule is no longer only prose. ``test_optional_dependency_coverage.py``
 # reads the suite's own ``importorskip`` calls out of its AST and fails when one
@@ -74,9 +75,9 @@ from tests.helpers.tracks import add_track_sequences
 # were found, both guarded and neither installed by any job, and how ``yaml`` was
 # found being guarded despite being a *core* dependency, a guard that could never
 # fire and would have masked a broken install.
-CI_REQUIRED_MODULES = ("imgstore", "pywt", "h5py", "tables")
+CI_REQUIRED_MODULES = ("imgstore",)
 
-# The same rule, scoped to one job. `torch` (via the `identity` extra) is a
+# The same rule, scoped to one job. `torch` (via the `deep-learning` extra) is a
 # ~200 MB wheel, so requiring it of every CI run would slow all of them down for
 # tests only one job runs. It gets its own job instead, which sets
 # MOSAIC_CI_IDENTITY=1 -- and inside that job the absence of torch is an error
@@ -378,7 +379,7 @@ def make_imgstore(tmp_path: Path) -> Callable[..., tuple[Path, list[np.ndarray]]
     """
     imgstore = pytest.importorskip(
         "imgstore",
-        reason="the `imgstore` extra is not installed (pip install -e '.[imgstore]')",
+        reason="imgstore is not installed (pip install --group test)",
     )
 
     def _make(

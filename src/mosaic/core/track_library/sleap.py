@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 
@@ -125,14 +126,6 @@ def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     ``(n_frames, n_tracks, n_nodes, 2)`` and ``point_scores`` is
     ``(n_frames, n_tracks, n_nodes)`` or ``None`` when the file has no scores.
     """
-    try:
-        import h5py
-    except ImportError as exc:  # optional dependency, shipped with [recommended]
-        raise ImportError(
-            "Reading a SLEAP analysis HDF5 requires h5py. Install it with "
-            "'pip install h5py' (or the mosaic '[recommended]' extra)."
-        ) from exc
-
     with h5py.File(str(path), "r") as handle:
         if "tracks" not in handle:
             raise ValueError(f"SLEAP analysis HDF5 has no 'tracks' dataset: {path}")

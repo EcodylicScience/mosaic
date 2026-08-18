@@ -289,7 +289,8 @@ def test_litpose_leaves_this_shape(
 
 
 def _write_analysis_h5(path: Path, *, n_frames: int = 6) -> None:
-    h5py = pytest.importorskip("h5py")
+    import h5py
+
     path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     # matlab layout: (track, xy, node, frame)
@@ -348,7 +349,6 @@ def fake_sleap(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeSleap]:
 def test_sleap_leaves_this_shape(
     ds: Dataset, sleap_model: Path, fake_sleap: _FakeSleap
 ) -> None:
-    _ = pytest.importorskip("h5py")
     import mosaic.tracking.sleap.dataset_runs as sleap_runs
 
     run_id = sleap_runs.run_sleap(ds, model_paths=[str(sleap_model)])

@@ -367,7 +367,10 @@ def group_requirements(root: LockedPackage) -> dict[str, tuple[Requirement, ...]
 
 
 def closure(
-    packages: Mapping[str, LockedPackage], roots: Iterable[Requirement]
+    packages: Mapping[str, LockedPackage],
+    roots: Iterable[Requirement],
+    *,
+    root_name: str | None = None,
 ) -> set[str]:
     """Every distribution reachable from these requirements.
 
@@ -376,6 +379,13 @@ def closure(
     extra from another, and the second edge's subtree is part of the obligation.
     The (name, extra) pairs already expanded are tracked so a cycle through an
     extra terminates.
+
+    ``root_name`` names the project itself, whose extras are declared by
+    self-reference (``all = ["mosaic-behavior[pose,faiss]"]``). Such an edge means
+    "and also that extra", never "and also every core dependency": following the
+    core requirements would put the whole base tree inside each extra's licence
+    closure, and this report exists to say what a *particular* extra obliges you
+    to. So the root's extras are expanded and its core requirements are not.
     """
     reached: set[str] = set()
     expanded: set[tuple[str, str]] = set()
@@ -385,7 +395,7 @@ def closure(
         package = packages.get(requirement.name)
         if package is None:
             continue
-        if requirement.name not in reached:
+        if requirement.name != root_name and requirement.name not in reached:
             reached.add(requirement.name)
             pending.extend(package.requires)
         for extra in requirement.extras:
@@ -508,7 +518,7 @@ def build_inventory(
     """Every distribution any group reaches, with the groups that reach it."""
     reached_by: dict[str, list[str]] = {}
     for group, requirements in group_requirements(root).items():
-        for name in sorted(closure(packages, requirements)):
+        for name in sorted(closure(packages, requirements, root_name=root.name)):
             if name == root.name:
                 continue
             reached_by.setdefault(name, []).append(group)

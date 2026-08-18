@@ -123,26 +123,18 @@ from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
 from .xgboost_feature import XgboostFeature
 
-# Optional: movement library integration (requires `movement` package)
-try:
-    from .movement import MovementFilterInterpolate, MovementSmooth
-except ImportError:
-    pass
-
-# Lightning-action temporal classifier (requires `lightning-action` package)
-try:
-    from . import lightning_action_feature
-    from .lightning_action_feature import LightningActionFeature
-except ImportError:
-    pass
-
-# FERAL V-JEPA behavior classifier
-# (optional: requires `pip install 'mosaic-behavior[feral]'`)
-try:
-    from . import feral_feature
-    from .feral_feature import FeralFeature, FeralTrainingConfig, feral_setup_check
-except ImportError:
-    pass
+# Imported unconditionally, like every module above. None of the three imports
+# its optional dependency at module scope -- each defers it into `__init__` or
+# `apply` and raises there naming the extra -- so the `try/except ImportError`
+# that used to wrap these caught nothing it was written for. What it could still
+# catch was a genuine error inside one of them, which it would swallow: the
+# feature would vanish from FEATURES and the first symptom would be a KeyError
+# on an unknown feature name, far from the cause.
+from .movement import MovementFilterInterpolate, MovementSmooth
+from . import lightning_action_feature
+from .lightning_action_feature import LightningActionFeature
+from . import feral_feature
+from .feral_feature import FeralFeature, FeralTrainingConfig, feral_setup_check
 
 # Note: Templates are not imported (they're just examples)
 # from . import feature_template__per_sequence

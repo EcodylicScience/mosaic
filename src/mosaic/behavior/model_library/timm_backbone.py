@@ -17,7 +17,7 @@ its upstream repository has since edited its declared config.
 
 Nothing here imports torch or timm at module scope: :func:`import_torch` and
 :func:`import_timm` are lazy, so ``mosaic.behavior`` stays importable without the
-``identity`` extra installed.
+``deep-learning`` extra installed.
 
 Mosaic distributes no model weights. Whatever ``model_name`` a caller passes is
 fetched at run time under its own license, independent of mosaic's own AGPLv3+.
@@ -79,7 +79,7 @@ def import_torch() -> Any:
     except ImportError:
         raise ImportError(
             "PyTorch is required for the identity networks. "
-            "Install it with: pip install 'mosaic-behavior[identity]'\n"
+            "Install it with: pip install 'mosaic-behavior[deep-learning]'\n"
             "See https://pytorch.org/get-started/locally/ for platform-specific "
             "instructions."
         ) from None
@@ -93,7 +93,7 @@ def import_timm() -> Any:
     except ImportError:
         raise ImportError(
             "timm is required for the backbone-based identity networks. "
-            "Install it with: pip install 'mosaic-behavior[identity]'"
+            "Install it with: pip install 'mosaic-behavior[deep-learning]'"
         ) from None
     return timm
 
