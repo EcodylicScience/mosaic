@@ -25,7 +25,7 @@ recordings out of a grid.
 The same holds in Python:
 
 ```python
-ds.run_feature(SpeedAngvel(), entries=[("cage-a", "trial01"), ("cage-b", "trial07")])
+ds.run_feature(SpeedAngvel(), entries=[("day1", "trial01"), ("day2", "trial07")])
 ```
 
 ## Reading the outcome

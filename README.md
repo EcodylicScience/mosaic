@@ -15,17 +15,17 @@
   <img alt="AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue">
 </p>
 
-mosaic drives the pose trackers you already use — **TRex, SLEAP, Lightning Pose,
-Ultralytics** — or imports tracks that something else produced, **DeepLabCut and
-CalMS21 among them**, and turns either into behavioral features, unsupervised
-syllables, trained classifiers, and annotated video. One dataset, one CLI, one
-standardized table underneath.
+Mosaic drives trackers — **TRex, SLEAP, Lightning Pose, Ultralytics** — or imports
+tracks something else already produced, then gives a flexible and expandable analysis
+framework for working with the data through the **feature** construct: individual
+behavioral metrics, collective motion, unsupervised methods, and supervised model
+fitting on annotated behaviors. A core focus is enabling **multi-animal analysis**: a
+feature can be calculated on individuals, on pairs, or on all animals at once.
 
-Every result is content-addressed: the same inputs and parameters produce the same
-`run_id`, so re-running is a no-op, parameter sweeps organize themselves, and
-`mosaic inventory` can tell you exactly what a dataset already holds.
-
-**Documentation: <https://ecodylicscience.github.io/mosaic/>**
+Results are organized by a content-addressed scheme for run-caching and
+reproducibility: the same inputs and parameters produce the same `run_id`, so
+re-running is a no-op, parameter sweeps organize themselves, and `mosaic inventory`
+tells you exactly what a dataset already holds.
 
 ## What it does
 
@@ -39,13 +39,7 @@ Every result is content-addressed: the same inputs and parameters produce the sa
 | **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
 | **Operate** | **24 CLI commands** and **17 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
-Its focus from the start is on enabling collective behavior analysis: identities,
-pairs and neighbors are first-class throughout, not an afterthought bolted onto
-single-animal tracking.
-
 ## Install
-
-`mosaic` is not on PyPI, so install it from a checkout:
 
 ```bash
 git clone https://github.com/EcodylicScience/mosaic.git
@@ -53,23 +47,26 @@ cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
+pip install -e ".[all]"
 ```
 
-`av` and `py-opencv` come from conda deliberately — their PyPI wheels each bundle a
-complete ffmpeg, and two in one process crash it. The
-[installation guide](https://ecodylicscience.github.io/mosaic/installation/)
-explains that, the full extras table, the two components that want an environment
-of their own, and Windows/WSL2 support.
+`pip install -e .` on its own is a complete analysis install — converters, features,
+clustering, classifiers, overlays. `[all]` adds the deep-learning surface: YOLO pose,
+`mosaic track ultralytics`, the heatmap localizer and the identity models, which means
+PyTorch. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
+the environment holds a single ffmpeg build.
+
+[Installation](docs/installation.md) has the extras table, a CPU-only PyTorch line, the
+tools mosaic drives but does not install, and Windows/WSL2 support.
 
 ## In 60 seconds
 
 ```bash
-mosaic init study --name "Cage A"
+mosaic init study --name "Experiment 1"
 
 # Point the dataset at video that can live anywhere -- a NAS, another volume.
 mosaic sources add -m study/dataset.yaml --kind media \
-    --path /data/cage-a --extensions .mp4
+    --path /data/day1 --extensions .mp4
 mosaic scan -m study/dataset.yaml
 
 # Track it, then derive something from the result.
@@ -87,9 +84,9 @@ their `--src-format`, and `mosaic convert-tracks` standardizes them.
 
 | | |
 | --- | --- |
-| [**Get started**](https://ecodylicscience.github.io/mosaic/dataset/) | Install, and build a dataset from recordings you already have |
-| [**Guides**](https://ecodylicscience.github.io/mosaic/guides/) | Tracking, analysis, and composing both into one pipeline |
-| [**Reference**](https://ecodylicscience.github.io/mosaic/reference/) | Every feature, op, CLI command and track format — generated from the code |
+| [**Documentation**](docs/index.md) | What mosaic is, and where everything lives |
+| [**Install**](docs/installation.md) | The environment, the extras, and the tools that run in their own environment |
+| [**Reference**](docs/reference/index.md) | Every feature, op, CLI command and track format — generated from the code |
 
 Worked examples live in [`notebooks/`](notebooks/): an end-to-end
 [CalMS21 template](notebooks/calms21-template.ipynb), and collective motion on
@@ -115,5 +112,6 @@ GNU Affero General Public License v3 or later. See [LICENSE](LICENSE), and
 [NOTICE](NOTICE) for the third-party attributions that must travel with it.
 
 mosaic bundles no third-party source and no model weights, but it drives tools whose
-terms differ from its own. [NOTICE](NOTICE) records how each third-party component
-reaches you and what that means for your use of it.
+terms differ from its own — keypoint-MoSeq prohibits commercial use, TRex requires a
+paid license for company use, and Ultralytics is AGPL-3.0. [NOTICE](NOTICE) records how
+each component reaches you and what that means for your use of it.

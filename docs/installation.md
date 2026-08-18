@@ -1,8 +1,6 @@
 # Installation
 
-mosaic is not published on PyPI, so it installs from a checkout. The clone is
-part of the instructions, not an assumed step -- `pip install -e .` has nothing
-to install from an empty directory.
+Mosaic needs Python 3.12 or newer, and installs from a checkout:
 
 ```bash
 git clone https://github.com/EcodylicScience/mosaic.git
@@ -10,94 +8,143 @@ cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[recommended]"
+pip install -e ".[all]"
 ```
 
-Frame decoding runs in-process via `av`, so no `ffmpeg` binary is required to
-read video. System `ffprobe` is still used for media indexing and probing
-(`mosaic_media.probe_media`), and system `ffmpeg` >= 5.1 is required for the
-transcode path (`mosaic media transcode`). Installing `ffmpeg` via conda covers
-both.
+`av` and `py-opencv` are installed from conda-forge, before pip runs, so that the
+environment holds a single ffmpeg build. `ffmpeg` and `ffprobe` are used for media
+indexing and for `mosaic media transcode`.
 
-**`av` and `py-opencv` come from conda so the environment holds one ffmpeg.**
-Their PyPI wheels each bundle a complete ffmpeg build of their own, and two of
-those in one process crash it at a different point on every run -- on macOS the
-Objective-C runtime warns about it on every import. The conda-forge builds link
-the `ffmpeg` on the same line instead. Nothing is pinned: `av` satisfies mosaic's
-requirement, and one `py-opencv` registers both `opencv-python` and
-`opencv-python-headless`, so the `pip install` that follows finds them satisfied
-and installs neither wheel. Order matters -- conda first, pip second.
+On Linux, apt does the same job: `apt install ffmpeg python3-av python3-opencv` links
+both against the distribution's ffmpeg.
 
-The `recommended` extra bundles wavelets, YOLO pose training/inference, and the
-PyTorch localizer. It deliberately excludes `yolo-augment`: `albumentations`
-requires `opencv-python-headless` while mosaic requires `opencv-python`, and pip
-installs both without complaint even though they ship the same `cv2` package.
-Installing `yolo-augment` also changes what a YOLO or POLO training run does,
-and nothing records which way a run went, so it is opt-in. For lighter or
-alternative installs, select extras individually:
+Confirm the install:
 
-| Extra              | Adds                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------- |
-| `recommended`      | `wavelets` + `pose` + `localizer`                                                   |
-| `wavelets`         | PyWavelets for spectral features                                                    |
-| `pose`             | Ultralytics YOLO pose training and inference, and `mosaic track ultralytics` (six multi-object trackers, in process) |
-| `polo`             | POLO point detection (mutually exclusive with `pose`; different ultralytics fork)   |
-| `localizer`        | PyTorch heatmap localizer training                                                  |
-| `identity`         | Image-backbone identity models (trained classifier, frozen timm backbones, DINOv2 + temporal); `torch` + `timm` |
-| `lightning-action` | Lightning-Action temporal action classifier                                         |
-| `gpu`              | faiss for GPU-accelerated kNN in `global-tsne` (use `faiss-gpu` on Linux + CUDA)    |
-| `imgstore`         | Native imgstore (Motif / Loopbio) video support (directory-based stores as media)   |
-| `sleap`            | `h5py`, to read the SLEAP analysis `.h5` its converter consumes (SLEAP itself is an external binary) |
-| `hdf5`             | PyTables, which pandas dispatches `read_hdf` to, for DeepLabCut's HDF5 export (`.h5` / `.hdf5` / `.hdf`); the `.csv` form needs nothing extra. Installs no DeepLabCut code |
-| `feral`            | FERAL V-JEPA behavior classifier (`FeralFeature`, training + inference); install it in an environment of its own, see below |
-| `yolo-augment`     | `albumentations`, which Ultralytics picks up on its own to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO training |
+```bash
+mosaic --help
+python -c "from mosaic.core.dataset import Dataset; print('OK')"
+```
 
-## Two components need an environment of their own
+## Optional extras
 
-`feral` wants one. FERAL pins its dependency versions exactly —
-`opencv-python`, `pandas`, `scikit-learn`, `timm`, `matplotlib`, `transformers` —
-while every mosaic requirement is a lower bound, so pip resolves the two together
-without complaint and downgrades each one. The `opencv-python` pin is the one
-that does damage: it installs a wheel over the conda-forge `py-opencv` the setup
-above asks for, which puts a second ffmpeg build in the process beside `av` and
-crashes it nondeterministically. Install `feral` separately and point it at the
-same datasets.
+`pip install -e .` on its own is a complete analysis install: every track and label
+converter, all per-frame and social features, wavelets, scaling, t-SNE, k-means, Ward,
+ARHMM, the XGBoost classifier, overlays and crops. What `[all]` adds is the
+deep-learning surface — YOLO pose training and inference, `mosaic track ultralytics`,
+the heatmap localizer and the identity models — which means PyTorch, and on Linux about
+4 GB of CUDA wheels.
 
-There is deliberately no `kpms` extra, for the same reason: keypoint-MoSeq cannot
-share an environment with mosaic, so the `kpms` feature drives it in one you
-build yourself. Two things to know before the first run:
+For that surface without CUDA — a laptop, a CPU-only node, a container you want to keep
+small — take PyTorch from its own index:
 
-- [`external/README.md`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/behavior/feature_library/external/README.md)
-  is the bootstrap, and `MOSAIC_KPMS_PYTHON` points mosaic at the interpreter.
-- mosaic will not start it until `MOSAIC_KPMS_LICENSE_ACCEPTED=1` is set. Exactly
-  `1` is accepted. Without it the feature refuses to spawn, which is by design
-  rather than a fault to debug.
+```bash
+pip install -e ".[all]" --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+| Extra              | Adds                                                            |
+| ------------------ | --------------------------------------------------------------- |
+| `all`              | `pose` + `faiss`: the documented install                        |
+| `deep-learning`    | `torch` + `timm` — the heatmap localizer and all three identity models |
+| `pose`             | `deep-learning`, plus Ultralytics YOLO pose training and inference and `mosaic track ultralytics` (six multi-object trackers, in process) |
+| `polo`             | `deep-learning`, plus POLO point detection and training         |
+| `faiss`            | The `"faiss"` kNN backend for `global-tsne`; its default `"annoy"` backend needs nothing |
+| `movement`         | The [movement](https://movement.neuroinformatics.dev/) smoothing and filtering features, and the xarray / netCDF4 / pynwb / sleap-io stack they sit on |
+| `lightning-action` | Lightning-Action temporal action classifier                     |
+| `feral`            | FERAL V-JEPA behavior classifier, training and inference        |
+| `yolo-augment`     | `albumentations`, adding photometric augmentation to YOLO and POLO training |
+
+Four things to know before choosing:
+
+- **`pose` and `polo` cannot share an environment.** Both install a distribution named
+  `ultralytics` — upstream against a fork — and pip resolves only one. Both build on
+  `deep-learning`, so taking the fork does not cost you the identity models.
+- **`yolo-augment` changes what a training run does.** Ultralytics adds Blur,
+  MedianBlur, ToGray and CLAHE at p=0.01 whenever `albumentations` is importable, and
+  nothing records which way a run went.
+- **`faiss` installs `faiss-cpu`.** On Linux with CUDA, install `faiss-gpu` yourself
+  instead.
+- **`pose`, `polo` and therefore `all` install Ultralytics, which is AGPL-3.0.** A bare
+  `pip install -e .` carries no AGPL dependency;
+  [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) says what that
+  means for a networked deployment.
+
+Spectral features, the SLEAP analysis reader and the DeepLabCut HDF5 reader are **not**
+extras: PyWavelets, h5py and PyTables are base dependencies, because each one gates
+reading a file you already have rather than an integration you opted into.
+
+`recommended`, `identity`, `localizer` and `gpu` still resolve as aliases and are
+removed in 0.13. `wavelets`, `sleap`, `hdf5` and `imgstore` are gone.
+
+## Tools that run in their own environment
+
+Four of the tools mosaic drives are **not installed by mosaic**. You install each one
+yourself, following its own instructions, and then tell mosaic where it is. Each pins
+a Python version or a framework stack that cannot share an environment with mosaic, so
+each gets an environment of its own and mosaic launches it there.
+
+| Install it yourself | Used by | Tell mosaic where it is |
+| ------------------- | ------- | ----------------------- |
+| [**TRex**](https://trex.run) | `mosaic track trex` | `MOSAIC_TREX_CONDA_ENV`, or `MOSAIC_TREX_BIN` for the binary itself |
+| [**SLEAP**](https://sleap.ai) | `mosaic track sleap`, the `train-sleap` op | `MOSAIC_SLEAP_CONDA_ENV`, or `MOSAIC_SLEAP_BIN` |
+| [**Lightning Pose**](https://lightning-pose.readthedocs.io) | `mosaic track litpose`, the `train-litpose` op | `MOSAIC_LITPOSE_CONDA_ENV`, or `MOSAIC_LITPOSE_BIN` |
+| [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_PYTHON`, the environment's interpreter |
+
+```bash
+export MOSAIC_TREX_CONDA_ENV=trex
+export MOSAIC_SLEAP_CONDA_ENV=sleap
+export MOSAIC_KPMS_PYTHON=/path/to/kpms-env/bin/python
+```
+
+A `_CONDA_ENV` variable names a conda environment, which mosaic activates with `conda
+run`; a `_BIN` variable names a path directly. With neither set, mosaic looks on
+`$PATH`. Where a tool is installed never enters a `run_id`, so two machines that place
+it differently still agree on what a run is called.
+
+Ultralytics is the exception. It is a Python package rather than a separate
+environment, it installs with the `pose` extra, and `mosaic track ultralytics` runs it
+in mosaic's own process.
+
+**keypoint-MoSeq** is the one mosaic helps you build. The repository carries that
+environment's definition — a `pyproject.toml` and lock file — under
+`src/mosaic/behavior/feature_library/external/`, so building it is one command in that
+directory:
+
+```bash
+cd src/mosaic/behavior/feature_library/external
+uv sync --python 3.13
+export MOSAIC_KPMS_LICENSE_ACCEPTED=1
+```
+
+Mosaic will not start keypoint-MoSeq until `MOSAIC_KPMS_LICENSE_ACCEPTED` is set to
+exactly `1`. Harvard OTD licenses keypoint-MoSeq for non-commercial research and
+academic use only, and setting the variable asserts that your use is permitted;
+[`external/README.md`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/behavior/feature_library/external/README.md)
+has the terms in full.
+
+**FERAL** is a mosaic extra rather than an external tool — the classifier runs in
+mosaic's own process — but it wants an environment of its own too. It pins its
+dependencies to exact versions where mosaic's are lower bounds, so installing
+`[feral]` alongside downgrades several of them. Build a second environment holding
+mosaic and `[feral]`, and point it at the same datasets.
 
 Third-party licenses, and what mosaic does about each, are recorded in
 [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE).
 
 ## Platform support
 
-mosaic runs natively on **macOS** and **Linux**. On **Windows**, the core
-analysis pipeline runs natively, but several features depend on components with
-no native-Windows build and need **WSL2** (or Linux):
+mosaic runs natively on **macOS** and **Linux**. On **Windows** the core analysis
+pipeline runs natively, but several capabilities depend on components with no
+native-Windows build and need **WSL2**:
 
 | Capability                                                        | Native Windows          | WSL2 / Linux | macOS |
 | ----------------------------------------------------------------- | ----------------------- | ------------ | ----- |
 | Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
 | keypoint-MoSeq (`kpms`) -- JAX + Unix sockets                     | No                      | Yes          | Yes   |
 | FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
-| GPU kNN (`gpu`, `faiss-gpu`)                                      | No (`faiss-cpu` works)  | Yes          | n/a   |
-| imgstore read/write (`imgstore`)                                  | Partial                 | Yes          | Yes   |
+| GPU kNN (`faiss`, `faiss-gpu`)                                    | No (`faiss-cpu` works)  | Yes          | n/a   |
+| imgstore recordings (reading is native)                           | Partial                 | Yes          | Yes   |
 | TREx tracking and pose-model training                             | Partial                 | Yes          | Yes   |
 
-For any **No** / **Partial** capability, or if anything misbehaves natively, use
-**WSL2** (`wsl --install` in an admin PowerShell), then follow the Linux setup
-above inside Ubuntu.
-
-Keep the repository and your datasets on the WSL filesystem (for example
-`~/mosaic`) rather than under `/mnt/c`: `drvfs` I/O is roughly an order of
-magnitude slower than ext4. Index writes work on a `/mnt/*` mount either way, so
-this is a speed choice, not a correctness one. One caveat: a lock taken from WSL
-and one taken by a native-Windows process are different lock namespaces and do
-not see each other, so do not run both against one dataset at the same time.
+For any **No** or **Partial** capability, install **WSL2** (`wsl --install` in an
+admin PowerShell) and follow the Linux setup above inside Ubuntu. Under WSL, keep the
+repository and your datasets under home (`~/`) rather than `/mnt/c`.
