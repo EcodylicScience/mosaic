@@ -87,6 +87,10 @@ SweepClass = Literal[
     # appended after the batch on some producers, so mid-run this is most of a
     # healthy run.
     "unrowed",
+    # A shared conversion a surviving tracker directory still names as its
+    # input. REFUSED whatever its age: several runs read one conversion, and the
+    # reader that proves it is in use is a marker, not a row.
+    "pinned",
     # A row whose directory is gone. Row-only drop.
     "orphan_row",
     # Not shaped like a run/entry directory at all.
@@ -115,6 +119,7 @@ REFUSED_NOTES: Final[Mapping[SweepClass, str]] = {
     "foreign": "carries no mosaic marker -- is this root a tracker root?",
     "stray": "not shaped like a run/entry directory",
     "complete_young": "finished, inside the retention window",
+    "pinned": "still named as the input of a tracker run; sweep those first",
 }
 """Every class a run reports but does not act on, and what a reader should do.
 
@@ -161,6 +166,13 @@ def decline_text(reason: DeclineReason) -> str:
 _DEFAULT_RETENTION_DAYS: Final[Mapping[RetentionClass, float]] = {
     "tracker": 14.0,
     "inference": 3.0,
+    # A shared conversion is held by reference, not by this clock: ``pinned``
+    # refuses one that any surviving tracker directory still names. The window
+    # only decides how long it lingers once its last reader is gone, which is
+    # why it matches ``tracker`` rather than exceeding it -- a reader that used
+    # the conversion is itself kept for 14 days, so this is "14 days after last
+    # use" without a stored timestamp that could go stale.
+    "conversion": 14.0,
 }
 
 
@@ -275,6 +287,7 @@ def classify_entry(
     rowed: bool,
     promoted: bool,
     max_age_days: float,
+    pinned: bool = False,
     now: datetime.datetime | None = None,
 ) -> SweepEntry:
     """Decide one entry working directory. Reads; never writes.
@@ -285,13 +298,18 @@ def classify_entry(
        claimed -- a producer that finished one phase and is running the next --
        and deleting it because the first phase looks done is the failure this
        whole module exists to prevent.
-    2. An expired or orphaned claim means abandoned, whatever else is true.
-    3. No mosaic marker anywhere means this is not a tracker directory. Refused,
+    2. A pinned directory -- a shared conversion some surviving tracker
+       directory still names as its input -- is refused next, ahead of
+       everything except a live claim. Both of the classes it pre-empts are
+       deletable: a half-written slot is ``incomplete`` and one carrying a
+       crashed run's leftover claim is ``expired_claim``, and neither says
+       anything about the runs reading the conversion now.
+    3. An expired or orphaned claim means abandoned, whatever else is true.
+    4. No mosaic marker anywhere means this is not a tracker directory. Refused,
        so a root pointed at the wrong place reclaims nothing.
-    4. Unrowed is refused *before* completeness is consulted, because on some
-       producers rows arrive only after the whole batch: mid-run, most finished
-       directories are unrowed and every one of them is live work.
-    5. Only then does completeness decide, and promotion outranks age.
+    5. Unrowed is refused before completeness is consulted, because on some
+       producers rows arrive only after the whole batch.
+    6. Only then does completeness decide, and promotion outranks age.
     """
     moment = now or datetime.datetime.now(datetime.timezone.utc)
     verdict, detail, held = _decide(
@@ -302,6 +320,7 @@ def classify_entry(
         rowed=rowed,
         promoted=promoted,
         max_age_days=max_age_days,
+        pinned=pinned,
         moment=moment,
     )
     return SweepEntry(
@@ -325,6 +344,7 @@ def _decide(
     rowed: bool,
     promoted: bool,
     max_age_days: float,
+    pinned: bool,
     moment: datetime.datetime,
 ) -> tuple[SweepClass, str, bool]:
     """The verdict alone, so ``classify_entry`` builds its record once."""
@@ -336,6 +356,15 @@ def _decide(
     )
     if claim == "live":
         return "inflight", "held by a live execution", False
+    if pinned:
+        # Ahead of the claim classes, and that ordering is load-bearing. A claim
+        # is evidence about whether an *attempt* is alive; a pin is evidence
+        # about whether the *artifact* is still an input. A shared conversion
+        # outlives the attempt that made it, so a stale claim left by that
+        # attempt says nothing about the runs reading it now -- and
+        # `expired_claim` is deletable, so consulting it first would reclaim a
+        # conversion live runs still name.
+        return "pinned", "a surviving tracker run still names it as its input", False
     if claim in ("expired", "orphaned"):
         return "expired_claim", f"claim is {claim}", False
     if not _has_marker(path):

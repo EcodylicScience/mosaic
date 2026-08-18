@@ -41,6 +41,7 @@ from mosaic.tracking.model_refs import (
 )
 from mosaic.tracking.litpose.dataset_runs import LitposeIndexRow
 from mosaic.tracking.sleap.dataset_runs import SleapIndexRow
+from mosaic.tracking.trex.conversion_cache import ConversionIndexRow
 from mosaic.tracking.trex.dataset_runs import TRexIndexRow
 from mosaic.tracking.ultralytics_track.dataset_runs import UltralyticsIndexRow
 
@@ -50,6 +51,14 @@ TRACKERS: list[str] = sorted(
     key for key, root in TRACKING_ROOTS.items() if root.retention == "tracker"
 )
 
+# Every root under `_tracking`, tracker or not. The phase declaration is checked
+# against this wider set rather than against `TRACKERS`, because an empty
+# `phase_outputs` is not a tracker-specific mistake: `_completed_at` returns
+# `None` for a root that declares none, which classifies every directory under it
+# `incomplete` -- and `incomplete` is deletable at any age. A root exempt from
+# this check is a root the sweeper wipes on its first `--apply`.
+ALL_ROOTS: list[str] = sorted(TRACKING_ROOTS)
+
 # Named rather than reached through the index registry, because that registry's
 # protocol is deliberately the two methods the reconciler and the sweeper call
 # and nothing else -- widening it so a test could read a row class would be the
@@ -57,6 +66,7 @@ TRACKERS: list[str] = sorted(
 # policed by the coverage assertion below.
 ROW_CLASSES: dict[str, type[TrackerRunRowBase]] = {
     "trex": TRexIndexRow,
+    "trex-convert": ConversionIndexRow,
     "sleap": SleapIndexRow,
     "litpose": LitposeIndexRow,
     "ultralytics": UltralyticsIndexRow,
@@ -72,9 +82,15 @@ GOLDEN = json.loads(
 _STORABLE: tuple[type, ...] = (str, int, float, bool, Path)
 
 
-def test_every_tracker_has_a_row_class_here() -> None:
-    """The one place this file names trackers, so it cannot silently miss one."""
-    assert sorted(ROW_CLASSES) == TRACKERS
+def test_every_root_with_an_index_has_a_row_class_here() -> None:
+    """The one place this file names them, so it cannot silently miss one.
+
+    Keyed on ``path_columns`` rather than on ``retention``: what these row-shape
+    checks need is a root that writes a typed index, which the conversion cache
+    does without being a tracker. The ``infer-*`` roots declare none and stay out.
+    """
+    expected = sorted(key for key, root in TRACKING_ROOTS.items() if root.path_columns)
+    assert sorted(ROW_CLASSES) == expected
 
 
 @pytest.mark.parametrize("kind", TRACKERS)
@@ -102,7 +118,7 @@ def test_it_registers_a_reconcilable_index(kind: str) -> None:
     assert reconcilable_index(kind) is not None
 
 
-@pytest.mark.parametrize("kind", TRACKERS)
+@pytest.mark.parametrize("kind", ALL_ROOTS)
 def test_it_declares_at_least_one_phase_with_unique_names(kind: str) -> None:
     """The sweeper needs every phase before it calls a directory finished."""
     root: TrackingRoot = TRACKING_ROOTS[kind]
@@ -114,7 +130,7 @@ def test_it_declares_at_least_one_phase_with_unique_names(kind: str) -> None:
         assert phase.clear_globs, f"{kind}'s {phase.name} declares nothing to clear"
 
 
-@pytest.mark.parametrize("kind", TRACKERS)
+@pytest.mark.parametrize("kind", sorted(ROW_CLASSES))
 def test_every_path_column_is_declared_both_places(kind: str) -> None:
     """The trap the roots table exists to close.
 
@@ -143,7 +159,7 @@ def test_every_path_column_is_declared_both_places(kind: str) -> None:
     )
 
 
-@pytest.mark.parametrize("kind", TRACKERS)
+@pytest.mark.parametrize("kind", sorted(ROW_CLASSES))
 def test_every_row_field_can_be_stored_in_a_csv(kind: str) -> None:
     row_cls = ROW_CLASSES[kind]
 

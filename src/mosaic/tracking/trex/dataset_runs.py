@@ -37,8 +37,11 @@ than bolting one on.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -83,14 +86,36 @@ from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import TrackerWorkItem, build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
+from mosaic.tracking.trex.conversion_cache import (
+    CONVERSION_STEM,
+    CONVERT_KIND,
+    SLOT_POLL_SECONDS,
+    ConversionIndexRow,
+    ConversionPublishError,
+    adopt_by_link,
+    claim_slot,
+    conversion_index,
+    conversion_index_path,
+    conversion_slot,
+    publish_conversion,
+    release_slot,
+    reusable_slot,
+    slot_marker_is_usable,
+    staging_dir,
+)
 from mosaic.tracking.trex.joined import retime_joined_frame
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
+    InflightMarker,
+    PhaseMarker,
     PhaseName,
     clear_phase_markers,
+    refresh_inflight,
+    write_phase_marker,
 )
+from mosaic.runlog import now_iso
 
 from .run import run_trex_convert, run_trex_track
 
@@ -365,6 +390,260 @@ def _bridge_npz_to_tracks(
 # --- Public entry point ---------------------------------------------------
 
 
+def _conversion_from_cache(
+    job: EntryJob,
+    *,
+    slot: Path,
+    convert_hash: str,
+    idle_timeout: float,
+    entry_claim: InflightMarker,
+    convert_into: Callable[[Path, str | None, Path, InflightMarker], Path],
+) -> Path:
+    """This entry's ``.pv`` from the shared cache, converting into it if need be.
+
+    Loops rather than deciding once, because between looking and claiming
+    another execution may publish the very slot this one was about to build.
+    Each pass re-reads the slot first, so the winner's work is picked up instead
+    of duplicated.
+
+    A held slot is **waited for, not worked around**. The alternative is two
+    executions each spending the detector hours on identical pixels, which is
+    the cost this whole cache exists to remove.
+
+    **Waiting still re-stamps this entry's own claim.** A claim carries its
+    expiry, and nothing else refreshes one while this run is blocked on a peer:
+    a run that waited out a multi-hour conversion in silence would have its
+    working directory read as abandoned -- stolen by the next execution, and
+    reclaimed by a concurrent sweep as ``expired_claim``, which is deletable.
+    """
+    seq_ctx = job.ctx
+    while True:
+        seq_ctx.check_cancel()
+        cached = reusable_slot(job.ds, slot, params_hash=convert_hash, item=job.item)
+        if cached is not None:
+            return cached
+
+        claim_marker = claim_slot(job.ds, seq_ctx, slot, idle_seconds=idle_timeout)
+        if claim_marker is None:
+            print(
+                f"[{CONVERT_KIND}] {job.item.key}: another execution is building "
+                f"this conversion; waiting for it rather than repeating it.",
+                file=sys.stderr,
+            )
+            seq_ctx.heartbeat()
+            _keep_entry_claim_alive(job.work_dir, entry_claim, idle_timeout)
+            time.sleep(SLOT_POLL_SECONDS)
+            continue
+
+        staging = staging_dir(slot, seq_ctx.execution_id)
+        try:
+            # Every `.incoming-*`, not only this execution's: one left by a run
+            # that died mid-conversion would otherwise sit here forever, and a
+            # slot holding a staging tree and no marker is refused by the
+            # sweeper rather than reclaimed. Safe to do under the claim, which
+            # is what says no peer is writing.
+            _clear_staging(slot)
+            staging.mkdir(parents=True, exist_ok=True)
+            _ = convert_into(staging, CONVERSION_STEM, slot, claim_marker)
+            try:
+                pv_path = publish_conversion(staging, slot)
+            except ConversionPublishError as exc:
+                return _keep_unshareable_conversion(job, staging=staging, why=str(exc))
+            # The slot's own marker, written after every rename: reuse needs the
+            # marker *and* the output, so a torn publish leaves nothing to bind.
+            write_phase_marker(
+                slot,
+                PhaseMarker(
+                    phase="convert",
+                    run_id=slot.parent.name,
+                    params_hash=convert_hash,
+                    execution_id=seq_ctx.execution_id,
+                    completed_at=now_iso(),
+                    source=job.ds.relative_to_root(job.item.video_path),
+                    source_uid=job.item.source_uid,
+                    recorded_output=job.ds.relative_to_root(pv_path),
+                ),
+            )
+            _record_conversion_row(
+                job, slot=slot, pv_path=pv_path, convert_hash=convert_hash
+            )
+        finally:
+            # A conversion that raised must not leave its staging tree behind:
+            # the slot would then hold a partial `.pv` and no marker, which the
+            # sweeper refuses as `foreign` rather than reclaiming.
+            shutil.rmtree(staging, ignore_errors=True)
+            release_slot(slot, seq_ctx.execution_id)
+            _discard_empty_slot(slot)
+        return pv_path
+
+
+def _keep_entry_claim_alive(
+    work_dir: Path, marker: InflightMarker, idle_seconds: float
+) -> None:
+    """Re-stamp this entry's claim. Best-effort, like every other refresh."""
+    try:
+        _ = refresh_inflight(work_dir, marker, idle_seconds)
+    except OSError:
+        pass
+
+
+def _clear_staging(slot: Path) -> None:
+    """Remove every staging tree under *slot*. Call only while holding its claim."""
+    for stale in slot.glob(".incoming-*"):
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def _discard_empty_slot(slot: Path) -> None:
+    """Remove a slot directory nothing was ever published into.
+
+    ``claim_slot`` has to create the directory before it can take a claim in it,
+    so a conversion that declined to publish leaves an empty one behind -- and an
+    empty directory carries no marker, which the sweeper classifies ``foreign``
+    and refuses permanently, telling the operator a root mosaic created is not a
+    tracker root.
+    """
+    try:
+        if not any(slot.iterdir()):
+            slot.rmdir()
+    except OSError:
+        pass
+
+
+def _keep_unshareable_conversion(job: EntryJob, *, staging: Path, why: str) -> Path:
+    """Move a conversion that cannot be published into this run's own directory.
+
+    A conversion is hours of detector inference. Refusing to *share* one that
+    did not leave a settings file is right -- tracking from it would silently
+    fall back to whatever ``detect_type`` implies -- but throwing it away is not,
+    and neither is failing the entry: the run can still use it exactly where a
+    run before this cache existed would have, and TREx's implicit settings lookup
+    then finds whatever is beside it, which is the behaviour that has always been
+    in force.
+
+    Raises:
+        ConversionPublishError: If there is no ``.pv`` either, in which case
+            nothing was produced and there is nothing to keep.
+    """
+    staged_pv = staging / f"{CONVERSION_STEM}.pv"
+    if not staged_pv.exists():
+        raise ConversionPublishError(why)
+
+    kept = job.work_dir / f"{CONVERSION_STEM}.pv"
+    os.replace(staged_pv, kept)
+    for name in (f"{CONVERSION_STEM}.settings", f"average_{CONVERSION_STEM}.png"):
+        spare = staging / name
+        if spare.exists():
+            os.replace(spare, job.work_dir / name)
+    shutil.rmtree(staging, ignore_errors=True)
+    _discard_empty_slot(staging.parent)
+    print(
+        f"[{CONVERT_KIND}] {job.item.key}: {why}. Keeping the conversion in "
+        f"{job.work_dir} for this run instead of sharing it; later runs with "
+        f"these detection settings will convert again.",
+        file=sys.stderr,
+    )
+    return kept
+
+
+def _adopt_into_cache(
+    job: EntryJob,
+    *,
+    slot: Path | None,
+    marker: PhaseMarker,
+    local_pv: Path,
+    convert_hash: str,
+    idle_timeout: float,
+) -> Path | None:
+    """Hard-link a conversion already on disk into the cache, and return its new path.
+
+    ``None`` means it stays where it is, which is always a correct outcome: the
+    run then uses the ``.pv`` in place exactly as it did before this cache
+    existed.
+
+    The marker must *prove* the match -- a non-empty ``params_hash`` and
+    ``source_uid``, both equal to this run's. ``reusable_marker`` deliberately
+    reads an empty one as "unknown is not mismatched", which is right for reusing
+    a directory where it stands and wrong for promoting its contents into a
+    durable shared address. A directory adopted from before markers existed
+    records neither, so it is reused and never cached.
+    """
+    if slot is None or not slot_marker_is_usable(marker):
+        return None
+    if marker.params_hash != convert_hash or marker.source_uid != job.item.source_uid:
+        return None
+    if reusable_slot(job.ds, slot, params_hash=convert_hash, item=job.item) is not None:
+        # Already published, by an earlier run or a peer. Adoption is a
+        # convenience, so the published copy simply wins.
+        return None
+
+    seq_ctx = job.ctx
+    claim_marker = claim_slot(job.ds, seq_ctx, slot, idle_seconds=idle_timeout)
+    if claim_marker is None:
+        _discard_empty_slot(slot)
+        return None
+    staging = staging_dir(slot, seq_ctx.execution_id)
+    try:
+        _clear_staging(slot)
+        if not adopt_by_link(local_pv, staging):
+            return None
+        pv_path = publish_conversion(staging, slot)
+        write_phase_marker(
+            slot,
+            PhaseMarker(
+                phase="convert",
+                run_id=slot.parent.name,
+                params_hash=convert_hash,
+                execution_id=seq_ctx.execution_id,
+                completed_at=marker.completed_at or now_iso(),
+                source=marker.source,
+                source_uid=marker.source_uid,
+                recorded_output=job.ds.relative_to_root(pv_path),
+            ),
+        )
+        _record_conversion_row(
+            job, slot=slot, pv_path=pv_path, convert_hash=convert_hash
+        )
+    except ConversionPublishError as exc:
+        print(f"[{CONVERT_KIND}] {job.item.key}: {exc}", file=sys.stderr)
+        return None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        release_slot(slot, seq_ctx.execution_id)
+        _discard_empty_slot(slot)
+    return pv_path
+
+
+def _record_conversion_row(
+    job: EntryJob, *, slot: Path, pv_path: Path, convert_hash: str
+) -> None:
+    """Append this slot's index row. Best-effort, and deliberately so.
+
+    Without a row the slot reads as ``unrowed``, which the sweeper *refuses* --
+    so a failure here costs disk, never data.
+    """
+    row = ConversionIndexRow(
+        run_id=slot.parent.name,
+        group="",
+        sequence=job.item.source_uid,
+        abs_path=Path(job.ds.relative_to_root(slot)),
+        video_abs_path=job.ds.relative_to_root(job.item.video_path),
+        params_hash=convert_hash,
+        pv_path=job.ds.relative_to_root(pv_path),
+        settings_path=job.ds.relative_to_root(pv_path.with_suffix(".settings")),
+        n_source_videos=job.item.n_sources,
+    )
+    try:
+        index = conversion_index(conversion_index_path(job.ds))
+        index.ensure()
+        index.append([row])
+        index.mark_finished(slot.parent.name)
+    except OSError as exc:
+        print(
+            f"[{CONVERT_KIND}] failed to record {slot} in the index: {exc}",
+            file=sys.stderr,
+        )
+
+
 def run_trex(
     ds: Dataset,
     *,
@@ -494,6 +773,9 @@ def run_trex(
     phase_hashes: dict[PhaseName, str] = {
         phase: hash_params(phase_settings(settings, phase)) for phase in PHASES
     }
+    # The same projection the convert digest is taken over, so the conversion
+    # run root's name and every convert marker's `params_hash` cannot disagree.
+    convert_settings = phase_settings(settings, "convert")
 
     # Route each scoped entry through the transcode verdict: a clean entry
     # resolves to its original, an analysis-required entry to its constant-rate
@@ -553,36 +835,51 @@ def run_trex(
                 ),
             )
 
-        reusable_convert = reusable_output(
-            job.ds,
-            work_dir,
-            "convert",
-            params_hash=phase_hashes["convert"],
-            video_path=item.video_path,
-            video_uid=item.source_uid,
-        )
-        if reusable_convert is None:
-            # The tracking phase consumes this phase's output, so a
-            # re-conversion invalidates it too.
-            clear_phase_markers(work_dir)
-            clear_outputs(work_dir, TREX_KIND, "convert")
-            clear_outputs(work_dir, TREX_KIND, "track")
-            convert_claim = claim(seq_ctx, work_dir, "convert", idle_timeout)
+        def convert_into(
+            out_dir: Path,
+            name: str | None,
+            claim_dir: Path,
+            claim_marker: InflightMarker,
+        ) -> Path:
+            """Run the conversion into *out_dir*, keeping every claim alive.
+
+            Two claims are held during a shared conversion -- this entry's
+            working directory and the slot -- and **both** have to be re-stamped
+            from the tool's output. Refreshing only the slot leaves the entry's
+            own claim to expire on its fixed window, after which a concurrent
+            sweep reads a live run as ``expired_claim`` and deletes its working
+            directory, and the next execution steals it and tracks into the same
+            place. When the two are the same directory (nothing is being shared)
+            one callback is enough.
+            """
             seq_ctx.progress.on_phase("convert", _phase_label(item))
+            entry_tick = phase_activity(seq_ctx, work_dir, convert_claim, idle_timeout)
+            slot_tick = (
+                None
+                if claim_dir == work_dir
+                else phase_activity(seq_ctx, claim_dir, claim_marker, idle_timeout)
+            )
+
+            def on_output(line: str) -> None:
+                entry_tick(line)
+                if slot_tick is not None:
+                    slot_tick(line)
+
             # T-Rex opens the path itself, so an imgstore recording resolves to
             # the plain video export-store wrote for it. Resolved here rather
             # than before the reuse gate: an entry whose conversion is already
             # reusable needs no export, and demanding one would fail a re-run
             # over work that is finished.
-            convert_result = run_trex_convert(
+            return run_trex_convert(
                 resolve_tool_inputs(job.ds, item, kind=TREX_KIND),
-                work_dir,
-                # Only when joining. TREx names a single-source `.pv` after its
-                # stem, which is where mosaic already looks -- but for several
-                # sources sharing a parent it uses *the parent directory's* name,
-                # which is neither chosen nor looked for. Naming it after the
-                # entry key puts it where every other artifact for the entry is.
-                output_name=item.key if joined else None,
+                out_dir,
+                # TREx names a single-source `.pv` after its stem, which is where
+                # mosaic already looks -- but for several sources sharing a
+                # parent it uses *the parent directory's* name, which is neither
+                # chosen nor looked for. A cached conversion pins the stem
+                # outright, because the slot is shared and the source file's name
+                # must not decide what is inside it.
+                output_name=name,
                 detect_model=detect_model_exec,
                 detect_type=detect_type,
                 detect_conf_threshold=detect_conf_threshold,
@@ -597,24 +894,99 @@ def run_trex(
                 trex_bin=trex_bin,
                 display=display,
                 cancel_check=cancel_check,
-                on_output=phase_activity(
-                    seq_ctx, work_dir, convert_claim, idle_timeout
-                ),
-            )
-            pv_path = convert_result.pv_path
+                on_output=on_output,
+            ).pv_path
+
+        def pin(where: Path, pv: Path) -> None:
+            """Record in *where* that this entry's conversion is *pv*.
+
+            On the trex working directory this is also what pins the slot: the
+            sweeper reads convert markers, not index rows, to decide a shared
+            conversion is still in use.
+            """
             _ = record_phase(
                 job.ds,
-                work_dir,
+                where,
                 "convert",
                 ctx=seq_ctx,
                 run_id=minted.run_id,
                 params_hash=phase_hashes["convert"],
                 video_path=item.video_path,
                 video_uid=item.source_uid,
-                output=pv_path,
+                output=pv,
             )
+
+        # --- the conversion -------------------------------------------------
+        #
+        # Local first, and that ordering is the whole compatibility story: this
+        # is the call that was here before, with the arguments it had, so every
+        # directory already on disk resolves exactly as it used to -- including
+        # one whose markers the adoption above backfilled, since "unknown is not
+        # mismatched". Consulting the cache first would send a run that already
+        # holds a good `.pv` looking for a slot it might have to create.
+        slot = conversion_slot(job.ds, convert_settings, item)
+        reusable_convert = reusable_output(
+            job.ds,
+            work_dir,
+            "convert",
+            params_hash=phase_hashes["convert"],
+            video_path=item.video_path,
+            video_uid=item.source_uid,
+        )
+        if reusable_convert is not None:
+            local_marker, pv_path = reusable_convert
+            adopted = _adopt_into_cache(
+                job,
+                slot=slot,
+                marker=local_marker,
+                local_pv=pv_path,
+                convert_hash=phase_hashes["convert"],
+                idle_timeout=idle_timeout,
+            )
+            if adopted is not None:
+                pv_path = adopted
+                # Repointed with `write_phase_marker`, not `record_phase`: this
+                # phase did not just complete, and restamping `completed_at`
+                # would push out the trex directory's own reclamation.
+                write_phase_marker(
+                    work_dir,
+                    local_marker.model_copy(
+                        update={"recorded_output": job.ds.relative_to_root(pv_path)}
+                    ),
+                )
         else:
-            _convert_marker, pv_path = reusable_convert
+            # The tracking phase consumes this phase's output, so a
+            # re-conversion invalidates it too.
+            clear_phase_markers(work_dir)
+            clear_outputs(work_dir, TREX_KIND, "convert")
+            clear_outputs(work_dir, TREX_KIND, "track")
+            # Taken before either route, and held across the whole conversion --
+            # including any wait on a peer's. This entry's directory is claimed
+            # for the duration whether the conversion happens here or elsewhere.
+            convert_claim = claim(seq_ctx, work_dir, "convert", idle_timeout)
+            if slot is None:
+                # No content identity for this media, so there is no durable key
+                # -- only a path, and a path is a mutable key. Convert in place,
+                # as every run did before the cache existed.
+                print(
+                    f"[{TREX_KIND}] {item.key}: media carries no content "
+                    f"identity, so this conversion cannot be shared. Run "
+                    f"`mosaic reprobe-media` and re-run to make it cacheable.",
+                    file=sys.stderr,
+                )
+                pv_path = convert_into(
+                    work_dir, item.key if joined else None, work_dir, convert_claim
+                )
+            else:
+                pv_path = _conversion_from_cache(
+                    job,
+                    slot=slot,
+                    convert_hash=phase_hashes["convert"],
+                    idle_timeout=idle_timeout,
+                    entry_claim=convert_claim,
+                    convert_into=convert_into,
+                )
+            pin(work_dir, pv_path)
 
         track_marker = reusable_marker(
             job.ds,
@@ -628,9 +1000,19 @@ def run_trex(
             clear_outputs(work_dir, TREX_KIND, "track")
             track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
             seq_ctx.progress.on_phase("track", _phase_label(item))
+            # Named explicitly rather than left to TRex's implicit lookup, which
+            # composes `<output_dir>/<pv stem>.settings` and so finds nothing
+            # once the conversion is shared. Without it the detection parameters
+            # -- posture, the skeleton, the size filter, everything
+            # `convert_extra_settings` carried -- fall back to what `detect_type`
+            # implies, and the run says nothing about it.
+            conversion_settings = pv_path.with_suffix(".settings")
             run_trex_track(
                 pv_path,
                 work_dir,
+                settings_path=(
+                    conversion_settings if conversion_settings.exists() else None
+                ),
                 track_max_individuals=track_max_individuals,
                 track_max_speed=track_max_speed,
                 track_max_reassign_time=track_max_reassign_time,

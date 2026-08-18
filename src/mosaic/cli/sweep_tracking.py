@@ -46,6 +46,16 @@ def sweep_tracking_command(
             help="Keep finished inference output this long (default 3).",
         ),
     ] = 3.0,
+    conversion_days: Annotated[
+        float,
+        typer.Option(
+            "--conversion-days",
+            help=(
+                "Keep an unreferenced shared conversion this long (default 14). "
+                "One a tracker run still names is refused whatever its age."
+            ),
+        ),
+    ] = 14.0,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON.")
     ] = False,
@@ -53,9 +63,12 @@ def sweep_tracking_command(
     """Delete tracker working directories that are finished and past their window.
 
     Never touches work in progress: a directory a live execution holds, or one
-    this dataset's index does not yet name, is reported and left alone. Rows go
-    before files, so an interrupted sweep leaves rows naming absent directories
-    -- which ``mosaic reindex`` repairs -- rather than files nothing names.
+    this dataset's index does not yet name, is reported and left alone. A shared
+    conversion is refused for as long as any surviving tracker directory names
+    it as its input, whatever its age -- sweep the runs that read it first. Rows
+    go before files, so an interrupted sweep leaves rows naming absent
+    directories -- which ``mosaic reindex`` repairs -- rather than files nothing
+    names.
 
     Dry-run by default; pass ``--apply`` to delete.
     """
@@ -77,6 +90,7 @@ def sweep_tracking_command(
                 retention_overrides={
                     "tracker": tracker_days,
                     "inference": inference_days,
+                    "conversion": conversion_days,
                 },
             )
     except Exception as exc:  # noqa: BLE001 - surface sweep errors cleanly

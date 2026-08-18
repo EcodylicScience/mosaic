@@ -46,6 +46,7 @@ from mosaic.core.pipeline.markers import (
     read_phase_marker,
     write_inflight,
 )
+from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
 from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 
@@ -166,13 +167,28 @@ class FakeTrex:
         if self.on_convert is not None:
             self.on_convert(Path(seq_dir))
         stem = output_name if output_name is not None else given[0].stem
-        home = given[0].parent if self.pv_beside_the_video else Path(seq_dir)
+        # `pv_beside_the_video` models TREx choosing its own location, which it
+        # only does when nothing pinned the name. Given `filename`, it writes
+        # where it was told -- the same order `run_trex_convert` looks in.
+        home = (
+            given[0].parent
+            if self.pv_beside_the_video and output_name is None
+            else Path(seq_dir)
+        )
         home.mkdir(parents=True, exist_ok=True)
         pv_path = home / f"{stem}.pv"
         _ = pv_path.write_bytes(b"pv")
+        # TREx writes a settings file beside every conversion, and it is not
+        # decorative: re-opening a `.pv` recovers only seven fields from the file
+        # itself, so this is the only thing carrying the detection parameters
+        # into a later tracking run. Written here for the same reason the npz
+        # below is real rather than a stub -- a fake that omits what the tool
+        # always produces exercises a path that cannot happen.
+        settings_path = home / f"{stem}.settings"
+        _ = settings_path.write_text("detect_type = yolo\n")
         return TRexConvertResult(
             pv_path=pv_path,
-            settings_path=home / f"{stem}.settings",
+            settings_path=settings_path,
             background_path=None,
             stdout="",
             stderr="",
@@ -787,10 +803,22 @@ def test_a_session_converts_once_with_every_clip(ds: Dataset, trex: FakeTrex) ->
 def test_the_pv_is_named_for_the_entry_not_the_first_clip(
     ds: Dataset, trex: FakeTrex
 ) -> None:
-    """TREx would otherwise name a multi-source .pv after the shared parent."""
+    """TREx would otherwise name a multi-source .pv after the shared parent.
+
+    The name is pinned harder now that a conversion is shared: every slot spells
+    it ``conversion.pv``, because the source file that happened to be first must
+    not decide what a directory several runs read is called. What this guards is
+    unchanged -- the name is chosen, never inherited from the clips.
+    """
     _session(ds, "c0.mp4", "c1.mp4")
     run_id = dr.run_trex(ds, entries=[("", "sess")])
-    assert (seq_dir_of(ds, run_id, "sess") / "sess.pv").exists()
+    seq_dir = seq_dir_of(ds, run_id, "sess")
+    marker = read_phase_marker(seq_dir, "convert")
+    assert marker is not None
+    pv_path = ds.resolve_path(marker.recorded_output)
+    assert pv_path.name == "conversion.pv"
+    assert pv_path.exists()
+    assert "c0" not in pv_path.name
 
 
 def test_an_unchanged_session_is_reused(ds: Dataset, trex: FakeTrex) -> None:
@@ -859,12 +887,44 @@ def test_a_joined_entry_is_not_adopted(ds: Dataset, trex: FakeTrex) -> None:
 
     Its shape is identical to a single-video one, so adopting would keep one
     clip's tracks for a whole session under a marker asserting it was done.
+
+    The conversion cache is cleared here so the directory really is the only
+    evidence available. A surviving slot would supply the conversion legitimately
+    -- it is addressed by the composition digest of the ordered clips, which is
+    exactly the thing a marker-less directory cannot demonstrate -- and that is a
+    different question, covered separately.
     """
     _session(ds, "c0.mp4", "c1.mp4")
     run_id = dr.run_trex(ds, entries=[("", "sess")])
     seq_dir = seq_dir_of(ds, run_id, "sess")
     for marker in seq_dir.glob(".mosaic-*.json"):
         marker.unlink()
+    shutil.rmtree(ds.get_root(CONVERT_KIND))
 
     _ = dr.run_trex(ds, entries=[("", "sess")])
     assert len(trex.sources) == 2, "a joined entry must recompute, never adopt"
+    convert_marker = read_phase_marker(seq_dir_of(ds, run_id, "sess"), "convert")
+    assert convert_marker is not None
+    assert not convert_marker.backfilled, "the directory must not have been adopted"
+
+
+def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The evidence adoption lacks, a slot has by construction.
+
+    A marker-less directory cannot say which clips it covered. A slot can: it is
+    addressed by the ordered composition digest, so a hit *is* the proof. The
+    conversion is therefore reused and only the tracking redone -- the opposite
+    of adoption, which would have skipped both on no evidence at all.
+    """
+    _session(ds, "c0.mp4", "c1.mp4")
+    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    seq_dir = seq_dir_of(ds, run_id, "sess")
+    for marker in seq_dir.glob(".mosaic-*.json"):
+        marker.unlink()
+    trex.tracked.clear()
+
+    _ = dr.run_trex(ds, entries=[("", "sess")])
+    assert len(trex.sources) == 1, "the slot's conversion covers this clip set"
+    assert len(trex.tracked) == 1, "tracking is redone, never adopted"

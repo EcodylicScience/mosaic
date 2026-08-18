@@ -3444,7 +3444,10 @@ class Dataset:
         Returns:
             A :class:`~mosaic.core.pipeline.sweep.SweepReport`.
         """
+        from typing import get_args
+
         from .pipeline.sweep import (
+            DeclineReason,
             RetentionClass,
             SweepEntry,
             classify_entry,
@@ -3463,22 +3466,33 @@ class Dataset:
         base = self.base_dir.resolve()
         wanted = set(roots) if roots is not None else set(TRACKING_ROOTS)
         overrides: dict[RetentionClass, float] = {}
+        # From the alias rather than a literal pair: a window nobody can set is
+        # a window silently ignored, and adding a retention class must not be
+        # the kind of change that needs this line remembered.
+        classes: tuple[RetentionClass, ...] = get_args(RetentionClass)
         for name, days in (retention_overrides or {}).items():
-            if name in ("tracker", "inference"):
+            if name in classes:
                 overrides[name] = days
 
+        keys = sorted(wanted & set(TRACKING_ROOTS))
+        conversion_keys = [
+            key for key in keys if TRACKING_ROOTS[key].retention == "conversion"
+        ]
+        other_keys = [key for key in keys if key not in set(conversion_keys)]
+        promoted_runs = self._promoted_from()
+
         decided: list[SweepEntry] = []
-        for key in sorted(wanted & set(TRACKING_ROOTS)):
+
+        def classify_root(key: str, pinned: frozenset[Path]) -> DeclineReason | None:
             if not self.has_root(key):
-                continue
+                return None
             root = self.get_root(key)
             if base not in root.resolve().parents and root.resolve() != base:
-                return declined_sweep("root-outside-dataset")
+                return "root-outside-dataset"
             if not root.exists():
-                continue
+                return None
             rowed = self._rowed_entries(key)
             window = retention_days(key, overrides)
-            promoted_runs = self._promoted_from()
             for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
                 for entry_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
                     decided.append(
@@ -3492,14 +3506,75 @@ class Dataset:
                             rowed=(run_dir.name, entry_dir.name) in rowed,
                             promoted=run_dir.name in promoted_runs,
                             max_age_days=window,
+                            pinned=entry_dir.resolve() in pinned,
                             now=now,
                         )
                     )
+            return None
+
+        # Consumers first, then the conversions they pin. One pass either way:
+        # a slot whose last reader is reclaimed in *this* run is reclaimed with
+        # it, and one whose reader survives is refused.
+        for key in other_keys:
+            reason = classify_root(key, frozenset())
+            if reason is not None:
+                return declined_sweep(reason)
+        if conversion_keys:
+            going = {
+                entry.path.resolve() for entry in decided if deletable(entry.verdict)
+            }
+            pinned_slots = self._pinned_conversions(going)
+            for key in conversion_keys:
+                reason = classify_root(key, pinned_slots)
+                if reason is not None:
+                    return declined_sweep(reason)
 
         report = summarize(decided, applied=apply)
         if not apply:
             return report
         return self._perform_sweep(report, deletable)
+
+    def _pinned_conversions(self, going: set[Path]) -> frozenset[Path]:
+        """Shared conversion slots a surviving tracker directory still reads.
+
+        The pin is **derived from markers, never from an index row**, and the
+        difference is the whole point. Several producers append their rows only
+        after the whole batch, so mid-run a live tracking run has written its
+        convert marker and no row at all. Keying this on the index would leave
+        exactly that run's conversion looking unreferenced, and reclaim a `.pv`
+        out from under a track phase that is reading it.
+
+        *going* is what this sweep has already decided to remove, so a slot
+        whose last reader is reclaimed in the same pass is not pinned by it --
+        which is what makes the cascade single-pass rather than needing a second
+        run to catch up.
+
+        Walks every ``retention == "tracker"`` root **regardless of any root
+        narrowing the caller asked for**: `--root trex-convert` must still read
+        the tracker roots, or restricting the sweep to the cache would reclaim
+        all of it.
+        """
+        from .pipeline.markers import read_phase_marker
+        from .pipeline.tracking_roots import TRACKING_ROOTS
+
+        pinned: set[Path] = set()
+        for key, root_spec in sorted(TRACKING_ROOTS.items()):
+            if root_spec.retention != "tracker" or not self.has_root(key):
+                continue
+            root = self.get_root(key)
+            if not root.exists():
+                continue
+            for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+                for entry_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+                    if entry_dir.resolve() in going:
+                        continue
+                    marker = read_phase_marker(entry_dir, "convert")
+                    if marker is None or not marker.recorded_output:
+                        continue
+                    pinned.add(
+                        self.resolve_path(marker.recorded_output).parent.resolve()
+                    )
+        return frozenset(pinned)
 
     def _promoted_from(self) -> set[str]:
         """Producer runs a promoted correction has superseded (items 8.4 / 8.6).

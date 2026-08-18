@@ -442,6 +442,7 @@ def run_trex_track(
     analysis_range: tuple[int, int] | None = None,
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
+    settings_path: Path | str | None = None,
     extra_settings: dict[str, Any] | None = None,
     idle_timeout: float = 900,
     max_runtime: float | None = None,
@@ -466,6 +467,20 @@ def run_trex_track(
         Converted T-Rex ``.pv`` file.
     output_dir : path
         Directory for output NPZ and results files.
+    settings_path : path, optional
+        The conversion's ``.settings`` file, passed to T-Rex as ``-s``.
+
+        **Naming it is what carries the detection parameters into tracking.**
+        Re-opening a ``.pv`` from the command line always takes T-Rex's
+        restricted read-back path, which recovers only ``meta_encoding``,
+        ``meta_source_path``, ``meta_video_size``, ``meta_real_width``,
+        ``frame_rate``, ``cm_per_pixel`` and ``detect_type`` from the file
+        itself; everything else comes from compiled defaults, from the defaults
+        that ``detect_type`` implies, and from this file. T-Rex looks for one
+        implicitly at ``<output_dir>/<pv stem>.settings`` and **not** beside the
+        ``.pv``, so once a conversion is shared the implicit lookup finds
+        nothing and says nothing. Passed as an absolute path it is honoured
+        verbatim, and a named-but-missing file is an error rather than silence.
     track_max_individuals : int, optional
         Number of individuals to track. T-Rex's own default is 1024.
     track_max_speed : float, optional
@@ -538,6 +553,10 @@ def run_trex_track(
         )
     if auto_train:
         params["auto_train"] = True
+    if settings_path is not None:
+        # Absolute, because a relative one is resolved under `output_dir` and
+        # the conversion this names generally does not live there.
+        params["s"] = str(Path(settings_path).resolve())
     if extra_settings:
         params.update(extra_settings)
 

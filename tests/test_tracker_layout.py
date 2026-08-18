@@ -457,11 +457,16 @@ class _FakeTrex:
         pv = Path(output_dir) / f"{stem}.pv"
         pv.parent.mkdir(parents=True, exist_ok=True)
         pv.write_bytes(b"pv")
-        # settings_path is never None in production: the real wrapper falls back
-        # to the video's sibling, which is a Path whether or not it exists.
+        # TREx writes a settings file beside every conversion, and it carries the
+        # detection parameters into tracking -- re-opening a `.pv` recovers only
+        # seven fields from the file itself. A conversion without one cannot be
+        # shared, so a fake that omits it exercises the fallback rather than the
+        # ordinary path.
+        settings = Path(output_dir) / f"{stem}.settings"
+        settings.write_text("detect_type = yolo\n")
         return TRexConvertResult(
             pv_path=pv,
-            settings_path=Path(output_dir) / f"{stem}.settings",
+            settings_path=settings,
             background_path=None,
             stdout="",
             stderr="",
@@ -517,14 +522,18 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
     run_id = trex_runs.run_trex(ds)
     got = snapshot(ds, "trex", run_id)
 
+    # The conversion is no longer in here. It is shared between every run over
+    # the same pixels under the same detection settings, so it lives in its own
+    # root and this directory holds only what tracking produced -- plus the
+    # convert marker, which names where the conversion went and is what pins it
+    # against the sweeper.
     assert got["files"] == [
         "<run>/.identity_scheme",
         "<run>/run_params.json",
         "<run>/vid1/.mosaic-convert.json",
         "<run>/vid1/.mosaic-track.json",
-        "<run>/vid1/data/vid1_fish0.npz",
-        "<run>/vid1/vid1.pv",
-        "<run>/vid1/vid1.results",
+        "<run>/vid1/conversion.results",
+        "<run>/vid1/data/conversion_fish0.npz",
         "index.csv",
         "index.csv.lock",
     ]
@@ -535,7 +544,10 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
             "execution_id": "<masked>",
             "params_hash": "<masked>",
             "phase": "convert",
-            "recorded_output": "_tracking/trex/<run>/vid1/vid1.pv",
+            "recorded_output": (
+                "_tracking/trex-convert/trex-convert.0.1-66a0875bb3/uid-vid1/"
+                "conversion.pv"
+            ),
             "run_id": "<run>",
             "schema_version": 1,
             "source": "media_raw/vid1.mp4",
@@ -547,7 +559,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
             "execution_id": "<masked>",
             "params_hash": "<masked>",
             "phase": "track",
-            "recorded_output": "_tracking/trex/<run>/vid1/vid1.results",
+            "recorded_output": "_tracking/trex/<run>/vid1/conversion.results",
             "run_id": "<run>",
             "schema_version": 1,
             "source": "media_raw/vid1.mp4",
@@ -736,7 +748,11 @@ def _trex_failing_for(monkeypatch: pytest.MonkeyPatch, doomed: set[str]) -> _Fak
 
     def track(pv_path: Path, output_dir: Path, **kwargs: object) -> object:
         result = fake.track(pv_path, output_dir, **kwargs)
-        if Path(pv_path).stem in doomed:
+        # Keyed on the working directory rather than on the `.pv`'s name: a
+        # conversion is shared between every run over the same pixels, so its
+        # file names cannot identify an entry and every slot spells the stem the
+        # same way. The working directory is still one per entry.
+        if Path(output_dir).name in doomed:
             _unconvertible_npz(result.npz_paths[0])  # pyright: ignore[reportAttributeAccessIssue]
         return result
 

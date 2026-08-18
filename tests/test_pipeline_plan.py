@@ -293,9 +293,14 @@ def fake_trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         stem = output_name if output_name is not None else Path(given[0]).stem
         pv_path = home / f"{stem}.pv"
         _ = pv_path.write_bytes(b"pv")
+        # TREx writes one beside every conversion, and it carries the detection
+        # parameters into tracking; a fake that omits it exercises a degraded
+        # path rather than the ordinary one.
+        settings_path = home / f"{stem}.settings"
+        _ = settings_path.write_text("detect_type = yolo\n")
         return TRexConvertResult(
             pv_path=pv_path,
-            settings_path=home / f"{stem}.settings",
+            settings_path=settings_path,
             background_path=None,
             stdout="",
             stderr="",

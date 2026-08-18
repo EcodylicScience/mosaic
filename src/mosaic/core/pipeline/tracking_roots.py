@@ -54,7 +54,7 @@ is against ``Path.parts``, since a directory exclusion cannot be expressed as a
 basename pattern.
 """
 
-RetentionClass = Literal["tracker", "inference"]
+RetentionClass = Literal["tracker", "inference", "conversion"]
 """Which retention window an intermediate falls under (item 8.4).
 
 ``tracker`` is the expensive, reusable, correctable output -- a ``.pv`` and its
@@ -62,6 +62,13 @@ settings, a ``.slp``, a predictions CSV. Its window is long and is ended by
 promotion (item 8.6) rather than by age. ``inference`` is audit-only: neither
 reused nor edited, kept so someone can see what a detector emitted before schema
 coercion, and evicted on a shorter clock.
+
+``conversion`` is the *input* to a tracker run rather than its output: a
+detection pass shared by every run that tracks the same pixels under the same
+detection settings. It is the most expensive artifact in the tree and the one
+several runs read at once, so age alone must not reclaim it -- a slot still
+named by a surviving tracker directory is refused whatever its age, and the
+window only decides how long it lingers after its last reader is itself gone.
 
 A closed alias rather than a bare ``str``, because the window a class maps to is
 a policy decision and an unrecognized value must not silently fall through to the
@@ -178,6 +185,42 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             # counts of every file it names into one length -- so a session's
             # clips convert into a single `.pv` with one continuous frame index,
             # and identities never break at a clip boundary.
+            joins_sources=True,
+        ),
+        # The shared conversion cache: one `.pv` per (detection settings, source
+        # content), read by every tracker run whose convert-phase parameters and
+        # media agree. A slot is addressed by both terms, so it is published
+        # once and never rewritten -- which is what lets several runs read one
+        # while a sixth is tracking off it.
+        #
+        # `*.results` is in the clear globs and in nothing else. TRex's
+        # conversion writes one unconditionally, mosaic deletes it at publish,
+        # and it must never sit beside a shared `.pv`: a results load with no
+        # explicit path falls back to the *input* folder, so leaving one here
+        # would put a stale tracking state where a later run could reach it.
+        TrackingRoot(
+            key="trex-convert",
+            retention="conversion",
+            # Inert: nothing bridges from this root, and it is spelled rather
+            # than defaulted because the default is the legacy centimetre schema.
+            output_schema="trex_v2",
+            outputs=("*.pv", "*.settings"),
+            phase_outputs=(
+                TrackingPhase(
+                    "convert",
+                    (
+                        "*.pv",
+                        "*.settings",
+                        "average_*.png",
+                        "*.results",
+                        "*.results.meta",
+                        ".incoming-*",
+                    ),
+                ),
+            ),
+            path_columns=("video_abs_path", "pv_path", "settings_path"),
+            # Mirrors the `trex` row: a joined session converts once, into one
+            # slot addressed by the composition digest of its ordered clips.
             joins_sources=True,
         ),
         # The analysis export has no phase of its own -- it is ensured rather

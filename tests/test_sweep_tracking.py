@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -93,6 +94,30 @@ def _row(
         trex_index_path,
     )
 
+    from mosaic.tracking.trex.conversion_cache import (
+        CONVERT_KIND,
+        ConversionIndexRow,
+        conversion_index,
+        conversion_index_path,
+    )
+
+    if root_key == CONVERT_KIND:
+        cache = conversion_index(conversion_index_path(ds))
+        cache.ensure()
+        cache.append(
+            [
+                ConversionIndexRow(
+                    run_id=run_id,
+                    group=group,
+                    sequence=sequence,
+                    abs_path=Path(ds.relative_to_root(path)),
+                    video_abs_path="",
+                    params_hash="",
+                )
+            ]
+        )
+        return
+
     assert root_key == "trex", "only the trex row shape is built here"
     idx = trex_index(trex_index_path(ds))
     idx.ensure()
@@ -108,6 +133,314 @@ def _row(
             )
         ]
     )
+
+
+# --- The shared conversion cache ---------------------------------------------
+
+
+def _slot(
+    ds: Dataset,
+    *,
+    uid: str = "uid-a",
+    run_id: str = "trex-convert.0.1-cccc",
+    finished_days_ago: float | None = 90.0,
+    rowed: bool = True,
+) -> Path:
+    """A published conversion slot, aged well past any window by default."""
+    from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
+
+    return _entry(
+        ds,
+        root_key=CONVERT_KIND,
+        run_id=run_id,
+        sequence=uid,
+        finished_days_ago=finished_days_ago,
+        rowed=rowed,
+    )
+
+
+def _reader(ds: Dataset, slot: Path, *, finished_days_ago: float | None = 1.0) -> Path:
+    """A trex working directory whose convert marker names *slot*'s conversion."""
+    seq_dir = _entry(ds, finished_days_ago=finished_days_ago)
+    stamp = (
+        (_NOW - datetime.timedelta(days=finished_days_ago)).isoformat()
+        if finished_days_ago is not None
+        else ""
+    )
+    write_phase_marker(
+        seq_dir,
+        PhaseMarker(
+            phase="convert",
+            run_id="trex.1.0-aaaa",
+            completed_at=stamp,
+            recorded_output=ds.relative_to_root(slot / "conversion.pv"),
+        ),
+    )
+    return seq_dir
+
+
+def test_every_retention_class_has_a_default_window() -> None:
+    """A class with no window raises inside the walk and aborts the whole sweep.
+
+    ``retention_days`` indexes the table directly, and the failure is not local:
+    the exception escapes the loop, so one unwindowed root stops every other
+    root being swept. basedpyright cannot see it -- the table is a ``Mapping``,
+    not a ``TypedDict``, so a literal missing a key still type-checks.
+    """
+    from typing import get_args
+
+    from mosaic.core.pipeline.sweep import _DEFAULT_RETENTION_DAYS
+    from mosaic.core.pipeline.tracking_roots import RetentionClass
+
+    assert set(_DEFAULT_RETENTION_DAYS) == set(get_args(RetentionClass))
+
+
+def test_the_conversion_window_is_settable_and_changes_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """A window nobody can set is a window silently ignored.
+
+    ``Dataset.sweep_tracking`` filters the overrides it accepts, so a class
+    missing from that filter is dropped in silence -- the call succeeds, the
+    number has no effect, and nothing says so. Asserting the verdict *moves* is
+    what catches that; asserting the call returns does not.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds, finished_days_ago=5.0)
+
+    default = ds.sweep_tracking(apply=False, now=_NOW)
+    assert [e.verdict for e in default.entries] == ["complete_young"]
+
+    narrowed = ds.sweep_tracking(
+        apply=False, retention_overrides={"conversion": 1.0}, now=_NOW
+    )
+    assert [e.verdict for e in narrowed.entries] == ["complete_aged"]
+    assert slot.exists(), "neither call applied anything"
+
+
+def test_a_pinned_conversion_survives_an_applied_sweep_with_no_window(
+    tmp_path: Path,
+) -> None:
+    """The gate for the expensive artifact, as behaviour.
+
+    A slot 90 days old, a zero window and ``apply=True`` is the most aggressive
+    call the surface admits. It must still be there, because a tracker directory
+    that survives this pass names it as its input.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+    _ = _reader(ds, slot)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"conversion": 0.0}, now=_NOW
+    )
+
+    assert slot.exists()
+    assert (slot / "out.pv").exists()
+    verdicts = {e.root_key: e.verdict for e in report.entries}
+    assert verdicts["trex-convert"] == "pinned"
+
+
+def test_a_slot_pinned_by_an_unrowed_reader_is_refused(tmp_path: Path) -> None:
+    """The pin reads markers, never rows.
+
+    Several producers append their index rows only after the whole batch, so
+    mid-run a live tracking run has written its convert marker and no row at all.
+    Keying the pin on the index would reclaim that run's conversion while it is
+    reading it.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+    reader = _reader(ds, slot)
+    _drop_rows(ds, "trex")
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"conversion": 0.0}, now=_NOW
+    )
+
+    assert reader.exists(), "an unrowed tracker directory is refused too"
+    assert slot.exists()
+    assert {e.verdict for e in report.entries} == {"unrowed", "pinned"}
+
+
+def test_an_unpinned_aged_slot_is_reclaimed(tmp_path: Path) -> None:
+    """A cache nothing can reclaim grows without bound."""
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not slot.exists()
+    assert slot in report.removed
+
+
+def test_an_unpinned_young_slot_is_held(tmp_path: Path) -> None:
+    """The window still applies once the last reader is gone."""
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds, finished_days_ago=1.0)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert slot.exists()
+    assert [e.verdict for e in report.entries] == ["complete_young"]
+
+
+def test_a_slot_whose_last_reader_goes_this_pass_goes_with_it(
+    tmp_path: Path,
+) -> None:
+    """One pass, not two: the cascade must not need a second run to catch up."""
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+    reader = _reader(ds, slot, finished_days_ago=90.0)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not reader.exists()
+    assert not slot.exists()
+    assert set(report.removed) == {reader, slot}
+
+
+def test_sweeping_only_the_cache_still_reads_the_tracker_root_for_pins(
+    tmp_path: Path,
+) -> None:
+    """``--root trex-convert`` must not reclaim conversions that are in use.
+
+    The pin scan runs over every tracker root regardless of the narrowing, or
+    restricting the sweep to the cache would delete all of it.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+    _ = _reader(ds, slot)
+
+    report = ds.sweep_tracking(
+        apply=True,
+        roots=["trex-convert"],
+        retention_overrides={"conversion": 0.0},
+        now=_NOW,
+    )
+
+    assert slot.exists()
+    assert [e.verdict for e in report.entries] == ["pinned"]
+
+
+def test_a_slot_with_no_index_row_is_refused(tmp_path: Path) -> None:
+    """Forgetting the index registration must cost disk, never data."""
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds, rowed=False)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert slot.exists()
+    assert [e.verdict for e in report.entries] == ["unrowed"]
+
+
+def test_dropping_a_slot_row_matches_its_directory_name(tmp_path: Path) -> None:
+    """The row goes with the directory, or reindex has to repair every sweep."""
+    from mosaic.tracking.trex.conversion_cache import (
+        conversion_index_path,
+    )
+
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    _ = _slot(ds)
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert report.rows_dropped == 1
+    assert len(pd.read_csv(conversion_index_path(ds))) == 0
+
+
+def test_a_reclaimed_slot_takes_its_staging_tree_with_it(tmp_path: Path) -> None:
+    """The sweep removes the slot whole, debris included.
+
+    A *surviving* slot's stale staging is a different problem, and it is the
+    conversion path that clears it rather than this one -- see
+    ``tests/test_trex_conversion_cache.py``. What is pinned here is that the
+    declared clear globs name it, so a re-conversion removes it, and that an
+    aged unpinned slot does not leave a partial `.pv` behind.
+    """
+    from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+    from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
+
+    assert ".incoming-*" in TRACKING_ROOTS[CONVERT_KIND].clear_globs("convert")
+
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds)
+    staging = slot / ".incoming-dead"
+    staging.mkdir()
+    (staging / "conversion.pv").write_bytes(b"partial")
+
+    _ = ds.sweep_tracking(apply=True, now=_NOW)
+    assert not slot.exists()
+    assert not staging.exists()
+
+
+def test_a_pinned_conversion_survives_a_stale_claim(tmp_path: Path) -> None:
+    """A claim is evidence about an attempt; a pin is evidence about the artifact.
+
+    A conversion outlives the run that made it, so a claim that run left behind
+    when it died says nothing about the runs reading the conversion now. Since
+    ``expired_claim`` is deletable and is reached before completeness, consulting
+    it before the pin would reclaim a 28 GB `.pv` that surviving tracker
+    directories still name as their input.
+
+    A claim's expiry has a floor of half an hour, so -- as elsewhere in this
+    file -- the claim is aged out by sweeping from far in the future rather than
+    by writing a short one. The reader is stamped relative to that same instant
+    so that it survives the pass and can do the pinning.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    later = _NOW + datetime.timedelta(days=365)
+
+    slot = _slot(ds, finished_days_ago=1.0)
+    write_inflight(
+        slot,
+        new_inflight(
+            execution_id="dead-exec",
+            host="dead-host",
+            pid=1,
+            phase="convert",
+            idle_seconds=1.0,
+        ),
+    )
+    # Finished the day before the sweep, so it is inside its own window.
+    _ = _reader(ds, slot, finished_days_ago=-364.0)
+
+    report = ds.sweep_tracking(apply=True, now=later)
+
+    verdicts = {e.root_key: e.verdict for e in report.entries}
+    assert verdicts["trex"] == "complete_young", "the reader must survive to pin"
+    assert verdicts["trex-convert"] == "pinned"
+    assert slot.exists(), "a pinned conversion is never deleted over a stale claim"
+
+
+def test_an_unpinned_slot_with_a_stale_claim_is_still_reclaimed(
+    tmp_path: Path,
+) -> None:
+    """The pin is the only thing that outranks a claim, not the root itself."""
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    slot = _slot(ds, finished_days_ago=1.0)
+    write_inflight(
+        slot,
+        new_inflight(
+            execution_id="dead-exec",
+            host="dead-host",
+            pid=1,
+            phase="convert",
+            idle_seconds=1.0,
+        ),
+    )
+
+    report = ds.sweep_tracking(apply=True, now=_NOW + datetime.timedelta(days=365))
+
+    assert not slot.exists()
+    assert [e.verdict for e in report.entries] == ["expired_claim"]
+
+
+def _drop_rows(ds: Dataset, root_key: str) -> None:
+    """Empty one root's index, leaving the file and its header in place."""
+    path = ds.get_root(root_key) / "index.csv"
+    frame = pd.read_csv(path)
+    frame.iloc[0:0].to_csv(path, index=False)
 
 
 # --- The gate ----------------------------------------------------------------
