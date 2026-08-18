@@ -1,54 +1,77 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 366" width="880" height="366" role="img" aria-labelledby="mosaic-pipeline-title mosaic-pipeline-desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 458" width="880" height="458"
+     role="img" aria-labelledby="mosaic-pipeline-title mosaic-pipeline-desc"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
   <title id="mosaic-pipeline-title">The mosaic pipeline</title>
-  <desc id="mosaic-pipeline-desc">Video goes to trackers, which mosaic drives, and their output becomes one standardized tracks table. From there mosaic computes features, fits models, and renders annotated video. Pose models trained in mosaic feed the trackers.</desc>
+  <desc id="mosaic-pipeline-desc">Two ways in, one table out. Video feeds the trackers mosaic runs; tracks produced by other tools are imported instead. Both arrive as one standardized tracks table, which feeds an analysis stage where individual, pair and group features compose with unsupervised and supervised models. Pose models trained in mosaic feed the trackers.</desc>
 
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8794"/>
     </marker>
   </defs>
 
   <g stroke-width="1.5">
-    <!-- Row 1: video, the trackers mosaic drives, the standardized table -->
-    <rect x="20" y="30" width="170" height="72" rx="8" fill="#252d35" stroke="#7b8794"/>
-    <text x="105" y="59" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Video</text>
-    <text x="105" y="79" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">mp4 · raw h264 · imgstore</text>
+    <!-- Way in, first: video through a tracker mosaic runs -->
+    <rect x="20" y="24" width="170" height="72" rx="8" fill="#252d35" stroke="#7b8794"/>
+    <text x="105" y="53" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Video</text>
+    <text x="105" y="73" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">mp4 · raw h264 · imgstore</text>
 
-    <rect x="250" y="30" width="300" height="72" rx="8" fill="#252d35" stroke="#7b8794"/>
-    <text x="400" y="54" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Trackers</text>
-    <text x="400" y="73" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">TRex · SLEAP · DeepLabCut</text>
-    <text x="400" y="89" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">Lightning Pose · Ultralytics</text>
-
-    <rect x="630" y="30" width="230" height="72" rx="8" fill="#123531" stroke="#4db6ac"/>
-    <text x="745" y="59" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Tracks</text>
-    <text x="745" y="79" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">one validated schema</text>
+    <rect x="250" y="24" width="300" height="72" rx="8" fill="#252d35" stroke="#7b8794"/>
+    <text x="400" y="48" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Run a tracker</text>
+    <text x="400" y="68" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">TRex · SLEAP</text>
+    <text x="400" y="84" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">Lightning Pose · Ultralytics</text>
 
     <!-- Pose models trained in mosaic, feeding the trackers above -->
-    <rect x="250" y="136" width="300" height="46" rx="8" fill="#123531" stroke="#4db6ac"/>
-    <text x="400" y="155" text-anchor="middle" font-size="13" font-weight="600" fill="#e4e7eb" stroke="none">Pose models</text>
-    <text x="400" y="172" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">YOLO · POLO · localizer, trained in mosaic</text>
+    <rect x="250" y="122" width="300" height="44" rx="8" fill="#123531" stroke="#4db6ac"/>
+    <text x="400" y="140" text-anchor="middle" font-size="13" font-weight="600" fill="#e4e7eb" stroke="none">Pose models</text>
+    <text x="400" y="157" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">YOLO · POLO · localizer, trained in mosaic</text>
 
-    <!-- Row 2: what mosaic computes from the table -->
-    <rect x="20" y="250" width="270" height="72" rx="8" fill="#123531" stroke="#4db6ac"/>
-    <text x="155" y="279" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Features</text>
-    <text x="155" y="299" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">45 registered · kinematic, social, spectral</text>
+    <!-- Way in, second: tracking someone else already did -->
+    <rect x="20" y="196" width="530" height="72" rx="8" fill="#252d35" stroke="#7b8794"/>
+    <text x="285" y="220" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Import tracks</text>
+    <text x="285" y="240" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">TRex · SLEAP · DeepLabCut · Ultralytics · CalMS21</text>
+    <text x="285" y="256" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">or a converter you write for your own format</text>
 
-    <rect x="340" y="250" width="270" height="72" rx="8" fill="#123531" stroke="#4db6ac"/>
-    <text x="475" y="279" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Models</text>
-    <text x="475" y="299" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">t-SNE · AR-HMM · XGBoost</text>
+    <!-- Where both ways in arrive -->
+    <rect x="610" y="110" width="250" height="72" rx="8" fill="#123531" stroke="#4db6ac"/>
+    <text x="735" y="139" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Tracks</text>
+    <text x="735" y="159" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">one validated schema, in pixels</text>
 
-    <rect x="660" y="250" width="200" height="72" rx="8" fill="#123531" stroke="#4db6ac"/>
-    <text x="760" y="279" text-anchor="middle" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Annotated video</text>
-    <text x="760" y="299" text-anchor="middle" font-size="11" fill="#9aa5b1" stroke="none">overlays · crops</text>
+    <!-- What mosaic computes from the table: one stage, not a chain of two -->
+    <rect x="20" y="306" width="840" height="124" rx="8" fill="none" stroke="#4db6ac"/>
+    <text x="40" y="334" font-size="15" font-weight="600" fill="#e4e7eb" stroke="none">Analysis</text>
+    <text x="122" y="334" font-size="11" fill="#9aa5b1" stroke="none">features and models, chained in any order</text>
+
+    <rect x="40" y="350" width="174" height="64" rx="6" fill="#123531" stroke="#4db6ac"/>
+    <text x="127" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#e4e7eb" stroke="none">Individual features</text>
+    <text x="127" y="394" text-anchor="middle" font-size="10" fill="#9aa5b1" stroke="none">speed · heading · neighbors</text>
+
+    <rect x="248" y="350" width="174" height="64" rx="6" fill="#123531" stroke="#4db6ac"/>
+    <text x="335" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#e4e7eb" stroke="none">Pair and group features</text>
+    <text x="335" y="394" text-anchor="middle" font-size="10" fill="#9aa5b1" stroke="none">egocentric · polarization</text>
+
+    <rect x="456" y="350" width="174" height="64" rx="6" fill="#123531" stroke="#4db6ac"/>
+    <text x="543" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#e4e7eb" stroke="none">Unsupervised models</text>
+    <text x="543" y="394" text-anchor="middle" font-size="10" fill="#9aa5b1" stroke="none">t-SNE · k-means · AR-HMM</text>
+
+    <rect x="664" y="350" width="176" height="64" rx="6" fill="#123531" stroke="#4db6ac"/>
+    <text x="752" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#e4e7eb" stroke="none">Supervised models</text>
+    <text x="752" y="394" text-anchor="middle" font-size="10" fill="#9aa5b1" stroke="none">XGBoost · Lightning-Action</text>
 
     <!-- Flow -->
-    <path d="M 194 66 L 242 66" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
-    <path d="M 554 66 L 622 66" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
-    <path d="M 400 132 L 400 110" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
-    <path d="M 745 106 L 745 206 L 155 206 L 155 242" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
-    <path d="M 294 286 L 332 286" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
-    <path d="M 614 286 L 652 286" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
+    <path d="M 194 60 L 242 60" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
+    <path d="M 400 118 L 400 104" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
+    <path d="M 554 60 L 578 60 L 578 146" fill="none" stroke="#7b8794"/>
+    <path d="M 554 232 L 578 232 L 578 146" fill="none" stroke="#7b8794"/>
+    <path d="M 578 146 L 602 146" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
+    <path d="M 735 186 L 735 284 L 440 284 L 440 298" fill="none" stroke="#7b8794" marker-end="url(#arrow)"/>
+
+    <!-- Adjacent stages compose both ways round -->
+    <path d="M 216 382 L 246 382" fill="none" stroke="#7b8794" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <path d="M 424 382 L 454 382" fill="none" stroke="#7b8794" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <path d="M 632 382 L 662 382" fill="none" stroke="#7b8794" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
   </g>
 
-  <text x="440" y="350" text-anchor="middle" font-size="11" font-style="italic" fill="#9aa5b1">every result content-addressed by run_id, so a re-run is a no-op</text>
+  <text x="440" y="454" text-anchor="middle" font-size="11" font-style="italic" fill="#9aa5b1">every result content-addressed by run_id, so a re-run is a no-op</text>
 </svg>

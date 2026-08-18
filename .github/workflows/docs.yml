@@ -65,9 +65,17 @@ jobs:
       # changes that group turns this job red on the next pull request. That is
       # a true statement about the CLI surface, and the failure names the one
       # command that fixes it.
+
+      # `--clear` rather than a bare `uv venv`. `setup-uv` creates `.venv` in the
+      # working directory and exports `VIRTUAL_ENV`, so a plain `uv venv` refuses
+      # with "a virtual environment already exists" and this job died in nine
+      # seconds on every push -- which is why the site has never deployed. The
+      # jobs in `ci.yml` do not hit it because they check out into a subdirectory
+      # and run with `working-directory:` set, so their `uv venv` lands somewhere
+      # `setup-uv` did not.
       - name: Install
         run: |
-          uv venv
+          uv venv --clear
           uv pip install -e '.'
           uv pip install --group docs
 
