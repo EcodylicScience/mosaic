@@ -12,6 +12,7 @@ from mosaic.core.label_converter import (
     LabelConverter,
     LabelEntry,
 )
+from mosaic.core.track_library.calms21 import calms21_entry_name
 
 # The CalMS21 behavior vocabulary. Lived in ``dataset.py`` and was imported back
 # here across the converter/dataset boundary; it is CalMS21-specific data, so it
@@ -58,7 +59,11 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
     src_format = "calms21_npy"  # Also handles calms21_json via load_calms21
     label_kind = "behavior"
     label_format = "individual_pair_v1"
-    version = "0.1"
+    # 0.2: entry names are compound (``task1__test__m``) rather than slash paths,
+    # matching what ``Calms21Converter`` has emitted since its own 0.2. The labels
+    # are otherwise identical, but a variant's identity covers what it emits, and
+    # this changed the entry keys and therefore the filenames.
+    version = "0.2"
     Params = CalMS21BehaviorParams
 
     def convert(
@@ -108,11 +113,20 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
                     dtype=np.int32,
                 )
 
-                seq_val = str(seq_key)
+                # The same flattening ``Calms21Converter.enumerate_sequences``
+                # applies. Two reasons it is not optional: ``write_labels_row``
+                # runs an entry name through ``validate_entry_name``, which
+                # rejects the ``/`` a raw CalMS21 id carries -- so the raw form
+                # did not merely mismatch, it raised -- and the tracks side has
+                # emitted the compound spelling since its 0.2, so anything else
+                # here is a label that no track table can be joined to.
+                # ``sequence_key`` keeps the raw id, which is still the key
+                # inside the source file.
+                seq_val = calms21_entry_name(str(seq_key))
                 payload: dict[str, object] = {
                     "group": group_val,
                     "sequence": seq_val,
-                    "sequence_key": seq_val,
+                    "sequence_key": str(seq_key),
                     "label_format": self.label_format,
                     "frames": event_frames,
                     "labels": event_labels,

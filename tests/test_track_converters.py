@@ -419,6 +419,60 @@ def test_calms21_enumerate_and_convert_agree_on_the_name(tmp_path: Path) -> None
     assert set(df["sequence"]) == {"task1__test__m075"}
 
 
+def test_calms21_labels_and_tracks_agree_on_the_entry_name(tmp_path: Path) -> None:
+    """The label converter must mint the name the track converter minted.
+
+    It did not, and the failure was not a quiet mismatch: the label side wrote
+    the raw slash id, and ``write_labels_row`` puts an entry name through
+    ``validate_entry_name``, which rejects a ``/``. So converting real CalMS21
+    annotations raised outright -- after the ``.npz`` had already been written,
+    which left an orphan file that made the retry skip the very sequence that
+    failed. Flattening on one side only would have been worse than either: a
+    label no track table can be joined to, with nothing raising to say so.
+    """
+    from mosaic.behavior.label_library.calms21_behavior import (
+        CalMS21BehaviorConverter,
+        CalMS21BehaviorParams,
+    )
+    from mosaic.core.helpers import validate_entry_name
+    from mosaic.core.track_library.calms21 import Calms21Converter
+
+    seq_id = "task1/test/mouse075_task1_annotator1"
+    npy = tmp_path / "calms21_task1_test.npy"
+    np.save(
+        npy,
+        {
+            "annotator-id_0": {
+                seq_id: {
+                    "keypoints": np.zeros((6, 2, 2, 7), dtype=float),
+                    "annotations": np.zeros(6, dtype=int),
+                }
+            }
+        },
+        allow_pickle=True,
+    )
+
+    (tracks_pair,) = Calms21Converter().enumerate_sequences(npy)
+    entries = CalMS21BehaviorConverter().convert(
+        npy, CalMS21BehaviorParams(), {"group": ""}
+    )
+
+    assert [e.sequence for e in entries] == [tracks_pair[1]]
+    # The name is usable as one path component, which is what raised before.
+    assert validate_entry_name(entries[0].sequence, "sequence")
+    # The raw id is still recorded -- it is the key inside the source file.
+    assert entries[0].payload["sequence_key"] == seq_id
+
+
+def test_calms21_label_version_says_its_output_identity_moved() -> None:
+    """0.2 changed the entry keys, so it changed the filenames labels land in."""
+    from mosaic.behavior.label_library.calms21_behavior import (
+        CalMS21BehaviorConverter,
+    )
+
+    assert CalMS21BehaviorConverter.version == "0.2"
+
+
 def test_calms21_version_says_its_output_identity_moved() -> None:
     """A variant identity covers what the recipe emits, and that changed twice.
 
