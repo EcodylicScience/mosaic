@@ -9,8 +9,6 @@
 <p align="center"><strong>A platform for behavior analysis.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/EcodylicScience/mosaic/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EcodylicScience/mosaic/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/EcodylicScience/mosaic/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/EcodylicScience/mosaic/actions/workflows/docs.yml/badge.svg"></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-blue">
   <img alt="AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue">
 </p>

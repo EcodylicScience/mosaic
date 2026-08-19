@@ -1,77 +1,379 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 458" width="880" height="458"
-     role="img" aria-labelledby="mosaic-pipeline-title mosaic-pipeline-desc"
-     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
-  <title id="mosaic-pipeline-title">The mosaic pipeline</title>
-  <desc id="mosaic-pipeline-desc">Two ways in, one table out. Video feeds the trackers mosaic runs; tracks produced by other tools are imported instead. Both arrive as one standardized tracks table, which feeds an analysis stage where individual, pair and group features compose with unsupervised and supervised models. Pose models trained in mosaic feed the trackers.</desc>
-
-  <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
-            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa5b1"/>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 880 458"
+   width="880"
+   height="458"
+   role="img"
+   aria-labelledby="mosaic-pipeline-title mosaic-pipeline-desc"
+   font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+   version="1.1"
+   id="svg30"
+   sodipodi:docname="pipeline-light.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <title
+     id="mosaic-pipeline-title">The mosaic pipeline</title>
+  <desc
+     id="mosaic-pipeline-desc">Two ways in, one table out. Video feeds the trackers mosaic runs; tracks produced by other tools are imported instead. Both arrive as one standardized tracks table, which feeds an analysis stage where individual, pair and group features compose with unsupervised and supervised models. Pose models trained in mosaic feed the trackers.</desc>
+  <defs
+     id="defs1">
+    <marker
+       id="arrow"
+       viewBox="0 0 10 10"
+       refX="9"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 0 0 L 10 5 L 0 10 z"
+         fill="#9aa5b1"
+         id="path1" />
     </marker>
   </defs>
-
-  <g stroke-width="1.5">
+  <g
+     stroke-width="1.5"
+     id="g30">
     <!-- Way in, first: video through a tracker mosaic runs -->
-    <rect x="20" y="24" width="170" height="72" rx="8" fill="#f4f6f8" stroke="#9aa5b1"/>
-    <text x="105" y="53" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2933" stroke="none">Video</text>
-    <text x="105" y="73" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">mp4 · raw h264 · imgstore</text>
-
-    <rect x="250" y="24" width="300" height="72" rx="8" fill="#f4f6f8" stroke="#9aa5b1"/>
-    <text x="400" y="48" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2933" stroke="none">Run a tracker</text>
-    <text x="400" y="68" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">TRex · SLEAP</text>
-    <text x="400" y="84" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">Lightning Pose · Ultralytics</text>
-
+    <rect
+       x="20"
+       y="24"
+       width="170"
+       height="72"
+       rx="8"
+       fill="#f4f6f8"
+       stroke="#9aa5b1"
+       id="rect1" />
+    <text
+       x="105"
+       y="53"
+       text-anchor="middle"
+       font-size="15"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text1">Video</text>
+    <text
+       x="105"
+       y="73"
+       text-anchor="middle"
+       font-size="11px"
+       fill="#52606d"
+       stroke="none"
+       id="text2">mp4 · raw · imgstore</text>
+    <rect
+       x="250"
+       y="24"
+       width="300"
+       height="72"
+       rx="8"
+       fill="#f4f6f8"
+       stroke="#9aa5b1"
+       id="rect2" />
+    <text
+       x="400"
+       y="48"
+       text-anchor="middle"
+       font-size="15"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text3">Run a tracker</text>
+    <text
+       x="400"
+       y="68"
+       text-anchor="middle"
+       font-size="11"
+       fill="#52606d"
+       stroke="none"
+       id="text4">TRex · SLEAP</text>
+    <text
+       x="400"
+       y="84"
+       text-anchor="middle"
+       font-size="11"
+       fill="#52606d"
+       stroke="none"
+       id="text5">Lightning Pose · Ultralytics</text>
     <!-- Pose models trained in mosaic, feeding the trackers above -->
-    <rect x="250" y="122" width="300" height="44" rx="8" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="400" y="140" text-anchor="middle" font-size="13" font-weight="600" fill="#1f2933" stroke="none">Pose models</text>
-    <text x="400" y="157" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">YOLO · POLO · localizer, trained in mosaic</text>
-
+    <rect
+       x="250"
+       y="122"
+       width="300"
+       height="44"
+       rx="8"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect5" />
+    <text
+       x="400"
+       y="140"
+       text-anchor="middle"
+       font-size="13px"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text6">Detection and pose models</text>
+    <text
+       x="400"
+       y="157"
+       text-anchor="middle"
+       font-size="11px"
+       fill="#52606d"
+       stroke="none"
+       id="text7"
+       dx="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0">YOLO · POLO · SLEAP · Lightning pose, trained in mosaic</text>
     <!-- Way in, second: tracking someone else already did -->
-    <rect x="20" y="196" width="530" height="72" rx="8" fill="#f4f6f8" stroke="#9aa5b1"/>
-    <text x="285" y="220" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2933" stroke="none">Import tracks</text>
-    <text x="285" y="240" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">TRex · SLEAP · DeepLabCut · Ultralytics · CalMS21</text>
-    <text x="285" y="256" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">or a converter you write for your own format</text>
-
+    <rect
+       x="210"
+       y="196"
+       width="340"
+       height="72"
+       rx="8"
+       fill="#f4f6f8"
+       stroke="#9aa5b1"
+       id="rect7" />
+    <text
+       x="380"
+       y="220"
+       text-anchor="middle"
+       font-size="15"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text8">Import tracks</text>
+    <text
+       x="380"
+       y="240"
+       text-anchor="middle"
+       font-size="11px"
+       fill="#52606d"
+       stroke="none"
+       id="text9">TRex · SLEAP · Lightning Pose · Ultralytics · DeepLabCut</text>
+    <text
+       x="380"
+       y="256"
+       text-anchor="middle"
+       font-size="11px"
+       fill="#52606d"
+       stroke="none"
+       id="text10"
+       dx="0 0 0 0 0 0 0 0 0 0 0.66099596">or custom converter for other formats</text>
     <!-- Where both ways in arrive -->
-    <rect x="610" y="110" width="250" height="72" rx="8" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="735" y="139" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2933" stroke="none">Tracks</text>
-    <text x="735" y="159" text-anchor="middle" font-size="11" fill="#52606d" stroke="none">one validated schema, in pixels</text>
-
+    <rect
+       x="610"
+       y="110"
+       width="250"
+       height="72"
+       rx="8"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect10" />
+    <text
+       x="735"
+       y="139"
+       text-anchor="middle"
+       font-size="15"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text11">Tracks</text>
+    <text
+       x="735"
+       y="159"
+       text-anchor="middle"
+       font-size="11px"
+       fill="#52606d"
+       stroke="none"
+       id="text12">common validated schema</text>
     <!-- What mosaic computes from the table: one stage, not a chain of two -->
-    <rect x="20" y="306" width="840" height="124" rx="8" fill="none" stroke="#00897b"/>
-    <text x="40" y="334" font-size="15" font-weight="600" fill="#1f2933" stroke="none">Analysis</text>
-    <text x="122" y="334" font-size="11" fill="#52606d" stroke="none">features and models, chained in any order</text>
-
-    <rect x="40" y="350" width="174" height="64" rx="6" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="127" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2933" stroke="none">Individual features</text>
-    <text x="127" y="394" text-anchor="middle" font-size="10" fill="#52606d" stroke="none">speed · heading · neighbors</text>
-
-    <rect x="248" y="350" width="174" height="64" rx="6" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="335" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2933" stroke="none">Pair and group features</text>
-    <text x="335" y="394" text-anchor="middle" font-size="10" fill="#52606d" stroke="none">egocentric · polarization</text>
-
-    <rect x="456" y="350" width="174" height="64" rx="6" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="543" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2933" stroke="none">Unsupervised models</text>
-    <text x="543" y="394" text-anchor="middle" font-size="10" fill="#52606d" stroke="none">t-SNE · k-means · AR-HMM</text>
-
-    <rect x="664" y="350" width="176" height="64" rx="6" fill="#e6f4f1" stroke="#00897b"/>
-    <text x="752" y="376" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2933" stroke="none">Supervised models</text>
-    <text x="752" y="394" text-anchor="middle" font-size="10" fill="#52606d" stroke="none">XGBoost · Lightning-Action</text>
-
+    <rect
+       x="20"
+       y="306"
+       width="840"
+       height="124"
+       rx="8"
+       fill="none"
+       stroke="#00897b"
+       id="rect12" />
+    <text
+       x="40"
+       y="334"
+       font-size="15"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text13">Analysis</text>
+    <text
+       x="122"
+       y="334"
+       font-size="11"
+       fill="#52606d"
+       stroke="none"
+       id="text14">features and models, chained in any order</text>
+    <rect
+       x="40"
+       y="350"
+       width="174"
+       height="64"
+       rx="6"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect14" />
+    <text
+       x="127"
+       y="376"
+       text-anchor="middle"
+       font-size="12"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text15">Individual features</text>
+    <text
+       x="127"
+       y="394"
+       text-anchor="middle"
+       font-size="10px"
+       fill="#52606d"
+       stroke="none"
+       id="text16">kinematics · posture · temporal</text>
+    <rect
+       x="248"
+       y="350"
+       width="174"
+       height="64"
+       rx="6"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect16" />
+    <text
+       x="335"
+       y="376"
+       text-anchor="middle"
+       font-size="12"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text17">Pair and group features</text>
+    <text
+       x="335"
+       y="394"
+       text-anchor="middle"
+       font-size="10px"
+       fill="#52606d"
+       stroke="none"
+       id="text18">interactions · neighbors · motion</text>
+    <rect
+       x="456"
+       y="350"
+       width="174"
+       height="64"
+       rx="6"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect18" />
+    <text
+       x="543"
+       y="376"
+       text-anchor="middle"
+       font-size="12"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text19">Unsupervised models</text>
+    <text
+       x="543"
+       y="394"
+       text-anchor="middle"
+       font-size="10px"
+       fill="#52606d"
+       stroke="none"
+       id="text20">AR-HMM · keypoint-MoSeq</text>
+    <rect
+       x="664"
+       y="350"
+       width="176"
+       height="64"
+       rx="6"
+       fill="#e6f4f1"
+       stroke="#00897b"
+       id="rect20" />
+    <text
+       x="752"
+       y="376"
+       text-anchor="middle"
+       font-size="12"
+       font-weight="600"
+       fill="#1f2933"
+       stroke="none"
+       id="text21">Supervised models</text>
+    <text
+       x="752"
+       y="394"
+       text-anchor="middle"
+       font-size="10px"
+       fill="#52606d"
+       stroke="none"
+       id="text22">XGBoost · Lightning-Action · FERAL</text>
     <!-- Flow -->
-    <path d="M 194 60 L 242 60" fill="none" stroke="#9aa5b1" marker-end="url(#arrow)"/>
-    <path d="M 400 118 L 400 104" fill="none" stroke="#9aa5b1" marker-end="url(#arrow)"/>
-    <path d="M 554 60 L 578 60 L 578 146" fill="none" stroke="#9aa5b1"/>
-    <path d="M 554 232 L 578 232 L 578 146" fill="none" stroke="#9aa5b1"/>
-    <path d="M 578 146 L 602 146" fill="none" stroke="#9aa5b1" marker-end="url(#arrow)"/>
-    <path d="M 735 186 L 735 284 L 440 284 L 440 298" fill="none" stroke="#9aa5b1" marker-end="url(#arrow)"/>
-
+    <path
+       d="M 194 60 L 242 60"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-end="url(#arrow)"
+       id="path22" />
+    <path
+       d="M 400 118 L 400 104"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-end="url(#arrow)"
+       id="path23" />
+    <path
+       d="M 554 60 L 578 60 L 578 146"
+       fill="none"
+       stroke="#9aa5b1"
+       id="path24" />
+    <path
+       d="M 554 232 L 578 232 L 578 146"
+       fill="none"
+       stroke="#9aa5b1"
+       id="path25" />
+    <path
+       d="M 578 146 L 602 146"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-end="url(#arrow)"
+       id="path26" />
+    <path
+       d="M 735 186 L 735 284 L 440 284 L 440 298"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-end="url(#arrow)"
+       id="path27" />
     <!-- Adjacent stages compose both ways round -->
-    <path d="M 216 382 L 246 382" fill="none" stroke="#9aa5b1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-    <path d="M 424 382 L 454 382" fill="none" stroke="#9aa5b1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-    <path d="M 632 382 L 662 382" fill="none" stroke="#9aa5b1" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <path
+       d="M 216 382 L 246 382"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-start="url(#arrow)"
+       marker-end="url(#arrow)"
+       id="path28" />
+    <path
+       d="M 424 382 L 454 382"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-start="url(#arrow)"
+       marker-end="url(#arrow)"
+       id="path29" />
+    <path
+       d="M 632 382 L 662 382"
+       fill="none"
+       stroke="#9aa5b1"
+       marker-start="url(#arrow)"
+       marker-end="url(#arrow)"
+       id="path30" />
   </g>
-
-  <text x="440" y="454" text-anchor="middle" font-size="11" font-style="italic" fill="#52606d">every result content-addressed by run_id, so a re-run is a no-op</text>
 </svg>
