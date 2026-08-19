@@ -14,6 +14,8 @@ is inside.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -25,7 +27,10 @@ from mosaic.tracking.common.ultralytics_env import (
     UltralyticsNotFoundError,
     UnsupportedModelError,
 )
-from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    ProbeResponse,
+    TrainPoseRequest,
+)
 from mosaic.tracking.pose_training.ultralytics_train import (
     CANCEL_SENTINEL_NAME,
     attempt_directory,
@@ -266,3 +271,122 @@ def test_the_epoch_count_survives_the_next_heartbeat() -> None:
     on_line('{"event":"epoch","epoch":4,"total_epochs":9,"metrics":{}}')
 
     assert ctx.done == 5, "five epochs have finished, counting from zero"
+
+
+# --- reading the tool's answer ---------------------------------------------
+
+
+def _answering(
+    save_dir: Path, **overrides: object
+) -> Callable[..., tuple[str, str, int]]:
+    """Stand in for a runner that answered, writing the response it would write."""
+    fields: dict[str, object] = {
+        "save_dir": str(save_dir),
+        "epochs_completed": 3,
+        "stop": "completed",
+    }
+    fields.update(overrides)
+
+    def fake_run_supervised(
+        argv: Sequence[str], **_kwargs: object
+    ) -> tuple[str, str, int]:
+        out = Path(argv[list(argv).index("--out") + 1])
+        _ = out.write_text(json.dumps(fields))
+        return "", "", 0
+
+    return fake_run_supervised
+
+
+def _somewhere_to_launch(_env: object, **_kwargs: object) -> list[str]:
+    """A resolved interpreter, with no built environment behind it."""
+    return ["/x/bin/python"]
+
+
+def _train_request(tmp_path: Path) -> TrainPoseRequest:
+    run_root = tmp_path / "run"
+    return TrainPoseRequest(
+        model="yolo11n-pose.pt",
+        data_yaml=str(tmp_path / "data.yaml"),
+        epochs=3,
+        imgsz=640,
+        batch=16,
+        device="cpu",
+        patience=50,
+        project_dir=str(run_root),
+        run_name="train",
+        resume=False,
+        augment={},
+        train_overrides={},
+        cancel_sentinel=str(run_root / ".mosaic-train" / "eid" / CANCEL_SENTINEL_NAME),
+    )
+
+
+def test_a_model_written_somewhere_else_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultralytics renames a run directory that is occupied; mosaic composes one.
+
+    Mosaic asks for ``exist_ok`` so the two agree, and reads the answer back so
+    that a build which renames anyway is a refusal rather than a silent
+    registration of some other attempt's weights.
+    """
+    import mosaic.tracking.common.ultralytics_env as tool_env
+    from mosaic.tracking.pose_training.ultralytics_train import (
+        TrainingDirectoryError,
+        run_pose_training_tool,
+    )
+
+    request = _train_request(tmp_path)
+    monkeypatch.setattr(
+        tool_env, "run_supervised", _answering(tmp_path / "run" / "train-2")
+    )
+    monkeypatch.setattr(tool_env, "tool_invocation", _somewhere_to_launch)
+
+    with pytest.raises(TrainingDirectoryError, match="train-2"):
+        _ = run_pose_training_tool(
+            request, work_dir=tmp_path / "attempt", idle_timeout=60.0
+        )
+
+
+def test_the_composed_directory_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mosaic.tracking.common.ultralytics_env as tool_env
+    from mosaic.tracking.pose_training.ultralytics_train import run_pose_training_tool
+
+    request = _train_request(tmp_path)
+    monkeypatch.setattr(
+        tool_env, "run_supervised", _answering(tmp_path / "run" / "train")
+    )
+    monkeypatch.setattr(tool_env, "tool_invocation", _somewhere_to_launch)
+
+    outcome = run_pose_training_tool(
+        request, work_dir=tmp_path / "attempt", idle_timeout=60.0
+    )
+    assert outcome.save_dir == tmp_path / "run" / "train"
+    assert outcome.epochs_completed == 3
+    assert outcome.stop == "completed"
+
+
+def test_the_request_is_left_beside_the_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exchange is the only durable record of what a run was asked to do."""
+    import mosaic.tracking.common.ultralytics_env as tool_env
+    from mosaic.tracking.pose_training.ultralytics_train import (
+        TRAIN_REQUEST_NAME,
+        TRAIN_RESPONSE_NAME,
+        run_pose_training_tool,
+    )
+
+    request = _train_request(tmp_path)
+    monkeypatch.setattr(
+        tool_env, "run_supervised", _answering(tmp_path / "run" / "train")
+    )
+    monkeypatch.setattr(tool_env, "tool_invocation", _somewhere_to_launch)
+    attempt = tmp_path / "attempt"
+
+    _ = run_pose_training_tool(request, work_dir=attempt, idle_timeout=60.0)
+
+    assert (attempt / TRAIN_REQUEST_NAME).is_file()
+    assert (attempt / TRAIN_RESPONSE_NAME).is_file()

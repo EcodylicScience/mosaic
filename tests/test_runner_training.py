@@ -468,3 +468,45 @@ def test_a_probe_with_no_model_asks_about_the_environment_alone(
     assert response.n_keypoints == 0
     assert response.model_load_error == ""
     assert response.has_ultralytics is True
+
+
+def test_point_training_stops_at_an_epoch_boundary_too(
+    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both subcommands share the callback, so both share the guarantee."""
+    _install_ultralytics(monkeypatch)
+    sentinel = tmp_path / "cancel"
+    original = _FakeYolo.train
+
+    def train_and_cancel_midway(self: _FakeYolo, **kwargs: object) -> None:
+        def touch_after_first(trainer: _Trainer) -> None:
+            if trainer.epoch == 0:
+                _ = sentinel.write_text("cancelled")
+
+        self.callbacks.setdefault("on_train_epoch_end", []).insert(0, touch_after_first)
+        original(self, **kwargs)
+
+    monkeypatch.setattr(_FakeYolo, "train", train_and_cancel_midway)
+    request = runner.TrainPointsRequest(
+        model="polo26n.yaml",
+        data_yaml=str(tmp_path / "data.yaml"),
+        epochs=TOTAL_EPOCHS,
+        imgsz=640,
+        batch=16,
+        device="cpu",
+        patience=50,
+        project_dir=str(tmp_path / "run"),
+        run_name="train",
+        resume=False,
+        augment={},
+        train_overrides={},
+        cancel_sentinel=str(sentinel),
+        loc=5.0,
+        loc_loss="mse",
+        dor=0.8,
+    )
+    response = runner.run_train_points(request)
+
+    assert response.stop == "cancelled"
+    assert response.epochs_completed == 1
+    assert (tmp_path / "run" / "train" / "weights" / "last.pt").is_file()

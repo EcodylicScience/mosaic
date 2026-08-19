@@ -1,13 +1,17 @@
 """Custom model training pipeline for pose estimation, point detection, and localization.
 
 Converters: transform annotation formats to YOLO pose / POLO point / localizer labels.
-Training:   train YOLO pose, POLO point-detection, or localizer heatmap models.
+Training:   the heatmap localizer trains here; YOLO pose and POLO point training
+            run in environments of their own, driven from `ultralytics_train`.
 Inference:  the heatmap localizer runs here; YOLO pose and POLO point inference
             run in environments of their own, driven from `ultralytics_infer`.
 
+Ultralytics and the POLO fork are AGPL-3.0, so no extra installs either and
+nothing here imports one. Build the environment the model belongs to and point
+mosaic at it with MOSAIC_ULTRALYTICS_BIN or MOSAIC_POLO_BIN; see
+`src/mosaic/tracking/external/README.md`.
+
 Requires optional dependency:
-    Pose:       pip install mosaic-behavior[pose]      (training only)
-    POLO:       pip install mosaic-behavior[polo]      (training only)
     Localizer:  pip install mosaic-behavior[deep-learning]
 """
 
@@ -41,12 +45,8 @@ from .prep import (
     tracks_to_yolo_pose,
 )
 from .train import (
-    train_pose_model,
-    train_point_model,
     find_best_model,
     find_last_checkpoint,
-    validate_model,
-    validate_point_model,
     load_training_curves,
 )
 from .inference import (
@@ -107,10 +107,6 @@ __all__ = [
     "run_localizer_inference",
     "tracks_to_yolo_pose",
     "train_localizer",
-    "train_point_model",
-    "train_pose_model",
-    "validate_model",
-    "validate_point_model",
     "visualize_detections",
     "visualize_inference",
     "visualize_keypoints",

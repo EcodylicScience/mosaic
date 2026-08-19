@@ -30,37 +30,20 @@ from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
 from mosaic.tracking.ops._common import RunRootHeld, fingerprint_yolo_dataset
 from mosaic.tracking.ops.train import trained_model_index
+from tests.helpers import FakeTrainer
 from tests.test_tracking_ops import _make_dataset
 
 
-class _Counter:
-    """A trainer stand-in that records how many times it really trained."""
+class _Counter(FakeTrainer):
+    """A trainer stand-in that records how many times it really trained.
 
-    def __init__(self) -> None:
-        self.calls = 0
-        self.last_kwargs: dict[str, object] = {}
+    The name and the ``calls`` attribute are what ``tests/test_pipeline_step.py``
+    reaches for, so the graph-execution claim test keeps working.
+    """
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import mosaic.tracking.pose_training.train as tr
-
-        def fake_train(
-            data_yaml: object,
-            *,
-            project: str,
-            name: str,
-            callback: object = None,
-            cancel_check: object = None,
-            epochs: int = 1,
-            **kw: object,
-        ) -> None:
-            self.calls += 1
-            self.last_kwargs = dict(kw)
-            run_dir = Path(project) / name
-            (run_dir / "weights").mkdir(parents=True, exist_ok=True)
-            _ = (run_dir / "weights" / "best.pt").write_bytes(b"weights")
-            _ = (run_dir / "results.csv").write_text("epoch,loss\n0,0.1\n")
-
-        monkeypatch.setattr(tr, "train_pose_model", fake_train)
+    @property
+    def last_request(self):
+        return self.requests[-1]
 
 
 def _data_yaml(tmp_path: Path) -> Path:
@@ -330,5 +313,5 @@ def test_overrides_reach_the_trainer_and_move_the_identity(
 
     assert plain != tuned
     assert trainer.calls == 2
-    assert trainer.last_kwargs["lr0"] == 0.0044
-    assert trainer.last_kwargs["lrf"] == 0.0072
+    assert trainer.last_request.train_overrides["lr0"] == 0.0044
+    assert trainer.last_request.train_overrides["lrf"] == 0.0072

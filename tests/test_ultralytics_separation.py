@@ -72,24 +72,15 @@ lets ``tests/test_ultralytics_wire_contract.py`` import the file in an
 environment that has no Ultralytics at all.
 """
 
-POSE_TRAINING_RESIDUAL: Final = ("tracking/pose_training/train.py",)
-"""YOLO and POLO **training** still runs in mosaic's own process.
+ALLOWED_TO_IMPORT_ULTRALYTICS: Final = frozenset({RUNNER_PROGRAM})
+"""One file, and it is the one that runs somewhere else.
 
-Single-model inference no longer does: ``infer-pose`` and ``infer-points`` drive
-the runner in the environment their model belongs to, exactly as the tracker
-does, and ``inference.py`` left this tuple when they moved. Training is what is
-left, and it is the harder half -- its progress callback is a live in-process
-closure holding a job context and a cancel token, which has no serializable form.
-
-Named here rather than tolerated by a broad exclusion, so the allowance shrinks
-when they move out instead of quietly outliving the reason for it: the test below
-fails on an allowed file that has *stopped* importing Ultralytics, which makes
-the second half of that work impossible to leave half-done.
+The list is terminal: it can only shrink to empty, which would mean the runner
+had stopped importing Ultralytics and this whole arrangement had lost its
+subject. It held a second entry until pose and point *training* moved out --
+those ops kept a live in-process progress callback holding a job context and a
+cancel token, which had no serializable form and needed one inventing.
 """
-
-ALLOWED_TO_IMPORT_ULTRALYTICS: Final = frozenset(
-    {RUNNER_PROGRAM, *POSE_TRAINING_RESIDUAL}
-)
 
 _MENTIONS_WITHOUT_IMPORTING: Final = "tracking/ultralytics_track/version.py"
 """A file whose prose contains ``from ultralytics import YOLO`` and whose code
@@ -217,9 +208,9 @@ def test_only_the_declared_files_import_ultralytics(
 
     A file that imports Ultralytics and is not listed is the breach this whole
     arrangement exists to prevent. An allowed file that has *stopped* importing
-    it is the other half: the allowance would otherwise outlive its reason, and
-    the remaining ``pose_training`` module is on its way out, so the day training
-    moves is the day this list must shrink to the runner alone.
+    it is the other half: an allowance nothing uses is one that gets reused by
+    accident, and it is what made the day training moved out the same day this
+    list shrank.
     """
     scanned = ultralytics_scan.scanned
     importers = ultralytics_scan.importers
