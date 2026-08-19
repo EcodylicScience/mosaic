@@ -26,6 +26,7 @@ request each op builds -- stays with that caller.
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -39,10 +40,13 @@ from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    missing_output_error,
     subprocess_env,
     tool_invocation,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    EpochEvent,
+    ProbeRequest,
     ProbeResponse,
     ProgressEvent,
 )
@@ -191,6 +195,16 @@ class ModelLoadError(ValueError):
     """The environment resolved, and could not load the weights it was given."""
 
 
+class UnsupportedModelError(ValueError):
+    """The weights are not the kind of model this op runs.
+
+    Shared by inference and by training, because it is a fact about the
+    checkpoint rather than about what was going to be done with it: a ``locate``
+    model handed to a pose op is the same refusal whether that op was going to
+    predict with it or fine-tune from it.
+    """
+
+
 def refuse_unloadable_model(probe: ProbeResponse, model_path: str) -> None:
     """Refuse weights the environment could not load, naming the likely reason.
 
@@ -318,6 +332,67 @@ def run_runner(
     return stdout, stderr
 
 
+def probe_environment(
+    model_path: Path | str,
+    *,
+    env: ToolEnv,
+    failure: type[ToolExitError],
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    conda_env: str | None = None,
+    bin_path: str | Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
+) -> ProbeResponse:
+    """Ask one environment what it holds, and what the weights are.
+
+    Called once per run, before anything is minted, so the keypoint count, the
+    model's declared task, whether this build is the fork and whether the weights
+    load at all are known before the first entry runs. Shared by inference and by
+    training, which ask the same question of the same environments and differ only
+    in what they refuse afterwards -- training additionally sends an empty
+    *model_path* when it starts from a bare asset name, which asks about the
+    environment alone rather than downloading a checkpoint to answer a preflight.
+
+    The request and the response live in a temporary directory: the probe runs
+    before the run root exists, and nothing reads either file afterwards. No
+    tracker is named, because inference runs none.
+
+    A probe writes no progress lines -- it loads the weights and answers -- so an
+    inactivity bound on it is a deadline on the whole operation. *idle_timeout*
+    is therefore raised to
+    :data:`~mosaic.tracking.common.ultralytics_env.PROBE_DEADLINE_FLOOR_SECONDS`
+    when the caller's value is shorter.
+
+    Raises:
+        ToolExitError: The subclass given as *failure*, when the runner exited
+            non-zero. Weights it cannot load are **not** among the reasons: those
+            are reported in ``model_load_error`` and refused by the callers below.
+        FileNotFoundError: The runner exited zero having written no response.
+    """
+    request = ProbeRequest(model_path=str(model_path))
+    with tempfile.TemporaryDirectory(prefix="mosaic-infer-probe-") as scratch:
+        request_path = Path(scratch) / "probe-request.json"
+        response_path = Path(scratch) / "probe-response.json"
+        _ = request_path.write_text(request.model_dump_json())
+        stdout, stderr = run_runner(
+            env,
+            failure,
+            "probe",
+            request_path,
+            response_path,
+            idle_timeout=max(idle_timeout, PROBE_DEADLINE_FLOOR_SECONDS),
+            max_runtime=max_runtime,
+            conda_env=conda_env,
+            bin_path=bin_path,
+            cancel_check=cancel_check,
+            on_output=on_output,
+        )
+        if not response_path.is_file():
+            raise missing_output_error(env.tool, response_path, stdout, stderr)
+        return ProbeResponse.model_validate_json(response_path.read_text())
+
+
 def reported_progress(line: str) -> ProgressEvent | None:
     """The ``progress`` event *line* carries, or ``None`` for anything else.
 
@@ -370,6 +445,53 @@ def progress_activity(
     return on_line
 
 
+def reported_epoch(line: str) -> EpochEvent | None:
+    """The completed epoch *line* carries, or ``None`` for anything else.
+
+    Tolerant for the reason :func:`reported_progress` is: this runs on the
+    subprocess reader thread, where a line is whatever the child wrote, and
+    raising there would be swallowed. The two readers are separate because the
+    events are separate models -- an epoch is not a position in frames -- and each
+    answering ``None`` to the other's lines is what let training's channel be
+    added without touching the tracker's.
+    """
+    try:
+        return EpochEvent.model_validate_json(line)
+    except ValidationError:
+        return None
+
+
+def training_activity(
+    ctx: JobContext,
+    liveness: Callable[[str], None],
+) -> Callable[[str], None]:
+    """Report each epoch the runner finishes, keeping *liveness* intact.
+
+    The training counterpart of :func:`progress_activity`, and deliberately
+    **not** throttled. That throttle exists because a batch is a fraction of a
+    second and reporting per line would write a run-log record per batch for the
+    length of a video; an epoch is minutes, there are hundreds rather than
+    hundreds of thousands, and a two-epoch run finishing inside the throttle
+    window would report its first epoch and swallow its second.
+
+    ``ctx.heartbeat(epoch + 1)`` is not decoration. ``phase_activity`` calls
+    ``ctx.heartbeat()`` with no argument, and the run-log reduction takes
+    ``progress_done`` from whichever of the two spoke last -- so without the
+    count being set here, the next heartbeat after an epoch would reset the
+    reduced progress to zero.
+    """
+
+    def on_line(line: str) -> None:
+        liveness(line)
+        event = reported_epoch(line)
+        if event is None:
+            return
+        ctx.progress.on_epoch_end(event.epoch, event.total_epochs, event.metrics)
+        ctx.heartbeat(event.epoch + 1)
+
+    return on_line
+
+
 __all__ = [
     "POLO_BOOTSTRAP",
     "POLO_ENV",
@@ -382,10 +504,14 @@ __all__ = [
     "RunnerSubcommand",
     "UltralyticsError",
     "UltralyticsNotFoundError",
+    "UnsupportedModelError",
+    "probe_environment",
     "progress_activity",
     "refuse_unloadable_model",
+    "reported_epoch",
     "reported_progress",
     "run_runner",
     "runner_invocation",
     "runner_script",
+    "training_activity",
 ]

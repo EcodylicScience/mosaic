@@ -11,12 +11,14 @@ from __future__ import annotations
 import pytest
 
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
-from mosaic.tracking.common.ultralytics_env import ModelLoadError
+from mosaic.tracking.common.ultralytics_env import (
+    ModelLoadError,
+    UnsupportedModelError,
+)
 from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
 from mosaic.tracking.pose_training.ultralytics_infer import (
     INFER_REQUEST_NAME,
     INFER_RESPONSE_NAME,
-    UnsupportedModelError,
     require_points_model,
     require_pose_model,
 )

@@ -516,14 +516,14 @@ class InferPoseOp(Op[PoseInferParams]):
             InferPoseRequest,
             pose_columns,
         )
+        from mosaic.tracking.common.ultralytics_env import probe_environment
         from mosaic.tracking.pose_training.ultralytics_infer import (
-            probe_inference_env,
             require_pose_model,
             run_pose_inference_tool,
         )
 
         def per_video_for(model_path: str) -> PerVideo:
-            probe = probe_inference_env(
+            probe = probe_environment(
                 model_path,
                 env=ULTRALYTICS_ENV,
                 failure=UltralyticsError,
@@ -599,14 +599,14 @@ class InferPointsOp(Op[PointInferParams]):
             POINT_COLUMNS,
             InferPointsRequest,
         )
+        from mosaic.tracking.common.ultralytics_env import probe_environment
         from mosaic.tracking.pose_training.ultralytics_infer import (
-            probe_inference_env,
             require_points_model,
             run_point_inference_tool,
         )
 
         def per_video_for(model_path: str) -> PerVideo:
-            probe = probe_inference_env(
+            probe = probe_environment(
                 model_path,
                 env=POLO_ENV,
                 failure=PoloError,

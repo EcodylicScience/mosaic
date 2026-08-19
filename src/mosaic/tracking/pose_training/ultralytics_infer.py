@@ -12,10 +12,11 @@ Both spawn the same runner, and which one answers is decided by the interpreter
 mosaic spawns -- :data:`~mosaic.tracking.common.ultralytics_env.ULTRALYTICS_ENV`
 or :data:`~mosaic.tracking.common.ultralytics_env.POLO_ENV`.
 
-:func:`probe_inference_env`, :func:`run_pose_inference_tool` and
-:func:`run_point_inference_tool` sit at module scope because they are the seam the
-marker suites replace, which is what exercises the whole op -- identifiers, the
-claim, the bridge, the index row -- with no Ultralytics installed at all.
+:func:`run_pose_inference_tool` and :func:`run_point_inference_tool` sit at module
+scope because they are the seam the marker suites replace, which is what exercises
+the whole op -- identifiers, the claim, the bridge, the index row -- with no
+Ultralytics installed at all. The probe they run first is shared with training and
+lives in :mod:`mosaic.tracking.common.ultralytics_env`.
 
 **Every refusal is decided from what the probe reported**, before a video is
 opened, so a missing environment or a checkpoint from the wrong fork is a message
@@ -24,7 +25,6 @@ rather than a traceback out of ``torch.load`` on frame zero.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +33,6 @@ from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError, missing_outpu
 from mosaic.tracking.common.ultralytics_env import (
     POLO_BOOTSTRAP,
     POLO_ENV,
-    PROBE_DEADLINE_FLOOR_SECONDS,
     ULTRALYTICS_BOOTSTRAP,
     ULTRALYTICS_ENV,
     PoloError,
@@ -41,6 +40,7 @@ from mosaic.tracking.common.ultralytics_env import (
     RunnerSubcommand,
     UltralyticsError,
     UltralyticsNotFoundError,
+    UnsupportedModelError,
     refuse_unloadable_model,
     run_runner,
 )
@@ -49,7 +49,6 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPoseRequest,
     InferRequestBase,
     InferResponse,
-    ProbeRequest,
     ProbeResponse,
 )
 
@@ -68,10 +67,6 @@ and ``test_infer_run_markers.py`` is what holds them together.
 """
 
 
-class UnsupportedModelError(ValueError):
-    """The weights are not the kind of model this op runs."""
-
-
 @dataclass(frozen=True, slots=True)
 class InferenceOutcome:
     """What one entry's inference produced."""
@@ -79,63 +74,6 @@ class InferenceOutcome:
     predictions_path: Path
     n_frames: int
     n_rows: int
-
-
-def probe_inference_env(
-    model_path: Path | str,
-    *,
-    env: ToolEnv,
-    failure: type[ToolExitError],
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
-    conda_env: str | None = None,
-    bin_path: str | Path | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-    on_output: Callable[[str], None] | None = None,
-) -> ProbeResponse:
-    """Ask one environment what it holds, and what the weights are.
-
-    Called once per run, before anything is minted, so the keypoint count, the
-    model's declared task, whether this build is the fork and whether the weights
-    load at all are known before the first entry runs.
-
-    The request and the response live in a temporary directory: the probe runs
-    before the run root exists, and nothing reads either file afterwards. No
-    tracker is named, because inference runs none.
-
-    A probe writes no progress lines -- it loads the weights and answers -- so an
-    inactivity bound on it is a deadline on the whole operation. *idle_timeout*
-    is therefore raised to
-    :data:`~mosaic.tracking.common.ultralytics_env.PROBE_DEADLINE_FLOOR_SECONDS`
-    when the caller's value is shorter.
-
-    Raises:
-        ToolExitError: The subclass given as *failure*, when the runner exited
-            non-zero. Weights it cannot load are **not** among the reasons: those
-            are reported in ``model_load_error`` and refused by the callers below.
-        FileNotFoundError: The runner exited zero having written no response.
-    """
-    request = ProbeRequest(model_path=str(model_path))
-    with tempfile.TemporaryDirectory(prefix="mosaic-infer-probe-") as scratch:
-        request_path = Path(scratch) / "probe-request.json"
-        response_path = Path(scratch) / "probe-response.json"
-        _ = request_path.write_text(request.model_dump_json())
-        stdout, stderr = run_runner(
-            env,
-            failure,
-            "probe",
-            request_path,
-            response_path,
-            idle_timeout=max(idle_timeout, PROBE_DEADLINE_FLOOR_SECONDS),
-            max_runtime=max_runtime,
-            conda_env=conda_env,
-            bin_path=bin_path,
-            cancel_check=cancel_check,
-            on_output=on_output,
-        )
-        if not response_path.is_file():
-            raise missing_output_error(env.tool, response_path, stdout, stderr)
-        return ProbeResponse.model_validate_json(response_path.read_text())
 
 
 def require_pose_model(probe: ProbeResponse, model_path: str) -> None:
@@ -309,8 +247,6 @@ __all__ = [
     "INFER_REQUEST_NAME",
     "INFER_RESPONSE_NAME",
     "InferenceOutcome",
-    "UnsupportedModelError",
-    "probe_inference_env",
     "require_points_model",
     "require_pose_model",
     "run_point_inference_tool",

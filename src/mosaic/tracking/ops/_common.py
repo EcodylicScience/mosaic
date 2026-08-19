@@ -19,6 +19,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
+    InflightMarker,
     clear_inflight,
     inflight_state,
     new_inflight,
@@ -203,7 +204,7 @@ class RunRootHeld(RuntimeError):
 
 def claim_run_root(
     ds: Dataset, ctx: JobContext, run_root: Path, kind: str, idle_seconds: float
-) -> None:
+) -> InflightMarker:
     """Take *run_root* exclusively for a one-shot op, or raise.
 
     Per-entry work skips a contended item so one sequence cannot end a batch; a
@@ -214,6 +215,18 @@ def claim_run_root(
 
     No ``finally`` release -- ``inflight_state`` reads a holder whose run-log went
     terminal as ``orphaned``, so a dead execution frees the root by itself.
+
+    Returns:
+        The claim that was taken, so a caller with output to read can keep it
+        alive. A claim expires ``idle_seconds`` plus a grace after it is written,
+        and a one-shot op that outruns that window has its root read as abandoned
+        by the next execution along -- which then clears it and starts writing
+        into the same directory. Only a caller with lines arriving from its tool
+        can refresh it, through
+        :func:`~mosaic.tracking.common.entry.phase_activity`, and it cannot do
+        that without the marker. This was minted and dropped on the floor for as
+        long as every one-shot op ran in process and had nothing to hang a
+        refresh on.
     """
     marker = new_inflight(
         execution_id=ctx.execution_id,
@@ -222,20 +235,22 @@ def claim_run_root(
         phase=None,
         idle_seconds=idle_seconds,
     )
+    held: InflightMarker | None = None
     for attempt in (0, 1):
         if try_create_inflight(run_root, marker):
-            return
+            return marker
         held = read_inflight(run_root)
         state = inflight_state(
             held, run_log_base=ds.base_dir, execution_id=ctx.execution_id
         )
         if state == "mine":
-            return
+            return marker
         if state in {"expired", "orphaned"} and attempt == 0:
             clear_inflight(run_root)
             continue
-        where = f"{held.host}:{held.pid}" if held is not None else "another host"
-        raise RunRootHeld(
-            f"[{kind}] {run_root.name} is being produced by execution "
-            f"{held.execution_id if held else '?'} on {where}; not training it again."
-        )
+        break
+    where = f"{held.host}:{held.pid}" if held is not None else "another host"
+    raise RunRootHeld(
+        f"[{kind}] {run_root.name} is being produced by execution "
+        f"{held.execution_id if held else '?'} on {where}; not training it again."
+    )

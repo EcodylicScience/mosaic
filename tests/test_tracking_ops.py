@@ -578,6 +578,7 @@ def _fake_pose_backend(monkeypatch) -> None:
     request names, because the op reads it back to bridge it, exactly as the
     runner would have written it.
     """
+    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     def fake_probe(model_path, **_kwargs):
@@ -610,7 +611,7 @@ def _fake_pose_backend(monkeypatch) -> None:
             predictions_path=published, n_frames=4, n_rows=len(table)
         )
 
-    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
     monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake_run)
 
 
@@ -663,6 +664,7 @@ def _fake_points_backend(monkeypatch) -> None:
     nothing in the suite called the op, faked its backend, or installed the
     `polo` extra, and no CI job did either. This is the first.
     """
+    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     def fake_probe(model_path, **_kwargs):
@@ -697,7 +699,7 @@ def _fake_points_backend(monkeypatch) -> None:
             predictions_path=published, n_frames=2, n_rows=len(table)
         )
 
-    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake_run)
 
 
