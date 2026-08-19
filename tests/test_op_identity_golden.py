@@ -403,6 +403,7 @@ def _trex_run_id_settings() -> str:
             analysis_range=None,
             visual_identification_model_path="train-identity.0.1-bbbbbbbbbb",
             auto_train=False,
+            detect_keypoint_count=7,
             track_extra_settings=None,
         )
     )

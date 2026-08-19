@@ -404,3 +404,106 @@ def test_the_located_pv_follows_output_name(monkeypatch: pytest.MonkeyPatch, tmp
 def test_no_sources_is_refused():
     with pytest.raises(ValueError, match="at least one source"):
         _ = trex_run._as_sources([])
+
+
+# --- pose columns reach the track argv, because TREx will not add them ---
+
+
+def _track_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: object):
+    """Run ``run_trex_track`` against a stubbed binary and return its argv."""
+    seen: dict[str, list[str]] = {}
+
+    def fake_run_trex(args, **_: object):
+        seen["args"] = list(args)
+        return "", ""
+
+    monkeypatch.setattr(trex_run, "_run_trex", fake_run_trex)
+    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
+    pv = tmp_path / "conversion.pv"
+    _ = pv.write_bytes(b"pv")
+    _ = trex_run.run_trex_track(pv, tmp_path / "out", **kwargs)  # pyright: ignore[reportArgumentType]
+    return seen["args"]
+
+
+def _output_fields(argv: list[str]) -> list[list[object]] | None:
+    """The ``-output_fields`` payload in *argv*, parsed, or None if absent."""
+    import json
+
+    if "-output_fields" not in argv:
+        return None
+    return json.loads(argv[argv.index("-output_fields") + 1])
+
+
+def test_a_keypoint_count_names_the_pose_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TREx exports the columns it is given, and adds pose ones only from a model.
+
+    ``detect_keypoint_format`` is set when TREx loads a model, is not written
+    into the ``.pv``, and is refused from both the command line and a settings
+    file -- so the tracking invocation, which loads no model, cannot name them
+    itself. This is where they come from instead.
+    """
+    fields = _output_fields(_track_argv(monkeypatch, tmp_path, detect_keypoint_count=7))
+    assert fields is not None
+    assert fields[-14:] == [
+        [f"pose{axis}{i}", []] for i in range(7) for axis in ("X", "Y")
+    ]
+
+
+def test_the_default_fields_survive_being_added_to(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``output_fields`` is a value, not a delta.
+
+    Assigning it replaces TREx's default rather than extending it, so sending
+    the keypoints alone would drop ``frame``, ``time`` and ``X``/``Y`` -- the
+    columns the NPZ converter reads -- and the entry would not survive the
+    bridge. Measured on TREx 2.0.0: 38 exported keys become 22.
+    """
+    fields = _output_fields(_track_argv(monkeypatch, tmp_path, detect_keypoint_count=7))
+    assert fields is not None
+    for required in (["frame", []], ["time", []], ["X", ["RAW", "WCENTROID"]]):
+        assert required in fields, required
+    assert fields[: len(trex_run.TREX_DEFAULT_OUTPUT_FIELDS)] == list(
+        trex_run.TREX_DEFAULT_OUTPUT_FIELDS
+    )
+
+
+def test_no_keypoint_count_leaves_the_fields_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A detection model has no keypoints to export, so TREx's default stands."""
+    assert _output_fields(_track_argv(monkeypatch, tmp_path)) is None
+    assert (
+        _output_fields(_track_argv(monkeypatch, tmp_path, detect_keypoint_count=0))
+        is None
+    )
+
+
+def test_an_explicit_output_fields_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The composed value is a default, not a decision taken away from the caller."""
+    mine = [["frame", []], ["poseX0", []]]
+    fields = _output_fields(
+        _track_argv(
+            monkeypatch,
+            tmp_path,
+            detect_keypoint_count=7,
+            extra_settings={"output_fields": mine},
+        )
+    )
+    assert fields == mine
+
+
+def test_pose_fields_are_named_the_way_trex_names_them() -> None:
+    """X before Y within a keypoint, zero-based -- matching ``list_auto_pose_fields``."""
+    assert trex_run.pose_output_fields(2) == [
+        ["poseX0", []],
+        ["poseY0", []],
+        ["poseX1", []],
+        ["poseY1", []],
+    ]
+    assert trex_run.pose_output_fields(0) == []
+    assert trex_run.pose_output_fields(-1) == []

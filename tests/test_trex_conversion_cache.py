@@ -829,3 +829,37 @@ def test_which_trex_exports_are_one_individual(stem: str, expected: bool) -> Non
     from mosaic.core.track_library.trex import is_per_individual_export
 
     assert is_per_individual_export(f"{stem}.npz") is expected
+
+
+def test_naming_the_keypoints_re_tracks_but_reuses_the_conversion(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """``detect_keypoint_count`` is a track key, and the distinction is the point.
+
+    It changes which columns are *exported*, never what was detected -- so it
+    has to move the tracking identity (the table really is different) while
+    leaving the ``.pv`` alone. Getting that backwards would make asking for
+    keypoints re-run detection over the whole video, which is the expensive
+    phase and the one the shared conversion cache exists to avoid.
+    """
+    first = dr.run_trex(ds)
+    converted_once = list(trex.converted)
+    assert len(converted_once) == 1
+
+    second = dr.run_trex(ds, detect_keypoint_count=7)
+
+    assert second != first, "the exported columns changed, so the run must"
+    assert trex.converted == converted_once, (
+        "the detection pass was repeated for a change that only renames columns"
+    )
+    assert len(trex.tracked) == 2, "and the tracking pass was not"
+
+
+def test_the_keypoint_count_reaches_the_tracking_call(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """It is the tracking phase that names the columns, not the conversion."""
+    _ = dr.run_trex(ds, detect_keypoint_count=7)
+
+    assert trex.track_kwargs[0]["detect_keypoint_count"] == 7
+    assert "detect_keypoint_count" not in trex.convert_kwargs[0]

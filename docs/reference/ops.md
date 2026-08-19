@@ -143,6 +143,7 @@ Run TREx (convert + track) over scoped videos, bridging results into ``tracks/``
 | `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  |
 | `visual_identification_model_path` | `string` \| `None` | `null` |  |
 | `auto_train` | `boolean` | `false` |  |
+| `detect_keypoint_count` | `integer` \| `None` | `null` |  |
 | `track_extra_settings` | `object` \| `None` | `null` |  |
 
 ??? note "`JsonValue`"

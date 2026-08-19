@@ -232,6 +232,11 @@ CONVERT_KEYS: Final[tuple[str, ...]] = (
 )
 TRACK_KEYS: Final[tuple[str, ...]] = (
     "track_max_individuals",
+    # A track key and deliberately not a convert one: it changes which columns
+    # are *exported*, never what was detected. So naming the keypoints re-keys
+    # the tracking run -- the cheap phase -- and reuses the `.pv`, which is the
+    # expensive one.
+    "detect_keypoint_count",
     "track_max_speed",
     "track_max_reassign_time",
     "track_trusted_probability",
@@ -258,6 +263,7 @@ def trex_settings(
     analysis_range: tuple[int, int] | None,
     visual_identification_model_path: Path | str | None,
     auto_train: bool,
+    detect_keypoint_count: int | None,
     track_extra_settings: dict[str, Any] | None,
 ) -> dict[str, object]:
     """Build the settings that define a tracking result -- the ``run_id`` payload.
@@ -296,6 +302,7 @@ def trex_settings(
             else None
         ),
         "auto_train": auto_train,
+        "detect_keypoint_count": detect_keypoint_count,
         "track_extra_settings": track_extra_settings,
     }
 
@@ -674,6 +681,7 @@ def run_trex(
     analysis_range: tuple[int, int] | None = None,
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
+    detect_keypoint_count: int | None = None,
     track_extra_settings: dict[str, Any] | None = None,
     # execution
     idle_timeout: float = 900,
@@ -768,6 +776,7 @@ def run_trex(
         analysis_range=analysis_range,
         visual_identification_model_path=vi_model_id,
         auto_train=auto_train,
+        detect_keypoint_count=detect_keypoint_count,
         track_extra_settings=track_extra_settings,
     )
     minted = mint_tracker_run(
@@ -1028,6 +1037,7 @@ def run_trex(
                 analysis_range=analysis_range,
                 visual_identification_model_path=vi_model_exec,
                 auto_train=auto_train,
+                detect_keypoint_count=detect_keypoint_count,
                 extra_settings=track_extra_settings,
                 idle_timeout=idle_timeout,
                 max_runtime=max_runtime,

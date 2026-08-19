@@ -65,6 +65,19 @@ class TrexParams(TrackerOpParams):
     analysis_range: tuple[int, int] | None = None
     visual_identification_model_path: str | None = None
     auto_train: bool = False
+    detect_keypoint_count: int | None = None
+    """How many keypoints ``detect_model`` reports.
+
+    Set it whenever that model is a **pose** model, or the tracks it produces
+    carry no keypoints and nothing says so. TREx names ``poseX<i>``/``poseY<i>``
+    itself from ``detect_keypoint_format``, which it learns by loading a model --
+    and mosaic runs convert and track as two separate invocations, so the
+    process doing the exporting has none. The value is refused from both the
+    command line and a settings file, so naming the columns in ``output_fields``
+    is the only route, and that is what mosaic does with this number.
+
+    A *track* key, so setting it re-tracks and reuses the conversion.
+    """
     # JsonValue rather than object on both pass-through dictionaries: these are
     # the only params carrying arbitrary user values into the run_id, so an
     # unrepresentable value here is what identity_ready now rejects. Typing them
@@ -140,6 +153,7 @@ class TrexOp(Op[TrexParams]):
             analysis_range=params.analysis_range,
             visual_identification_model_path=vi_model_id,
             auto_train=params.auto_train,
+            detect_keypoint_count=params.detect_keypoint_count,
             track_extra_settings=params.track_extra_settings,
         )
         return tracker_identity(self.kind, self.version, settings)
@@ -169,6 +183,7 @@ class TrexOp(Op[TrexParams]):
             analysis_range=params.analysis_range,
             visual_identification_model_path=params.visual_identification_model_path,
             auto_train=params.auto_train,
+            detect_keypoint_count=params.detect_keypoint_count,
             track_extra_settings=params.track_extra_settings,
             overwrite=params.overwrite,
             convert_to_tracks=params.convert_to_tracks,

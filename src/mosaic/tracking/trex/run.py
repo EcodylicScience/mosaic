@@ -431,6 +431,74 @@ def run_trex_convert(
     )
 
 
+TREX_DEFAULT_OUTPUT_FIELDS: Final[list[list[Any]]] = [
+    ["X", ["RAW", "WCENTROID"]],
+    ["Y", ["RAW", "WCENTROID"]],
+    ["X", ["RAW", "HEAD"]],
+    ["Y", ["RAW", "HEAD"]],
+    ["VX", ["RAW", "HEAD"]],
+    ["VY", ["RAW", "HEAD"]],
+    ["AX", ["RAW", "HEAD"]],
+    ["AY", ["RAW", "HEAD"]],
+    ["ANGLE", ["RAW"]],
+    ["ANGULAR_V", ["RAW"]],
+    ["ANGULAR_A", ["RAW"]],
+    ["MIDLINE_OFFSET", ["RAW"]],
+    ["normalized_midline", ["RAW"]],
+    ["midline_length", ["RAW"]],
+    ["midline_x", ["RAW"]],
+    ["midline_y", ["RAW"]],
+    ["midline_segment_length", ["RAW"]],
+    ["SPEED", ["RAW", "WCENTROID"]],
+    ["SPEED", ["RAW", "PCENTROID"]],
+    ["SPEED", ["RAW", "HEAD"]],
+    ["BORDER_DISTANCE", ["PCENTROID"]],
+    ["time", []],
+    ["timestamp", []],
+    ["frame", []],
+    ["missing", []],
+    ["num_pixels", []],
+    ["ACCELERATION", ["RAW", "PCENTROID"]],
+    ["ACCELERATION", ["RAW", "WCENTROID"]],
+]
+"""TREx's own default for ``output_fields``, restated.
+
+Restated because ``output_fields`` is a **value, not a delta**: assigning it
+replaces this list rather than extending it, and TREx offers no spelling that
+appends. Sending the keypoint columns alone therefore drops ``frame``, ``time``
+and ``X``/``Y`` -- the columns the NPZ converter reads -- and the entry does not
+survive the bridge. Measured on TREx 2.0.0: 38 exported keys become 22.
+
+Kept in mosaic rather than read back from TREx because there is nowhere to read
+it from: the value only appears in TREx's parameter reference and in a settings
+file it writes after a run, neither of which is available when the argv is
+built. It changes about as often as the integration version does, and a drift
+shows up as a column vanishing from ``tracks/``, which
+``test_trex_output_fields`` pins.
+"""
+
+
+def pose_output_fields(n_keypoints: int) -> list[list[Any]]:
+    """The ``poseX<i>``/``poseY<i>`` entries for a model with *n_keypoints*.
+
+    The naming is TREx's own: :func:`list_auto_pose_fields` builds exactly these
+    when it can, so a table produced this way is indistinguishable from one TREx
+    named itself.
+
+    Args:
+        n_keypoints: How many keypoints the detection model reports. Zero or
+            fewer yields no fields.
+
+    Returns:
+        One ``[name, []]`` pair per coordinate, X before Y within a keypoint.
+    """
+    return [
+        [f"pose{axis}{index}", []]
+        for index in range(max(0, n_keypoints))
+        for axis in ("X", "Y")
+    ]
+
+
 def run_trex_track(
     pv_path: Path | str,
     output_dir: Path | str,
@@ -442,6 +510,7 @@ def run_trex_track(
     analysis_range: tuple[int, int] | None = None,
     visual_identification_model_path: Path | str | None = None,
     auto_train: bool = False,
+    detect_keypoint_count: int | None = None,
     settings_path: Path | str | None = None,
     extra_settings: dict[str, Any] | None = None,
     idle_timeout: float = 900,
@@ -500,6 +569,24 @@ def run_trex_track(
         Path to pre-trained identity weights (``.pth``, without extension).
     auto_train : bool
         Automatically train visual identification after tracking (default False).
+    detect_keypoint_count : int, optional
+        How many keypoints the detection model reports. Given, ``output_fields``
+        is composed as :data:`TREX_DEFAULT_OUTPUT_FIELDS` plus that many
+        ``poseX<i>``/``poseY<i>`` columns, so a pose model's keypoints reach the
+        export.
+
+        **They do not otherwise.** TREx appends those columns itself from
+        ``detect_keypoint_format``, which it sets when it *loads a model* -- and
+        which is not among the settings it writes into the ``.pv``, is refused
+        from the command line, and is refused from a settings file (it answers
+        ``No valid detect_keypoint_format set``). Since convert and track are
+        two separate invocations here, the tracking process has no model to ask,
+        and the failure is silent: tracking succeeds and the table has no
+        keypoints. Naming the columns is the only route that works.
+
+        ``None`` leaves ``output_fields`` unset, which is right for a detection
+        model with no keypoints to export. An ``output_fields`` in
+        *extra_settings* wins over this.
     extra_settings : dict, optional
         Additional T-Rex parameters passed as ``-key value`` pairs.
     idle_timeout : float
@@ -553,6 +640,12 @@ def run_trex_track(
         )
     if auto_train:
         params["auto_train"] = True
+    if detect_keypoint_count:
+        # Before the `extra_settings` update below, so an explicit
+        # `output_fields` from the caller replaces this rather than the reverse.
+        params["output_fields"] = TREX_DEFAULT_OUTPUT_FIELDS + pose_output_fields(
+            detect_keypoint_count
+        )
     if settings_path is not None:
         # Absolute, because a relative one is resolved under `output_dir` and
         # the conversion this names generally does not live there.

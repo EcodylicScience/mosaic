@@ -658,6 +658,7 @@ def test_the_phase_key_sets_partition_the_settings(ds: Dataset) -> None:
         analysis_range=None,
         visual_identification_model_path=None,
         auto_train=False,
+        detect_keypoint_count=None,
         track_extra_settings=None,
     )
 
