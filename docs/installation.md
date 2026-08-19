@@ -47,8 +47,8 @@ pip install -e ".[all]" --extra-index-url https://download.pytorch.org/whl/cpu
 | ------------------ | --------------------------------------------------------------- |
 | `all`              | `pose` + `faiss`: the documented install                        |
 | `deep-learning`    | `torch` + `timm` — the heatmap localizer and all three identity models |
-| `pose`             | `deep-learning`, plus Ultralytics YOLO pose model training and single-model inference |
-| `polo`             | `deep-learning`, plus POLO point-model training and inference   |
+| `pose`             | `deep-learning`, plus Ultralytics YOLO pose model **training**   |
+| `polo`             | `deep-learning`, plus POLO point-model **training**             |
 | `faiss`            | The `"faiss"` kNN backend for `global-tsne`; its default `"annoy"` backend needs nothing |
 | `movement`         | The [movement](https://movement.neuroinformatics.dev/) smoothing and filtering features, and the xarray / netCDF4 / pynwb / sleap-io stack they sit on |
 | `lightning-action` | Lightning-Action temporal action classifier                     |
@@ -59,18 +59,20 @@ Four things to know before choosing:
 
 - **`pose` and `polo` cannot share an environment.** Both install a distribution named
   `ultralytics` — upstream against a fork — and pip resolves only one. Both build on
-  `deep-learning`, so taking the fork does not cost you the identity models. Neither
-  reaches `mosaic track ultralytics`, whose Ultralytics lives in an environment of its
-  own, so one machine can hold the fork here and upstream there.
+  `deep-learning`, so taking the fork does not cost you the identity models. Neither is
+  needed to *run* a model: `mosaic track ultralytics`, `mosaic run --kind infer-pose`
+  and `mosaic run --kind infer-points` each drive an environment of their own, so one
+  machine can train with the fork here and run upstream there. What is left in these
+  extras is model training.
 - **`yolo-augment` changes what a training run does.** Ultralytics adds Blur,
   MedianBlur, ToGray and CLAHE at p=0.01 whenever `albumentations` is importable, and
   nothing records which way a run went.
 - **`faiss` installs `faiss-cpu`.** On Linux with CUDA, install `faiss-gpu` yourself
   instead.
 - **`pose`, `polo` and therefore `all` install Ultralytics, which is AGPL-3.0.** Pose
-  and point model training and inference import it inside mosaic's own process, which
-  is what those extras are for. A bare `pip install -e .` carries no AGPL dependency,
-  and neither does `mosaic track ultralytics`, which runs Ultralytics as a separate
+  and point model *training* imports it inside mosaic's own process, which is what
+  those extras are now for. A bare `pip install -e .` carries no AGPL dependency, and
+  neither does tracking or single-model inference, which run Ultralytics as a separate
   program. [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) says
   what that means for a networked deployment.
 
@@ -83,17 +85,19 @@ removed in 0.13. `wavelets`, `sleap`, `hdf5` and `imgstore` are gone.
 
 ## Tools that run in their own environment
 
-Five of the tools mosaic drives are **not installed by mosaic**. You install each one
+Six of the tools mosaic drives are **not installed by mosaic**. You install each one
 yourself and then tell mosaic where it is, and mosaic launches it there. Four of them
 pin a Python version or a framework stack that cannot share an environment with
-mosaic; Ultralytics is separate for a licensing reason, given below.
+mosaic; Ultralytics and the POLO fork are separate for a licensing reason, given
+below.
 
 | Install it yourself | Used by | Tell mosaic where it is |
 | ------------------- | ------- | ----------------------- |
 | [**TRex**](https://trex.run) | `mosaic track trex` | `MOSAIC_TREX_CONDA_ENV`, or `MOSAIC_TREX_BIN` for the binary itself |
 | [**SLEAP**](https://sleap.ai) | `mosaic track sleap`, the `train-sleap` op | `MOSAIC_SLEAP_CONDA_ENV`, or `MOSAIC_SLEAP_BIN` |
 | [**Lightning Pose**](https://lightning-pose.readthedocs.io) | `mosaic track litpose`, the `train-litpose` op | `MOSAIC_LITPOSE_CONDA_ENV`, or `MOSAIC_LITPOSE_BIN` |
-| [**Ultralytics**](https://github.com/ultralytics/ultralytics) | `mosaic track ultralytics` | `MOSAIC_ULTRALYTICS_CONDA_ENV`, or `MOSAIC_ULTRALYTICS_BIN` for the environment's `yolo` script |
+| [**Ultralytics**](https://github.com/ultralytics/ultralytics) | `mosaic track ultralytics`, the `infer-pose` op | `MOSAIC_ULTRALYTICS_CONDA_ENV`, or `MOSAIC_ULTRALYTICS_BIN` for the environment's `yolo` script |
+| [**POLO**](https://github.com/mooch443/POLO) | the `infer-points` op | `MOSAIC_POLO_CONDA_ENV`, or `MOSAIC_POLO_BIN` for the environment's `yolo` script |
 | [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_PYTHON`, the environment's interpreter |
 
 ```bash
@@ -107,18 +111,31 @@ run`; a `_BIN` variable names a path directly. With neither set, mosaic looks on
 `$PATH`. Where a tool is installed never enters a `run_id`, so two machines that place
 it differently still agree on what a run is called.
 
-**Ultralytics** and **keypoint-MoSeq** are the two mosaic helps you build. The
-repository carries each environment's definition, a `pyproject.toml` and a lock file,
-so building one is a single command in its directory.
+**Ultralytics**, **POLO** and **keypoint-MoSeq** are the ones mosaic helps you build.
+The repository carries each environment's definition, a `pyproject.toml` and a lock
+file, so building one is a single command in its directory.
 
-Ultralytics is AGPL-3.0, and a program that imports it is one work with it, so mosaic
-drives it as a separate program and imports it nowhere on that path:
+Ultralytics is AGPL-3.0, and so is the POLO fork; a program that imports either is one
+work with it, so mosaic drives them as separate programs and imports them nowhere on
+those paths. Build whichever you need:
 
 ```bash
 cd src/mosaic/tracking/external/ultralytics-env
 uv sync --python 3.12
 export MOSAIC_ULTRALYTICS_BIN="$PWD/.venv/bin/yolo"
 ```
+
+```bash
+cd src/mosaic/tracking/external/polo-env
+uv sync --python 3.12
+export MOSAIC_POLO_BIN="$PWD/.venv/bin/yolo"
+```
+
+**Two environments, because POLO ships under the distribution name `ultralytics`** and
+so cannot occupy one with upstream. It also installs the same `yolo` console script,
+which is why `MOSAIC_POLO_BIN` is worth setting rather than leaving to `$PATH`: the
+last step of the search cannot tell the two builds apart. Point detection checks what
+the environment reported and refuses an upstream build by name rather than running it.
 
 The interpreter is pinned rather than left to uv, which would take the newest one it
 can find. That directory's `pyproject.toml` admits `>=3.12` and its `uv.lock` was
@@ -129,11 +146,13 @@ what the committed lock is for. `MOSAIC_ULTRALYTICS_BIN` names the `yolo` consol
 script; the `python` beside it in the same `bin/` is what mosaic runs.
 
 That costs two things, against an Ultralytics installed into mosaic's own
-environment. Building an environment is more work than adding an extra. And the
-tracker is handed a video path like every other external tool, so an imgstore
-recording has to be exported to plain video first, with
-`mosaic run --kind export-store`, exactly as TRex, SLEAP and Lightning Pose already
-require; the error message names the command.
+environment. Building an environment is more work than adding an extra. And the tool
+is handed a video path like every other external tool, so an imgstore recording has to
+be exported to plain video first, with `mosaic run --kind export-store`, exactly as
+TRex, SLEAP and Lightning Pose already require; the error message names the command.
+That applies to `infer-pose` and `infer-points` as well as to the tracker.
+`infer-localizer` is unaffected -- it is mosaic's own PyTorch and reads a store
+natively.
 
 **keypoint-MoSeq** is built the same way, from
 `src/mosaic/behavior/feature_library/external/`:

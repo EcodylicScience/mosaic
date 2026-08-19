@@ -98,6 +98,12 @@ that directory rather than putting anything on `$PATH`.
 `MOSAIC_ULTRALYTICS_CONDA_ENV` names a conda environment holding the same packages
 instead.
 
+This environment runs `mosaic run --kind infer-pose` as well as the tracker, so
+building it once covers both. Point detection needs a second one: POLO ships under the
+distribution name `ultralytics` and so cannot share an environment with upstream. Build
+it the same way in `polo-env/` beside this one, and name it with `MOSAIC_POLO_BIN` --
+both install the same `yolo` script, so a `$PATH` lookup cannot tell them apart.
+
 ## Tracking parameters
 
 Each tracker declares its own parameters, and `--set` takes any of them:

@@ -246,7 +246,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 #### `infer-points`
 
-Version `0.1` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
+Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
 
 Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
@@ -270,7 +270,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 #### `infer-pose`
 
-Version `0.1` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
+Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
 
 Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 

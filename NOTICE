@@ -138,27 +138,32 @@ Ultralytics reaches a user two of those ways at once -- invoked for
 tracking, optional for training -- and which path a use takes decides what
 that user owes.
 
-Invoked, for tracking. `mosaic track ultralytics` drives Ultralytics as a
-separate program in an environment the user builds. That environment's
-definition is src/mosaic/tracking/external/ultralytics-env/, the program
-that runs inside it is src/mosaic/tracking/external/runner/, and what
-crosses between mosaic and that program is a JSON request file, a JSON
-response file and progress lines on standard output. Mosaic locates the
-environment through MOSAIC_ULTRALYTICS_CONDA_ENV or MOSAIC_ULTRALYTICS_BIN
-and spawns its interpreter. On this path mosaic imports Ultralytics
-nowhere, and no mosaic install carries it: the user builds the environment,
-obtains Ultralytics from its own publisher under that publisher's terms,
-and is the licensee.
+Invoked, for tracking and single-model inference. `mosaic track
+ultralytics`, `mosaic run --kind infer-pose` and `mosaic run --kind
+infer-points` drive Ultralytics as a separate program in an environment the
+user builds. There are two such environments, because the POLO fork ships
+under the distribution name `ultralytics` and so cannot occupy one with
+upstream: src/mosaic/tracking/external/ultralytics-env/ for the tracker and
+pose inference, and src/mosaic/tracking/external/polo-env/ for point
+inference. The program that runs inside both is
+src/mosaic/tracking/external/runner/, and what crosses between mosaic and
+that program is a JSON request file, a JSON response file and progress
+lines on standard output. Mosaic locates each environment through
+MOSAIC_ULTRALYTICS_CONDA_ENV / MOSAIC_ULTRALYTICS_BIN and MOSAIC_POLO_CONDA_ENV
+/ MOSAIC_POLO_BIN and spawns its interpreter. On these paths mosaic imports
+Ultralytics nowhere, and no mosaic install carries it: the user builds the
+environment, obtains Ultralytics or POLO from its own publisher under that
+publisher's terms, and is the licensee.
 
-One package by these authors is installed into that environment beside
+One package by these authors is installed into those environments beside
 Ultralytics: mosaic-media, under the Apache License 2.0, which the runner
 reads video through. That is a licensing decision and not a packaging one.
 Apache-2.0 is one-way compatible with AGPL-3.0 -- it may be taken into an
 AGPL-covered work, and the combining is done by the user who builds the
 environment -- so it can sit there where mosaic-behavior, being
-AGPL-3.0-or-later, cannot. mosaic-behavior is declared nowhere in that
-environment and is not importable from it, and
-tests/test_ultralytics_separation.py checks both.
+AGPL-3.0-or-later, cannot. mosaic-behavior is declared nowhere in either
+environment and is not importable from either, and
+tests/test_ultralytics_separation.py checks both, for both.
 
 That separation is a license requirement, not a packaging convenience. A
 program that imports an AGPL-3.0 library is one work with it, so a mosaic
@@ -168,10 +173,10 @@ works. tests/test_ultralytics_separation.py holds that line in both
 directions: no mosaic module outside the files it names may import
 Ultralytics, and the runner program may not import mosaic.
 
-Optional, for pose and point models. The separation covers tracking and
-nothing else. Model training and single-model inference -- the train-pose,
-train-points, infer-pose and infer-points ops, in
-src/mosaic/tracking/pose_training/ -- still import Ultralytics inside
+Optional, for pose and point model training. The separation now covers
+tracking and single-model inference; training is what is left. The
+train-pose and train-points ops, in
+src/mosaic/tracking/pose_training/train.py, still import Ultralytics inside
 mosaic's own process. The [pose] extra installs upstream Ultralytics and
 the [polo] extra installs the fork; [all] reaches [pose] by self-reference,
 and so does [recommended], which is an alias for [all] kept for saved

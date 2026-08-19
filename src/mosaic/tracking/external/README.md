@@ -1,10 +1,18 @@
-# The Ultralytics tracking environments
+# The Ultralytics environments
 
-Mosaic's `ultralytics` tracker drives [Ultralytics](https://github.com/ultralytics/ultralytics)
-in a separate Python environment. Mosaic does not install it and never ships it.
-This directory holds that environment's definition (`ultralytics-env/`) and the
-program that runs inside it (`runner/`). You build the environment yourself,
-once.
+Mosaic drives [Ultralytics](https://github.com/ultralytics/ultralytics) and the
+[mooch443/POLO](https://github.com/mooch443/POLO) fork in separate Python
+environments. Mosaic does not install either and never ships them. This directory
+holds the two environment definitions (`ultralytics-env/`, `polo-env/`) and the
+one program that runs inside them (`runner/`). You build them yourself, once
+each.
+
+| Environment | Built for | Located by |
+| --- | --- | --- |
+| `ultralytics-env/` | `mosaic track ultralytics`, `mosaic run --kind infer-pose` | `MOSAIC_ULTRALYTICS_CONDA_ENV` / `MOSAIC_ULTRALYTICS_BIN` |
+| `polo-env/` | `mosaic run --kind infer-points` | `MOSAIC_POLO_CONDA_ENV` / `MOSAIC_POLO_BIN` |
+
+You need only the one your work reaches.
 
 ## Why the separation exists
 
@@ -17,14 +25,18 @@ distributable under its own terms, so what it does is spawn a second program in
 the environment you build and exchange JSON files and command-line arguments
 with it -- and two programs exchanging files are two programs.
 
-`src/mosaic/tracking/ultralytics_track/run.py` is mosaic's side of that
-exchange: it locates the environment and launches `runner/` inside it, and it
-imports no Ultralytics.
+`src/mosaic/tracking/common/ultralytics_env.py` locates either environment and
+launches `runner/` inside it; `ultralytics_track/run.py` and
+`pose_training/ultralytics_infer.py` are the tracker's and the inference ops'
+sides of that exchange. None of the three imports Ultralytics.
 
-Tracking is what runs out of process. `src/mosaic/tracking/pose_training/` --
-YOLO and POLO training, and single-model inference -- still imports Ultralytics
-in mosaic's own process, so the environments here do not yet cover every path
-that reaches it.
+Tracking and single-model inference are what run out of process. **Model
+training** -- `mosaic run --kind train-pose` and `--kind train-points`, in
+`src/mosaic/tracking/pose_training/train.py` -- still imports Ultralytics in
+mosaic's own process, so the environments here do not yet cover every path that
+reaches it. That is the harder half: its progress callback is a live in-process
+closure holding a job context and a cancel token, which has no serializable
+form.
 
 The same reasoning puts keypoint-MoSeq in
 [`src/mosaic/behavior/feature_library/external/`](../../behavior/feature_library/external/README.md);
@@ -37,10 +49,15 @@ deployment, not to mosaic's.
 
 ## Install
 
-From the repository root:
+From the repository root, for whichever you need:
 
 ```bash
 cd src/mosaic/tracking/external/ultralytics-env
+uv sync --python 3.12
+```
+
+```bash
+cd src/mosaic/tracking/external/polo-env
 uv sync --python 3.12
 ```
 
@@ -64,35 +81,48 @@ run identifier and two sets of numbers.
 
 The same ladder every other external tool uses, first match wins:
 
-1. `MOSAIC_ULTRALYTICS_CONDA_ENV` -- a conda environment name or prefix.
-2. `MOSAIC_ULTRALYTICS_BIN` -- the `yolo` console script. The `python` beside it
-   in the same `bin/` is what mosaic runs, so pointing at any one of the
+1. `MOSAIC_<TOOL>_CONDA_ENV` -- a conda environment name or prefix.
+2. `MOSAIC_<TOOL>_BIN` -- the `yolo` console script. The `python` beside it in
+   the same `bin/` is what mosaic runs, so pointing at any one of the
    environment's scripts names the directory the interpreter lives in.
 3. `yolo` on `$PATH`.
 
 ```bash
 export MOSAIC_ULTRALYTICS_BIN=src/mosaic/tracking/external/ultralytics-env/.venv/bin/yolo
+export MOSAIC_POLO_BIN=src/mosaic/tracking/external/polo-env/.venv/bin/yolo
 ```
+
+**Set the variable for the fork rather than relying on `$PATH`.** POLO installs
+the same `yolo` and `ultralytics` console scripts as upstream, under the same
+distribution name, so the third rung cannot tell the two apart: it resolves to
+whichever is on the path. Point detection therefore checks what the environment
+reported -- whether its `ultralytics` defines the `locate` task -- and refuses an
+upstream build by name rather than running it.
 
 The ladder resolves **placement, never identity**: which environment a tool ran
 in is a property of the machine, so none of these values reaches a `run_id`, and
 two machines with Ultralytics installed differently still agree on what a run is
 called.
 
-## The POLO fork gets an environment beside this one
+## Why the fork has an environment of its own
 
 POLO is a full fork of Ultralytics -- it keeps every upstream task and adds
 `locate` (point detection) -- and it ships under the **same distribution name**,
 `ultralytics`. Installed into one environment the two cannot coexist: pip
 resolves one and the other silently is not there. Two environments is exactly
-what makes them coexist, which is why `runner/` is a sibling of
-`ultralytics-env/` rather than inside it: a POLO environment beside it runs the
-same program, and which one runs is chosen by the interpreter mosaic spawns. Only tracking has moved out of process, and the tracker runs
-upstream Ultralytics, so there is no `polo-env/` here yet.
+what makes them coexist, which is why `runner/` is a sibling of both rather than
+inside either: they run the same program, and which one runs is chosen by the
+interpreter mosaic spawns.
 
-The directory is `ultralytics-env` and not `ultralytics` for a smaller reason: a
-hyphen is not a valid Python identifier, so the directory can never be read as a
-package shadowing the real `ultralytics` if it ever reaches `sys.path`.
+`polo-env/pyproject.toml` carries no version floor where its sibling pins
+`ultralytics>=8.4.63`, because pairing a direct git reference with a version
+specifier for one distribution is unresolvable. The `uv.lock` beside it pins the
+commit that was resolved, which is what the floor would have been for.
+
+The directories are `ultralytics-env` and `polo-env`, not `ultralytics` and
+`polo`, for a smaller reason: a hyphen is not a valid Python identifier, so
+neither can ever be read as a package shadowing the real `ultralytics` if it
+reaches `sys.path`.
 
 ## What runs inside
 
@@ -105,14 +135,21 @@ the package without importing the module that imports Ultralytics.
   standard library, numpy and pydantic and nothing else. It imports neither
   `ultralytics` nor `mosaic`.
 - `runner/ultralytics_runner.py` -- the program that imports Ultralytics, and
-  the only one `mosaic track ultralytics` reaches that does. Three subcommands,
-  each reading one JSON request file and writing one JSON response file:
+  the only one mosaic reaches that does. Five subcommands, each reading one JSON
+  request file and writing one JSON response file:
 
   ```bash
   .venv/bin/python ../runner/ultralytics_runner.py probe --request req.json --out resp.json
   .venv/bin/python ../runner/ultralytics_runner.py tracker-defaults --request req.json --out resp.json
   .venv/bin/python ../runner/ultralytics_runner.py track --request req.json --out result.json
+  .venv/bin/python ../runner/ultralytics_runner.py infer-pose --request req.json --out result.json
+  .venv/bin/python ../runner/ultralytics_runner.py infer-points --request req.json --out result.json
   ```
+
+  The two inference subcommands write their predictions parquet themselves, the
+  way `track` does, and convert each batch as it arrives rather than keeping the
+  results: a video's worth of live tensors cannot cross the boundary, and holding
+  them was a memory profile that grew with the recording.
 
   The response goes to a file rather than to standard output because
   Ultralytics' own logger is a stream handler on standard output -- a weights
@@ -122,17 +159,26 @@ the package without importing the module that imports Ultralytics.
   and `tracker-defaults` are silent from spawn to answer and mosaic gives them a
   deadline floor rather than an inactivity bound.
 
-  Under `track`, standard output carries one JSON line as soon as Ultralytics is
-  imported and one per decoded batch after that, which is what mosaic's
-  inactivity watchdog reads and what it reports position from. Loading the
+  Under `track` and the two inference subcommands, standard output carries one
+  JSON line as soon as Ultralytics is imported and one per decoded batch after
+  that, which is what mosaic's inactivity watchdog reads, what it reports position
+  from, and what keeps an entry's claim refreshed through a long video. Loading the
   weights happens between the first line and the second, so the `idle_timeout` a
   run is given has to exceed a cold model load: that is the longest silence a
   healthy run contains.
 
 `probe` reports and never refuses: it says what the environment holds -- whether
-Ultralytics and `lap` import, the version, the known backends, the model's task
-and keypoint count -- and mosaic decides what to refuse, because the refusal
-messages name mosaic commands and mosaic's own installation documentation.
+Ultralytics and `lap` import, whether this build is the fork, the version, the
+known backends, the model's task and keypoint count, and **why the weights would
+not load** when they do not -- and mosaic decides what to refuse, because the
+refusal messages name mosaic commands and mosaic's own installation
+documentation.
+
+That last field is what lets a checkpoint from the wrong fork be refused by name.
+POLO pickles its weights under a class upstream does not define, so an upstream
+build fails inside `torch.load` before the task the checkpoint declares can be
+read -- reporting the failure instead of raising it is what makes the refusal
+that routes those weights to `infer-points` reachable at all.
 
 `tracker-defaults` reports every backend's shipped configuration table in one
 process. No run calls it: mosaic transcribes those tables so that an upstream

@@ -46,6 +46,11 @@ carrying a weights path around.
 something called `ultralytics`, upstream for `pose` and the POLO fork for `polo`, so
 pip resolves only one. Prefer `pose` unless you need point detection.
 
+Running a trained model is not affected by that choice. `infer-pose` and
+`infer-points` each drive an environment mosaic does not install, built from
+`src/mosaic/tracking/external/`, so one machine can train points here and run pose
+inference there. See [installation](../../installation.md#tools-that-run-in-their-own-environment).
+
 ## 4. Use it
 
 Either run the model directly over scoped videos, which bridges into `tracks/` like a
@@ -56,6 +61,10 @@ mosaic run -m dataset.yaml --kind infer-pose --params '{"model": "<run_id>"}'
 ```
 
 `infer-points` and `infer-localizer` are the same shape for the other two model types.
+`infer-pose` and `infer-points` need their environment built and named first, and are
+handed a video path -- so an imgstore recording has to be exported with
+`mosaic run --kind export-store` beforehand. `infer-localizer` is mosaic's own PyTorch
+and needs neither.
 
 Or hand the weights to a tracker, which is what TRex's detection model expects:
 

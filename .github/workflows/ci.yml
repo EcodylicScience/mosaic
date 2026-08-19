@@ -185,14 +185,27 @@ jobs:
         working-directory: mosaic/src/mosaic/tracking/external/ultralytics-env
         run: uv sync --python 3.12
 
+      # POLO beside it, and not in it: the fork ships under the distribution name
+      # `ultralytics`, so an environment holds one or the other. `infer-points`
+      # runs the fork, and until it had an environment of its own nothing in CI
+      # had ever executed that path -- no job installed the `polo` extra.
+      - name: Build the POLO environment
+        working-directory: mosaic/src/mosaic/tracking/external/polo-env
+        run: uv sync --python 3.12
+
       - name: Test ultralytics tracking
         working-directory: mosaic
         env:
           PYTHONHASHSEED: random
-          # Promotes an Ultralytics environment that does not resolve from "skip"
-          # to "broken environment".
+          # Promotes an external environment that does not resolve from "skip"
+          # to "broken environment", for both of them.
           MOSAIC_CI_TRACKING: "1"
           MOSAIC_ULTRALYTICS_BIN: ${{ github.workspace }}/mosaic/src/mosaic/tracking/external/ultralytics-env/.venv/bin/yolo
+          # Named explicitly, never left to $PATH: the fork installs the same
+          # `yolo` script as upstream, so the last rung of the location ladder
+          # cannot tell the two apart and would hand point detection to whichever
+          # is found first.
+          MOSAIC_POLO_BIN: ${{ github.workspace }}/mosaic/src/mosaic/tracking/external/polo-env/.venv/bin/yolo
         # `-m tracker` for the same reason as the identity job above.
         run: uv run --no-sync pytest -q -m tracker
 

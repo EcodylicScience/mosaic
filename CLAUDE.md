@@ -75,14 +75,15 @@ gates reading a file the user already has, and the three are ~30 MB together.
 - `pose` and `polo` cannot be installed in the same environment — both ship
   under the `ultralytics` distribution name. Both self-reference
   `deep-learning`, so choosing the fork does not cost the identity models. What
-  they serve is pose and point **model training and inference**, the paths that
-  still import Ultralytics in mosaic's own process. `mosaic track ultralytics`
-  needs neither extra: it runs in
-  `src/mosaic/tracking/external/ultralytics-env/`, whose own `pyproject.toml`
-  declares `lap` (the tracker's linear-assignment solver, in no ultralytics
-  extra, so undeclared it gets pip-installed mid-run) and the
-  `ultralytics>=8.4.63` floor the four newer tracker backends arrived in. Both
-  extras still carry a copy of each.
+  they serve is pose and point **model training**, the one path that still
+  imports Ultralytics in mosaic's own process. Neither `mosaic track
+  ultralytics` nor `mosaic run --kind infer-pose|infer-points` needs an extra:
+  they run in `src/mosaic/tracking/external/ultralytics-env/` and
+  `.../polo-env/`, whose own `pyproject.toml` files declare `lap` (the tracker's
+  linear-assignment solver, in no ultralytics extra, so undeclared it gets
+  pip-installed mid-run) and, upstream only, the `ultralytics>=8.4.63` floor the
+  four newer tracker backends arrived in — the POLO pin is a bare git reference,
+  which cannot carry a version specifier. Both extras still carry a copy of each.
 - **`all` is self-referential** (`["mosaic-behavior[pose,faiss]"]`), so a bundle
   cannot drift from its parts. It excludes `polo` (mutually exclusive with
   `pose`), `yolo-augment` (changes what a training run does),
@@ -1022,16 +1023,24 @@ external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
 `run_ultralytics_tool`. One subprocess per entry.
 
 `tests/test_ultralytics_separation.py` holds both directions: no mosaic module
-outside the runner and two named `pose_training` modules may import Ultralytics,
-and the runner may not import mosaic. **The separation covers tracking only.**
-`train-pose`, `train-points`, `infer-pose` and `infer-points` still import
+outside the runner and one named `pose_training` module may import Ultralytics,
+and the runner may not import mosaic. **The separation covers tracking and
+single-model inference.** `train-pose` and `train-points` still import
 Ultralytics in mosaic's process, which is what `pose` and `polo` are for, so a
 claim that mosaic installs no AGPL dependency is false today.
+
+**Two environments, because POLO cannot share one with upstream.**
+`ultralytics-env/` runs the tracker and `infer-pose`; `polo-env/` runs
+`infer-points`. They ship the same `yolo` console script, so the `$PATH` rung of
+the location ladder cannot tell them apart — the probe reports whether a build
+defines the `locate` task, and `infer-points` refuses an upstream one by name.
 
 Two consequences a change should not undo. The tool is handed a video *path*, so
 an imgstore recording needs `mosaic run --kind export-store` first, exactly as the
 other three subprocess trackers do (`common/tool_input.py` is that boundary and
-raises naming the command); tracking a store natively is a capability this cost.
+raises naming the command); tracking a store natively is a capability this cost,
+and `infer-pose` / `infer-points` now pay it too. `infer-localizer` does not — it
+is mosaic's own PyTorch and still reads a store natively.
 And the environment is excluded from the uv workspace and has its own basedpyright
 execution environment pinned at `python3.12`. Built with any other interpreter,
 its packages land where nothing looks and the runner type-checks against no

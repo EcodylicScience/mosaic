@@ -74,6 +74,58 @@ training run does, and nothing records which way a run went.
 nothing for win32 on Python 3.14, which `requires-python` admits, so `uv.lock`
 is stale and `NOTICE` cannot be regenerated with it. No CI job reads the lock.
 
+## Unreleased — pose and point inference leave mosaic's process, and land in source pixels
+
+**`infer-pose` and `infer-points` now run their model in an environment mosaic
+does not install**, reached as a subprocess, the way the `ultralytics` tracker
+already did. Nothing in `src/mosaic/tracking/pose_training/inference.py` imports
+Ultralytics any more, and the separation guard's allowance is down to
+`train.py`. Model training is what is left.
+
+**Both ops move to version `0.2`, because their output moved.** They used to
+resize every frame at decode time to fit `imgsz` (640 by default) and return
+coordinates in that smaller space — which then reached `tracks/`, where every
+spatial column is supposed to be video pixels. Frames are now fed at their native
+size, as the tracker's always have been. A table written by `infer-pose.0.1-*` or
+`infer-points.0.1-*` holds coordinates scaled by `min(640/width, 640/height)` and
+should be re-run; the two versions write into separate directories, so nothing is
+overwritten and nothing is silently reinterpreted. No digest moves: the version is
+a visible segment, not a hash term, and `tests/data/op_identity_golden.json` is
+unchanged.
+
+**POLO has an environment of its own**, `src/mosaic/tracking/external/polo-env/`,
+located by `MOSAIC_POLO_CONDA_ENV` / `MOSAIC_POLO_BIN`. It cannot share one with
+upstream: both ship under the distribution name `ultralytics`. Both environments
+install the same `yolo` console script, so the `$PATH` step of the location
+ladder cannot tell them apart — name the fork's environment explicitly. Point
+detection refuses an upstream build by name rather than running it, which is what
+that step would otherwise do silently.
+
+**A checkpoint from the wrong fork is refused rather than crashing.** POLO pickles
+its weights under a class upstream does not define, so an upstream build failed
+inside `torch.load` before the task the checkpoint declares could be read, and the
+refusal that already routed `locate` weights to `infer-points` was unreachable.
+The probe now reports a load failure instead of raising it, and mosaic names the
+environment those weights belong to. This fixes `mosaic track ultralytics` too.
+
+**An imgstore recording has to be exported first**, for these two ops as it
+already was for the tracker: they are handed a video path, so
+`mosaic run --kind export-store` comes first and the error message names the
+command. `infer-localizer` is unaffected — it is mosaic's own PyTorch, still runs
+in process, still reads a store natively, and stays at version `0.1`.
+
+**Two fixes the boundary forced.** Predictions are converted per batch instead of
+being accumulated, so peak memory no longer grows with the length of a recording.
+And a long video no longer expires its own claim: the runner's progress lines
+refresh it, where an in-process op had no line to hang that on.
+
+**One defect found and fixed in the shared runner.** Its prefetch producer offered
+the end-of-stream sentinel once, with a timeout, so a consumer that had not freed
+a queue slot within half a second never received it and blocked forever. Whether
+that happened was decided by how long one batch took against that timer — never on
+a fast GPU, reliably on a busy machine or on CPU. `mosaic track ultralytics` was
+exposed to it too.
+
 ## Unreleased — a graph step names itself, and says no before doing the work
 
 **No identifier moves.** What changes is the surface another repository sees: a
