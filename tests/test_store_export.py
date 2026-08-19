@@ -191,6 +191,21 @@ def test_an_export_registers_both_links(
     assert derivative["recipe_hash"]
 
 
+def test_an_export_records_the_encoder_it_wrote_with(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """An export encodes, so its derivative row names the encoder like any other.
+    The value is read off the writer rather than assumed: nothing else on the row
+    carries it, since codec is measured and reads "av1" whichever encoder ran."""
+    ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
+    _export(ds, group, sequence)
+
+    derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
+    assert derivatives.iloc[0]["encoder"] == "libsvtav1"
+
+
 def test_a_second_export_reuses_the_first(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],

@@ -53,7 +53,7 @@ dependencies = [
     # an undeclared psutil turns that check into a silent no-op.
     "psutil>=5.9",
     "typer>=0.12",
-    "mosaic-media[io,cli]>=0.3.0,<0.4.0",
+    "mosaic-media[io,cli]>=0.3.3,<0.4.0",
 ]
 
 [dependency-groups]

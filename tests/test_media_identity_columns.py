@@ -45,9 +45,15 @@ def test_facts_to_row_carries_the_two_fact_values(
     row = facts_to_row(sample_facts, sample_verdict)
     assert row["video_uuid"] == "video-uuid-abc123"
     assert row["content_digest"] == "content-digest-def456"
-    # source_video_uuid is a transcode edge, not a fact, so facts_to_row leaves
-    # it empty for build_media_index_row to override.
+    # source_video_uuid and encoder are transcode edges, not facts, so
+    # facts_to_row leaves them empty for build_media_index_row to override.
     assert row["source_video_uuid"] == ""
+    assert row["encoder"] == ""
+
+
+def test_the_encoder_column_is_in_the_schema() -> None:
+    assert "encoder" in FLAT_FACTS_COLUMNS
+    assert "encoder" in MEDIA_INDEX_COLUMNS
 
 
 def test_build_media_index_row_overrides_source_video_uuid(

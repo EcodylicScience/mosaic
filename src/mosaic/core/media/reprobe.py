@@ -61,10 +61,14 @@ from .facts_columns import (
 from .imgstore_io import imgstore_probe, is_imgstore
 from .probe_row import probe_video_metadata
 
-# The five cells a fresh probe always leaves empty because they record a
+# The six cells a fresh probe always leaves empty because they record a
 # transcode decision rather than a measurement. The patch must never write them:
-# doing so would erase the media index's link graph and the recipe a derivative
-# was produced under.
+# doing so would erase the media index's link graph, the recipe a derivative was
+# produced under, and the encoder that produced it. `encoder` belongs here and
+# not with the measured cells for the reason the whole column exists: no probe
+# of the output can recover which encoder wrote it -- `codec` reads "av1" either
+# way -- so a patch that wrote what it measured would write an empty cell over
+# the only record.
 UNMEASURED_LINK_COLUMNS = frozenset(
     {
         "analysis_derivative_path",
@@ -72,6 +76,7 @@ UNMEASURED_LINK_COLUMNS = frozenset(
         "source_path",
         "source_video_uuid",
         "recipe_hash",
+        "encoder",
     }
 )
 

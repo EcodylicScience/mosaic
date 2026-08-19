@@ -280,7 +280,7 @@ class StoreExportOp(Op[StoreExportParams]):
                 continue
 
             ctx.progress.on_phase("export-store", f"{label}: {store.name}")
-            write_export(store, dest, row, params.av1_crf, ctx, index)
+            encoder = write_export(store, dest, row, params.av1_crf, ctx, index)
 
             facts = probe_media(dest)
             verdict = derive(facts, CHROME_149, media_thresholds())
@@ -295,6 +295,7 @@ class StoreExportOp(Op[StoreExportParams]):
                 video_order,
                 source_video_uuid=source_uuids[index],
                 recipe_hash=recipe_hash,
+                encoder=encoder,
             )
             set_forward_link(
                 ds, store, source_uuids[index], derivative_rel, EXPORT_TARGET
@@ -311,8 +312,9 @@ def write_export(
     av1_crf: int,
     ctx: "JobContext",
     position: int,
-) -> None:
-    """Decode every frame of *store* in order and encode it into *dest*.
+) -> str:
+    """Decode every frame of *store* in order and encode it into *dest*, and
+    report the encoder that wrote it.
 
     Writes to a sibling partial file and renames, so an interrupted encode never
     leaves a truncated video at the recipe address -- where the name alone would
@@ -344,6 +346,9 @@ def write_export(
             av1_crf=av1_crf,
             av1_preset=_EXPORT_PRESET,
         ) as writer:
+            # Read inside the block: the writer resolves its encoder when it
+            # opens, and the value is what goes in the derivative's index cell.
+            encoder_name = writer.encoder_name
             for _, frame in reader:
                 writer.write(frame)
                 written += 1
@@ -363,3 +368,4 @@ def write_export(
         )
         raise TranscodeError(message)
     partial.replace(dest)
+    return encoder_name

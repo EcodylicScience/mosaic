@@ -360,6 +360,20 @@ def test_the_derivative_row_records_the_recipe(
     assert rows[0]["recipe_hash"] == recipe
 
 
+def test_the_derivative_row_records_the_encoder(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """Which encoder ran is not recoverable from the rest of the row: codec is
+    measured and reads "av1" either way, and recipe_hash records the recipe
+    rather than the machine. Permitting hardware does not settle it either, since
+    a machine whose device cannot open av1_nvenc encodes on the CPU."""
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
+    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    _ = run_op(ds, "transcode", params)
+    rows = read_media_index(ds.get_root("media") / "index.csv")
+    assert rows[0]["encoder"] == "libsvtav1"
+
+
 def test_a_source_with_no_uuid_refuses_to_transcode(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:

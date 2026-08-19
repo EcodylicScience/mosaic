@@ -111,17 +111,23 @@ class TranscodeParams(Params):
     # those videos are hashed in their place, so a sequence rename does not move
     # the run.
     #
-    # allow_hardware is excluded provisionally, and the reasoning cuts both ways.
-    # A hardware encode and a CPU encode of the same source are not
-    # byte-identical, so this is more than a throughput knob. But it is a
-    # permission rather than a determinant: once the encode gate is
-    # usability-checked (mosaic-media issue
-    # encoder-gate-checks-listing-not-usability), allow_hardware=True on a
-    # machine with no usable device silently falls back to the CPU encoder. So
-    # including it would be wrong in both directions -- claiming two runs differ
-    # when both produced identical CPU output, and claiming two match when one
-    # used the hardware encoder. The honest discriminator is the encoder actually
-    # selected, which nothing records; this exclusion holds until it does.
+    # allow_hardware is excluded, and the reasoning cuts both ways. A hardware
+    # encode and a CPU encode of the same source are not byte-identical, so this
+    # is more than a throughput knob. But it is a permission rather than a
+    # determinant: the encode gate takes hardware only when the machine can
+    # actually open the encoder, so allow_hardware=True where it cannot falls
+    # back to the CPU encoder, and hashing the flag would claim two runs differ
+    # when both produced identical CPU output -- re-encoding a corpus for a flag
+    # that did nothing.
+    #
+    # The honest discriminator is the encoder actually selected, and it is now
+    # recorded, in the derivative's `encoder` index cell. It still cannot enter
+    # this hash, whatever its merits: the hash names the destination path, so it
+    # is needed before the transcode that chooses the encoder can run. What that
+    # leaves standing is that a permitted run and a plain run write different
+    # bytes to one path and each reuses the other's file. Closing that would make
+    # the cheapest path in the job -- the reuse check -- pay a device probe; the
+    # index cell says which encoder is there instead.
     entry: Annotated[tuple[str, str] | None, HASH_EXCLUDE] = None
     entries: Annotated[list[tuple[str, str]], HASH_EXCLUDE] = Field(
         default_factory=list
@@ -288,6 +294,7 @@ def _derivative_row(
     video_order: int,
     source_video_uuid: str,
     recipe_hash: str,
+    encoder: str,
 ) -> dict[str, object]:
     """Build the ``media`` index row describing one derivative."""
     raw_root = ds.get_root(ds.resolve_media_root())
@@ -298,8 +305,11 @@ def _derivative_row(
         "codec": facts.codec_name,
         **facts_to_row(facts, verdict),
     }
-    # facts_to_row leaves source_path/source_video_uuid/recipe_hash empty; the
-    # back-link records the origin and the recipe it was produced under.
+    # facts_to_row leaves source_path/source_video_uuid/recipe_hash/encoder
+    # empty; the back-link records the origin, the recipe it was produced under,
+    # and the encoder that produced it. The encoder is not derivable from the
+    # rest of the row: codec is measured and reads "av1" whichever encoder ran,
+    # and the recipe hash records the recipe rather than the machine.
     #
     # No assignment_source: a derivative takes its (group, sequence) from the
     # source row it was made from and has no derivation of its own to record.
@@ -317,6 +327,7 @@ def _derivative_row(
         source_path=relative_to_anchor(source, raw_root),
         source_video_uuid=source_video_uuid,
         recipe_hash=recipe_hash,
+        encoder=encoder,
         video_order=video_order,
     )
 
@@ -332,6 +343,7 @@ def set_back_link(
     video_order: int,
     source_video_uuid: str,
     recipe_hash: str,
+    encoder: str,
 ) -> None:
     """Record (or replace) the derivative's ``media`` index row (idempotent).
 
@@ -355,6 +367,7 @@ def set_back_link(
             video_order,
             source_video_uuid,
             recipe_hash,
+            encoder,
         )
         abs_value = str(row["abs_path"])
         if not df.empty:
@@ -445,6 +458,13 @@ class TranscodeOp(Op[TranscodeParams]):
     # targets, and a source stating no frame rate raises instead of leaving the
     # muxer to invent one. That is exactly the upstream change
     # transcode_recipe_hash's docstring says this segment is bumped by hand for.
+    #
+    # Not moved by the encode-gate change in mosaic-media 0.3.3. Hardware is now
+    # taken only when the machine can open the encoder, and the one invocation
+    # that changes is one that previously failed at encoder startup having
+    # written nothing. So no derivative in existence came from a command that
+    # change alters, and a bump would rename every derivative on every machine,
+    # CPU-only ones included, to separate files from byte-identical output.
     version = "0.2"
     Params = TranscodeParams
 
@@ -662,6 +682,7 @@ class TranscodeOp(Op[TranscodeParams]):
                 video_order,
                 source_video_uuid=source_uuids[i],
                 recipe_hash=recipe_hash,
+                encoder=result.encoder_name,
             )
             set_forward_link(ds, source, source_uuids[i], derivative_rel, params.target)
 

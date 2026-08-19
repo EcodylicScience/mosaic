@@ -44,6 +44,15 @@ FLAT_FACTS_COLUMNS: list[str] = [
     # source_video_uuid, so facts_to_row leaves it empty and
     # build_media_index_row overrides it from the transcode job.
     "recipe_hash",
+    # encoder names the video encoder a derivative was produced by. Empty on an
+    # original, which no encoder here wrote, and on a copy remux, which encodes
+    # nothing. It is what tells a hardware encode from the CPU fallback the same
+    # permission produces on a machine whose device cannot open the hardware
+    # encoder: the codec column cannot, being a measured fact that reads "av1"
+    # for both, and the recipe hash cannot, recording the recipe rather than the
+    # machine. A transcode edge like the two above, so facts_to_row leaves it
+    # empty and build_media_index_row overrides it from the TranscodeResult.
+    "encoder",
 ]
 FACTS_JSON_COLUMN = "media_facts"
 FACTS_COLUMNS: list[str] = [*FLAT_FACTS_COLUMNS, FACTS_JSON_COLUMN]
@@ -220,6 +229,7 @@ class MediaFactsRow(TypedDict):
     content_digest: str
     source_video_uuid: str
     recipe_hash: str
+    encoder: str
     media_facts: str
 
 
@@ -245,6 +255,7 @@ def facts_to_row(facts: MediaFacts, verdict: Verdict) -> MediaFactsRow:
         "content_digest": facts.content_digest,
         "source_video_uuid": "",
         "recipe_hash": "",
+        "encoder": "",
         "media_facts": json.dumps(dataclasses.asdict(facts)),
     }
 
