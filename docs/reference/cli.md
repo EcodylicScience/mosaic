@@ -662,7 +662,7 @@ $ mosaic media transcode [OPTIONS] {file}
 * `--target <analysis|playback>`: Which derivative to produce: analysis or playback.  [required]
 * `--output <path>`: Output file path, or an existing directory the derivative is written into under the source stem. Required: the CLI knows no dataset layout.  [required]
 * `--profile <chrome-149>`: Playback policy profile.  [default: chrome-149]
-* `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding; used only when the system ffmpeg offers it. Off by default (permitting enables it only when detected).  [default: no-hardware]
+* `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding. Taken only when this machine can actually open that encoder: a build listing it on a device that cannot run it encodes on the CPU instead. Off by default.  [default: no-hardware]
 * `--help`: Show this message and exit.
 
 ## `mosaic pipeline`

@@ -1,7 +1,7 @@
 # Run a tracker
 
 Four trackers are integrated. `mosaic track <kind>` scopes the videos, runs the
-tool, and bridges its output into `tracks/` in one command.
+tool, and bridges its output into `tracks/` in one command, e.g.
 
 ```bash
 mosaic track trex -m dataset.yaml --set track_max_individuals=4

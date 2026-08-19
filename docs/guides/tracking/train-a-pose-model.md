@@ -1,8 +1,8 @@
 # Train a pose model
 
-If there are no tracks and no off-the-shelf model that works on your animal, mosaic
-covers the upstream half too: sample frames, annotate them, train a detector, and
-hand the weights to a tracker.
+If there are no tracks and no off-the-shelf model that works on your data, you can use
+mosaic for the model training process: sample frames, annotate them, train a detector,
+and hand the weights to a tracker.
 
 This is the most involved path in the section. Read [Run a
 tracker](run-a-tracker.md) first — training exists to feed it.
