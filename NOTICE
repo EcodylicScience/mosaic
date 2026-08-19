@@ -116,8 +116,8 @@ The arhmm feature fits a comparable model in mosaic's own code, with no
 keypoint-MoSeq dependency and no license restriction.
 
 
-ULTRALYTICS YOLO, AND THE POLO FORK -- INVOKED, AND OPTIONAL
-============================================================
+ULTRALYTICS YOLO, AND THE POLO FORK -- INVOKED
+==============================================
 
 Ultralytics YOLO. Copyright (C) Ultralytics.
 https://github.com/ultralytics/ultralytics
@@ -134,24 +134,26 @@ the AGPL v3 text. The Ultralytics Enterprise License is offered by
 Ultralytics for its own distribution and does not extend to a third-party
 fork, so POLO is AGPL-only.
 
-Ultralytics reaches a user two of those ways at once -- invoked for
-tracking, optional for training -- and which path a use takes decides what
-that user owes.
+No mosaic install carries Ultralytics. No extra, bundle or alias installs
+it, and no module under src/mosaic imports it outside
+src/mosaic/tracking/external/runner/, which runs only inside an environment
+the user builds.
 
-Invoked, for tracking and single-model inference. `mosaic track
-ultralytics`, `mosaic run --kind infer-pose` and `mosaic run --kind
-infer-points` drive Ultralytics as a separate program in an environment the
-user builds. There are two such environments, because the POLO fork ships
-under the distribution name `ultralytics` and so cannot occupy one with
-upstream: src/mosaic/tracking/external/ultralytics-env/ for the tracker and
-pose inference, and src/mosaic/tracking/external/polo-env/ for point
-inference. The program that runs inside both is
+Invoked, on every path. `mosaic track ultralytics` and `mosaic run --kind`
+with `infer-pose`, `infer-points`, `train-pose` or `train-points` drive
+Ultralytics as a separate program in an environment the user builds. There
+are two such environments, because the POLO fork ships under the
+distribution name `ultralytics` and so cannot occupy one with upstream:
+src/mosaic/tracking/external/ultralytics-env/ for the tracker, pose
+inference and pose training, and src/mosaic/tracking/external/polo-env/ for
+point inference and point training. The program that runs inside both is
 src/mosaic/tracking/external/runner/, and what crosses between mosaic and
-that program is a JSON request file, a JSON response file and progress
-lines on standard output. Mosaic locates each environment through
-MOSAIC_ULTRALYTICS_CONDA_ENV / MOSAIC_ULTRALYTICS_BIN and MOSAIC_POLO_CONDA_ENV
-/ MOSAIC_POLO_BIN and spawns its interpreter. On these paths mosaic imports
-Ultralytics nowhere, and no mosaic install carries it: the user builds the
+that program is a JSON request file, a JSON response file, progress lines on
+standard output, and -- for a cancelled training run -- a file mosaic writes
+that the program stats between epochs. Mosaic locates each environment
+through MOSAIC_ULTRALYTICS_CONDA_ENV / MOSAIC_ULTRALYTICS_BIN and
+MOSAIC_POLO_CONDA_ENV / MOSAIC_POLO_BIN and spawns its interpreter. On every
+one of these paths mosaic imports Ultralytics nowhere: the user builds the
 environment, obtains Ultralytics or POLO from its own publisher under that
 publisher's terms, and is the licensee.
 
@@ -170,31 +172,20 @@ program that imports an AGPL-3.0 library is one work with it, so a mosaic
 that imported Ultralytics could not be offered under terms of its own
 without also licensing Ultralytics; two programs exchanging files are two
 works. tests/test_ultralytics_separation.py holds that line in both
-directions: no mosaic module outside the files it names may import
-Ultralytics, and the runner program may not import mosaic.
-
-Optional, for pose and point model training. The separation now covers
-tracking and single-model inference; training is what is left. The
-train-pose and train-points ops, in
-src/mosaic/tracking/pose_training/train.py, still import Ultralytics inside
-mosaic's own process. The [pose] extra installs upstream Ultralytics and
-the [polo] extra installs the fork; [all] reaches [pose] by self-reference,
-and so does [recommended], which is an alias for [all] kept for saved
-install lines and removed in 0.13. A user who installs any of those four
-has an AGPL-licensed dependency in their environment and runs a combined
-work, exactly as before.
+directions: no mosaic module outside the runner program may import
+Ultralytics, no extra or bundle may declare it, and the runner program may
+not import mosaic.
 
 Obligation. AGPL v3 section 13 extends the duty to offer Corresponding
 Source to anyone who interacts with the program remotely over a network, so
 a commercial user is reached by operating a pipeline that includes
-Ultralytics as a service, without ever redistributing a copy. Mosaic is
-itself AGPL-3.0-or-later, so there is no incompatibility; the question is
-whether a given use of the combined work can meet the AGPL's obligations.
-For the [pose], [polo], [all] and [recommended] paths the options are to
-comply, to buy an Enterprise License from Ultralytics for its own
-distribution, or to install none of them. For the tracking environment the same choice is the user's
-own, made where they build it; mosaic asks for nothing on their behalf.
-
+Ultralytics as a service, without ever redistributing a copy. That
+obligation attaches to the environment the user built and to their
+deployment of it, not to mosaic: mosaic asks for none of it on their behalf,
+and installs nothing that carries it. The choices -- comply, buy an
+Enterprise License from Ultralytics for its own distribution, or build
+neither environment and use another tracker -- are the user's own, made
+where they build it.
 
 THE ULTRALYTICS TRACKER DEFAULTS, AND THE METHODS THEY CONFIGURE
 ===============================================================
@@ -241,9 +232,10 @@ LAP -- OPTIONAL
 lap. Copyright (c) 2012-2017 Tomas Kazmar and contributors.
 https://github.com/gatagat/lap
 
-BSD 2-Clause License. Declared by the Ultralytics environment, in
-src/mosaic/tracking/external/ultralytics-env/pyproject.toml, and by the
-[pose] and [polo] extras. It is the linear-assignment solver Ultralytics'
+BSD 2-Clause License. Declared by both Ultralytics environments, in
+src/mosaic/tracking/external/ultralytics-env/pyproject.toml and
+src/mosaic/tracking/external/polo-env/pyproject.toml, and by no mosaic
+extra. It is the linear-assignment solver Ultralytics'
 tracker matching imports at module scope, and it appears in no Ultralytics
 extra: declaring it is what makes it arrive when an environment is built,
 rather than being fetched by Ultralytics during a run.

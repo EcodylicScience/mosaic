@@ -11,10 +11,10 @@ messages do not, and each one sends a user to install something that will not
 fix their problem.
 
 **A bundle whose self-reference dangles.** Bundles are declared by
-self-reference (``all = ["mosaic-behavior[pose,faiss]"]``) so they cannot drift
-from their parts. The failure mode that buys is narrow but nasty: rename ``pose``
-without updating ``all`` and pip resolves ``mosaic-behavior[pose]`` to the
-project with an unknown extra, warns, and installs the base. The user gets a
+self-reference (``all = ["mosaic-behavior[deep-learning,faiss]"]``) so they
+cannot drift from their parts. The failure mode that buys is narrow but nasty:
+rename ``deep-learning`` without updating ``all`` and pip resolves the bundle to
+the project with an unknown extra, warns, and installs the base. The user gets a
 working mosaic with no torch in it and no error to say so -- which is exactly
 what the deprecated aliases exist to prevent, so they are checked too.
 """
@@ -189,6 +189,13 @@ def test_bundles_and_deprecated_aliases_are_not_empty() -> None:
 
     for name in ("all", "recommended", "identity", "localizer", "gpu"):
         assert name in extras, f"[{name}] is expected to exist until 0.13"
+        assert resolve(name), f"[{name}] resolves to no requirements at all"
+
+    # One release behind the four above, because they were retired later: when
+    # pose and point training moved into environments mosaic does not install,
+    # and there was no longer anything for either name to install here.
+    for name in ("pose", "polo"):
+        assert name in extras, f"[{name}] is expected to exist until 0.14"
         assert resolve(name), f"[{name}] resolves to no requirements at all"
 
     for name in ("all", "recommended"):

@@ -37,7 +37,7 @@ from mosaic.core.pipeline.run_log import (
 from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
-from tests.helpers import make_dataset
+from tests.helpers import FakeTrainer, make_dataset
 
 
 # --- fixtures --------------------------------------------------------------
@@ -327,24 +327,11 @@ def test_extract_frames_cancel(tmp_path, monkeypatch):
 # --- train-pose op (mocked trainer) + lineage ------------------------------
 
 
-def _install_fake_pose_trainer(monkeypatch):
-    import mosaic.tracking.pose_training.train as tr
-
-    def fake_train(
-        data_yaml, *, project, name, callback=None, cancel_check=None, epochs=1, **kw
-    ):
-        run_dir = Path(project) / name
-        (run_dir / "weights").mkdir(parents=True, exist_ok=True)
-        (run_dir / "weights" / "best.pt").write_bytes(b"weights")
-        (run_dir / "results.csv").write_text("epoch,loss\n0,0.1\n")
-        for e in range(2):
-            if callback is not None:
-                callback.on_epoch_end(e, epochs, {"loss": 0.1})
-            if cancel_check is not None and cancel_check():
-                break
-        return None
-
-    monkeypatch.setattr(tr, "train_pose_model", fake_train)
+def _install_fake_pose_trainer(monkeypatch) -> FakeTrainer:
+    """Replace the two seams that reach the training environment."""
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    return trainer
 
 
 def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
@@ -395,23 +382,57 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
 
 def test_train_pose_cancel(tmp_path, monkeypatch):
     ds = _make_dataset(tmp_path)
-    import mosaic.tracking.pose_training.train as tr
-
-    def fake_train(data_yaml, *, project, name, cancel_check=None, **kw):
-        # simulate a between-epoch cancel firing during training
-        return None
-
-    monkeypatch.setattr(tr, "train_pose_model", fake_train)
+    _install_fake_pose_trainer(monkeypatch)
     data_yaml = tmp_path / "data.yaml"
     data_yaml.write_text("kpt_shape: [4, 3]\n")
 
     token = CancelToken()
-    token.cancel()  # already cancelled -> ctx.check_cancel() after train raises
+    token.cancel()  # already cancelled -> ctx.check_cancel() after the tool raises
     with pytest.raises(Cancelled):
         run_op(
             ds, "train-pose", {"data": str(data_yaml), "epochs": 1}, cancel_token=token
         )
     assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
+
+
+def test_a_tool_that_reports_a_cancel_is_never_registered(tmp_path, monkeypatch):
+    """A truncated model must not land under a finished run's identifier.
+
+    The token is normally already set and the check above has raised. This is the
+    other order: the tool stopped short because it was asked to, while this
+    process no longer thinks it was.
+    """
+    ds = _make_dataset(tmp_path)
+    trainer = FakeTrainer(epochs_run=1, stop="cancelled")
+    trainer.install(monkeypatch)
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("kpt_shape: [4, 3]\n")
+
+    with pytest.raises(Cancelled):
+        run_op(ds, "train-pose", {"data": str(data_yaml), "epochs": 8})
+
+    from mosaic.core.pipeline.models import model_index_path
+    from mosaic.tracking.ops.train import trained_model_index
+
+    index = model_index_path(ds, "train-pose")
+    assert not index.exists() or trained_model_index(index).read().empty
+
+
+def test_the_index_records_the_epochs_that_actually_ran(tmp_path, monkeypatch):
+    """``patience`` stops a run short, and a forty-epoch model is not a three-hundred."""
+    ds = _make_dataset(tmp_path)
+    trainer = FakeTrainer(epochs_run=3, stop="early_stopped")
+    trainer.install(monkeypatch)
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("kpt_shape: [4, 3]\n")
+
+    run_id = run_op(ds, "train-pose", {"data": str(data_yaml), "epochs": 40})
+
+    from mosaic.core.pipeline.models import model_index_path
+    from mosaic.tracking.ops.train import trained_model_index
+
+    rows = trained_model_index(model_index_path(ds, "train-pose")).read(run_id=run_id)
+    assert int(rows.iloc[0]["n_epochs"]) == 3
 
 
 def test_train_localizer_mints_and_registers(
@@ -483,6 +504,7 @@ def _fake_pose_backend(monkeypatch) -> None:
     request names, because the op reads it back to bridge it, exactly as the
     runner would have written it.
     """
+    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     def fake_probe(model_path, **_kwargs):
@@ -515,7 +537,7 @@ def _fake_pose_backend(monkeypatch) -> None:
             predictions_path=published, n_frames=4, n_rows=len(table)
         )
 
-    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
     monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake_run)
 
 
@@ -568,6 +590,7 @@ def _fake_points_backend(monkeypatch) -> None:
     nothing in the suite called the op, faked its backend, or installed the
     `polo` extra, and no CI job did either. This is the first.
     """
+    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     def fake_probe(model_path, **_kwargs):
@@ -602,7 +625,7 @@ def _fake_points_backend(monkeypatch) -> None:
             predictions_path=published, n_frames=2, n_rows=len(table)
         )
 
-    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake_run)
 
 

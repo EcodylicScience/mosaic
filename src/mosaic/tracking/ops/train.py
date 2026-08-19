@@ -1,11 +1,21 @@
 """Model-training tracking ops: pose, points (POLO), localizer.
 
-Each op wraps the corresponding low-level trainer (kept in
-``pose_training/``) under the Job Contract: content ``run_id``, tracked storage
-under ``models/<kind>/<run_id>/``, per-epoch progress routed through
-``ctx.progress``, cooperative between-epoch cancellation, retraining lineage,
-and a ``TrainedModelIndexRow``. Heavy backends (ultralytics / torch / POLO) are
-imported lazily inside ``run()`` so registration stays import-light.
+Each op runs a trainer under the Job Contract: content ``run_id``, tracked
+storage under ``models/<kind>/<run_id>/``, per-epoch progress routed through
+``ctx.progress``, cooperative between-epoch cancellation, retraining lineage, and
+a ``TrainedModelIndexRow``.
+
+**Two of the three run somewhere else.** ``train-pose`` and ``train-points`` drive
+Ultralytics and the POLO fork in environments the user builds, because both are
+AGPL-3.0 and a mosaic that imported either would be one work with it; what crosses
+is a JSON request, a JSON response, and progress lines on standard output.
+``train-localizer`` is mosaic's own PyTorch and still runs in this process.
+
+The pieces that differ between the two external ops are the request they build,
+the environment they reach and what they refuse. Everything else -- the probe, the
+claim, the cancel, the reporting -- is :func:`train_through_the_tool`, so the
+sequence exists once. Heavy backends are imported lazily inside ``run()`` so
+registration stays import-light, and so the seams stay replaceable by a test.
 """
 
 from __future__ import annotations
@@ -15,14 +25,14 @@ from pathlib import Path
 
 import pandas as pd
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Annotated, Final, Self
+from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self
 
 from pydantic import model_validator
 
 from mosaic.core.helpers import text_cell
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
-from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
@@ -32,6 +42,7 @@ from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.tracking.common.mint import planned_model_id
+from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError
 from mosaic.tracking.model_refs import ModelShape, resolve_model
 from mosaic.tracking.ops._common import (
     claim_run_root,
@@ -42,19 +53,84 @@ from mosaic.tracking.ops._common import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.markers import InflightMarker
+    from mosaic.tracking.external.runner.ultralytics_protocol import (
+        ProbeResponse,
+        TrainRequestBase,
+    )
+    from mosaic.tracking.pose_training.ultralytics_train import TrainingOutcome
+
+
+class TrainingTool[RequestT: TrainRequestBase](Protocol):
+    """How a training subcommand is launched, whichever environment it runs in.
+
+    Generic in the request because each launcher takes exactly its own shape: a
+    pose tool cannot be handed a point request, and widening the parameter to the
+    base would say it could.
+    """
+
+    def __call__(
+        self,
+        request: RequestT,
+        /,
+        *,
+        work_dir: Path,
+        idle_timeout: float,
+        cancel_check: Callable[[], bool] | None,
+        on_output: Callable[[str], None] | None,
+    ) -> TrainingOutcome: ...
 
 
 _TRAIN_IDLE_SECONDS = 1800.0
+"""How long a training run may say nothing before it is presumed hung.
+
+The tool reports an epoch when one ends and a heartbeat every thirty seconds in
+between, so this bounds a genuinely silent process rather than a slow one -- and
+it has to, because an epoch on a large dataset outruns any window that would
+otherwise be reasonable.
+"""
+
+_TRAIN_CANCEL_GRACE_SECONDS = 900.0
+"""How long a cancelled training run is given to finish its epoch and stop.
+
+Ultralytics reads its stop flag between epochs and nowhere else, so a cancel is a
+file the tool notices at the next boundary; this is how long mosaic waits for
+that before falling back to the process kill every other tool gets immediately.
+
+It must exceed one epoch, or the kill always wins and the file is decorative. It
+must also stay **under** whatever grace the substrate running mosaic imposes: a
+container runtime that SIGKILLs the process tree on its own timer makes a longer
+value moot, and the ordering has to be one epoch, then this, then that. Nine
+hundred is half the default a mosaic-queue pod is given, which leaves that
+ordering intact without needing to read it from anywhere.
+"""
+
+_TRAIN_RUN_NAME = "train"
+"""The subdirectory Ultralytics writes into, under the claimed run root.
+
+Sent to the tool and composed by mosaic to read ``best.pt`` and ``results.csv``
+back, which is why it is one constant rather than two literals.
+"""
 
 OP_SUPPLIED_TRAIN_ARGS: Final = frozenset(
-    {"project", "name", "callback", "cancel_check", "task"}
+    {"project", "name", "callback", "cancel_check", "task", "exist_ok"}
 )
 """Trainer arguments the op supplies that are not params fields.
 
-``project`` / ``name`` address the claimed run root, ``callback`` and
-``cancel_check`` are the Job Contract's progress and cancellation hooks, and
-``task`` selects the ultralytics task. Together with the params fields
-themselves these are what ``train_overrides`` may not set.
+``project`` / ``name`` address the claimed run root, ``task`` selects the
+ultralytics task, and ``exist_ok`` pins the directory the tool writes into --
+Ultralytics renames one that is already occupied, and mosaic composes that path
+itself to read the weights back, so a rename would register some other attempt's
+model under this run's identifier.
+
+``callback`` and ``cancel_check`` name nothing the trainer takes any more: they
+were the Job Contract's hooks when it ran in this process, and progress and
+cancellation now cross as JSON lines and a file. They stay refused because the
+overrides are applied last and a caller who set either would be describing a
+mechanism that no longer exists, which is worth a message rather than silence.
+
+Together with the params fields themselves these are what ``train_overrides``
+may not set.
 """
 
 # --- Trained-model index -------------------------------------------------
@@ -321,6 +397,164 @@ def training_is_complete(ds: Dataset, kind: str, run_id: str) -> bool:
     return ds.resolve_path(recorded).exists()
 
 
+def _resolved_base(ds: Dataset, kind: str, base_model: str) -> tuple[str, str, str]:
+    """What this run fine-tunes from: the path to hand the tool, and its lineage.
+
+    ``model_id`` rather than ``run_id``: a bare path has no run, and hashing an
+    empty string there let two fine-tunes from *different* weights collide
+    whenever their params and data matched.
+    """
+    if not base_model:
+        return "", "", ""
+    base = resolve_model(ds, base_model, kind)
+    return str(base.path), base.model_id, base.digest
+
+
+def build_train_request[RequestT: TrainRequestBase](
+    shape: type[RequestT],
+    ds: Dataset,
+    params: PoseTrainParams,
+    *,
+    run_root: Path,
+    execution_id: str,
+    base_weights: str,
+    data_yaml: Path,
+    **extra: object,
+) -> RequestT:
+    """Resolve everything the tool is not allowed to decide, and say it once.
+
+    Built **before** the run root is claimed and before an interpreter is spawned,
+    which is what makes an unknown augmentation preset or a resume with no
+    checkpoint a refusal at submit rather than a failure on a GPU node.
+
+    Three things collapse into one ``model``, in the order the in-process path
+    applied them: the checkpoint when the run resumes, else the resolved base
+    weights when it fine-tunes, else the caller's own value verbatim -- which may
+    be a bare asset name the tool resolves itself. One field because there was
+    only ever one winner, and two would let the tool disagree with the identity
+    mosaic minted from both.
+    """
+    from mosaic.tracking.pose_training.augmentation import resolve_augmentation
+    from mosaic.tracking.pose_training.train import find_last_checkpoint
+    from mosaic.tracking.pose_training.ultralytics_train import (
+        CANCEL_SENTINEL_NAME,
+        attempt_directory,
+    )
+
+    model = base_weights or params.model
+    if params.resume:
+        model = str(find_last_checkpoint(run_root, _TRAIN_RUN_NAME))
+    # A resume restores the augmentation its checkpoint was trained under, and
+    # overriding that is not what resuming means -- the in-process path skipped
+    # the resolution entirely, and this records what was actually applied.
+    augment = {} if params.resume else (resolve_augmentation(params.augmentation) or {})
+
+    return shape(
+        model=model,
+        data_yaml=str(data_yaml),
+        epochs=params.epochs,
+        imgsz=params.imgsz,
+        batch=params.batch,
+        device=params.device,
+        patience=params.patience,
+        project_dir=str(run_root),
+        run_name=_TRAIN_RUN_NAME,
+        resume=params.resume,
+        augment=augment,
+        train_overrides=dict(params.train_overrides or {}),
+        cancel_sentinel=str(
+            attempt_directory(run_root, execution_id) / CANCEL_SENTINEL_NAME
+        ),
+        **extra,
+    )
+
+
+def train_through_the_tool[RequestT: TrainRequestBase](
+    ctx: JobContext,
+    request: RequestT,
+    *,
+    run_root: Path,
+    marker: InflightMarker,
+    base_weights: str,
+    preflight: Callable[[ProbeResponse, str], None],
+    run_tool: TrainingTool[RequestT],
+    env: ToolEnv,
+    failure: type[ToolExitError],
+) -> TrainingOutcome:
+    """Run one training job in the environment its model belongs to.
+
+    Shared by ``train-pose`` and ``train-points``, which differ only in the
+    request they build, the environment they reach and what they refuse -- all of
+    which arrive as arguments, so the sequence itself exists once.
+
+    Three things happen here that do not happen for any other external tool.
+
+    The environment is **probed before the root is claimed**, so a missing
+    Ultralytics or a checkpoint from the wrong fork is a message rather than a
+    claim left behind on a run that was never going to start. It is probed after
+    the reuse gate, so a cache hit does not pay for a cold torch import.
+
+    A cancel **asks before it kills**. Handed the job's raw token the supervisor
+    would kill the process group and lose the epoch in flight; handed
+    :func:`~mosaic.tracking.common.cooperative_cancel.stop_then_kill` it writes
+    the file the tool stats between epochs, and only escalates once the grace is
+    spent.
+
+    And the tool's own output **keeps the claim alive**. A training run outlasts
+    the claim's window routinely, and until it ran out of process there was no
+    line to hang a refresh on -- so the run root was read as abandoned by whatever
+    came next.
+    """
+    from mosaic.core.pipeline.subprocess_util import ProcessCancelled
+    from mosaic.tracking.common.cooperative_cancel import stop_then_kill
+    from mosaic.tracking.common.entry import phase_activity
+    from mosaic.tracking.common.ultralytics_env import (
+        probe_environment,
+        training_activity,
+    )
+    from mosaic.tracking.pose_training.ultralytics_train import attempt_directory
+
+    probe = probe_environment(
+        base_weights,
+        env=env,
+        failure=failure,
+        cancel_check=ctx.cancel_token.is_cancelled,
+    )
+    preflight(probe, base_weights)
+
+    work_dir = attempt_directory(run_root, ctx.execution_id)
+    try:
+        outcome = run_tool(
+            request,
+            work_dir=work_dir,
+            idle_timeout=_TRAIN_IDLE_SECONDS,
+            cancel_check=stop_then_kill(
+                ctx.cancel_token.is_cancelled,
+                Path(request.cancel_sentinel),
+                _TRAIN_CANCEL_GRACE_SECONDS,
+            ),
+            on_output=training_activity(
+                ctx,
+                phase_activity(ctx, run_root, marker, _TRAIN_IDLE_SECONDS),
+            ),
+        )
+    except ProcessCancelled as killed:
+        # The tool was asked and did not stop in time, so it was killed. That is a
+        # cancelled attempt, not a failed one -- the same reading the tracker
+        # driver gives it.
+        raise Cancelled() from killed
+
+    ctx.check_cancel()
+    if outcome.stop == "cancelled":
+        # The token is normally already set, and `check_cancel` above has raised.
+        # Reaching here means the tool stopped short because it was asked to while
+        # this process no longer thinks it was -- registering the truncated model
+        # under a finished run's identifier is the one outcome that must not
+        # happen.
+        raise Cancelled()
+    return outcome
+
+
 # --- Params --------------------------------------------------------------
 
 
@@ -469,21 +703,23 @@ class TrainPoseOp(Op[PoseTrainParams]):
         )
 
     def run(self, ds: Dataset, params: PoseTrainParams, ctx: JobContext) -> str:
-        from mosaic.tracking.pose_training.train import train_pose_model
+        from mosaic.tracking.common.ultralytics_env import (
+            ULTRALYTICS_ENV,
+            UltralyticsError,
+        )
+        from mosaic.tracking.external.runner.ultralytics_protocol import (
+            TrainPoseRequest,
+        )
+        from mosaic.tracking.pose_training.ultralytics_train import (
+            require_pose_training_env,
+            run_pose_training_tool,
+        )
 
         ensure_models_root(ds)
         data_yaml = Path(ds.resolve_path(params.data))
-        model_arg = params.model
-        base_run_id = ""
-        base_digest = ""
-        if params.base_model:
-            base = resolve_model(ds, params.base_model, self.kind)
-            # model_id, not run_id: a bare path has no run, and hashing "" there
-            # let two fine-tunes from *different* weights collide whenever their
-            # params and data matched.
-            base_run_id = base.model_id
-            base_digest = base.digest
-            model_arg = str(base.path)
+        base_weights, base_run_id, base_digest = _resolved_base(
+            ds, self.kind, params.base_model
+        )
 
         # Through plan_identity, so this run is named in exactly one place. A
         # second copy here would be the one that drifts when the payload changes,
@@ -494,29 +730,34 @@ class TrainPoseOp(Op[PoseTrainParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
-        ctx.set_total(params.epochs)
+
         run_root = model_run_root(ds, self.kind, run_id)
+        request = build_train_request(
+            TrainPoseRequest,
+            ds,
+            params,
+            run_root=run_root,
+            execution_id=ctx.execution_id,
+            base_weights=base_weights,
+            data_yaml=data_yaml,
+        )
+
+        ctx.set_total(params.epochs)
         run_root.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
-        train_pose_model(
-            data_yaml,
-            model=model_arg,
-            epochs=params.epochs,
-            imgsz=params.imgsz,
-            batch=params.batch,
-            device=params.device,
-            patience=params.patience,
-            resume=params.resume,
-            augmentation=params.augmentation,
-            project=str(run_root),
-            name="train",
-            callback=ctx.progress,
-            cancel_check=ctx.cancel_token.is_cancelled,
-            **(params.train_overrides or {}),
+        outcome = train_through_the_tool(
+            ctx,
+            request,
+            run_root=run_root,
+            marker=marker,
+            base_weights=base_weights,
+            preflight=require_pose_training_env,
+            run_tool=run_pose_training_tool,
+            env=ULTRALYTICS_ENV,
+            failure=UltralyticsError,
         )
-        ctx.check_cancel()  # raise Cancelled if a between-epoch cancel fired
         finalize_training(
             ds,
             self.kind,
@@ -526,9 +767,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
             params.base_model,
             base_run_id,
             base_digest,
-            run_root / "train" / "weights" / "best.pt",
-            run_root / "train" / "results.csv",
-            params.epochs,
+            outcome.save_dir / "weights" / "best.pt",
+            outcome.save_dir / "results.csv",
+            outcome.epochs_completed,
         )
         return run_id
 
@@ -567,21 +808,26 @@ class TrainPointsOp(Op[PointTrainParams]):
         )
 
     def run(self, ds: Dataset, params: PointTrainParams, ctx: JobContext) -> str:
-        from mosaic.tracking.pose_training.train import train_point_model
+        from mosaic.tracking.common.ultralytics_env import POLO_ENV, PoloError
+        from mosaic.tracking.external.runner.ultralytics_protocol import (
+            TrainPointsRequest,
+        )
+        from mosaic.tracking.pose_training.ultralytics_train import (
+            require_points_training_env,
+            run_point_training_tool,
+        )
+
+        if params.backend != "polo":
+            raise ValueError(
+                f"Unsupported point-detection backend: {params.backend!r}. "
+                "Currently only 'polo' is supported."
+            )
 
         ensure_models_root(ds)
         data_yaml = Path(ds.resolve_path(params.data))
-        model_arg = params.model
-        base_run_id = ""
-        base_digest = ""
-        if params.base_model:
-            base = resolve_model(ds, params.base_model, self.kind)
-            # model_id, not run_id: a bare path has no run, and hashing "" there
-            # let two fine-tunes from *different* weights collide whenever their
-            # params and data matched.
-            base_run_id = base.model_id
-            base_digest = base.digest
-            model_arg = str(base.path)
+        base_weights, base_run_id, base_digest = _resolved_base(
+            ds, self.kind, params.base_model
+        )
 
         # Through plan_identity, so this run is named in exactly one place. A
         # second copy here would be the one that drifts when the payload changes,
@@ -592,33 +838,37 @@ class TrainPointsOp(Op[PointTrainParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
-        ctx.set_total(params.epochs)
-        run_root = model_run_root(ds, self.kind, run_id)
-        run_root.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
-        write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
-        train_point_model(
-            data_yaml,
-            model=model_arg,
-            epochs=params.epochs,
-            imgsz=params.imgsz,
-            batch=params.batch,
-            device=params.device,
-            patience=params.patience,
+        run_root = model_run_root(ds, self.kind, run_id)
+        request = build_train_request(
+            TrainPointsRequest,
+            ds,
+            params,
+            run_root=run_root,
+            execution_id=ctx.execution_id,
+            base_weights=base_weights,
+            data_yaml=data_yaml,
             loc=params.loc,
             loc_loss=params.loc_loss,
             dor=params.dor,
-            resume=params.resume,
-            augmentation=params.augmentation,
-            backend=params.backend,
-            project=str(run_root),
-            name="train",
-            callback=ctx.progress,
-            cancel_check=ctx.cancel_token.is_cancelled,
-            **(params.train_overrides or {}),
         )
-        ctx.check_cancel()
+
+        ctx.set_total(params.epochs)
+        run_root.mkdir(parents=True, exist_ok=True)
+        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
+
+        outcome = train_through_the_tool(
+            ctx,
+            request,
+            run_root=run_root,
+            marker=marker,
+            base_weights=base_weights,
+            preflight=require_points_training_env,
+            run_tool=run_point_training_tool,
+            env=POLO_ENV,
+            failure=PoloError,
+        )
         finalize_training(
             ds,
             self.kind,
@@ -628,9 +878,9 @@ class TrainPointsOp(Op[PointTrainParams]):
             params.base_model,
             base_run_id,
             base_digest,
-            run_root / "train" / "weights" / "best.pt",
-            run_root / "train" / "results.csv",
-            params.epochs,
+            outcome.save_dir / "weights" / "best.pt",
+            outcome.save_dir / "results.csv",
+            outcome.epochs_completed,
         )
         return run_id
 

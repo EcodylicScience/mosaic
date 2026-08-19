@@ -165,10 +165,11 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      # Plainly, with no `pose` extra: Ultralytics is AGPL-3.0 and mosaic never
-      # imports it, which `test_ultralytics_separation.py` is what enforces.
-      # Installing it here would put it one careless import away from being true
-      # again, and would buy nothing -- nothing in mosaic's environment loads it.
+      # Plainly, with no extras. There is no longer one that installs Ultralytics
+      # -- it is AGPL-3.0 and mosaic imports it nowhere, which
+      # `test_ultralytics_separation.py` is what enforces, in both directions and
+      # over the extras table as well as the source. What this job needs instead
+      # is the two real environments, built below.
       - name: Install
         working-directory: mosaic
         run: |

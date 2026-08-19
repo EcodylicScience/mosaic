@@ -10,12 +10,12 @@ launches ``runner/ultralytics_runner.py`` inside it, exchanging a JSON request
 file, a JSON response file and progress lines on standard output.
 
 **Two environments.** POLO ships under the distribution name ``ultralytics``, so
-it and upstream cannot occupy one: ``ultralytics-env/`` runs the tracker and pose
-inference, ``polo-env/`` runs point inference. ``runner/`` is a sibling of both
-rather than inside either, because they run the same program and which one runs
-is chosen by the interpreter mosaic spawns.
+it and upstream cannot occupy one: ``ultralytics-env/`` runs the tracker and
+everything upstream-backed, ``polo-env/`` runs the fork's point detection.
+``runner/`` is a sibling of both rather than inside either, because they run the
+same program and which one runs is chosen by the interpreter mosaic spawns.
 
-Tracking and single-model inference are what run out of process. Model training,
-in :mod:`mosaic.tracking.pose_training.train`, still imports Ultralytics in
-mosaic's own process. See ``README.md`` here.
+**Every path that reaches Ultralytics reaches it here** -- tracking, single-model
+inference and model training alike -- so no mosaic install carries it and nothing
+under ``src/mosaic/`` imports it outside ``runner/``. See ``README.md`` here.
 """

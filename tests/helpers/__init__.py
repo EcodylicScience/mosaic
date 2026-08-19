@@ -49,6 +49,7 @@ from tests.helpers.media import (
     write_mpeg4_mp4,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.training import FakeTrainer, healthy_probe
 from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_variant,
@@ -58,12 +59,14 @@ from tests.helpers.tracks import (
 
 __all__ = [
     "FFMPEG_TOOLCHAIN",
+    "FakeTrainer",
     "MockDataset",
     "add_media_sequence",
     "add_track_sequences",
     "add_tracks_variant",
     "add_transcode_derivative",
     "assert_no_literal_tilde",
+    "healthy_probe",
     "clean_facts_cells",
     "inside_a_virtualenv",
     "make_dataset",

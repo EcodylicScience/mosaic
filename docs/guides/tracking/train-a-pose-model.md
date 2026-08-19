@@ -42,14 +42,24 @@ A trained model is registered as an artifact directory under
 `models/<kind>/<run_id>/`, so a later step can name a prior training run instead of
 carrying a weights path around.
 
-`train-pose` and `train-points` cannot share an environment: both extras install
-something called `ultralytics`, upstream for `pose` and the POLO fork for `polo`, so
-pip resolves only one. Prefer `pose` unless you need point detection.
+`train-pose` and `train-points` each drive an environment mosaic does not install,
+built from `src/mosaic/tracking/external/` — `ultralytics-env/` for pose and
+`polo-env/` for points. Two of them, because POLO ships under the distribution name
+`ultralytics` and so cannot occupy one with upstream. Build whichever you need and name
+it with `MOSAIC_ULTRALYTICS_BIN` or `MOSAIC_POLO_BIN`; there is no extra to install and
+one machine can do both. See
+[installation](../../installation.md#tools-that-run-in-their-own-environment).
 
-Running a trained model is not affected by that choice. `infer-pose` and
-`infer-points` each drive an environment mosaic does not install, built from
-`src/mosaic/tracking/external/`, so one machine can train points here and run pose
-inference there. See [installation](../../installation.md#tools-that-run-in-their-own-environment).
+**The first pose training run fetches its base weights.** The default `model` is the
+bare asset name `yolo11n-pose.pt`, which Ultralytics downloads from a GitHub release
+when the environment does not already hold it. On an air-gapped machine, or a queued
+job that must not write outside the dataset, pass `model` as a path to weights that are
+already there. Point training fetches nothing: `polo26n.yaml` is package data inside
+the fork.
+
+**Cancelling a training run stops it at the next epoch boundary**, leaving `last.pt`
+and `results.csv` complete up to the epoch that finished. Ultralytics cannot be
+interrupted inside an epoch, so on a long one a cancel is not immediate.
 
 ## 4. Use it
 
@@ -78,8 +88,13 @@ which, you want the tracker.
 
 ## Augmentation is opt-in
 
-Installing the `yolo-augment` extra adds `albumentations`, which Ultralytics picks up
-on its own and uses to apply Blur, MedianBlur, ToGray and CLAHE at p=0.01 during YOLO
-and POLO training. Nothing records which way a run went, so the choice is deliberate
-rather than a default — and `albumentations` requires `opencv-python-headless` while
-mosaic requires `opencv-python`, which is why it sits outside `recommended`.
+Building the training environment with `uv sync --python 3.12 --extra augment` adds
+`albumentations`, which Ultralytics picks up on its own and uses to apply Blur,
+MedianBlur, ToGray and CLAHE at p=0.01 during YOLO and POLO training. Nothing records
+which way a run went, so the choice is deliberate rather than a default, and it belongs
+to whoever builds the environment — that is the process that reads it.
+
+This was the `yolo-augment` extra until training moved out of mosaic's process. No
+extra in mosaic's own `pyproject.toml` can install a package into an environment mosaic
+does not build, so the name is gone rather than aliased: pip's unknown-extra warning is
+what tells you the opt-in moved.

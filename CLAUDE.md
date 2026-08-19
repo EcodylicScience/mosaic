@@ -72,29 +72,29 @@ gates reading a file the user already has, and the three are ~30 MB together.
   once h5py moved to the base. On Linux torch pulls the whole `nvidia-cu12`
   stack -- about 4 GB of wheels -- which is the entire reason the default install
   does not carry it.
-- `pose` and `polo` cannot be installed in the same environment — both ship
-  under the `ultralytics` distribution name. Both self-reference
-  `deep-learning`, so choosing the fork does not cost the identity models. What
-  they serve is pose and point **model training**, the one path that still
-  imports Ultralytics in mosaic's own process. Neither `mosaic track
-  ultralytics` nor `mosaic run --kind infer-pose|infer-points` needs an extra:
-  they run in `src/mosaic/tracking/external/ultralytics-env/` and
-  `.../polo-env/`, whose own `pyproject.toml` files declare `lap` (the tracker's
+- **No extra installs Ultralytics.** `pose` and `polo` are deprecation aliases
+  for `deep-learning` (removed in 0.14) and nothing under `src/mosaic/` imports
+  Ultralytics outside the runner. Every path that reaches it — `mosaic track
+  ultralytics` and `mosaic run --kind infer-pose|infer-points|train-pose|train-points`
+  — runs in `src/mosaic/tracking/external/ultralytics-env/` or `.../polo-env/`,
+  whose own `pyproject.toml` files are the only place `lap` (the tracker's
   linear-assignment solver, in no ultralytics extra, so undeclared it gets
-  pip-installed mid-run) and, upstream only, the `ultralytics>=8.4.63` floor the
-  four newer tracker backends arrived in — the POLO pin is a bare git reference,
-  which cannot carry a version specifier. Both extras still carry a copy of each.
-- **`all` is self-referential** (`["mosaic-behavior[pose,faiss]"]`), so a bundle
-  cannot drift from its parts. It excludes `polo` (mutually exclusive with
-  `pose`), `yolo-augment` (changes what a training run does),
-  `lightning-action` and `movement` (heavy, single-purpose), and `feral` (wants
-  its own environment).
-- `yolo-augment` installs `albumentations`, which Ultralytics picks up on its own
-  and uses to add Blur / MedianBlur / ToGray / CLAHE at p=0.01 to YOLO and POLO
-  training. **It is opt-in because it changes what a run does** and nothing
-  records which way a run went — not for packaging reasons. It does require
-  `opencv-python-headless`, but the documented conda environment satisfies that
-  with no wheel; see pitfall 8, which now names the two ffmpeg hazards apart.
+  pip-installed mid-run), `opencv-python-headless` and, upstream only, the
+  `ultralytics>=8.4.63` floor the four newer tracker backends arrived in are
+  declared — the POLO pin is a bare git reference, which cannot carry a version
+  specifier.
+- **`all` is self-referential** (`["mosaic-behavior[deep-learning,faiss]"]`), so
+  a bundle cannot drift from its parts. It excludes `lightning-action` and
+  `movement` (heavy, single-purpose) and `feral` (wants its own environment), and
+  it reaches no AGPL-licensed distribution at all.
+- **`yolo-augment` is gone, not aliased.** `albumentations` now belongs to
+  whichever environment runs the trainer, opted into with `uv sync --extra
+  augment` there. It is still opt-in because it changes what a run does — it makes
+  Ultralytics add Blur / MedianBlur / ToGray / CLAHE at p=0.01 — and nothing
+  records which way a run went. No alias in mosaic's own pyproject could install
+  it where it is now read, so pip's unknown-extra warning is the signal that the
+  opt-in moved. Both environments declare `opencv-python-headless` outright and
+  override away the GUI wheel Ultralytics asks for; see pitfall 8.
 - `lightning-action` is capped at `<1.1`: 1.1.0 requires `nvidia-dali-cuda110`
   unconditionally, and PyPI serves it as an sdist only, so without the cap the
   extra fails to install anywhere without CUDA.
@@ -108,7 +108,8 @@ gates reading a file the user already has, and the three are ~30 MB together.
   needed only to *write* the fixture stores the suite builds — so it lives in
   the `test` dependency group, which every CI job installs.
 - `recommended`, `identity`, `localizer` and `gpu` survive as self-referential
-  aliases through 0.12 and are removed in 0.13. They exist only because pip
+  aliases through 0.12 and are removed in 0.13; `pose` and `polo` join them in
+  0.13 and are removed in 0.14. They exist only because pip
   *warns* about an unknown extra and carries on: a saved `.[recommended]` would
   otherwise produce a working install with no torch in it and no error to say
   so. `wavelets`, `sleap` and `hdf5` are not aliased — the base provides them,
@@ -233,12 +234,12 @@ any run with `CI` set and a job without it fails at collection.
   goes green; run them locally.
 - **`identity`** — the identity-marked suites under a `deep-learning`
   environment, so `pytest.importorskip("torch")` cannot silently skip them.
-- **`tracking`** — the `tracker`-marked suites, deliberately with **no** `pose`
-  extra, against a real Ultralytics environment built the way a user builds it:
-  `uv sync --python 3.12` in `src/mosaic/tracking/external/ultralytics-env/`,
-  located by `MOSAIC_ULTRALYTICS_BIN`. Installing `[pose]` here would put
-  Ultralytics one careless import away from mosaic's own process and buy
-  nothing. Without the built environment the preflight comparison against the
+- **`tracking`** — the `tracker`-marked suites, against real Ultralytics and POLO
+  environments built the way a user builds them: `uv sync --python 3.12` in
+  `src/mosaic/tracking/external/ultralytics-env/` and `.../polo-env/`, located by
+  `MOSAIC_ULTRALYTICS_BIN` and `MOSAIC_POLO_BIN`. No extra installs Ultralytics
+  any more, so there is nothing to leave out; the point of building the real
+  environments is that the preflight comparison has something to compare against. Without the built environment the preflight comparison against the
   shipped tracker tables would skip green and prove nothing, so
   `MOSAIC_CI_TRACKING=1` promotes an environment that does not resolve from
   "skip" to "broken environment".
@@ -666,7 +667,7 @@ src/mosaic/
 └── tracking/
     ├── ops/                    # @register_op layer behind `mosaic run --kind`
     ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
-    ├── pose_training/          # YOLO pose, POLO point, localizer training
+    ├── pose_training/          # annotation prep, localizer training, and mosaic's side of the YOLO/POLO exchange
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
     ├── common/                 # everything a tracker run does around the tool
@@ -1023,11 +1024,10 @@ external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
 `run_ultralytics_tool`. One subprocess per entry.
 
 `tests/test_ultralytics_separation.py` holds both directions: no mosaic module
-outside the runner and one named `pose_training` module may import Ultralytics,
-and the runner may not import mosaic. **The separation covers tracking and
-single-model inference.** `train-pose` and `train-points` still import
-Ultralytics in mosaic's process, which is what `pose` and `polo` are for, so a
-claim that mosaic installs no AGPL dependency is false today.
+outside the runner may import Ultralytics, no extra or bundle may declare it, and
+the runner may not import mosaic. **The separation is complete** — tracking,
+single-model inference and model training all run out of process, so
+`pip install -e ".[all]"` resolves no AGPL-licensed dependency.
 
 **Two environments, because POLO cannot share one with upstream.**
 `ultralytics-env/` runs the tracker and `infer-pose`; `polo-env/` runs
@@ -1041,6 +1041,18 @@ other three subprocess trackers do (`common/tool_input.py` is that boundary and
 raises naming the command); tracking a store natively is a capability this cost,
 and `infer-pose` / `infer-points` now pay it too. `infer-localizer` does not — it
 is mosaic's own PyTorch and still reads a store natively.
+
+**Training cancels cooperatively, and that is the one place `run_supervised`'s
+kill is wrong.** Ultralytics honours `trainer.stop` between epochs and nowhere
+else, so a killed process loses the epoch in flight where a flag it reads leaves
+`last.pt` and `results.csv` complete. `stop_then_kill`
+(`tracking/common/cooperative_cancel.py`) is the predicate that writes the
+sentinel the runner stats and only escalates to the existing kill after
+`_TRAIN_CANCEL_GRACE_SECONDS`. That grace must exceed one epoch and stay **under**
+the substrate's own — a queue pod SIGKILLs the tree on its own timer — so the
+ordering is epoch, then mosaic's grace, then the runtime's. The exchange lives in
+`models/<kind>/<run_id>/.mosaic-train/<execution_id>/` because a run root is
+reused across attempts and a stale sentinel would cancel the next one instantly.
 And the environment is excluded from the uv workspace and has its own basedpyright
 execution environment pinned at `python3.12`. Built with any other interpreter,
 its packages land where nothing looks and the runner type-checks against no
@@ -1156,13 +1168,18 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 
 ## Common Pitfalls
 
-1. **`pose` vs `polo` install conflict.** Both extras install something named
-   `ultralytics` (upstream pin vs. the [mooch443/POLO](https://github.com/mooch443/POLO)
-   git pin), so pip resolves only one. POLO is a *full fork* of ultralytics —
-   it retains all upstream tasks (detect/segment/classify/pose/track) and
-   *adds* the `locate` (point-detection) task. The trade-off is update
-   cadence: `[pose]` tracks upstream releases; `[polo]` is pinned to a fork
-   that updates less often. Prefer `[pose]` unless you need point detection.
+1. **Two Ultralytics environments, never one.** POLO ships under the
+   distribution name `ultralytics` (the
+   [mooch443/POLO](https://github.com/mooch443/POLO) git pin against the upstream
+   release), so one environment holds upstream or the fork and never both. That
+   is why `ultralytics-env/` and `polo-env/` are separate directories rather than
+   one with an extra. POLO is a *full fork* — it retains all upstream tasks
+   (detect/segment/classify/pose/track) and *adds* `locate` (point detection) —
+   so a POLO environment can serve every op, at the cost of tracking a fork that
+   updates less often. The two ship the same `yolo` console script, so the
+   `$PATH` rung of the location ladder cannot tell them apart: set
+   `MOSAIC_POLO_BIN` explicitly, and note that the point ops refuse an upstream
+   build by name.
 2. **Raw `.h264` files (Raspberry Pi)** have no container, so header metadata is
    unreliable and seeking the bare stream corrupts the decoder. Read them through
    [`core/media/video_io.py`](src/mosaic/core/media/video_io.py): the packet-scan
@@ -1179,11 +1196,11 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
    will fail validation downstream. Test new converters against
    `core/schema.py` before relying on them.
 6. **`all` is what belongs in one environment, not everything.** It resolves to
-   `pose` + `faiss`. `polo` is excluded because it cannot coexist with `pose`,
-   `yolo-augment` because it changes what a training run does, `movement` and
-   `lightning-action` because they are heavy and single-purpose, and `feral`
-   because it re-resolves the environment. Each exclusion has its own reason;
-   don't quietly fold any of them in, and don't restate the reasons as one.
+   `deep-learning` + `faiss`. `movement` and `lightning-action` are excluded
+   because they are heavy and single-purpose, and `feral` because it re-resolves
+   the environment. Each exclusion has its own reason; don't quietly fold any of
+   them in, and don't restate the reasons as one. Nothing YOLO-shaped is in it or
+   can be: that work runs in an environment mosaic does not install.
 7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
    changes still warrant explicit discussion in an issue first.
 
@@ -1194,16 +1211,21 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
    with different blast radii, and running them together is what once put
    `albumentations` in quarantine for a reason that does not apply:**
 
-   - **Two wheels providing `cv2` — plain pip only.** `albumentations`,
-     `lightning-action` and `movement` (via `pyvideoreader`) require
-     `opencv-python-headless` while mosaic and `ultralytics` require
-     `opencv-python`. pip installs both without complaint -- they are different
-     distributions -- and they then overwrite each other's files and merge two
-     ffmpeg builds into one `cv2/.dylibs`. **The documented conda environment is
-     immune**: one conda-forge `py-opencv` registers *both* pip distribution
-     names for its single build, so those extras resolve with no wheel installed
-     at all. `tests/conftest.py` refuses to start when it finds two *builds*, and
-     tells conda's one-build-two-names case apart by `INSTALLER`.
+   - **Two wheels providing `cv2` — plain pip only.** `lightning-action` and
+     `movement` (via `pyvideoreader`) require `opencv-python-headless` while
+     mosaic requires `opencv-python`. pip installs both without complaint -- they
+     are different distributions -- and they then overwrite each other's files and
+     merge two ffmpeg builds into one `cv2/.dylibs`. **The documented conda
+     environment is immune**: one conda-forge `py-opencv` registers *both* pip
+     distribution names for its single build, so those extras resolve with no
+     wheel installed at all. `tests/conftest.py` refuses to start when it finds
+     two *builds*, and tells conda's one-build-two-names case apart by
+     `INSTALLER`. The same collision would arise inside the two Ultralytics
+     environments -- `ultralytics` wants the GUI wheel, `albumentations` the
+     headless one -- and is settled there by declaring headless outright and
+     overriding the GUI wheel away with a never-true marker. `conftest`'s guard
+     reads the *running* interpreter's distributions and cannot see those, which
+     is why each environment's lock is checked by its own test.
    - **`av` and any `cv2` wheel each vendoring their own ffmpeg.** Both bundle a
      complete build, so two collide even when only one provides `cv2`
      (`av/.dylibs/libSvtAv1Enc.4.1.0` against `cv2/.dylibs/libSvtAv1Enc.3.0.2`).
