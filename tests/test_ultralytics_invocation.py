@@ -1,9 +1,14 @@
-"""Unit tests for the env-aware Ultralytics invocation resolution.
+"""Unit tests for the env-aware invocation resolution of both external environments.
 
-Covers :func:`mosaic.tracking.ultralytics_track.run._ultralytics_invocation` (how
-the Ultralytics environment's ``python`` is launched: in a conda env, as a
-sibling of an explicit binary, or from ``$PATH`` via the ``yolo`` console script)
-and the ``_run_runner`` wiring, with no Ultralytics environment anywhere.
+Covers :func:`mosaic.tracking.common.ultralytics_env.runner_invocation` (how an
+environment's ``python`` is launched: in a conda env, as a sibling of an explicit
+binary, or from ``$PATH`` via the ``yolo`` console script) and the
+:func:`~mosaic.tracking.common.ultralytics_env.run_runner` wiring, with neither
+environment anywhere.
+
+**Every ladder test runs against both**, because upstream and the POLO fork ship
+the same ``yolo`` script under the same distribution name: the ladder is the only
+thing that separates them, and it separates them by variable name alone.
 """
 
 from __future__ import annotations
@@ -13,21 +18,35 @@ from pathlib import Path
 
 import pytest
 
+import mosaic.tracking.common.ultralytics_env as ultralytics_env
 from mosaic.tracking.common import toolenv
-from mosaic.tracking.ultralytics_track import run as ultralytics_run
 from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
-from mosaic.tracking.ultralytics_track.run import (
+from mosaic.tracking.common.ultralytics_env import (
+    POLO_ENV,
     PROBE_DEADLINE_FLOOR_SECONDS,
+    ULTRALYTICS_ENV,
+    PoloNotFoundError,
+    UltralyticsError,
     UltralyticsNotFoundError,
-    _run_runner,
-    _ultralytics_invocation,
-    probe_ultralytics,
+    run_runner,
+    runner_invocation,
+)
+from mosaic.tracking.common.toolenv import ToolEnv, ToolNotFoundError
+from mosaic.tracking.ultralytics_track.run import probe_ultralytics
+
+BOTH_ENVIRONMENTS = pytest.mark.parametrize(
+    ("env", "not_found"),
+    [
+        (ULTRALYTICS_ENV, UltralyticsNotFoundError),
+        (POLO_ENV, PoloNotFoundError),
+    ],
+    ids=["ultralytics", "polo"],
 )
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove Ultralytics env vars and make ``which`` resolve fake script paths.
+    """Remove both environments' variables, and make ``which`` resolve fakes.
 
     The fake conda sits two levels deep for a reason. ``conda_invocation``
     resolves the environment's own executable by climbing ``parent.parent`` from
@@ -38,8 +57,10 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     exists nowhere, so every candidate misses and the bare name is used.
     """
     for var in (
-        "MOSAIC_ULTRALYTICS_CONDA_ENV",
-        "MOSAIC_ULTRALYTICS_BIN",
+        ULTRALYTICS_ENV.conda_env_var,
+        ULTRALYTICS_ENV.bin_var,
+        POLO_ENV.conda_env_var,
+        POLO_ENV.bin_var,
         "CONDA_EXE",
         "CONDA_ENVS_DIRS",
     ):
@@ -60,8 +81,10 @@ def _nothing_on_path(_name: str) -> str | None:
 # --- precedence: param conda env > param bin > env conda > env bin > which ---
 
 
-def test_param_conda_env_wins() -> None:
-    assert _ultralytics_invocation(conda_env="ul") == [
+@BOTH_ENVIRONMENTS
+def test_param_conda_env_wins(env: ToolEnv, not_found: type[ToolNotFoundError]) -> None:
+    del not_found
+    assert runner_invocation(env, conda_env="ul") == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -71,21 +94,33 @@ def test_param_conda_env_wins() -> None:
     ]
 
 
-def test_param_bin_resolves_python_as_a_sibling() -> None:
+@BOTH_ENVIRONMENTS
+def test_param_bin_resolves_python_as_a_sibling(
+    env: ToolEnv, not_found: type[ToolNotFoundError]
+) -> None:
+    del not_found
     # MOSAIC_ULTRALYTICS_BIN may point at the yolo script (or any bin entry);
     # what runs is the interpreter in the same directory, because a bare
     # `python` on $PATH would be the caller's own.
-    assert _ultralytics_invocation(bin_path="/x/bin/yolo") == ["/x/bin/python"]
+    assert runner_invocation(env, bin_path="/x/bin/yolo") == ["/x/bin/python"]
 
 
-def test_param_conda_beats_param_bin() -> None:
-    got = _ultralytics_invocation(conda_env="ul", bin_path="/x/bin/yolo")
+@BOTH_ENVIRONMENTS
+def test_param_conda_beats_param_bin(
+    env: ToolEnv, not_found: type[ToolNotFoundError]
+) -> None:
+    del not_found
+    got = runner_invocation(env, conda_env="ul", bin_path="/x/bin/yolo")
     assert got[0] == "/p/bin/conda"
 
 
-def test_env_conda(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MOSAIC_ULTRALYTICS_CONDA_ENV", "envc")
-    assert _ultralytics_invocation() == [
+@BOTH_ENVIRONMENTS
+def test_env_conda(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del not_found
+    monkeypatch.setenv(env.conda_env_var, "envc")
+    assert runner_invocation(env) == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -95,40 +130,60 @@ def test_env_conda(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
-def test_param_beats_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MOSAIC_ULTRALYTICS_CONDA_ENV", "envc")
-    assert _ultralytics_invocation(bin_path="/x/bin/yolo") == ["/x/bin/python"]
+@BOTH_ENVIRONMENTS
+def test_param_beats_env(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del not_found
+    monkeypatch.setenv(env.conda_env_var, "envc")
+    assert runner_invocation(env, bin_path="/x/bin/yolo") == ["/x/bin/python"]
 
 
-def test_env_bin_resolves_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MOSAIC_ULTRALYTICS_BIN", "/y/bin/yolo")
-    assert _ultralytics_invocation() == ["/y/bin/python"]
+@BOTH_ENVIRONMENTS
+def test_env_bin_resolves_sibling(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del not_found
+    monkeypatch.setenv(env.bin_var, "/y/bin/yolo")
+    assert runner_invocation(env) == ["/y/bin/python"]
 
 
-def test_default_path_lookup() -> None:
+@BOTH_ENVIRONMENTS
+def test_default_path_lookup(env: ToolEnv, not_found: type[ToolNotFoundError]) -> None:
+    del not_found
     # The python beside the yolo script on $PATH.
-    assert _ultralytics_invocation() == ["/p/bin/python"]
+    assert runner_invocation(env) == ["/p/bin/python"]
 
 
 # --- error paths ---
 
 
-def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+@BOTH_ENVIRONMENTS
+def test_default_missing_raises(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
-    with pytest.raises(UltralyticsNotFoundError):
-        _ = _ultralytics_invocation()
+    with pytest.raises(not_found):
+        _ = runner_invocation(env)
 
 
-def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+@BOTH_ENVIRONMENTS
+def test_conda_missing_raises(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
-    with pytest.raises(UltralyticsNotFoundError):
-        _ = _ultralytics_invocation(conda_env="ul")
+    with pytest.raises(not_found):
+        _ = runner_invocation(env, conda_env="ul")
 
 
-def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+@BOTH_ENVIRONMENTS
+def test_conda_uses_conda_exe_fallback(
+    env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del not_found
     monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
-    assert _ultralytics_invocation(conda_env="ul")[0] == "/opt/conda/bin/conda"
+    assert runner_invocation(env, conda_env="ul")[0] == "/opt/conda/bin/conda"
 
 
 # --- _run_runner wires invocation + request into the supervised subprocess ---
@@ -154,12 +209,14 @@ def test_the_runner_command_carries_the_request_and_neutralizes_mpl(
         recorded_env.update(env or {})
         return ("ok", "", 0)
 
-    monkeypatch.setattr(ultralytics_run, "run_supervised", fake_supervised)
+    monkeypatch.setattr(ultralytics_env, "run_supervised", fake_supervised)
     monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
     request = tmp_path / "probe-request.json"
     response = tmp_path / "probe-response.json"
-    stdout, stderr = _run_runner(
+    stdout, stderr = run_runner(
+        ULTRALYTICS_ENV,
+        UltralyticsError,
         "probe",
         request,
         response,
@@ -217,16 +274,18 @@ def test_a_short_tracking_window_does_not_put_a_stopwatch_on_the_probe(
         answer = ProbeResponse(
             has_ultralytics=True,
             has_lap=True,
+            has_locate=False,
             ultralytics_version="8.4.63",
             tracker_names=["bytetrack"],
             model_task="pose",
             n_keypoints=2,
+            model_load_error="",
             installed_tracker_table={},
         )
         _ = Path(tokens[tokens.index("--out") + 1]).write_text(answer.model_dump_json())
         return ("", "", 0)
 
-    monkeypatch.setattr(ultralytics_run, "run_supervised", fake_supervised)
+    monkeypatch.setattr(ultralytics_env, "run_supervised", fake_supervised)
 
     probe = probe_ultralytics(
         "best.pt", tracker="bytetrack", idle_timeout=5, bin_path="/x/bin/yolo"

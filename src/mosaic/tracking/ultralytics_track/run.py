@@ -11,9 +11,11 @@ that keeps an imgstore recording working: a tool that opens a path cannot read a
 directory of chunk files, so a store resolves to the plain video
 ``export-store`` wrote for it.
 
-This module is where the tool is located and launched -- one :class:`ToolEnv`,
-the argv its ladder resolves, and the calls that write a request and read a
-response back. :func:`probe_ultralytics` and :func:`run_ultralytics_tool` sit at
+This module is the tracker's own half of that exchange: the preflight refusals,
+the merged tracker configuration, and the calls that write a request and read a
+response back. Locating either environment and launching the runner in it lives
+in :mod:`mosaic.tracking.common.ultralytics_env`, because pose and point
+inference need the same launcher. :func:`probe_ultralytics` and :func:`run_ultralytics_tool` sit at
 module scope because they are the seam the marker suite replaces, which is what
 exercises the whole run protocol -- identifiers, markers, reuse, the bridge --
 with no Ultralytics installed at all. :func:`ultralytics_tracker_defaults` is the
@@ -29,17 +31,18 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.subprocess_util import run_supervised
-from mosaic.tracking.common.toolenv import (
-    ToolEnv,
-    ToolExitError,
-    ToolNotFoundError,
-    missing_output_error,
-    subprocess_env,
-    tool_invocation,
+from mosaic.tracking.common.toolenv import missing_output_error
+from mosaic.tracking.common.ultralytics_env import (
+    PROBE_DEADLINE_FLOOR_SECONDS,
+    ULTRALYTICS_BOOTSTRAP,
+    ULTRALYTICS_ENV,
+    UltralyticsError,
+    UltralyticsNotFoundError,
+    refuse_unloadable_model,
+    run_runner,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     ModelTask,
@@ -65,10 +68,6 @@ logger = logging.getLogger(__name__)
 # mosaic may import it freely.
 _SUPPORTED_TASKS: Final[tuple[ModelTask, ...]] = ("pose", "detect")
 
-_PYTHON: Final = "python"
-_YOLO_SCRIPT: Final = "yolo"
-_RUNNER_SCRIPT: Final = "ultralytics_runner.py"
-
 TRACK_REQUEST_NAME: Final = "track-request.json"
 """What one entry's request to the tool is called, inside its working directory."""
 
@@ -84,41 +83,6 @@ independently, and ``test_ultralytics_run_markers.py`` is what holds them
 together.
 """
 
-PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
-"""The least time a silent subcommand gets to answer, whatever the tracking bound is.
-
-``idle_timeout`` bounds *silence*, which is the right unit for tracking once a
-run is under way: the runner prints a line per decoded batch, so a quiet stretch
-there means hung. A probe prints nothing at all between spawn and answer, so the
-same number would be a deadline on a cold torch import and a checkpoint load off
-a network mount -- work proceeding exactly as intended. A user who shortens the
-tracking window so a hung tracker dies quickly must not thereby put a stopwatch
-on loading a model, so the probe gets the caller's value or this floor,
-whichever is longer. ``tracker-defaults`` is silent for the same stretch -- the
-torch import is most of what it costs -- and takes the same floor.
-
-No such floor is applied to ``track``, and that is a judgement rather than an
-omission: see :func:`run_ultralytics_tool`.
-"""
-
-_ENV_BOOTSTRAP: Final = (
-    "Build it with 'uv sync --python 3.12' in "
-    "src/mosaic/tracking/external/ultralytics-env/, then point "
-    "MOSAIC_ULTRALYTICS_CONDA_ENV at a conda environment holding it or "
-    "MOSAIC_ULTRALYTICS_BIN at that environment's 'yolo' script. See "
-    "src/mosaic/tracking/external/README.md."
-)
-
-
-class UltralyticsNotFoundError(ToolNotFoundError):
-    """The Ultralytics environment, its Ultralytics, or ``conda``, is not there."""
-
-    default_message = (
-        "The Ultralytics environment was not found: no 'yolo' console script on "
-        "$PATH, and neither MOSAIC_ULTRALYTICS_CONDA_ENV nor "
-        f"MOSAIC_ULTRALYTICS_BIN names one. {_ENV_BOOTSTRAP}"
-    )
-
 
 class UnsupportedTaskError(ValueError):
     """The model is not one mosaic can bridge into a ``trex_v1`` table."""
@@ -126,21 +90,6 @@ class UnsupportedTaskError(ValueError):
 
 class UnsupportedTrackerError(ValueError):
     """The installed Ultralytics does not know the requested backend."""
-
-
-class UltralyticsError(ToolExitError):
-    """The Ultralytics runner exited with a non-zero return code.
-
-    The inherited ``head`` of six is what both rungs of the location ladder need.
-    On the direct rung the argv is ``<python> <runner> <subcommand> --request
-    <path> --out <path>``, where three tokens already reach the subcommand; on
-    the conda rung ``conda run --no-capture-output -n <env> <python>`` is six
-    tokens before any of that, so a shorter head elides the environment name, the
-    runner and the subcommand together and leaves a message that names no
-    operation at all. TREx and SLEAP take the same six for the same reason.
-    """
-
-    tool_name = "Ultralytics"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,35 +101,31 @@ class UltralyticsTrackResult:
     n_ids: int
 
 
-# The runner is driven through its environment's ``python`` rather than a console
-# verb, so the ``yolo`` script is what locates that interpreter: a bare
-# ``python`` on ``$PATH`` would be the caller's own.
-ULTRALYTICS_ENV: Final = ToolEnv(
-    tool="Ultralytics",
-    conda_env_var="MOSAIC_ULTRALYTICS_CONDA_ENV",
-    bin_var="MOSAIC_ULTRALYTICS_BIN",
-    bin_mode="sibling",
-    not_found=UltralyticsNotFoundError,
-    locator=_YOLO_SCRIPT,
-)
-
-
 # --- preflight -------------------------------------------------------------
 
 
-def require_ultralytics(probe: ProbeResponse, tracker: TrackerName) -> None:
+def require_ultralytics(
+    probe: ProbeResponse, tracker: TrackerName, model_path: str
+) -> None:
     """Refuse, by name, anything this run needs and the environment lacks.
 
     Decided from what the probe reported rather than by importing anything, and
-    run before a video is opened, so a missing dependency or an unsupported
-    backend is a message rather than a traceback from inside a callback on frame
-    zero.
+    run before a video is opened, so a missing dependency, an unsupported backend
+    or a checkpoint this build cannot load is a message rather than a traceback
+    from inside a callback on frame zero.
+
+    The weights are refused **before** ``lap`` and the backend, and before
+    :func:`require_supported_task` reads the task: a checkpoint that did not load
+    reports no task at all, so asking about one would answer a question the probe
+    never got to.
     """
     if not probe.has_ultralytics:
         raise UltralyticsNotFoundError(
             "the Ultralytics environment resolved but holds no ultralytics. "
-            f"{_ENV_BOOTSTRAP}"
+            f"{ULTRALYTICS_BOOTSTRAP}"
         )
+
+    refuse_unloadable_model(probe, model_path)
 
     if not probe.has_lap:
         raise UltralyticsNotFoundError(
@@ -188,7 +133,7 @@ def require_ultralytics(probe: ProbeResponse, tracker: TrackerName) -> None:
             "linear-assignment solver every backend associates with. It appears "
             "in no ultralytics extra, so without it ultralytics tries to "
             "pip-install it mid-run. The environment's pyproject.toml declares "
-            f"it, so rebuilding is the fix. {_ENV_BOOTSTRAP}"
+            f"it, so rebuilding is the fix. {ULTRALYTICS_BOOTSTRAP}"
         )
 
     if tracker not in probe.tracker_names:
@@ -263,88 +208,6 @@ def write_tracker_yaml(path: Path, table: Mapping[str, TrackerSetting]) -> Path:
 # --- launching the runner --------------------------------------------------
 
 
-def _runner_script() -> Path:
-    """Where the program mosaic spawns lives, as an absolute path.
-
-    Resolved from the package rather than joined out of strings, so a source
-    checkout, an editable install and a wheel all name the same file. Importing
-    the package is not importing the runner *module*: ``runner/__init__.py`` is
-    a docstring, so nothing here pulls Ultralytics into this process, which is
-    the whole point of the separation.
-    """
-    from mosaic.tracking.external import runner
-
-    return Path(runner.__file__).parent / _RUNNER_SCRIPT
-
-
-def _ultralytics_invocation(
-    *,
-    conda_env: str | None = None,
-    bin_path: str | Path | None = None,
-) -> list[str]:
-    """Resolve how to launch the Ultralytics environment's ``python``, as a prefix.
-
-    The shared five-step ladder (:func:`tool_invocation`) applied to
-    :data:`ULTRALYTICS_ENV`.
-    """
-    return tool_invocation(
-        ULTRALYTICS_ENV,
-        executable=_PYTHON,
-        conda_env=conda_env,
-        bin_path=bin_path,
-    )
-
-
-def _run_runner(
-    subcommand: Literal["probe", "tracker-defaults", "track"],
-    request_path: Path,
-    response_path: Path,
-    *,
-    idle_timeout: float,
-    max_runtime: float | None,
-    conda_env: str | None,
-    bin_path: str | Path | None,
-    cancel_check: Callable[[], bool] | None,
-    on_output: Callable[[str], None] | None,
-) -> tuple[str, str]:
-    """Run one runner subcommand and return (stdout, stderr).
-
-    *cancel_check*, when supplied, is polled while the runner works; if it fires,
-    the whole process group is killed and
-    :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
-
-    Raises:
-        UltralyticsError: The runner exited with a non-zero return code.
-    """
-    cmd = [
-        *_ultralytics_invocation(conda_env=conda_env, bin_path=bin_path),
-        str(_runner_script()),
-        subcommand,
-        "--request",
-        str(request_path),
-        "--out",
-        str(response_path),
-    ]
-    # The same head the failure message uses, read off the exception class so the
-    # log line and the error cannot come to elide at different points.
-    head = UltralyticsError.head
-    logger.info(
-        "Running: %s", " ".join(cmd[:head]) + (" ..." if len(cmd) > head else "")
-    )
-
-    stdout, stderr, returncode = run_supervised(
-        cmd,
-        env=subprocess_env(),
-        cancel_check=cancel_check,
-        timeout=max_runtime,
-        idle_timeout=idle_timeout,
-        on_output=on_output,
-    )
-    if returncode != 0:
-        raise UltralyticsError(cmd, returncode, stdout, stderr)
-    return stdout, stderr
-
-
 def probe_ultralytics(
     model_path: Path | str,
     *,
@@ -381,7 +244,9 @@ def probe_ultralytics(
         request_path = Path(scratch) / "probe-request.json"
         response_path = Path(scratch) / "probe-response.json"
         _ = request_path.write_text(request.model_dump_json())
-        stdout, stderr = _run_runner(
+        stdout, stderr = run_runner(
+            ULTRALYTICS_ENV,
+            UltralyticsError,
             "probe",
             request_path,
             response_path,
@@ -430,7 +295,9 @@ def ultralytics_tracker_defaults(
         request_path = Path(scratch) / "tracker-defaults-request.json"
         response_path = Path(scratch) / "tracker-defaults-response.json"
         _ = request_path.write_text(request.model_dump_json())
-        stdout, stderr = _run_runner(
+        stdout, stderr = run_runner(
+            ULTRALYTICS_ENV,
+            UltralyticsError,
             "tracker-defaults",
             request_path,
             response_path,
@@ -488,7 +355,9 @@ def run_ultralytics_tool(
     response_path = work_dir / TRACK_RESPONSE_NAME
     _ = request_path.write_text(request.model_dump_json())
 
-    stdout, stderr = _run_runner(
+    stdout, stderr = run_runner(
+        ULTRALYTICS_ENV,
+        UltralyticsError,
         "track",
         request_path,
         response_path,

@@ -129,30 +129,38 @@ CI_FERAL_MODULES = ("feral",)
 CI_REQUIRED_BINARIES = FFMPEG_TOOLCHAIN
 
 
-def _refuse_an_unresolvable_ultralytics_environment() -> None:
-    """Under the tracking job, an Ultralytics environment that is not there is an error.
+def _refuse_an_unresolvable_external_environment() -> None:
+    """Under the tracking job, an environment that is not there is an error.
+
+    **Both** of them: the tracker and pose inference run upstream Ultralytics, and
+    point inference runs the POLO fork, which cannot share an environment with it.
+    Each is checked, because a skip in either place is a suite that reports green
+    having compared nothing -- the tracker-table drift check against the release
+    that runs it, and the point-inference path against a real fork, which nothing
+    exercised at all before it had an environment to run in.
 
     Resolved through `tool_invocation` -- the same five-step ladder a real run
-    walks -- rather than by reading MOSAIC_ULTRALYTICS_CONDA_ENV and
-    MOSAIC_ULTRALYTICS_BIN here, so this check and the lookup it stands in for
-    cannot come to disagree about what "the environment is there" means.
+    walks -- rather than by reading the four variables here, so this check and the
+    lookup it stands in for cannot come to disagree about what "the environment is
+    there" means.
 
     Imported inside the call: only the tracking job asks, and the import reaches
     the whole pipeline package.
     """
     from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
-    from mosaic.tracking.ultralytics_track.run import ULTRALYTICS_ENV
+    from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
 
-    try:
-        _ = tool_invocation(ULTRALYTICS_ENV, executable="python")
-    except ToolNotFoundError as absent:
-        raise pytest.UsageError(
-            "CI builds the Ultralytics environment for this job, but it does not "
-            f"resolve: {absent} The tracker-table drift check would skip silently "
-            "instead of comparing mosaic's declared tables against the release "
-            "that runs them. Check that the environment was built and that "
-            "MOSAIC_ULTRALYTICS_BIN or MOSAIC_ULTRALYTICS_CONDA_ENV names it."
-        ) from absent
+    for env in (ULTRALYTICS_ENV, POLO_ENV):
+        try:
+            _ = tool_invocation(env, executable="python")
+        except ToolNotFoundError as absent:
+            raise pytest.UsageError(
+                f"CI builds the {env.tool} environment for this job, but it does "
+                f"not resolve: {absent} The checks that need it would skip "
+                "silently instead of running against the release that will run "
+                f"them. Check that the environment was built and that "
+                f"{env.bin_var} or {env.conda_env_var} names it."
+            ) from absent
 
 
 def _refuse_two_opencv_builds() -> None:
@@ -235,7 +243,7 @@ def pytest_configure() -> None:
             "(uv run --no-sync)."
         )
     if os.environ.get("MOSAIC_CI_TRACKING"):
-        _refuse_an_unresolvable_ultralytics_environment()
+        _refuse_an_unresolvable_external_environment()
     absent = [name for name in CI_REQUIRED_BINARIES if shutil.which(name) is None]
     if absent:
         raise pytest.UsageError(
