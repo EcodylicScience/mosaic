@@ -165,25 +165,34 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      # `pose` brings the real Ultralytics, which is the whole point: the
-      # preflight suite compares mosaic's declared tracker tables against the
-      # installed ones, and under `pytest.importorskip` an absent Ultralytics
-      # would make that comparison pass by not running.
+      # Plainly, with no `pose` extra: Ultralytics is AGPL-3.0 and mosaic never
+      # imports it, which `test_ultralytics_separation.py` is what enforces.
+      # Installing it here would put it one careless import away from being true
+      # again, and would buy nothing -- nothing in mosaic's environment loads it.
       - name: Install
         working-directory: mosaic
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[pose]'
+          uv pip install -e '.'
           uv pip install --group test
+
+      # The environment Ultralytics actually runs in, built exactly as a user
+      # builds it. This is what the preflight suite compares mosaic's declared
+      # tracker tables against; without it that comparison skips, and the job
+      # would prove nothing about the defaults it exists to hold still.
+      - name: Build the Ultralytics environment
+        working-directory: mosaic/src/mosaic/tracking/external/ultralytics-env
+        run: uv sync --python 3.12
 
       - name: Test ultralytics tracking
         working-directory: mosaic
         env:
           PYTHONHASHSEED: random
-          # Promotes a missing ultralytics or lap from "skip" to "broken
-          # environment".
+          # Promotes an Ultralytics environment that does not resolve from "skip"
+          # to "broken environment".
           MOSAIC_CI_TRACKING: "1"
+          MOSAIC_ULTRALYTICS_BIN: ${{ github.workspace }}/mosaic/src/mosaic/tracking/external/ultralytics-env/.venv/bin/yolo
         # `-m tracker` for the same reason as the identity job above.
         run: uv run --no-sync pytest -q -m tracker
 

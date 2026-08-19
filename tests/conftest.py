@@ -86,12 +86,20 @@ CI_REQUIRED_MODULES = ("imgstore",)
 # between a refactor and a silently randomly-initialised network inside T-Rex.
 CI_IDENTITY_MODULES = ("torch", "timm")
 
-# The same argument again, for the job that installs `pose`. `lap` is the one
-# that matters: Ultralytics imports it at module scope in its tracker matching
-# and pip-installs it at run time when it is absent, so a job without it would
-# skip the drift and reset checks green while proving nothing about the
-# declaration that exists to stop that install happening.
-CI_TRACKING_MODULES = ("ultralytics", "lap")
+# The same argument again for the tracking job, with one difference that changes
+# its shape entirely: what that job installs is not a module. Ultralytics is
+# AGPL-3.0 and mosaic never imports it -- it runs in an environment the user
+# builds, reached as a subprocess -- so there is no import name to demand of
+# *this* environment and deliberately no tuple below. Folding one in would claim
+# a CI job installs Ultralytics here, and would then excuse an
+# `importorskip("ultralytics")` that guards the wrong environment entirely.
+#
+# The rule itself is unchanged, pointed at the environment instead: under
+# MOSAIC_CI_TRACKING an Ultralytics environment that does not resolve is a broken
+# environment rather than a reason to skip. `test_ultralytics_preflight.py` skips
+# its drift check when it cannot find one, and a job that builds the environment
+# and then skips that check has proved nothing about the tracker tables it exists
+# to compare.
 
 # And again for the job that installs `feral`, which became possible at all only
 # when FERAL started publishing to PyPI. `feral` is probed with
@@ -119,6 +127,32 @@ CI_FERAL_MODULES = ("feral",)
 # The list and the probe live in `tests.helpers.environment`, because the plain
 # helpers there need the same answer and a second copy is how the two drift.
 CI_REQUIRED_BINARIES = FFMPEG_TOOLCHAIN
+
+
+def _refuse_an_unresolvable_ultralytics_environment() -> None:
+    """Under the tracking job, an Ultralytics environment that is not there is an error.
+
+    Resolved through `tool_invocation` -- the same five-step ladder a real run
+    walks -- rather than by reading MOSAIC_ULTRALYTICS_CONDA_ENV and
+    MOSAIC_ULTRALYTICS_BIN here, so this check and the lookup it stands in for
+    cannot come to disagree about what "the environment is there" means.
+
+    Imported inside the call: only the tracking job asks, and the import reaches
+    the whole pipeline package.
+    """
+    from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
+    from mosaic.tracking.ultralytics_track.run import ULTRALYTICS_ENV
+
+    try:
+        _ = tool_invocation(ULTRALYTICS_ENV, executable="python")
+    except ToolNotFoundError as absent:
+        raise pytest.UsageError(
+            "CI builds the Ultralytics environment for this job, but it does not "
+            f"resolve: {absent} The tracker-table drift check would skip silently "
+            "instead of comparing mosaic's declared tables against the release "
+            "that runs them. Check that the environment was built and that "
+            "MOSAIC_ULTRALYTICS_BIN or MOSAIC_ULTRALYTICS_CONDA_ENV names it."
+        ) from absent
 
 
 def _refuse_two_opencv_builds() -> None:
@@ -180,7 +214,9 @@ def pytest_configure() -> None:
 
     Local runs are unaffected: a developer without ``imgstore`` installed still
     gets skips, which is the point of ``importorskip``. Only CI, which installs
-    them explicitly, treats their absence as a broken environment.
+    them explicitly, treats their absence as a broken environment. The tracking
+    job's dependency is an external environment rather than an import, and is
+    held to the same standard by the call at the end.
     """
     _refuse_two_opencv_builds()
     if not os.environ.get("CI"):
@@ -188,8 +224,6 @@ def pytest_configure() -> None:
     required = CI_REQUIRED_MODULES
     if os.environ.get("MOSAIC_CI_IDENTITY"):
         required += CI_IDENTITY_MODULES
-    if os.environ.get("MOSAIC_CI_TRACKING"):
-        required += CI_TRACKING_MODULES
     if os.environ.get("MOSAIC_CI_FERAL"):
         required += CI_FERAL_MODULES
     missing = [name for name in required if importlib.util.find_spec(name) is None]
@@ -200,6 +234,8 @@ def pytest_configure() -> None:
             "that the test step does not re-sync the environment away "
             "(uv run --no-sync)."
         )
+    if os.environ.get("MOSAIC_CI_TRACKING"):
+        _refuse_an_unresolvable_ultralytics_environment()
     absent = [name for name in CI_REQUIRED_BINARIES if shutil.which(name) is None]
     if absent:
         raise pytest.UsageError(

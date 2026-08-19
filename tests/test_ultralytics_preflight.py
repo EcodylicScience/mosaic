@@ -1,31 +1,51 @@
-"""What mosaic declares about Ultralytics tracking, checked against what is installed.
+"""What mosaic declares about Ultralytics tracking, against the environment that runs it.
 
-This replaces the invocation suites the three subprocess trackers have. There is
-no argv, no ``ToolEnv`` and no location ladder to test, because Ultralytics runs
-in mosaic's own process. The equivalent questions are: is the dependency
-declared, does the installed library know these six backends, and does mosaic's
-declared default table still say what the installed one says.
+Most of this file needs nothing installed: the tracker tables are mosaic's own
+declaration, and the refusals over them are decided from that declaration alone.
+The last section is the one that reaches outside, and it reaches into the
+*Ultralytics* environment rather than mosaic's own, because mosaic's own no
+longer holds Ultralytics -- that is the whole subject of
+``tests/test_ultralytics_separation.py``.
 
-The drift check **fails** rather than warns. A moved default silently re-means
-every run identifier already on disk, so it needs a decision at upgrade time.
+**Why mosaic transcribes those tables at all.** Every detection-affecting setting
+is passed explicitly and enters the run identifier, so an upstream retune must
+not silently re-mean an identifier already on disk. That only works while the
+transcription still says what the installed release says, and the drift check
+below is what turns a moved default into a decision at upgrade time. It **fails**
+rather than warns, for the same reason.
+
+**What happened to the track-identity reset.** Mosaic used to reset the shared
+``BaseTrack`` counter between entries, and a test here asserted that every
+backend's ``reset()`` really returned it to zero -- otherwise a run's identifiers
+would depend on what ran before it in the same process. Nothing resets it now,
+and nothing needs to: each entry is tracked in a subprocess of its own, so the
+class-level counter starts at zero by construction. The property did not stop
+mattering; it is guaranteed structurally instead of by a call, which is why the
+test that pinned the call is gone.
 """
 
 from __future__ import annotations
 
-import re
 import tomllib
 from pathlib import Path
-from typing import cast
+from typing import Final
 
 import pytest
+from pydantic import TypeAdapter
 
 from mosaic.core.json_value import JsonValue
+from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
+from mosaic.tracking.ultralytics_track.run import (
+    ULTRALYTICS_ENV,
+    ultralytics_tracker_defaults,
+)
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     CLOSED_KEYS,
     TRACKER_KNOBS,
     TRACKER_NAMES,
     TrackerConfigError,
     TrackerName,
+    TrackerSetting,
     resolve_tracker_config,
 )
 
@@ -34,67 +54,45 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
 pytestmark = pytest.mark.tracker
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_ENVIRONMENT_PYPROJECT = (
+    _REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "ultralytics-env"
+) / "pyproject.toml"
+
+_REQUIREMENTS: Final = TypeAdapter(list[str])
+"""Reads a ``[project] dependencies`` array as the list of strings it is.
+
+Validated rather than asserted so the shape is checked where it is read, and so
+nothing here has to narrow ``tomllib``'s untyped document by hand.
+"""
 
 
-# --- the declaration, checkable without Ultralytics ------------------------
+# --- the declaration, checkable with nothing installed ---------------------
 
 
-def _resolve_extra(extras: dict[str, list[str]], name: str) -> list[str]:
-    """Every requirement `name` pulls in, following ``mosaic-behavior[...]`` edges.
+def test_the_ultralytics_environment_declares_lap() -> None:
+    """``lap`` is declared by the environment that will run Ultralytics.
 
-    Bundles are declared by self-reference (``all = ["mosaic-behavior[pose,faiss]"]``)
-    so they cannot drift from their parts. That is exactly what defeats a
-    text scan of one extra's own list: ``all`` reaches an Ultralytics tracker and
-    names nothing but itself. Resolving the edges is what keeps the assertion
-    below meaning what it says.
+    ``lap`` is the linear-assignment solver every one of the six backends reaches
+    from module scope in ``ultralytics.trackers.utils.matching``, and it appears
+    in no Ultralytics extra. Undeclared, Ultralytics pip-installs it *during the
+    run* -- a network write inside a queued job, and an outright failure in a
+    locked environment.
+
+    Asked of the environment's own ``pyproject.toml`` rather than of mosaic's,
+    because mosaic's environment is no longer where Ultralytics runs. With
+    ``lap`` present the hazard is invisible, so reading the declaration is the
+    only thing that can catch its removal.
     """
-    seen: set[str] = set()
-    out: list[str] = []
+    document = tomllib.loads(_ENVIRONMENT_PYPROJECT.read_text())
+    declared = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
 
-    def walk(extra: str) -> None:
-        if extra in seen:
-            return
-        seen.add(extra)
-        for spec in extras.get(extra, []):
-            inner = re.fullmatch(r"mosaic-behavior\[([a-z0-9,\-]+)\]", spec.strip())
-            if inner is None:
-                out.append(spec)
-                continue
-            for referenced in inner.group(1).split(","):
-                walk(referenced.strip())
-
-    walk(name)
-    return out
-
-
-def test_mosaic_declares_lap_rather_than_letting_ultralytics_install_it() -> None:
-    """``lap`` is named by every extra that can reach a tracker backend.
-
-    Ultralytics imports ``lap`` at module scope in its matching helper and, on
-    ImportError, pip-installs it *during the run* -- a network write inside a
-    queued job, and an outright failure in a locked environment. With ``lap``
-    present the hazard is invisible, so reading the declaration is the only
-    thing that can catch its removal.
-
-    Asked of every extra that resolves to Ultralytics rather than of a hardcoded
-    list, so a new bundle carrying it is covered the day it lands.
-    """
-    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
-    extras = cast(dict[str, list[str]], pyproject["project"]["optional-dependencies"])
-
-    reaching: dict[str, list[str]] = {}
-    for name in extras:
-        resolved = _resolve_extra(extras, name)
-        if any(
-            spec.split(">=")[0].split("@")[0].strip() == "ultralytics"
-            for spec in resolved
-        ):
-            reaching[name] = resolved
-    assert reaching, "no extra resolves to ultralytics; this test has lost its subject"
-    for name, declared in sorted(reaching.items()):
-        assert any(spec.startswith("lap") for spec in declared), (
-            f"[{name}] can reach an Ultralytics tracker but does not declare lap"
-        )
+    assert any(spec.startswith("ultralytics") for spec in declared), (
+        f"{_ENVIRONMENT_PYPROJECT} declares no ultralytics; this test has lost "
+        "its subject"
+    )
+    assert any(spec.startswith("lap") for spec in declared), (
+        f"{_ENVIRONMENT_PYPROJECT} runs Ultralytics tracking but does not declare lap"
+    )
 
 
 def test_every_backend_declares_the_settings_it_selects_on() -> None:
@@ -166,30 +164,67 @@ def test_a_whole_number_widens_into_a_threshold() -> None:
     assert widened == 1.0
 
 
-# --- the declaration, checked against the installed library ----------------
+def test_every_declared_knob_has_a_default_of_its_own_type() -> None:
+    """A structural check on the tables themselves, needing nothing installed."""
+    for name in TRACKER_NAMES:
+        for key, knob in TRACKER_KNOBS[name].items():
+            resolved = resolve_tracker_config(name)[key]
+            assert type(resolved) is type(knob.default), f"{name}.{key}"
 
 
-def _installed_tracker_config(name: str) -> dict[str, object]:
-    """Parse the installed Ultralytics' own YAML for *name*."""
-    import yaml
+# --- the declaration, checked against the Ultralytics environment ----------
 
-    import ultralytics
 
-    path = Path(ultralytics.__file__).parent / "cfg" / "trackers" / f"{name}.yaml"
-    assert path.is_file(), f"the installed ultralytics has no {name}.yaml"
-    return cast(dict[str, object], yaml.safe_load(path.read_text()))
+@pytest.fixture(scope="module")
+def installed_tracker_tables() -> dict[str, dict[str, TrackerSetting]]:
+    """Every backend's shipped table, read in the environment that runs them.
+
+    Module-scoped because the answer costs one subprocess and a cold torch
+    import, and every test below asks it of the same environment. The runner
+    reports all six in one response for the same reason.
+
+    Whether an environment resolves is decided by :func:`tool_invocation` -- the
+    same five-step ladder a real run walks -- rather than by reading
+    ``MOSAIC_ULTRALYTICS_CONDA_ENV`` and ``MOSAIC_ULTRALYTICS_BIN`` here, so the
+    skip condition and the lookup cannot come to disagree about what "the
+    environment is there" means.
+    """
+    try:
+        _ = tool_invocation(ULTRALYTICS_ENV, executable="python")
+    except ToolNotFoundError as absent:
+        pytest.skip(f"no Ultralytics environment resolves: {absent}")
+    return ultralytics_tracker_defaults().tables
+
+
+def test_the_environment_knows_exactly_the_backends_mosaic_declares(
+    installed_tracker_tables: dict[str, dict[str, TrackerSetting]],
+) -> None:
+    """A backend either side has and the other does not.
+
+    Mosaic naming one the release does not have is a run that fails inside
+    Ultralytics; the release having one mosaic does not name is a backend nobody
+    can select through mosaic, which is a decision rather than an accident and so
+    belongs at upgrade time.
+    """
+    assert set(installed_tracker_tables) == set(TRACKER_NAMES)
 
 
 @pytest.mark.parametrize("name", TRACKER_NAMES)
-def test_each_declared_table_matches_the_installed_yaml(name: TrackerName) -> None:
+def test_each_declared_table_matches_the_installed_one(
+    name: TrackerName,
+    installed_tracker_tables: dict[str, dict[str, TrackerSetting]],
+) -> None:
     """Both directions.
 
     A setting installed but not declared is an identity gap: it affects the run
     and no identifier names it. A setting declared but not installed is a dead
     knob mosaic offers and nothing reads.
     """
-    _ = pytest.importorskip("ultralytics")
-    installed = _installed_tracker_config(name)
+    assert name in installed_tracker_tables, (
+        f"the ultralytics in this environment knows "
+        f"{sorted(installed_tracker_tables)}, not {name!r}"
+    )
+    installed = installed_tracker_tables[name]
     declared = resolve_tracker_config(name)
 
     assert set(installed) == set(declared), (
@@ -199,45 +234,3 @@ def test_each_declared_table_matches_the_installed_yaml(name: TrackerName) -> No
     for key in sorted(installed):
         assert installed[key] == declared[key], f"{name}.{key}"
         assert type(installed[key]) is type(declared[key]), f"{name}.{key} type"
-
-
-def test_the_six_backend_names_are_what_the_installed_ultralytics_knows() -> None:
-    _ = pytest.importorskip("ultralytics")
-    _ = pytest.importorskip("lap")
-    from ultralytics.trackers.track import TRACKER_MAP
-
-    assert set(TRACKER_NAMES) == set(TRACKER_MAP)
-
-
-@pytest.mark.parametrize("name", TRACKER_NAMES)
-def test_a_reset_restarts_the_track_id_counter_for_every_backend(
-    name: TrackerName,
-) -> None:
-    """Each backend's ``reset()`` must return the *class-level* counter to zero.
-
-    Mosaic resets between entries so that a run's identifiers do not depend on
-    what ran before it in the same process. The counter lives on ``BaseTrack``,
-    shared by every backend, and each backend overrides ``reset()`` -- so this is
-    parametrized rather than asserted once: a subclass that clears its own pools
-    without resetting the counter would pass a single global check.
-    """
-    _ = pytest.importorskip("ultralytics")
-    _ = pytest.importorskip("lap")
-    from ultralytics.trackers.basetrack import BaseTrack
-    from ultralytics.trackers.track import TRACKER_MAP
-    from ultralytics.utils import IterableSimpleNamespace
-
-    settings = IterableSimpleNamespace(**resolve_tracker_config(name))
-    tracker = TRACKER_MAP[name](args=settings)
-    for _ in range(41):  # advance the shared counter through the public door
-        _ = BaseTrack.next_id()
-    tracker.reset()
-    assert BaseTrack.next_id() == 1
-
-
-def test_every_declared_knob_has_a_default_of_its_own_type() -> None:
-    """A structural check on the tables themselves, needing nothing installed."""
-    for name in TRACKER_NAMES:
-        for key, knob in TRACKER_KNOBS[name].items():
-            resolved = resolve_tracker_config(name)[key]
-            assert type(resolved) is type(knob.default), f"{name}.{key}"

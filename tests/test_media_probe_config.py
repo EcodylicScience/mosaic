@@ -14,6 +14,8 @@ from mosaic_media import DEFAULT_THRESHOLDS
 
 from mosaic.media_probe_config import media_thresholds
 
+from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
+
 
 def test_defaults_are_the_documented_integers() -> None:
     thresholds = media_thresholds()
@@ -111,13 +113,31 @@ def test_every_derive_call_in_mosaic_resolves_thresholds() -> None:
 
     root = Path(mosaic.__file__).parent
     offenders: list[str] = []
+    scanned: set[str] = set()
     for source in root.rglob("*.py"):
         if source.name == "media_probe_config.py":
             continue
-        if "feature_library/external" in source.as_posix():
+        # Both exclusions, because both reasons are real here. A program in an
+        # external-environment tree may take no import from mosaic at all, so it
+        # cannot call `media_thresholds` and this rule cannot reach it; and an
+        # installed virtualenv is not mosaic's code wherever it lands, which the
+        # first predicate only happens to cover while every such environment is
+        # built inside one of the two named trees.
+        if inside_a_virtualenv(source, root) or runs_in_an_external_environment(
+            source, root
+        ):
             continue
+        scanned.add(source.relative_to(root).as_posix())
         if _uses_upstream_default_thresholds(ast.parse(source.read_text())):
             offenders.append(str(source.relative_to(root)))
+    # A walk that reads nothing reports no offenders and proves nothing, and an
+    # exclusion one predicate too broad is how that happens. So it names a module
+    # it must have read: `read_target.py` calls `media_thresholds`, which is the
+    # very habit this guard is about.
+    assert "core/media/read_target.py" in scanned, (
+        "the walk did not read core/media/read_target.py, so it is not covering "
+        f"the modules this rule is about; it read {len(scanned)} files"
+    )
     message = (
         "these modules read mosaic_media.DEFAULT_THRESHOLDS instead of calling "
         "media_thresholds: " + ", ".join(offenders)

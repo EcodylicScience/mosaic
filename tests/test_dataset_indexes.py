@@ -22,7 +22,11 @@ from mosaic.core.pipeline.dataset_indexes import (
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
-from tests.helpers import make_dataset
+from tests.helpers import (
+    inside_a_virtualenv,
+    make_dataset,
+    runs_in_an_external_environment,
+)
 
 
 def _trex_row(ds: Dataset, run_id: str, sequence: str, output: Path) -> None:
@@ -303,18 +307,17 @@ def test_the_listing_is_written_in_exactly_one_place() -> None:
         "core/pipeline/labels_migration.py",
     }
     source_root = Path(mosaic.__file__).parent
-    # The two trees whose programs run in an environment the user builds. Each
-    # holds a vendored virtualenv this walk has no business entering, and the
-    # programs themselves take no import from mosaic, so they have no dataset
-    # root to list. Matched by path component: a substring test would also
-    # exempt a sibling module merely named for one of them.
-    external = (
-        source_root / "behavior" / "feature_library" / "external",
-        source_root / "tracking" / "external",
-    )
     matched: set[str] = set()
     for source in sorted(source_root.rglob("*.py")):
-        if any(tree in source.parents for tree in external):
+        # The two trees whose programs run in an environment the user builds take
+        # no import from mosaic, so they have no dataset root to list; and each
+        # is where a virtualenv gets built, which is a separate question with its
+        # own answer wherever one lands. Both are one shared declaration, spelled
+        # by path component -- a substring test would also exempt a sibling
+        # module merely named for one of them.
+        if inside_a_virtualenv(source, source_root):
+            continue
+        if runs_in_an_external_environment(source, source_root):
             continue
         tree = ast.parse(source.read_text())
         for node in ast.walk(tree):

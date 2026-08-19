@@ -28,8 +28,8 @@ If your use is not permitted, the `arhmm` feature fits a comparable
 autoregressive hidden Markov model in mosaic's own code and carries no such
 restriction.
 
-Mosaic's [Licensing](../../../../../docs/licensing.md) page has the wider
-picture, including why this environment is separate at all.
+Mosaic's [NOTICE](../../../../../NOTICE) records the wider picture, including
+why this environment is separate at all.
 
 ## Install
 

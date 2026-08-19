@@ -209,6 +209,42 @@ class ProbeResponse(BaseModel):
     """
 
 
+# --- tracker defaults ------------------------------------------------------
+
+
+class TrackerDefaultsRequest(BaseModel):
+    """Ask the environment for every backend's shipped configuration table.
+
+    Carries no fields at all, and no model path in particular: reading the
+    configuration files loads no weights. It exists so that all three
+    subcommands take the same ``--request`` / ``--out`` shape, which is what
+    keeps one launcher able to drive any of them.
+
+    The answer is not narrowed to the backends mosaic knows either. A setting
+    the installed release added and mosaic has not transcribed is precisely what
+    the comparison is for, and a request naming the backends would hide a whole
+    backend the same way.
+    """
+
+
+class TrackerDefaultsResponse(BaseModel):
+    """Every backend's shipped defaults, read in one process.
+
+    One response rather than one per backend because each spawn pays a cold
+    torch import, which is the whole cost of the answer.
+    """
+
+    tables: dict[str, dict[str, TrackerSetting]]
+    """Each backend the installed ``TRACKER_MAP`` knows, mapped to its shipped
+    configuration file read as scalars -- the same reading
+    :class:`ProbeResponse.installed_tracker_table` reports for one backend.
+
+    A backend whose configuration file is absent maps to an empty table rather
+    than being left out, so the key set stays the set of backends that exist and
+    a missing file reads as a missing file.
+    """
+
+
 # --- track -----------------------------------------------------------------
 
 
@@ -330,6 +366,8 @@ __all__ = [
     "Result",
     "TrackRequest",
     "TrackResponse",
+    "TrackerDefaultsRequest",
+    "TrackerDefaultsResponse",
     "TrackerSetting",
     "UltralyticsInteropError",
     "rows_from_result",

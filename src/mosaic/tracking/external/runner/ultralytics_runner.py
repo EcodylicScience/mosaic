@@ -10,9 +10,10 @@ beside this file, which imports neither side.
 Invoked as::
 
     <env>/bin/python ultralytics_runner.py probe --request <req.json> --out <resp.json>
+    <env>/bin/python ultralytics_runner.py tracker-defaults --request <req.json> --out <resp.json>
     <env>/bin/python ultralytics_runner.py track --request <req.json> --out <result.json>
 
-Both subcommands read their whole request from a JSON file and write their whole
+Every subcommand reads its whole request from a JSON file and writes its whole
 response to a JSON file, with nothing else on the command line. The response
 goes to a **file** rather than to standard output because importing torch and
 Ultralytics prints banners and warnings to standard output, so a response parsed
@@ -68,6 +69,8 @@ from ultralytics_protocol import (
     ProgressEvent,
     ProgressEventKind,
     Result,
+    TrackerDefaultsRequest,
+    TrackerDefaultsResponse,
     TrackerSetting,
     TrackRequest,
     TrackResponse,
@@ -211,6 +214,35 @@ def run_probe(request: ProbeRequest) -> ProbeResponse:
         installed_tracker_table=_installed_tracker_table(
             Path(ultralytics.__file__).parent, request.tracker
         ),
+    )
+
+
+# --- tracker defaults ------------------------------------------------------
+
+
+def run_tracker_defaults(request: TrackerDefaultsRequest) -> TrackerDefaultsResponse:
+    """Every backend's shipped configuration table, read in one process.
+
+    *request* carries nothing; it is validated by the caller so that this
+    subcommand takes the same shape as the other two. What decides the answer is
+    the installed release alone.
+
+    Mosaic transcribes these tables so that an upstream retune cannot silently
+    re-mean an identifier already on disk, and reads them back through here to
+    find out when one has moved. Every backend in one answer because each spawn
+    pays a cold torch import, which is the whole cost of asking.
+    """
+    del request  # nothing to read: the installed release decides the whole answer
+
+    import ultralytics
+    from ultralytics.trackers.track import TRACKER_MAP
+
+    package_root = Path(ultralytics.__file__).parent
+    return TrackerDefaultsResponse(
+        tables={
+            name: _installed_tracker_table(package_root, name)
+            for name in sorted(TRACKER_MAP)
+        }
     )
 
 
@@ -504,6 +536,7 @@ def _parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
         ("probe", "report what this environment holds"),
+        ("tracker-defaults", "report every backend's shipped configuration table"),
         ("track", "track one video and write its raw predictions"),
     ):
         subcommand = subcommands.add_parser(name, help=help_text)
@@ -516,18 +549,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _answer(command: str, payload: str) -> BaseModel:
+    """Run the named subcommand against its own request model."""
+    if command == "probe":
+        return run_probe(ProbeRequest.model_validate_json(payload))
+    if command == "tracker-defaults":
+        return run_tracker_defaults(TrackerDefaultsRequest.model_validate_json(payload))
+    return run_track(TrackRequest.model_validate_json(payload))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     namespace = _parser().parse_args(argv)
     command: str = namespace.command
     request_path = Path(str(namespace.request))
     output_path = Path(str(namespace.out))
 
-    payload = request_path.read_text()
-    response: BaseModel = (
-        run_probe(ProbeRequest.model_validate_json(payload))
-        if command == "probe"
-        else run_track(TrackRequest.model_validate_json(payload))
-    )
+    response = _answer(command, request_path.read_text())
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _ = output_path.write_text(response.model_dump_json())

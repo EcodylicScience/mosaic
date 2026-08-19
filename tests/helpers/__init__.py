@@ -13,7 +13,10 @@ What lives where:
   fit-then-apply features are tested on.
 - ``tracks`` -- track tables, tracks variants, raw TREx exports.
 - ``media`` -- media files, media-index rows, transcode derivatives.
-- ``environment`` -- what the surrounding machine provides (the ffmpeg toolchain).
+- ``environment`` -- what the surrounding machine provides: the ffmpeg
+  toolchain, and which files under the package root a structural walk should
+  skip -- installed third-party code, and mosaic's own code that runs in an
+  environment built for an external tool.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
 
@@ -25,10 +28,13 @@ from __future__ import annotations
 
 from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import (
+    EXTERNAL_ENVIRONMENT_TREES,
     FFMPEG_TOOLCHAIN,
     assert_no_literal_tilde,
+    inside_a_virtualenv,
     missing_ffmpeg_tools,
     require_ffmpeg,
+    runs_in_an_external_environment,
     sandbox_home,
 )
 from tests.helpers.features import (
@@ -52,6 +58,7 @@ from tests.helpers.tracks import (
 )
 
 __all__ = [
+    "EXTERNAL_ENVIRONMENT_TREES",
     "FFMPEG_TOOLCHAIN",
     "MockDataset",
     "add_media_sequence",
@@ -60,11 +67,13 @@ __all__ = [
     "add_transcode_derivative",
     "assert_no_literal_tilde",
     "clean_facts_cells",
+    "inside_a_virtualenv",
     "make_dataset",
     "make_sequence_df",
     "make_templates",
     "missing_ffmpeg_tools",
     "require_ffmpeg",
+    "runs_in_an_external_environment",
     "sandbox_home",
     "track_sequences",
     "write_media_index",

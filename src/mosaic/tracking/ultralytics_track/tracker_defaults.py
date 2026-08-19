@@ -11,8 +11,9 @@ dictated by the code that consumes them (each backend reads its knobs straight
 off the config object), and the values are the ones Ultralytics 8.4.63 shipped.
 Nothing is copied: no YAML file is vendored, and
 ``tests/test_ultralytics_preflight.py`` diffs every table against whatever
-Ultralytics is installed, so drift is a named failure at upgrade time instead of
-a wrong number nobody looks at. See ``docs/licensing.md``.
+Ultralytics the external environment holds, so drift is a named failure at
+upgrade time instead of a wrong number nobody looks at. See ``NOTICE`` at the
+repository root.
 
 There is deliberately **no shared base row**. Six of the seven common settings do
 line up across five backends, but ``deepocsort`` raises three of the thresholds

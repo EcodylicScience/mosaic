@@ -19,7 +19,9 @@ those as guards and produces a covered set that is quietly wrong.
 
 Three properties, and each has already caught something real:
 
-- a guarded module that no CI job installs (found ``timm`` and ``tables``),
+- a guarded module that no CI job installs (found ``timm`` and ``tables``, and
+  now the answer for ``ultralytics``, which belongs in an environment of its own
+  rather than in mosaic's),
 - a guarded module that is a *core* dependency, so the guard can never fire and
   would hide a broken install rather than a missing extra (found ``yaml``),
 - a required module that nothing in the suite reaches, i.e. a tuple entry kept
@@ -41,7 +43,6 @@ from tests.conftest import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
     CI_REQUIRED_MODULES,
-    CI_TRACKING_MODULES,
 )
 
 TESTS = Path(__file__).resolve().parent
@@ -117,13 +118,18 @@ def guarded_targets() -> dict[str, set[str]]:
 
 
 def _ci_modules() -> set[str]:
-    """Every module some CI job is obliged to install."""
-    return (
-        set(CI_REQUIRED_MODULES)
-        | set(CI_IDENTITY_MODULES)
-        | set(CI_TRACKING_MODULES)
-        | set(CI_FERAL_MODULES)
-    )
+    """Every module some CI job is obliged to install into mosaic's environment.
+
+    There is deliberately no tracking entry, and its absence is load-bearing
+    rather than an oversight. What the tracking job installs is an *Ultralytics
+    environment*, which is not a module and is not importable from here:
+    Ultralytics is AGPL-3.0 and mosaic never imports it. A tuple naming it would
+    assert the opposite, and would then excuse an ``importorskip("ultralytics")``
+    that guards mosaic's environment for a package that does not belong in it.
+    Without one, such a guard fails the audit below, which is the right answer.
+    ``tests/conftest.py`` holds that job to its real requirement directly.
+    """
+    return set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_FERAL_MODULES)
 
 
 def _core_import_names() -> set[str]:
@@ -164,7 +170,10 @@ def test_every_guarded_module_is_required_by_some_ci_job() -> None:
         f"guarded but required by no CI job: {uncovered}. "
         "Their tests skip green in every job, so they are not evidence. Either "
         "add the distribution to a CI install line and its import name to the "
-        "matching tuple in tests/conftest.py, or delete the guard."
+        "matching tuple in tests/conftest.py, or delete the guard. A dependency "
+        "that belongs in an external tool's own environment rather than in "
+        "mosaic's -- ultralytics is the one -- has no tuple to join: guard the "
+        "environment, as tests/test_ultralytics_preflight.py does."
     )
 
 

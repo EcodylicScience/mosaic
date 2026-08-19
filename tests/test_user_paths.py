@@ -23,7 +23,13 @@ from mosaic.core.pipeline.scan_claim import ScanClaim
 from mosaic.core.stored_paths import resolve_stored_path
 from mosaic.user_paths import user_path
 
-from tests.helpers import assert_no_literal_tilde, sandbox_home, write_media_index
+from tests.helpers import (
+    assert_no_literal_tilde,
+    inside_a_virtualenv,
+    runs_in_an_external_environment,
+    sandbox_home,
+    write_media_index,
+)
 
 
 # --- The helper's own contract ----------------------------------------------
@@ -95,27 +101,32 @@ def test_expanduser_is_called_in_exactly_one_place() -> None:
     thing pinned -- narrowly, by name, with a one-line repair.
     """
     package = Path(__file__).resolve().parent.parent / "src" / "mosaic"
-    # The two trees whose programs run in an environment the user builds, and
-    # which take no import from mosaic at all: the sandboxed keypoint-MoSeq
-    # runner, and the Ultralytics tracking runner. Neither can call
-    # ``user_paths.user_path`` -- it is a mosaic import -- so holding them to
-    # this rule would leave no way to comply. Each is also where a virtualenv
-    # gets built, which this walk has no business entering.
-    sandboxed = (
-        package / "behavior" / "feature_library" / "external",
-        package / "tracking" / "external",
-    )
     home = package / "user_paths.py"
 
     offenders: list[str] = []
+    scanned: set[str] = set()
     for path in sorted(package.rglob("*.py")):
-        if path == home or any(tree in path.parents for tree in sandboxed):
+        # The two trees whose programs run in an environment the user builds take
+        # no import from mosaic at all, so they cannot call ``user_path`` and
+        # holding them to this rule would leave no way to comply; and an
+        # installed virtualenv is not mosaic's code wherever it lands. One
+        # declaration of each, shared with every other structural walk.
+        if path == home or inside_a_virtualenv(path, package):
             continue
+        if runs_in_an_external_environment(path, package):
+            continue
+        scanned.add(path.relative_to(package).as_posix())
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr == "expanduser":
                 offenders.append(f"{path.relative_to(package)}:{node.lineno}")
 
+    # No offenders is the pass state, so a walk that read nothing passes for the
+    # wrong reason. It names a module it must have read before its verdict counts.
+    assert "core/dataset.py" in scanned, (
+        "the walk did not read core/dataset.py, so it is not covering mosaic's "
+        f"own tree; it read {len(scanned)} files"
+    )
     assert not offenders, (
         "call mosaic.user_paths.user_path instead of .expanduser() directly, so "
         f"the boundary stays greppable: {offenders}"

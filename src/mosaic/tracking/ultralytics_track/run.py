@@ -12,11 +12,14 @@ directory of chunk files, so a store resolves to the plain video
 ``export-store`` wrote for it.
 
 This module is where the tool is located and launched -- one :class:`ToolEnv`,
-the argv its ladder resolves, and the two calls that write a request and read a
+the argv its ladder resolves, and the calls that write a request and read a
 response back. :func:`probe_ultralytics` and :func:`run_ultralytics_tool` sit at
 module scope because they are the seam the marker suite replaces, which is what
 exercises the whole run protocol -- identifiers, markers, reuse, the bridge --
-with no Ultralytics installed at all.
+with no Ultralytics installed at all. :func:`ultralytics_tracker_defaults` is the
+third and is called by no run: it reads back what the environment's backends
+ship, so mosaic's transcribed tables can be diffed against the release that will
+run them.
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ from mosaic.tracking.common.toolenv import (
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeRequest,
     ProbeResponse,
+    TrackerDefaultsRequest,
+    TrackerDefaultsResponse,
     TrackRequest,
     TrackResponse,
 )
@@ -79,7 +84,7 @@ together.
 """
 
 PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
-"""The least time a probe gets to answer, whatever the tracking bound is.
+"""The least time a silent subcommand gets to answer, whatever the tracking bound is.
 
 ``idle_timeout`` bounds *silence*, which is the right unit for tracking: the
 runner prints a line per decoded batch, so a quiet stretch means hung. A probe
@@ -88,6 +93,8 @@ on a cold torch import and a checkpoint load off a network mount -- work
 proceeding exactly as intended. A user who shortens the tracking window so a hung
 tracker dies quickly must not thereby put a stopwatch on loading a model, so the
 probe gets the caller's value or this floor, whichever is longer.
+``tracker-defaults`` is silent for the same stretch -- the torch import is most
+of what it costs -- and takes the same floor.
 """
 
 _ENV_BOOTSTRAP: Final = (
@@ -279,7 +286,7 @@ def _ultralytics_invocation(
 
 
 def _run_runner(
-    subcommand: Literal["probe", "track"],
+    subcommand: Literal["probe", "tracker-defaults", "track"],
     request_path: Path,
     response_path: Path,
     *,
@@ -375,6 +382,55 @@ def probe_ultralytics(
         return ProbeResponse.model_validate_json(response_path.read_text())
 
 
+def ultralytics_tracker_defaults(
+    *,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    conda_env: str | None = None,
+    bin_path: str | Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
+) -> TrackerDefaultsResponse:
+    """Read back every backend's shipped configuration table from the environment.
+
+    Mosaic transcribes those tables rather than reading them, so that an upstream
+    retune cannot silently re-mean a run identifier already on disk. This is how
+    the transcription is compared against the release that will actually run it,
+    which turns a moved default into a decision at upgrade time.
+
+    Not called by a run. The request and the response live in a temporary
+    directory for the same reason the probe's do: nothing reads either file
+    afterwards.
+
+    This subcommand prints nothing between spawn and answer, so *idle_timeout* is
+    raised to :data:`PROBE_DEADLINE_FLOOR_SECONDS` when the caller's value is
+    shorter, exactly as :func:`probe_ultralytics` does.
+
+    Raises:
+        UltralyticsError: The runner exited with a non-zero return code.
+        FileNotFoundError: The runner exited zero having written no response.
+    """
+    request = TrackerDefaultsRequest()
+    with tempfile.TemporaryDirectory(prefix="mosaic-ultralytics-defaults-") as scratch:
+        request_path = Path(scratch) / "tracker-defaults-request.json"
+        response_path = Path(scratch) / "tracker-defaults-response.json"
+        _ = request_path.write_text(request.model_dump_json())
+        stdout, stderr = _run_runner(
+            "tracker-defaults",
+            request_path,
+            response_path,
+            idle_timeout=max(idle_timeout, PROBE_DEADLINE_FLOOR_SECONDS),
+            max_runtime=max_runtime,
+            conda_env=conda_env,
+            bin_path=bin_path,
+            cancel_check=cancel_check,
+            on_output=on_output,
+        )
+        if not response_path.is_file():
+            raise missing_output_error("Ultralytics", response_path, stdout, stderr)
+        return TrackerDefaultsResponse.model_validate_json(response_path.read_text())
+
+
 def run_ultralytics_tool(
     request: TrackRequest,
     *,
@@ -446,5 +502,6 @@ __all__ = [
     "require_supported_task",
     "require_ultralytics",
     "run_ultralytics_tool",
+    "ultralytics_tracker_defaults",
     "write_tracker_yaml",
 ]

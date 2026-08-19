@@ -15,6 +15,6 @@ Spawning a separate interpreter and exchanging JSON over a socket keeps them
 two programs.
 
 It follows that keypoint-moseq must never be bundled into a mosaic distribution
-or installer. See ``README.md`` here for the setup, and ``docs/licensing.md``
-for the terms.
+or installer. See ``README.md`` here for the setup, and ``NOTICE`` at the
+repository root for the terms.
 """

@@ -16,6 +16,8 @@ from pathlib import Path
 
 from mosaic.core.pipeline.inventory.params import RunParams, read_run_params
 
+from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
+
 # One document holding every case the two walks disagree about, plus the two
 # that neither keeps. Written once so a change to either rule is a visible diff.
 DIVERGENCE_DOC: dict[str, object] = {
@@ -190,7 +192,15 @@ def _modules_naming_the_file() -> dict[str, list[int]]:
     source_root = Path(mosaic.__file__).parent
     found: dict[str, list[int]] = {}
     for source in sorted(source_root.rglob("*.py")):
-        if "feature_library/external" in source.as_posix():
+        # Both exclusions, because both reasons are real here. A program in an
+        # external-environment tree may take no import from mosaic at all, so it
+        # cannot be a fourth reader of this document; and an installed virtualenv
+        # is not mosaic's code wherever it lands, which the first predicate only
+        # happens to cover while every such environment is built inside one of
+        # the two named trees.
+        if inside_a_virtualenv(source, source_root) or runs_in_an_external_environment(
+            source, source_root
+        ):
             continue
         for node in ast.walk(ast.parse(source.read_text())):
             if isinstance(node, ast.Constant) and node.value == "params.json":
@@ -243,8 +253,16 @@ def test_no_module_parses_a_params_document_itself() -> None:
         "core/pipeline/tracks_identity.py",
         "core/pipeline/labels_identity.py",
     }
+    named = _modules_naming_the_file()
+    # The walk proves it happened before its verdict is believed: an exclusion
+    # one predicate too broad would find no module naming the file at all, and
+    # this test would report a clean result having read nothing.
+    assert "core/pipeline/inventory/params.py" in named, (
+        "the walk did not find the reader itself naming params.json, so it read "
+        f"none of the modules this rule is about; it found {sorted(named)}"
+    )
     offenders: list[str] = []
-    for relative in _modules_naming_the_file():
+    for relative in named:
         if relative in exempt:
             continue
         tree = ast.parse((source_root / relative).read_text())
