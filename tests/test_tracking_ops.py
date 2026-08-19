@@ -414,6 +414,101 @@ def test_train_pose_cancel(tmp_path, monkeypatch):
     assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
 
 
+def _install_fake_point_trainer(monkeypatch) -> dict[str, object]:
+    """Stand in for the POLO trainer, recording what the op handed it."""
+    import mosaic.tracking.pose_training.train as tr
+
+    seen: dict[str, object] = {}
+
+    def fake_train(
+        data_yaml, *, project, name, callback=None, cancel_check=None, epochs=1, **kw
+    ):
+        seen.update(kw)
+        seen["data_yaml"] = str(data_yaml)
+        run_dir = Path(project) / name
+        (run_dir / "weights").mkdir(parents=True, exist_ok=True)
+        (run_dir / "weights" / "best.pt").write_bytes(b"weights")
+        (run_dir / "results.csv").write_text("epoch,loss\n0,0.1\n")
+        for e in range(epochs):
+            if callback is not None:
+                callback.on_epoch_end(e, epochs, {"loss": 0.1})
+        return None
+
+    monkeypatch.setattr(tr, "train_point_model", fake_train)
+    return seen
+
+
+def test_train_points_lifecycle_and_polo_knobs(tmp_path, monkeypatch):
+    """``train-points`` executes, registers, and delivers its fork-only arguments.
+
+    ``train-pose`` has had an execution test since it landed and ``train-points``
+    has had none, so every POLO-specific term -- ``loc``, ``loc_loss``, ``dor``,
+    ``backend`` -- was declared, hashed into the identifier, and never once
+    observed arriving at a trainer. They are asserted here because they are
+    exactly what a move to another process has to carry across.
+    """
+    ds = _make_dataset(tmp_path)
+    seen = _install_fake_point_trainer(monkeypatch)
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("names: [bee]\nradii: {0: 5.0}\n")
+
+    run_id = run_op(
+        ds,
+        "train-points",
+        {
+            "data": str(data_yaml),
+            "epochs": 2,
+            "device": "cpu",
+            "loc": 7.5,
+            "loc_loss": "hausdorff",
+            "dor": 0.6,
+        },
+    )
+
+    assert run_id.startswith("train-points.")
+    row = read_run(
+        _run_dir(ds), read_runs(_run_dir(ds), kind="train-points")[0]["execution_id"]
+    )
+    assert row["status"] == "finished" and row["run_id"] == run_id
+    assert row["progress_done"] == 2 and row["progress_total"] == 2
+
+    assert seen["loc"] == 7.5
+    assert seen["loc_loss"] == "hausdorff"
+    assert seen["dor"] == 0.6
+    assert seen["backend"] == "polo"
+    assert seen["model"] == "polo26n.yaml"
+
+    from mosaic.core.pipeline.models import model_index_path
+    from mosaic.tracking.ops.train import trained_model_index
+
+    rows = trained_model_index(model_index_path(ds, "train-points")).read(run_id=run_id)
+    assert len(rows) == 1
+    assert rows.iloc[0]["best_model_path"].endswith("best.pt")
+
+    resolved = resolve_model(ds, run_id, "train-points")
+    assert resolved.path.name == "best.pt"
+    assert resolved.run_id == run_id
+
+
+def test_a_point_knob_moves_the_identity(tmp_path, monkeypatch):
+    """``dor`` names a different model here, unlike on the inference path.
+
+    On ``infer-points`` the same field reaches no argument at all, which is its
+    own recorded defect. On this op it is a real ``train`` keyword, so two values
+    are two models and the identifier has to say so.
+    """
+    ds = _make_dataset(tmp_path)
+    _ = _install_fake_point_trainer(monkeypatch)
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("names: [bee]\nradii: {0: 5.0}\n")
+    base = {"data": str(data_yaml), "epochs": 1, "device": "cpu"}
+
+    first = run_op(ds, "train-points", dict(base))
+    second = run_op(ds, "train-points", {**base, "dor": 0.55})
+
+    assert first != second
+
+
 def test_train_localizer_mints_and_registers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
