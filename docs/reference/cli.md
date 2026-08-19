@@ -366,9 +366,12 @@ $ mosaic prune-media [OPTIONS]
 Delete tracker working directories that are finished and past their window.
 
 Never touches work in progress: a directory a live execution holds, or one
-this dataset's index does not yet name, is reported and left alone. Rows go
-before files, so an interrupted sweep leaves rows naming absent directories
--- which ``mosaic reindex`` repairs -- rather than files nothing names.
+this dataset's index does not yet name, is reported and left alone. A shared
+conversion is refused for as long as any surviving tracker directory names
+it as its input, whatever its age -- sweep the runs that read it first. Rows
+go before files, so an interrupted sweep leaves rows naming absent
+directories -- which ``mosaic reindex`` repairs -- rather than files nothing
+names.
 
 Dry-run by default; pass ``--apply`` to delete.
 
@@ -385,6 +388,7 @@ $ mosaic sweep-tracking [OPTIONS]
 * `--root <str>`: Restrict to one tracker root (repeatable): trex, sleap, ...
 * `--tracker-days <float>`: Keep finished tracker output this long (default 14).  [default: 14.0]
 * `--inference-days <float>`: Keep finished inference output this long (default 3).  [default: 3.0]
+* `--conversion-days <float>`: Keep an unreferenced shared conversion this long (default 14). One a tracker run still names is refused whatever its age.  [default: 14.0]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 
