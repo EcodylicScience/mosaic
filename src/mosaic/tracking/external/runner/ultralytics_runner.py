@@ -58,9 +58,10 @@ import queue
 import sys
 import tempfile
 import threading
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, Protocol, TypeAlias
+from typing import Final, Literal, Protocol, TypeAlias, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -69,6 +70,14 @@ from mosaic_media.io import VideoReader
 from pydantic import BaseModel, TypeAdapter
 
 from ultralytics_protocol import (
+    POINT_COLUMNS,
+    InferenceResult,
+    InferPointsRequest,
+    InferPoseRequest,
+    InferRequestBase,
+    InferResponse,
+    PointResult,
+    PoseResult,
     Precision,
     ProbeRequest,
     ProbeResponse,
@@ -80,8 +89,12 @@ from ultralytics_protocol import (
     TrackerSetting,
     TrackRequest,
     TrackResponse,
+    point_rows_from_result,
+    pose_rows_from_result,
     rows_from_result,
 )
+
+ResultT = TypeVar("ResultT", bound=InferenceResult)
 
 QuantizeSpelling: TypeAlias = Literal["quantize", "half"]
 """Which keyword the installed Ultralytics takes half precision under.
@@ -104,9 +117,15 @@ class RunnerError(RuntimeError):
 
 
 class _Model(Protocol):
-    """The one Ultralytics call this program makes."""
+    """The tracking call."""
 
     def track(self, source: list[np.ndarray], **kwargs: object) -> list[Result]: ...
+
+
+class _Predictor(Protocol[ResultT]):
+    """The inference call, over whichever result the loaded task produces."""
+
+    def predict(self, source: list[np.ndarray], **kwargs: object) -> list[ResultT]: ...
 
 
 # --- probe -----------------------------------------------------------------
@@ -167,6 +186,44 @@ def _keypoint_count(model: object, task: str) -> int:
     return int(shape[0])
 
 
+def _has_locate() -> bool:
+    """Whether this environment's ``ultralytics`` is the POLO fork.
+
+    Read as the presence of ``LocalizationModel``, which is what the fork adds
+    and upstream does not define. There is nothing else to read it from: the two
+    share a distribution name, overlap in version, and install the same console
+    scripts, so no version comparison and no resolved path distinguishes them.
+
+    ``hasattr`` on the module rather than a ``from ... import``, so the check
+    needs no bound name it then has to explain away.
+    """
+    try:
+        from ultralytics.nn import tasks
+    except ImportError:
+        return False
+    return hasattr(tasks, "LocalizationModel")
+
+
+def _load_model(model_path: str) -> tuple[object | None, str]:
+    """The loaded weights, or ``None`` and why not.
+
+    Every exception is caught, which is the point rather than an oversight. What
+    the probe is reporting is *whether this environment can load these weights*,
+    and the ways it cannot are open-ended: unpickling a class the running build
+    does not define raises ``AttributeError``, a missing module raises
+    ``ModuleNotFoundError``, a truncated checkpoint raises from ``torch.load``
+    itself, an absent file raises ``FileNotFoundError``. A closed list would
+    catch four of those and let the fifth reach the user as the traceback this
+    exists to replace.
+    """
+    from ultralytics import YOLO
+
+    try:
+        return YOLO(model_path), ""
+    except Exception as failure:
+        return None, f"{type(failure).__name__}: {failure}"
+
+
 def _quantize_spelling() -> QuantizeSpelling:
     """Which keyword the installed Ultralytics takes half precision under.
 
@@ -197,26 +254,31 @@ def run_probe(request: ProbeRequest) -> ProbeResponse:
         return ProbeResponse(
             has_ultralytics=False,
             has_lap=has_lap,
+            has_locate=False,
             ultralytics_version="",
             tracker_names=[],
             model_task="",
             n_keypoints=0,
+            model_load_error="",
             installed_tracker_table={},
         )
 
     import ultralytics
-    from ultralytics import YOLO
     from ultralytics.trackers.track import TRACKER_MAP
 
-    model = YOLO(request.model_path)
-    task = str(model.task)
+    # Reported whether or not the weights load: what this environment holds is
+    # not a question about the checkpoint it was handed.
+    model, load_error = _load_model(request.model_path)
+    task = "" if model is None else str(getattr(model, "task", ""))
     return ProbeResponse(
         has_ultralytics=True,
         has_lap=has_lap,
+        has_locate=_has_locate(),
         ultralytics_version=str(getattr(ultralytics, "__version__", "unknown")),
         tracker_names=sorted(TRACKER_MAP),
         model_task=task,
-        n_keypoints=_keypoint_count(model, task),
+        n_keypoints=0 if model is None else _keypoint_count(model, task),
+        model_load_error=load_error,
         installed_tracker_table=_installed_tracker_table(
             Path(ultralytics.__file__).parent, request.tracker
         ),
@@ -311,15 +373,15 @@ result is a ``MediaFacts`` the checker can see is one.
 """
 
 
-def _media_facts(request: TrackRequest) -> MediaFacts:
+def _media_facts(payload: dict[str, object]) -> MediaFacts:
     """Rebuild the facts mosaic measured, gated and flattened for the wire.
 
     Never ``None``, and the request field is not nullable either. The read-target
     gate -- probe the file, derive its verdict, refuse one that needs transcoding
     before it can be read for analysis -- lives in mosaic and cannot be called
     from here. A reader handed no facts probes with no gate, so a rotated or
-    variable-frame-rate original would track silently to misindexed coordinates
-    under a valid identifier. Requiring the payload is what makes the gate
+    variable-frame-rate original would be read silently at misindexed
+    coordinates under a valid identifier. Requiring the payload is what makes the gate
     unskippable from this side of the boundary.
 
     Injecting measured facts rather than probing here is also what keeps a raw
@@ -328,7 +390,7 @@ def _media_facts(request: TrackRequest) -> MediaFacts:
     read. An incomplete payload raises out of this validation rather than
     degrading to an ungated probe.
     """
-    return _MEDIA_FACTS.validate_python(request.media_facts)
+    return _MEDIA_FACTS.validate_python(payload)
 
 
 @contextlib.contextmanager
@@ -350,21 +412,37 @@ def _decoded_batches(
     pending: queue.Queue[tuple[np.ndarray, np.ndarray] | None] = queue.Queue(maxsize=2)
     stop = threading.Event()
 
+    def offer(item: tuple[np.ndarray, np.ndarray] | None) -> None:
+        """Hand *item* to the consumer, giving up only if the run is stopping.
+
+        Retried rather than attempted once. A single bounded ``put`` drops the
+        item whenever the consumer has not freed a slot within the timeout, and
+        for the ``None`` sentinel below that is a deadlock rather than a lost
+        frame: the consumer blocks on a ``get`` that never arrives, and the whole
+        process sleeps until something kills it. Whether it happens is decided by
+        how long one batch takes against a half-second timer -- so it does not
+        happen on a fast GPU and does happen on a busy machine, on CPU, and on a
+        large model, which is the worst possible way for it to be distributed.
+        """
+        while not stop.is_set():
+            try:
+                pending.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+
     def produce() -> None:
         try:
             while not stop.is_set():
                 indices, frames = reader.read_batch(batch_size)
                 if len(indices) == 0:
                     break
-                while not stop.is_set():
-                    try:
-                        pending.put((indices, frames), timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
+                offer((indices, frames))
         finally:
-            with contextlib.suppress(queue.Full):
-                pending.put(None, timeout=0.5)
+            # Abandoned only when `stop` is set, which the context manager below
+            # does before it drains the queue -- at which point nothing is reading
+            # and the sentinel has nobody to reach.
+            offer(None)
 
     worker = threading.Thread(target=produce, daemon=True)
     worker.start()
@@ -511,7 +589,7 @@ def run_track(request: TrackRequest) -> TrackResponse:
         # maps predictions back to the frame it was given, so feeding native
         # frames is what puts the coordinates in source pixels.
         resize=None,
-        facts=_media_facts(request),
+        facts=_media_facts(request.media_facts),
     )
     with reader:
         total = len(reader)
@@ -543,19 +621,236 @@ def run_track(request: TrackRequest) -> TrackResponse:
     return TrackResponse(n_frames=n_frames, n_ids=n_ids)
 
 
+# --- inference -------------------------------------------------------------
+
+
+def _infer_kwargs(request: InferRequestBase) -> dict[str, object]:
+    """The arguments every frame of this video is predicted with.
+
+    Four, and deliberately not the full explicit set :func:`_track_kwargs`
+    passes. Single-model inference has always left ``iou``, ``max_det``,
+    ``agnostic_nms``, ``augment`` and half precision at Ultralytics' shipped
+    defaults, and pinning them here would change what these ops produce rather
+    than move where they produce it. That leaves the exposure the tracker closed
+    -- an upstream retune can still re-mean an identifier already on disk -- which
+    is recorded as its own defect rather than fixed in passing.
+    """
+    return {
+        "device": request.device,
+        "conf": request.conf,
+        "imgsz": request.imgsz,
+        # False so the tool does not chatter over the progress lines, which are
+        # what mosaic's inactivity watchdog reads.
+        "verbose": False,
+    }
+
+
+def _write_annotated(
+    result: InferenceResult, directory: Path, frame_index: int
+) -> None:
+    """Draw one frame the way Ultralytics draws it, and save it.
+
+    Named for the **source** frame index, not the run's position, which is what
+    the in-process path wrote and the one place the two numbers differ visibly:
+    a windowed or stepped run's images stay addressable against the video they
+    came from.
+
+    ``cv2`` is imported here rather than at module scope so a run with no
+    annotated output does not pay for it, and so an environment without it still
+    answers every other subcommand.
+    """
+    import cv2
+
+    _ = cv2.imwrite(str(directory / f"frame_{frame_index:08d}.jpg"), result.plot())
+
+
+@dataclass(slots=True)
+class _InferOutcome:
+    """What one video's inference produced, before it is given column names."""
+
+    blocks: list[np.ndarray] = field(default_factory=list)
+    n_frames: int = 0
+    names: dict[int, str] = field(default_factory=dict)
+
+
+def _infer_frames(
+    request: InferRequestBase,
+    model: _Predictor[ResultT],
+    kwargs: dict[str, object],
+    rows: Callable[[ResultT, int], np.ndarray | None],
+) -> _InferOutcome:
+    """Read *request*'s window in batches, predict each, and keep only the rows.
+
+    The results themselves are dropped as each batch is converted. That is the
+    one thing this loop does that the in-process path did not: it accumulated
+    every ``Results`` object for a whole video and returned them all, each
+    holding live torch tensors, so a long recording's peak memory grew with its
+    length. A process boundary cannot carry those objects at all, so converting
+    per batch is forced -- and it is also the fix.
+
+    No decode-time resize. Ultralytics letterboxes to ``imgsz`` itself and maps
+    predictions back to the frame it was given, so feeding native frames is what
+    puts the coordinates in source pixels. The in-process path resized at decode
+    time instead and returned coordinates in that smaller space, which is what
+    reached ``tracks/`` under a schema whose every spatial column is video
+    pixels.
+    """
+    outcome = _InferOutcome()
+    annotated = Path(request.annotated_dir) if request.annotated_dir else None
+    if annotated is not None:
+        annotated.mkdir(parents=True, exist_ok=True)
+
+    reader = VideoReader(
+        request.video_path,
+        start_frame=request.start_frame,
+        end_frame=request.end_frame,
+        frame_step=request.frame_step,
+        resize=None,
+        facts=_media_facts(request.media_facts),
+    )
+    with reader:
+        total = len(reader)
+        if request.max_frames is not None:
+            total = min(total, request.max_frames)
+        with _decoded_batches(reader, request.batch_size, request.prefetch) as batches:
+            for indices, frames in batches:
+                if request.max_frames is not None:
+                    remaining = request.max_frames - outcome.n_frames
+                    if remaining <= 0:
+                        break
+                    indices = indices[:remaining]
+                    frames = frames[:remaining]
+                results = model.predict(
+                    source=[frames[i] for i in range(len(indices))], **kwargs
+                )
+                for offset, result in enumerate(results):
+                    if not outcome.names:
+                        outcome.names = dict(result.names)
+                    block = rows(result, outcome.n_frames + offset)
+                    if block is not None:
+                        outcome.blocks.append(block)
+                    if annotated is not None:
+                        _write_annotated(result, annotated, int(indices[offset]))
+                outcome.n_frames += len(indices)
+                _report("progress", outcome.n_frames, total)
+                if (
+                    request.max_frames is not None
+                    and outcome.n_frames >= request.max_frames
+                ):
+                    break
+    return outcome
+
+
+def _numeric_frame(
+    blocks: list[np.ndarray], columns: Sequence[str]
+) -> tuple[pd.DataFrame, int]:
+    """*blocks* stacked and labelled, plus how many rows that is.
+
+    Built even when there is nothing in it, with its full column set, so an empty
+    result is a legible empty table rather than an absent file -- the same reason
+    ``track`` writes one.
+    """
+    stacked = (
+        np.concatenate(blocks, axis=0)
+        if blocks
+        else np.empty((0, len(columns)), dtype=np.float64)
+    )
+    if stacked.shape[1] != len(columns):
+        raise RunnerError(
+            f"the predictions carry {stacked.shape[1]} columns and mosaic named "
+            f"{len(columns)}. The names decide what every column means, so a "
+            "mismatch cannot be written."
+        )
+    return pd.DataFrame(stacked, columns=list(columns)), int(stacked.shape[0])
+
+
+def _loaded_for(request: InferRequestBase) -> object:
+    """The weights this run declares, loaded, with the declared task checked.
+
+    Announced before the load for the reason :func:`run_track` gives: a cold
+    checkpoint is the longest silence a healthy run contains, and mosaic's
+    watchdog bounds silence.
+    """
+    from ultralytics import YOLO
+
+    _report("started")
+    loaded = YOLO(request.model_path)
+    task = str(getattr(loaded, "task", ""))
+    if task != request.task:
+        raise RunnerError(
+            f"{request.model_path} is a {task!r} model but the run declares "
+            f"task={request.task!r}. The declared task is part of the run "
+            "identifier, so it has to match what the weights actually are."
+        )
+    return loaded
+
+
+def run_infer_pose(request: InferPoseRequest) -> InferResponse:
+    """Run one video through a YOLO pose model and write its raw predictions."""
+    model: _Predictor[PoseResult] = _loaded_for(request)
+    outcome = _infer_frames(
+        request,
+        model,
+        _infer_kwargs(request),
+        lambda result, position: pose_rows_from_result(
+            result, position, n_keypoints=request.n_keypoints
+        ),
+    )
+    table, n_rows = _numeric_frame(outcome.blocks, request.columns)
+    table = table.astype({"frame": "int64", "id": "int64"})
+    _publish_parquet(table, request.output_parquet)
+    return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
+
+
+def run_infer_points(request: InferPointsRequest) -> InferResponse:
+    """Run one video through a POLO point model and write its raw predictions.
+
+    ``class_name`` is mapped from ``class_id`` after the numeric block is
+    assembled, because it is the one column of either table that is not a number
+    and so cannot travel in one.
+    """
+    model: _Predictor[PointResult] = _loaded_for(request)
+    kwargs = _infer_kwargs(request)
+    if request.radii is not None:
+        kwargs["radii"] = dict(request.radii)
+    outcome = _infer_frames(request, model, kwargs, point_rows_from_result)
+
+    numeric = list(POINT_COLUMNS[:-1])
+    table, n_rows = _numeric_frame(outcome.blocks, numeric)
+    table = table.astype(
+        {"frame": "int64", "detection_id": "int64", "class_id": "int64"}
+    )
+    # ``dtype=object`` explicitly: an empty run would otherwise get a float64
+    # ``class_name`` from an empty list, and the table is now written even when it
+    # holds no rows -- so a reader concatenating an empty run with a full one
+    # would meet two dtypes for one column.
+    table["class_name"] = pd.Series(
+        [
+            outcome.names.get(class_id, f"class_{class_id}")
+            for class_id in table["class_id"]
+        ],
+        dtype=object,
+        index=table.index,
+    )
+    _publish_parquet(table[list(request.columns)], request.output_parquet)
+    return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
+
+
 # --- entry point -----------------------------------------------------------
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ultralytics_runner",
-        description="Probe the Ultralytics environment, or track one video in it.",
+        description="Probe the Ultralytics environment, or run one video through it.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
         ("probe", "report what this environment holds"),
         ("tracker-defaults", "report every backend's shipped configuration table"),
         ("track", "track one video and write its raw predictions"),
+        ("infer-pose", "run a pose model over one video"),
+        ("infer-points", "run a point model over one video"),
     ):
         subcommand = subcommands.add_parser(name, help=help_text)
         _ = subcommand.add_argument(
@@ -573,6 +868,10 @@ def _answer(command: str, payload: str) -> BaseModel:
         return run_probe(ProbeRequest.model_validate_json(payload))
     if command == "tracker-defaults":
         return run_tracker_defaults(TrackerDefaultsRequest.model_validate_json(payload))
+    if command == "infer-pose":
+        return run_infer_pose(InferPoseRequest.model_validate_json(payload))
+    if command == "infer-points":
+        return run_infer_points(InferPointsRequest.model_validate_json(payload))
     return run_track(TrackRequest.model_validate_json(payload))
 
 

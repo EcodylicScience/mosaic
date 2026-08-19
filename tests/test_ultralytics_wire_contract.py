@@ -28,7 +28,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from mosaic_media import MediaFacts
+from pydantic import BaseModel
 
+import mosaic.tracking.common.ultralytics_env as ultralytics_env
+import mosaic.tracking.ops.infer as ops_infer
+import mosaic.tracking.pose_training.ultralytics_infer as ultralytics_infer
 import mosaic.tracking.ultralytics_track.dataset_runs as dataset_runs
 import mosaic.tracking.ultralytics_track.run as ultralytics_run
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -37,6 +41,8 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external import runner as runner_package
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    InferPointsRequest,
+    InferPoseRequest,
     ProbeResponse,
     TrackRequest,
     rows_from_result,
@@ -184,11 +190,47 @@ def test_the_runner_reports_exactly_the_probe_fields_mosaic_reads(
     a field only the other branch sets would raise there and nowhere else.
     """
     reported = _keywords_of_call(runner_module, "ProbeResponse")
-    read = _attributes_read_off([dataset_runs, ultralytics_run], "probe")
+    read = _attributes_read_off(
+        [dataset_runs, ultralytics_run, ultralytics_env, ultralytics_infer, ops_infer],
+        "probe",
+    )
     declared = set(ProbeResponse.model_fields)
 
     assert len(declared) > 5
     assert reported == declared
+    assert read == declared
+
+
+@pytest.mark.parametrize(
+    ("name", "model"),
+    [
+        ("InferPoseRequest", InferPoseRequest),
+        ("InferPointsRequest", InferPointsRequest),
+    ],
+)
+def test_mosaic_sends_exactly_the_inference_fields_the_runner_reads(
+    runner_module: ModuleType, name: str, model: type[BaseModel]
+) -> None:
+    """Neither side of an inference request carries a field the other ignores.
+
+    The same check the track request gets, and it matters more here, because two
+    requests share a base: a field read only off the base, or sent only on one
+    subclass, is exactly the asymmetry a single-request contract cannot express.
+
+    Reads are collected off the base annotation as well as the subclass, since the
+    runner's shared loop takes an ``InferRequestBase`` and only the two entry
+    points take the narrower type.
+    """
+    sent = _keywords_of_call(ops_infer, name)
+    read = _attributes_read_from(runner_module, name) | _attributes_read_from(
+        runner_module, "InferRequestBase"
+    )
+    declared = set(model.model_fields)
+
+    # The extraction has to have found something before its verdict means
+    # anything: an empty pair of sets agrees with itself.
+    assert len(declared) > 15
+    assert sent == declared
     assert read == declared
 
 
@@ -308,10 +350,12 @@ class RunnerStandIn:
         return self.module.ProbeResponse(
             has_ultralytics=True,
             has_lap=True,
+            has_locate=False,
             ultralytics_version="8.4.63",
             tracker_names=list(TRACKER_NAMES),
             model_task="pose",
             n_keypoints=self.n_keypoints,
+            model_load_error="",
             installed_tracker_table={"track_buffer": 30},
         ).model_dump_json()
 
@@ -319,7 +363,7 @@ class RunnerStandIn:
         request = self.module.TrackRequest.model_validate_json(payload)
         # The facts mosaic flattened, rebuilt the way the runner rebuilds them
         # before handing them to its reader.
-        self.reconstructed_facts.append(self.module._media_facts(request))
+        self.reconstructed_facts.append(self.module._media_facts(request.media_facts))
         columns = list(request.columns)
         rows = [
             [float(frame), 1.0, 10.0, 20.0, 15.0, 25.0, 0.9, 0.0]
@@ -337,7 +381,7 @@ def stand_in(
     runner_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[RunnerStandIn]:
     fake = RunnerStandIn(runner_module, _N_KEYPOINTS)
-    monkeypatch.setattr(ultralytics_run, "run_supervised", fake)
+    monkeypatch.setattr(ultralytics_env, "run_supervised", fake)
     yield fake
 
 
