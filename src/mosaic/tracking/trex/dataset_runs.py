@@ -208,10 +208,17 @@ def trex_run_id(settings: Mapping[str, object]) -> str:
 
 
 # Which settings each TREx task actually consumes, from the two parameter dicts
-# built in ``trex/run.py``. ``track_max_individuals`` appears in **both**: it is
-# a conversion input despite its name, so changing it must invalidate a
-# conversion as well as a tracking. A key in neither set would silently stop
-# invalidating anything, which ``trex_settings`` and its test guard against.
+# built in ``trex/run.py``. A key in neither set would silently stop invalidating
+# anything, which ``trex_settings`` and its test guard against.
+#
+# ``track_max_individuals`` appears in **both**, and the reason is narrower than
+# it looks. Nothing in TRex's conversion reads it: it reaches the ``.pv`` only
+# through the trailing metadata blob, which sits after the index table and shifts
+# no frame data, and a later ``-task track`` overrides it from the command line
+# anyway. It stays a convert key because every convert marker already on disk
+# recorded a ``params_hash`` computed from this projection, so moving it would
+# re-key every existing conversion -- the reconversion the shared cache exists to
+# avoid. The cost is only that changing it reconverts when it need not.
 CONVERT_KEYS: Final[tuple[str, ...]] = (
     "detect_model",
     "detect_type",
