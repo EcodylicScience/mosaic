@@ -4454,7 +4454,22 @@ class Dataset:
             raise FileNotFoundError(
                 f"{media_key}/{index_filename} not found; run index_media() first."
             )
-        df = pd.read_csv(idx_path)
+        # Read the non-numeric schema columns as text rather than coercing after
+        # the fact. A sequence named "0066" is inferred as int64 by a bare
+        # read_csv, and the .astype(str) below then yields "66" -- the padding is
+        # already gone by the time it runs. That renames the entry for every
+        # caller of this method (frame extraction, transcode, tracker scope), so
+        # the run lands under a key that matches neither the media index it came
+        # from nor the tracks index beside it. dtype keys naming a column the
+        # file does not carry are ignored, so this stays schema-driven.
+        df = pd.read_csv(
+            idx_path,
+            dtype={
+                column: str
+                for column in MEDIA_INDEX_COLUMNS
+                if column not in MEDIA_NUMERIC_COLUMNS
+            },
+        )
         # Back-fill every non-numeric schema column by schema, not by a fixed
         # list: an index written before a column existed must read it back as an
         # empty string rather than KeyError or a float NaN, and a future column
