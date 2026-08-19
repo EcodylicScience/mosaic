@@ -42,6 +42,7 @@ from mosaic.tracking.common.toolenv import (
     tool_invocation,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    ModelTask,
     ProbeRequest,
     ProbeResponse,
     TrackerDefaultsRequest,
@@ -56,12 +57,12 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
 
 logger = logging.getLogger(__name__)
 
-ModelTask = Literal["pose", "detect"]
-"""What mosaic bridges. A segment mask and a rotated box have no ``trex_v1``
-mapping, POLO's point detection has its own op, and Ultralytics refuses to track
-a classifier.
-"""
-
+# `ModelTask` is re-exported rather than restated. What mosaic bridges and what
+# the wire carries are the same closed set -- a segment mask and a rotated box
+# have no `trex_v1` mapping, POLO's point detection has its own op, and
+# Ultralytics refuses to track a classifier -- and the protocol module is where
+# it is declared, because that module may take no import from mosaic while
+# mosaic may import it freely.
 _SUPPORTED_TASKS: Final[tuple[ModelTask, ...]] = ("pose", "detect")
 
 _PYTHON: Final = "python"
@@ -86,15 +87,18 @@ together.
 PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
 """The least time a silent subcommand gets to answer, whatever the tracking bound is.
 
-``idle_timeout`` bounds *silence*, which is the right unit for tracking: the
-runner prints a line per decoded batch, so a quiet stretch means hung. A probe
-prints nothing at all between spawn and answer, so the same number is a deadline
-on a cold torch import and a checkpoint load off a network mount -- work
-proceeding exactly as intended. A user who shortens the tracking window so a hung
-tracker dies quickly must not thereby put a stopwatch on loading a model, so the
-probe gets the caller's value or this floor, whichever is longer.
-``tracker-defaults`` is silent for the same stretch -- the torch import is most
-of what it costs -- and takes the same floor.
+``idle_timeout`` bounds *silence*, which is the right unit for tracking once a
+run is under way: the runner prints a line per decoded batch, so a quiet stretch
+there means hung. A probe prints nothing at all between spawn and answer, so the
+same number would be a deadline on a cold torch import and a checkpoint load off
+a network mount -- work proceeding exactly as intended. A user who shortens the
+tracking window so a hung tracker dies quickly must not thereby put a stopwatch
+on loading a model, so the probe gets the caller's value or this floor,
+whichever is longer. ``tracker-defaults`` is silent for the same stretch -- the
+torch import is most of what it costs -- and takes the same floor.
+
+No such floor is applied to ``track``, and that is a judgement rather than an
+omission: see :func:`run_ultralytics_tool`.
 """
 
 _ENV_BOOTSTRAP: Final = (
@@ -125,12 +129,18 @@ class UnsupportedTrackerError(ValueError):
 
 
 class UltralyticsError(ToolExitError):
-    """The Ultralytics runner exited with a non-zero return code."""
+    """The Ultralytics runner exited with a non-zero return code.
+
+    The inherited ``head`` of six is what both rungs of the location ladder need.
+    On the direct rung the argv is ``<python> <runner> <subcommand> --request
+    <path> --out <path>``, where three tokens already reach the subcommand; on
+    the conda rung ``conda run --no-capture-output -n <env> <python>`` is six
+    tokens before any of that, so a shorter head elides the environment name, the
+    runner and the subcommand together and leaves a message that names no
+    operation at all. TREx and SLEAP take the same six for the same reason.
+    """
 
     tool_name = "Ultralytics"
-    # The argv is ``python <runner> <subcommand> --request <path> --out <path>``,
-    # so four tokens reach the subcommand and echoing further prints paths.
-    head = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +325,12 @@ def _run_runner(
         "--out",
         str(response_path),
     ]
-    logger.info("Running: %s", " ".join(cmd[:4]) + (" ..." if len(cmd) > 4 else ""))
+    # The same head the failure message uses, read off the exception class so the
+    # log line and the error cannot come to elide at different points.
+    head = UltralyticsError.head
+    logger.info(
+        "Running: %s", " ".join(cmd[:head]) + (" ..." if len(cmd) > head else "")
+    )
 
     stdout, stderr, returncode = run_supervised(
         cmd,
@@ -447,6 +462,19 @@ def run_ultralytics_tool(
     The request and the response are written into *work_dir*, beside the
     predictions parquet the runner publishes, so an attempt's whole exchange is
     on disk where the attempt is.
+
+    **The caller's** ``idle_timeout`` **must exceed a cold model load.** It is
+    passed through untouched, unlike the floor
+    :data:`PROBE_DEADLINE_FLOOR_SECONDS` puts under the two silent subcommands,
+    because raising it here would blunt the one bound that supervises tracking:
+    the runner prints a line per decoded batch, and a value chosen so a wedged
+    tracker dies in two minutes is the whole point of the knob. What that leaves
+    is one silent stretch inside a healthy run. The runner announces itself as
+    soon as Ultralytics is imported, so the import is covered; loading the
+    weights runs between that line and the first batch, and it is the longest
+    silence a run contains -- a cold checkpoint off a network mount can take
+    minutes. A bound shorter than that kills a working run and reports it as a
+    tool that produced no output.
 
     Raises:
         UltralyticsError: The runner exited with a non-zero return code.

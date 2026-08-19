@@ -49,8 +49,8 @@ pip install -e ".[all]"
 ```
 
 `pip install -e .` on its own is a complete analysis install — converters, features,
-clustering, classifiers, overlays. `[all]` adds the deep-learning surface: YOLO pose,
-`mosaic track ultralytics`, the heatmap localizer and the identity models, which means
+clustering, classifiers, overlays. `[all]` adds the deep-learning surface: YOLO pose
+training and inference, the heatmap localizer and the identity models, which means
 PyTorch. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
 the environment holds a single ffmpeg build.
 

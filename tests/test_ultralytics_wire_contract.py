@@ -57,19 +57,33 @@ _N_KEYPOINTS = 2
 
 
 @pytest.fixture(scope="module")
-def runner_module() -> ModuleType:
-    """The runner program, imported into this process.
+def runner_module() -> Iterator[ModuleType]:
+    """The runner program, imported into this process, and then unimported.
 
     Its directory goes on ``sys.path`` because the program resolves
     ``ultralytics_protocol`` as a bare top-level module -- what a script gets for
     free from its own directory, and what it will get when it is spawned. The
     insertion is safe: the directory holds those two modules and nothing that
     could shadow a mosaic import.
+
+    Both are undone afterwards. Left in place they outlive this file: the search
+    path keeps answering ``ultralytics_protocol`` for the rest of the session,
+    and ``sys.modules`` holds a *second* copy of that module beside
+    ``mosaic.tracking.external.runner.ultralytics_protocol`` -- same file, two
+    classes. Nothing today compares a :class:`TrackRequest` by identity, so the
+    leak is currently harmless and would stop being so quietly.
     """
-    directory = Path(runner_package.__file__).parent
-    if str(directory) not in sys.path:
-        sys.path.insert(0, str(directory))
-    return importlib.import_module("ultralytics_runner")
+    directory = str(Path(runner_package.__file__).parent)
+    inserted = directory not in sys.path
+    if inserted:
+        sys.path.insert(0, directory)
+    try:
+        yield importlib.import_module("ultralytics_runner")
+    finally:
+        if inserted:
+            sys.path.remove(directory)
+        for name in ("ultralytics_runner", "ultralytics_protocol"):
+            _ = sys.modules.pop(name, None)
 
 
 # --- what each side says about the request ---------------------------------

@@ -12,7 +12,7 @@ mosaic track trex -m dataset.yaml --set track_max_individuals=4
 | `trex` | [TRex](https://trex.run) — conversion then headless tracking, with or without posture | Its own conda env; needs a display even headless |
 | `sleap` | [SLEAP](https://sleap.ai) — pose inference plus identity tracking | Its own conda env; headless |
 | `litpose` | [Lightning Pose](https://github.com/paninski-lab/lightning-pose) — single animal, no cross-frame identity | Its own conda env; Linux CUDA for video inference |
-| `ultralytics` | Ultralytics MOT, six tracker backends | In process — no second environment |
+| `ultralytics` | Ultralytics MOT, six tracker backends | Its own environment, built from the repository; headless |
 
 `--set` takes any parameter the op declares. `mosaic tracking describe <kind>` lists
 them, and so does [the ops reference](../../reference/ops.md).
@@ -23,9 +23,11 @@ reclaims that working space once a run is finished and past its retention window
 
 ## Finding the tool
 
-Three of the four run in an interpreter of their own, and all three are located the
-same way: a `MOSAIC_<TOOL>_CONDA_ENV` or `MOSAIC_<TOOL>_BIN` environment variable, or
-a `<tool>_conda_env=` / `<tool>_bin=` parameter, falling back to the tool on `PATH`.
+All four run in an interpreter of their own, and all four are located the same way: a
+`MOSAIC_<TOOL>_CONDA_ENV` or `MOSAIC_<TOOL>_BIN` environment variable, or a
+`<tool>_conda_env=` / `<tool>_bin=` parameter, falling back to the tool on `PATH`.
+Where a tool is installed never enters a `run_id`, so two machines that place it
+differently still agree on what a run is called.
 
 ### TRex
 
@@ -34,7 +36,7 @@ of its own:
 
 ```bash
 conda create -n track -c conda-forge -c trexing trex   # dedicated TRex env (py3.11)
-pip install ultralytics torch                          # into `track`, for YOLO detection
+pip install ultralytics torch                          # into `track`, for TRex's own YOLO detection
 ```
 
 Point mosaic at it with `trex_conda_env="track"` or `MOSAIC_TREX_CONDA_ENV=track`.
@@ -73,8 +75,35 @@ DeepLabCut-style CSV is read by the built-in `deeplabcut` converter.
 
 ### Ultralytics
 
-Runs in the mosaic process, installed by the `pose` extra. No second environment, no
-display.
+Ultralytics is AGPL-3.0, and a program that imports it is one work with it, so mosaic
+drives it as a separate program: nothing on the tracking path imports it. The
+repository carries that environment's definition, so building it is one command in its
+directory:
+
+```bash
+cd src/mosaic/tracking/external/ultralytics-env
+uv sync --python 3.12
+export MOSAIC_ULTRALYTICS_BIN="$PWD/.venv/bin/yolo"
+```
+
+`MOSAIC_ULTRALYTICS_BIN` names the `yolo` console script, and the `python` beside it
+in the same `bin/` is what mosaic runs; `MOSAIC_ULTRALYTICS_CONDA_ENV` names a conda
+environment holding the same packages instead. Python 3.12 is pinned deliberately;
+[Installation](../../installation.md#tools-that-run-in-their-own-environment) says why,
+and what building the environment costs you. Nothing here needs the `pose` extra: that
+one installs an Ultralytics into mosaic's own environment for pose model training and
+inference, and the tracker does not use it.
+
+One process per entry, handed a video path to open. An imgstore recording is a
+directory of chunk files rather than a video, so it has to be exported first:
+
+```bash
+mosaic run -m dataset.yaml --kind export-store --params '{"entry": ["group", "seq"]}'
+```
+
+That step is new. TRex, SLEAP and Lightning Pose already needed it; Ultralytics read a
+store directly while it ran inside mosaic, and no longer can. The error message names
+the command.
 
 ## From Python
 

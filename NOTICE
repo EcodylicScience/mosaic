@@ -116,34 +116,79 @@ The arhmm feature fits a comparable model in mosaic's own code, with no
 keypoint-MoSeq dependency and no license restriction.
 
 
-ULTRALYTICS YOLO, AND THE POLO FORK -- OPTIONAL
-===============================================
+ULTRALYTICS YOLO, AND THE POLO FORK -- INVOKED, AND OPTIONAL
+============================================================
 
 Ultralytics YOLO. Copyright (C) Ultralytics.
 https://github.com/ultralytics/ultralytics
 
-Installed by the [pose] extra, which the curated [recommended] bundle
-includes. Dual-licensed: GNU Affero General Public License v3 or later, or a
-paid Ultralytics Enterprise License that lifts the open-source requirements.
-Its dependency ultralytics-thop carries the same AGPL v3 or later terms and
-is named in no pyproject.toml, arriving only through Ultralytics itself.
+Dual-licensed: GNU Affero General Public License v3 or later, or a paid
+Ultralytics Enterprise License that lifts the open-source requirements. Its
+dependency ultralytics-thop carries the same AGPL v3 or later terms and is
+named in no pyproject.toml, arriving only through Ultralytics itself.
 
 POLO. https://github.com/mooch443/POLO
 
-Installed by the [polo] extra, from git. POLO is a third-party fork of
-Ultralytics YOLO adding point detection, and ships the AGPL v3 text. The
-Ultralytics Enterprise License is offered by Ultralytics for its own
-distribution and does not extend to a third-party fork, so [polo] is
-AGPL-only.
+A third-party fork of Ultralytics YOLO that adds point detection, and ships
+the AGPL v3 text. The Ultralytics Enterprise License is offered by
+Ultralytics for its own distribution and does not extend to a third-party
+fork, so POLO is AGPL-only.
 
-Obligation. AGPL v3 section 13 extends the duty to offer Corresponding Source
-to anyone who interacts with the program remotely over a network, so a
-commercial user is reached by operating a pipeline that includes Ultralytics
-as a service, without ever redistributing a copy. Mosaic is itself
-AGPL-3.0-or-later, so there is no incompatibility; the question is whether a
-given use of the combined work can meet the AGPL's obligations. The options
-are to comply, to buy an Enterprise License from Ultralytics for the [pose]
-and [recommended] paths, or to install neither extra.
+Ultralytics reaches a user two of those ways at once -- invoked for
+tracking, optional for training -- and which path a use takes decides what
+that user owes.
+
+Invoked, for tracking. `mosaic track ultralytics` drives Ultralytics as a
+separate program in an environment the user builds. That environment's
+definition is src/mosaic/tracking/external/ultralytics-env/, the program
+that runs inside it is src/mosaic/tracking/external/runner/, and what
+crosses between mosaic and that program is a JSON request file, a JSON
+response file and progress lines on standard output. Mosaic locates the
+environment through MOSAIC_ULTRALYTICS_CONDA_ENV or MOSAIC_ULTRALYTICS_BIN
+and spawns its interpreter. On this path mosaic imports Ultralytics
+nowhere, and no mosaic install carries it: the user builds the environment,
+obtains Ultralytics from its own publisher under that publisher's terms,
+and is the licensee.
+
+One package by these authors is installed into that environment beside
+Ultralytics: mosaic-media, under the Apache License 2.0, which the runner
+reads video through. That is a licensing decision and not a packaging one.
+Apache-2.0 is one-way compatible with AGPL-3.0 -- it may be taken into an
+AGPL-covered work, and the combining is done by the user who builds the
+environment -- so it can sit there where mosaic-behavior, being
+AGPL-3.0-or-later, cannot. mosaic-behavior is declared nowhere in that
+environment and is not importable from it, and
+tests/test_ultralytics_separation.py checks both.
+
+That separation is a license requirement, not a packaging convenience. A
+program that imports an AGPL-3.0 library is one work with it, so a mosaic
+that imported Ultralytics could not be offered under terms of its own
+without also licensing Ultralytics; two programs exchanging files are two
+works. tests/test_ultralytics_separation.py holds that line in both
+directions: no mosaic module outside the files it names may import
+Ultralytics, and the runner program may not import mosaic.
+
+Optional, for pose and point models. The separation covers tracking and
+nothing else. Model training and single-model inference -- the train-pose,
+train-points, infer-pose and infer-points ops, in
+src/mosaic/tracking/pose_training/ -- still import Ultralytics inside
+mosaic's own process. The [pose] extra installs upstream Ultralytics and
+the [polo] extra installs the fork; [all] reaches [pose] by self-reference,
+and so does [recommended], which is an alias for [all] kept for saved
+install lines and removed in 0.13. A user who installs any of those four
+has an AGPL-licensed dependency in their environment and runs a combined
+work, exactly as before.
+
+Obligation. AGPL v3 section 13 extends the duty to offer Corresponding
+Source to anyone who interacts with the program remotely over a network, so
+a commercial user is reached by operating a pipeline that includes
+Ultralytics as a service, without ever redistributing a copy. Mosaic is
+itself AGPL-3.0-or-later, so there is no incompatibility; the question is
+whether a given use of the combined work can meet the AGPL's obligations.
+For the [pose], [polo], [all] and [recommended] paths the options are to
+comply, to buy an Enterprise License from Ultralytics for its own
+distribution, or to install none of them. For the tracking environment the same choice is the user's
+own, made where they build it; mosaic asks for nothing on their behalf.
 
 
 THE ULTRALYTICS TRACKER DEFAULTS, AND THE METHODS THEY CONFIGURE
@@ -159,8 +204,9 @@ Those defaults are transcribed -- the setting names and their values, in
 mosaic's own structure with mosaic's own commentary -- from the six files
 ultralytics/cfg/trackers/{botsort,bytetrack,ocsort,deepocsort,fasttrack,
 tracktrack}.yaml as of Ultralytics 8.4.63. The YAML files themselves are not
-copied and no AGPL-licensed source is vendored into src/. A test compares the
-transcription against the installed Ultralytics, so drift fails by name.
+copied and no AGPL-licensed source is vendored into src/. A test reads the
+tables back out of the Ultralytics environment and compares them against the
+transcription, so drift fails by name.
 
 The backends implement published methods. Results produced with one should
 cite it:
@@ -190,11 +236,12 @@ LAP -- OPTIONAL
 lap. Copyright (c) 2012-2017 Tomas Kazmar and contributors.
 https://github.com/gatagat/lap
 
-BSD 2-Clause License. Installed by the [pose], [polo] and [recommended]
-extras. It is the linear-assignment solver Ultralytics' tracker matching
-imports at module scope, and it appears in no Ultralytics extra: mosaic
-declares it so that it arrives at install time rather than being fetched by
-Ultralytics during a run.
+BSD 2-Clause License. Declared by the Ultralytics environment, in
+src/mosaic/tracking/external/ultralytics-env/pyproject.toml, and by the
+[pose] and [polo] extras. It is the linear-assignment solver Ultralytics'
+tracker matching imports at module scope, and it appears in no Ultralytics
+extra: declaring it is what makes it arrive when an environment is built,
+rather than being fetched by Ultralytics during a run.
 
 
 FERAL, AND THE BACKBONE WEIGHTS IT DOWNLOADS
@@ -312,6 +359,10 @@ https://github.com/EcodylicScience/mosaic-media
 A sibling package by the same authors, and a required dependency of
 mosaic-behavior. Apache-2.0 is compatible with, and is absorbed by, the
 AGPL v3 terms of the combined work.
+
+It is also the one distribution by these authors that the Ultralytics
+tracking environment installs, for that same one-way compatibility, as the
+Ultralytics section above records.
 
 
 THE REST OF THE DEPENDENCY GRAPH

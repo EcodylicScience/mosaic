@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
+from pydantic import ValidationError
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
@@ -48,6 +50,7 @@ from mosaic.tracking.common.bridge import (
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
+    INFLIGHT_REFRESH_SECONDS,
     claim,
     clear_outputs,
     phase_activity,
@@ -65,7 +68,10 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
-from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    ProgressEvent,
+    TrackRequest,
+)
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
@@ -262,6 +268,54 @@ def _frame_count_of(path: Path) -> int:
     return int(table["frame"].nunique())
 
 
+def _reported_progress(line: str) -> ProgressEvent | None:
+    """The ``progress`` event *line* carries, or ``None`` for anything else.
+
+    Tolerant on purpose. This runs on the subprocess reader thread, where the
+    lines are whatever the child wrote -- a torn line, a warning Ultralytics'
+    own logger put on standard output, a future event kind this release does not
+    know -- and none of those is a reason to raise where raising would be
+    swallowed anyway. ``started`` is filtered out here rather than reported as
+    ``0/0``, being liveness rather than position.
+    """
+    try:
+        event = ProgressEvent.model_validate_json(line)
+    except ValidationError:
+        return None
+    return event if event.event == "progress" else None
+
+
+def _track_activity(
+    ctx: JobContext, key: str, liveness: Callable[[str], None]
+) -> Callable[[str], None]:
+    """Report the runner's per-batch position, keeping *liveness* intact.
+
+    The runner counts frames per batch and writes them; without this nothing read
+    them, and the position an in-process tracker used to show disappeared with
+    it. *liveness* -- :func:`phase_activity` -- still sees every line, because
+    what proves the phase alive is that the child spoke at all.
+
+    Throttled on the same interval the claim and the heartbeat are, and for the
+    same reason: a batch is a fraction of a second on short clips, and
+    ``ctx.progress`` is the run-log when no callback was injected, so reporting
+    per line would write one JSONL record per batch for the length of a video.
+    """
+    last_report = [0.0]
+
+    def on_line(line: str) -> None:
+        liveness(line)
+        event = _reported_progress(line)
+        if event is None:
+            return
+        now = time.monotonic()
+        if now - last_report[0] < INFLIGHT_REFRESH_SECONDS:
+            return
+        last_report[0] = now
+        ctx.progress.on_phase("track", f"{key} {event.done}/{event.total}")
+
+    return on_line
+
+
 def _context_token(ctx: JobContext | None) -> CancelToken | None:
     """The cancel token an already-open job carries, if a run was handed one.
 
@@ -317,7 +371,10 @@ def run_ultralytics(
 
     ``idle_timeout`` bounds silence and sizes the in-flight claim on each entry's
     working directory: the runner prints a progress line per decoded batch, so a
-    process that has printed nothing for that long is hung and is killed.
+    process that has printed nothing for that long is hung and is killed. **It
+    must still exceed a cold model load**, which is the one silent stretch a
+    healthy run contains -- the runner announces itself as soon as Ultralytics is
+    imported, and loads the weights between that line and the first batch.
     ``max_runtime`` is the absolute ceiling. Cancellation kills the process
     group, so its latency is a poll interval rather than a video.
 
@@ -480,7 +537,11 @@ def run_ultralytics(
                 conda_env=ultralytics_conda_env,
                 bin_path=ultralytics_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(seq_ctx, work_dir, phase_claim, idle_timeout),
+                on_output=_track_activity(
+                    seq_ctx,
+                    item.key,
+                    phase_activity(seq_ctx, work_dir, phase_claim, idle_timeout),
+                ),
             )
             marker = record_phase(
                 job.ds,

@@ -31,6 +31,14 @@ ModelTask: TypeAlias = Literal["pose", "detect"]
 ``str`` because a wire contract is where a closed set is worth closing: a
 mistyped task would pass validation and then be compared, unequal, against what
 the weights actually declare.
+
+Declared once, here, and **imported** by mosaic's side rather than mirrored the
+way :data:`TrackerSetting` above is. The rule this module lives under is
+one-directional -- it may take no import from mosaic, while mosaic may import it
+freely -- so a name mosaic can adopt as-is should be one declaration.
+``TrackerSetting`` cannot be: its mosaic-side home is
+``ultralytics_track.tracker_defaults``, which is a pure mosaic module and would
+have to reach into the runner directory to share this one.
 """
 
 Precision: TypeAlias = Literal["fp32", "fp16"]
@@ -335,11 +343,12 @@ class TrackResponse(BaseModel):
 class ProgressEvent(BaseModel):
     """One line of the runner's standard output.
 
-    Two kinds. ``started`` is written once, as soon as the weights are loaded,
-    and ``progress`` after every decoded batch. Splitting them is what lets a
-    supervising inactivity timeout be chosen against one batch rather than
-    against a cold torch import and model load, which is far longer and has
-    nothing to do with whether the run is stuck.
+    Two kinds. ``started`` is written once, as soon as Ultralytics is imported
+    and before the weights load; ``progress`` after every decoded batch.
+    Splitting them is what lets a supervising inactivity timeout be chosen
+    against one batch rather than against a cold torch import as well, which is
+    far longer and has nothing to do with whether the run is stuck. The weights
+    load still falls between the two, so the bound must exceed it.
     """
 
     event: ProgressEventKind
@@ -353,10 +362,11 @@ class ProgressEvent(BaseModel):
     """
 
 
+# `Boxes`, `Detections` and `Keypoints` are deliberately absent. They exist to
+# give `Result` and `rows_from_result` something to say about the Ultralytics
+# surface, and nothing on either side of the boundary names them: `Result` is
+# what a caller passes. Exporting them would advertise a surface no caller has.
 __all__ = [
-    "Boxes",
-    "Detections",
-    "Keypoints",
     "ModelTask",
     "Precision",
     "ProbeRequest",

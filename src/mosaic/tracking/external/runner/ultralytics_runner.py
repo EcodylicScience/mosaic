@@ -15,9 +15,15 @@ Invoked as::
 
 Every subcommand reads its whole request from a JSON file and writes its whole
 response to a JSON file, with nothing else on the command line. The response
-goes to a **file** rather than to standard output because importing torch and
-Ultralytics prints banners and warnings to standard output, so a response parsed
+goes to a **file** rather than to standard output because Ultralytics' own
+logger is a stream handler on standard output -- a weights download, a warning,
+anything ``verbose=False`` does not suppress lands there -- so a response parsed
 from that stream would be fragile. Standard output carries progress lines only.
+
+Importing torch and Ultralytics, by contrast, writes nothing to standard output
+at all. That is why ``probe`` and ``tracker-defaults`` are silent from spawn to
+answer, and why mosaic gives them a deadline floor rather than bounding their
+inactivity.
 
 ``ultralytics_protocol`` is imported as a bare top-level module: running a script
 puts the script's own directory first on the module search path, the same
@@ -403,11 +409,15 @@ def _report(event: ProgressEventKind, done: int = 0, total: int = 0) -> None:
     Ultralytics from chattering. Without these lines a long video is killed as
     idle.
 
-    ``started`` is written as soon as the weights are loaded, before the reader
-    opens, and it exists to decouple that timeout from model-load latency: the
-    torch import and a cold checkpoint load take far longer than a batch, and
-    without a line between them the timeout has to be chosen against the sum of
-    the two rather than against the work it is meant to supervise.
+    ``started`` is written as soon as Ultralytics is imported, before the weights
+    load and before the reader opens, and it exists to decouple that timeout from
+    startup latency: the torch import and a cold checkpoint load each take far
+    longer than a batch, and without a line between them the timeout has to be
+    chosen against the sum of the two rather than against the work it is meant to
+    supervise. It does not abolish the problem -- the load still runs silently,
+    between this line and the first ``progress`` -- so the caller's bound must
+    still exceed a cold model load. What it does is split that stretch in two, so
+    that a slow *import* can no longer be read as a hung tool.
     """
     line = json.dumps(ProgressEvent(event=event, done=done, total=total).model_dump())
     _ = sys.stdout.write(line + "\n")
@@ -470,6 +480,15 @@ def run_track(request: TrackRequest) -> TrackResponse:
     """
     from ultralytics import YOLO
 
+    # Announced before the weights load, not after it. Loading a cold checkpoint
+    # -- off a network mount, with the torch runtime still warming -- is the
+    # longest silence a run contains, and mosaic's watchdog bounds *silence*: a
+    # line written after the load would put the caller's `idle_timeout` on work
+    # proceeding exactly as intended, and kill it with a message about the tool
+    # producing no output. Written here it says what is true, which is that
+    # Ultralytics is imported and the process is loading.
+    _report("started")
+
     loaded = YOLO(request.model_path)
     task = str(loaded.task)
     if task != request.task:
@@ -479,7 +498,6 @@ def run_track(request: TrackRequest) -> TrackResponse:
             "identifier, so it has to match what the weights actually are."
         )
     model: _Model = loaded
-    _report("started")
     kwargs = _track_kwargs(request)
 
     blocks: list[np.ndarray] = []

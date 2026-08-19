@@ -30,9 +30,11 @@ python -c "from mosaic.core.dataset import Dataset; print('OK')"
 `pip install -e .` on its own is a complete analysis install: every track and label
 converter, all per-frame and social features, wavelets, scaling, t-SNE, k-means, Ward,
 ARHMM, the XGBoost classifier, overlays and crops. What `[all]` adds is the
-deep-learning surface — YOLO pose training and inference, `mosaic track ultralytics`,
-the heatmap localizer and the identity models — which means PyTorch, and on Linux about
-4 GB of CUDA wheels.
+deep-learning surface — YOLO pose training and inference, the heatmap localizer and
+the identity models — which means PyTorch, and on Linux about 4 GB of CUDA wheels.
+`mosaic track ultralytics` is not in that list: it drives Ultralytics in an
+environment you build, covered under
+[Tools that run in their own environment](#tools-that-run-in-their-own-environment).
 
 For that surface without CUDA — a laptop, a CPU-only node, a container you want to keep
 small — take PyTorch from its own index:
@@ -45,8 +47,8 @@ pip install -e ".[all]" --extra-index-url https://download.pytorch.org/whl/cpu
 | ------------------ | --------------------------------------------------------------- |
 | `all`              | `pose` + `faiss`: the documented install                        |
 | `deep-learning`    | `torch` + `timm` — the heatmap localizer and all three identity models |
-| `pose`             | `deep-learning`, plus Ultralytics YOLO pose training and inference and `mosaic track ultralytics` (six multi-object trackers, in process) |
-| `polo`             | `deep-learning`, plus POLO point detection and training         |
+| `pose`             | `deep-learning`, plus Ultralytics YOLO pose model training and single-model inference |
+| `polo`             | `deep-learning`, plus POLO point-model training and inference   |
 | `faiss`            | The `"faiss"` kNN backend for `global-tsne`; its default `"annoy"` backend needs nothing |
 | `movement`         | The [movement](https://movement.neuroinformatics.dev/) smoothing and filtering features, and the xarray / netCDF4 / pynwb / sleap-io stack they sit on |
 | `lightning-action` | Lightning-Action temporal action classifier                     |
@@ -57,16 +59,20 @@ Four things to know before choosing:
 
 - **`pose` and `polo` cannot share an environment.** Both install a distribution named
   `ultralytics` — upstream against a fork — and pip resolves only one. Both build on
-  `deep-learning`, so taking the fork does not cost you the identity models.
+  `deep-learning`, so taking the fork does not cost you the identity models. Neither
+  reaches `mosaic track ultralytics`, whose Ultralytics lives in an environment of its
+  own, so one machine can hold the fork here and upstream there.
 - **`yolo-augment` changes what a training run does.** Ultralytics adds Blur,
   MedianBlur, ToGray and CLAHE at p=0.01 whenever `albumentations` is importable, and
   nothing records which way a run went.
 - **`faiss` installs `faiss-cpu`.** On Linux with CUDA, install `faiss-gpu` yourself
   instead.
-- **`pose`, `polo` and therefore `all` install Ultralytics, which is AGPL-3.0.** A bare
-  `pip install -e .` carries no AGPL dependency;
-  [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) says what that
-  means for a networked deployment.
+- **`pose`, `polo` and therefore `all` install Ultralytics, which is AGPL-3.0.** Pose
+  and point model training and inference import it inside mosaic's own process, which
+  is what those extras are for. A bare `pip install -e .` carries no AGPL dependency,
+  and neither does `mosaic track ultralytics`, which runs Ultralytics as a separate
+  program. [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) says
+  what that means for a networked deployment.
 
 Spectral features, the SLEAP analysis reader and the DeepLabCut HDF5 reader are **not**
 extras: PyWavelets, h5py and PyTables are base dependencies, because each one gates
@@ -77,16 +83,17 @@ removed in 0.13. `wavelets`, `sleap`, `hdf5` and `imgstore` are gone.
 
 ## Tools that run in their own environment
 
-Four of the tools mosaic drives are **not installed by mosaic**. You install each one
-yourself, following its own instructions, and then tell mosaic where it is. Each pins
-a Python version or a framework stack that cannot share an environment with mosaic, so
-each gets an environment of its own and mosaic launches it there.
+Five of the tools mosaic drives are **not installed by mosaic**. You install each one
+yourself and then tell mosaic where it is, and mosaic launches it there. Four of them
+pin a Python version or a framework stack that cannot share an environment with
+mosaic; Ultralytics is separate for a licensing reason, given below.
 
 | Install it yourself | Used by | Tell mosaic where it is |
 | ------------------- | ------- | ----------------------- |
 | [**TRex**](https://trex.run) | `mosaic track trex` | `MOSAIC_TREX_CONDA_ENV`, or `MOSAIC_TREX_BIN` for the binary itself |
 | [**SLEAP**](https://sleap.ai) | `mosaic track sleap`, the `train-sleap` op | `MOSAIC_SLEAP_CONDA_ENV`, or `MOSAIC_SLEAP_BIN` |
 | [**Lightning Pose**](https://lightning-pose.readthedocs.io) | `mosaic track litpose`, the `train-litpose` op | `MOSAIC_LITPOSE_CONDA_ENV`, or `MOSAIC_LITPOSE_BIN` |
+| [**Ultralytics**](https://github.com/ultralytics/ultralytics) | `mosaic track ultralytics` | `MOSAIC_ULTRALYTICS_CONDA_ENV`, or `MOSAIC_ULTRALYTICS_BIN` for the environment's `yolo` script |
 | [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_PYTHON`, the environment's interpreter |
 
 ```bash
@@ -100,14 +107,36 @@ run`; a `_BIN` variable names a path directly. With neither set, mosaic looks on
 `$PATH`. Where a tool is installed never enters a `run_id`, so two machines that place
 it differently still agree on what a run is called.
 
-Ultralytics is the exception. It is a Python package rather than a separate
-environment, it installs with the `pose` extra, and `mosaic track ultralytics` runs it
-in mosaic's own process.
+**Ultralytics** and **keypoint-MoSeq** are the two mosaic helps you build. The
+repository carries each environment's definition, a `pyproject.toml` and a lock file,
+so building one is a single command in its directory.
 
-**keypoint-MoSeq** is the one mosaic helps you build. The repository carries that
-environment's definition — a `pyproject.toml` and lock file — under
-`src/mosaic/behavior/feature_library/external/`, so building it is one command in that
-directory:
+Ultralytics is AGPL-3.0, and a program that imports it is one work with it, so mosaic
+drives it as a separate program and imports it nowhere on that path:
+
+```bash
+cd src/mosaic/tracking/external/ultralytics-env
+uv sync --python 3.12
+export MOSAIC_ULTRALYTICS_BIN="$PWD/.venv/bin/yolo"
+```
+
+The interpreter is pinned rather than left to uv, which would take the newest one it
+can find. That directory's `pyproject.toml` admits `>=3.12` and its `uv.lock` was
+resolved for one interpreter, so a build on a newer one resolves a different set of
+wheels -- or none at all, for the first months after a Python release. Two machines
+tracking one video under one run identifier should be running the same code, which is
+what the committed lock is for. `MOSAIC_ULTRALYTICS_BIN` names the `yolo` console
+script; the `python` beside it in the same `bin/` is what mosaic runs.
+
+That costs two things, against an Ultralytics installed into mosaic's own
+environment. Building an environment is more work than adding an extra. And the
+tracker is handed a video path like every other external tool, so an imgstore
+recording has to be exported to plain video first, with
+`mosaic run --kind export-store`, exactly as TRex, SLEAP and Lightning Pose already
+require; the error message names the command.
+
+**keypoint-MoSeq** is built the same way, from
+`src/mosaic/behavior/feature_library/external/`:
 
 ```bash
 cd src/mosaic/behavior/feature_library/external

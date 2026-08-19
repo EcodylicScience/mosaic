@@ -13,7 +13,7 @@ Tracking is what runs out of process. :mod:`mosaic.tracking.pose_training` --
 YOLO and POLO training, and single-model inference -- still imports Ultralytics
 in mosaic's own process.
 
-``runner/`` is a sibling of the environment directories rather than inside one,
-because ``ultralytics-env/`` and the POLO environment beside it install the same
-two files. See ``README.md`` here.
+``runner/`` is a sibling of the environment directory rather than inside it,
+because a POLO environment beside ``ultralytics-env/`` runs the same program.
+See ``README.md`` here.
 """

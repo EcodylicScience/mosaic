@@ -19,6 +19,7 @@ from pydantic import Field, model_validator
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue
 from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.ultralytics_track.run import ModelTask
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
     resolve_tracker_config,
@@ -52,8 +53,10 @@ class UltralyticsParams(TrackerOpParams):
     model_path: str
     # Declared rather than detected, because it is part of the identifier and a
     # run must not silently re-mean itself when the weights behind a path change.
-    # Checked against the loaded model, which refuses a mismatch by name.
-    task: Literal["pose", "detect"] = "pose"
+    # Checked against the loaded model, which refuses a mismatch by name. The
+    # alias is the wire contract's own, so the op, the run and the request cannot
+    # come to admit different tasks.
+    task: ModelTask = "pose"
     tracker: TrackerName = "bytetrack"
     # Identity, as the fully resolved table: restating a default mints the same
     # identifier as passing nothing, and changing one knob mints a different one.

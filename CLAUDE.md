@@ -74,12 +74,15 @@ gates reading a file the user already has, and the three are ~30 MB together.
   does not carry it.
 - `pose` and `polo` cannot be installed in the same environment — both ship
   under the `ultralytics` distribution name. Both self-reference
-  `deep-learning`, so choosing the fork does not cost the identity models.
-  `pose` carries `lap` and an `ultralytics>=8.4.63` floor, which is what
-  `mosaic track ultralytics` needs: `lap` is the tracker's linear-assignment
-  solver and is in no ultralytics extra, so undeclared it gets pip-installed
-  mid-run, and the four newer tracker backends only exist from 8.4.63. `polo`
-  carries `lap` too.
+  `deep-learning`, so choosing the fork does not cost the identity models. What
+  they serve is pose and point **model training and inference**, the paths that
+  still import Ultralytics in mosaic's own process. `mosaic track ultralytics`
+  needs neither extra: it runs in
+  `src/mosaic/tracking/external/ultralytics-env/`, whose own `pyproject.toml`
+  declares `lap` (the tracker's linear-assignment solver, in no ultralytics
+  extra, so undeclared it gets pip-installed mid-run) and the
+  `ultralytics>=8.4.63` floor the four newer tracker backends arrived in. Both
+  extras still carry a copy of each.
 - **`all` is self-referential** (`["mosaic-behavior[pose,faiss]"]`), so a bundle
   cannot drift from its parts. It excludes `polo` (mutually exclusive with
   `pose`), `yolo-augment` (changes what a training run does),
@@ -229,9 +232,15 @@ any run with `CI` set and a job without it fails at collection.
   goes green; run them locally.
 - **`identity`** — the identity-marked suites under a `deep-learning`
   environment, so `pytest.importorskip("torch")` cannot silently skip them.
-- **`tracking`** — the ultralytics preflight and marker suites under a `pose`
-  environment, for the same reason: without `ultralytics` and `lap` installed they
-  would skip green and prove nothing.
+- **`tracking`** — the `tracker`-marked suites, deliberately with **no** `pose`
+  extra, against a real Ultralytics environment built the way a user builds it:
+  `uv sync --python 3.12` in `src/mosaic/tracking/external/ultralytics-env/`,
+  located by `MOSAIC_ULTRALYTICS_BIN`. Installing `[pose]` here would put
+  Ultralytics one careless import away from mosaic's own process and buy
+  nothing. Without the built environment the preflight comparison against the
+  shipped tracker tables would skip green and prove nothing, so
+  `MOSAIC_CI_TRACKING=1` promotes an environment that does not resolve from
+  "skip" to "broken environment".
 - **`feral`** — the FERAL-marked suites under a `feral` environment. Mosaic
   imports ten symbols FERAL's `__all__` does not carry, so this is what notices a
   release that moves one. Its own runner because FERAL's exact dependency pins
@@ -671,7 +680,8 @@ src/mosaic/
     ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
     ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export
     ├── litpose/                # Lightning Pose: one gated phase, reuses the deeplabcut converter
-    └── ultralytics_track/      # Ultralytics MOT: one gated phase, in process, no second env
+    ├── ultralytics_track/      # Ultralytics MOT: one gated phase, own env, reached as a subprocess
+    └── external/               # the Ultralytics environment definition + the programs that run in it
 ```
 
 **Layering.** `core` is the foundation: data model, schema, the pipeline engine,
@@ -997,6 +1007,35 @@ keypoint-MoSeq. [NOTICE](NOTICE) records this arrangement and the other
 third-party terms — notably TRex, which requires a paid license for company use.
 A reader-facing licensing page is being written and is not yet published, so
 nothing under `docs/` carries these terms today.
+
+### `tracking/external/` is where Ultralytics runs
+
+Same shape, different license. Ultralytics is AGPL-3.0, and a program that
+imports it is one work with it, so `mosaic track ultralytics` drives it as a
+separate program: `tracking/external/ultralytics-env/` declares an environment
+the user builds with `uv sync --python 3.12`, `tracking/external/runner/` holds
+the two files that run inside it, and what crosses between them is a JSON request
+file, a JSON response file and progress lines on stdout.
+[`ultralytics_track/run.py`](src/mosaic/tracking/ultralytics_track/run.py) is
+mosaic's side: `ULTRALYTICS_ENV` on the same five-step location ladder every other
+external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
+`run_ultralytics_tool`. One subprocess per entry.
+
+`tests/test_ultralytics_separation.py` holds both directions: no mosaic module
+outside the runner and two named `pose_training` modules may import Ultralytics,
+and the runner may not import mosaic. **The separation covers tracking only.**
+`train-pose`, `train-points`, `infer-pose` and `infer-points` still import
+Ultralytics in mosaic's process, which is what `pose` and `polo` are for, so a
+claim that mosaic installs no AGPL dependency is false today.
+
+Two consequences a change should not undo. The tool is handed a video *path*, so
+an imgstore recording needs `mosaic run --kind export-store` first, exactly as the
+other three subprocess trackers do (`common/tool_input.py` is that boundary and
+raises naming the command); tracking a store natively is a capability this cost.
+And the environment is excluded from the uv workspace and has its own basedpyright
+execution environment pinned at `python3.12`. Built with any other interpreter,
+its packages land where nothing looks and the runner type-checks against no
+Ultralytics at all.
 
 ## Working with Notebooks
 

@@ -215,13 +215,23 @@ venv = ".venv"
 reportMissingTypeStubs = false
 executionEnvironments = [
     { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external/.venv/lib/python3.13/site-packages"] },
-    # The runner directory first, because that is what resolves the bare
-    # `ultralytics_protocol` import a script run from there gets for free; then
-    # the Ultralytics environment's packages, which exist once the user builds
-    # it. The 3.12 in that path is why the README pins `uv sync --python 3.12`:
-    # uv would otherwise take the newest interpreter it can find and put the
-    # packages somewhere this never looks.
-    { root = "src/mosaic/tracking/external/runner", extraPaths = ["src/mosaic/tracking/external/runner", "src/mosaic/tracking/external/ultralytics-env/.venv/lib/python3.12/site-packages"] },
+    # The runner directory, because that is what resolves the bare
+    # `ultralytics_protocol` import a script run from there gets for free. That
+    # is the whole entry, and deliberately: the Ultralytics environment's
+    # site-packages used to be listed beside it, and re-resolved numpy, pandas,
+    # pydantic and mosaic-media from a second install. Those directories sit
+    # under `src/mosaic/`, so their files fall under the *default* execution
+    # environment and resolve their own imports from `.venv` -- which gave one
+    # numpy two module identities and manufactured 13 findings in a directory
+    # that has none. What the path bought was resolving the runner's deferred
+    # `ultralytics` imports; those now resolve exactly the way
+    # `tracking/pose_training/`'s deferred ones already do, from whatever the
+    # `pose` or `polo` extra put in this environment, and report
+    # `reportMissingImports` in an environment that has neither. The runner
+    # types the Ultralytics surface as its own protocols anyway -- four rules are
+    # disabled at the top of it because the real annotations are unusable -- so
+    # checking against the built environment bought little for that cost.
+    { root = "src/mosaic/tracking/external/runner", extraPaths = ["src/mosaic/tracking/external/runner"] },
 ]
 
 [tool.ruff.lint]

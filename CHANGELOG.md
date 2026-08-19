@@ -163,6 +163,43 @@ cannot derive it from the job spec: a step-addressed argv carries no
 stops reporting `cache_hit: null` — it now reads both back from its own log, which
 is why `entry_failure_status` is now `attempt_facts`.
 
+**Ultralytics tracking runs in an environment you build, and an upgraded worker
+that has not built one fails every `mosaic track ultralytics` job.** That is the
+operational fact this entry exists for, and mosaic-queue and mosaic-api deploy
+this. The refusal is at the probe, before anything is minted, and it is
+`UltralyticsNotFoundError` naming the two variables and the build command — so it
+is loud rather than silent, and it costs nothing already computed. But it is
+every job on the machine, not the first one to need something unusual.
+
+The environment is built with `uv sync --python 3.12` in
+`src/mosaic/tracking/external/ultralytics-env/`, and located by
+`MOSAIC_ULTRALYTICS_CONDA_ENV` (a conda environment) or `MOSAIC_ULTRALYTICS_BIN`
+(that environment's `yolo` script), the same ladder TRex, SLEAP and Lightning
+Pose already use. With neither set mosaic looks for `yolo` on `$PATH`. Where the
+tool sits is a property of the machine, so none of it reaches a `run_id`.
+
+Ultralytics is AGPL-3.0, and a program that imports it is one work with it.
+Mosaic now imports it nowhere on the tracking path: it spawns a program in that
+environment and exchanges a JSON request file, a JSON response file and progress
+lines on standard output.
+
+**No identifier moves**, and no run on disk is re-addressed. The tracker's
+settings, its version and its digest are what they were; a run recorded before
+this change reads as current and reuses.
+
+**The `pose` and `polo` extras are unchanged, and still install Ultralytics.**
+The separation covers tracking only — `train-pose`, `train-points`, `infer-pose`
+and `infer-points` still import Ultralytics inside mosaic's own process — so an
+install that asked for one of those extras has an AGPL dependency in it exactly
+as before, and a tracking run still ignores it and uses the built environment.
+
+**An imgstore recording has to be exported first.** The tracker is handed a video
+path like every other external tool, and a store is a directory of chunk files,
+so `mosaic run --kind export-store` comes first — the same requirement TRex,
+SLEAP and Lightning Pose already carry, and the error message names the command.
+In-process tracking could open a store directly; that is the one capability this
+costs.
+
 ## Unreleased — a table may declare centimetres, and three TREx readers say which
 
 **mosaic refused data it could analyse perfectly well, over a number nobody

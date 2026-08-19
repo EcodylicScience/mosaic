@@ -22,9 +22,10 @@ somebody deletes.
 The reverse direction has the same stake and is held the same way. The runner
 program runs *inside* the Ultralytics environment, so a ``mosaic`` import there
 would put mosaic's code into the same process as Ultralytics and recreate the
-single combined work from the other side. ``mosaic_media`` is a separate
-distribution and is deliberately not covered by that rule -- the runner reads
-video through it, and it is what the environment declares.
+single combined work from the other side. ``mosaic_media`` is deliberately not
+covered by that rule -- the runner reads video through it -- and the reason is
+its Apache-2.0 license rather than its being separately packaged; see
+:data:`MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE`.
 """
 
 from __future__ import annotations
@@ -100,10 +101,22 @@ EXTRAS_REACHING_ULTRALYTICS: Final = frozenset({"pose", "polo", "all", "recommen
 """Those two, plus the bundles that reach them by self-reference."""
 
 MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE: Final = frozenset({"mosaic_media"})
-"""``mosaic-media`` is a separate distribution and the runner's video reader.
+"""``mosaic-media`` may sit beside Ultralytics because of its **license**.
 
-``mosaic-behavior`` is the one that must never appear: it is the package whose
-separation from Ultralytics this whole file is about.
+Not because it is a separate distribution. Being separately packaged decides
+nothing here -- ``mosaic-behavior`` is a separate distribution too, and it is the
+one that must never appear, being the package whose separation from Ultralytics
+this whole file is about. What makes ``mosaic-media`` safe is that it is
+**Apache-2.0**, which is one-way compatible with AGPL-3.0: Apache-2.0 code may be
+taken into an AGPL-covered work, and the combining is done by the user who builds
+this environment, not by anyone shipping mosaic.
+
+So the question a second entry has to answer is not "is it its own package" but
+"are its terms ones the AGPL absorbs, and is the user still the only party
+combining them". A mosaic-authored package under mosaic's own terms answers no
+twice: mosaic is AGPL-3.0-or-later and its ``src/`` must stay commercially
+relicensable, and neither survives being installed into an environment that
+exists to keep AGPL-3.0 code out of mosaic's process.
 """
 
 
@@ -256,8 +269,10 @@ def test_the_runner_program_takes_no_import_from_mosaic() -> None:
     side. What they share with mosaic is a JSON contract and a command line, and
     that is what keeps them two programs.
 
-    ``mosaic_media`` is a separate distribution the environment declares and the
-    runner reads video through, so it is not what this refuses.
+    ``mosaic_media`` is what the environment declares and the runner reads video
+    through, and is not what this refuses:
+    :data:`MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE` says on what
+    grounds.
     """
     directory = _REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "runner"
     sources = sorted(directory.glob("*.py"))

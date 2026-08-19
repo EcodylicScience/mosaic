@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import (
-    EXTERNAL_ENVIRONMENT_TREES,
     FFMPEG_TOOLCHAIN,
     assert_no_literal_tilde,
     inside_a_virtualenv,
@@ -58,7 +57,6 @@ from tests.helpers.tracks import (
 )
 
 __all__ = [
-    "EXTERNAL_ENVIRONMENT_TREES",
     "FFMPEG_TOOLCHAIN",
     "MockDataset",
     "add_media_sequence",
