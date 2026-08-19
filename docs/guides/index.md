@@ -36,7 +36,6 @@ cache the same way, which is what lets them chain.
 | --- | --- |
 | [Features](analysis/features.md) | What the library holds and how to run one |
 | [Write your own feature](analysis/write-your-own-feature.md) | The library does not have the quantity you need |
-| [Unsupervised and supervised models](analysis/models.md) | Discovering behaviors, or classifying against labels |
 
 ## Pipelines
 

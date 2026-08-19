@@ -26,26 +26,23 @@ ds = open_dataset("dataset.yaml")
 result = ds.run_feature(SpeedAngvel(), entries=[("", "trial01")])
 ```
 
-`ds.run_feature(...)` is the method form of `mosaic.core.pipeline.run.run_feature`,
-which takes the dataset as its first argument. Either works; the method reads better
-in a notebook.
-
-Run it twice and the second call does nothing: the `run_id` is a hash of the
+If you run the exact same call twice, the second call computes nothing: the `run_id` is a hash of the
 parameters, inputs and frame range, so identical work is already on disk. That is
 also what makes a parameter sweep organize itself — see [Reproducibility, run_id and
 caching](../../concepts/reproducibility.md).
+
 
 ## What the library holds
 
 [The features reference](../../reference/features.md) is the complete list with every
 parameter, generated from the registry. Grouped by the question they answer:
 
-**One individual at a time.** `speed-angvel` (speed and angular velocity),
+**Individual.** `speed-angvel` (speed and angular velocity),
 `heading` (body orientation from keypoints, under a method you name),
 `trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`,
 `temporal-stack` (gives a frame its context window).
 
-**Individuals relative to each other.** `nearest-neighbor` and its
+**Pair or interactions.** `nearest-neighbor` and its
 `nn-delta-response` / `nn-delta-bins` chain for social forces; the `pair-*` family —
 `pair-position`, `pair-egocentric`, `pair-facing`, `pair-wavelet`,
 `pair-posedistance-pca`; `orientation-rel`, `approach-avoidance`, `attention-target`.
@@ -55,7 +52,8 @@ order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
 
 **Models fitted over a collection.** t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq and
-the supervised classifiers — see [Unsupervised and supervised models](models.md).
+the supervised classifiers. Each is listed with its parameters under *Global* in the
+[features reference](../../reference/features.md).
 
 **Image and video artifacts.** `egocentric-crop` and `interaction-crop-pipeline` cut
 animal-centered clips; `overlay` renders an annotated video. These are features so

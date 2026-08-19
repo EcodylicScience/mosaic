@@ -151,7 +151,6 @@ nav:
       - Analysis:
           - Features: guides/analysis/features.md
           - Write your own feature: guides/analysis/write-your-own-feature.md
-          - Unsupervised and supervised models: guides/analysis/models.md
       - Pipelines:
           - Chain steps into a recipe: guides/pipelines/chain-steps.md
           - Run work and see what ran: guides/pipelines/run-and-see-what-ran.md
