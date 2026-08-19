@@ -62,15 +62,29 @@ were applied to it.
 | --- | --- |
 | `"inputs": [{"step": "speed"}]` | Read that step's feature output |
 | `"tracks": {"step": "trex"}` | Read the tracks variant that op produced |
-| `"params": {"f": {"step": "x", "pattern": "*.parquet"}}` | Take a named artifact from that step |
+| `"params": {"f": {"step": "x", "pattern": "templates.parquet"}}` | Take a named artifact from that step |
 | `"after": ["transcode"]` | Ordering only, no data reference |
 
 A reference sits at the exact place it substitutes, so there is no separate edge list
 to drift from the step bodies.
 
+**Always spell out `pattern` on an artifact reference.** Left unset it defaults to
+`*.parquet`, and a producer's run directory holds one per-entry output parquet per
+sequence beside its named artifacts — so the default resolves to whichever file sorts
+first, which is usually one of those per-entry outputs rather than the artifact you
+meant. Nothing refuses it and nothing warns: the step runs, reports success, and has
+read the wrong table. That is why the recipe above pins `templates.parquet`.
+
 `after` is for the case where one step must precede another without reading anything
 from it — transcode before trex is the standard example: the tracker reads the
 derivative from the media index, not from the transcode step's return value.
+
+### `overwrite` is refused
+
+A step's `params` may not carry `overwrite`. Validation rejects it on presence,
+before the dataset is touched, because overwriting mutates content under a stable
+address: a downstream reader gets a mixed read that its own `run_id` records nothing
+about. Change the params instead, which gives the new work its own address.
 
 ## `Pipeline`, when the graph is code you are editing
 
@@ -103,7 +117,8 @@ pipe.add(FeatureStep("metrics", FFGroupsMetrics, {}, ["smooth", "ff", "speed"]))
 `pipe.load(dataset)` populates results from cached runs without executing anything —
 which is how a notebook picks up where a previous session left off.
 
-See [the Pipeline API](../../api/pipeline/index.md) for every method and signature.
+Every method and signature is documented in the class's own docstrings; see
+[`core/pipeline/pipeline.py`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/pipeline/pipeline.py).
 
 ### Per-step overrides
 

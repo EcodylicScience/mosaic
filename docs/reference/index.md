@@ -3,10 +3,6 @@
 
 # What is where
 
-Reference has two halves, and they answer different questions.
-
-## Registries -- what can I run?
-
 Every feature, op, command and format mosaic knows about, with the parameters
 each one takes. Reach for these when you know what you want to do and need the
 name and the knobs.
@@ -23,12 +19,8 @@ These four pages are generated from the registries themselves by
 fails if the result differs from what is committed, so a count here cannot fall
 behind the code that produces it.
 
-## Python API -- what is this object?
+## What a Python object takes
 
-Classes, signatures and docstrings, rendered from the source. Reach for these
-when you are writing Python against mosaic and need to know what a method takes
-or returns -- `Dataset`, the manifest models, the pipeline types, the schema
-validator.
-
-The two overlap by design. A feature appears in the registry with the parameters
-you would pass it, and in the API with the class that implements it.
+Read its docstring, in the source or in an editor. There is no rendered API
+reference: the hand-written one reached under a third of the tree with nothing
+to keep it honest, so what it omitted read as absent from the toolkit.

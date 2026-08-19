@@ -204,16 +204,16 @@ mkdocs serve     # live-reload at http://127.0.0.1:8000/
 mkdocs build     # static site into ./site/
 ```
 
-Two different things are generated, and the difference matters:
+**`docs/reference/` is generated wholesale** by `scripts/gen_docs_reference.py`
+from the live registries and the Typer app — features, ops, the CLI, and the track
+formats. Never edit those files. Run the script with `--write` after changing a
+registry, and commit the result; the docs workflow runs it with `--check` and fails
+when a committed page no longer matches the code.
 
-- **`docs/reference/` is generated wholesale** by `scripts/gen_docs_reference.py`
-  from the live registries and the Typer app — features, ops, the CLI, and the track
-  formats. Never edit those files. Run the script with `--write` after changing a
-  registry, and commit the result; the docs workflow runs it with `--check` and fails
-  when a committed page no longer matches the code.
-- **`docs/api/` pages are hand-written mkdocstrings stubs.** Only their *contents*
-  come from docstrings. A new public module gets no page at all until someone adds
-  the file and a `nav:` entry.
+Every other page under `docs/` is hand-written prose, and there is no rendered
+Python API reference. `docs/api/` held one: fourteen mkdocstrings stubs reaching 87
+of 303 public modules, with no gate to keep them honest and nothing that swept them.
+A public object is documented by its docstring, read in the source or in an editor.
 
 The site deploys from `.github/workflows/docs.yml` on every push to `main`, and
 builds with `--strict` on every pull request. Do not run `mkdocs gh-deploy`: Pages is
@@ -977,8 +977,8 @@ basedpyright is in strict mode. Prefer dataclasses / Pydantic models over
 
 ### Docstrings
 
-Google-style. mkdocstrings auto-renders public API into `docs/api/`, so a good
-docstring is the documentation.
+Google-style. A public object's docstring is the only place it is documented —
+there is no rendered API reference to carry the explanation instead.
 
 ### `feature_library/external/` is sandboxed
 
@@ -1231,6 +1231,4 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   converter, plus one `TrackingRoot` row. `tests/test_tracker_conformance.py` is
   parametrized over every tracker root, so a half-implemented one fails by name,
   and it reads `docs/drafts/adding-a-tracker.md` when that draft is present.
-- [`docs/api/`](docs/api/) — auto-generated API reference (core, pipeline,
-  behavior, media, tracking).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.

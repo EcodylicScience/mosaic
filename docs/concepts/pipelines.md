@@ -58,6 +58,15 @@ left, recorded under the name of a fit over everything, is exactly the silent wr
 answer the scheme exists to prevent. A step with no scope dependence gets the
 remainder, as it should.
 
+That asymmetry is also why a coverage shortfall is **refused** rather than proceeded
+through, and refused only for a scope-dependent step. A scope-free step over 89 of 90
+entries writes 89 correct outputs under the identifier they belong to, and the
+ninetieth arrives later under the same one. A scope-dependent step over 89 writes
+*one* artifact that is not the one anyone asked for, under a name saying it is.
+`allow_partial` is where a decision to proceed regardless is recorded, and it answers
+that question alone — a moved version or a disagreeing tracks variant is not a
+question about how much, and no flag unlocks them.
+
 ---
 
 To build one, see [Chain steps into a recipe](../guides/pipelines/chain-steps.md).

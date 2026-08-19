@@ -16,9 +16,19 @@ mosaic inventory -m dataset.yaml --kind feature --json
 distinction is the point: "the t-SNE ran" and "the t-SNE covers all forty sequences"
 are different facts, and only the second one lets you trust a figure.
 
-Status is **derived at read time, never stored**: `absent`, `partial`, `complete`,
-`complete-but-drifted`, `inconsistent`. Truth is on disk, so a stale view is
-impossible rather than merely unlikely.
+Status is **derived at read time, never stored**:
+
+| Status | Meaning |
+| --- | --- |
+| `absent` | nothing of this is on disk |
+| `partial` | some keys covered, some missing, nothing damaged |
+| `complete` | coverage answers for everything wanted |
+| `complete-but-drifted` | complete, but a recorded source has moved |
+| `inconsistent` | the index and the files disagree |
+
+Truth is on disk, so a stale view is impossible rather than merely unlikely.
+`inconsistent` is judged only on a *finished* run: outputs are written before their
+index rows, so files ahead of rows is what a run in progress looks like, not damage.
 
 Two narrower listings: `mosaic sequences` lists what has been converted, and
 `mosaic features list` / `mosaic tracking list` enumerate the registries.

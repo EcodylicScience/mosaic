@@ -68,6 +68,13 @@ mosaic init ~/dataset --name "Experiment 1"
 
 Both write `~/dataset/dataset.yaml` and create every folder it declares.
 
+`open_dataset` is also how you reopen an existing one — it is
+`Dataset(path).load()` as a single call. Reach for it rather than the
+constructor. `Dataset(path)` **reads nothing**: it takes a manifest *path*, so a
+caller can point at a dataset that does not exist yet and create it. That makes
+the bare constructor a working expression whose roots are all empty, and every
+accessor on it then fails against a manifest file that is perfectly correct.
+
 ## Dataset folder layout
 
 ```

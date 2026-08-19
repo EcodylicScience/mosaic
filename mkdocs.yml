@@ -164,23 +164,7 @@ nav:
       - Pipelines as documents: concepts/pipelines.md
   - Reference:
       - What is where: reference/index.md
-      - Registries:
-          - Features: reference/features.md
-          - Ops: reference/ops.md
-          - CLI: reference/cli.md
-          - Track formats: reference/track-formats.md
-      - Python API:
-          - Dataset: api/core/dataset.md
-          - Manifest: api/core/manifest.md
-          - Typed attributes: api/core/typed-attribute.md
-          - Schema: api/core/schema.md
-          - Helpers: api/core/helpers.md
-          - Pipeline: api/pipeline/index.md
-          - Inventory: api/pipeline/inventory.md
-          - Graphs: api/pipeline/graph.md
-          - Feature library: api/behavior/feature-library.md
-          - Label library: api/behavior/label-library.md
-          - Visualization: api/behavior/visualization.md
-          - Video I/O: api/media/video-io.md
-          - Frame extraction: api/tracking/frame-extraction.md
-          - Pose training: api/tracking/pose-training.md
+      - Features: reference/features.md
+      - Ops: reference/ops.md
+      - CLI: reference/cli.md
+      - Track formats: reference/track-formats.md
