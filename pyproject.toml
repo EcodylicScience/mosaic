@@ -319,4 +319,5 @@ microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-
 exclude = [
     "src/mosaic/behavior/feature_library/external",
     "src/mosaic/tracking/external/ultralytics-env",
+    "src/mosaic/tracking/external/polo-env",
 ]

@@ -1,0 +1,36 @@
+[project]
+name = "mosaic-polo-env"
+version = "0.1.0"
+description = "Isolated environment for POLO point detection"
+requires-python = ">=3.12"
+dependencies = [
+    # POLO is a full fork of Ultralytics and is AGPL-3.0 like its upstream, so
+    # the same rule applies: mosaic must never import it, because a mosaic that
+    # did would be one work with it and could not be offered under mosaic's own
+    # terms. See ../README.md.
+    #
+    # It also ships under the distribution name `ultralytics`, so it and
+    # upstream can never occupy one environment -- pip resolves one and the
+    # other silently is not there. That is why this directory exists beside
+    # `ultralytics-env/` rather than adding a requirement to it, and why the two
+    # are told apart by which of MOSAIC_POLO_BIN and MOSAIC_ULTRALYTICS_BIN
+    # names them.
+    #
+    # No version floor, unlike the upstream pin next door: a direct reference
+    # paired with a version specifier for one distribution is unresolvable. The
+    # fork declares 8.4.84, above the 8.4.63 the sibling environment asks for,
+    # and `uv.lock` beside this file pins the commit that was resolved.
+    "ultralytics @ git+https://github.com/mooch443/POLO.git",
+    # Declared explicitly for the same reason the sibling environment declares
+    # it: Ultralytics reaches `lap` from module scope in
+    # `ultralytics.trackers.utils.matching` while listing it in no extra, so
+    # undeclared it gets pip-installed mid-run -- a network write inside a
+    # queued job, and a hard failure in a locked environment.
+    "lap>=0.5.12",
+    "mosaic-media[io]>=0.3.0,<0.4.0",
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "pyarrow>=11.0",
+    "pydantic>=2.12",
+    "pyyaml>=6.0",
+]
