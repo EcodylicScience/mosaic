@@ -49,9 +49,10 @@ pip install -e ".[all]"
 ```
 
 `pip install -e .` on its own is a complete analysis install — converters, features,
-clustering, classifiers, overlays. `[all]` adds the deep-learning surface: YOLO pose
-training and inference, the heatmap localizer and the identity models, which means
-PyTorch. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
+clustering, classifiers, overlays. `[all]` adds the deep-learning surface: the heatmap
+localizer and the identity models, which means PyTorch. YOLO pose and POLO point work
+is not in it — tracking, inference and training alike run in an environment you build,
+so no install of mosaic carries an AGPL-licensed dependency. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
 the environment holds a single ffmpeg build.
 
 [Installation](docs/installation.md) has the extras table, a CPU-only PyTorch line, the

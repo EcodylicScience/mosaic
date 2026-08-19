@@ -9,8 +9,8 @@ each.
 
 | Environment | Built for | Located by |
 | --- | --- | --- |
-| `ultralytics-env/` | `mosaic track ultralytics`, `mosaic run --kind infer-pose` | `MOSAIC_ULTRALYTICS_CONDA_ENV` / `MOSAIC_ULTRALYTICS_BIN` |
-| `polo-env/` | `mosaic run --kind infer-points` | `MOSAIC_POLO_CONDA_ENV` / `MOSAIC_POLO_BIN` |
+| `ultralytics-env/` | `mosaic track ultralytics`, `mosaic run --kind infer-pose`, `--kind train-pose` | `MOSAIC_ULTRALYTICS_CONDA_ENV` / `MOSAIC_ULTRALYTICS_BIN` |
+| `polo-env/` | `mosaic run --kind infer-points`, `--kind train-points` | `MOSAIC_POLO_CONDA_ENV` / `MOSAIC_POLO_BIN` |
 
 You need only the one your work reaches.
 
@@ -26,17 +26,16 @@ the environment you build and exchange JSON files and command-line arguments
 with it -- and two programs exchanging files are two programs.
 
 `src/mosaic/tracking/common/ultralytics_env.py` locates either environment and
-launches `runner/` inside it; `ultralytics_track/run.py` and
-`pose_training/ultralytics_infer.py` are the tracker's and the inference ops'
-sides of that exchange. None of the three imports Ultralytics.
+launches `runner/` inside it; `ultralytics_track/run.py`,
+`pose_training/ultralytics_infer.py` and `pose_training/ultralytics_train.py`
+are the tracker's, the inference ops' and the training ops' sides of that
+exchange. None of the four imports Ultralytics.
 
-Tracking and single-model inference are what run out of process. **Model
-training** -- `mosaic run --kind train-pose` and `--kind train-points`, in
-`src/mosaic/tracking/pose_training/train.py` -- still imports Ultralytics in
-mosaic's own process, so the environments here do not yet cover every path that
-reaches it. That is the harder half: its progress callback is a live in-process
-closure holding a job context and a cancel token, which has no serializable
-form.
+**Every path that reaches Ultralytics runs here**, so no mosaic install carries
+it: there is no extra to install, and `pip install -e ".[all]"` resolves no
+AGPL-licensed dependency. Training was the last path to move, and the hardest,
+because a cancelled run had to keep stopping the way it always had -- see
+"Cancelling a training run" below.
 
 The same reasoning puts keypoint-MoSeq in
 [`src/mosaic/behavior/feature_library/external/`](../../behavior/feature_library/external/README.md);
@@ -67,6 +66,37 @@ newest interpreter it can find. `pyproject.toml` here admits `>=3.12`, and
 resolves a different set of wheels, or none at all for the first months after a
 Python release, which is exactly the reproducibility the committed lock is
 there to give.
+
+### Augmentation is opt-in, and lives here
+
+```bash
+uv sync --python 3.12 --extra augment
+```
+
+Ultralytics builds its `Albumentations` transform whenever the package is
+importable, and swallows the ImportError when it is not -- so a build carrying
+`--extra augment` additionally applies Blur, MedianBlur, ToGray and CLAHE at
+p=0.01 to every training run, and nothing records which way a run went. That is
+why it is a choice rather than a default, and why the choice belongs to whoever
+builds the environment: this is the process that reads it. It was a mosaic extra
+(`yolo-augment`) until training moved here, and no extra in mosaic's own
+`pyproject.toml` can install a package into an environment mosaic does not build.
+
+`opencv-python-headless` is declared outright and the GUI wheel Ultralytics asks
+for is excluded. They are two distributions shipping one import package, so
+installed together they overwrite each other's files and leave two vendored
+ffmpeg builds in a single `cv2` -- which crashes the process nondeterministically.
+Nothing here needs a GUI build.
+
+### Training fetches its base weights the first time
+
+`train-pose`'s default `model` is the bare asset name `yolo11n-pose.pt`, which
+Ultralytics resolves as a path, then under its own weights directory, and
+otherwise **downloads** from the `ultralytics/assets` GitHub release into the
+working directory the run inherits. A machine with no network, or a queued job
+that must not write outside the dataset, wants `model` given as a path to weights
+that are already there. Point training fetches nothing: `polo26n.yaml` is package
+data, resolved inside the fork.
 
 The build works from a source checkout only: this directory is excluded from the
 uv workspace, and its non-Python files are not part of the installed wheel.
@@ -135,7 +165,7 @@ the package without importing the module that imports Ultralytics.
   standard library, numpy and pydantic and nothing else. It imports neither
   `ultralytics` nor `mosaic`.
 - `runner/ultralytics_runner.py` -- the program that imports Ultralytics, and
-  the only one mosaic reaches that does. Five subcommands, each reading one JSON
+  the only one mosaic reaches that does. Seven subcommands, each reading one JSON
   request file and writing one JSON response file:
 
   ```bash
@@ -144,6 +174,8 @@ the package without importing the module that imports Ultralytics.
   .venv/bin/python ../runner/ultralytics_runner.py track --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py infer-pose --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py infer-points --request req.json --out result.json
+  .venv/bin/python ../runner/ultralytics_runner.py train-pose --request req.json --out result.json
+  .venv/bin/python ../runner/ultralytics_runner.py train-points --request req.json --out result.json
   ```
 
   The two inference subcommands write their predictions parquet themselves, the
@@ -184,3 +216,25 @@ that routes those weights to `infer-points` reachable at all.
 process. No run calls it: mosaic transcribes those tables so that an upstream
 retune cannot silently re-mean an identifier already on disk, and this is how
 the transcription is compared against the release that will run it.
+
+## Cancelling a training run
+
+Ultralytics cannot be interrupted inside an epoch. It reads a stop flag between
+them, and the epoch that was running writes `last.pt` and appends to
+`results.csv` before it ends -- so a run stopped at a boundary leaves a complete
+checkpoint and a complete curve, where a killed process loses whichever epoch was
+in flight.
+
+Every other tool mosaic drives is cancelled by killing its process group, because
+the unit of loss there is one video that will simply be redone. Training is the
+exception, so `mosaic cancel` on a training run does something else: mosaic writes
+a file inside the run root, the runner stats it at each epoch boundary, and the
+run ends the way it always did. The kill is still there as a backstop, after a
+grace long enough for an epoch -- a tool that ignores the file is not immortal.
+
+Two consequences worth knowing. A cancel takes effect at the *next* epoch
+boundary, so on a long epoch it is not immediate; that was equally true when
+training ran in mosaic's own process. And the grace has to stay shorter than
+whatever the substrate running mosaic allows -- a container runtime that SIGKILLs
+the process tree on its own timer will win, and the ordering wants to be one
+epoch, then mosaic's grace, then the runtime's.

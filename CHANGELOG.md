@@ -74,13 +74,64 @@ training run does, and nothing records which way a run went.
 nothing for win32 on Python 3.14, which `requires-python` admits, so `uv.lock`
 is stale and `NOTICE` cannot be regenerated with it. No CI job reads the lock.
 
+## Unreleased — no install of mosaic carries Ultralytics
+
+**No identifier moves, and no run on disk is re-addressed.** The golden corpus has
+no diff, no params field is added and no op version is bumped. What changes is
+where `train-pose` and `train-points` run, and what `pip install` brings.
+
+**`pip install -e ".[all]"` now resolves no AGPL-licensed dependency.** Pose and
+point *training* were the last two paths that imported Ultralytics inside mosaic's
+own process; both now drive the same runner the tracker and both inference ops
+already use, in the environment their model belongs to. Nothing under
+`src/mosaic/` imports Ultralytics outside
+`src/mosaic/tracking/external/runner/`, no extra declares it, and
+`tests/test_ultralytics_separation.py` asserts both with empty sets and a witness
+that the detector still finds it where it really is.
+
+**`pose` and `polo` become aliases for `deep-learning`, removed in 0.14.** A
+saved `pip install -e ".[pose]"` still produces a working environment and no
+longer produces an Ultralytics: build
+`src/mosaic/tracking/external/ultralytics-env/` or `.../polo-env/` and name it
+with `MOSAIC_ULTRALYTICS_BIN` or `MOSAIC_POLO_BIN`. `all` reaches
+`deep-learning` directly, so no live bundle points into a deprecated alias.
+
+**`yolo-augment` is removed rather than aliased.** `albumentations` is read by
+whichever process runs the trainer, and after this that process is the external
+environment -- so it is declared there, opted into with `uv sync --extra augment`,
+and no alias in mosaic's own `pyproject.toml` could have put it where it is now
+needed. Both environments also declare `opencv-python-headless` and override the
+GUI wheel away, because `ultralytics` wants one build and `albumentations` the
+other, and two builds of one import package in a process is what pitfall 8 is
+about.
+
+**A cancelled training run still stops at an epoch boundary.** This is the
+behavior the move had to preserve rather than a new feature: Ultralytics cannot be
+interrupted inside an epoch, so a killed process loses whichever one was running,
+where a flag it reads between them leaves `last.pt` and `results.csv` complete.
+Mosaic writes a file the runner stats at each boundary, and falls back to the kill
+every other tool gets only after a grace long enough for an epoch. On a substrate
+that imposes its own termination grace -- a queue pod -- that grace has to exceed
+one epoch too, or the runtime's SIGKILL arrives first.
+
+**`n_epochs` in the trained-model index now records what ran, not what was
+asked.** A run stopped early by `patience` at forty of three hundred was recorded
+as a three-hundred-epoch model. Anything reading that column sees a value that
+means something narrower than it did.
+
+**Two things a training run now does that it did not before.** It reports each
+epoch into the run-log, so a queued job's progress is visible where previously the
+denominator was set and the numerator never advanced; and it refreshes its own
+run-root claim from the tool's output, so a run longer than the claim's window is
+no longer read as abandoned by the next execution along.
+
 ## Unreleased — pose and point inference leave mosaic's process, and land in source pixels
 
 **`infer-pose` and `infer-points` now run their model in an environment mosaic
 does not install**, reached as a subprocess, the way the `ultralytics` tracker
 already did. Nothing in `src/mosaic/tracking/pose_training/inference.py` imports
 Ultralytics any more, and the separation guard's allowance is down to
-`train.py`. Model training is what is left.
+`train.py`. Model training is what is left, and the entry below is where it goes.
 
 **Both ops move to version `0.2`, because their output moved.** They used to
 resize every frame at decode time to fit `imgsz` (640 by default) and return

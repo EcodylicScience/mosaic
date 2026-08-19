@@ -38,11 +38,13 @@ Prefer `uv pip install` over `uv sync`. `uv sync` installs the project without
 extras and prunes anything it considers extraneous, silently undoing an extras
 install.
 
-**`uv lock` currently does not resolve at all**, on any platform: `ultralytics`
-publishes nothing for win32 on Python 3.14, and mosaic's `requires-python` admits
-it, so the resolver reports the split unsatisfiable. `uv.lock` is therefore stale
-and cannot be regenerated until that is settled — by bounding `requires-python`,
-by marker-gating the requirement, or by upstream shipping the wheel. Nothing in
+**`uv lock` currently does not resolve at all**, on any platform:
+`lightning-action` requires `nvidia-dali-cuda110` with no environment marker, and
+PyPI serves that as an sdist only, so the resolver tries to build NVIDIA DALI from
+source and fails. `uv.lock` is therefore stale and cannot be regenerated until
+that is settled — by marker-gating the requirement, by dropping the extra from the
+resolution, or by upstream publishing wheels. (Ultralytics used to be the blocker,
+for a different reason; it no longer appears in mosaic's dependency graph at all.) Nothing in
 the repository consumes the lock: every CI job installs with `uv pip install`,
 and `scripts/gen_third_party_inventory.py` is the one reader, so `NOTICE`
 regeneration is blocked with it.
