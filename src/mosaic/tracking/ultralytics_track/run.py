@@ -36,6 +36,10 @@ import pandas as pd
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    Result,
+    rows_from_result,
+)
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
     TrackerSetting,
@@ -55,9 +59,6 @@ a classifier.
 
 _SUPPORTED_TASKS: Final[tuple[ModelTask, ...]] = ("pose", "detect")
 
-_TRACK_COLUMNS: Final = 7
-"""Columns a tracked ``Boxes`` carries: x1, y1, x2, y2, track id, confidence, class."""
-
 
 class UltralyticsNotFoundError(ImportError):
     """Ultralytics, or a dependency of its tracker, is not importable.
@@ -76,10 +77,6 @@ class UnsupportedTrackerError(ValueError):
     """The installed Ultralytics does not know the requested backend."""
 
 
-class UltralyticsInteropError(RuntimeError):
-    """Ultralytics behaved in a way this integration's correctness depends on not happening."""
-
-
 @dataclass(frozen=True, slots=True)
 class UltralyticsTrackResult:
     """What one entry's tracking produced."""
@@ -92,35 +89,8 @@ class UltralyticsTrackResult:
 # --- protocols standing in for the Ultralytics surface ---------------------
 
 
-class _Detections(Protocol):
-    """The ``Boxes`` / ``Keypoints`` surface, after ``.cpu().numpy()``."""
-
-    @property
-    def data(self) -> np.ndarray: ...
-
-
-class _Boxes(_Detections, Protocol):
-    @property
-    def id(self) -> np.ndarray | None: ...
-
-    def cpu(self) -> _Boxes: ...
-    def numpy(self) -> _Boxes: ...
-
-
-class _Keypoints(_Detections, Protocol):
-    def cpu(self) -> _Keypoints: ...
-    def numpy(self) -> _Keypoints: ...
-
-
-class _Result(Protocol):
-    @property
-    def boxes(self) -> _Boxes | None: ...
-    @property
-    def keypoints(self) -> _Keypoints | None: ...
-
-
 class _Model(Protocol):
-    def track(self, source: list[np.ndarray], **kwargs: object) -> list[_Result]: ...
+    def track(self, source: list[np.ndarray], **kwargs: object) -> list[Result]: ...
 
 
 # --- preflight -------------------------------------------------------------
@@ -272,7 +242,7 @@ class TrackSession:
     n_keypoints: int
     kwargs: Mapping[str, object]
 
-    def track(self, frames: list[np.ndarray]) -> list[_Result]:
+    def track(self, frames: list[np.ndarray]) -> list[Result]:
         return self.model.track(frames, **self.kwargs)
 
 
@@ -386,69 +356,6 @@ def reset_trackers(session: TrackSession) -> None:
 
 
 # --- one entry -------------------------------------------------------------
-
-
-def rows_from_result(
-    result: _Result, frame_index: int, *, n_keypoints: int
-) -> np.ndarray | None:
-    """One frame's tracked detections as a ``(n, 8 + 3K)`` block, or None.
-
-    ``boxes.id is None`` is not an empty frame in disguise. Ultralytics' tracking
-    callback returns early when the tracker produced no tracks, leaving the
-    result holding its *raw, untracked* detections -- so treating that as data
-    would put identity-less rows into a table whose whole subject is identity.
-    """
-    boxes = result.boxes
-    if boxes is None:
-        return None
-    boxes = boxes.cpu().numpy()
-    if boxes.id is None:
-        return None
-    data = boxes.data
-    if data.shape[0] == 0:
-        return None
-    if data.shape[1] < _TRACK_COLUMNS:
-        raise UltralyticsInteropError(
-            f"a tracked detection should carry {_TRACK_COLUMNS} columns "
-            f"(box, track id, confidence, class); got {data.shape[1]}."
-        )
-
-    n = data.shape[0]
-    xyxy = data[:, 0:4].astype(np.float64)
-    track_id = data[:, 4].astype(np.float64)
-    conf = data[:, 5].astype(np.float64)
-    cls = data[:, 6].astype(np.float64)
-
-    if result.keypoints is not None:
-        keypoints = result.keypoints.cpu().numpy().data
-        if keypoints.shape[0] != n:
-            raise UltralyticsInteropError(
-                f"frame {frame_index}: {keypoints.shape[0]} keypoint sets for "
-                f"{n} tracked boxes. Keypoints are reindexed with the boxes, so "
-                "a mismatch means the two are no longer the same detections."
-            )
-        kp = np.empty((n, n_keypoints, 3), dtype=np.float64)
-        kp[:, :, 0:2] = keypoints[:, :n_keypoints, 0:2]
-        kp[:, :, 2] = keypoints[:, :n_keypoints, 2] if keypoints.shape[2] > 2 else 1.0
-    else:
-        # A box-only model localizes nothing finer, so the box centre is the
-        # honest single keypoint and the detection confidence is its score.
-        kp = np.empty((n, 1, 3), dtype=np.float64)
-        kp[:, 0, 0] = (xyxy[:, 0] + xyxy[:, 2]) / 2.0
-        kp[:, 0, 1] = (xyxy[:, 1] + xyxy[:, 3]) / 2.0
-        kp[:, 0, 2] = conf
-
-    block = np.empty((n, 8 + 3 * kp.shape[1]), dtype=np.float64)
-    block[:, 0] = float(frame_index)
-    block[:, 1] = track_id
-    block[:, 2:6] = xyxy
-    block[:, 6] = conf
-    block[:, 7] = cls
-    block[:, 8:] = kp.reshape(n, -1)
-    # List order is not a contract -- two backends override how they format their
-    # output -- so sort by the tracker's own numbering to make the file a
-    # function of the frame rather than of the backend's bookkeeping.
-    return block[np.argsort(block[:, 1], kind="stable")]
 
 
 @contextlib.contextmanager
@@ -594,7 +501,6 @@ def run_ultralytics_track(
 __all__ = [
     "ModelTask",
     "TrackSession",
-    "UltralyticsInteropError",
     "UltralyticsNotFoundError",
     "UltralyticsTrackResult",
     "UnsupportedTaskError",
@@ -605,7 +511,6 @@ __all__ = [
     "require_supported_task",
     "require_ultralytics",
     "reset_trackers",
-    "rows_from_result",
     "run_ultralytics_track",
     "write_tracker_yaml",
 ]

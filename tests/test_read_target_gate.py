@@ -266,6 +266,38 @@ def test_multi_video_reader_plain_video_branch_is_gated(
     reader.close()
 
 
+_EXTERNAL_ENVIRONMENT_TREES = (
+    ("behavior", "feature_library", "external"),
+    ("tracking", "external"),
+)
+"""Source that runs in an environment mosaic builds nothing of and imports
+nothing from, given as path components under the package root.
+
+Excluded from both structural guards below for two reasons. The gate is
+unreachable from these trees by construction: a program under one of them may
+take no import from ``mosaic`` at all -- that separation is what keeps mosaic and
+an AGPL-licensed or non-commercial tool two programs -- so it cannot call
+``verified_read_facts``, and mosaic gates the facts on its own side and hands the
+measured result across the boundary instead. And each tree is where the user
+*builds* a virtualenv, so a walk that entered one would read a site-packages tree
+of thousands of files that are not mosaic's code at all.
+"""
+
+
+def _runs_in_an_external_environment(source: Path, root: Path) -> bool:
+    """True when *source* lies inside one of the external-environment trees.
+
+    A path-*component* test, not a substring one. ``"tracking/external" in
+    source.as_posix()`` also matches ``tracking/external_helpers.py`` and
+    ``tracking/externals/``, and ``tracking/`` is exactly where the mosaic-side
+    launcher for these programs lands -- so a substring match would silently
+    exempt a mosaic module that must be held to the gate.
+    """
+    return any(
+        root.joinpath(*tree) in source.parents for tree in _EXTERNAL_ENVIRONMENT_TREES
+    )
+
+
 def _imports_a_mosaic_media_reader(tree: ast.Module) -> bool:
     """True when *tree* imports ``VideoReader`` or ``MultiVideoReader`` from
     ``mosaic_media.io``, in any import form."""
@@ -311,9 +343,7 @@ def test_only_the_gate_and_its_two_reader_modules_import_mosaic_media_readers() 
     root = Path(mosaic.__file__).parent
     reader_importers: set[str] = set()
     for source in root.rglob("*.py"):
-        # A vendored virtualenv under this excluded workspace member; not part
-        # of mosaic's own tree.
-        if "feature_library/external" in source.as_posix():
+        if _runs_in_an_external_environment(source, root):
             continue
         tree = ast.parse(source.read_text())
         if _imports_a_mosaic_media_reader(tree):
@@ -402,9 +432,7 @@ def test_only_the_two_reader_modules_may_construct_an_upstream_reader() -> None:
     root = Path(mosaic.__file__).parent
     matched: set[str] = set()
     for source in root.rglob("*.py"):
-        # A vendored virtualenv under this excluded workspace member; not part
-        # of mosaic's own tree.
-        if "feature_library/external" in source.as_posix():
+        if _runs_in_an_external_environment(source, root):
             continue
         if _imports_an_upstream_reader_directly(ast.parse(source.read_text())):
             matched.add(str(source.relative_to(root)))

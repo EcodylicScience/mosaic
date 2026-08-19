@@ -23,7 +23,7 @@ from mosaic.core.track_library.ultralytics_tracks import (
     UltralyticsTracksParams,
     raw_columns,
 )
-from mosaic.tracking.ultralytics_track.run import (
+from mosaic.tracking.external.runner.ultralytics_protocol import (
     UltralyticsInteropError,
     rows_from_result,
 )

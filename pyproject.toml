@@ -215,6 +215,13 @@ venv = ".venv"
 reportMissingTypeStubs = false
 executionEnvironments = [
     { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external/.venv/lib/python3.13/site-packages"] },
+    # The runner directory first, because that is what resolves the bare
+    # `ultralytics_protocol` import a script run from there gets for free; then
+    # the Ultralytics environment's packages, which exist once the user builds
+    # it. The 3.12 in that path is why the README pins `uv sync --python 3.12`:
+    # uv would otherwise take the newest interpreter it can find and put the
+    # packages somewhere this never looks.
+    { root = "src/mosaic/tracking/external/runner", extraPaths = ["src/mosaic/tracking/external/runner", "src/mosaic/tracking/external/ultralytics-env/.venv/lib/python3.12/site-packages"] },
 ]
 
 [tool.ruff.lint]
@@ -301,4 +308,5 @@ microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-
 [tool.uv.workspace]
 exclude = [
     "src/mosaic/behavior/feature_library/external",
+    "src/mosaic/tracking/external/ultralytics-env",
 ]

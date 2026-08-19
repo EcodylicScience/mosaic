@@ -95,14 +95,21 @@ def test_expanduser_is_called_in_exactly_one_place() -> None:
     thing pinned -- narrowly, by name, with a one-line repair.
     """
     package = Path(__file__).resolve().parent.parent / "src" / "mosaic"
-    # The sandboxed keypoint-MoSeq runner has its own environment and is
-    # deliberately outside the main package's rules.
-    sandboxed = package / "behavior" / "feature_library" / "external"
+    # The two trees whose programs run in an environment the user builds, and
+    # which take no import from mosaic at all: the sandboxed keypoint-MoSeq
+    # runner, and the Ultralytics tracking runner. Neither can call
+    # ``user_paths.user_path`` -- it is a mosaic import -- so holding them to
+    # this rule would leave no way to comply. Each is also where a virtualenv
+    # gets built, which this walk has no business entering.
+    sandboxed = (
+        package / "behavior" / "feature_library" / "external",
+        package / "tracking" / "external",
+    )
     home = package / "user_paths.py"
 
     offenders: list[str] = []
     for path in sorted(package.rglob("*.py")):
-        if path == home or sandboxed in path.parents:
+        if path == home or any(tree in path.parents for tree in sandboxed):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

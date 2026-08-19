@@ -126,6 +126,38 @@ def test_a_failed_rewrite_preserves_the_existing_table(
     assert list(path.parent.glob("*.tmp")) == []
 
 
+def _inside_a_virtualenv(source: Path, root: Path) -> bool:
+    """True when *source* is installed third-party code rather than mosaic's own.
+
+    Two directories under ``src/mosaic/`` are where a user builds an environment
+    for an external tool -- the keypoint-MoSeq runner's and the Ultralytics
+    tracking runner's -- so a walk of the package tree can reach a whole
+    site-packages. It finds hits that are not writers at all: ``pandas``'s own
+    ``frame.py`` carries ``df.to_parquet("df.parquet.gzip", ...)`` in a docstring
+    example, which reads exactly like a final path.
+
+    Detected two ways because a virtualenv directory can be called anything: a
+    ``site-packages`` component *below the package root*, or a ``pyvenv.cfg`` in a
+    directory between *source* and *root*.
+
+    Both tests are deliberately relative to *root*. Under a non-editable install
+    the package root is itself ``.../site-packages/mosaic``, so an absolute
+    ``"site-packages" in source.parts`` is true of every file in the walk --
+    which excludes the whole of mosaic, leaves the caller asserting against an
+    empty list, and turns the guard green having checked nothing. The property
+    being tested is where a file sits inside the package, never where the
+    package was installed.
+    """
+    if "site-packages" in source.relative_to(root).parts:
+        return True
+    for parent in source.parents:
+        if parent == root:
+            return False
+        if (parent / "pyvenv.cfg").is_file():
+            return True
+    return False
+
+
 def test_every_tracks_writer_goes_through_the_atomic_one() -> None:
     """No writer may address a final path directly.
 
@@ -137,15 +169,38 @@ def test_every_tracks_writer_goes_through_the_atomic_one() -> None:
 
     root = Path(mosaic.__file__).parent
     offenders: list[str] = []
+    scanned: set[str] = set()
+    reached_the_definition_site = False
     for source in sorted(root.rglob("*.py")):
         if source.name == "writers.py":
+            reached_the_definition_site = True
             continue  # the one legitimate definition site
+        if _inside_a_virtualenv(source, root):
+            continue
+        scanned.add(source.relative_to(root).as_posix())
         for number, line in enumerate(source.read_text().splitlines(), start=1):
             if ".to_parquet(" in line and "write_parquet_atomic" not in line:
                 # A temp path handed to us by atomic_write is fine.
                 if "(p," in line or "(temp," in line or "(tmp," in line:
                     continue
                 offenders.append(f"{source.relative_to(root)}:{number}")
+
+    # A structural guard that can pass by scanning nothing is worse than no
+    # guard at all: it reports a green invariant it never checked, and the
+    # exclusion above is one over-broad predicate away from that. So the walk is
+    # made to prove it happened before its finding is believed -- that it
+    # reached the sanctioned writer it deliberately skips, and that it read
+    # ordinary mosaic modules beside it. The sibling guards in
+    # test_read_target_gate.py carry the same kind of check for the same reason.
+    assert reached_the_definition_site, (
+        "the walk never reached core/pipeline/writers.py, so it scanned no part "
+        "of mosaic and its verdict below means nothing"
+    )
+    assert "core/dataset.py" in scanned, (
+        "the walk did not read core/dataset.py, so it is not covering mosaic's "
+        f"own tree; it scanned {len(scanned)} files"
+    )
+
     assert offenders == [], (
         "these write a parquet without going through write_parquet_atomic: "
         + ", ".join(offenders)

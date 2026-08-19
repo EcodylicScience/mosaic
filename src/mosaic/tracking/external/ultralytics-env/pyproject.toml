@@ -1,0 +1,29 @@
+[project]
+name = "mosaic-ultralytics-env"
+version = "0.1.0"
+description = "Isolated environment for Ultralytics multi-object tracking"
+requires-python = ">=3.12"
+dependencies = [
+    # Ultralytics is AGPL-3.0, and mosaic must never import it: a mosaic that
+    # did would be one work with it, and could not be offered under mosaic's own
+    # terms. So this file declares an environment the user builds, and does not
+    # fold Ultralytics into mosaic's own dependencies. See ../README.md.
+    #
+    # The 8.4.63 floor is where the four newer tracker backends -- ocsort,
+    # deepocsort, fasttrack, tracktrack -- landed. Below it only botsort and
+    # bytetrack exist, so an older install answers a run naming one of the four
+    # with a missing key rather than a different tracker.
+    "ultralytics>=8.4.63",
+    # Declared explicitly because Ultralytics does not: it reaches `lap` from
+    # module scope in `ultralytics.trackers.utils.matching` -- it is the
+    # linear-assignment solver every backend associates with -- while listing it
+    # in no extra. Undeclared, it gets pip-installed mid-run, which is a network
+    # write inside a queued job and a hard failure in a locked environment.
+    "lap>=0.5.12",
+    "mosaic-media[io]>=0.3.0,<0.4.0",
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "pyarrow>=11.0",
+    "pydantic>=2.12",
+    "pyyaml>=6.0",
+]

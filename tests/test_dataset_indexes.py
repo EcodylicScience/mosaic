@@ -303,10 +303,18 @@ def test_the_listing_is_written_in_exactly_one_place() -> None:
         "core/pipeline/labels_migration.py",
     }
     source_root = Path(mosaic.__file__).parent
+    # The two trees whose programs run in an environment the user builds. Each
+    # holds a vendored virtualenv this walk has no business entering, and the
+    # programs themselves take no import from mosaic, so they have no dataset
+    # root to list. Matched by path component: a substring test would also
+    # exempt a sibling module merely named for one of them.
+    external = (
+        source_root / "behavior" / "feature_library" / "external",
+        source_root / "tracking" / "external",
+    )
     matched: set[str] = set()
     for source in sorted(source_root.rglob("*.py")):
-        # A vendored virtualenv under the excluded workspace member.
-        if "feature_library/external" in source.as_posix():
+        if any(tree in source.parents for tree in external):
             continue
         tree = ast.parse(source.read_text())
         for node in ast.walk(tree):
