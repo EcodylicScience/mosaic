@@ -16,7 +16,9 @@ Ultralytics used to be the exception, decoding through ``open_frame_reader`` and
 reading a store directly -- genuinely the better path, and one that worked with
 no export on disk. That capability is gone: Ultralytics is AGPL-3.0, so it runs
 in an environment of its own and opens a path like every other tool, and tracking
-a store now costs an ``export-store`` run and a copy of the pixels first.
+a store now costs an ``export-store`` run and a copy of the pixels first. Pose and
+point *inference* pay the same cost for the same reason. The heatmap localizer
+does not: it is mosaic's own PyTorch and still reads a store natively.
 """
 
 from __future__ import annotations
@@ -32,7 +34,12 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.tracking.common.scope import TrackerWorkItem
 
-__all__ = ["StoreExportMissingError", "resolve_tool_input", "resolve_tool_inputs"]
+__all__ = [
+    "StoreExportMissingError",
+    "resolve_entry_input",
+    "resolve_tool_input",
+    "resolve_tool_inputs",
+]
 
 
 class StoreExportMissingError(FileNotFoundError):
@@ -60,7 +67,8 @@ def resolve_tool_inputs(
             registered, or with a link pointing at a file that is gone.
     """
     return tuple(
-        _resolve_one(ds, item, source, kind=kind) for source in item.video_paths
+        resolve_entry_input(ds, item.group, item.sequence, source, kind=kind)
+        for source in item.video_paths
     )
 
 
@@ -74,10 +82,15 @@ def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> 
     return resolve_tool_inputs(ds, item, kind=kind)[0]
 
 
-def _resolve_one(
-    ds: "Dataset", item: "TrackerWorkItem", source: Path, *, kind: str
+def resolve_entry_input(
+    ds: "Dataset", group: str, sequence: str, source: Path, *, kind: str
 ) -> Path:
     """*source* itself, or the export registered for it when it is a store.
+
+    The entry named by *group* and *sequence* rather than a
+    :class:`~mosaic.tracking.common.scope.TrackerWorkItem`, because the inference
+    ops reach this boundary too and build no work items: they walk a media scope
+    directly. Those two names are all a work item ever supplied here.
 
     The store row is found by path rather than by camera: a work item carries no
     camera (per-camera tracker output is not built), and the path is what
@@ -86,19 +99,19 @@ def _resolve_one(
     if not is_imgstore(source):
         return source
 
-    export = _registered_export(ds, item, source)
+    export = _registered_export(ds, group, sequence, source)
     if export is None:
         message = (
-            f"[{kind}] ({item.group}, {item.sequence}) is an imgstore recording, "
+            f"[{kind}] ({group}, {sequence}) is an imgstore recording, "
             f"which {kind} cannot open -- it reads a video file, not a store "
             f"directory. Export it first:\n"
             f"    mosaic run -m <manifest> --kind export-store --params "
-            f'\'{{"entry": ["{item.group}", "{item.sequence}"]}}\''
+            f'\'{{"entry": ["{group}", "{sequence}"]}}\''
         )
         raise StoreExportMissingError(message)
     if not export.is_file():
         message = (
-            f"[{kind}] ({item.group}, {item.sequence}) links to an exported video "
+            f"[{kind}] ({group}, {sequence}) links to an exported video "
             f"at {export}, which does not exist; re-run 'mosaic run --kind "
             f"export-store' to rebuild it"
         )
@@ -107,10 +120,10 @@ def _resolve_one(
 
 
 def _registered_export(
-    ds: "Dataset", item: "TrackerWorkItem", source: Path
+    ds: "Dataset", group: str, sequence: str, source: Path
 ) -> Path | None:
     """The export linked from *source*'s own store row, or ``None`` if unlinked."""
-    matched = ds.match_media_rows(item.group, item.sequence)
+    matched = ds.match_media_rows(group, sequence)
     media_root = ds.get_root("media")
     for _, row in matched.iterrows():
         # Through row_mapping rather than indexing the Series: a Series subscript

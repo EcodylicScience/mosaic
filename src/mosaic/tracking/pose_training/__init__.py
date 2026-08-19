@@ -2,11 +2,12 @@
 
 Converters: transform annotation formats to YOLO pose / POLO point / localizer labels.
 Training:   train YOLO pose, POLO point-detection, or localizer heatmap models.
-Inference:  test trained models on video (non-production; production uses TRex).
+Inference:  the heatmap localizer runs here; YOLO pose and POLO point inference
+            run in environments of their own, driven from `ultralytics_infer`.
 
 Requires optional dependency:
-    Pose:       pip install mosaic-behavior[pose]
-    POLO:       pip install mosaic-behavior[polo]
+    Pose:       pip install mosaic-behavior[pose]      (training only)
+    POLO:       pip install mosaic-behavior[polo]      (training only)
     Localizer:  pip install mosaic-behavior[deep-learning]
 """
 
@@ -49,15 +50,9 @@ from .train import (
     load_training_curves,
 )
 from .inference import (
-    run_inference,
-    run_inference_opencv,
-    run_point_inference,
-    run_point_inference_opencv,
     visualize_keypoints,
     visualize_detections,
     visualize_inference,
-    inference_to_dataframe,
-    locations_to_dataframe,
 )
 from .localizer_train import train_localizer, TrainingResult
 from .localizer_inference import (
@@ -95,7 +90,6 @@ __all__ = [
     "detect_locations",
     "find_best_model",
     "find_last_checkpoint",
-    "inference_to_dataframe",
     "BboxPolicy",
     "keypoints_to_bbox",
     "keypoints_to_bbox_isotropic",
@@ -104,18 +98,13 @@ __all__ = [
     "load_localizer_weights",
     "load_training_curves",
     "localizer_detections_to_dataframe",
-    "locations_to_dataframe",
     "make_data_yaml",
     "make_polo_data_yaml",
     "prepare_yolo_dataset",
     "resolve_augmentation",
     "resolve_localizer_augment",
     "repad_yolo_pose",
-    "run_inference",
-    "run_inference_opencv",
     "run_localizer_inference",
-    "run_point_inference",
-    "run_point_inference_opencv",
     "tracks_to_yolo_pose",
     "train_localizer",
     "train_point_model",

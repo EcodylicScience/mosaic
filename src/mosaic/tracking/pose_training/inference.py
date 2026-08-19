@@ -1,370 +1,29 @@
-"""Test inference for trained YOLO pose and POLO point-detection models.
+"""Drawing inference results over the video they came from.
 
-This is test/development code for evaluating trained models on video.
-The production pose inference pipeline is handled by TRex.
+What ran the models used to live here too, and no longer does: YOLO pose and POLO
+point inference are AGPL-3.0 and now run in environments of their own, reached as
+a subprocess from
+:mod:`mosaic.tracking.pose_training.ultralytics_infer`. What is left is mosaic's
+own OpenCV drawing, which imports nothing from either.
 
-Requires:
-    Pose:  pip install ultralytics
-    POLO:  pip install git+https://github.com/mooch443/POLO.git
+:func:`visualize_inference` reads results objects rather than a predictions table,
+so nothing in mosaic produces its ``pose`` and ``point`` inputs any more -- only a
+caller holding an Ultralytics of their own can. Its ``localizer`` input, plain
+``list[list[dict]]``, is still mosaic's.
 """
 
 from __future__ import annotations
 
-import queue
-import threading
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import cv2
 import numpy as np
-import pandas as pd
-from mosaic_media import MediaFacts, MediaProbeError
+from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 
-from mosaic.core.media.video_io import (
-    FrameReader,
-    get_video_metadata,
-    open_frame_reader,
-    prefetch_batches,
-    video_metadata_or_probe,
-)
+from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
 from mosaic.user_paths import user_path
-
-
-class _InferenceResult(Protocol):
-    """The ultralytics ``Results`` surface used while consuming a batch."""
-
-    def plot(self) -> np.ndarray: ...
-
-
-class _InferenceModel(Protocol):
-    """The ultralytics model surface the batched predict loop calls."""
-
-    def predict(
-        self, source: list[np.ndarray], **kwargs: object
-    ) -> list[_InferenceResult]: ...
-
-
-class _ProgressBar(Protocol):
-    """The tqdm progress-bar surface the batched predict loop advances."""
-
-    def update(self, n: int) -> object: ...
-
-
-def _require_ultralytics():
-    try:
-        from ultralytics import YOLO
-
-        return YOLO
-    except ImportError:
-        raise ImportError(
-            "ultralytics is required for inference. "
-            "Install it with: pip install ultralytics"
-        )
-
-
-def _run_predict_loop(
-    model: _InferenceModel,
-    reader: FrameReader,
-    predict_kwargs: dict[str, Any],
-    *,
-    output_dir: str | Path | None,
-    save_images: bool,
-    max_frames: int | None,
-    batch_size: int,
-    prefetch: bool,
-    pbar: _ProgressBar | None,
-) -> tuple[list[Any], int]:
-    """Read frames from *reader* in batches, call ``model.predict`` per batch,
-    and optionally save annotated frames.
-
-    Shared by every inference entry point (pose and point-detection, single-frame
-    and throughput-batched): the reader's decode-time resize/facts, the batch
-    size, and the prefetch cadence are supplied by the caller and are the only
-    things that differ between them. A single-frame call site passes
-    ``batch_size=1, prefetch=False``, which reproduces the same per-frame
-    predict/save behavior as reading one frame at a time.
-    """
-    all_results: list[Any] = []
-    processed = 0
-
-    def _consume_batch(indices: np.ndarray, batch_frames: np.ndarray) -> bool:
-        """Predict and save one batch; return True once max_frames is reached."""
-        nonlocal processed
-        if max_frames is not None:
-            remaining = max_frames - processed
-            if remaining <= 0:
-                return True
-            if len(indices) > remaining:
-                indices = indices[:remaining]
-                batch_frames = batch_frames[:remaining]
-
-        frames_list = [batch_frames[i] for i in range(len(indices))]
-        results = model.predict(source=frames_list, **predict_kwargs)
-        all_results.extend(results)
-
-        if save_images and output_dir is not None:
-            for i, result in enumerate(results):
-                annotated = result.plot()
-                fname = f"frame_{indices[i]:08d}.jpg"
-                cv2.imwrite(str(Path(output_dir) / fname), annotated)
-
-        processed += len(indices)
-        if pbar is not None:
-            pbar.update(len(indices))
-        return max_frames is not None and processed >= max_frames
-
-    if prefetch:
-        frame_queue: queue.Queue[tuple[np.ndarray, np.ndarray] | None] = queue.Queue(
-            maxsize=2
-        )
-        worker = threading.Thread(
-            target=prefetch_batches,
-            args=(reader, frame_queue, batch_size),
-            daemon=True,
-        )
-        worker.start()
-
-        while True:
-            item = frame_queue.get()
-            if item is None:
-                break
-            indices, batch_frames = item
-            if _consume_batch(indices, batch_frames):
-                break
-
-        worker.join(timeout=5)
-    else:
-        while True:
-            indices, batch_frames = reader.read_batch(batch_size)
-            if len(indices) == 0:
-                break
-            if _consume_batch(indices, batch_frames):
-                break
-
-    return all_results, processed
-
-
-def run_inference_opencv(
-    model_path: str | Path,
-    video_path: str | Path,
-    output_dir: str | Path | None = None,
-    *,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    conf_threshold: float = 0.25,
-    max_frames: int | None = None,
-    device: str = "0",
-    save_images: bool = True,
-    imgsz: int = 640,
-) -> list[Any]:
-    """Run pose inference on a video, one frame at a time.
-
-    Decodes sequentially through
-    :func:`~mosaic.core.media.video_io.open_frame_reader` (in-process libav,
-    not OpenCV) at the video's native resolution -- there is no decode-time
-    resize, so returned keypoints stay in the source video's pixel coordinate
-    space. Use :func:`run_inference` for higher-throughput batched decoding
-    (which resizes to fit ``imgsz`` at decode time, so its returned coordinates
-    are in that resized space instead).
-
-    Parameters
-    ----------
-    model_path : path
-        Path to trained .pt model.
-    video_path : path
-        Path to input video.
-    output_dir : path, optional
-        Where to save annotated frames.  None = don't save.
-    start_frame : int
-        Frame index to start inference from (default 0).
-    end_frame : int, optional
-        Frame index to stop at (exclusive). None = run to end of video.
-    frame_step : int
-        Process every Nth frame (relative to start_frame).
-    conf_threshold : float
-        Minimum detection confidence.
-    max_frames : int, optional
-        Stop after this many processed frames.
-    device : str
-        Device for inference.
-    save_images : bool
-        If True and output_dir set, save annotated frames.
-    imgsz : int
-        Inference image size.
-
-    Returns
-    -------
-    list
-        List of ultralytics Results objects, one per processed frame.
-    """
-    YOLO = _require_ultralytics()
-    model = YOLO(str(model_path))
-
-    if output_dir is not None:
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    predict_kwargs: dict[str, Any] = dict(
-        device=device,
-        conf=conf_threshold,
-        imgsz=imgsz,
-        verbose=False,
-    )
-
-    reader = open_frame_reader(
-        video_path,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        frame_step=frame_step,
-        target="analysis",
-    )
-    total_str = str(reader.frame_count)
-
-    try:
-        all_results, processed = _run_predict_loop(
-            model,
-            reader,
-            predict_kwargs,
-            output_dir=output_dir,
-            save_images=save_images,
-            max_frames=max_frames,
-            batch_size=1,
-            prefetch=False,
-            pbar=None,
-        )
-    finally:
-        reader.close()
-
-    print(f"[inference] Processed {processed}/{total_str} frames from {video_path}")
-
-    return all_results
-
-
-def run_inference(
-    model_path: str | Path,
-    video_path: str | Path,
-    output_dir: str | Path | None = None,
-    *,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    conf_threshold: float = 0.25,
-    max_frames: int | None = None,
-    device: str = "0",
-    save_images: bool = True,
-    imgsz: int = 640,
-    batch_size: int = 8,
-    prefetch: bool = True,
-    verbose: bool = True,
-    facts: MediaFacts | None = None,
-) -> list[Any]:
-    """Run pose inference on a video and optionally save annotated frames.
-
-    Reads frames in-process via :func:`~mosaic.core.media.video_io.open_frame_reader`
-    with decode-time resize and batched ``model.predict()`` calls for higher GPU
-    utilization.
-
-    Parameters
-    ----------
-    model_path : path
-        Path to trained ``.pt`` model.
-    video_path : path
-        Path to input video.
-    output_dir : path, optional
-        Where to save annotated frames.
-    start_frame, end_frame, frame_step : int
-        Frame selection parameters.
-    conf_threshold : float
-        Minimum detection confidence.
-    max_frames : int, optional
-        Stop after this many processed frames.
-    device : str
-        Device for inference.
-    save_images : bool
-        If True and output_dir set, save annotated frames.
-    imgsz : int
-        Inference image size.
-    batch_size : int
-        Number of frames per batch for ``model.predict()``.
-    prefetch : bool
-        Use a background thread to read frames ahead of inference.
-    verbose : bool
-        Show tqdm progress bar.
-
-    Returns
-    -------
-    list
-        List of ultralytics Results objects, one per processed frame.
-    """
-    YOLO = _require_ultralytics()
-    model = YOLO(str(model_path))
-
-    if output_dir is not None:
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-    predict_kwargs: dict[str, Any] = dict(
-        device=device,
-        conf=conf_threshold,
-        imgsz=imgsz,
-        verbose=False,
-    )
-
-    # Get video metadata for resize computation and progress bar
-    meta = video_metadata_or_probe(video_path, facts)
-    resize_dims = _compute_resize(meta.width, meta.height, imgsz)
-
-    # Compute expected total frames for progress bar
-    eff_end = (
-        min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
-    )
-    expected_frames = max(0, len(range(start_frame, eff_end, frame_step)))
-    if max_frames is not None:
-        expected_frames = min(expected_frames, max_frames)
-
-    # Progress bar
-    pbar = None
-    if verbose:
-        try:
-            from tqdm.auto import tqdm
-
-            pbar = tqdm(total=expected_frames, desc="Inference", unit="frame")
-        except ImportError:
-            pass
-
-    try:
-        reader = open_frame_reader(
-            video_path,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            frame_step=frame_step,
-            resize=resize_dims,
-            facts=facts,
-            target="analysis",
-        )
-        try:
-            all_results, processed = _run_predict_loop(
-                model,
-                reader,
-                predict_kwargs,
-                output_dir=output_dir,
-                save_images=save_images,
-                max_frames=max_frames,
-                batch_size=batch_size,
-                prefetch=prefetch,
-                pbar=pbar,
-            )
-        finally:
-            reader.close()
-    finally:
-        if pbar is not None:
-            pbar.close()
-
-    total_str = str(meta.frame_count)
-    print(f"[inference] Processed {processed}/{total_str} frames from {video_path}")
-
-    return all_results
 
 
 def visualize_keypoints(
@@ -427,383 +86,6 @@ def visualize_keypoints(
 
     return out
 
-
-def inference_to_dataframe(results: list[Any]) -> pd.DataFrame:
-    """Convert YOLO inference results to a DataFrame.
-
-    Extracts keypoints from each result frame and produces a DataFrame
-    with columns compatible with the trex_v1 schema (poseX{k}, poseY{k}, poseP{k}).
-
-    Parameters
-    ----------
-    results : list
-        List of ultralytics Results objects (one per frame).
-
-    Returns
-    -------
-    DataFrame
-        Columns: frame, id, poseX0, poseY0, poseP0, poseX1, poseY1, poseP1, ...
-    """
-    rows = []
-    for frame_idx, result in enumerate(results):
-        if result.keypoints is None:
-            continue
-        kps_data = result.keypoints.data  # (num_detections, num_keypoints, 3)
-        if kps_data is None or len(kps_data) == 0:
-            continue
-
-        kps_np = (
-            kps_data.cpu().numpy() if hasattr(kps_data, "cpu") else np.asarray(kps_data)
-        )
-
-        for det_idx in range(kps_np.shape[0]):
-            row: dict[str, Any] = {
-                "frame": frame_idx,
-                "id": det_idx,
-            }
-            n_kps = kps_np.shape[1]
-            for k in range(n_kps):
-                row[f"poseX{k}"] = float(kps_np[det_idx, k, 0])
-                row[f"poseY{k}"] = float(kps_np[det_idx, k, 1])
-                row[f"poseP{k}"] = (
-                    float(kps_np[det_idx, k, 2]) if kps_np.shape[2] > 2 else 1.0
-                )
-            rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-# --------------------------------------------------------------------------- #
-# POLO point-detection inference
-# --------------------------------------------------------------------------- #
-
-
-def _require_polo():
-    """Import YOLO from a POLO fork and verify the 'locate' task is available."""
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        raise ImportError(
-            "A POLO-compatible ultralytics fork is required for point "
-            "inference.  Install with:\n"
-            "  pip install git+https://github.com/mooch443/POLO.git"
-        )
-    try:
-        from ultralytics.nn.tasks import LocalizationModel  # noqa: F401
-    except ImportError:
-        raise ImportError(
-            "Your ultralytics installation does not support the 'locate' task. "
-            "Install the POLO fork:\n"
-            "  pip install git+https://github.com/mooch443/POLO.git"
-        )
-    return YOLO
-
-
-def run_point_inference_opencv(
-    model_path: str | Path,
-    video_path: str | Path,
-    output_dir: str | Path | None = None,
-    *,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    conf_threshold: float = 0.25,
-    dor: float = 0.8,
-    radii: dict[int, float] | None = None,
-    max_frames: int | None = None,
-    device: str = "0",
-    save_images: bool = True,
-    imgsz: int = 640,
-) -> list[Any]:
-    """Run POLO point-detection inference on a video, one frame at a time.
-
-    Decodes sequentially through
-    :func:`~mosaic.core.media.video_io.open_frame_reader` (in-process libav,
-    not OpenCV) at the video's native resolution -- there is no decode-time
-    resize, so returned locations stay in the source video's pixel coordinate
-    space. Use :func:`run_point_inference` for higher-throughput batched
-    decoding (which resizes to fit ``imgsz`` at decode time, so its returned
-    coordinates are in that resized space instead).
-
-    Parameters
-    ----------
-    model_path : path
-        Path to trained POLO ``.pt`` model.
-    video_path : path
-        Path to input video.
-    output_dir : path, optional
-        Where to save annotated frames.
-    start_frame, end_frame, frame_step : int
-        Frame selection parameters.
-    conf_threshold : float
-        Minimum detection confidence.
-    dor : float
-        Distance of Reference threshold for post-processing.
-    radii : dict, optional
-        Override radii. ``{class_id: radius_px}``.
-    max_frames : int, optional
-        Stop after this many processed frames.
-    device : str
-        Device for inference.
-    save_images : bool
-        If True and output_dir set, save annotated frames.
-    imgsz : int
-        Inference image size.
-
-    Returns
-    -------
-    list
-        List of ultralytics Results objects with ``.locations`` attribute.
-    """
-    YOLO = _require_polo()
-    model = YOLO(str(model_path))
-
-    if output_dir is not None:
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    predict_kwargs: dict[str, Any] = dict(
-        device=device,
-        conf=conf_threshold,
-        imgsz=imgsz,
-        verbose=False,
-    )
-    if radii is not None:
-        predict_kwargs["radii"] = radii
-
-    reader = open_frame_reader(
-        video_path,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        frame_step=frame_step,
-        target="analysis",
-    )
-    total_str = str(reader.frame_count)
-
-    try:
-        all_results, processed = _run_predict_loop(
-            model,
-            reader,
-            predict_kwargs,
-            output_dir=output_dir,
-            save_images=save_images,
-            max_frames=max_frames,
-            batch_size=1,
-            prefetch=False,
-            pbar=None,
-        )
-    finally:
-        reader.close()
-
-    print(
-        f"[point_inference] Processed {processed}/{total_str} frames from {video_path}"
-    )
-
-    return all_results
-
-
-def _compute_resize(source_w: int, source_h: int, imgsz: int) -> tuple[int, int]:
-    """Compute resize dimensions that fit within imgsz x imgsz, preserving aspect ratio."""
-    scale = min(imgsz / source_w, imgsz / source_h)
-    if scale >= 1.0:
-        return source_w, source_h
-    w = max(1, round(source_w * scale))
-    h = max(1, round(source_h * scale))
-    # Ensure even dimensions for ffmpeg compatibility
-    w = w if w % 2 == 0 else w + 1
-    h = h if h % 2 == 0 else h + 1
-    return w, h
-
-
-def run_point_inference(
-    model_path: str | Path,
-    video_path: str | Path,
-    output_dir: str | Path | None = None,
-    *,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    conf_threshold: float = 0.25,
-    dor: float = 0.8,
-    radii: dict[int, float] | None = None,
-    max_frames: int | None = None,
-    device: str = "0",
-    save_images: bool = True,
-    imgsz: int = 640,
-    batch_size: int = 8,
-    prefetch: bool = True,
-    verbose: bool = True,
-    facts: MediaFacts | None = None,
-) -> list[Any]:
-    """Run POLO point-detection inference on a video.
-
-    Reads frames in-process via :func:`~mosaic.core.media.video_io.open_frame_reader`
-    with decode-time resize and batched ``model.predict()`` calls for higher GPU
-    utilization.
-
-    Parameters
-    ----------
-    model_path : path
-        Path to trained POLO ``.pt`` model.
-    video_path : path
-        Path to input video.
-    output_dir : path, optional
-        Where to save annotated frames.
-    start_frame, end_frame, frame_step : int
-        Frame selection parameters.
-    conf_threshold : float
-        Minimum detection confidence.
-    dor : float
-        Distance of Reference threshold for post-processing.
-    radii : dict, optional
-        Override radii. ``{class_id: radius_px}``.
-    max_frames : int, optional
-        Stop after this many processed frames.
-    device : str
-        Device for inference (``"0"`` for first GPU, ``"cpu"`` for CPU).
-    save_images : bool
-        If True and output_dir set, save annotated frames.
-    imgsz : int
-        Inference image size.
-    batch_size : int
-        Number of frames per batch for ``model.predict()``.
-    prefetch : bool
-        Use a background thread to read frames ahead of inference.
-    verbose : bool
-        Show tqdm progress bar.
-
-    Returns
-    -------
-    list
-        List of ultralytics Results objects with ``.locations`` attribute.
-    """
-    YOLO = _require_polo()
-    model = YOLO(str(model_path))
-
-    if output_dir is not None:
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-    predict_kwargs: dict[str, Any] = dict(
-        device=device,
-        conf=conf_threshold,
-        imgsz=imgsz,
-        verbose=False,
-    )
-    if radii is not None:
-        predict_kwargs["radii"] = radii
-
-    # Get video metadata for resize computation and progress bar
-    meta = video_metadata_or_probe(video_path, facts)
-    resize_dims = _compute_resize(meta.width, meta.height, imgsz)
-
-    # Compute expected total frames for progress bar
-    eff_end = (
-        min(end_frame, meta.frame_count) if end_frame is not None else meta.frame_count
-    )
-    expected_frames = max(0, len(range(start_frame, eff_end, frame_step)))
-    if max_frames is not None:
-        expected_frames = min(expected_frames, max_frames)
-
-    # Progress bar
-    pbar = None
-    if verbose:
-        try:
-            from tqdm.auto import tqdm
-
-            pbar = tqdm(total=expected_frames, desc="Inference", unit="frame")
-        except ImportError:
-            pass
-
-    try:
-        reader = open_frame_reader(
-            video_path,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            frame_step=frame_step,
-            resize=resize_dims,
-            facts=facts,
-            target="analysis",
-        )
-        try:
-            all_results, processed = _run_predict_loop(
-                model,
-                reader,
-                predict_kwargs,
-                output_dir=output_dir,
-                save_images=save_images,
-                max_frames=max_frames,
-                batch_size=batch_size,
-                prefetch=prefetch,
-                pbar=pbar,
-            )
-        finally:
-            reader.close()
-    finally:
-        if pbar is not None:
-            pbar.close()
-
-    total_str = str(meta.frame_count)
-    print(
-        f"[point_inference] Processed {processed}/{total_str} frames from {video_path}"
-    )
-
-    return all_results
-
-
-def locations_to_dataframe(results: list[Any]) -> pd.DataFrame:
-    """Convert POLO inference results to a DataFrame.
-
-    Parameters
-    ----------
-    results : list
-        List of ultralytics Results objects with ``.locations`` attribute.
-
-    Returns
-    -------
-    DataFrame
-        Columns: frame, detection_id, x, y, confidence, class_id, class_name.
-    """
-    rows = []
-    for frame_idx, result in enumerate(results):
-        locs = getattr(result, "locations", None)
-        if locs is None:
-            continue
-        locs_data = getattr(locs, "data", None)
-        if locs_data is None or len(locs_data) == 0:
-            continue
-
-        locs_np = (
-            locs_data.cpu().numpy()
-            if hasattr(locs_data, "cpu")
-            else np.asarray(locs_data)
-        )
-        names = getattr(result, "names", {})
-
-        for det_idx in range(locs_np.shape[0]):
-            # POLO locations: [x, y, conf, cls] or [x, y, track_id, conf, cls]
-            if locs_np.shape[1] >= 5:
-                x, y, _track, conf, cls = locs_np[det_idx, :5]
-            else:
-                x, y, conf, cls = locs_np[det_idx, :4]
-
-            rows.append(
-                {
-                    "frame": frame_idx,
-                    "detection_id": det_idx,
-                    "x": float(x),
-                    "y": float(y),
-                    "confidence": float(conf),
-                    "class_id": int(cls),
-                    "class_name": names.get(int(cls), f"class_{int(cls)}"),
-                }
-            )
-
-    return pd.DataFrame(rows)
-
-
-# --------------------------------------------------------------------------- #
-# Visualization
-# --------------------------------------------------------------------------- #
 
 _DEFAULT_CLASS_COLORS: dict[int, tuple[int, int, int]] = {
     0: (0, 255, 0),
@@ -892,13 +174,13 @@ def _detect_result_type(results: list) -> str:
     if isinstance(first, list):
         return "localizer"
 
-    # Pose: ultralytics Results with .keypoints
+    # Pose: Ultralytics Results with .keypoints
     if hasattr(first, "keypoints") and first.keypoints is not None:
         kps = first.keypoints
         if hasattr(kps, "data") and kps.data is not None and len(kps.data) > 0:
             return "pose"
 
-    # Point: ultralytics Results with .locations
+    # Point: Ultralytics Results with .locations
     if hasattr(first, "locations") and first.locations is not None:
         return "point"
 
@@ -948,7 +230,6 @@ def visualize_inference(
     results: list,
     *,
     result_type: str | None = None,
-    rendering: str = "custom",
     output_path: str | Path | None = None,
     show_window: bool = True,
     window_name: str = "Inference",
@@ -983,13 +264,10 @@ def visualize_inference(
     video_path : path
         Source video file.
     results : list
-        Inference results — ultralytics Results objects or
+        Inference results — Ultralytics Results objects or
         ``list[list[dict]]`` for localizer.
     result_type : str, optional
         ``"pose"``, ``"point"``, or ``"localizer"``.  Auto-detected if None.
-    rendering : str
-        ``"custom"`` (default) for manual drawing with full control, or
-        ``"ultralytics"`` to use ``result.plot()`` (pose/point only).
     output_path : path, optional
         Save annotated video to this path (MP4).  Uses ffmpeg for fast
         H.264 encoding when available, falls back to OpenCV VideoWriter.
@@ -1043,24 +321,12 @@ def visualize_inference(
     if rtype not in ("pose", "point", "localizer"):
         raise ValueError(f"Unknown result_type: {rtype!r}")
 
-    if rendering not in ("custom", "ultralytics"):
-        raise ValueError(f"Unknown rendering mode: {rendering!r}")
-
-    if rendering == "ultralytics" and rtype == "localizer":
-        raise ValueError(
-            "rendering='ultralytics' is not supported for localizer results"
-        )
-
     meta = get_video_metadata(video_path)
 
     # Compute scale factors for coordinate mapping
     # Ultralytics results store orig_shape = (H, W) of the inference input
     scale_x, scale_y = 1.0, 1.0
-    if (
-        rendering == "custom"
-        and rtype in ("pose", "point")
-        and hasattr(results[0], "orig_shape")
-    ):
+    if rtype in ("pose", "point") and hasattr(results[0], "orig_shape"):
         inf_h, inf_w = results[0].orig_shape
         if inf_w != meta.width or inf_h != meta.height:
             scale_x = meta.width / inf_w
@@ -1120,13 +386,7 @@ def visualize_inference(
                 break
 
             # Annotate
-            if rendering == "ultralytics":
-                annotated = result.plot()
-                # Resize to source resolution if inference was at different size
-                ah, aw = annotated.shape[:2]
-                if aw != meta.width or ah != meta.height:
-                    annotated = cv2.resize(annotated, (meta.width, meta.height))
-            elif rtype == "pose":
+            if rtype == "pose":
                 annotated = frame.copy()
                 kps_attr = getattr(result, "keypoints", None)
                 if kps_attr is not None:

@@ -274,19 +274,44 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # a bad model -- and nothing reads it back, so it is a byproduct on a
         # shorter clock rather than a cache. One root per inference kind, because
         # each is a separate op with its own identifiers.
+        #
+        # The two Ultralytics ops additionally exchange a JSON request and
+        # response with the environment their model runs in, and those are
+        # byproducts of one attempt: cleared when the phase re-runs so a stale
+        # request cannot sit beside fresh output, and kept out of `outputs`,
+        # which is the sweeper's evidence of real output. `infer-localizer` runs
+        # in mosaic's own process and exchanges nothing.
         TrackingRoot(
             key="infer-pose",
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
-            phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
+            phase_outputs=(
+                TrackingPhase(
+                    "infer",
+                    (
+                        "predictions.parquet",
+                        "infer-request.json",
+                        "infer-response.json",
+                    ),
+                ),
+            ),
         ),
         TrackingRoot(
             key="infer-points",
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
-            phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
+            phase_outputs=(
+                TrackingPhase(
+                    "infer",
+                    (
+                        "predictions.parquet",
+                        "infer-request.json",
+                        "infer-response.json",
+                    ),
+                ),
+            ),
         ),
         TrackingRoot(
             key="infer-localizer",

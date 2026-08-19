@@ -26,6 +26,8 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.ops import OPS, describe_op, list_ops, run_op
+from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
+from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 from mosaic.core.pipeline.run_log import (
     read_run,
     read_run_progress,
@@ -472,27 +474,54 @@ def test_train_localizer_mints_and_registers(
 # --- infer-pose op -> tracks bridge (mocked model) -------------------------
 
 
-def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
-    ds = _make_dataset(tmp_path)
-    import mosaic.tracking.pose_training.inference as inf
+def _fake_pose_backend(monkeypatch) -> None:
+    """Replace the two module-scope seams `infer-pose` reaches its model through.
 
-    def fake_run_inference(model, video, output_dir=None, **kw):
-        return ["r"]  # opaque; consumed by fake_to_df
+    The op now spawns a runner in the Ultralytics environment, so what a test
+    stands in for is the probe and the tool call -- not an in-process function
+    returning results objects. The stand-in writes a real parquet at the path the
+    request names, because the op reads it back to bridge it, exactly as the
+    runner would have written it.
+    """
+    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
-    def fake_to_df(results):
-        n = 4
-        return pd.DataFrame(
-            {
-                "frame": range(n),
-                "id": [0] * n,
-                "poseX0": [1.0] * n,
-                "poseY0": [2.0] * n,
-                "poseP0": [0.9] * n,
-            }
+    def fake_probe(model_path, **_kwargs):
+        return ProbeResponse(
+            has_ultralytics=True,
+            has_lap=True,
+            has_locate=False,
+            ultralytics_version="8.4.63",
+            tracker_names=[],
+            model_task="pose",
+            n_keypoints=1,
+            model_load_error="",
+            installed_tracker_table={},
         )
 
-    monkeypatch.setattr(inf, "run_inference", fake_run_inference)
-    monkeypatch.setattr(inf, "inference_to_dataframe", fake_to_df)
+    def fake_run(request, *, work_dir, **_kwargs):
+        table = pd.DataFrame(
+            {
+                "frame": range(4),
+                "id": [0] * 4,
+                "poseX0": [1.0] * 4,
+                "poseY0": [2.0] * 4,
+                "poseP0": [0.9] * 4,
+            }
+        )
+        published = Path(request.output_parquet)
+        published.parent.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(published, index=False)
+        return InferenceOutcome(
+            predictions_path=published, n_frames=4, n_rows=len(table)
+        )
+
+    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake_run)
+
+
+def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
+    ds = _make_dataset(tmp_path)
+    _fake_pose_backend(monkeypatch)
 
     # a raw model path (no training run needed)
     model = tmp_path / "m.pt"
@@ -532,26 +561,109 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
 # --- infer under the marker protocol (items 8.2 / 8.3, via 8.7) ------------
 
 
-def _fake_pose_model(monkeypatch, tmp_path) -> Path:
-    """Patch the pose backend out and return a bare weights path."""
-    import mosaic.tracking.pose_training.inference as inf
+def _fake_points_backend(monkeypatch) -> None:
+    """The same two seams, for the POLO fork's environment.
 
-    def fake_run_inference(model, video, output_dir=None, **kw):
-        return ["r"]
+    `infer-points` had no execution test at all before it ran out of process:
+    nothing in the suite called the op, faked its backend, or installed the
+    `polo` extra, and no CI job did either. This is the first.
+    """
+    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
-    def fake_to_df(results):
-        return pd.DataFrame(
-            {
-                "frame": range(4),
-                "id": [0] * 4,
-                "poseX0": [1.0] * 4,
-                "poseY0": [2.0] * 4,
-                "poseP0": [0.9] * 4,
-            }
+    def fake_probe(model_path, **_kwargs):
+        return ProbeResponse(
+            has_ultralytics=True,
+            has_lap=True,
+            has_locate=True,
+            ultralytics_version="8.4.84",
+            tracker_names=[],
+            model_task="locate",
+            n_keypoints=1,
+            model_load_error="",
+            installed_tracker_table={},
         )
 
-    monkeypatch.setattr(inf, "run_inference", fake_run_inference)
-    monkeypatch.setattr(inf, "inference_to_dataframe", fake_to_df)
+    def fake_run(request, *, work_dir, **_kwargs):
+        table = pd.DataFrame(
+            {
+                "frame": [0, 0, 1],
+                "detection_id": [0, 1, 0],
+                "x": [1.0, 2.0, 3.0],
+                "y": [4.0, 5.0, 6.0],
+                "confidence": [0.9, 0.8, 0.7],
+                "class_id": [0, 0, 1],
+                "class_name": ["bee", "bee", "feeder"],
+            }
+        )
+        published = Path(request.output_parquet)
+        published.parent.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(published, index=False)
+        return InferenceOutcome(
+            predictions_path=published, n_frames=2, n_rows=len(table)
+        )
+
+    monkeypatch.setattr(infer_run, "probe_inference_env", fake_probe)
+    monkeypatch.setattr(infer_run, "run_point_inference_tool", fake_run)
+
+
+def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
+    """The whole op over the POLO seam: identity, claim, parquet, bridge, marker."""
+    ds = _make_dataset(tmp_path)
+    _fake_points_backend(monkeypatch)
+    model = tmp_path / "polo.pt"
+    model.write_bytes(b"w")
+
+    run_id = run_op(ds, "infer-points", {"model": str(model)})
+
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.tracking.ops.infer import infer_run_root
+
+    assert run_id.startswith("infer-points.0.2-"), run_id
+    run_root = infer_run_root(ds, "infer-points", run_id)
+    for sequence in ("vid1", "vid2"):
+        # Published by the runner at the path the request named, and read back
+        # from there by the op to bridge it.
+        assert (run_root / sequence / "predictions.parquet").exists()
+
+    rows = read_tracks_index(ds)
+    assert set(rows["sequence"]) == {"vid1", "vid2"}
+    assert set(rows["producer"]) == {"infer-points"}
+    assert set(rows["producer_run_id"]) == {run_id}
+
+
+def test_the_predictions_the_runner_published_are_not_rewritten(tmp_path, monkeypatch):
+    """A published table is read back, never copied over itself.
+
+    The op writes the parquet only when the caller did not. For the two
+    out-of-process ops the runner wrote it atomically at that exact path, so a
+    second write would copy a whole table onto itself -- and the localizer, which
+    still computes in this process, must keep getting its write.
+    """
+    ds = _make_dataset(tmp_path)
+    _fake_points_backend(monkeypatch)
+    model = tmp_path / "polo.pt"
+    model.write_bytes(b"w")
+
+    written: list[Path] = []
+    import mosaic.tracking.ops.infer as infer_op
+
+    real_write = infer_op.write_parquet_atomic
+
+    def counted(frame, path, *args, **kwargs):
+        written.append(Path(path))
+        return real_write(frame, path, *args, **kwargs)
+
+    monkeypatch.setattr(infer_op, "write_parquet_atomic", counted)
+    _ = run_op(ds, "infer-points", {"model": str(model)})
+
+    assert not [p for p in written if p.name == "predictions.parquet"], (
+        f"the op re-wrote a parquet the runner had already published: {written}"
+    )
+
+
+def _fake_pose_model(monkeypatch, tmp_path) -> Path:
+    """Patch the pose backend out and return a bare weights path."""
+    _fake_pose_backend(monkeypatch)
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
     return model

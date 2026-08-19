@@ -41,8 +41,12 @@ from typing import Final
 import pytest
 from pydantic import TypeAdapter
 
-from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
-from mosaic.tracking.ultralytics_track.run import ULTRALYTICS_ENV
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolNotFoundError,
+    tool_invocation,
+)
+from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
 
 from tests.helpers import inside_a_virtualenv
 
@@ -68,11 +72,14 @@ lets ``tests/test_ultralytics_wire_contract.py`` import the file in an
 environment that has no Ultralytics at all.
 """
 
-POSE_TRAINING_RESIDUAL: Final = (
-    "tracking/pose_training/train.py",
-    "tracking/pose_training/inference.py",
-)
-"""YOLO and POLO training, and single-model inference, still run in mosaic's own process.
+POSE_TRAINING_RESIDUAL: Final = ("tracking/pose_training/train.py",)
+"""YOLO and POLO **training** still runs in mosaic's own process.
+
+Single-model inference no longer does: ``infer-pose`` and ``infer-points`` drive
+the runner in the environment their model belongs to, exactly as the tracker
+does, and ``inference.py`` left this tuple when they moved. Training is what is
+left, and it is the harder half -- its progress callback is a live in-process
+closure holding a job context and a cancel token, which has no serializable form.
 
 Named here rather than tolerated by a broad exclusion, so the allowance shrinks
 when they move out instead of quietly outliving the reason for it: the test below
@@ -211,8 +218,8 @@ def test_only_the_declared_files_import_ultralytics(
     A file that imports Ultralytics and is not listed is the breach this whole
     arrangement exists to prevent. An allowed file that has *stopped* importing
     it is the other half: the allowance would otherwise outlive its reason, and
-    the two ``pose_training`` modules are on their way out, so the day the second
-    one moves is the day this list must shrink.
+    the remaining ``pose_training`` module is on its way out, so the day training
+    moves is the day this list must shrink to the runner alone.
     """
     scanned = ultralytics_scan.scanned
     importers = ultralytics_scan.importers
@@ -374,28 +381,45 @@ def test_no_mosaic_install_declares_ultralytics_outside_the_pose_extras() -> Non
     assert reaching == EXTRAS_REACHING_ULTRALYTICS
 
 
-def test_the_ultralytics_environment_declares_no_mosaic_distribution() -> None:
-    """The environment that runs Ultralytics must not install mosaic beside it.
+EXTERNAL_ENVIRONMENTS: Final = (
+    ("ultralytics-env", ULTRALYTICS_ENV),
+    ("polo-env", POLO_ENV),
+)
+"""Every environment that runs an Ultralytics-family library, by directory.
+
+Two, because POLO ships under the distribution name ``ultralytics`` and so cannot
+share an environment with upstream. Both are AGPL-3.0 and both run the same
+runner program, so every claim below is made about each of them: an environment
+added without being listed here is one nothing checks.
+"""
+
+
+@pytest.mark.parametrize(("directory", "_env"), EXTERNAL_ENVIRONMENTS)
+def test_an_external_environment_declares_no_mosaic_distribution(
+    directory: str, _env: ToolEnv
+) -> None:
+    """An environment that runs Ultralytics must not install mosaic beside it.
 
     Declaring ``mosaic-behavior`` there would make the import the runner is
     forbidden to write merely a matter of somebody writing it, and would put
     mosaic's code in a resolver's reach of the AGPL library on purpose.
     """
-    document = tomllib.loads((_ENVIRONMENT_DIRECTORY / "pyproject.toml").read_text())
+    manifest = _ENVIRONMENT_DIRECTORY.parent / directory / "pyproject.toml"
+    document = tomllib.loads(manifest.read_text())
     declared = _distributions(
         _REQUIREMENTS.validate_python(document["project"]["dependencies"])
     )
 
     assert _ULTRALYTICS in declared, (
-        f"{_ENVIRONMENT_DIRECTORY / 'pyproject.toml'} declares no Ultralytics; "
-        "this test has lost its subject"
+        f"{manifest} declares no Ultralytics; this test has lost its subject"
     )
     from_mosaic = {name for name in declared if name.startswith(_MOSAIC)}
     assert from_mosaic == MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE
 
 
-def test_mosaic_is_not_importable_in_the_built_ultralytics_environment(
-    tmp_path: Path,
+@pytest.mark.parametrize(("directory", "env"), EXTERNAL_ENVIRONMENTS)
+def test_mosaic_is_not_importable_in_a_built_external_environment(
+    directory: str, env: ToolEnv, tmp_path: Path
 ) -> None:
     """The declaration above, confirmed against the environment a user built.
 
@@ -407,9 +431,9 @@ def test_mosaic_is_not_importable_in_the_built_ultralytics_environment(
     from whatever the working directory happens to hold.
     """
     try:
-        invocation = tool_invocation(ULTRALYTICS_ENV, executable="python")
+        invocation = tool_invocation(env, executable="python")
     except ToolNotFoundError as absent:
-        pytest.skip(f"no Ultralytics environment resolves: {absent}")
+        pytest.skip(f"no {directory} resolves: {absent}")
 
     report = (
         "import importlib.util, sys;"

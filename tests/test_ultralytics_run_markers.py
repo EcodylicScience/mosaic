@@ -106,10 +106,12 @@ def _probe_response(model_task: str = "pose") -> ProbeResponse:
     return ProbeResponse(
         has_ultralytics=True,
         has_lap=True,
+        has_locate=False,
         ultralytics_version="8.4.63",
         tracker_names=list(TRACKER_NAMES),
         model_task=model_task,
         n_keypoints=_N_KEYPOINTS,
+        model_load_error="",
         installed_tracker_table={},
     )
 
