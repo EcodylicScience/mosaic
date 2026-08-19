@@ -1,7 +1,6 @@
 # Import tracks you already have
 
-If something else did the tracking, mosaic reads the files rather than redoing the
-work. Three steps: declare where the files are, scan, convert.
+If tracking was done somewhere else, mosaic can read and convert the files for further analysis.  Three steps: declare where the files are, scan, convert.
 
 ```bash
 mosaic sources add -m dataset.yaml --kind tracks \
@@ -11,8 +10,7 @@ mosaic convert-tracks -m dataset.yaml
 ```
 
 That writes `tracks/<variant>/<group>__<sequence>.parquet`, one per entry, and a row
-per entry in the tracks index. From here every feature in the library reads them, and
-nothing downstream can tell whether a tracker or an import produced them.
+per entry in the tracks index. From here every feature in the library reads them.
 
 The same thing from Python:
 
@@ -44,30 +42,15 @@ which schema the output carries.
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
 explain why the three TRex rows differ.
 
-DeepLabCut appears here and nowhere else: mosaic reads its output, it does not run it.
-
-## Two source modes
-
-A **directory** source globs — `--patterns`, `--extensions`, recursive or not. A
-**files** source claims exactly the paths it lists, which is what importing part of a
-folder needs, since no glob expresses an arbitrary subset.
-
-A scan replaces what its sources claim and preserves everything else, so re-scanning
-after adding files is safe and non-destructive. [Datasets, roots and
-sources](../../concepts/datasets.md) has the full rule.
-
 ## Several recipes over one dataset
 
 A dataset can hold more than one tracks variant: the same entries converted by
 different recipes, each in its own `tracks/<variant>/` directory. Different entries
-carrying different variants — some imported, some tracked — is normal and expected.
+carrying different variants enables comparison of tracking results.
 
-When an entry carries exactly one variant it resolves silently. When it carries two
-genuinely different ones, mosaic **raises rather than guessing**, because picking one
-would be a wrong answer rather than an error. Answer the refusal by naming the
-variant: `--tracks-run-id` on `mosaic run`, or `tracks_run_id=` on `run_feature`.
+When a tracks entry carries exactly one variant, features resolve it automatically. When it carries more than one, you need to name the variant: `--tracks-run-id` on `mosaic run`, or `tracks_run_id=` on `run_feature` -- if not, mosaic raises an error saying that specification is neeeded.
 
-## When your format is not on the list
+## If your format is not on the list
 
 Write a converter — it is one class and one method. See [Write a
 converter](write-a-converter.md).

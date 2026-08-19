@@ -17,17 +17,14 @@ mosaic track trex -m dataset.yaml --set track_max_individuals=4
 `--set` takes any parameter the op declares. `mosaic tracking describe <kind>` lists
 them, and so does [the ops reference](../../reference/ops.md).
 
-Raw tool output lands under `_tracking/<tool>/<run_id>/` and is deliberately kept out
-of `tracks_raw/`, which holds only what a user uploaded. `mosaic sweep-tracking`
-reclaims that working space once a run is finished and past its retention window.
+Raw tool output lands under the temporary directory `_tracking/<tool>/<run_id>/` (note: `mosaic sweep-tracking`
+reclaims that working space once a run is finished and past its retention window).  Finished and standardize output lands under `tracks/`.  
 
 ## Finding the tool
 
 All four run in an interpreter of their own, and all four are located the same way: a
 `MOSAIC_<TOOL>_CONDA_ENV` or `MOSAIC_<TOOL>_BIN` environment variable, or a
 `<tool>_conda_env=` / `<tool>_bin=` parameter, falling back to the tool on `PATH`.
-Where a tool is installed never enters a `run_id`, so two machines that place it
-differently still agree on what a run is called.
 
 ### TRex
 

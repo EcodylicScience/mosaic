@@ -830,7 +830,7 @@ read path, so an index that already holds one keeps resolving. Join levels with
 ### Op and variant run identifiers
 
 Tracking ops and tracks variants are named `<kind>.<version>-<10-hex-digest>`
-(e.g. `convert-calms21_npy.0.2-6bb5efbf05`). The version is a *visible segment*,
+(e.g. `convert-calms21_npy.0.3-6bb5efbf05`). The version is a *visible segment*,
 not a hash term, so bumping it does not re-derive anything.
 `extract-frames` is carved out and frozen — mosaic-api embeds its identifier in
 annotation paths.
