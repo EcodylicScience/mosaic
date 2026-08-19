@@ -297,7 +297,8 @@ def run_command(
     except ImportError as exc:
         fail(
             f"Missing optional dependency for this operation: {exc}. "
-            "Install the matching extra (e.g. pip install 'mosaic-behavior[pose]')."
+            "Install the matching extra (e.g. pip install "
+            "'mosaic-behavior[deep-learning]')."
         )
     except FileNotFoundError as exc:
         fail(str(exc))

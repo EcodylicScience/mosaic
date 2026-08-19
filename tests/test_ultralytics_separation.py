@@ -92,11 +92,28 @@ _EXTRAS: Final = TypeAdapter(dict[str, list[str]])
 rather than narrowed by hand: ``tomllib`` returns an untyped document.
 """
 
-EXTRAS_DECLARING_ULTRALYTICS: Final = frozenset({"pose", "polo"})
-"""The extras that name an Ultralytics distribution in their own requirement list."""
+EXTRAS_DECLARING_ULTRALYTICS: Final = frozenset()
+"""No extra names an Ultralytics distribution in its own requirement list."""
 
-EXTRAS_REACHING_ULTRALYTICS: Final = frozenset({"pose", "polo", "all", "recommended"})
-"""Those two, plus the bundles that reach them by self-reference."""
+EXTRAS_REACHING_ULTRALYTICS: Final = frozenset()
+"""And none reaches one by self-reference either.
+
+Both are empty and both are asserted, because the property is now terminal: an
+extra reappearing here would be a distribution mosaic cannot import arriving in
+an environment mosaic installs, which is the shape of the thing this whole
+arrangement removed. ``pose`` and ``polo`` still exist and now alias
+``deep-learning``, so a saved install line keeps working and stops carrying
+Ultralytics.
+"""
+
+_SIDECAR_MANIFEST: Final = _ENVIRONMENT_DIRECTORY / "pyproject.toml"
+"""Where Ultralytics *is* declared, and the witness two empty sets need.
+
+A detector that has stopped detecting anything reports the same two empty sets as
+a repository that has genuinely stopped declaring it, so the assertion below
+proves the walk still finds Ultralytics where it really is before believing that
+it is nowhere else.
+"""
 
 MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE: Final = frozenset({"mosaic_media"})
 """``mosaic-media`` may sit beside Ultralytics because of its **license**.
@@ -336,22 +353,30 @@ def _requirements_reaching(extras: dict[str, list[str]], name: str) -> list[str]
     return reached
 
 
-def test_no_mosaic_install_declares_ultralytics_outside_the_pose_extras() -> None:
-    """A plain install brings no Ultralytics, and exactly two extras still do.
+def test_no_mosaic_install_declares_ultralytics_at_all() -> None:
+    """No install of mosaic brings Ultralytics, by any extra or bundle.
 
     Declaring a distribution is not importing it, so this is a weaker property
     than the walk above -- but it is the surface an import becomes possible from,
-    and it decides what a user gets without asking. A base dependency would put
-    Ultralytics in every environment mosaic is installed into.
+    and it decides what a user gets without asking. It is what makes
+    ``pip install -e ".[all]"`` carry no AGPL-licensed dependency, which is the
+    sentence this whole arrangement exists to be able to write.
 
-    ``pose`` and ``polo`` still declare it, for the training paths that have not
-    moved yet, and the bundles that reach them still reach it. Pinned exactly
-    rather than aspirationally, so retiring those extras is a change to this
-    list and not a silent widening of it.
+    ``pose`` and ``polo`` are still declared and now alias ``deep-learning``: pip
+    only warns about an unknown extra, so deleting the names would leave a saved
+    install line producing a torch-less environment and no error to say so.
     """
     document = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     base = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
     extras = _EXTRAS.validate_python(document["project"]["optional-dependencies"])
+
+    sidecar = tomllib.loads(_SIDECAR_MANIFEST.read_text())
+    assert _ULTRALYTICS in _distributions(
+        _REQUIREMENTS.validate_python(sidecar["project"]["dependencies"])
+    ), (
+        f"the detector found Ultralytics nowhere, {_SIDECAR_MANIFEST} included, "
+        "so the empty sets below prove nothing about mosaic"
+    )
 
     assert _ULTRALYTICS not in _distributions(base), (
         "[project] dependencies declares Ultralytics, so every plain install of "
@@ -370,6 +395,12 @@ def test_no_mosaic_install_declares_ultralytics_outside_the_pose_extras() -> Non
     }
     assert declaring == EXTRAS_DECLARING_ULTRALYTICS
     assert reaching == EXTRAS_REACHING_ULTRALYTICS
+
+    for retired in ("pose", "polo"):
+        assert extras.get(retired), (
+            f"[{retired}] is gone rather than aliased, so a saved install line "
+            "resolves to the base with only a warning"
+        )
 
 
 EXTERNAL_ENVIRONMENTS: Final = (

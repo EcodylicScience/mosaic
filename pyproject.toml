@@ -103,28 +103,6 @@ docs = [
 # anyone without a GPU.
 deep-learning = ["torch>=2.0", "timm>=1.0"]
 
-# `pose` and `polo` both install a distribution named `ultralytics` -- upstream
-# against a full third-party fork -- and pip resolves only one, so they are
-# permanently mutually exclusive. Both build on `deep-learning`, so choosing the
-# fork does not cost a user the identity models.
-#
-# `lap` is Ultralytics' linear-assignment solver, imported at module scope by
-# `ultralytics.trackers.utils.matching` and reached by every one of the six
-# tracker backends. Undeclared, Ultralytics pip-installs it *during the run*,
-# which is a network write inside a queued job and a failure in a locked
-# environment. The `>=8.4.63` floor is where the last four tracker backends
-# (ocsort / deepocsort / fasttrack / tracktrack) landed; below it only botsort
-# and bytetrack exist.
-pose = ["mosaic-behavior[deep-learning]", "ultralytics>=8.4.63", "lap>=0.5.12"]
-# The POLO pin stays a bare git reference: pairing a direct reference with a
-# version specifier for one distribution is unresolvable, which is why the floor
-# above lives on `pose` alone.
-polo = [
-    "mosaic-behavior[deep-learning]",
-    "ultralytics @ git+https://github.com/mooch443/POLO.git",
-    "lap>=0.5.12",
-]
-
 # Optional kNN backend for `global-tsne` (`knn_method="faiss"`; the default is
 # "annoy", which needs nothing). Named for what it installs -- the old `gpu`
 # name promised a GPU and delivered `faiss-cpu`. On Linux + CUDA install
@@ -139,21 +117,6 @@ faiss = ["faiss-cpu>=1.7"]
 # Outside `all` for its weight rather than any hazard: it pulls xarray, netCDF4,
 # pynwb, sleap-io and napari-video for two filtering wrappers.
 movement = ["movement>=0.17"]
-
-# Opt-in because it CHANGES WHAT A TRAINING RUN DOES. Ultralytics builds its
-# `Albumentations` transform whenever the package is importable and swallows the
-# ImportError when it is not, so with it present a YOLO or POLO run additionally
-# applies Blur, MedianBlur, ToGray and CLAHE at p=0.01 each. Mosaic's own presets
-# in `tracking/pose_training/augmentation.py` set none of those, and nothing
-# records which way a run went -- so the choice belongs to the person installing,
-# and it stays out of `all`.
-#
-# It also requires `opencv-python-headless`, but that is not why it is separate:
-# the conda-forge `py-opencv` the install docs prescribe registers both
-# distribution names for its single build, so this resolves with no wheel and no
-# second ffmpeg. That collision is a plain-pip hazard; see pitfall 8 in
-# CLAUDE.md, which now names the two ffmpeg hazards separately.
-yolo-augment = ["albumentations>=1.3"]
 
 # Capped at <1.1 on purpose: 1.1.0 requires `nvidia-dali-cuda110` with no
 # environment marker, and PyPI serves that as an sdist only. Without the cap
@@ -184,11 +147,13 @@ feral = ["feral>=1.0,<2"]
 # from its parts -- which is what `recommended` was one careless edit away from
 # at all times.
 #
-# Excludes, each for its own reason stated above: `polo` (mutually exclusive
-# with `pose`), `yolo-augment` (changes what a training run does),
-# `lightning-action` and `movement` (heavy and single-purpose), `feral` (wants
-# its own environment).
-all = ["mosaic-behavior[pose,faiss]"]
+# Excludes, each for its own reason stated above: `lightning-action` and
+# `movement` (heavy and single-purpose), and `feral` (wants its own
+# environment). It reaches no AGPL-licensed distribution: YOLO pose and POLO
+# point work -- tracking, inference and training alike -- runs in an environment
+# you build, which no extra here can install. See
+# src/mosaic/tracking/external/README.md.
+all = ["mosaic-behavior[deep-learning,faiss]"]
 
 # Deprecated in 0.12, removed in 0.13. Kept only where the name's absence would
 # leave a *silently wrong* environment: pip warns about an unknown extra and
@@ -203,6 +168,24 @@ recommended = ["mosaic-behavior[all]"]
 identity = ["mosaic-behavior[deep-learning]"]
 localizer = ["mosaic-behavior[deep-learning]"]
 gpu = ["mosaic-behavior[faiss]"]
+
+# Deprecated in 0.13, removed in 0.14 -- one release behind the four above,
+# because they retire here rather than there. Nothing in mosaic imports
+# Ultralytics any more: the tracker, both inference ops and both training ops run
+# it in the environment its model belongs to, so an extra that installed it would
+# put an AGPL-licensed distribution where mosaic can never reach it from. The
+# names survive for the reason `identity` and `localizer` do -- pip only *warns*
+# about an unknown extra, so a saved `pip install -e ".[pose]"` would otherwise
+# resolve to the base and leave a torch-less environment with no error to say so.
+#
+# `yolo-augment` is deliberately NOT aliased. albumentations now belongs to
+# whichever environment runs the trainer, and no alias here can put it there --
+# so pip's unknown-extra warning is the signal that the opt-in moved, where an
+# alias would resolve happily and do nothing that was asked for. It is declared
+# by both environments under `--extra augment`; see
+# src/mosaic/tracking/external/README.md.
+pose = ["mosaic-behavior[deep-learning]"]
+polo = ["mosaic-behavior[deep-learning]"]
 
 [project.scripts]
 mosaic = "mosaic.cli:app"
