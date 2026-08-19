@@ -1,11 +1,17 @@
-"""Ultralytics multi-object tracking, run in mosaic's own process.
+"""Ultralytics multi-object tracking, run in an environment of its own.
 
-The one integrated tracker with no second environment: Ultralytics is already a
-mosaic dependency (the ``pose`` extra), so there is no ``ToolEnv``, no
-``MOSAIC_*_BIN`` ladder and no subprocess. Everything else -- content-addressed
-run identifiers, phase markers and reuse, the tracks bridge, sweeping -- is the
-shared machinery in :mod:`mosaic.tracking.common`, exactly as for TREx, SLEAP and
-Lightning Pose.
+Ultralytics is AGPL-3.0, and a mosaic that imported it would be one work with it,
+so mosaic spawns a program in an environment the user builds and exchanges JSON
+files with it. That makes this tracker like the other three: a ``ToolEnv``, the
+same five-step ``MOSAIC_ULTRALYTICS_CONDA_ENV`` / ``MOSAIC_ULTRALYTICS_BIN``
+location ladder, and a supervised subprocess per entry. Everything around it --
+content-addressed run identifiers, phase markers and reuse, the tracks bridge,
+sweeping -- is the shared machinery in :mod:`mosaic.tracking.common`, exactly as
+for TREx, SLEAP and Lightning Pose.
+
+The environment and the program it runs live in
+:mod:`mosaic.tracking.external`; ``src/mosaic/tracking/external/README.md`` is
+the bootstrap, with the license terms attached to that step.
 """
 
 from __future__ import annotations
@@ -16,6 +22,8 @@ from mosaic.tracking.ultralytics_track.dataset_runs import (
     run_ultralytics,
 )
 from mosaic.tracking.ultralytics_track.run import (
+    ULTRALYTICS_ENV,
+    UltralyticsError,
     UltralyticsNotFoundError,
     UltralyticsTrackResult,
     UnsupportedTaskError,
@@ -34,10 +42,12 @@ from mosaic.tracking.ultralytics_track.version import (
 
 __all__ = [
     "TRACKER_NAMES",
+    "ULTRALYTICS_ENV",
     "ULTRALYTICS_KIND",
     "ULTRALYTICS_VERSION",
     "TrackerConfigError",
     "TrackerName",
+    "UltralyticsError",
     "UltralyticsIndexRow",
     "UltralyticsNotFoundError",
     "UltralyticsTrackResult",

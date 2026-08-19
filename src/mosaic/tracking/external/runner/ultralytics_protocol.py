@@ -40,9 +40,6 @@ silently means fp32 there and travels as ``{"quantize": "fp61"}`` into a newer
 one -- a run that read as full precision under an identifier minted for half.
 """
 
-QuantizeSpelling: TypeAlias = Literal["quantize", "half"]
-"""Which keyword the installed Ultralytics takes half precision under."""
-
 ProgressEventKind: TypeAlias = Literal["started", "progress"]
 """The two lines the runner writes to standard output."""
 
@@ -211,20 +208,6 @@ class ProbeResponse(BaseModel):
     raises on a missing attribute.
     """
 
-    quantize_spelling: QuantizeSpelling | None
-    """Which keyword the install takes half precision under; ``None`` when
-    Ultralytics is absent.
-
-    Ultralytics renamed the half-precision argument. Probing the shipped default
-    configuration rather than comparing versions keeps this working across the
-    transition in both directions.
-
-    Absent is ``None`` rather than the empty string every other field uses,
-    because the set has exactly two members and an empty third one would be a
-    value a reader has to know to exclude. ``model_task`` above can spell absent
-    as ``""`` precisely because its set is open, so no task name collides.
-    """
-
 
 # --- track -----------------------------------------------------------------
 
@@ -240,8 +223,15 @@ class TrackRequest(BaseModel):
     tracker_yaml: str
     """The merged settings file mosaic wrote for this run."""
 
-    work_dir: str
-    """Where Ultralytics' eagerly computed run directory is pinned."""
+    project_dir: str
+    """Where Ultralytics computes its own run directory.
+
+    Named for the ``project`` argument it is passed rather than for a directory
+    of mosaic's, because mosaic writes nothing here: Ultralytics computes that
+    path eagerly even with saving off, and an unpinned one walks the shared
+    ``runs/`` tree. Not the entry working directory -- that is what ``work_dir``
+    means on the mosaic side, and one name for the two would be a trap.
+    """
 
     columns: list[str]
     """The raw-parquet column names, in write order.
@@ -337,7 +327,6 @@ __all__ = [
     "ProbeResponse",
     "ProgressEvent",
     "ProgressEventKind",
-    "QuantizeSpelling",
     "Result",
     "TrackRequest",
     "TrackResponse",

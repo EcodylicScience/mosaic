@@ -1,55 +1,55 @@
-"""Driving Ultralytics multi-object tracking over one video, in process.
+"""Locating the Ultralytics environment, and launching the runner program in it.
 
-The only module here that imports Ultralytics, and it does so inside functions --
-so registering the op, describing its parameters and reconciling its index all
-work in an environment that has no Ultralytics at all.
+Ultralytics is AGPL-3.0, so mosaic never imports it. The imports live in
+:mod:`mosaic.tracking.external.runner.ultralytics_runner`, a program that runs
+in an environment the user builds, and what crosses between the two is a JSON
+request file, a JSON response file and progress lines on standard output.
 
-Three module-level functions are the seam the tests replace:
-:func:`load_tracking_model`, :func:`reset_trackers` and
-:func:`run_ultralytics_track`. Patching them on ``dataset_runs`` exercises the
-whole run protocol -- identifiers, markers, reuse, the bridge -- with no weights,
-no torch and no GPU, exactly as the three subprocess trackers patch their
-``run_*`` wrappers.
+**Mosaic hands the tool a path**, exactly as TREx, SLEAP and Lightning Pose do,
+and :func:`~mosaic.tracking.common.tool_input.resolve_tool_input` is the boundary
+that keeps an imgstore recording working: a tool that opens a path cannot read a
+directory of chunk files, so a store resolves to the plain video
+``export-store`` wrote for it.
 
-**Mosaic decodes; Ultralytics never sees a path.** Handing ``model.track`` a
-video would put OpenCV on the read path, which cannot open an imgstore directory
-at all and reads a raw ``.h264`` with a garbage frame count. Reading through
-``open_frame_reader`` instead keeps imgstore, raw streams, the true frame index
-and mosaic's own frame window working, and costs nothing: Ultralytics tracks
-frame by frame regardless.
+This module is where the tool is located and launched -- one :class:`ToolEnv`,
+the argv its ladder resolves, and the two calls that write a request and read a
+response back. :func:`probe_ultralytics` and :func:`run_ultralytics_tool` sit at
+module scope because they are the seam the marker suite replaces, which is what
+exercises the whole run protocol -- identifiers, markers, reuse, the bridge --
+with no Ultralytics installed at all.
 """
 
 from __future__ import annotations
 
-import contextlib
-import importlib
-import queue
-import threading
-from collections.abc import Iterator, Mapping, Sequence
+import logging
+import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import Final, Literal
 
-import numpy as np
-import pandas as pd
-
-from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.track_library.ultralytics_tracks import raw_columns
+from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    missing_output_error,
+    subprocess_env,
+    tool_invocation,
+)
 from mosaic.tracking.external.runner.ultralytics_protocol import (
-    Result,
-    rows_from_result,
+    ProbeRequest,
+    ProbeResponse,
+    TrackRequest,
+    TrackResponse,
 )
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
     TrackerSetting,
 )
-from mosaic.core.pipeline.writers import write_parquet_atomic
 
-if TYPE_CHECKING:
-    from mosaic_media import MediaFacts
-
-    from mosaic.core.media.video_io import FrameReader
+logger = logging.getLogger(__name__)
 
 ModelTask = Literal["pose", "detect"]
 """What mosaic bridges. A segment mask and a rotated box have no ``trex_v1``
@@ -59,14 +59,54 @@ a classifier.
 
 _SUPPORTED_TASKS: Final[tuple[ModelTask, ...]] = ("pose", "detect")
 
+_PYTHON: Final = "python"
+_YOLO_SCRIPT: Final = "yolo"
+_RUNNER_SCRIPT: Final = "ultralytics_runner.py"
 
-class UltralyticsNotFoundError(ImportError):
-    """Ultralytics, or a dependency of its tracker, is not importable.
+TRACK_REQUEST_NAME: Final = "track-request.json"
+"""What one entry's request to the tool is called, inside its working directory."""
 
-    Deliberately not a ``ToolNotFoundError``: there is no ``ToolEnv``, no
-    ``MOSAIC_ULTRALYTICS_*`` and no location ladder, and borrowing that
-    vocabulary would promise a placement mechanism this tracker does not have.
-    """
+TRACK_RESPONSE_NAME: Final = "track-response.json"
+"""What the tool's reply is called, beside the request.
+
+Both are byproducts of an attempt rather than results of one, so a re-run of the
+``track`` phase must delete them: a stale request beside fresh output is exactly
+what the phase's clear globs exist to prevent. Those globs live in
+:data:`~mosaic.core.pipeline.tracking_roots.TRACKING_ROOTS`, which is in ``core``
+and so cannot import this module -- the two spell the same strings
+independently, and ``test_ultralytics_run_markers.py`` is what holds them
+together.
+"""
+
+PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
+"""The least time a probe gets to answer, whatever the tracking bound is.
+
+``idle_timeout`` bounds *silence*, which is the right unit for tracking: the
+runner prints a line per decoded batch, so a quiet stretch means hung. A probe
+prints nothing at all between spawn and answer, so the same number is a deadline
+on a cold torch import and a checkpoint load off a network mount -- work
+proceeding exactly as intended. A user who shortens the tracking window so a hung
+tracker dies quickly must not thereby put a stopwatch on loading a model, so the
+probe gets the caller's value or this floor, whichever is longer.
+"""
+
+_ENV_BOOTSTRAP: Final = (
+    "Build it with 'uv sync --python 3.12' in "
+    "src/mosaic/tracking/external/ultralytics-env/, then point "
+    "MOSAIC_ULTRALYTICS_CONDA_ENV at a conda environment holding it or "
+    "MOSAIC_ULTRALYTICS_BIN at that environment's 'yolo' script. See "
+    "src/mosaic/tracking/external/README.md."
+)
+
+
+class UltralyticsNotFoundError(ToolNotFoundError):
+    """The Ultralytics environment, its Ultralytics, or ``conda``, is not there."""
+
+    default_message = (
+        "The Ultralytics environment was not found: no 'yolo' console script on "
+        "$PATH, and neither MOSAIC_ULTRALYTICS_CONDA_ENV nor "
+        f"MOSAIC_ULTRALYTICS_BIN names one. {_ENV_BOOTSTRAP}"
+    )
 
 
 class UnsupportedTaskError(ValueError):
@@ -75,6 +115,15 @@ class UnsupportedTaskError(ValueError):
 
 class UnsupportedTrackerError(ValueError):
     """The installed Ultralytics does not know the requested backend."""
+
+
+class UltralyticsError(ToolExitError):
+    """The Ultralytics runner exited with a non-zero return code."""
+
+    tool_name = "Ultralytics"
+    # The argv is ``python <runner> <subcommand> --request <path> --out <path>``,
+    # so four tokens reach the subcommand and echoing further prints paths.
+    head = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,55 +135,51 @@ class UltralyticsTrackResult:
     n_ids: int
 
 
-# --- protocols standing in for the Ultralytics surface ---------------------
-
-
-class _Model(Protocol):
-    def track(self, source: list[np.ndarray], **kwargs: object) -> list[Result]: ...
+# The runner is driven through its environment's ``python`` rather than a console
+# verb, so the ``yolo`` script is what locates that interpreter: a bare
+# ``python`` on ``$PATH`` would be the caller's own.
+ULTRALYTICS_ENV: Final = ToolEnv(
+    tool="Ultralytics",
+    conda_env_var="MOSAIC_ULTRALYTICS_CONDA_ENV",
+    bin_var="MOSAIC_ULTRALYTICS_BIN",
+    bin_mode="sibling",
+    not_found=UltralyticsNotFoundError,
+    locator=_YOLO_SCRIPT,
+)
 
 
 # --- preflight -------------------------------------------------------------
 
 
-def _installed_version() -> str:
-    import ultralytics
+def require_ultralytics(probe: ProbeResponse, tracker: TrackerName) -> None:
+    """Refuse, by name, anything this run needs and the environment lacks.
 
-    return str(getattr(ultralytics, "__version__", "unknown"))
-
-
-def require_ultralytics(tracker: TrackerName) -> None:
-    """Refuse, by name, anything this run needs and does not have.
-
-    Runs before a model is loaded or a video is opened, so a missing dependency
-    or an Ultralytics too old for the requested backend is a message rather than
-    a traceback from inside a callback on frame zero.
+    Decided from what the probe reported rather than by importing anything, and
+    run before a video is opened, so a missing dependency or an unsupported
+    backend is a message rather than a traceback from inside a callback on frame
+    zero.
     """
-    try:
-        _ = importlib.import_module("ultralytics")
-    except ImportError as exc:
+    if not probe.has_ultralytics:
         raise UltralyticsNotFoundError(
-            "ultralytics is required for the 'ultralytics' tracker. Install it "
-            'with: pip install "mosaic-behavior[pose]".'
-        ) from exc
+            "the Ultralytics environment resolved but holds no ultralytics. "
+            f"{_ENV_BOOTSTRAP}"
+        )
 
-    try:
-        _ = importlib.import_module("lap")
-    except ImportError as exc:
+    if not probe.has_lap:
         raise UltralyticsNotFoundError(
             "lap is required for Ultralytics multi-object tracking -- it is the "
             "linear-assignment solver every backend associates with. It appears "
             "in no ultralytics extra, so without it ultralytics tries to "
-            "pip-install it mid-run. Install it with: pip install "
-            '"mosaic-behavior[pose]".'
-        ) from exc
+            "pip-install it mid-run. The environment's pyproject.toml declares "
+            f"it, so rebuilding is the fix. {_ENV_BOOTSTRAP}"
+        )
 
-    from ultralytics.trackers.track import TRACKER_MAP
-
-    if tracker not in TRACKER_MAP:
+    if tracker not in probe.tracker_names:
         raise UnsupportedTrackerError(
-            f"the installed ultralytics ({_installed_version()}) knows "
-            f"{sorted(TRACKER_MAP)}, not {tracker!r}. The four newer backends "
-            "arrived in 8.4.63; mosaic declares that floor on its [pose] extra."
+            f"the ultralytics in this environment ({probe.ultralytics_version}) "
+            f"knows {sorted(probe.tracker_names)}, not {tracker!r}. The four "
+            "newer backends arrived in 8.4.63, which is the floor "
+            "src/mosaic/tracking/external/ultralytics-env/pyproject.toml declares."
         )
 
 
@@ -154,26 +199,11 @@ def require_supported_task(task: str) -> ModelTask:
     )
 
 
-def precision_kwarg(precision: Literal["fp32", "fp16"]) -> dict[str, object]:
-    """How the installed Ultralytics spells half precision.
-
-    ``half`` was replaced by ``quantize`` and now emits a deprecation warning, but
-    the older spelling is what an older install understands. Probed from the
-    shipped default configuration rather than from a version comparison, so this
-    keeps working across the transition in both directions.
-    """
-    from ultralytics.cfg import DEFAULT_CFG_DICT
-
-    if "quantize" in DEFAULT_CFG_DICT:
-        return {"quantize": precision}
-    return {"half": precision == "fp16"}
-
-
 # --- the tracker configuration file ----------------------------------------
 
 
 def effective_tracker_table(
-    tracker: TrackerName, resolved: Mapping[str, TrackerSetting]
+    installed: Mapping[str, TrackerSetting], resolved: Mapping[str, TrackerSetting]
 ) -> dict[str, TrackerSetting]:
     """The installed backend's own defaults, with mosaic's resolved values on top.
 
@@ -184,19 +214,10 @@ def effective_tracker_table(
     an upstream release added a required setting. Merging leaves a setting mosaic
     has not transcribed at its upstream default, and the preflight drift test is
     what turns that into a decision rather than a surprise.
+
+    *installed* arrives from the probe, which read it in the environment that
+    will run: this process has no Ultralytics to read a shipped YAML from.
     """
-    import yaml
-
-    import ultralytics
-
-    path = Path(ultralytics.__file__).parent / "cfg" / "trackers" / f"{tracker}.yaml"
-    installed: dict[str, TrackerSetting] = {}
-    if path.is_file():
-        loaded = yaml.safe_load(path.read_text())
-        if isinstance(loaded, dict):
-            for key, value in loaded.items():  # pyright: ignore[reportUnknownVariableType]
-                if isinstance(value, (bool, int, float, str)):
-                    installed[str(key)] = value
     return {**installed, **resolved}
 
 
@@ -222,295 +243,208 @@ def write_tracker_yaml(path: Path, table: Mapping[str, TrackerSetting]) -> Path:
     return path
 
 
-# --- the model, held for the whole run -------------------------------------
+# --- launching the runner --------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class TrackSession:
-    """A loaded model plus the arguments every frame of the run is tracked with.
+def _runner_script() -> Path:
+    """Where the program mosaic spawns lives, as an absolute path.
 
-    One session per run rather than per entry, so weights load once however many
-    sequences the run covers. The keyword arguments are frozen here for a reason
-    beyond tidiness: ``device`` must be byte-identical on every call, because
-    Ultralytics rebuilds its predictor when the device argument changes and would
-    take the live trackers -- pools, Kalman state, identity numbering -- with it,
-    mid-video and silently.
+    Resolved from the package rather than joined out of strings, so a source
+    checkout, an editable install and a wheel all name the same file. Importing
+    the package is not importing the runner *module*: ``runner/__init__.py`` is
+    a docstring, so nothing here pulls Ultralytics into this process, which is
+    the whole point of the separation.
     """
+    from mosaic.tracking.external import runner
 
-    model: _Model
-    task: ModelTask
-    n_keypoints: int
-    kwargs: Mapping[str, object]
-
-    def track(self, frames: list[np.ndarray]) -> list[Result]:
-        return self.model.track(frames, **self.kwargs)
+    return Path(runner.__file__).parent / _RUNNER_SCRIPT
 
 
-def load_tracking_model(
-    model_path: Path,
+def _ultralytics_invocation(
     *,
-    tracker_yaml: Path,
-    task: ModelTask,
-    conf: float,
-    iou: float,
-    imgsz: int,
-    max_det: int,
-    classes: Sequence[int] | None,
-    agnostic_nms: bool,
-    device: str,
-    precision: Literal["fp32", "fp16"],
+    conda_env: str | None = None,
+    bin_path: str | Path | None = None,
+) -> list[str]:
+    """Resolve how to launch the Ultralytics environment's ``python``, as a prefix.
+
+    The shared five-step ladder (:func:`tool_invocation`) applied to
+    :data:`ULTRALYTICS_ENV`.
+    """
+    return tool_invocation(
+        ULTRALYTICS_ENV,
+        executable=_PYTHON,
+        conda_env=conda_env,
+        bin_path=bin_path,
+    )
+
+
+def _run_runner(
+    subcommand: Literal["probe", "track"],
+    request_path: Path,
+    response_path: Path,
+    *,
+    idle_timeout: float,
+    max_runtime: float | None,
+    conda_env: str | None,
+    bin_path: str | Path | None,
+    cancel_check: Callable[[], bool] | None,
+    on_output: Callable[[str], None] | None,
+) -> tuple[str, str]:
+    """Run one runner subcommand and return (stdout, stderr).
+
+    *cancel_check*, when supplied, is polled while the runner works; if it fires,
+    the whole process group is killed and
+    :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
+
+    Raises:
+        UltralyticsError: The runner exited with a non-zero return code.
+    """
+    cmd = [
+        *_ultralytics_invocation(conda_env=conda_env, bin_path=bin_path),
+        str(_runner_script()),
+        subcommand,
+        "--request",
+        str(request_path),
+        "--out",
+        str(response_path),
+    ]
+    logger.info("Running: %s", " ".join(cmd[:4]) + (" ..." if len(cmd) > 4 else ""))
+
+    stdout, stderr, returncode = run_supervised(
+        cmd,
+        env=subprocess_env(),
+        cancel_check=cancel_check,
+        timeout=max_runtime,
+        idle_timeout=idle_timeout,
+        on_output=on_output,
+    )
+    if returncode != 0:
+        raise UltralyticsError(cmd, returncode, stdout, stderr)
+    return stdout, stderr
+
+
+def probe_ultralytics(
+    model_path: Path | str,
+    *,
+    tracker: TrackerName,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    conda_env: str | None = None,
+    bin_path: str | Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
+) -> ProbeResponse:
+    """Ask the Ultralytics environment what it holds, and what the weights are.
+
+    Called once per run, before anything is minted, so the keypoint count, the
+    backend's shipped settings, the model's declared task and the installed
+    version are all known before the first entry runs.
+
+    The request and the response live in a temporary directory: the probe runs
+    before the run root exists, and nothing reads either file afterwards.
+
+    A probe writes no progress lines -- it loads the weights and answers -- so an
+    inactivity bound on it is a deadline on the whole operation. *idle_timeout*
+    is therefore raised to :data:`PROBE_DEADLINE_FLOOR_SECONDS` when the caller's
+    value is shorter. *max_runtime* is passed through untouched, being an
+    absolute ceiling the caller asked for.
+
+    Raises:
+        UltralyticsError: The runner exited non-zero. A model it cannot load is
+            the usual reason, and the captured streams say which.
+        FileNotFoundError: The runner exited zero having written no response.
+    """
+    request = ProbeRequest(model_path=str(model_path), tracker=tracker)
+    with tempfile.TemporaryDirectory(prefix="mosaic-ultralytics-probe-") as scratch:
+        request_path = Path(scratch) / "probe-request.json"
+        response_path = Path(scratch) / "probe-response.json"
+        _ = request_path.write_text(request.model_dump_json())
+        stdout, stderr = _run_runner(
+            "probe",
+            request_path,
+            response_path,
+            idle_timeout=max(idle_timeout, PROBE_DEADLINE_FLOOR_SECONDS),
+            max_runtime=max_runtime,
+            conda_env=conda_env,
+            bin_path=bin_path,
+            cancel_check=cancel_check,
+            on_output=on_output,
+        )
+        if not response_path.is_file():
+            raise missing_output_error("Ultralytics", response_path, stdout, stderr)
+        return ProbeResponse.model_validate_json(response_path.read_text())
+
+
+def run_ultralytics_tool(
+    request: TrackRequest,
+    *,
     work_dir: Path,
-) -> TrackSession:
-    """Load *model_path* and freeze the arguments its whole run will use.
-
-    Every detection-affecting argument is passed explicitly rather than left to
-    Ultralytics' shipped defaults, so an upstream retune cannot silently re-mean
-    an identifier mosaic already minted.
-    """
-    from ultralytics import YOLO
-
-    model = YOLO(str(model_path))
-    resolved_task = require_supported_task(str(model.task))
-    if resolved_task != task:
-        raise UnsupportedTaskError(
-            f"{model_path} is a {resolved_task!r} model but the run declares "
-            f"task={task!r}. The declared task is part of the run identifier, so "
-            "it has to match what the weights actually are."
-        )
-
-    n_keypoints = _keypoint_count(model, resolved_task)
-    kwargs: dict[str, object] = {
-        "persist": True,
-        "tracker": str(tracker_yaml),
-        "stream": False,
-        "conf": conf,
-        "iou": iou,
-        "imgsz": imgsz,
-        "max_det": max_det,
-        "classes": list(classes) if classes is not None else None,
-        "agnostic_nms": agnostic_nms,
-        "augment": False,
-        "device": device,
-        "verbose": False,
-        "save": False,
-        "save_txt": False,
-        "show": False,
-        # Pin the run directory even though nothing is saved: Ultralytics computes
-        # it eagerly, and an unpinned one walks the shared `runs/` tree.
-        "project": str(work_dir),
-        "name": "ultralytics",
-        "exist_ok": True,
-        **precision_kwarg(precision),
-    }
-    return TrackSession(
-        model=model, task=resolved_task, n_keypoints=n_keypoints, kwargs=kwargs
-    )
-
-
-def _keypoint_count(model: object, task: ModelTask) -> int:
-    """How many keypoints this model predicts; 1 for a box-only model.
-
-    Read off the detection **head**, not off the model. ``PoseModel`` never
-    assigns ``kpt_shape`` to itself -- only the head does -- so the obvious read
-    yields nothing for a checkpoint that did not come through Ultralytics'
-    trainer, and a one-keypoint table would be written for a pose model.
-    """
-    if task == "detect":
-        return 1
-    inner = getattr(model, "model", None)
-    layers = getattr(inner, "model", None)
-    head = layers[-1] if layers is not None else None
-    shape = getattr(head, "kpt_shape", None) or getattr(inner, "kpt_shape", None)
-    if shape is None:
-        raise UnsupportedTaskError(
-            "this pose model does not declare a keypoint shape, so mosaic cannot "
-            "tell how many keypoints its predictions carry."
-        )
-    return int(shape[0])
-
-
-def reset_trackers(session: TrackSession) -> None:
-    """Return every attached tracker to its frame-zero state, between entries.
-
-    Necessary, not defensive. Track identity is numbered from a counter on a
-    class shared by all backends, so without this a run's second video continues
-    the first video's numbering and the output depends on what ran before it in
-    the process. ``reset()`` clears that counter along with each tracker's pools,
-    its Kalman filter and -- where there is one -- its camera-motion history,
-    which optical flow would otherwise carry across a cut between two videos.
-
-    The reset is a method call rather than ``persist=False`` on the first frame:
-    Ultralytics binds the persist flag into its callbacks at the first tracking
-    call and ignores it thereafter, so alternating would rebuild the trackers on
-    every frame instead of once per entry.
-    """
-    from ultralytics.trackers.basetrack import BaseTrack
-
-    predictor = getattr(session.model, "predictor", None)
-    trackers = getattr(predictor, "trackers", None)
-    for tracker in trackers or ():
-        tracker.reset()
-    # Covers the first entry, where no tracker exists yet to reset the shared
-    # counter a long-lived worker process may already have advanced.
-    BaseTrack.reset_id()
-
-
-# --- one entry -------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _decoded_batches(
-    reader: FrameReader, batch_size: int, prefetch: bool
-) -> Iterator[Iterator[tuple[np.ndarray, np.ndarray]]]:
-    """Yield ``(indices, frames)`` batches, optionally decoded a batch ahead.
-
-    The prefetch producer is local rather than
-    :func:`~mosaic.core.media.video_io.prefetch_batches` because it has to be
-    *stoppable*: that one runs until the reader is empty, so a cancelled run
-    would decode the rest of the video on its way out.
-    """
-    if not prefetch or batch_size <= 1:
-        yield _direct_batches(reader, batch_size)
-        return
-
-    pending: queue.Queue[tuple[np.ndarray, np.ndarray] | None] = queue.Queue(maxsize=2)
-    stop = threading.Event()
-
-    def produce() -> None:
-        try:
-            while not stop.is_set():
-                indices, frames = reader.read_batch(batch_size)
-                if len(indices) == 0:
-                    break
-                while not stop.is_set():
-                    try:
-                        pending.put((indices, frames), timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
-        finally:
-            with contextlib.suppress(queue.Full):
-                pending.put(None, timeout=0.5)
-
-    worker = threading.Thread(target=produce, daemon=True)
-    worker.start()
-    try:
-        yield _queued_batches(pending)
-    finally:
-        stop.set()
-        while True:
-            try:
-                _ = pending.get_nowait()
-            except queue.Empty:
-                break
-        worker.join(timeout=5)
-
-
-def _direct_batches(
-    reader: FrameReader, batch_size: int
-) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    while True:
-        indices, frames = reader.read_batch(max(1, batch_size))
-        if len(indices) == 0:
-            return
-        yield indices, frames
-
-
-def _queued_batches(
-    pending: queue.Queue[tuple[np.ndarray, np.ndarray] | None],
-) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    while True:
-        item = pending.get()
-        if item is None:
-            return
-        yield item
-
-
-def run_ultralytics_track(
-    session: TrackSession,
-    video_path: Path,
-    out_parquet: Path,
-    *,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    batch_size: int = 8,
-    prefetch: bool = True,
-    facts: MediaFacts | None = None,
-    on_tick: object = None,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    conda_env: str | None = None,
+    bin_path: str | Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
 ) -> UltralyticsTrackResult:
-    """Track one video and write its raw predictions.
+    """Track one video in the Ultralytics environment, and read back what it did.
 
-    Batching decodes and infers several frames per call while still tracking
-    them one at a time in order: a list source puts Ultralytics in image mode,
-    where one tracker is created and every result in the batch is fed through it
-    in sequence. So a batch is a throughput choice, not a behavioral one.
+    The request and the response are written into *work_dir*, beside the
+    predictions parquet the runner publishes, so an attempt's whole exchange is
+    on disk where the attempt is.
 
-    The table is written **even when it is empty**, with its full column set. The
-    reuse gate proves a phase complete by finding the output it recorded, so an
-    absent file for a video with no detections would re-run that video forever.
+    Raises:
+        UltralyticsError: The runner exited with a non-zero return code.
+        FileNotFoundError: The runner exited zero having written no response, or
+            no predictions table. The second is the sharper case: a run that
+            reports success having written nothing would leave the reuse gate
+            with no output to find, and the entry re-running forever.
     """
-    n_keypoints = session.n_keypoints
-    blocks: list[np.ndarray] = []
-    n_frames = 0
+    work_dir.mkdir(parents=True, exist_ok=True)
+    request_path = work_dir / TRACK_REQUEST_NAME
+    response_path = work_dir / TRACK_RESPONSE_NAME
+    _ = request_path.write_text(request.model_dump_json())
 
-    reader = open_frame_reader(
-        video_path,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        frame_step=frame_step,
-        # No decode-time resize: Ultralytics letterboxes to `imgsz` itself and
-        # maps predictions back to the frame it was given, so feeding native
-        # frames is what puts the coordinates in source pixels.
-        resize=None,
-        facts=facts,
-        target="analysis",
+    stdout, stderr = _run_runner(
+        "track",
+        request_path,
+        response_path,
+        idle_timeout=idle_timeout,
+        max_runtime=max_runtime,
+        conda_env=conda_env,
+        bin_path=bin_path,
+        cancel_check=cancel_check,
+        on_output=on_output,
     )
-    with reader:
-        total = len(reader)
-        with _decoded_batches(reader, batch_size, prefetch) as batches:
-            for indices, frames in batches:
-                results = session.track([frames[i] for i in range(len(indices))])
-                for offset, result in enumerate(results):
-                    block = rows_from_result(
-                        result, int(indices[offset]), n_keypoints=n_keypoints
-                    )
-                    if block is not None:
-                        blocks.append(block)
-                n_frames += len(indices)
-                if callable(on_tick):
-                    on_tick(n_frames, total)
 
-    columns = list(raw_columns(n_keypoints))
-    stacked = (
-        np.concatenate(blocks, axis=0)
-        if blocks
-        else np.empty((0, len(columns)), dtype=np.float64)
-    )
-    table = pd.DataFrame(stacked, columns=columns)
-    table = table.astype({"frame": "int64", "track_id": "int64", "cls": "int64"})
+    if not response_path.is_file():
+        raise missing_output_error("Ultralytics", response_path, stdout, stderr)
+    predictions_path = Path(request.output_parquet)
+    if not predictions_path.is_file():
+        raise missing_output_error("Ultralytics", predictions_path, stdout, stderr)
 
-    _ = write_parquet_atomic(table, out_parquet)
-
-    n_ids = int(np.unique(stacked[:, 1]).size) if blocks else 0
+    response = TrackResponse.model_validate_json(response_path.read_text())
     return UltralyticsTrackResult(
-        predictions_path=out_parquet, n_frames=n_frames, n_ids=n_ids
+        predictions_path=predictions_path,
+        n_frames=response.n_frames,
+        n_ids=response.n_ids,
     )
 
 
 __all__ = [
+    "PROBE_DEADLINE_FLOOR_SECONDS",
+    "TRACK_REQUEST_NAME",
+    "TRACK_RESPONSE_NAME",
+    "ULTRALYTICS_ENV",
     "ModelTask",
-    "TrackSession",
+    "UltralyticsError",
     "UltralyticsNotFoundError",
     "UltralyticsTrackResult",
     "UnsupportedTaskError",
     "UnsupportedTrackerError",
     "effective_tracker_table",
-    "load_tracking_model",
-    "precision_kwarg",
+    "probe_ultralytics",
     "require_supported_task",
     "require_ultralytics",
-    "reset_trackers",
-    "run_ultralytics_track",
+    "run_ultralytics_tool",
     "write_tracker_yaml",
 ]

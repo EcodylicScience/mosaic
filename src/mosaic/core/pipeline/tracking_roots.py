@@ -248,13 +248,25 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # The tracker configuration this run used lives at the *run* root, beside
         # run_params.json, rather than in an entry directory -- it is one value
         # for the whole run -- so it is neither evidence of a tracked entry nor
-        # something re-running one must clear.
+        # something re-running one must clear. The request and response the tool
+        # exchanged are the opposite: byproducts of one attempt, cleared when the
+        # phase re-runs so a stale request cannot sit beside fresh output, and
+        # kept out of `outputs`, which is the sweeper's evidence of real output.
         TrackingRoot(
             key="ultralytics",
             retention="tracker",
             output_schema="mosaic_v1",
             outputs=("*.predictions.parquet",),
-            phase_outputs=(TrackingPhase("track", ("*.predictions.parquet",)),),
+            phase_outputs=(
+                TrackingPhase(
+                    "track",
+                    (
+                        "*.predictions.parquet",
+                        "track-request.json",
+                        "track-response.json",
+                    ),
+                ),
+            ),
             path_columns=("video_abs_path", "predictions_path"),
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector

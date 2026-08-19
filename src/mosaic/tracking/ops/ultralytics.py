@@ -177,4 +177,5 @@ class UltralyticsOp(Op[UltralyticsParams]):
             convert_to_tracks=params.convert_to_tracks,
             overwrite=params.overwrite,
             idle_timeout=params.idle_timeout,
+            max_runtime=params.max_runtime,
         )

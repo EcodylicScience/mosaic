@@ -1,18 +1,22 @@
 """The path a tracker hands to an external tool, which is not always the source.
 
-Three of the four integrated trackers run their tool as a subprocess and give it
-a path to open. That works for a video file and fails for an imgstore recording,
-which is a *directory* of chunk files: T-Rex converts it to nothing and reports a
-missing ``.pv``, and SLEAP and Lightning Pose fail comparably. mosaic's own
-readers handle a store natively, so the mismatch is only ever at this boundary --
-the moment a path leaves mosaic for a tool that does its own decoding.
+All four integrated trackers run their tool as a subprocess and give it a path to
+open, so all four resolve through here. That works for a video file and fails for
+an imgstore recording, which is a *directory* of chunk files: T-Rex converts it
+to nothing and reports a missing ``.pv``, and SLEAP, Lightning Pose and
+Ultralytics fail comparably. mosaic's own readers handle a store natively, so the
+mismatch is only ever at this boundary -- the moment a path leaves mosaic for a
+tool that does its own decoding.
 
 :func:`resolve_tool_input` is that boundary. A plain video passes through
 untouched; a store resolves to the plain video ``export-store`` wrote for it, or
-raises naming the command that would produce one. The in-process Ultralytics
-tracker does not call this and must not: it decodes through
-``open_frame_reader`` and reads the store directly, which is the better path and
-the one that keeps working when no export exists.
+raises naming the command that would produce one.
+
+Ultralytics used to be the exception, decoding through ``open_frame_reader`` and
+reading a store directly -- genuinely the better path, and one that worked with
+no export on disk. That capability is gone: Ultralytics is AGPL-3.0, so it runs
+in an environment of its own and opens a path like every other tool, and tracking
+a store now costs an ``export-store`` run and a copy of the pixels first.
 """
 
 from __future__ import annotations

@@ -1,20 +1,21 @@
 """Running Ultralytics tracking across a dataset's scoped media.
 
 The dataset-level half of the integration: resolve the model to a content
-identity, mint a run, and drive one gated ``track`` phase per entry through the
-shared runner, bridging each entry's raw predictions into
-``tracks/<variant>/``.
+identity, probe the Ultralytics environment, mint a run, and drive one gated
+``track`` phase per entry through the shared runner, bridging each entry's raw
+predictions into ``tracks/<variant>/``.
 
-One expensive gated phase, like Lightning Pose. Unlike the three subprocess
-trackers there is no environment to locate and no argv to build, so the whole
-run happens in this process -- but every identifier, marker, reuse decision and
-index write is the shared machinery, unchanged.
+One expensive gated phase, like Lightning Pose, and like every other tracker the
+tool runs in an environment of its own and opens a path -- so each entry resolves
+through :func:`resolve_tool_input`, and every identifier, marker, reuse decision
+and index write is the shared machinery, unchanged.
 
-**Nothing is loaded before the run is minted.** Resolving the model reads its
-bytes for a digest; loading it reads the network weights and claims a GPU. The
-first must precede minting, because a variant naming weights that could not be
-found describes a run that never happened. The second must not, because a run
-whose scope matches nothing should not have paid for a model.
+**What precedes minting, and what does not.** Resolving the model reads its bytes
+for a digest, and the probe loads its weights where they will run; both come
+before the mint, because a variant naming weights that cannot be loaded -- or a
+backend this environment does not know -- describes a run that never happened.
+The cost is one probe for a run whose scope matches nothing. Tracking itself is
+per entry and after the scope, so such a run spawns nothing else.
 """
 
 from __future__ import annotations
@@ -30,11 +31,14 @@ import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
+from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV
-from mosaic.core.pipeline.job import CancelToken, JobContext
+from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.core.pipeline.subprocess_util import ProcessCancelled
+from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
@@ -46,9 +50,9 @@ from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
     claim,
     clear_outputs,
+    phase_activity,
     record_phase,
     reusable_output,
-    tick_activity,
 )
 from mosaic.tracking.common.index import (
     media_composition_cell,
@@ -60,6 +64,8 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
+from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerName,
@@ -74,12 +80,12 @@ from mosaic.tracking.ultralytics_track.version import (
 
 from .run import (
     ModelTask,
-    TrackSession,
+    UnsupportedTaskError,
     effective_tracker_table,
-    load_tracking_model,
+    probe_ultralytics,
+    require_supported_task,
     require_ultralytics,
-    reset_trackers,
-    run_ultralytics_track,
+    run_ultralytics_tool,
     write_tracker_yaml,
 )
 
@@ -256,6 +262,16 @@ def _frame_count_of(path: Path) -> int:
     return int(table["frame"].nunique())
 
 
+def _context_token(ctx: JobContext | None) -> CancelToken | None:
+    """The cancel token an already-open job carries, if a run was handed one.
+
+    The op path passes its ``ctx`` and no token; a library caller passes a token
+    and no ``ctx``. Reading both is what lets work done before ``run_tracker``
+    opens -- the probe -- be cancellable on either.
+    """
+    return ctx.cancel_token if ctx is not None else None
+
+
 # --- the run ---------------------------------------------------------------
 
 
@@ -284,6 +300,9 @@ def run_ultralytics(
     batch_size: int = 8,
     prefetch: bool = True,
     idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    ultralytics_conda_env: str | None = None,
+    ultralytics_bin: Path | str | None = None,
     overwrite: bool = False,
     convert_to_tracks: bool = True,
     # Job Contract
@@ -296,12 +315,18 @@ def run_ultralytics(
 ) -> str:
     """Track every scoped sequence with *model_path*, and return the run id.
 
-    ``idle_timeout`` no longer kills anything -- in process there is nothing to
-    kill. It keeps its other meaning: it sizes the in-flight claim on each
-    entry's working directory. Cancellation is checked between batches, so the
-    latency bound is one batch rather than one frame.
+    ``idle_timeout`` bounds silence and sizes the in-flight claim on each entry's
+    working directory: the runner prints a progress line per decoded batch, so a
+    process that has printed nothing for that long is hung and is killed.
+    ``max_runtime`` is the absolute ceiling. Cancellation kills the process
+    group, so its latency is a poll interval rather than a video.
+
+    ``ultralytics_conda_env`` and ``ultralytics_bin`` are the top two rungs of
+    the location ladder, for a caller holding more than one Ultralytics
+    environment. They name a machine rather than a result, so they reach no
+    identifier and the op deliberately does not carry them: a queued job would
+    ship a path that means something else on the host that runs it.
     """
-    require_ultralytics(tracker)
     tracker_config = resolve_tracker_config(tracker, tracker_overrides)
 
     # Content, never a path -- and the kind comes from the reference itself,
@@ -310,6 +335,36 @@ def run_ultralytics(
     parsed = parse_op_run_id(str(model_path))
     model_kind = parsed.kind if parsed is not None else TRAIN_POSE_KIND
     resolved_model = resolve_model(ds, str(model_path), model_kind)
+
+    # Once per run, before anything is minted: what the environment holds, what
+    # the backend ships, what the weights declare and how many keypoints they
+    # carry. Every refusal below is decided from what it reported, rather than
+    # from an import mosaic must not make.
+    # A cancel raised while the weights load is answered by killing the probe,
+    # the same way it is answered during tracking. The translation is local
+    # because this call happens before `run_tracker` opens, and it is what makes
+    # a cancelled attempt read as cancelled rather than failed.
+    cancel = cancel_token if cancel_token is not None else _context_token(ctx)
+    try:
+        probe = probe_ultralytics(
+            resolved_model.path,
+            tracker=tracker,
+            idle_timeout=idle_timeout,
+            max_runtime=max_runtime,
+            conda_env=ultralytics_conda_env,
+            bin_path=ultralytics_bin,
+            cancel_check=cancel.is_cancelled if cancel is not None else None,
+        )
+    except ProcessCancelled as exc:
+        raise Cancelled() from exc
+    require_ultralytics(probe, tracker)
+    weights_task = require_supported_task(probe.model_task)
+    if weights_task != task:
+        raise UnsupportedTaskError(
+            f"{resolved_model.path} is a {weights_task!r} model but the run "
+            f"declares task={task!r}. The declared task is part of the run "
+            "identifier, so it has to match what the weights actually are."
+        )
 
     settings = ultralytics_settings(
         model_id=resolved_model.model_id,
@@ -335,6 +390,9 @@ def run_ultralytics(
             "model_id": resolved_model.model_id,
             "task": task,
             "tracker": tracker,
+            # Which Ultralytics ran is a property of the machine, so it is
+            # recorded beside the variant as provenance and enters no digest.
+            "ultralytics_version": probe.ultralytics_version,
         },
     )
     scope = ds.resolve_media_scope(groups, sequences, entries)
@@ -349,13 +407,14 @@ def run_ultralytics(
     # and Ultralytics reads it exactly once, on the first tracking call.
     tracker_yaml = write_tracker_yaml(
         minted.run_root / TRACKER_CONFIG_NAME,
-        effective_tracker_table(tracker, tracker_config),
+        effective_tracker_table(probe.installed_tracker_table, tracker_config),
     )
-
-    session: TrackSession | None = None
+    # Mosaic owns the raw-parquet column contract -- the converter that reads the
+    # table is mosaic's -- so the runner is told the columns rather than deriving
+    # them. One list for the run: the keypoint count belongs to the model.
+    columns = list(raw_columns(probe.n_keypoints))
 
     def track_one(job: EntryJob) -> UltralyticsIndexRow | None:
-        nonlocal session
         item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
         predictions_path = work_dir / f"{item.key}{PREDICTIONS_SUFFIX}"
 
@@ -372,42 +431,56 @@ def run_ultralytics(
             clear_outputs(work_dir, ULTRALYTICS_KIND, "track")
             phase_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
-            if session is None:
-                session = load_tracking_model(
-                    resolved_model.path,
-                    tracker_yaml=tracker_yaml,
+            # The runner opens the path itself, so an imgstore recording resolves
+            # to the plain video export-store wrote for it. Resolved here rather
+            # than before the reuse gate: an entry already tracked needs no
+            # export, and demanding one would fail a re-run over finished work.
+            tool_input = resolve_tool_input(job.ds, item, kind=ULTRALYTICS_KIND)
+            # The facts have to describe the file the tool will open, and the
+            # index row measured the source. For an exported store those are two
+            # files, so the indexed facts travel only when the resolved path is
+            # the source itself; otherwise the export is probed and gated on its
+            # own. The gate is mosaic's alone -- the runner cannot call it.
+            facts = verified_read_facts(
+                tool_input,
+                item.facts if tool_input == item.video_path else None,
+                "analysis",
+            )[0]
+            result = run_ultralytics_tool(
+                TrackRequest(
+                    model_path=str(resolved_model.path),
+                    video_path=str(tool_input),
+                    output_parquet=str(predictions_path),
+                    tracker_yaml=str(tracker_yaml),
+                    # Ultralytics computes its own run directory eagerly even
+                    # with nothing saved, so it is pinned at the run root rather
+                    # than left to walk the shared `runs/` tree.
+                    project_dir=str(minted.run_root),
+                    columns=columns,
+                    n_keypoints=probe.n_keypoints,
                     task=task,
                     conf=conf,
                     iou=iou,
                     imgsz=imgsz,
                     max_det=max_det,
-                    classes=classes,
+                    classes=list(classes) if classes is not None else None,
                     agnostic_nms=agnostic_nms,
                     device=device,
                     precision=precision,
-                    work_dir=minted.run_root,
-                )
-            # Every entry starts from a clean tracker: pools, Kalman state, the
-            # camera-motion history and the shared identity counter.
-            reset_trackers(session)
-            result = run_ultralytics_track(
-                session,
-                item.video_path,
-                predictions_path,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                frame_step=frame_step,
-                batch_size=batch_size,
-                prefetch=prefetch,
-                facts=item.facts,
-                on_tick=tick_activity(
-                    seq_ctx,
-                    work_dir,
-                    phase_claim,
-                    idle_timeout,
-                    phase="track",
-                    key=item.key,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    frame_step=frame_step,
+                    batch_size=batch_size,
+                    prefetch=prefetch,
+                    media_facts=dataclasses.asdict(facts),
                 ),
+                work_dir=work_dir,
+                idle_timeout=idle_timeout,
+                max_runtime=max_runtime,
+                conda_env=ultralytics_conda_env,
+                bin_path=ultralytics_bin,
+                cancel_check=seq_ctx.cancel_token.is_cancelled,
+                on_output=phase_activity(seq_ctx, work_dir, phase_claim, idle_timeout),
             )
             marker = record_phase(
                 job.ds,

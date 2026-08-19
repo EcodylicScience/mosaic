@@ -1,19 +1,21 @@
 """End-to-end ``run_ultralytics`` reuse and provenance, without Ultralytics.
 
-The three module-level seams in ``run.py`` are replaced with a recording fake
-that writes a small, converter-readable predictions parquet. That exercises the
-whole run protocol -- content ``run_id``, phase-marker reuse, the bridge, both
-index writers -- with no weights, no torch and no GPU, so this file runs in the
-default CI environment.
+The two module-level seams in ``run.py`` are replaced with a recording fake: a
+probe reporting what an environment holds, and a track call writing a small,
+converter-readable predictions parquet. That exercises the whole run protocol --
+content ``run_id``, phase-marker reuse, the bridge, both index writers -- with no
+Ultralytics environment, no weights and no GPU, so this file runs in the default
+CI environment.
 
-The fake records into one shared event log, so the *order* of resets and tracks
-is assertable: every entry must be reset before it is tracked, which is what
-keeps a run's identities independent of what ran before it in the process.
+Everything between the two seams is the real thing: the refusals are decided
+from the reported probe, the merged tracker table is written as YAML, and each
+entry's request is captured, which is what lets the facts the tool would open its
+file with be asserted.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,13 +26,25 @@ import pytest
 import mosaic.tracking.ultralytics_track.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.markers import read_phase_marker
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
+from mosaic.tracking.common.scope import TrackerWorkItem
+from mosaic.tracking.common.tool_input import StoreExportMissingError
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    ProbeResponse,
+    TrackRequest,
+)
 from mosaic.tracking.ultralytics_track.dataset_runs import (
     ultralytics_index_path,
     ultralytics_run_root,
 )
-from mosaic.tracking.ultralytics_track.run import UltralyticsTrackResult
+from mosaic.tracking.ultralytics_track.run import (
+    TRACK_REQUEST_NAME,
+    TRACK_RESPONSE_NAME,
+    UltralyticsTrackResult,
+)
+from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
 from tests.helpers import write_media_index
 
@@ -65,7 +79,7 @@ def model(tmp_path: Path) -> Path:
 
 
 def _write_predictions(path: Path, *, n_frames: int = 4, n_ids: int = 2) -> None:
-    """A predictions parquet in the shape the tracker writes."""
+    """A predictions parquet in the shape the runner writes."""
     rows: list[list[float]] = []
     for frame in range(n_frames):
         for track in range(1, n_ids + 1):
@@ -82,57 +96,59 @@ def _write_predictions(path: Path, *, n_frames: int = 4, n_ids: int = 2) -> None
     table.to_parquet(path, index=False)
 
 
+def _probe_response(model_task: str = "pose") -> ProbeResponse:
+    """What a healthy environment reports for the fixture's weights.
+
+    ``installed_tracker_table`` is empty, so the merge mosaic writes is its own
+    resolved table -- exactly the case a fresh Ultralytics with no extra settings
+    produces, and the one that makes the written YAML assertable.
+    """
+    return ProbeResponse(
+        has_ultralytics=True,
+        has_lap=True,
+        ultralytics_version="8.4.63",
+        tracker_names=list(TRACKER_NAMES),
+        model_task=model_task,
+        n_keypoints=_N_KEYPOINTS,
+        installed_tracker_table={},
+    )
+
+
 @dataclass
 class FakeUltralytics:
-    """Recording stand-in for the three Ultralytics seams."""
+    """Recording stand-in for the two runner seams."""
 
     events: list[tuple[str, str]] = field(default_factory=list)
+    requests: list[TrackRequest] = field(default_factory=list)
+    work_dirs: list[Path] = field(default_factory=list)
     tracked: list[Path] = field(default_factory=list)
     n_frames: int = 4
     n_ids: int = 2
 
-    def load(self, model_path: Path, **_kwargs: object) -> object:
-        self.events.append((str(model_path), "load"))
-        return object()
-
-    def reset(self, _session: object) -> None:
-        self.events.append((self._current, "reset"))
+    def probe(self, model_path: Path | str, **_kwargs: object) -> ProbeResponse:
+        self.events.append((str(model_path), "probe"))
+        return _probe_response()
 
     def track(
-        self, _session: object, video_path: Path, out_parquet: Path, **_kwargs: object
+        self, request: TrackRequest, *, work_dir: Path, **_kwargs: object
     ) -> UltralyticsTrackResult:
-        self.tracked.append(Path(video_path))
-        self.events.append((Path(out_parquet).name, "track"))
-        _write_predictions(Path(out_parquet), n_frames=self.n_frames, n_ids=self.n_ids)
+        self.requests.append(request)
+        self.work_dirs.append(Path(work_dir))
+        self.tracked.append(Path(request.video_path))
+        out_parquet = Path(request.output_parquet)
+        self.events.append((out_parquet.name, "track"))
+        _write_predictions(out_parquet, n_frames=self.n_frames, n_ids=self.n_ids)
         return UltralyticsTrackResult(
-            predictions_path=Path(out_parquet),
-            n_frames=self.n_frames,
-            n_ids=self.n_ids,
+            predictions_path=out_parquet, n_frames=self.n_frames, n_ids=self.n_ids
         )
-
-    _current: str = ""
 
 
 @pytest.fixture
 def ultralytics(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeUltralytics]:
     fake = FakeUltralytics()
-    monkeypatch.setattr(dr, "require_ultralytics", lambda _tracker: None)
-    monkeypatch.setattr(dr, "effective_tracker_table", lambda _t, resolved: resolved)
-    monkeypatch.setattr(
-        dr, "write_tracker_yaml", lambda path, table: _write_yaml(path, table)
-    )
-    monkeypatch.setattr(dr, "load_tracking_model", fake.load)
-    monkeypatch.setattr(dr, "reset_trackers", fake.reset)
-    monkeypatch.setattr(dr, "run_ultralytics_track", fake.track)
+    monkeypatch.setattr(dr, "probe_ultralytics", fake.probe)
+    monkeypatch.setattr(dr, "run_ultralytics_tool", fake.track)
     yield fake
-
-
-def _write_yaml(path: Path, table: object) -> Path:
-    import json
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(json.dumps(table, sort_keys=True))
-    return path
 
 
 def _index(ds: Dataset) -> pd.DataFrame:
@@ -162,6 +178,12 @@ def test_a_fresh_run_tracks_and_bridges(
     assert str(row["producer"]) == "ultralytics"
     assert str(row["producer_run_id"]) == run_id
     assert int(row["n_rows"]) == 8  # 4 frames x 2 tracks
+
+    # The facts travel with the request, describing the file the tool opens --
+    # here the source itself, so they are the ones the index row measured.
+    request = ultralytics.requests[0]
+    assert Path(request.video_path) == ds.get_root("media_raw") / "vid1.mp4"
+    assert request.media_facts["width"] == 640
 
     index = _index(ds)
     assert str(index.iloc[0]["tracker"]) == "bytetrack"
@@ -254,13 +276,10 @@ def test_execution_knobs_do_not_move_the_run(
 ) -> None:
     """Where and how it ran must not name what it produced."""
     base = dr.run_ultralytics(ds, model_path=str(model))
-    for kwargs in (
-        {"device": "cpu"},
-        {"precision": "fp16"},
-        {"batch_size": 1},
-        {"prefetch": False},
-    ):
-        assert dr.run_ultralytics(ds, model_path=str(model), **kwargs) == base
+    assert dr.run_ultralytics(ds, model_path=str(model), device="cpu") == base
+    assert dr.run_ultralytics(ds, model_path=str(model), precision="fp16") == base
+    assert dr.run_ultralytics(ds, model_path=str(model), batch_size=1) == base
+    assert dr.run_ultralytics(ds, model_path=str(model), prefetch=False) == base
 
 
 # --- a killed run leaves nothing trusted ------------------------------------
@@ -269,19 +288,19 @@ def test_execution_knobs_do_not_move_the_run(
 def test_an_interrupted_track_is_not_trusted(
     ds: Dataset, model: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(dr, "require_ultralytics", lambda _tracker: None)
-    monkeypatch.setattr(dr, "effective_tracker_table", lambda _t, resolved: resolved)
-    monkeypatch.setattr(dr, "write_tracker_yaml", _write_yaml)
-    monkeypatch.setattr(dr, "load_tracking_model", lambda *a, **k: object())
-    monkeypatch.setattr(dr, "reset_trackers", lambda _s: None)
+    def steady_probe(_model_path: Path | str, **_kwargs: object) -> ProbeResponse:
+        return _probe_response()
+
+    monkeypatch.setattr(dr, "probe_ultralytics", steady_probe)
 
     def dying_track(
-        _session: object, _video: Path, out_parquet: Path, **_kwargs: object
+        request: TrackRequest, *, work_dir: Path, **_kwargs: object
     ) -> UltralyticsTrackResult:
-        _write_predictions(Path(out_parquet), n_frames=1, n_ids=1)  # a partial file
+        # A partial file, as a killed runner would leave behind.
+        _write_predictions(Path(request.output_parquet), n_frames=1, n_ids=1)
         raise RuntimeError("killed mid-video")
 
-    monkeypatch.setattr(dr, "run_ultralytics_track", dying_track)
+    monkeypatch.setattr(dr, "run_ultralytics_tool", dying_track)
     with pytest.raises(RuntimeError):
         _ = dr.run_ultralytics(ds, model_path=str(model))
 
@@ -292,7 +311,7 @@ def test_an_interrupted_track_is_not_trusted(
 
     # A working run then does the work: the partial file is not reused.
     fake = FakeUltralytics()
-    monkeypatch.setattr(dr, "run_ultralytics_track", fake.track)
+    monkeypatch.setattr(dr, "run_ultralytics_tool", fake.track)
     _ = dr.run_ultralytics(ds, model_path=str(model))
     assert len(fake.tracked) == 1
     assert len(read_tracks_index(ds)) == 1
@@ -325,31 +344,133 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     assert len(ultralytics.tracked) == 1
 
 
-# --- every entry starts from a clean tracker --------------------------------
+# --- one entry, one process, one working directory --------------------------
 
 
-def test_every_entry_is_reset_before_it_is_tracked(
+def test_every_entry_is_tracked_once_into_its_own_directory(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """Ordering, which is what a fake can prove.
+    """Ordering and addressing, which is what a fake can prove.
 
-    That the reset *works* -- that identity numbering restarts -- is pinned in
-    ``test_ultralytics_preflight.py`` against the real backends, because a fake
-    asserting "ids start at 1" would only be asserting that the fake does.
+    Each entry is tracked exactly once, in scope order, into the working
+    directory it was claimed under. Track identity restarting per entry needs no
+    assertion here and no reset call: the runner tracks one video per process, so
+    the counter every backend numbers from starts at zero by construction.
     """
     write_media_index(ds, ["vid1", "vid2"])
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    run_id = dr.run_ultralytics(ds, model_path=str(model))
 
-    kinds = [kind for _name, kind in ultralytics.events if kind in {"reset", "track"}]
-    assert kinds == ["reset", "track", "reset", "track"]
-    assert len(ultralytics.tracked) == 2
+    run_root = ultralytics_run_root(ds, run_id)
+    assert ultralytics.work_dirs == [run_root / "vid1", run_root / "vid2"]
+    assert [Path(request.output_parquet) for request in ultralytics.requests] == [
+        run_root / "vid1" / "vid1.predictions.parquet",
+        run_root / "vid2" / "vid2.predictions.parquet",
+    ]
+    assert [kind for _name, kind in ultralytics.events] == ["probe", "track", "track"]
     assert len(read_tracks_index(ds)) == 2
 
 
 def test_an_empty_scope_still_returns_the_run_it_minted(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """And loads no model on the way -- a matched-nothing run pays for nothing."""
+    """And spawns no tracking process -- a matched-nothing run tracks nothing.
+
+    It does probe. The probe is what validates the weights and the backend, and
+    that has to happen before the run is named, whatever the scope turns out to
+    hold.
+    """
     run_id = dr.run_ultralytics(ds, model_path=str(model), sequences=["absent"])
     assert run_id.startswith("ultralytics.8.4-")
-    assert ultralytics.events == []
+    assert ultralytics.tracked == []
+    assert [kind for _name, kind in ultralytics.events] == ["probe"]
+
+
+def test_a_re_run_clears_the_previous_attempts_request_and_response(
+    ds: Dataset, model: Path, ultralytics: FakeUltralytics
+) -> None:
+    """The two JSON names are spelled twice, and this is what ties them.
+
+    ``core`` cannot import ``tracking``, so the phase's clear globs in
+    ``TRACKING_ROOTS`` restate the strings ``run.py`` declares. Rename one side
+    and nothing else notices: the glob stops matching, and a re-run runs beside
+    the previous attempt's request rather than replacing it.
+    """
+    globs = TRACKING_ROOTS["ultralytics"].clear_globs("track")
+    assert TRACK_REQUEST_NAME in globs
+    assert TRACK_RESPONSE_NAME in globs
+
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
+    run_id = dr.run_ultralytics(ds, model_path=str(model))
+    work_dir = ultralytics_run_root(ds, run_id) / "vid1"
+    stale = [work_dir / TRACK_REQUEST_NAME, work_dir / TRACK_RESPONSE_NAME]
+    for path in stale:
+        _ = path.write_text("{}")
+
+    # Replaced bytes under the same path, which is what invalidates the marker
+    # and sends the entry back through the phase.
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
+    _ = dr.run_ultralytics(ds, model_path=str(model))
+
+    assert [path for path in stale if path.exists()] == []
+
+
+# --- what path the tool is given, and what facts describe it ----------------
+
+
+def _point_at_a_store(ds: Dataset, sequence: str, store: Path) -> Path:
+    """Re-address *sequence*'s indexed media at an imgstore recording.
+
+    A store is a directory holding a ``metadata.yaml`` naming ``__store``, which
+    is all ``is_imgstore`` reads -- so this needs no chunk files and no imgstore
+    package.
+    """
+    store.mkdir(parents=True, exist_ok=True)
+    _ = (store / "metadata.yaml").write_text("__store: {}\n")
+    index_path = ds.get_root(ds.resolve_media_root()) / "index.csv"
+    table = pd.read_csv(index_path)
+    is_entry = table["sequence"] == sequence
+    table.loc[is_entry, "abs_path"] = ds.relative_to_root(store)
+    table.loc[is_entry, "media_type"] = "imgstore"
+    table.to_csv(index_path, index=False)
+    return store
+
+
+def test_a_store_with_no_export_refuses_and_names_the_command(
+    ds: Dataset, model: Path, ultralytics: FakeUltralytics
+) -> None:
+    """The tool opens a path, and no tool opens a directory of chunk files."""
+    _ = _point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
+
+    with pytest.raises(StoreExportMissingError, match="export-store"):
+        _ = dr.run_ultralytics(ds, model_path=str(model))
+    assert ultralytics.tracked == []
+
+
+def test_the_facts_describe_the_file_the_tool_will_open(
+    ds: Dataset,
+    model: Path,
+    ultralytics: FakeUltralytics,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    write_cfr_mp4: Callable[..., None],
+) -> None:
+    """A resolved export is a different file from the one the index measured.
+
+    ``resolve_tool_input`` answers with the export a store was written out to, so
+    passing the row's facts across would describe the store. The indexed row says
+    640x480; the export here is 64x48, which is what tells the two apart.
+    """
+    export = tmp_path / "exports" / "vid1.mp4"
+    write_cfr_mp4(export, frames=6, size=(64, 48))
+
+    def resolved_export(_ds: Dataset, _item: TrackerWorkItem, *, kind: str) -> Path:
+        return export
+
+    monkeypatch.setattr(dr, "resolve_tool_input", resolved_export)
+
+    _ = dr.run_ultralytics(ds, model_path=str(model))
+
+    request = ultralytics.requests[0]
+    assert Path(request.video_path) == export
+    assert request.media_facts["width"] == 64
+    assert request.media_facts["height"] == 48

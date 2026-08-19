@@ -17,11 +17,14 @@ distributable under its own terms, so what it does is spawn a second program in
 the environment you build and exchange JSON files and command-line arguments
 with it -- and two programs exchanging files are two programs.
 
-**The separation is not yet complete.**
-`src/mosaic/tracking/ultralytics_track/run.py` still imports Ultralytics in four
-function bodies and tracks in mosaic's own process. `runner/` is what the
-tracker is rewired to spawn instead; until that lands, this section describes
-where the code is going, and the paragraph you are reading goes when it arrives.
+`src/mosaic/tracking/ultralytics_track/run.py` is mosaic's side of that
+exchange: it locates the environment and launches `runner/` inside it, and it
+imports no Ultralytics.
+
+Tracking is what runs out of process. `src/mosaic/tracking/pose_training/` --
+YOLO and POLO training, and single-model inference -- still imports Ultralytics
+in mosaic's own process, so the environments here do not yet cover every path
+that reaches it.
 
 The same reasoning puts keypoint-MoSeq in
 [`src/mosaic/behavior/feature_library/external/`](../../behavior/feature_library/external/README.md);
@@ -96,9 +99,9 @@ package shadowing the real `ultralytics` if it ever reaches `sys.path`.
   row extraction. Imported from **both** environments, so it depends on the
   standard library, numpy and pydantic and nothing else. It imports neither
   `ultralytics` nor `mosaic`.
-- `runner/ultralytics_runner.py` -- the program that imports Ultralytics, and the
-  only one that does once the tracker is rewired. Two subcommands, each reading
-  one JSON request file and writing one JSON response file:
+- `runner/ultralytics_runner.py` -- the program that imports Ultralytics, and
+  the only one `mosaic track ultralytics` reaches that does. Two subcommands,
+  each reading one JSON request file and writing one JSON response file:
 
   ```bash
   .venv/bin/python ../runner/ultralytics_runner.py probe --request req.json --out resp.json

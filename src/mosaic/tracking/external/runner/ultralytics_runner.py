@@ -7,11 +7,6 @@ command-line arguments, which is what keeps them two programs. Nothing here may
 grow a ``mosaic`` import; the shared vocabulary lives in ``ultralytics_protocol``
 beside this file, which imports neither side.
 
-The separation is not yet complete:
-``mosaic/tracking/ultralytics_track/run.py`` still imports Ultralytics in four
-function bodies and tracks in mosaic's own process. This file is what the
-tracker is rewired to spawn instead, and this paragraph goes when it is.
-
 Invoked as::
 
     <env>/bin/python ultralytics_runner.py probe --request <req.json> --out <resp.json>
@@ -58,7 +53,7 @@ import tempfile
 import threading
 from collections.abc import Generator, Iterator, Sequence
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -72,13 +67,20 @@ from ultralytics_protocol import (
     ProbeResponse,
     ProgressEvent,
     ProgressEventKind,
-    QuantizeSpelling,
     Result,
     TrackerSetting,
     TrackRequest,
     TrackResponse,
     rows_from_result,
 )
+
+QuantizeSpelling: TypeAlias = Literal["quantize", "half"]
+"""Which keyword the installed Ultralytics takes half precision under.
+
+Declared here rather than in the protocol because it never crosses the wire:
+mosaic sends a precision and this program spells it for the Ultralytics it is
+running against, so nothing on the other side has an opinion about it.
+"""
 
 
 # Process umask, read once at import (single-threaded startup). Used to restore
@@ -191,7 +193,6 @@ def run_probe(request: ProbeRequest) -> ProbeResponse:
             model_task="",
             n_keypoints=0,
             installed_tracker_table={},
-            quantize_spelling=None,
         )
 
     import ultralytics
@@ -210,7 +211,6 @@ def run_probe(request: ProbeRequest) -> ProbeResponse:
         installed_tracker_table=_installed_tracker_table(
             Path(ultralytics.__file__).parent, request.tracker
         ),
-        quantize_spelling=_quantize_spelling(),
     )
 
 
@@ -256,7 +256,7 @@ def _track_kwargs(request: TrackRequest) -> dict[str, object]:
         "show": False,
         # Pin the run directory even though nothing is saved: Ultralytics computes
         # it eagerly, and an unpinned one walks the shared `runs/` tree.
-        "project": request.work_dir,
+        "project": request.project_dir,
         "name": "ultralytics",
         "exist_ok": True,
         **_precision_kwarg(request.precision),
