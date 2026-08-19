@@ -27,6 +27,19 @@ dependencies = [
     # undeclared it gets pip-installed mid-run -- a network write inside a
     # queued job, and a hard failure in a locked environment.
     "lap>=0.5.12",
+    # Declared explicitly, and headless, because `ultralytics` requires
+    # `opencv-python` -- the GUI build -- and the `augment` extra below requires
+    # `opencv-python-headless` through albumentations. Those are two distributions
+    # shipping one import package: installed together they overwrite each other's
+    # files and leave two vendored ffmpeg builds in a single `cv2`, which is what
+    # crashes a process nondeterministically. Nothing here needs a GUI build:
+    # `ultralytics` is the only requirement that asks for one, mosaic-media reads
+    # video through `av`, and the runner's sole cv2 call is `cv2.imwrite`. So the
+    # GUI wheel is excluded below and this is what serves every build, augmented
+    # or not -- and it must stay declared here rather than arriving with the
+    # extra, or a plain sync would resolve no cv2 at all and `import ultralytics`
+    # would fail outright.
+    "opencv-python-headless>=4.6",
     "mosaic-media[io]>=0.3.0,<0.4.0",
     "numpy>=1.22",
     "pandas>=1.5",
@@ -34,3 +47,23 @@ dependencies = [
     "pydantic>=2.12",
     "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+# Photometric augmentation for training, opted into with `uv sync --extra augment`.
+# Ultralytics builds its `Albumentations` transform whenever the package is
+# importable and swallows the ImportError when it is not, so a build carrying this
+# additionally applies Blur, MedianBlur, ToGray and CLAHE at p=0.01 to every
+# training run. Nothing records which way a run went, so the choice belongs to
+# whoever builds the environment -- which is why it is an extra here rather than a
+# dependency, and why it is here at all rather than in mosaic's own pyproject: it
+# is read by whichever process runs the trainer, and that process is this one.
+augment = ["albumentations>=1.3"]
+
+[tool.uv]
+# The GUI OpenCV wheel, excluded from every build of this environment. It is
+# reachable only as an `ultralytics` requirement, and `opencv-python-headless`
+# above satisfies every `import cv2` in this environment; leaving both resolvable
+# is what puts two builds of one import package side by side. A never-true marker
+# rather than a removal, so the requirement is still recorded in the lock and a
+# reader can see it was answered rather than missed.
+override-dependencies = ["opencv-python ; sys_platform == 'never'"]

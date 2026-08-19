@@ -54,9 +54,15 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
 pytestmark = pytest.mark.tracker
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_ENVIRONMENT_PYPROJECT = (
-    _REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "ultralytics-env"
-) / "pyproject.toml"
+_EXTERNAL = _REPO_ROOT / "src" / "mosaic" / "tracking" / "external"
+ENVIRONMENT_DIRECTORIES: Final = ("ultralytics-env", "polo-env")
+"""Every environment that runs an Ultralytics-family library, by directory.
+
+Two, because POLO ships under the distribution name ``ultralytics`` and so cannot
+share one with upstream. Every claim below is made of both: they run the same
+program, so a declaration that landed in one and not the other is a difference
+nothing else would report.
+"""
 
 _REQUIREMENTS: Final = TypeAdapter(list[str])
 """Reads a ``[project] dependencies`` array as the list of strings it is.
@@ -69,8 +75,11 @@ nothing here has to narrow ``tomllib``'s untyped document by hand.
 # --- the declaration, checkable with nothing installed ---------------------
 
 
-def test_the_ultralytics_environment_declares_lap() -> None:
-    """``lap`` is declared by the environment that will run Ultralytics.
+@pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
+def test_an_external_environment_declares_what_its_runner_needs(
+    directory: str,
+) -> None:
+    """Every requirement whose absence is invisible until a run is under way.
 
     ``lap`` is the linear-assignment solver every one of the six backends reaches
     from module scope in ``ultralytics.trackers.utils.matching``, and it appears
@@ -78,20 +87,87 @@ def test_the_ultralytics_environment_declares_lap() -> None:
     run* -- a network write inside a queued job, and an outright failure in a
     locked environment.
 
-    Asked of the environment's own ``pyproject.toml`` rather than of mosaic's,
-    because mosaic's environment is no longer where Ultralytics runs. With
-    ``lap`` present the hazard is invisible, so reading the declaration is the
-    only thing that can catch its removal.
+    ``opencv-python-headless`` is the environment's only ``cv2``, and it has to be
+    declared here rather than arriving with the ``augment`` extra: the override
+    below excludes the GUI wheel ``ultralytics`` asks for, so without this
+    declaration a plain ``uv sync`` resolves no ``cv2`` provider at all and
+    ``import ultralytics`` fails before any subcommand runs.
+
+    Asked of the environments' own manifests rather than of mosaic's, because
+    mosaic's environment is no longer where any of this runs. With each of them
+    present the hazard is invisible, so reading the declaration is the only thing
+    that can catch a removal.
     """
-    document = tomllib.loads(_ENVIRONMENT_PYPROJECT.read_text())
+    manifest = _EXTERNAL / directory / "pyproject.toml"
+    document = tomllib.loads(manifest.read_text())
     declared = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
 
     assert any(spec.startswith("ultralytics") for spec in declared), (
-        f"{_ENVIRONMENT_PYPROJECT} declares no ultralytics; this test has lost "
-        "its subject"
+        f"{manifest} declares no ultralytics; this test has lost its subject"
     )
     assert any(spec.startswith("lap") for spec in declared), (
-        f"{_ENVIRONMENT_PYPROJECT} runs Ultralytics tracking but does not declare lap"
+        f"{manifest} runs Ultralytics tracking but does not declare lap"
+    )
+    assert any(spec.startswith("opencv-python-headless") for spec in declared), (
+        f"{manifest} declares no cv2 provider, so `import ultralytics` fails "
+        "there: the GUI wheel it requires is excluded by this environment's own "
+        "override"
+    )
+    assert not any(spec.startswith("opencv-python>") for spec in declared), (
+        f"{manifest} declares the GUI OpenCV wheel beside the headless one; two "
+        "distributions shipping one import package overwrite each other and leave "
+        "two vendored ffmpeg builds in a single cv2"
+    )
+
+
+@pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
+def test_an_external_environment_offers_augmentation_without_a_second_cv2(
+    directory: str,
+) -> None:
+    """The albumentations opt-in follows the process that reads it, and costs no cv2.
+
+    Ultralytics builds its ``Albumentations`` transform whenever the package is
+    importable, so this changes what a training run does and stays an extra. What
+    it must not do is bring ``opencv-python-headless``'s rival with it: albucore
+    requires the headless build and Ultralytics requires the GUI one, and pip and
+    uv both install the pair without complaint.
+    """
+    manifest = _EXTERNAL / directory / "pyproject.toml"
+    document = tomllib.loads(manifest.read_text())
+
+    extras = document["project"]["optional-dependencies"]
+    augment = _REQUIREMENTS.validate_python(extras["augment"])
+    assert [spec.split(">")[0] for spec in augment] == ["albumentations"]
+
+    overrides = _REQUIREMENTS.validate_python(
+        document["tool"]["uv"]["override-dependencies"]
+    )
+    assert any(
+        spec.startswith("opencv-python ") and "never" in spec for spec in overrides
+    ), (
+        f"{manifest} does not exclude the GUI OpenCV wheel, so a build with the "
+        "augment extra installs two cv2 providers"
+    )
+
+
+@pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
+def test_a_locked_external_environment_resolves_one_cv2(directory: str) -> None:
+    """The declaration above, confirmed against what the lock actually pins.
+
+    A manifest says what was asked for; the lock says what a build gets, and it
+    is the lock ``uv sync`` reads. The GUI wheel is expected to be *present* and
+    unbuildable -- the override records it rather than removing it -- so this
+    asserts the marker rather than the absence.
+    """
+    lock = (_EXTERNAL / directory / "uv.lock").read_text()
+
+    assert 'name = "opencv-python-headless"' in lock, (
+        f"{directory}/uv.lock pins no headless OpenCV, so a synced environment "
+        "has no cv2 for ultralytics to import"
+    )
+    assert '{ name = "opencv-python", marker = "sys_platform == \'never\'" }' in lock, (
+        f"{directory}/uv.lock does not record the GUI OpenCV wheel as excluded, "
+        "so a build can install it beside the headless one"
     )
 
 
