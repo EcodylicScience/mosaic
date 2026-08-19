@@ -895,7 +895,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |
 | `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  |
 | `k` | `integer` | `100` | >= `1` |
 | `random_state` | `integer` | `42` |  |
@@ -904,19 +904,6 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 | `device` | `string` | `"cpu"` |  |
 | `label_artifact_points` | `boolean` | `true` |  |
 | `pair_filter` | `NNResult` \| `None` | `null` |  |
-
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -960,6 +947,19 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | `numeric_only` | `boolean` | `true` |  |
     | `frame_column` | `string` \| `None` | `null` |  |
 
+??? note "`TemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
+
 ### `global-scaler`
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
@@ -968,21 +968,8 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |
 | `model` | `ScalerModelArtifact` \| `None` | _constructed_ |  |
-
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1015,6 +1002,19 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"scaler.joblib"` |  |
 
+??? note "`TemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
+
 ### `global-tsne`
 
 Version `0.4` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE`
@@ -1023,7 +1023,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |
 | `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  |
 | `random_state` | `integer` | `42` |  |
 | `perplexity` | `integer` | `50` | >= `1` |
@@ -1031,19 +1031,6 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 | `n_jobs` | `integer` | `8` | >= `1` |
 | `fit` | `TSNEFitConfig` | _constructed_ |  |
 | `mapping` | `TSNEMapConfig` | _constructed_ |  |
-
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1098,6 +1085,19 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | `load` | `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` | `"embedding.joblib"` |  |
 
+??? note "`TemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
+
 ### `global-ward`
 
 Version `0.3` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering`
@@ -1106,24 +1106,11 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |
 | `model` | `WardModelArtifact` \| `None` | _constructed_ |  |
 | `n_clusters` | `integer` | `20` | >= `1` |
 | `method` | `string` | `"ward"` |  |
 | `pair_filter` | `NNResult` \| `None` | `null` |  |
-
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1153,6 +1140,19 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | `drop_columns` | list of `string` \| `None` | `null` |  |
     | `numeric_only` | `boolean` | `true` |  |
     | `frame_column` | `string` \| `None` | `null` |  |
+
+??? note "`TemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
 
 ??? note "`WardModelArtifact`"
 
@@ -1235,7 +1235,7 @@ Supervised temporal action segmentation via lightning-action.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |
 | `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  |
 | `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  |
 | `num_hid_units` | `integer` | `64` | >= `1` |
@@ -1255,25 +1255,25 @@ Supervised temporal action segmentation via lightning-action.
 | `decision_threshold` | `number` \| `object` \| `None` | `null` |  |
 | `default_class` | `integer` | _required_ |  |
 
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
-
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
     | `kind` | `string` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
+
+??? note "`LabeledTemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
 
 ??? note "`LightningActionModelArtifact`"
 
@@ -1307,7 +1307,7 @@ XGBoost behavior classifier as a pipeline feature.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `templates` | `ArtifactSpec_ParquetLoadSpec_DataFrame` \| `None` | _constructed_ |  |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |
 | `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  |
 | `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  |
 | `decision_threshold` | `number` \| `object` \| `None` | `null` |  |
@@ -1322,25 +1322,25 @@ XGBoost behavior classifier as a pipeline feature.
 | `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` |
 | `random_state` | `integer` | `42` |  |
 
-??? note "`ArtifactSpec_ParquetLoadSpec_DataFrame`"
-
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | _required_ |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _required_ |  |
-    | `pattern` | `string` | `""` |  |
-
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
     | `kind` | `string` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
+
+??? note "`LabeledTemplatesRef`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |
+    | `run_id` | `string` \| `None` | `null` |  |
+    | `execution_id` | `string` \| `None` | `null` |  |
+    | `cache_hit` | `boolean` | `false` |  |
+    | `failed_entries` | list of `string` | `[]` |  |
+    | `entries_written` | `integer` | `0` |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |
 
 ??? note "`ParquetLoadSpec`"
 

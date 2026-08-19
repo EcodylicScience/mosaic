@@ -199,6 +199,73 @@ def test_a_reference_in_a_field_the_model_does_not_declare_is_refused() -> None:
     assert "no_such_field" in problem.message
 
 
+def test_an_artifact_reference_that_would_resolve_by_glob_is_refused() -> None:
+    """A wildcard names a run root's contents, not one artifact.
+
+    The producer's run directory holds one per-entry output parquet per sequence
+    beside its named artifacts, so a glob resolves whichever sorts first and the
+    step fits on a per-entry table while reporting success. Refused here because
+    it needs no dataset: the author hears it before the producing step has run.
+    """
+    problem = _at(
+        {
+            "steps": [
+                SPEED_STEP,
+                {
+                    "id": "templates",
+                    "type": "feature",
+                    "feature": "extract-templates",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"n_templates": 8},
+                },
+                {
+                    "id": "tsne",
+                    "type": "feature",
+                    "feature": "global-tsne",
+                    "inputs": [{"step": "speed"}],
+                    "params": {
+                        "templates": {"step": "templates", "pattern": "*.parquet"}
+                    },
+                },
+            ]
+        },
+        "params.templates",
+    )
+    assert "*.parquet" in problem.message
+    assert "sorts first" in problem.message
+
+
+def test_an_artifact_reference_with_no_pattern_is_admissible() -> None:
+    """The declared type names the file, so the recipe does not have to.
+
+    This is the shape that used to validate, plan, run, and read a per-entry
+    output. It stays admissible -- what changed is where it resolves to.
+    """
+    reject_unless_valid(
+        Recipe.model_validate(
+            {
+                "steps": [
+                    SPEED_STEP,
+                    {
+                        "id": "templates",
+                        "type": "feature",
+                        "feature": "extract-templates",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"n_templates": 8},
+                    },
+                    {
+                        "id": "tsne",
+                        "type": "feature",
+                        "feature": "global-tsne",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"templates": {"step": "templates"}},
+                    },
+                ]
+            }
+        )
+    )
+
+
 def test_templates_and_model_together_are_refused() -> None:
     """``GlobalModelParams`` allows exactly one source, and validation asks it."""
     problem = _at(

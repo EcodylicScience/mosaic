@@ -7,11 +7,14 @@ from mosaic.core.pipeline._loaders import (
     load_from_spec,
 )
 from mosaic.core.pipeline.types.artifacts import (
+    TEMPLATES_ARTIFACT_NAME,
     ArtifactSpec,
     FeatureLabelsSource,
     JoblibArtifact,
+    LabeledTemplatesRef,
     NpzArtifact,
     ParquetArtifact,
+    TemplatesRef,
 )
 from mosaic.core.pipeline.types.data_config import (
     COLUMNS,
@@ -72,6 +75,7 @@ __all__ = [
     "InputsLike",
     "JoblibArtifact",
     "JoblibLoadSpec",
+    "LabeledTemplatesRef",
     "LabelsSource",
     "LabelsSourceSpec",
     "LoadSpec",
@@ -86,6 +90,8 @@ __all__ = [
     "ResultColumn",
     "TrackInput",
     "TrackInputs",
+    "TEMPLATES_ARTIFACT_NAME",
+    "TemplatesRef",
     "TrackLike",
     "TracksColumn",
     "load_from_spec",

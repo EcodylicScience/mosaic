@@ -57,6 +57,7 @@ from .resolve import (
     resolve_step_spec,
 )
 from .topo import RecipeCycle, topological_order
+from mosaic.core.pipeline.types import ArtifactSpec, Params
 
 if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog
@@ -311,13 +312,15 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         )
     try:
         if isinstance(step, FeatureStepSpec):
-            _ = build_step_feature(spec)
+            built = build_step_feature(spec).params
         else:
-            _ = build_step_op_params(spec)
+            built = build_step_op_params(spec)
     except StepBuildError as exc:
         walk.broken.add(step.id)
         problems.append(Problem(step.id, exc.stage, exc.detail))
         return problems
+
+    problems.extend(_glob_reference_problems(step, name, built))
 
     walk.record(
         step, declared, spec.storage_name if isinstance(step, FeatureStepSpec) else ""
@@ -350,6 +353,45 @@ def _reference_site_problems(step: Step, name: str, kind: str) -> list[Problem]:
                     f"that names a model",
                 )
             )
+    return found
+
+
+_GLOB_METACHARACTERS: Final = ("*", "?", "[")
+
+
+def _glob_reference_problems(step: Step, name: str, built: Params) -> list[Problem]:
+    """Artifact references that would resolve by glob rather than name a file.
+
+    Asked of the *built* params, so the answer covers both halves of the question:
+    a pattern the recipe wrote, and one the consumer's declared type defaulted to.
+    A producer's run root holds one per-entry output parquet per sequence beside
+    whatever it saved, so a glob resolves whichever file sorts first -- which is a
+    per-entry table, and reads downstream as the artifact the author meant.
+
+    Refused here rather than only at run time because this needs no dataset: the
+    author hears it from ``mosaic pipeline validate``, before the producing step
+    has run.
+    """
+    found: list[Problem] = []
+    for field_name in params_step_refs(step.params):
+        value: object = getattr(built, field_name, None)
+        if not isinstance(value, ArtifactSpec):
+            continue
+        pattern = value.pattern
+        if not any(char in pattern for char in _GLOB_METACHARACTERS):
+            continue
+        spelling = '{"step": ..., "pattern": "<filename>"}'
+        found.append(
+            Problem(
+                step.id,
+                f"params.{field_name}",
+                f"{name}'s {field_name!r} would resolve by the glob {pattern!r}. A "
+                f"producer's run directory holds one per-entry output parquet per "
+                f"sequence beside its named artifacts, so a glob resolves whichever "
+                f"file sorts first rather than the artifact meant. Name the file: "
+                f"{spelling}",
+            )
+        )
     return found
 
 

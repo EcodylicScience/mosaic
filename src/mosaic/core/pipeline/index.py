@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
@@ -49,6 +49,71 @@ def missing_outputs_error(
         f"outputs were deleted, recompute the feature (or ds.reindex_features() "
         f"to drop the stale index rows)."
     )
+
+
+_MAX_LISTED_MATCHES: Final = 5
+"""How many matches an ambiguity names before it counts the rest.
+
+A run root holds one output per sequence, so a hundred-sequence dataset would
+otherwise put a hundred filenames in one message."""
+
+
+def ambiguous_artifact_error(
+    field_name: str, feature_name: str, run_root: Path, pattern: str, files: list[Path]
+) -> ValueError:
+    """Build an actionable error for a pattern that names more than one file.
+
+    Args:
+        field_name: The params field holding the reference.
+        feature_name: Storage name of the feature that wrote the run root.
+        run_root: The producer's run directory that was searched.
+        pattern: The glob that matched.
+        files: The matches, sorted (more than one).
+    """
+    listed = ", ".join(path.name for path in files[:_MAX_LISTED_MATCHES])
+    if len(files) > _MAX_LISTED_MATCHES:
+        listed = f"{listed}, and {len(files) - _MAX_LISTED_MATCHES} more"
+    return ValueError(
+        f"Field {field_name!r} references feature {feature_name!r}, whose run root "
+        f"{run_root} holds {len(files)} files matching {pattern!r}: {listed}. A run "
+        f"root is not a directory of named state files -- it holds one per-entry "
+        f"output parquet per sequence beside whatever the feature saved -- so this "
+        f"pattern does not name one artifact. Name the file: on a recipe reference "
+        f'write {{"step": ..., "pattern": "<filename>"}}, and in library code use '
+        f"the producing feature's pinned artifact class."
+    )
+
+
+def resolve_artifact_file(
+    field_name: str, feature_name: str, run_root: Path, pattern: str
+) -> Path | None:
+    """The one file *pattern* names in *run_root*, or None when it names none.
+
+    The single funnel every artifact reference resolves through, so a graph-driven
+    run and a library-driven one cannot disagree. More than one match is refused
+    rather than guessed: this used to take ``sorted(...)[0]``, which for the
+    derived ``*.parquet`` glob is a per-entry output rather than the artifact the
+    reference meant, and every layer downstream read it as the real thing.
+
+    Returning ``None`` for no match is deliberate and is not the same question. A
+    consumer branches on whether its field resolved, so an absent artifact is a
+    state features already handle; an ambiguous one is a wrong answer.
+
+    Args:
+        field_name: The params field holding the reference.
+        feature_name: Storage name of the feature that wrote the run root.
+        run_root: The producer's run directory to search.
+        pattern: The glob to match, already defaulted by ``ArtifactSpec``.
+
+    Raises:
+        ValueError: The pattern matched more than one file.
+    """
+    files = sorted(run_root.glob(pattern))
+    if len(files) > 1:
+        raise ambiguous_artifact_error(
+            field_name, feature_name, run_root, pattern, files
+        )
+    return files[0] if files else None
 
 
 # --- Feature Index ---

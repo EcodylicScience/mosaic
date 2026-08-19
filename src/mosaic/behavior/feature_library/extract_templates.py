@@ -13,6 +13,7 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
+    TEMPLATES_ARTIFACT_NAME,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -22,6 +23,7 @@ from mosaic.core.pipeline.types import (
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
+    TemplatesRef,
 )
 
 from .helpers import ensure_columns, feature_columns
@@ -30,12 +32,14 @@ from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 
-class TemplatesArtifact(ParquetArtifact):
-    """Template feature vectors (templates.parquet)."""
+class TemplatesArtifact(TemplatesRef):
+    """Template feature vectors, named for the run that produced them.
+
+    The filename and the load spec come from ``TemplatesRef``; all this adds is
+    which feature wrote them, which is what ``from_result`` validates against.
+    """
 
     feature: str = "extract-templates"
-    pattern: str = "templates.parquet"
-    load: ParquetLoadSpec = Field(default_factory=ParquetLoadSpec)
 
 
 class ProvenanceArtifact(ParquetArtifact):
@@ -124,7 +128,7 @@ class ExtractTemplates:
         self._entry_map = {}
         self._provenance = None
 
-        path = run_root / "templates.parquet"
+        path = run_root / TEMPLATES_ARTIFACT_NAME
         if path.exists():
             df = pd.read_parquet(path)
             self._feature_columns = list(df.columns)
@@ -399,7 +403,7 @@ class ExtractTemplates:
         run_root.mkdir(parents=True, exist_ok=True)
 
         df = pd.DataFrame(self._templates, columns=self._feature_columns)
-        _ = write_parquet_atomic(df, run_root / "templates.parquet")
+        _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
 
         if self._provenance is not None:
             _ = write_parquet_atomic(

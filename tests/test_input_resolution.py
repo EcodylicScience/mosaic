@@ -44,6 +44,9 @@ from mosaic.core.pipeline.types import (
 )
 
 UPSTREAM_DIR = "resolution-upstream__from__tracks"
+UPSTREAM_ENTRY = "seq_a"
+"""One of the two sequences ``scenario_dataset`` holds, so a reference to the
+upstream run names a file rather than globbing both of its outputs."""
 DOWNSTREAM_DIR = "resolution-downstream__from__tracks"
 
 
@@ -113,8 +116,19 @@ class _Downstream(_FeatureBase):
 
 
 def _templates_ref(run_id: str | None = None) -> ParquetArtifact:
-    """An artifact reference to the upstream feature, unpinned by default."""
-    return ParquetArtifact(feature=UPSTREAM_DIR, run_id=run_id, load=ParquetLoadSpec())
+    """An artifact reference to the upstream feature, unpinned by default.
+
+    "Unpinned" here is about ``run_id`` and nothing else. ``pattern`` is spelled
+    because the upstream writes one output per sequence and the fixture has two,
+    so a derived ``*.parquet`` names no single file and resolution refuses it --
+    a different question, answered in ``test_artifact_resolution``.
+    """
+    return ParquetArtifact(
+        feature=UPSTREAM_DIR,
+        run_id=run_id,
+        pattern=f"{UPSTREAM_ENTRY}.parquet",
+        load=ParquetLoadSpec(),
+    )
 
 
 class _WithInputReference(_FeatureBase):

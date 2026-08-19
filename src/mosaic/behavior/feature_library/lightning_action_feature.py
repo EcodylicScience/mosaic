@@ -34,6 +34,7 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
+    LabeledTemplatesRef,
     InputRequire,
     Inputs,
     InputStream,
@@ -141,7 +142,7 @@ class LightningActionFeature:
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"
 
-    class Params(GlobalModelParams[LightningActionModelArtifact]):
+    class Params(GlobalModelParams[LightningActionModelArtifact, LabeledTemplatesRef]):
         model: LightningActionModelArtifact | None = Field(
             default_factory=LightningActionModelArtifact
         )

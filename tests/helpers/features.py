@@ -97,6 +97,11 @@ def write_templates(tmp_path: Path, templates: pd.DataFrame) -> Path:
     The directory stands in for the producing feature's run root, which is what
     makes the `templates.parquet` pattern the artifact declares resolvable.
 
+    A per-entry sibling is written beside it, because a real run root holds one
+    output parquet per sequence and a directory holding only the named artifact
+    is the one arrangement in which resolving by glob cannot go wrong. A fixture
+    that cannot reproduce the failure cannot notice it either.
+
     Args:
         tmp_path: The test's temporary directory. Must not already hold a
             `templates_run` directory.
@@ -109,4 +114,7 @@ def write_templates(tmp_path: Path, templates: pd.DataFrame) -> Path:
     template_dir.mkdir()
     path = template_dir / "templates.parquet"
     templates.to_parquet(path, index=False)
+    make_sequence_df(n_rows=4, n_features=templates.shape[1]).to_parquet(
+        template_dir / "seq_a.parquet", index=False
+    )
     return path

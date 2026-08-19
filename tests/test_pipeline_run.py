@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -88,7 +89,54 @@ def _recorded_params(dataset: Dataset, run_id: str) -> str:
     return found[0].read_text()
 
 
+UNPINNED_CHAIN: Document = json.loads(
+    json.dumps(CHAIN).replace(', "pattern": "templates.parquet"', "")
+)
+"""``CHAIN`` with the scaler's artifact reference naming no file.
+
+This shape once validated, planned and ran while the scaler fitted on
+``seq_a.parquet`` -- one sequence's pass-through table -- because the derived
+``*.parquet`` glob matched the per-entry outputs beside the templates matrix and
+they sort first.
+"""
+
+
 # --- the runner ------------------------------------------------------------------
+
+
+def test_an_unpinned_artifact_reference_reads_the_declared_artifact(
+    tracked: Dataset,
+) -> None:
+    """The consumer's declared type names the file, so the recipe need not.
+
+    Two sequences, so the producer's run root holds ``seq_a.parquet`` and
+    ``seq_b.parquet`` beside ``templates.parquet`` and
+    ``template_provenance.parquet`` -- every arrangement in which taking the
+    first sorted match is wrong. What closes it is that the scaler fits on the
+    template matrix, which its own column list is read from.
+    """
+    recipe = Recipe.model_validate(UNPINNED_CHAIN)
+
+    done = run_pipeline(tracked, recipe)
+
+    assert [outcome.state for outcome in done.outcomes] == ["ran", "ran", "ran"]
+    scaler = done.outcomes[-1]
+    assert scaler.run_id is not None
+    assert '"pattern": "templates.parquet"' in _recorded_params(tracked, scaler.run_id)
+
+    templates_run = done.outcomes[1].run_id
+    assert templates_run is not None
+    produced = _table(tracked, templates_run, "templates.parquet")
+    fitted = _table(tracked, scaler.run_id, "scaled_templates.parquet")
+    assert list(fitted.columns) == list(produced.columns)
+    assert len(fitted) == len(produced)
+
+
+def _table(dataset: Dataset, run_id: str, name: str) -> pd.DataFrame:
+    """One named artifact out of whichever storage *run_id* landed under."""
+    found = list(Path(dataset.get_root("features")).glob(f"*/{run_id}/{name}"))
+    assert found, f"no {name} for run {run_id}"
+    return pd.read_parquet(found[0])
 
 
 def test_a_run_records_the_identifiers_the_plan_resolved(tracked: Dataset) -> None:

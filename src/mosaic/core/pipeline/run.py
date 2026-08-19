@@ -178,6 +178,7 @@ def _resolve_dependencies(
       referenced via ``feature.inputs``) to a (group, sequence) -> Path dict
     """
     from .index import latest_feature_run_root as _latest_feature_run_root
+    from .index import resolve_artifact_file
 
     params = feature.params
     artifact_paths: dict[str, Path] = {}
@@ -205,9 +206,11 @@ def _resolve_dependencies(
                     _run_id, dep_root = _latest_feature_run_root(ds, feature_name)
                 else:
                     dep_root = feature_run_root(ds, feature_name, _run_id)
-                files = sorted(dep_root.glob(pattern))
-                if files:
-                    artifact_paths[field_name] = files[0]
+                resolved_file = resolve_artifact_file(
+                    field_name, feature_name, dep_root, pattern
+                )
+                if resolved_file is not None:
+                    artifact_paths[field_name] = resolved_file
 
             case Result(feature=str(feature_name), run_id=_run_id):
                 if not feature_name:

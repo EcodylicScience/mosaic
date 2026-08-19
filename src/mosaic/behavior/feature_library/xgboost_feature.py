@@ -14,6 +14,7 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
+    LabeledTemplatesRef,
     InputRequire,
     Inputs,
     InputStream,
@@ -91,7 +92,7 @@ class XgboostFeature:
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"
 
-    class Params(GlobalModelParams[XgboostModelArtifact]):
+    class Params(GlobalModelParams[XgboostModelArtifact, LabeledTemplatesRef]):
         model: XgboostModelArtifact | None = Field(default_factory=XgboostModelArtifact)
         strategy: Literal["multiclass", "one_vs_rest"] = "multiclass"
         decision_threshold: float | Mapping[int, float] | None = None

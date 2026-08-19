@@ -8,11 +8,12 @@ what notebooks use. Passing ``--params`` straight through ``from_overrides``
 reconstructs artifact-in-params dependencies (e.g. scaler/tsne ``templates``)
 from plain dicts, giving full generality.
 
-Two footguns worth surfacing to users (documented in ``describe`` / the README):
-- Artifact refs default their glob to ``*.parquet``; a producer that emits more
-  than one parquet (e.g. ``extract-templates``) needs the ref to pin ``pattern``
-  (``{"feature": "extract-templates", "run_id": null, "pattern": "templates.parquet"}``)
-  or the pipeline silently resolves the wrong file.
+Two points worth surfacing to users (documented in ``describe`` / the README):
+- An artifact ref needs only ``{"feature": ..., "run_id": ...}``; the params
+  field's declared type names the file. Spell ``pattern`` to reach a producer's
+  other artifacts. A ref that does resolve by glob and matches more than one file
+  is refused rather than resolved -- a producer's run root holds one per-entry
+  output parquet per sequence, so a glob names no single artifact.
 - ``GlobalModelParams`` requires exactly one of ``templates`` / ``model``.
 """
 

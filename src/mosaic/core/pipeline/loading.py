@@ -20,6 +20,7 @@ from .index import (
     feature_index_path,
     feature_run_root,
     latest_feature_run_root,
+    resolve_artifact_file,
 )
 from .types import ArtifactSpec, NNResult
 from .types.data_config import ALIGN_COLS, COLUMNS
@@ -449,7 +450,9 @@ def load_joblib_artifact(ds: Dataset, artifact: ArtifactSpec) -> object:
             f"got {type(artifact.load).__name__}"
         )
     _, run_root = get_feature_run_root(ds, artifact.feature, artifact.run_id)
-    files = sorted(run_root.glob(artifact.pattern))
-    if not files:
+    resolved = resolve_artifact_file(
+        "artifact", artifact.feature, run_root, artifact.pattern
+    )
+    if resolved is None:
         raise FileNotFoundError(f"No files matching '{artifact.pattern}' in {run_root}")
-    return artifact.from_path(files[0])
+    return artifact.from_path(resolved)

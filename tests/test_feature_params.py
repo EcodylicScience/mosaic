@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from collections.abc import Callable
 from typing import Annotated, Literal
 
 import pytest
@@ -17,6 +18,7 @@ from mosaic.core.pipeline.types import (
     Inputs,
     Params,
     Result,
+    TemplatesRef,
     TrackInput,
     resolve_order_col,
 )
@@ -487,8 +489,89 @@ def test_global_ward_partial_artifact_override() -> None:
     from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
 
     p = GlobalWardClustering.Params.from_overrides({"templates": {"feature": "other"}})
+    assert p.templates is not None
     assert p.templates.feature == "other"
-    assert p.templates.pattern == "*.parquet"
+    # The declared type names the file, so a partial override that does not
+    # mention one still resolves an artifact rather than a glob.
+    assert p.templates.pattern == "templates.parquet"
+
+
+# --- The templates edge names its file ----------------------------------------
+
+
+_TEMPLATES_CONSUMERS: tuple[tuple[str, bool], ...] = (
+    ("global-scaler", True),
+    ("global-tsne", True),
+    ("global-kmeans", True),
+    ("global-ward", True),
+    ("xgboost", False),
+    ("lightning-action", False),
+)
+"""Every feature whose training set arrives as a templates artifact, and whether
+its matrix is filtered to numeric columns on the way in."""
+
+
+def _recipe_templates_ref(consumer: str) -> TemplatesRef:
+    """The ``templates`` reference a recipe builds for *consumer*.
+
+    Spelled the way ``resolve_step_spec`` spells it -- feature and run only. The
+    graph payload carries a pattern solely when the recipe wrote one, and never
+    carries a load spec at all, so this is the shape the declared type has to
+    complete on its own.
+    """
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+    from mosaic.behavior.feature_library.global_scaler import GlobalScaler
+    from mosaic.behavior.feature_library.global_tsne import GlobalTSNE
+    from mosaic.behavior.feature_library.global_ward import GlobalWardClustering
+    from mosaic.behavior.feature_library.lightning_action_feature import (
+        LightningActionFeature,
+    )
+    from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
+
+    ref: dict[str, object] = {"templates": {"feature": "up", "run_id": "r1"}}
+    labeled: dict[str, object] = {**ref, "default_class": 0}
+    builders: dict[str, Callable[[], TemplatesRef | None]] = {
+        "global-scaler": lambda: GlobalScaler.Params.from_overrides(ref).templates,
+        "global-tsne": lambda: GlobalTSNE.Params.from_overrides(ref).templates,
+        "global-kmeans": lambda: (
+            GlobalKMeansClustering.Params.from_overrides(ref).templates
+        ),
+        "global-ward": lambda: (
+            GlobalWardClustering.Params.from_overrides(ref).templates
+        ),
+        "xgboost": lambda: XgboostFeature.Params.from_overrides(labeled).templates,
+        "lightning-action": lambda: (
+            LightningActionFeature.Params.from_overrides(labeled).templates
+        ),
+    }
+    templates = builders[consumer]()
+    assert templates is not None
+    return templates
+
+
+@pytest.mark.parametrize(
+    ("consumer", "numeric_only"),
+    _TEMPLATES_CONSUMERS,
+    ids=[consumer for consumer, _ in _TEMPLATES_CONSUMERS],
+)
+def test_a_templates_reference_names_the_file_it_reads(
+    consumer: str, numeric_only: bool
+) -> None:
+    """No consumer of a templates matrix resolves it by glob.
+
+    A producer's run root holds one per-entry output parquet per sequence beside
+    its named artifacts, so the derived ``*.parquet`` took whichever sorted first
+    -- a per-entry table, read downstream as the training set with nothing
+    raising.
+
+    ``numeric_only`` rides along because it is the same declaration: a labeled
+    matrix carries a string ``split`` column that both its consumers require by
+    name, and the generic default filtered it out before ``fit`` ever saw it.
+    """
+    templates = _recipe_templates_ref(consumer)
+
+    assert templates.pattern == "templates.parquet"
+    assert templates.load.numeric_only is numeric_only
 
 
 # --- Mutable default isolation ---

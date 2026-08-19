@@ -33,8 +33,7 @@ JSON, portable across datasets, checked before it runs, and drivable from
 
     {"id": "tsne", "type": "feature", "feature": "global-tsne",
      "inputs": [{"step": "speed"}],
-     "params": {"templates": {"step": "templates",
-                              "pattern": "templates.parquet"},
+     "params": {"templates": {"step": "templates"},
                 "perplexity": 50}}
   ]
 }
@@ -42,7 +41,8 @@ JSON, portable across datasets, checked before it runs, and drivable from
 
 Five steps spanning all three stages: transcode the originals, track the derivative
 with TRex, derive speeds from the tracks that produced, sample templates, fit an
-embedding.
+embedding. The `tsne` step names no `pattern`: its `templates` field declares which
+file it reads.
 
 ```bash
 mosaic pipeline validate -m dataset.yaml --recipe @recipe.json
@@ -62,18 +62,21 @@ were applied to it.
 | --- | --- |
 | `"inputs": [{"step": "speed"}]` | Read that step's feature output |
 | `"tracks": {"step": "trex"}` | Read the tracks variant that op produced |
-| `"params": {"f": {"step": "x", "pattern": "templates.parquet"}}` | Take a named artifact from that step |
+| `"params": {"f": {"step": "x"}}` | Take that step's artifact, named by the field |
 | `"after": ["transcode"]` | Ordering only, no data reference |
 
 A reference sits at the exact place it substitutes, so there is no separate edge list
 to drift from the step bodies.
 
-**Always spell out `pattern` on an artifact reference.** Left unset it defaults to
-`*.parquet`, and a producer's run directory holds one per-entry output parquet per
-sequence beside its named artifacts — so the default resolves to whichever file sorts
-first, which is usually one of those per-entry outputs rather than the artifact you
-meant. Nothing refuses it and nothing warns: the step runs, reports success, and has
-read the wrong table. That is why the recipe above pins `templates.parquet`.
+**`pattern` is optional, because the consumer's params field names the file.** A
+producer's run directory holds one per-entry output parquet per sequence beside its
+named artifacts, so a reference that resolved by glob would take whichever sorts
+first — usually one of those per-entry outputs rather than the artifact you meant.
+Nothing about that is visible downstream, so it is refused at both ends instead: a
+reference that still resolves by glob is rejected by `validate`, before the producing
+step has run, and a pattern matching more than one file is refused when it is
+resolved. Spelling `pattern` stays legal and is how you reach a producer's other
+artifacts — `template_provenance.parquet`, say, rather than `templates.parquet`.
 
 `after` is for the case where one step must precede another without reading anything
 from it — transcode before trex is the standard example: the tracker reads the

@@ -15,11 +15,13 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
+    TEMPLATES_ARTIFACT_NAME,
     DependencyLookup,
     GroundTruthLabelsSource,
     InputRequire,
     Inputs,
     InputStream,
+    LabeledTemplatesRef,
     Params,
     ParquetArtifact,
     ParquetLoadSpec,
@@ -42,18 +44,15 @@ class _Reservoir:
     n_seen: int = 0
 
 
-class LabeledTemplatesArtifact(ParquetArtifact):
-    """Labeled template feature vectors (templates.parquet).
+class LabeledTemplatesArtifact(LabeledTemplatesRef):
+    """Labeled template feature vectors, named for the run that produced them.
 
-    Uses numeric_only=False because the parquet contains the str 'split'
-    column alongside numeric feature columns and int 'label'.
+    The filename and the ``numeric_only=False`` load spec come from
+    ``LabeledTemplatesRef``; all this adds is which feature wrote them, which is
+    what ``from_result`` validates against.
     """
 
     feature: str = "extract-labeled-templates"
-    pattern: str = "templates.parquet"
-    load: ParquetLoadSpec = Field(
-        default_factory=lambda: ParquetLoadSpec(numeric_only=False)
-    )
 
 
 class LabeledProvenanceArtifact(ParquetArtifact):
@@ -159,7 +158,7 @@ class ExtractLabeledTemplates:
         self._sequence_splits = {}
         self._labels_lookup = dependency_lookups.get("labels", {})
 
-        path = run_root / "templates.parquet"
+        path = run_root / TEMPLATES_ARTIFACT_NAME
         if path.exists():
             df = pd.read_parquet(path)
             label_col = df["label"].to_numpy(dtype=np.int64)
@@ -692,7 +691,7 @@ class ExtractLabeledTemplates:
         df = pd.DataFrame(self._templates, columns=self._feature_columns)
         df["label"] = self._labels
         df["split"] = self._splits
-        _ = write_parquet_atomic(df, run_root / "templates.parquet")
+        _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
 
         _ = write_parquet_atomic(
             self._provenance, run_root / "template_provenance.parquet"

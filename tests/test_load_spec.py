@@ -10,6 +10,7 @@ import pytest
 
 from mosaic.core.pipeline.types import (
     ArtifactSpec,
+    JoblibLoadSpec,
     NpzLoadSpec,
     ParquetLoadSpec,
     Result,
@@ -44,6 +45,47 @@ def test_load_joblib_artifact_rejects_non_joblib() -> None:
     artifact = ArtifactSpec(feature="test", load=ParquetLoadSpec())
     with pytest.raises(ValueError, match="requires JoblibLoadSpec"):
         load_joblib_artifact(None, artifact)
+
+
+def test_load_joblib_artifact_refuses_an_ambiguous_pattern(tmp_path: Path) -> None:
+    """The public loader resolves through the same funnel as a feature run.
+
+    Its run root holds every joblib a global fitter saved -- a model beside its
+    class names and its training history -- so a derived ``*.joblib`` names no
+    one of them.
+    """
+    import joblib
+
+    from mosaic.core.pipeline.loading import load_joblib_artifact
+    from tests.helpers import make_dataset
+
+    dataset = make_dataset(tmp_path / "ds")
+    run_root = dataset.get_root("features") / "up" / "0.1-abc"
+    run_root.mkdir(parents=True)
+    for name in ("identity_names.joblib", "model.joblib"):
+        joblib.dump({"value": 1}, run_root / name)
+
+    artifact = ArtifactSpec(feature="up", run_id="0.1-abc", load=JoblibLoadSpec())
+
+    with pytest.raises(ValueError, match="holds 2 files matching"):
+        _ = load_joblib_artifact(dataset, artifact)
+
+
+def test_load_joblib_artifact_still_raises_when_nothing_matches(
+    tmp_path: Path,
+) -> None:
+    """No match keeps its own error: nothing to load is not an ambiguity."""
+    from mosaic.core.pipeline.loading import load_joblib_artifact
+    from tests.helpers import make_dataset
+
+    dataset = make_dataset(tmp_path / "ds")
+    run_root = dataset.get_root("features") / "up" / "0.1-abc"
+    run_root.mkdir(parents=True)
+
+    artifact = ArtifactSpec(feature="up", run_id="0.1-abc", load=JoblibLoadSpec())
+
+    with pytest.raises(FileNotFoundError, match="No files matching"):
+        _ = load_joblib_artifact(dataset, artifact)
 
 
 def test_temporal_stacking_stateless_protocol() -> None:

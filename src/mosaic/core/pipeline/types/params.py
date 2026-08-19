@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from typing import Generic, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 from typing_extensions import TypeVar
 
-from mosaic.core.pipeline._loaders import ParquetLoadSpec, StrictModel
-from mosaic.core.pipeline.types.artifacts import (
-    ArtifactSpec,
-    JoblibArtifact,
-    ParquetArtifact,
-)
+from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 
 # ``JsonValue`` used to live here. It moved to ``mosaic.core.json_value`` -- a
 # module with no imports at all -- because the dataset manifest needs the same
@@ -83,27 +79,36 @@ class Params(StrictModel):
 
 
 M = TypeVar("M", bound=JoblibArtifact[object], default=JoblibArtifact[object])
+T = TypeVar("T", bound=TemplatesRef, default=TemplatesRef)
 
 
-class GlobalModelParams(Params, Generic[M]):
+class GlobalModelParams(Params, Generic[M, T]):
     """Base params for global features that fit on a templates artifact
     or load a pre-fitted model.
 
-    Type parameter M is the model artifact type (must extend JoblibArtifact).
-    Exactly one of `templates` or `model` must be provided.
+    Type parameter M is the model artifact type (must extend JoblibArtifact), and
+    T the templates artifact type (must extend TemplatesRef). Exactly one of
+    `templates` or `model` must be provided.
 
-    Both fields use default_factory so that from_overrides() merges
-    partial dicts correctly. The _exclusive_source validator checks
-    model_fields_set and nulls out the field that was not provided.
+    **Both are pinned types rather than the bare aliases, and that is the whole
+    defence of the artifact edge.** An ``ArtifactSpec`` with no pattern derives
+    ``*.<load kind>``, and a producer's run root holds one per-entry output parquet
+    per sequence beside its named artifacts -- so a generic ``ParquetArtifact`` here
+    resolved whichever file sorted first, which is a per-entry table, and nothing
+    downstream could tell. Naming the type puts the filename in the declaration,
+    where it costs nothing at run time and cannot be forgotten by a recipe author.
+
+    Neither field carries a default_factory. ``from_overrides`` merges a partial
+    dict onto such a default, which would splice the *base* type's load spec into a
+    payload destined for a narrowed one; with a plain ``None`` the payload validates
+    straight against T and the pinned class defaults supply pattern and load.
 
     Attributes:
         templates: Templates artifact to fit from. Mutually exclusive with model.
         model: Pre-fitted model artifact. Mutually exclusive with templates.
     """
 
-    templates: ParquetArtifact | None = Field(
-        default_factory=lambda: ArtifactSpec(feature="", load=ParquetLoadSpec())
-    )
+    templates: T | None = None
     model: M | None = None
 
     @model_validator(mode="after")
@@ -118,9 +123,9 @@ class GlobalModelParams(Params, Generic[M]):
         that file, so it could not confirm a single such run and reported them
         all unresolvable; the reader is `run_feature`'s own output.
 
-        ``model_fields_set`` still has to be consulted, because ``templates``
-        carries a non-``None`` default: a caller who passed only ``model`` would
-        otherwise look like it had passed both.
+        ``model_fields_set`` still has to be consulted for that reason alone:
+        neither field carries a non-``None`` default any more, but a reloaded dump
+        names both keys, and only the values tell which one was given.
         """
         has_templates = (
             "templates" in self.model_fields_set and self.templates is not None
