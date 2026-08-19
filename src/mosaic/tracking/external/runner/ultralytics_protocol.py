@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Final, Literal, Protocol, TypeAlias
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 # Mirror of ``mosaic.tracking.ultralytics_track.tracker_defaults.TrackerSetting``.
 # Duplicated deliberately rather than imported: this module may take no import
@@ -160,7 +160,16 @@ class ProbeRequest(BaseModel):
     """What mosaic wants to know about the Ultralytics environment."""
 
     model_path: str
-    """The weights the run will load, so the probe can report their task."""
+    """The weights the run will load, so the probe can report their task.
+
+    **Empty asks about the environment alone**, the reading :attr:`tracker` below
+    already has. Training sends empty whenever it is not fine-tuning: its model is
+    a bare asset name Ultralytics fetches from a release, so loading it here would
+    put a network download inside a preflight whose whole value is being cheap,
+    and would report a load error for a question nobody asked. When there *is* a
+    base checkpoint mosaic sends its resolved path, and the load answers a real
+    question -- whether these weights open in this environment.
+    """
 
     tracker: str = ""
     """Which backend's shipped configuration file to read back, or empty for none.
@@ -618,6 +627,208 @@ class InferResponse(BaseModel):
     """Detections written across every frame."""
 
 
+# --- training --------------------------------------------------------------
+
+
+TrainStop: TypeAlias = Literal["completed", "early_stopped", "cancelled"]
+"""How a training run ended.
+
+``completed`` ran its epoch target. ``early_stopped`` is Ultralytics' own
+``patience``. ``cancelled`` is the epoch callback finding the sentinel and
+setting ``trainer.stop``, and is the only one of the three that is not a
+finished model.
+"""
+
+
+class TrainRequestBase(BaseModel):
+    """What both training subcommands take. Never sent on its own.
+
+    Everything here is already resolved. Mosaic decides which base weights win,
+    where the run lands, and what a preset name meant, and sends the answers; this
+    program constructs one model, calls ``train`` once, and reports how it ended.
+
+    What is absent is the whole video-reading half the inference requests carry --
+    no ``media_facts``, no frame window, no ``prefetch`` -- because training reads
+    the image files ``data_yaml`` declares and opens no reader, so mosaic's
+    read-target gate has nothing to gate.
+    """
+
+    model: str
+    """What ``YOLO()`` is constructed from, already chosen.
+
+    Three things collapse into this one field, mosaic-side, in the order the op
+    applies them: the ``last.pt`` mosaic found when the run resumes; else the
+    resolved path of the base model when fine-tuning; else the caller's ``model``
+    verbatim. Verbatim means it may be a bare Ultralytics asset name
+    (``yolo11n-pose.pt``) or a fork configuration name (``polo26n.yaml``) rather
+    than a path, which Ultralytics resolves itself -- fetching the first from a
+    release when the environment does not hold it.
+
+    One field because the in-process path had one winner and only ever passed one
+    value. Two would let this program disagree with the identity mosaic minted
+    from both.
+    """
+
+    data_yaml: str
+    """The training data declaration, resolved against the dataset root.
+
+    Absolute, because this program's working directory is not mosaic's, and the
+    paths inside the file are resolved against the file rather than against
+    whoever opened it.
+    """
+
+    epochs: int
+    """The epoch target, and the denominator every progress line reports against."""
+
+    imgsz: int
+    batch: int
+    device: str
+    patience: int
+
+    project_dir: str
+    """The claimed run root, passed as Ultralytics' ``project``.
+
+    Named for the argument it becomes, as :attr:`TrackRequest.project_dir` is, but
+    unlike there this is a directory of mosaic's: the run root the op claimed,
+    which already holds this request file. Ultralytics computes ``<project>/<name>``
+    under it and writes its weights and ``results.csv`` there.
+    """
+
+    run_name: str
+    """Ultralytics' ``name``, the subdirectory it writes into.
+
+    Sent rather than assumed on either side because mosaic reads ``best.pt`` and
+    ``results.csv`` back from underneath it, and a directory name spelled
+    independently in two processes is one that can disagree. What Ultralytics
+    *chose* comes back in :attr:`TrainResponse.save_dir`.
+    """
+
+    resume: bool
+    """Whether to continue the checkpoint in :attr:`model` rather than start from it.
+
+    Mosaic finds the checkpoint; this says only what to do with it. The split is
+    deliberate: the checkpoint lives under mosaic's claimed run root by mosaic's
+    own directory convention, and the refusal when there is none names that root.
+    Letting this program search would put the convention in two places.
+    """
+
+    augment: dict[str, JsonValue]
+    """The augmentation keywords, already resolved from the preset name.
+
+    The preset tables live in mosaic and import no Ultralytics, so they stay where
+    they are read and an unknown preset name is refused at submit -- before a run
+    root is claimed and before an interpreter is spawned. Empty means *apply none
+    of mosaic's*, which is what both an unset augmentation and a resuming run
+    send: a resume restores the augmentation its checkpoint was trained under, and
+    overriding that is not what resuming means.
+    """
+
+    train_overrides: dict[str, JsonValue]
+    """The caller's own ``train`` keywords, applied last.
+
+    A second bag rather than merged into :attr:`augment` by mosaic, for two
+    reasons. Precedence: overrides beat the resolved augmentation, and one merged
+    bag would have to record that ordering somewhere else. Provenance: this file
+    stays on disk beside the run, and the two bags are what tell a reader which
+    key came from a preset mosaic chose and which came from their own request.
+
+    Mosaic has already refused the keys it supplies itself, so nothing here can
+    retarget the run.
+    """
+
+    cancel_sentinel: str
+    """A path this program stats at each epoch boundary; its appearance stops the run.
+
+    Written by mosaic when the job's cancel token fires, and never by this
+    program. Stopping this way is what leaves ``last.pt`` and ``results.csv``
+    complete up to the epoch that finished, where killing the process loses
+    whichever epoch was in flight. Ultralytics honors the flag between epochs and
+    nowhere else, so one stat per epoch is the whole check.
+    """
+
+
+class TrainPoseRequest(TrainRequestBase):
+    """One YOLO pose model, trained in a process of its own.
+
+    Adds nothing. It exists so the two subcommands take two request types rather
+    than one carrying a task field: the subcommand already names the task, and a
+    payload that validated as either kind is one a mistyped subcommand would
+    happily run.
+    """
+
+
+class TrainPointsRequest(TrainRequestBase):
+    """One POLO point model, trained in a process of its own."""
+
+    loc: float
+    """The localization loss weight, a POLO ``train`` keyword."""
+
+    loc_loss: str
+    """Which localization loss, e.g. ``mse``.
+
+    A bare ``str`` where the other closed sets here are ``Literal`` aliases, for
+    the reason :attr:`ProbeResponse.model_task` gives: mosaic's own field is a free
+    string and a term of the run identifier, so closing it at the boundary would
+    refuse a run that has already been named on disk.
+    """
+
+    dor: float
+    """The Distance of Reference threshold POLO evaluates against.
+
+    Carried, where :class:`InferPointsRequest` deliberately drops the identically
+    named field: on the inference path it reaches no Ultralytics argument at all,
+    so sending it would change what that op computes. Here it is a ``train``
+    keyword the in-process path always passed, so *not* sending it would change
+    what this one computes.
+    """
+
+
+class TrainResponse(BaseModel):
+    """How the run ended. The artifacts are on disk, not in here.
+
+    Deliberately neither the Ultralytics results object nor a copy of the final
+    metrics. ``best.pt`` and ``results.csv`` are written under :attr:`save_dir` and
+    mosaic reads both from there -- it already did on the in-process path, where
+    the returned object was assigned to nothing -- and every per-epoch number has
+    already travelled on the progress channel into the run-log. A metric spelled
+    here as well would be a second copy of a number ``results.csv`` holds, and the
+    two would be read by different code.
+
+    What is left is the three facts that exist only inside the training process.
+    """
+
+    save_dir: str
+    """The directory Ultralytics actually wrote into.
+
+    Reported rather than assumed. Mosaic composes ``<project_dir>/<run_name>`` and
+    reads ``weights/best.pt`` and ``results.csv`` from under it, and mosaic also
+    asks for ``exist_ok`` so that path is the one used -- but a build that
+    increments the name anyway would leave mosaic registering some other attempt's
+    weights under this run's identifier. The composed path is what mosaic expects;
+    this is what happened, and the two disagreeing is a refusal rather than a
+    shrug.
+    """
+
+    epochs_completed: int
+    """Epochs that finished, which is not always the epochs that were asked for.
+
+    ``patience`` stops a run early and a cancel stops it earlier still. The index
+    row records this rather than the request's ``epochs``, so a model that trained
+    for forty of three hundred does not read as a three-hundred-epoch model.
+    """
+
+    stop: TrainStop
+    """Which of the three ways this run ended.
+
+    The one fact mosaic cannot recover from disk: all three leave ``best.pt``,
+    ``last.pt`` and a ``results.csv``, and the cancel token that used to answer the
+    question lived in the trainer's own process. It no longer does, and the token
+    being set is not the answer either -- a sentinel written during the final epoch
+    loses the race, the run completes, and that is a model to register rather than
+    an attempt to discard.
+    """
+
+
 class ProgressEvent(BaseModel):
     """One line of the runner's standard output.
 
@@ -640,12 +851,75 @@ class ProgressEvent(BaseModel):
     """
 
 
+class EpochEvent(BaseModel):
+    """One completed training epoch, as a line on standard output.
+
+    A **sibling** of :class:`ProgressEvent` rather than a third kind on it.
+    ``done`` and ``total`` there are frames, and a model whose fields mean
+    something on one kind and nothing on the next is how a plausible number gets
+    recorded -- an epoch carrying ``done=0`` would read as "no frames" rather than
+    as "not applicable".
+
+    Splitting them also makes the addition invisible to every reader that came
+    before it, by construction: mosaic validates a line against one model, and an
+    epoch line fails :class:`ProgressEvent`'s validation and is answered ``None``.
+    """
+
+    event: Literal["epoch"]
+
+    epoch: int
+    """Zero-based, the trainer's own index.
+
+    Absolute over the model's training history, so a resumed attempt's first epoch
+    is not zero. That reads as a jump from nothing to 181/300 in the ledger, and it
+    is correct: the numerator names an epoch of the model, not of the attempt.
+    """
+
+    total_epochs: int
+    """The trainer's own total, not the request's.
+
+    On a resume Ultralytics restores its arguments from the checkpoint, so what
+    was asked for is not necessarily what runs, and a denominator taken from the
+    request would not match this numerator.
+    """
+
+    metrics: dict[str, float] = {}
+    """Finite floats only. What will not cast, and what is not finite, is dropped
+    before it is written.
+
+    The filtering happens on this side because the values start as torch tensors
+    and a dict of arbitrary objects is exactly the untyped bag this module refuses
+    everywhere else. It is also what keeps the line valid JSON: a NaN metric
+    serializes as ``null``, which fails this annotation on arrival and would cost
+    the whole epoch rather than the one key.
+    """
+
+
+class HeartbeatEvent(BaseModel):
+    """Proof the training process is alive, between epochs.
+
+    Carries no numbers at all, deliberately. Its whole job is to be a line: mosaic
+    bounds *silence* with an inactivity watchdog and refreshes the run root's claim
+    on every line, and an epoch on a large dataset can outlast both windows while
+    everything is perfectly healthy. Ultralytics' own progress bar cannot serve --
+    it writes carriage returns, which a line-oriented reader never sees as lines.
+
+    Giving it a position would be worse than giving it none: the only number
+    available mid-epoch is the last epoch that finished, and reporting that
+    repeatedly is a counter that stalls rather than a counter that waits.
+    """
+
+    event: Literal["heartbeat"]
+
+
 # `Boxes`, `Detections` and `Keypoints` are deliberately absent. They exist to
 # give `Result` and `rows_from_result` something to say about the Ultralytics
 # surface, and nothing on either side of the boundary names them: `Result` is
 # what a caller passes. Exporting them would advertise a surface no caller has.
 __all__ = [
     "POINT_COLUMNS",
+    "EpochEvent",
+    "HeartbeatEvent",
     "InferPointsRequest",
     "InferPoseRequest",
     "InferRequestBase",
@@ -666,6 +940,11 @@ __all__ = [
     "TrackerDefaultsRequest",
     "TrackerDefaultsResponse",
     "TrackerSetting",
+    "TrainPointsRequest",
+    "TrainPoseRequest",
+    "TrainRequestBase",
+    "TrainResponse",
+    "TrainStop",
     "UltralyticsInteropError",
     "point_rows_from_result",
     "pose_columns",

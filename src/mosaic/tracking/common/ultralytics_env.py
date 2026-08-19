@@ -54,7 +54,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 RunnerSubcommand: TypeAlias = Literal[
-    "probe", "tracker-defaults", "track", "infer-pose", "infer-points"
+    "probe",
+    "tracker-defaults",
+    "track",
+    "infer-pose",
+    "infer-points",
+    "train-pose",
+    "train-points",
 ]
 """Every subcommand the runner program answers to.
 

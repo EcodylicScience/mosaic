@@ -12,6 +12,10 @@ Invoked as::
     <env>/bin/python ultralytics_runner.py probe --request <req.json> --out <resp.json>
     <env>/bin/python ultralytics_runner.py tracker-defaults --request <req.json> --out <resp.json>
     <env>/bin/python ultralytics_runner.py track --request <req.json> --out <result.json>
+    <env>/bin/python ultralytics_runner.py infer-pose --request <req.json> --out <result.json>
+    <env>/bin/python ultralytics_runner.py infer-points --request <req.json> --out <result.json>
+    <env>/bin/python ultralytics_runner.py train-pose --request <req.json> --out <result.json>
+    <env>/bin/python ultralytics_runner.py train-points --request <req.json> --out <result.json>
 
 Every subcommand reads its whole request from a JSON file and writes its whole
 response to a JSON file, with nothing else on the command line. The response
@@ -52,7 +56,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
+import math
 import os
 import queue
 import sys
@@ -71,6 +75,8 @@ from pydantic import BaseModel, TypeAdapter
 
 from ultralytics_protocol import (
     POINT_COLUMNS,
+    EpochEvent,
+    HeartbeatEvent,
     InferenceResult,
     InferPointsRequest,
     InferPoseRequest,
@@ -89,6 +95,11 @@ from ultralytics_protocol import (
     TrackerSetting,
     TrackRequest,
     TrackResponse,
+    TrainPointsRequest,
+    TrainPoseRequest,
+    TrainRequestBase,
+    TrainResponse,
+    TrainStop,
     point_rows_from_result,
     pose_rows_from_result,
     rows_from_result,
@@ -267,8 +278,13 @@ def run_probe(request: ProbeRequest) -> ProbeResponse:
     from ultralytics.trackers.track import TRACKER_MAP
 
     # Reported whether or not the weights load: what this environment holds is
-    # not a question about the checkpoint it was handed.
-    model, load_error = _load_model(request.model_path)
+    # not a question about the checkpoint it was handed. An empty path is not a
+    # checkpoint it was handed at all -- a fresh training run starts from a bare
+    # asset name Ultralytics would fetch from a release, and downloading that to
+    # answer a preflight is neither cheap nor what was asked.
+    model, load_error = (
+        (None, "") if not request.model_path else _load_model(request.model_path)
+    )
     task = "" if model is None else str(getattr(model, "task", ""))
     return ProbeResponse(
         has_ultralytics=True,
@@ -478,6 +494,20 @@ def _queued_batches(
         yield item
 
 
+def _write_event(event: BaseModel) -> None:
+    """One JSON line on standard output, flushed.
+
+    ``model_dump_json`` rather than ``json.dumps(model_dump())``, and that is not
+    a style choice: the second writes the bare tokens ``NaN`` and ``Infinity`` for
+    a non-finite float, which are not JSON. Python's own parser happens to accept
+    them, so the defect is invisible from this side and lands on whatever reads
+    the stream next. Pydantic writes ``null`` instead, which the reader refuses
+    honestly.
+    """
+    _ = sys.stdout.write(event.model_dump_json() + "\n")
+    sys.stdout.flush()
+
+
 def _report(event: ProgressEventKind, done: int = 0, total: int = 0) -> None:
     """One JSON line on standard output, flushed.
 
@@ -497,9 +527,7 @@ def _report(event: ProgressEventKind, done: int = 0, total: int = 0) -> None:
     still exceed a cold model load. What it does is split that stretch in two, so
     that a slow *import* can no longer be read as a hung tool.
     """
-    line = json.dumps(ProgressEvent(event=event, done=done, total=total).model_dump())
-    _ = sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    _write_event(ProgressEvent(event=event, done=done, total=total))
 
 
 def _publish_parquet(table: pd.DataFrame, output_parquet: str) -> None:
@@ -836,6 +864,267 @@ def run_infer_points(request: InferPointsRequest) -> InferResponse:
     return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
 
 
+# --- training --------------------------------------------------------------
+
+
+EPOCH_EVENT: Final = "on_train_epoch_end"
+"""The Ultralytics callback mosaic's epoch reporting and cancellation hang on.
+
+Checked against the installed release before it is registered, because
+Ultralytics' callback registry is a ``defaultdict(list)`` and ``add_callback``
+appends without asking whether anything will ever call the key. A misspelled or
+renamed event therefore registers happily, never fires, and cancellation
+degrades silently to whatever kills the process -- which is the one regression
+this whole arrangement exists to prevent, arriving with no error anywhere.
+"""
+
+START_EVENT: Final = "on_train_start"
+"""Where the second ``started`` line is written from: after the weights load,
+the dataset scan, the label-cache build and the AMP check, and before epoch
+zero."""
+
+_HEARTBEAT_SECONDS: Final = 30.0
+"""How often the training subcommand says it is alive.
+
+An epoch on a large dataset can outlast both the caller's inactivity window and
+the run root's claim, with nothing wrong. Ultralytics' own progress bar cannot
+stand in for this: it redraws with carriage returns, which a line-oriented reader
+never sees as a line.
+"""
+
+
+class _Trainable(Protocol):
+    """The training call, and the hook mosaic needs on it."""
+
+    def add_callback(self, event: str, func: Callable[[object], None]) -> None: ...
+    def train(self, **kwargs: object) -> object: ...
+
+
+@contextlib.contextmanager
+def _heartbeat() -> Generator[None]:
+    """Say so every :data:`_HEARTBEAT_SECONDS` until the block exits.
+
+    Started before Ultralytics is imported, so the import itself is covered, and
+    on a daemon thread so a hard kill does not leave it holding the process open.
+    The event, rather than a sleep loop, is what lets it stop promptly at the end
+    of a run instead of after one more interval.
+    """
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(_HEARTBEAT_SECONDS):
+            _write_event(HeartbeatEvent(event="heartbeat"))
+
+    worker = threading.Thread(target=beat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=5)
+
+
+def _finite_float(value: object) -> float | None:
+    """*value* as a finite float, or ``None`` when it is neither.
+
+    Unwraps a tensor through ``.item()`` first, which is what the loss arrives as.
+    """
+    item = getattr(value, "item", None)
+    if callable(item):
+        value = item()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _epoch_metrics(trainer: object) -> dict[str, float]:
+    """Every number this epoch produced that survives the crossing.
+
+    The loss is a tensor and needs ``.item()``; the rest is whatever the trainer
+    put in its metrics mapping. Anything that will not cast to a float is dropped
+    rather than raising, which is what the in-process bridge did -- a metric mosaic
+    cannot read is not a reason to lose the run.
+
+    Non-finite values are dropped too, which the in-process bridge did not do and
+    could afford not to. A NaN survives a Python call and does not survive JSON:
+    it serializes as ``null``, which fails the reader's annotation and costs the
+    **whole epoch line** rather than the one key. Ultralytics emits NaN routinely
+    -- mAP before the first validation, a diverged loss -- so this is the ordinary
+    case, not the pathological one.
+    """
+    metrics: dict[str, float] = {}
+    loss = _finite_float(getattr(trainer, "loss", None))
+    if loss is not None:
+        metrics["loss"] = loss
+    reported = getattr(trainer, "metrics", None)
+    if isinstance(reported, dict):
+        for key, raw in reported.items():
+            value = _finite_float(raw)
+            if value is not None:
+                metrics[str(key)] = value
+    return metrics
+
+
+def _register_epoch_callback(model: _Trainable, request: TrainRequestBase) -> None:
+    """Report each epoch, and stop the run when the sentinel appears.
+
+    The replacement for a live in-process closure holding mosaic's progress
+    callback and cancel token, and it preserves the property that mattered about
+    it: a cancelled run ends at an epoch boundary, so ``last.pt`` and
+    ``results.csv`` are complete up to the epoch that finished. Ultralytics honors
+    ``trainer.stop`` between epochs and nowhere else, so one ``stat`` per epoch is
+    the entire check and an additional per-batch one would shorten nothing.
+    """
+    from ultralytics.utils.callbacks.base import default_callbacks
+
+    for event in (EPOCH_EVENT, START_EVENT):
+        if event not in default_callbacks:
+            raise RunnerError(
+                f"this Ultralytics defines no {event!r} callback, so registering "
+                "one would succeed and never fire -- progress would stop being "
+                "reported and a cancel would stop being honored, both silently. "
+                f"Known events: {sorted(default_callbacks)}"
+            )
+
+    sentinel = Path(request.cancel_sentinel)
+
+    def on_epoch_end(trainer: object) -> None:
+        epoch = int(getattr(trainer, "epoch", 0))
+        total = int(getattr(trainer, "epochs", request.epochs))
+        _write_event(
+            EpochEvent(
+                event="epoch",
+                epoch=epoch,
+                total_epochs=total,
+                metrics=_epoch_metrics(trainer),
+            )
+        )
+        if sentinel.exists():
+            # setattr because the trainer is Ultralytics', not this program's, and
+            # `stop` is the one attribute of it mosaic writes.
+            setattr(trainer, "stop", True)
+
+    def on_train_start(_trainer: object) -> None:
+        # The second `started`. Everything between the first one and here -- the
+        # weights load, the dataset scan, the label cache, the AMP check -- is
+        # silent and can run for minutes, and without a line the caller's idle
+        # window has to be chosen against that stretch *plus* an epoch.
+        _report("started")
+
+    model.add_callback(EPOCH_EVENT, on_epoch_end)
+    model.add_callback(START_EVENT, on_train_start)
+
+
+def _train_kwargs(request: TrainRequestBase, task: str) -> dict[str, object]:
+    """What ``train`` is called with, in the order the in-process path built it.
+
+    Structural keys first, then ``resume``, then the resolved augmentation, then
+    the caller's own overrides -- so an override of a preset key wins, which is
+    what the two separate bags on the request exist to preserve.
+
+    ``exist_ok`` is mosaic's, not the caller's. Ultralytics increments its run
+    directory when ``<project>/<name>`` is occupied, and mosaic composes that path
+    itself to read ``best.pt`` and ``results.csv`` back -- so a re-run into an
+    already-claimed root would write to ``train-2`` while mosaic registered the
+    previous attempt's weights under this run's identifier.
+    """
+    kwargs: dict[str, object] = {
+        "data": request.data_yaml,
+        "task": task,
+        "epochs": request.epochs,
+        "imgsz": request.imgsz,
+        "batch": request.batch,
+        "device": request.device,
+        "patience": request.patience,
+        "project": request.project_dir,
+        "name": request.run_name,
+        "exist_ok": True,
+    }
+    if isinstance(request, TrainPointsRequest):
+        kwargs["loc"] = request.loc
+        kwargs["loc_loss"] = request.loc_loss
+        kwargs["dor"] = request.dor
+    if request.resume:
+        kwargs["resume"] = True
+    kwargs.update(request.augment)
+    kwargs.update(request.train_overrides)
+    return kwargs
+
+
+def _completed_epochs(trainer: object, request: TrainRequestBase) -> int:
+    """How many epochs finished, from the trainer's own zero-based counter."""
+    epoch = getattr(trainer, "epoch", None)
+    if epoch is None:
+        return request.epochs
+    return int(epoch) + 1
+
+
+def _how_it_stopped(
+    trainer: object, request: TrainRequestBase, sentinel: Path
+) -> TrainStop:
+    """Which of the three endings this was.
+
+    The sentinel is asked first and the epoch count second, because a run that
+    was told to stop *and* happened to be on its last epoch is still a completed
+    model -- there is nothing to discard and nothing was lost. Only a run that
+    stopped short because it was asked to is a cancellation.
+    """
+    completed = _completed_epochs(trainer, request)
+    if completed >= request.epochs:
+        return "completed"
+    if sentinel.exists():
+        return "cancelled"
+    return "early_stopped"
+
+
+def _run_training(request: TrainRequestBase, task: str) -> TrainResponse:
+    """Train one model, reporting each epoch and honoring the cancel sentinel.
+
+    The heartbeat is opened before anything else, the Ultralytics import
+    included, because that import is itself a long silence on a cold machine and
+    the caller is watching for silence.
+    """
+    with _heartbeat():
+        return _train_under_heartbeat(request, task)
+
+
+def _train_under_heartbeat(request: TrainRequestBase, task: str) -> TrainResponse:
+    """The training run itself, with liveness already being reported."""
+    from ultralytics import YOLO
+
+    _report("started")
+    model: _Trainable = YOLO(request.model)
+    _register_epoch_callback(model, request)
+    _ = model.train(**_train_kwargs(request, task))
+
+    trainer = getattr(model, "trainer", None)
+    sentinel = Path(request.cancel_sentinel)
+    save_dir = getattr(trainer, "save_dir", None)
+    if save_dir is None:
+        raise RunnerError(
+            "the trainer reported no save directory, so the weights it wrote "
+            "cannot be named. Mosaic reads best.pt and results.csv back from "
+            "under that directory, and guessing which one it was is how the "
+            "wrong attempt's weights get registered."
+        )
+    return TrainResponse(
+        save_dir=str(save_dir),
+        epochs_completed=_completed_epochs(trainer, request),
+        stop=_how_it_stopped(trainer, request, sentinel),
+    )
+
+
+def run_train_pose(request: TrainPoseRequest) -> TrainResponse:
+    """Train one YOLO pose model."""
+    return _run_training(request, "pose")
+
+
+def run_train_points(request: TrainPointsRequest) -> TrainResponse:
+    """Train one POLO point-detection model."""
+    return _run_training(request, "locate")
+
+
 # --- entry point -----------------------------------------------------------
 
 
@@ -851,6 +1140,8 @@ def _parser() -> argparse.ArgumentParser:
         ("track", "track one video and write its raw predictions"),
         ("infer-pose", "run a pose model over one video"),
         ("infer-points", "run a point model over one video"),
+        ("train-pose", "train a pose model on one dataset"),
+        ("train-points", "train a point model on one dataset"),
     ):
         subcommand = subcommands.add_parser(name, help=help_text)
         _ = subcommand.add_argument(
@@ -872,6 +1163,10 @@ def _answer(command: str, payload: str) -> BaseModel:
         return run_infer_pose(InferPoseRequest.model_validate_json(payload))
     if command == "infer-points":
         return run_infer_points(InferPointsRequest.model_validate_json(payload))
+    if command == "train-pose":
+        return run_train_pose(TrainPoseRequest.model_validate_json(payload))
+    if command == "train-points":
+        return run_train_points(TrainPointsRequest.model_validate_json(payload))
     return run_track(TrackRequest.model_validate_json(payload))
 
 
