@@ -50,6 +50,7 @@ import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.track_library.trex import is_per_individual_export
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import (
@@ -1053,7 +1054,17 @@ def run_trex(
             recomputed = False
 
         data_dir = work_dir / "data"
-        npz_paths = sorted(data_dir.glob("*.npz")) if data_dir.is_dir() else []
+        # Filtered, not just globbed. `auto_train` (visual identification) makes
+        # TRex write `<prefix>_vi_probs.npz` into the same directory -- a `probs`
+        # matrix with no positions and no `cm_per_pixel` -- and handing it to the
+        # converter raises MissingTrexCalibrationError, failing the whole entry
+        # after the tracking itself succeeded. `n_ids` below counts this too, so
+        # an unfiltered glob also reported one individual too many.
+        npz_paths = (
+            [f for f in sorted(data_dir.glob("*.npz")) if is_per_individual_export(f)]
+            if data_dir.is_dir()
+            else []
+        )
         row = TRexIndexRow(
             run_id=minted.run_id,
             group=item.group,

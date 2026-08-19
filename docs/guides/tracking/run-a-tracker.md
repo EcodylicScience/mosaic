@@ -7,102 +7,24 @@ tool, and bridges its output into `tracks/` in one command.
 mosaic track trex -m dataset.yaml --set track_max_individuals=4
 ```
 
-| Kind | What it is | Needs |
-| --- | --- | --- |
-| `trex` | [TRex](https://trex.run) — conversion then headless tracking, with or without posture | A display, even headless |
-| `sleap` | [SLEAP](https://sleap.ai) — pose inference plus identity tracking | Nothing beyond the install |
-| `litpose` | [Lightning Pose](https://lightning-pose.readthedocs.io) — single animal, no cross-frame identity | Linux CUDA for video inference |
-| `ultralytics` | Ultralytics MOT, six tracker backends | Nothing beyond the install |
+| Kind | What it is |
+| --- | --- |
+| `trex` | [TRex](https://trex.run) — conversion then headless tracking, with or without posture |
+| `sleap` | [SLEAP](https://sleap.ai) — pose inference plus identity tracking |
+| `litpose` | [Lightning Pose](https://lightning-pose.readthedocs.io) — single animal, no cross-frame identity; video inference needs a Linux CUDA GPU |
+| `ultralytics` | Ultralytics MOT, six tracker backends |
+
+A Lightning Pose run therefore yields one `id=0` track per video, and its
+DeepLabCut-style CSV is read by the built-in `deeplabcut` converter.
+
+None of the four is installed by mosaic.
+[Installation](../../installation.md#tools-that-run-in-their-own-environment) has the
+build for each and how mosaic locates it — in short, `MOSAIC_TREX_CONDA_ENV`,
+`MOSAIC_SLEAP_CONDA_ENV`, `MOSAIC_LITPOSE_CONDA_ENV` and `MOSAIC_ULTRALYTICS_BIN`.
 
 Raw tool output lands under `_tracking/<tool>/<run_id>/`, which is working space:
 `mosaic sweep-tracking` reclaims it once a run is finished and past its retention
 window. The standardized tables land under `tracks/` and stay.
-
-## Finding the tool
-
-None of the four is installed by mosaic, and none can share its environment — each
-pins a Python version or a framework stack that would fight with mosaic's own. Install
-each one yourself, then tell mosaic where it went.
-
-All four are located the same way, first match winning:
-
-1. a `<tool>_conda_env=` or `<tool>_bin=` argument on the call,
-2. `MOSAIC_<TOOL>_CONDA_ENV` or `MOSAIC_<TOOL>_BIN` in the environment,
-3. the tool on `$PATH`.
-
-**Where a tool lives never enters a `run_id`.** It is a property of the machine, not of
-the run, so two machines that install a tracker differently still agree on what a run
-is called.
-
-### TRex
-
-TRex's conda package pins `python=3.11` and `numpy=1.26`, so it needs an environment of
-its own:
-
-```bash
-conda create -n trex -c conda-forge -c trexing trex -y
-export MOSAIC_TREX_CONDA_ENV=trex
-```
-
-On a headless server TRex still needs a display. Run **one** persistent virtual
-framebuffer and point mosaic at it — do not wrap `trex` in `xvfb-run`, which fork-bombs,
-because TRex relaunches itself:
-
-```bash
-Xvfb :99 &
-export MOSAIC_TREX_DISPLAY=:99
-```
-
-### SLEAP
-
-SLEAP 1.6 brings PyTorch and Qt, so it installs on its own:
-
-```bash
-uv tool install "sleap[nn]"
-```
-
-Nothing to export: this puts `sleap-track` and `sleap-convert` on `$PATH`, where mosaic
-finds them. If you install SLEAP into a conda environment instead, name it with
-`export MOSAIC_SLEAP_CONDA_ENV=sleap`.
-
-Inference is headless, and mosaic reads the analysis HDF5 written by SLEAP.
-
-### Lightning Pose
-
-Lightning Pose brings PyTorch, Lightning and NVIDIA DALI, and its video inference needs
-a Linux CUDA GPU:
-
-```bash
-conda create -n litpose python=3.10 -y
-conda activate litpose
-pip install lightning-pose
-export MOSAIC_LITPOSE_CONDA_ENV=litpose
-```
-
-Single-animal and per-frame, so each video yields one `id=0` track. Its
-DeepLabCut-style CSV is read by the built-in `deeplabcut` converter.
-
-### Ultralytics
-
-Ultralytics runs in an environment the mosaic repository defines, so build it from your
-checkout:
-
-```bash
-cd src/mosaic/tracking/external/ultralytics-env
-uv sync --python 3.12
-export MOSAIC_ULTRALYTICS_BIN="$PWD/.venv/bin/yolo"
-```
-
-The export is needed here, and not for SLEAP, because `uv sync` builds a `.venv` inside
-that directory rather than putting anything on `$PATH`.
-`MOSAIC_ULTRALYTICS_CONDA_ENV` names a conda environment holding the same packages
-instead.
-
-This environment runs `mosaic run --kind infer-pose` as well as the tracker, so
-building it once covers both. Point detection needs a second one: POLO ships under the
-distribution name `ultralytics` and so cannot share an environment with upstream. Build
-it the same way in `polo-env/` beside this one, and name it with `MOSAIC_POLO_BIN` --
-both install the same `yolo` script, so a `$PATH` lookup cannot tell them apart.
 
 ## Tracking parameters
 
@@ -161,10 +83,13 @@ convert once and re-track several times:
 from mosaic.tracking.trex import run_trex_convert, run_trex_track
 
 conv = run_trex_convert("video.mp4", "out/", detect_model="yolo.pt",
-                        track_max_individuals=4, trex_conda_env="trex", display=":99")
+                        track_max_individuals=4, trex_conda_env="trex")
 trk = run_trex_track(conv.pv_path, "out/", track_max_individuals=4,
-                     trex_conda_env="trex", display=":99")
+                     trex_conda_env="trex")
 ```
+
+Each function also takes `<tool>_conda_env=` or `<tool>_bin=`, which override the
+environment variables for that one call.
 
 ## What comes out
 

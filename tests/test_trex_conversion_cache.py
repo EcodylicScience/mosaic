@@ -765,3 +765,67 @@ def test_a_stale_staging_tree_is_cleared_by_the_next_conversion(
     assert not stale.exists()
     assert len(trex.converted) == 1, "an unpublished slot must be reconverted"
     assert (slot_of(ds) / f"{CONVERSION_STEM}.pv").exists()
+
+
+def test_visual_identification_probabilities_are_not_read_as_tracks(
+    ds: Dataset, trex: FakeTrex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``auto_train`` writes a ``_vi_probs.npz`` beside the per-id exports.
+
+    It holds a ``probs`` matrix and nothing else -- no positions, no
+    ``cm_per_pixel`` -- so a bridge that globs ``data/*.npz`` hands it to the
+    converter, which refuses it for a calibration it was never going to carry.
+    The entry then fails *after* TRex tracked it successfully, and a run using
+    visual identification publishes nothing at all.
+
+    The membership test is the individual-id suffix, not the directory.
+    """
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    # Wrap what the fixture installed. Rebinding ``trex.track`` would not work:
+    # the fixture patched the module with the already-bound method.
+    tracked = dr.run_trex_track
+
+    def track_with_vi_probs(pv_path: Path, output_dir: Path, **kwargs: object):
+        result = tracked(pv_path, output_dir, **kwargs)
+        np.savez(
+            Path(output_dir) / "data" / f"{Path(pv_path).stem}_vi_probs.npz",
+            probs=np.zeros((6, 2), dtype=float),
+        )
+        return result
+
+    monkeypatch.setattr(dr, "run_trex_track", track_with_vi_probs)
+
+    variant = dr.run_trex(ds, auto_train=True)
+
+    published = read_tracks_index(ds)
+    assert len(published) == 1, "the entry published, so visual identity is usable"
+    assert published.iloc[0]["run_id"] == variant
+    assert int(published.iloc[0]["n_rows"]) == 6, (
+        "the per-id export is what became the table"
+    )
+
+    trex_index = pd.read_csv(ds.get_root("trex") / "index.csv")
+    assert int(trex_index.iloc[0]["n_ids"]) == 1, (
+        "n_ids counts individuals, and the probability matrix is not one"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stem", "expected"),
+    [
+        ("conversion_id0", True),
+        ("vid1_fish12", True),
+        # TRex names exports `<output_prefix>_id<N>`; an empty prefix leaves the
+        # tail as the whole name, which is still one individual's export.
+        ("fish0", True),
+        ("bee3", True),
+        ("conversion_vi_probs", False),  # what auto_train writes
+        ("conversion", False),
+    ],
+)
+def test_which_trex_exports_are_one_individual(stem: str, expected: bool) -> None:
+    """The membership test is the id suffix, not the directory it sits in."""
+    from mosaic.core.track_library.trex import is_per_individual_export
+
+    assert is_per_individual_export(f"{stem}.npz") is expected

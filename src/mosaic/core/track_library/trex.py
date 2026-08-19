@@ -67,6 +67,7 @@ __all__ = [
     "TrexScaledNpzParams",
     "UnknownTrexUnitsError",
     "calibration_from_frame",
+    "is_per_individual_export",
     "load_npz_to_df",
     "name_the_body_centre",
     "unscale_to_pixels",
@@ -74,10 +75,43 @@ __all__ = [
 
 
 # --- TRex per-id NPZ support ---
-# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc. Read for two different
-# questions -- which individual a file holds (below) and which sequence it
-# belongs to (TrexNpzConverter.sequence_from_stem) -- so it stays module-level.
+# Matches: _id0, _id1, _fish0, _fish1, _bee0, _bee1, etc. Read for three
+# different questions -- which individual a file holds (below), which sequence
+# it belongs to (TrexNpzConverter.sequence_from_stem), and whether a file in a
+# TRex output directory is an individual export at all
+# (is_per_individual_export) -- so it stays module-level.
 _TREX_ID_SUFFIX = re.compile(r"_(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
+
+# The same tail, but allowed to *be* the whole stem. TRex names its exports
+# `<output_prefix>_id<N>`, and with an empty prefix that is bare `fish0.npz` --
+# still one individual's export, and still not a probability matrix. The two
+# patterns are not interchangeable: `sequence_from_stem` strips the separator
+# along with the tail, and there is nothing to strip when the tail is the name.
+_TREX_ID_NAME = re.compile(r"(?:^|_)(?:id|fish|bee|animal|ind)(\d+)$", re.IGNORECASE)
+
+
+def is_per_individual_export(path: Path | str) -> bool:
+    """Does this filename name one individual's TRex export?
+
+    TRex's ``data/`` directory is not exclusively per-individual tracks. Visual
+    identification (``auto_train``) writes ``<prefix>_vi_probs.npz`` beside them,
+    holding a ``probs`` matrix and nothing else -- no positions, no
+    ``cm_per_pixel``. Handing that to the converter raises
+    :class:`MissingTrexCalibrationError`, which is the correct answer to the
+    wrong question: the file is not a failed export, it is not an export.
+
+    So the individual suffix is the membership test, not the directory. A name
+    with no ``_id<N>`` tail is something else TRex wrote, and something else is
+    skipped rather than converted.
+
+    Args:
+        path: A path or filename. Only the stem is read.
+
+    Returns:
+        Whether the stem ends in an individual-id suffix.
+    """
+    return _TREX_ID_NAME.search(Path(path).stem) is not None
+
 
 CALIBRATION_COLUMN = "cm_per_pixel"
 """The field TRex writes its applied pixel-to-centimetre factor into.

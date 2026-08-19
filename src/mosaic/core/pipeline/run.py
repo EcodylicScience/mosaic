@@ -1265,6 +1265,18 @@ def _run_feature_impl(
     if hasattr(feature, "bind_dataset"):
         feature.bind_dataset(ds)
 
+    # And the scope, for a feature that re-reads tracks itself rather than only
+    # consuming the manifest the engine built. The three media features do:
+    # `overlay` and the two crop features call back into `play_video` /
+    # `load_tracks`, which resolve a variant of their own. Without this the
+    # variant this run was built from never reaches them, so `select_variant_rows`
+    # sees an entry carrying two recipes and refuses -- which is the ordinary
+    # state of any dataset where a tracker has run beside a conversion, and made
+    # `run_feature(..., tracks_run_id=...)` silently ineffective for exactly the
+    # features whose whole job is to draw the result.
+    if hasattr(feature, "set_scope"):
+        feature.set_scope(scope)
+
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(
         ds, feature, labels_run_id
