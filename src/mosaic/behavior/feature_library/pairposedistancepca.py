@@ -40,11 +40,18 @@ class PairPoseDistancePCABundle(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class _BatchMeta:
-    """Metadata yielded alongside each feature batch."""
+    """Row-aligned identity for one feature batch.
+
+    ``id1`` is the focal and ``id2`` the other individual, so the pair **swaps**
+    between the two perspectives: the perspective-1 rows are built as ``(b, a)``,
+    and labelling them ``(a, b)`` made one ``(frame, id1, id2)`` name two different
+    rows. Arrays rather than scalars for exactly that reason -- a scalar stamped
+    across a batch cannot express the swap.
+    """
 
     frames: np.ndarray | None
-    id1: int
-    id2: int
+    id1: np.ndarray
+    id2: np.ndarray
 
 
 @final
@@ -53,6 +60,10 @@ class PairPoseDistancePCA:
     """
     'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and
     fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
+
+    One row per **ordered** pair per frame: ``id1`` is the focal, ``id2`` the other,
+    and ``perspective`` says which ordering, so the key is
+    ``(frame, id1, id2, perspective)``.
 
     Params:
         interpolation: Interpolation settings for missing pose data.
@@ -74,7 +85,7 @@ class PairPoseDistancePCA:
 
     category = "per-frame"
     name = "pair-posedistance-pca"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -174,8 +185,10 @@ class PairPoseDistancePCA:
             pcs.append(out)
 
         if not pcs:
+            # The identity columns are named even when there is nothing to identify:
+            # an empty frame missing them reads as unidentified rather than pair.
             return pd.DataFrame(
-                columns=["perspective"]
+                columns=[C.frame_col, "id1", "id2", "perspective"]
                 + [f"PC{i}" for i in range(self.params.n_components)]
             )
 
@@ -298,7 +311,10 @@ class PairPoseDistancePCA:
                 ]
                 feat_mat = np.vstack(feat_rows).astype(np.float32, copy=False)
 
-                persp = np.zeros(feat_mat.shape[0], dtype=np.int8)
+                n_base = feat_mat.shape[0]
+                persp = np.zeros(n_base, dtype=np.int64)
+                id1 = np.full(n_base, id_a, dtype=np.int64)
+                id2 = np.full(n_base, id_b, dtype=np.int64)
                 frame_arr = chunk[order_col].to_numpy() if has_frames else None
 
                 if dup:
@@ -306,10 +322,14 @@ class PairPoseDistancePCA:
                         self._build_pair_feat(b, a) for a, b in zip(vals_a, vals_b)
                     ]
                     feat_dup = np.vstack(feat_rows2).astype(np.float32, copy=False)
+                    n_dup = feat_dup.shape[0]
                     feat_mat = np.vstack([feat_mat, feat_dup])
                     persp = np.concatenate(
-                        [persp, np.ones(feat_dup.shape[0], dtype=np.int8)], axis=0
+                        [persp, np.ones(n_dup, dtype=np.int64)], axis=0
                     )
+                    # B is the focal on the mirrored block, so the ids swap with it.
+                    id1 = np.concatenate([id1, np.full(n_dup, id_b, dtype=np.int64)])
+                    id2 = np.concatenate([id2, np.full(n_dup, id_a, dtype=np.int64)])
                     if frame_arr is not None:
                         frame_arr = np.concatenate([frame_arr, frame_arr], axis=0)
 
@@ -317,7 +337,7 @@ class PairPoseDistancePCA:
                     msg = f"Feature length mismatch: got {feat_mat.shape[1]}, expected {self._feat_len}"
                     raise ValueError(msg)
 
-                yield feat_mat, _BatchMeta(frame_arr, id_a, id_b), persp
+                yield feat_mat, _BatchMeta(frame_arr, id1, id2), persp
 
     def _pose_to_points(self, row_vals: np.ndarray) -> np.ndarray:
         N = self._effective_pose_n()

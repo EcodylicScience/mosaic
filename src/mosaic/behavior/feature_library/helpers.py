@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types import COLUMNS
+from mosaic.core.pipeline.types import COLUMNS, META_COLS
 
 from .types import InterpolationConfig
 
@@ -21,15 +21,29 @@ __all__ = [
     "ego_rotate",
     "ensure_columns",
     "feature_columns",
+    "meta_columns",
     "smooth_1d",
     "unwrap_diff",
     "wrap_angle",
 ]
 
 
-# Extra non-feature columns that may appear in result DataFrames alongside
-# the standard COLUMNS metadata (id, sequence, group, frame, time).
-_EXTRA_META = {"id1", "id2", "entity_level", "perspective", "fps", "label", "split"}
+# Non-feature columns that are not identity either: a sampling rate, a ground-truth
+# label, a train/test assignment, a level marker. They are kept out of the feature
+# set like the identity columns, but a feature rebuilding its output does not carry
+# them -- they are bookkeeping about a run, not about who the row is.
+#
+# The identity names (id, sequence, group, frame, time, id1, id2, perspective) are
+# deliberately **not** listed here: they live in ``META_COLS``, so the exclusion
+# below and the passthrough in :func:`meta_columns` cannot drift apart. They did,
+# and the gap is where ``perspective`` fell through -- excluded from the features by
+# a list that named it, dropped from the metadata by a list that did not.
+_EXTRA_META = {"entity_level", "fps", "label", "split"}
+
+
+def _non_feature_columns(df: pd.DataFrame) -> set[str]:
+    """Every column of *df* that is not a measurement."""
+    return META_COLS | (_EXTRA_META & set(df.columns))
 
 
 def apply_exclude_cols(
@@ -52,13 +66,25 @@ def apply_exclude_cols(
 def feature_columns(df: pd.DataFrame) -> list[str]:
     """Return the sorted list of numeric feature column names in *df*.
 
-    Excludes standard metadata columns (COLUMNS.meta_set()) and known
-    non-feature columns (id1, id2, entity_level, perspective, fps).
+    Excludes the identity columns (``META_COLS``) and the non-identity bookkeeping
+    ones (``entity_level``, ``fps``, ``label``, ``split``). Together with
+    :func:`meta_columns` this partitions *df* by construction, which is the point:
+    a feature that asks both questions cannot answer them with two different sets.
     """
-    from mosaic.core.pipeline.types import COLUMNS as C
+    return sorted(
+        set(df.select_dtypes(include="number").columns) - _non_feature_columns(df)
+    )
 
-    exclude = C.meta_set() | (_EXTRA_META & set(df.columns))
-    return sorted(set(df.select_dtypes(include="number").columns) - exclude)
+
+def meta_columns(df: pd.DataFrame) -> list[str]:
+    """Return the sorted identity columns present in *df*.
+
+    What a feature that rebuilds its output carries through unchanged. The
+    complement of :func:`feature_columns` over the identity half, read from the
+    pipeline's own ``META_COLS`` rather than spelled per feature -- five features
+    spelled it separately and three of the spellings disagreed.
+    """
+    return sorted(META_COLS & set(df.columns))
 
 
 # What to say when a missing column has a known producer. A tracks table records

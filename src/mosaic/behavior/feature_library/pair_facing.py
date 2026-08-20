@@ -64,9 +64,10 @@ class PairFacing:
     """
     Per-frame directional facing metric for all ordered pairs of individuals.
 
-    Output columns (one row per ordered (focal, target) per frame):
+    Output columns (one row per ordered pair per frame, keyed by
+    ``(frame, id1, id2, perspective)``):
       - frame
-      - focal_id, target_id
+      - id1 (the focal), id2 (the target), perspective
       - body_angle_deg
       - bearing_deg
       - angle_diff_deg
@@ -100,7 +101,7 @@ class PairFacing:
 
     category = "per-frame"
     name = "pair-facing"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -191,8 +192,10 @@ class PairFacing:
                 )
                 if pair_df is None or pair_df.empty:
                     continue
-                pair_df["focal_id"] = focal_id
-                pair_df["target_id"] = target_id
+                pair_df["id1"] = focal_id
+                pair_df["id2"] = target_id
+                # The focal-first ordering is perspective 0; its mirror is 1.
+                pair_df["perspective"] = 0 if focal_id < target_id else 1
                 all_rows.append(pair_df)
 
         if not all_rows:
@@ -206,8 +209,9 @@ class PairFacing:
 
         cols = [
             C.frame_col,
-            "focal_id",
-            "target_id",
+            "id1",
+            "id2",
+            "perspective",
             "body_angle_deg",
             "bearing_deg",
             "angle_diff_deg",
@@ -277,8 +281,9 @@ class PairFacing:
         return pd.DataFrame(
             columns=[
                 C.frame_col,
-                "focal_id",
-                "target_id",
+                "id1",
+                "id2",
+                "perspective",
                 "body_angle_deg",
                 "bearing_deg",
                 "angle_diff_deg",

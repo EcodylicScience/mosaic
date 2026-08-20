@@ -360,7 +360,7 @@ class FeralFeature:
     # meaning, so this changes what is displayed and nothing about what runs.
     category = "global"
     name = "feral"
-    version = "0.1"
+    version = "0.2"
     parallelizable = False
     scope_dependent = False
     accepts_overlap = (
@@ -1340,7 +1340,7 @@ class FeralFeature:
             ]
 
         # Detect input format and normalize to per-video rows
-        is_pair_input = "id_a" in df.columns and "id_b" in df.columns
+        is_pair_input = "id1" in df.columns and "id2" in df.columns
         video_rows = self._normalize_input(df)
 
         # Resolve video directory (fallback chain: cached → config → params)
@@ -1410,14 +1410,16 @@ class FeralFeature:
 
                 pred_row: dict = {C.frame_col: start_frame + i}
 
-                # Identity columns — adapt to input type
+                # Identity columns — adapt to input type. The pair case carries
+                # the ordered pair through; the individual case is keyed on the
+                # cropped individual alone.
                 if is_pair_input:
-                    pred_row["id_a"] = row.get("id_a")
-                    pred_row["id_b"] = row.get("id_b")
-                    pred_row["target_id"] = row.get("target_id")
+                    pred_row["id1"] = row.get("id1")
+                    pred_row["id2"] = row.get("id2")
+                    pred_row["perspective"] = row.get("perspective")
                     pred_row["interaction_id"] = row.get("interaction_id")
                 else:
-                    pred_row[C.id_col] = row.get("target_id")
+                    pred_row[C.id_col] = row.get(C.id_col)
 
                 # Probability columns (prob_0, prob_1, ...)
                 for cls_idx, cls in enumerate(self._classes):
@@ -1457,25 +1459,25 @@ class FeralFeature:
 
         Handles two formats:
         1. InteractionCropPipeline: already per-video, has video_path
-        2. EgocentricCrop: per-frame, derive video_path from target_id
+        2. EgocentricCrop: per-frame, derive video_path from the cropped id
         """
         if "video_path" in df.columns:
             # InteractionCropPipeline format — already per-video rows
             return df
 
         # EgocentricCrop format — per-frame rows, aggregate to per-video
-        if "target_id" not in df.columns:
+        if C.id_col not in df.columns:
             raise ValueError(
                 "Input must have either 'video_path' (InteractionCropPipeline) "
-                "or 'target_id' + 'frame' columns (EgocentricCrop)."
+                "or 'id' + 'frame' columns (EgocentricCrop)."
             )
 
         rows = []
-        for target_id, sub in df.groupby("target_id"):
+        for target_id, sub in df.groupby(C.id_col):
             rows.append(
                 {
                     "video_path": f"egocentric_id{target_id}.mp4",
-                    "target_id": target_id,
+                    C.id_col: target_id,
                     "start_frame": int(sub[C.frame_col].min())
                     if C.frame_col in sub.columns
                     else 0,

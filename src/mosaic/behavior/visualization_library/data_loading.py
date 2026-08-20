@@ -34,10 +34,7 @@ def _pick_label_column(df: pd.DataFrame) -> Optional[str]:
         "id",
         "id1",
         "id2",
-        "id_a",
-        "id_b",
-        "id_A",
-        "id_B",
+        "perspective",
         "entity_level",
     }
     for col in df.columns:
@@ -53,14 +50,6 @@ def _normalize_identity_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "id1" not in out.columns and "id" in out.columns:
         out["id1"] = out["id"]
-    if "id1" not in out.columns and "id_a" in out.columns:
-        out["id1"] = out["id_a"]
-    if "id2" not in out.columns and "id_b" in out.columns:
-        out["id2"] = out["id_b"]
-    if "id1" not in out.columns and "id_A" in out.columns:
-        out["id1"] = out["id_A"]
-    if "id2" not in out.columns and "id_B" in out.columns:
-        out["id2"] = out["id_B"]
 
     if "id1" in out.columns:
         out["id1"] = pd.to_numeric(out["id1"], errors="coerce")
@@ -102,7 +91,7 @@ def load_tracks_and_labels(
     labels : dict
         {
           "per_id": {feature_name: {id_value: Series}},
-          "per_pair": {feature_name: {(id1, id2): Series}},
+          "per_pair": {feature_name: {(id1, id2): Series}},   # ordered pair
           "raw": {feature_name: DataFrame}  # full frame per feature for bespoke use
         }
         Series are indexed by frame and hold the chosen label column.
@@ -180,8 +169,12 @@ def load_tracks_and_labels(
             # Per-pair rows (id1 + id2 present)
             pair_rows = df_norm[has_id1 & has_id2]
             if not pair_rows.empty:
+                # The ordered pair, not the sorted one: a pair feature writes
+                # one row per direction, and sorting here collapsed them onto one
+                # key where the last row silently won. Consumers that can only
+                # draw one thing per pair collapse deliberately instead.
                 pairs = pair_rows[["id1", "id2"]].apply(
-                    lambda row: tuple(sorted((int(row["id1"]), int(row["id2"])))),
+                    lambda row: (int(row["id1"]), int(row["id2"])),
                     axis=1,
                 )
                 pair_rows = pair_rows.assign(_pair=pairs)

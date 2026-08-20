@@ -15,11 +15,8 @@ from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
 from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
-from mosaic.core.pipeline.types import (
     DependencyLookup,
+    EmitsLevel,
     Inputs,
     InputStream,
     NNResult,
@@ -27,7 +24,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 
-from .helpers import feature_columns
+from .helpers import feature_columns, meta_columns
 from .registry import register_feature
 
 # --- Computation helpers ---
@@ -223,7 +220,7 @@ class TemporalStackingFeature:
 
     category = "per-frame"
     name = "temporal-stack"
-    version = "0.3"
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = True
@@ -301,7 +298,7 @@ class TemporalStackingFeature:
         df: pd.DataFrame,
         cols: list[str],
     ) -> pd.DataFrame:
-        meta = sorted(((C.meta_set() | {"id1", "id2"}) & set(df.columns)) - set(cols))
+        meta = meta_columns(df)
         base = df[cols].to_numpy(dtype=np.float32)
         stacked, stacked_names = self._stack(base, cols)
         result = pd.DataFrame(stacked, columns=stacked_names, index=df.index)
@@ -314,9 +311,9 @@ class TemporalStackingFeature:
         df: pd.DataFrame,
         cols: list[str],
     ) -> pd.DataFrame:
-        meta = sorted(((C.meta_set() | {"id1", "id2"}) & set(df.columns)) - set(cols))
+        meta = meta_columns(df)
         parts: list[pd.DataFrame] = []
-        for _, sub in df.groupby(["id1", "id2"], sort=False):
+        for _, sub in df.groupby(self._pair_keys(df), sort=False):
             sub = sub.sort_values("frame").reset_index(drop=True)
             base = sub[cols].to_numpy(dtype=np.float32)
             stacked, stacked_names = self._stack(base, cols)
@@ -327,6 +324,21 @@ class TemporalStackingFeature:
         if not parts:
             return pd.DataFrame()
         return pd.concat(parts, ignore_index=True)
+
+    @staticmethod
+    def _pair_keys(df: pd.DataFrame) -> list[str]:
+        """The columns that separate one pair's time series from another's.
+
+        ``perspective`` is one of them wherever it is present. Grouping on
+        ``id1``/``id2`` alone puts both perspectives of a pair in one block, where
+        sorting by frame interleaves them -- so the smoothing and the offset stack
+        read across the two, and a row's own value and both of its neighbours come
+        from the wrong perspective.
+        """
+        keys = ["id1", "id2"]
+        if "perspective" in df.columns:
+            keys.append("perspective")
+        return keys
 
     def _stack(
         self,

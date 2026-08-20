@@ -91,6 +91,58 @@ def make_sequence_df(
     return pd.DataFrame(data)
 
 
+def make_pair_df(
+    n_frames: int,
+    n_features: int,
+    *,
+    ids: tuple[int, int] = (0, 1),
+    sequence: str = "seq_a",
+    group: str = "grp_a",
+    separable: bool = False,
+) -> pd.DataFrame:
+    """One sequence's pair frame: two rows per frame, one per ordered pair.
+
+    The shape every pair-level feature emits. ``id1`` is the focal and ``id2``
+    the other, so the two rows of a frame carry the ids in opposite orders, and
+    ``perspective`` says which ordering -- making the key
+    ``(frame, id1, id2, perspective)`` rather than ``(frame, id1, id2)``.
+
+    Args:
+        n_frames: How many frames the sequence holds. Each yields two rows.
+        n_features: How many feature columns each row holds.
+        ids: The pair, low id first.
+        sequence: The sequence name written into every row.
+        group: The group name written into every row.
+        separable: Give the two perspectives disjoint value ranges --
+            perspective 0 draws below 1 and perspective 1 above 100 -- so an
+            assertion can tell which perspective a computed value came from.
+            The default draws a plain standard normal on the shared seed.
+
+    Returns:
+        The frame, perspective 0 rows first, each block ordered by frame.
+    """
+    rng = np.random.default_rng(99)
+    id_a, id_b = ids
+    blocks: list[pd.DataFrame] = []
+    for perspective, (focal, other) in enumerate(((id_a, id_b), (id_b, id_a))):
+        data: dict[str, object] = {
+            "frame": np.arange(n_frames),
+            "time": np.arange(n_frames, dtype=float) / 30.0,
+            "group": [group] * n_frames,
+            "sequence": [sequence] * n_frames,
+            "id1": np.full(n_frames, focal, dtype=int),
+            "id2": np.full(n_frames, other, dtype=int),
+            "perspective": np.full(n_frames, perspective, dtype=int),
+        }
+        for i in range(n_features):
+            if separable:
+                data[f"feat_{i}"] = np.full(n_frames, 100.0 * perspective + i)
+            else:
+                data[f"feat_{i}"] = rng.standard_normal(n_frames)
+        blocks.append(pd.DataFrame(data))
+    return pd.concat(blocks, ignore_index=True)
+
+
 def write_templates(tmp_path: Path, templates: pd.DataFrame) -> Path:
     """Write *templates* where a feature's templates artifact resolves it.
 

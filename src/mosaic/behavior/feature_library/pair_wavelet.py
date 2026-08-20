@@ -24,7 +24,7 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from .types import SamplingConfig
 
@@ -203,11 +203,8 @@ class PairWavelet:
         pc_cols = self._pc_columns(df, self.params.pc_prefix)
         if pc_cols:
             return pc_cols
-        # 3) Auto-detect: all numeric columns except known meta
-        meta_like = C.meta_set() | {"perspective", "fps", "id1", "id2"}
-        num_cols = sorted(
-            set(df.select_dtypes(include=[np.number]).columns) - meta_like
-        )
+        # 3) Auto-detect: every numeric column that is not identity or bookkeeping
+        num_cols = feature_columns(df)
         if not num_cols:
             raise ValueError(
                 "[pair-wavelet] Could not auto-detect numeric feature columns."

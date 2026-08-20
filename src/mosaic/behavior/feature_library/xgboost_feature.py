@@ -10,7 +10,6 @@ from pydantic import Field
 from xgboost import XGBClassifier
 
 from mosaic.core.pipeline.types import (
-    COLUMNS as C,
     EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
@@ -23,7 +22,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 
-from .helpers import ensure_columns, feature_columns
+from .helpers import ensure_columns, feature_columns, meta_columns
 from .registry import register_feature
 
 
@@ -364,29 +363,11 @@ class XgboostFeature:
         else:
             predicted_labels = self._from_index(np.argmax(probs, axis=1))
 
-        # Build output DataFrame.
-        #
-        # `id1` / `id2` / `perspective` travel with the rest because this feature is
-        # routinely fed pair-level input, and without them the output is two rows per
-        # frame with nothing to tell them apart -- unjoinable against the very
-        # features it was trained on. `id1` and `id2` are alignment columns;
-        # `perspective` is what actually separates A->B from B->A, since both
-        # perspectives carry the same pair ids.
-        meta_cols = [
-            c
-            for c in [
-                C.frame_col,
-                C.time_col,
-                C.id_col,
-                C.group_col,
-                C.seq_col,
-                "id1",
-                "id2",
-                "perspective",
-            ]
-            if c in df.columns
-        ]
-        result = df[meta_cols].copy()
+        # Build output DataFrame. The whole identity travels with the predictions,
+        # `perspective` included: this feature is routinely fed pair-level input,
+        # and without it the output is two rows per frame with nothing to tell them
+        # apart -- unjoinable against the very features it was trained on.
+        result = df[meta_columns(df)].copy()
         for col_idx, cls in enumerate(self._classes):
             result[f"prob_{cls}"] = probs[:, col_idx]
         result["predicted_label"] = predicted_labels

@@ -109,11 +109,31 @@ class PoseConfig(StrictModel):
         return self
 
 
+# What identifies a pair row. A pair feature emits one row per *ordered* pair per
+# frame -- ``id1`` the focal, ``id2`` the other -- and ``perspective`` says which
+# ordering, so ``(frame, id1, id2)`` is not a key and ``(frame, id1, id2,
+# perspective)`` is.
+#
+# ``perspective`` belongs here rather than among the measurements because leaving it
+# out made it neither a join key nor carried metadata, and the two halves of that
+# compounded: a merge of two pair inputs renamed the second copy to
+# ``perspective__1``, which then read as a numeric feature and was fitted as data,
+# while the surviving plain column was dropped by any feature rebuilding its output
+# from the metadata set.
+PAIR_COLS: frozenset[str] = frozenset({"id1", "id2", "perspective"})
+
+# The columns that name *who* a row is about. What ``alignment_verdict`` asks for
+# when two inputs sit at different entity levels: sharing ``frame`` alone is a
+# cartesian product, sharing an id is an alignment. ``perspective`` is deliberately
+# absent -- it separates two rows of one pair, it does not say who they are about, so
+# a stray one on an individual-level frame must not unlock a cross-level join.
+ID_COLS: frozenset[str] = frozenset({COLUMNS.id_col, "id1", "id2"})
+
 # Join keys for a multi-input merge, and the metadata a feature passes through.
 # They differ by exactly ``{group, sequence}``: those are constant within an entry,
 # so joining on them narrows nothing, and a blank group spelled ``""`` on one side
 # and ``NaN`` on the other would empty the join instead.
 ALIGN_COLS: frozenset[str] = frozenset(
-    (COLUMNS.meta_set() - {COLUMNS.group_col, COLUMNS.seq_col}) | {"id1", "id2"}
+    (COLUMNS.meta_set() - {COLUMNS.group_col, COLUMNS.seq_col}) | PAIR_COLS
 )
-META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | {"id1", "id2"})
+META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)

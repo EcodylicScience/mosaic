@@ -86,9 +86,26 @@ class Feature(Protocol):
 
     - ``"individual"`` -- one row per ``(frame, id)``, or per ``id`` for a
       per-sequence summary. ``speed-angvel``, ``nearest-neighbor``, ``arhmm``.
-    - ``"pair"`` -- one row per ordered or unordered pair, whatever the pair
-      columns are spelled. The ``pair-*`` family, ``orientation-rel``,
-      ``interaction-crop-pipeline``.
+    - ``"pair"`` -- one row per **ordered** pair per frame: ``id1`` the focal,
+      ``id2`` the other, and ``perspective`` saying which ordering, so the key is
+      ``(frame, id1, id2, perspective)``. The ``pair-*`` family,
+      ``orientation-rel``, ``interaction-crop-pipeline``.
+
+      The ordering is not decoration. A producer that wrote the ids unswapped on
+      the second perspective made ``id1`` mean the focal on some features and the
+      lower id on others, and a merge between the two bound every row to the wrong
+      perspective while dropping half of one side -- silently, because one side
+      was unique on the shared keys and the join read as a broadcast.
+
+      **One spelling and one shape, with no special case.** Not ``id_a``/``id_b``,
+      not ``focal_id`` with a target column: ``entity_level_of`` reads identity by
+      name, so a frame spelled any other way reads as carrying none at all and is
+      permitted a frame-only join. And not an unordered row either, even where the
+      quantity is symmetric -- a distance, a mutual-interaction flag -- because a
+      lone unordered row matches half of an ordered partner's rows and the merge
+      broadcasts rather than refusing. Write the symmetric value on both rows.
+      ``tests/test_pair_identity_convention.py`` and the sweeps in
+      ``tests/test_feature_conformance.py`` hold this.
     - ``"unidentified"`` -- no per-animal identity at all: a per-frame or
       per-chunk aggregate over everyone present. ``collective-motion-metrics``,
       ``frame-aggregate``.

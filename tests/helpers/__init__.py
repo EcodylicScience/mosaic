@@ -37,6 +37,7 @@ from tests.helpers.environment import (
     sandbox_home,
 )
 from tests.helpers.features import (
+    make_pair_df,
     make_sequence_df,
     make_templates,
     write_templates,
@@ -70,6 +71,7 @@ __all__ = [
     "clean_facts_cells",
     "inside_a_virtualenv",
     "make_dataset",
+    "make_pair_df",
     "make_sequence_df",
     "make_templates",
     "missing_ffmpeg_tools",

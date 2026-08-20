@@ -137,7 +137,7 @@ class EgocentricCrop:
 
     category = "media"
     name = "egocentric-crop"
-    version = "0.2"
+    version = "0.3"
     parallelizable = False  # Video I/O is sequential
     scope_dependent = False
     accepts_overlap = False  # opens the entry's own video
@@ -856,7 +856,10 @@ class EgocentricCrop:
                         "center_x": center[0],
                         "center_y": center[1],
                         "heading_angle": angle,
-                        "target_id": target_id,
+                        # The individual this crop is of. Spelled `id` like every
+                        # other individual-level output -- the `target_id` param
+                        # names a choice, not a row, and keeps its name.
+                        COLUMNS.id_col: target_id,
                         "group": group,
                         "sequence": sequence,
                     }

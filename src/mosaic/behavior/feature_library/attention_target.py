@@ -1,10 +1,15 @@
 """
 AttentionTarget -- per-frame attention target and group-membership label.
 
-Consumes PairFacing output. For each (focal_id, frame), picks the facing
-target with the smallest ``angle_diff_deg`` (NaN if no target satisfies the
-facing thresholds), then optionally labels the focal-target relationship
-against a generic ``id -> group`` mapping.
+Consumes PairFacing output. For each ``(id, frame)``, picks the facing target
+with the smallest ``angle_diff_deg`` (NaN if no target satisfies the facing
+thresholds), then optionally labels the focal-target relationship against a
+generic ``id -> group`` mapping.
+
+The result is **individual-level**, not pair-level: one row per focal per frame,
+with the target as a nullable measurement rather than a second identity. A row
+with no facing target has no second individual to name, so the target cannot be
+a join key -- which is what ``emits = "pair"`` would have promised.
 
 This generalizes Valerie's BeesInADish in_pair/out_pair attention metric:
 for the petri-dish experiment the group map encodes scent role
@@ -56,9 +61,9 @@ class AttentionTarget:
     """
     Per-frame attention target with group-membership labeling.
 
-    Output columns (one row per (focal_id, frame)):
+    Output columns (one row per (id, frame)):
       - frame
-      - focal_id
+      - id                               (the focal)
       - attention_target_id              (NA if no facing target)
       - attention_target_angle_diff_deg  (NA if no facing target)
       - focal_group                      (NA if id_group_map is None or id absent)
@@ -79,12 +84,12 @@ class AttentionTarget:
 
     category = "per-frame"
     name = "attention-target"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-    emits: EmitsLevel = "pair"
+    emits: EmitsLevel = "individual"
 
     class Inputs(Inputs[Result]):
         pass
@@ -120,47 +125,49 @@ class AttentionTarget:
 
         ensure_columns(
             df,
-            [C.frame_col, "focal_id", "target_id", "angle_diff_deg", "is_facing"],
+            [C.frame_col, "id1", "id2", "angle_diff_deg", "is_facing"],
         )
 
         # Restrict to facing candidates; for each (focal, frame) pick the one
         # with smallest angle_diff_deg.
         facing = df[df["is_facing"].astype(bool)]
         if not facing.empty:
-            idx = facing.groupby(["focal_id", C.frame_col])["angle_diff_deg"].idxmin()
+            idx = facing.groupby(["id1", C.frame_col])["angle_diff_deg"].idxmin()
             picked = facing.loc[
-                idx, ["focal_id", C.frame_col, "target_id", "angle_diff_deg"]
+                idx, ["id1", C.frame_col, "id2", "angle_diff_deg"]
             ].rename(
                 columns={
-                    "target_id": "attention_target_id",
+                    "id1": C.id_col,
+                    "id2": "attention_target_id",
                     "angle_diff_deg": "attention_target_angle_diff_deg",
                 }
             )
         else:
             picked = pd.DataFrame(
                 columns=[
-                    "focal_id",
+                    C.id_col,
                     C.frame_col,
                     "attention_target_id",
                     "attention_target_angle_diff_deg",
                 ]
             )
 
-        # Outer-join onto the full (focal_id, frame) grid so frames without a
-        # facing target appear with NA target.
+        # Outer-join onto the full (id, frame) grid so frames without a facing
+        # target appear with NA target.
         full_index = (
-            df[["focal_id", C.frame_col]].drop_duplicates().reset_index(drop=True)
+            df[["id1", C.frame_col]]
+            .drop_duplicates()
+            .rename(columns={"id1": C.id_col})
+            .reset_index(drop=True)
         )
-        out = full_index.merge(picked, on=["focal_id", C.frame_col], how="left")
+        out = full_index.merge(picked, on=[C.id_col, C.frame_col], how="left")
 
         # Group labels. Normalize ids to canonical string keys -- the left-join
         # may upcast attention_target_id to float (NaN-bearing), so str(2.0)
         # would otherwise fail to match a dict keyed on "2".
         group_map = self.params.id_group_map
         if group_map:
-            out["focal_group"] = out["focal_id"].map(
-                lambda i: group_map.get(_id_key(i))
-            )
+            out["focal_group"] = out[C.id_col].map(lambda i: group_map.get(_id_key(i)))
             out["target_group"] = out["attention_target_id"].map(
                 lambda i: group_map.get(_id_key(i))
             )
@@ -185,7 +192,7 @@ class AttentionTarget:
 
         cols = [
             C.frame_col,
-            "focal_id",
+            C.id_col,
             "attention_target_id",
             "attention_target_angle_diff_deg",
             "focal_group",
@@ -195,7 +202,7 @@ class AttentionTarget:
         extra = [c for c in out.columns if c not in cols]
         return (
             out[cols + extra]
-            .sort_values(["focal_id", C.frame_col])
+            .sort_values([C.id_col, C.frame_col])
             .reset_index(drop=True)
         )
 
@@ -203,7 +210,7 @@ class AttentionTarget:
         return pd.DataFrame(
             columns=[
                 C.frame_col,
-                "focal_id",
+                C.id_col,
                 "attention_target_id",
                 "attention_target_angle_diff_deg",
                 "focal_group",

@@ -66,10 +66,13 @@ _LEVEL_COLUMNS: Mapping[EntityLevel, frozenset[str]] = {
 }
 """The identity columns each level implies, as ``alignment_verdict`` reads them.
 
-Only these five names decide the question: ``ALIGN_COLS`` is
-``{id, frame, time, id1, id2}``, and ``entity_level_of`` looks at the id columns
-alone. Everything else a feature emits is payload, and payload cannot make a join
-legal or illegal.
+Only these five names decide the question. ``ALIGN_COLS`` is
+``{id, frame, time, id1, id2, perspective}`` and ``entity_level_of`` looks at the id
+columns alone, so ``perspective`` narrows a pair-to-pair join at the merge but
+answers nothing here: it says which ordering a row is, never whether two inputs
+share an entity. Adding it to ``"pair"`` would also make the declaration lie about
+any pair feature that does not write one. Everything else a feature emits is
+payload, and payload cannot make a join legal or illegal.
 """
 
 

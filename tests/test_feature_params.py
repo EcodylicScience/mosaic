@@ -262,6 +262,15 @@ def test_feral_inference_identity_is_pinned() -> None:
     FERAL run holds 95 sequences of V-JEPA2 inference. If this digest moves, that
     notebook stops finding its results and asks to recompute them; the notebook
     asserts the same value, so a mismatch should surface here first.
+
+    **The version moved once, deliberately, and the digest did not.** `feral` went
+    to `0.2` when its identity columns were renamed to `id1` / `id2` /
+    `perspective`, and the crop feature it reads went to `0.3` for the same reason.
+    So the run this pins is not reachable by name any more: the artifacts are still
+    on disk under `0.1-a3cefdc108`, and a fresh run asks to recompute all 95
+    sequences under `0.2-a3cefdc108`. The parameter set itself is untouched, which
+    is what the unchanged digest says -- so if the digest ever moves, that is a
+    different and unintended thing.
     """
     from mosaic.behavior.feature_library.feral_feature import FeralFeature
     from mosaic.core.pipeline._utils import hash_params
@@ -297,7 +306,7 @@ def test_feral_inference_identity_is_pinned() -> None:
             "_frame_range": [None, None],
         }
     )
-    assert f"{FeralFeature.version}-{digest}" == "0.1-a3cefdc108"
+    assert f"{FeralFeature.version}-{digest}" == "0.2-a3cefdc108"
 
 
 # --- Spec models ---

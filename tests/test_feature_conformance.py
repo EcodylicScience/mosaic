@@ -141,3 +141,76 @@ def test_every_feature_declares_what_it_emits(cls: type) -> None:
         f"{cls.__name__} declares emits = {declared!r}, which is not one of "
         f"{sorted(EMITS_LEVELS)}."
     )
+
+
+BANNED_IDENTITY_NAMES = frozenset(
+    {"id_a", "id_b", "id_A", "id_B", "focal_id", "target_id"}
+)
+"""Pair spellings that used to coexist with ``id1`` / ``id2``.
+
+Four of them, across six features, and the cost was not untidiness.
+``entity_level_of`` reads identity by name, so a ``focal_id`` frame read as
+carrying *no* identity and was permitted a frame-only join against an
+individual-level input. ``feature_columns`` excludes only the canonical names, so
+every one of these was handed to the scaler and the embedding as a measurement.
+And two producers spelled the same pair differently, so a merge between them bound
+each row to the wrong partner.
+
+One spelling is what makes it a rule. This is the assertion that keeps it one.
+"""
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_no_feature_writes_a_second_pair_spelling(cls: type) -> None:
+    """No feature assigns a column under a retired identity name.
+
+    Read out of the source rather than by running the feature, because most
+    features need a shaped input to produce a frame at all, and the point is to
+    catch the name at the moment somebody writes it.
+
+    String literals only: a *local variable* named ``id_a`` is fine and common --
+    six features enumerate their pairs that way -- so what is looked for is the
+    name used as a column key.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(cls))
+    except (OSError, TypeError):  # pragma: no cover - defensive
+        pytest.skip(f"{cls.__name__} has no readable source")
+
+    offenders = {
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in BANNED_IDENTITY_NAMES
+    }
+
+    assert not offenders, (
+        f"{cls.__name__} names {sorted(offenders)}. A pair row is keyed by "
+        f"(frame, id1, id2, perspective) -- id1 the focal, id2 the other."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_pair_feature_writes_perspective(cls: type) -> None:
+    """A feature declaring ``emits = "pair"`` names ``perspective`` somewhere.
+
+    A pair feature emits one row per *ordered* pair, so without ``perspective``
+    its two rows per frame are the same row twice as far as any join can tell.
+    Presence of the name is a weak check -- the values are asserted in
+    ``tests/test_pair_identity_convention.py``, which runs the producers -- but it
+    is the one that covers every registered feature, including the ones that need
+    a video or a fitted model to run.
+    """
+    if getattr(cls, "emits", None) != "pair":
+        pytest.skip("does not declare emits = 'pair'")
+
+    try:
+        source = textwrap.dedent(inspect.getsource(cls))
+    except (OSError, TypeError):  # pragma: no cover - defensive
+        pytest.skip(f"{cls.__name__} has no readable source")
+
+    assert "perspective" in source, (
+        f"{cls.__name__} declares emits = 'pair' but never names 'perspective'. "
+        f"Two rows of one frame that differ in nothing cannot be joined apart."
+    )

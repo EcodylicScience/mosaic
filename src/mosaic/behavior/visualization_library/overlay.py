@@ -283,7 +283,12 @@ def prepare_overlay(
                     b = int(pair[1])
                 except Exception:
                     continue
-                frame_pairs[tuple(sorted((a, b)))] = val
+                # One line is drawn between two individuals, so the two
+                # directions of a pair have to collapse to one value here. Taking
+                # the first -- the loader yields the low-id-focal row first --
+                # rather than letting the last write win, so the same recording
+                # renders the same way every time.
+                frame_pairs.setdefault(tuple(sorted((a, b))), val)
             if frame_pairs:
                 frame_pair_labels[feat_name] = frame_pairs
 

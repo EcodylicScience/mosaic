@@ -65,22 +65,23 @@ class InteractionCropPipeline:
       2. A ``pair-interaction-filter`` result providing interaction segments
 
     The pipeline iterates over the filter result's interaction segments
-    (grouped by ``id_a``, ``id_b``, ``interaction_id``) and extracts
-    egocentric crops from the source video for each individual in the pair.
+    (grouped by ``id1``, ``id2``, ``interaction_id``) and extracts an egocentric
+    crop from the source video around the focal individual of each ordered pair.
 
     Output
     ------
     Videos are written to ``<run_root>/`` when run via the pipeline
     (run_id-tagged).  Returns a metadata DataFrame with one row per
     generated clip:
-      - group, sequence, id_a, id_b, target_id, interaction_id
+      - group, sequence, id1 (the focal), id2 (the other), perspective,
+        interaction_id
       - start_frame, end_frame, n_frames
       - video_path (filename only, relative to run_root)
     """
 
     category = "media"
     name = "interaction-crop-pipeline"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # opens the entry's own video
@@ -197,7 +198,7 @@ class InteractionCropPipeline:
         """Process merged tracks + interaction-filter DataFrame.
 
         The pipeline merges both inputs on frame, so *df* contains
-        track columns **and** filter columns (id_a, id_b,
+        track columns **and** filter columns (id1, id2,
         interaction_id, interaction_start, interaction_end).
         """
         if df.empty:
@@ -223,8 +224,9 @@ class InteractionCropPipeline:
 
         # Group by interaction segment
         required = [
-            "id_a",
-            "id_b",
+            "id1",
+            "id2",
+            "perspective",
             "interaction_id",
             "interaction_start",
             "interaction_end",
@@ -236,7 +238,11 @@ class InteractionCropPipeline:
                     f"output is provided as an input."
                 )
 
-        seg_groups = list(df.groupby(["id_a", "id_b", "interaction_id"]))
+        # One clip per ordered pair per segment, cropped around the focal `id1`.
+        # The filter emits both orderings, so cropping both individuals is
+        # keeping both rows -- a target loop on top of that would double them.
+        segments = df if p.crop_both_individuals else df[df["perspective"] == 0]
+        seg_groups = list(segments.groupby(["id1", "id2", "interaction_id"]))
 
         # Sort segments by start frame for sequential video reading
         seg_groups.sort(key=lambda x: int(x[1]["interaction_start"].iloc[0]))
@@ -251,31 +257,22 @@ class InteractionCropPipeline:
 
         clip_records = []
         try:
-            for (id_a, id_b, seg_id), seg_df in seg_groups:
-                start_frame = int(seg_df["interaction_start"].iloc[0])
-                end_frame = int(seg_df["interaction_end"].iloc[0])
-
-                # Determine which individuals to crop
-                target_ids = [id_a]
-                if p.crop_both_individuals:
-                    target_ids.append(id_b)
-
-                for target_id in target_ids:
-                    record = self._crop_segment(
-                        reader=reader,
-                        output_fps=output_fps,
-                        df_tracks=df,
-                        target_id=target_id,
-                        start_frame=start_frame,
-                        end_frame=end_frame,
-                        id_a=id_a,
-                        id_b=id_b,
-                        seg_id=seg_id,
-                        group=group,
-                        sequence=sequence,
-                    )
-                    if record is not None:
-                        clip_records.append(record)
+            for (focal_id, other_id, seg_id), seg_df in seg_groups:
+                record = self._crop_segment(
+                    reader=reader,
+                    output_fps=output_fps,
+                    df_tracks=df,
+                    focal_id=focal_id,
+                    other_id=other_id,
+                    perspective=int(seg_df["perspective"].iloc[0]),
+                    start_frame=int(seg_df["interaction_start"].iloc[0]),
+                    end_frame=int(seg_df["interaction_end"].iloc[0]),
+                    seg_id=seg_id,
+                    group=group,
+                    sequence=sequence,
+                )
+                if record is not None:
+                    clip_records.append(record)
         finally:
             reader.close()
 
@@ -288,21 +285,21 @@ class InteractionCropPipeline:
         reader: Any,
         output_fps: float,
         df_tracks: pd.DataFrame,
-        target_id: Any,
+        focal_id: Any,
+        other_id: Any,
+        perspective: int,
         start_frame: int,
         end_frame: int,
-        id_a: Any,
-        id_b: Any,
         seg_id: int,
         group: str,
         sequence: str,
     ) -> dict | None:
-        """Crop a single segment for a single individual."""
+        """Crop one segment around the focal individual of one ordered pair."""
         p = self.params
 
-        # Filter tracks for this individual and frame range
+        # Filter tracks for the focal individual and frame range
         df_target = df_tracks[
-            (df_tracks[C.id_col] == target_id)
+            (df_tracks[C.id_col] == focal_id)
             & (df_tracks[C.frame_col] >= start_frame)
             & (df_tracks[C.frame_col] <= end_frame)
         ].sort_values(C.frame_col)
@@ -313,9 +310,13 @@ class InteractionCropPipeline:
         # Output path
         out_dir = self._get_output_dir(group, sequence)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # The pair is named low-id-first whichever ordering this clip is, so the
+        # two clips of one segment differ only in the trailing focal id -- the
+        # name a FERAL label JSON already references.
+        low, high = sorted((focal_id, other_id))
         video_out = (
             out_dir
-            / f"{sequence}_pair_{id_a}_{id_b}_{start_frame}--{end_frame}_id_{target_id}.mp4"
+            / f"{sequence}_pair_{low}_{high}_{start_frame}--{end_frame}_id_{focal_id}.mp4"
         )
 
         crop_w, crop_h = p.crop_size
@@ -387,9 +388,9 @@ class InteractionCropPipeline:
         return {
             "group": group,
             "sequence": sequence,
-            "id_a": id_a,
-            "id_b": id_b,
-            "target_id": target_id,
+            "id1": focal_id,
+            "id2": other_id,
+            "perspective": perspective,
             "interaction_id": seg_id,
             "start_frame": start_frame,
             "end_frame": end_frame,

@@ -146,12 +146,19 @@ class PairInteractionFilter:
     filtering, and extracts continuous interaction segments that meet a
     minimum duration.
 
-    Output columns (one row per frame per interaction segment):
+    Output columns (two rows per frame per interaction segment, one per ordered
+    pair, keyed by ``(frame, id1, id2, perspective)``):
       - frame: frame number
-      - id_a, id_b: individual IDs (id_a < id_b by convention)
+      - id1: the focal individual, id2: the other
+      - perspective: 0 for the ordering with the lower id focal, 1 for its mirror
       - interaction_id: integer label for the segment within this pair
       - interaction_start: first frame of this segment
       - interaction_end: last frame (exclusive) of this segment
+
+    The criteria are symmetric in the two individuals, so the mirrored row holds
+    the same values. It is written anyway: one shape for every pair feature is
+    what lets any two of them join, and a lone unordered row matches only half of
+    an ordered partner's rows -- silently, since the join reads as a broadcast.
 
     Params
     ------
@@ -188,7 +195,7 @@ class PairInteractionFilter:
 
     category = "per-frame"
     name = "pair-interaction-filter"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -292,11 +299,14 @@ class PairInteractionFilter:
             return pd.DataFrame(
                 columns=[
                     C.frame_col,
-                    "id_a",
-                    "id_b",
+                    "id1",
+                    "id2",
+                    "perspective",
                     "interaction_id",
                     "interaction_start",
                     "interaction_end",
+                    C.group_col,
+                    C.seq_col,
                 ]
             )
 
@@ -379,22 +389,28 @@ class PairInteractionFilter:
         if not runs:
             return None
 
-        # Build output DataFrame — one row per frame per interaction segment
+        # Two rows per frame per interaction segment: the pair in both orderings.
+        # `interaction_id` counts segments within the pair, so the mirror carries
+        # the same one -- it is the same interaction seen the other way round.
         rows = []
         for seg_id, (start_idx, end_idx) in enumerate(runs):
             seg_frames = frames[start_idx:end_idx]
+            start_frame = int(frames[start_idx])
+            end_frame = int(frames[min(end_idx - 1, len(frames) - 1)])
             for f in seg_frames:
-                rows.append(
-                    {
-                        C.frame_col: int(f),
-                        "id_a": id_a,
-                        "id_b": id_b,
-                        "interaction_id": seg_id,
-                        "interaction_start": int(frames[start_idx]),
-                        "interaction_end": int(
-                            frames[min(end_idx - 1, len(frames) - 1)]
-                        ),
-                    }
-                )
+                for perspective, (focal, other) in enumerate(
+                    ((id_a, id_b), (id_b, id_a))
+                ):
+                    rows.append(
+                        {
+                            C.frame_col: int(f),
+                            "id1": focal,
+                            "id2": other,
+                            "perspective": perspective,
+                            "interaction_id": seg_id,
+                            "interaction_start": start_frame,
+                            "interaction_end": end_frame,
+                        }
+                    )
 
         return pd.DataFrame(rows)

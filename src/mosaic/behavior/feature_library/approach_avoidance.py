@@ -49,28 +49,23 @@ from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
 
 
-def _contiguous_runs(
-    binary: np.ndarray,
-    frames: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Find start/end frame numbers for contiguous runs of 1s."""
-    if len(binary) == 0:
-        return np.array([], dtype=int), np.array([], dtype=int)
-    diff = np.diff(binary, prepend=0, append=0)
-    starts = np.where(diff == 1)[0]
-    ends = np.where(diff == -1)[0] - 1
-    return frames[starts], frames[ends]
-
-
 @final
 @register_feature
 class ApproachAvoidance:
     """
     'approach-avoidance' — per-sequence AA event detection for all pairs.
 
-    For N animals per sequence, evaluates all N*(N-1)/2 unique unordered pairs.
-    The output stores directional events as aa_event_12 and aa_event_21 over
-    canonical (id1,id2), plus aa_event/label_id as non-directional union.
+    For N animals per sequence, evaluates all N*(N-1)/2 unordered pairs, and
+    writes each as two rows -- one per ordered pair, keyed by
+    ``(frame, id1, id2, perspective)``. ``id1`` is the focal, ``id2`` the other,
+    and ``aa_event_directed`` is 1 where the focal approaches and the other
+    avoids. ``aa_event`` and ``label_id`` are the non-directional union and are
+    the same on both rows, as any symmetric quantity is.
+
+    The direction used to live in two columns of one unordered row
+    (``aa_event_12`` / ``aa_event_21``). That shape matched only half the rows of
+    any both-perspectives feature it was merged with, and the merge read as a
+    broadcast rather than refusing.
 
     Params:
         interpolation: Interpolation settings for missing data.
@@ -108,7 +103,7 @@ class ApproachAvoidance:
 
     category = "per-frame"
     name = "approach-avoidance"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = True
@@ -202,15 +197,19 @@ class ApproachAvoidance:
                     "frame",
                     "id1",
                     "id2",
+                    "perspective",
                     "label_id",
                     "aa_event",
-                    "aa_event_12",
-                    "aa_event_21",
+                    "aa_event_directed",
+                    C.seq_col,
+                    C.group_col,
                 ]
             )
 
         out = pd.concat(out_frames, ignore_index=True)
-        out = out.sort_values(["id1", "id2", "frame"]).reset_index(drop=True)
+        out = out.sort_values(["id1", "id2", "perspective", "frame"]).reset_index(
+            drop=True
+        )
         return out
 
     # ----------------------- Pair computation --------------------
@@ -446,18 +445,28 @@ class ApproachAvoidance:
 
         aa_event = np.maximum(aa_event_12, aa_event_21)
 
-        out = pd.DataFrame(
-            {
-                "frame": frames,
-                "id1": id1,
-                "id2": id2,
-                # Keep this as the preferred label column for viz/overlay loaders.
-                "label_id": aa_event.astype(np.int8, copy=False),
-                "aa_event": aa_event,
-                "aa_event_12": aa_event_12,
-                "aa_event_21": aa_event_21,
-            }
-        )
+        # One row per ordered pair. The direction that used to sit in two columns
+        # of one row is now which row you are on; the symmetric union is written
+        # the same on both, as a symmetric quantity always is.
+        blocks: list[pd.DataFrame] = []
+        for perspective, (focal, other, directed) in enumerate(
+            ((id1, id2, aa_event_12), (id2, id1, aa_event_21))
+        ):
+            blocks.append(
+                pd.DataFrame(
+                    {
+                        "frame": frames,
+                        "id1": focal,
+                        "id2": other,
+                        "perspective": perspective,
+                        # The preferred label column for viz/overlay loaders.
+                        "label_id": aa_event.astype(np.int8, copy=False),
+                        "aa_event": aa_event,
+                        "aa_event_directed": directed,
+                    }
+                )
+            )
+        out = pd.concat(blocks, ignore_index=True)
 
         for col in (C.seq_col, C.group_col):
             if col in gseq.columns:
@@ -465,91 +474,6 @@ class ApproachAvoidance:
             elif col in orig_df.columns:
                 out[col] = orig_df[col].iloc[0]
 
-        return out
-
-    # ----------------------- Event extraction ---------------------
-
-    @staticmethod
-    def extract_events(
-        aa_df: pd.DataFrame,
-        min_duration: int = 1,
-    ) -> pd.DataFrame:
-        """Convert per-frame AA output into a compact event table.
-
-        Parameters
-        ----------
-        aa_df : DataFrame
-            Per-frame output with columns: frame, id1, id2,
-            aa_event, aa_event_12, aa_event_21.  May span multiple
-            sequences/groups (they are handled independently).
-        min_duration : int
-            Minimum event length in frames.  Events shorter than this
-            are discarded.
-
-        Returns
-        -------
-        DataFrame with columns:
-            id1, id2, start_frame, end_frame, duration,
-            direction ('12' if id1→id2, '21' if id2→id1, 'both'),
-            approacher_id, avoider_id,
-            sequence (if present), group (if present).
-        """
-        # TODO: These are still hardcoded.
-        group_cols = ["id1", "id2"]
-        for c in ("sequence", "group"):
-            if c in aa_df.columns:
-                group_cols.append(c)
-
-        events: list[dict] = []
-        for keys, g in aa_df.groupby(group_cols, sort=True):
-            if not isinstance(keys, tuple):
-                # just defensive coding, group_cols always > 2
-                keys = (keys,)
-            meta = dict(zip(group_cols, keys))
-            id1, id2 = int(meta["id1"]), int(meta["id2"])
-            g = g.sort_values("frame").reset_index(drop=True)
-            frames = g["frame"].to_numpy(dtype=int)
-
-            for col, direction in [
-                ("aa_event_12", "12"),
-                ("aa_event_21", "21"),
-            ]:
-                if col not in g.columns:
-                    continue
-                active = g[col].to_numpy(dtype=int)
-                starts, ends = _contiguous_runs(active, frames)
-                for s, e in zip(starts, ends):
-                    dur = e - s + 1
-                    if dur < min_duration:
-                        continue
-                    if direction == "12":
-                        appr, avoid = id1, id2
-                    else:
-                        appr, avoid = id2, id1
-                    row = {
-                        **meta,
-                        "start_frame": int(s),
-                        "end_frame": int(e),
-                        "duration": int(dur),
-                        "direction": direction,
-                        "approacher_id": appr,
-                        "avoider_id": avoid,
-                    }
-                    events.append(row)
-
-        if not events:
-            cols = group_cols + [
-                "start_frame",
-                "end_frame",
-                "duration",
-                "direction",
-                "approacher_id",
-                "avoider_id",
-            ]
-            return pd.DataFrame(columns=cols)
-
-        out = pd.DataFrame(events)
-        out = out.sort_values(group_cols + ["start_frame"]).reset_index(drop=True)
         return out
 
     @staticmethod

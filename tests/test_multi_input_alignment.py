@@ -15,6 +15,16 @@ A second silent mode: joining a canonicalised pair feature (``approach-avoidance
 ``id1 < id2``) with a both-perspectives one merges on ``{frame, id1, id2}`` and drops
 roughly half the rows, because only one perspective matches.
 
+A third, the sharpest of them, is why ``perspective`` is an alignment column. A pair
+row is one *ordered* pair -- ``id1`` the focal, ``id2`` the other -- so two rows of
+one frame differ in ``perspective``, and a producer that wrote the ids unswapped made
+them differ in nothing else. Merging that against a producer that swapped them keyed
+on ``{frame, id1, id2}``: one side was unique on it, so the multiplicity guard
+allowed the join as a broadcast, and every row of the non-unique side was bound to
+the *wrong* perspective of the other while half of the second input matched nothing
+and vanished. The collided ``perspective`` was then renamed ``perspective__1``, which
+matched no exclusion list and was read downstream as a measurement.
+
 The rule is exported as a predicate rather than buried in the raise, so a caller
 composing a chain ahead of running it uses the same rule the merge enforces. There
 is no such caller in-tree yet; the seam is the point.
@@ -100,6 +110,93 @@ def test_the_level_of_a_column_set_is_a_callable_rule() -> None:
     assert "individual" in verdict.reason and "pair" in verdict.reason
 
     assert alignment_verdict([_PAIR, _PAIR]).compatible is True
+
+
+def _ordered_pair(
+    payload: str, values: tuple[float, float], *, swap: bool
+) -> pd.DataFrame:
+    """Three frames of one pair, both perspectives, in one of the two conventions.
+
+    *swap* writes the focal into ``id1`` -- the rule. Without it both rows carry
+    ``(0, 1)`` and only ``perspective`` separates them, which is what
+    ``pair-posedistance-pca`` wrote.
+    """
+    frames = [0, 1, 2]
+    low, high = values
+    return pd.concat(
+        [
+            pd.DataFrame(
+                {"frame": frames, "id1": 0, "id2": 1, "perspective": 0, payload: low}
+            ),
+            pd.DataFrame(
+                {
+                    "frame": frames,
+                    "id1": 1 if swap else 0,
+                    "id2": 0 if swap else 1,
+                    "perspective": 1,
+                    payload: high,
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+
+
+def test_two_pair_inputs_bind_perspective_to_perspective() -> None:
+    """Every row keeps its own perspective on both sides, and none is dropped.
+
+    Keyed on ``{frame, id1, id2}`` this returned six rows in which the three
+    perspective-1 rows of the left input carried the perspective-0 values of the
+    right, and the right input's perspective-1 rows were absent entirely.
+    """
+    left = _ordered_pair("social", (10.0, 20.0), swap=True)
+    right = _ordered_pair("ego", (100.0, 200.0), swap=True)
+
+    merged = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    assert merged is not None
+    assert len(merged) == 6
+    assert set(zip(merged["social"], merged["ego"])) == {
+        (10.0, 100.0),
+        (20.0, 200.0),
+    }
+
+
+def test_a_collided_identity_column_is_dropped_rather_than_numbered() -> None:
+    """``perspective__1`` was a 0/1 identity flag read downstream as data.
+
+    Numbering a collided identity column put it in the feature space, where
+    ``feature_columns`` -- which excludes only the bare name -- handed it to the
+    scaler and the embedding. ``group`` and ``sequence`` are the same case, and
+    produced ``group__1`` / ``sequence__1`` beside it.
+    """
+    left = _ordered_pair("social", (10.0, 20.0), swap=True)
+    right = _ordered_pair("ego", (100.0, 200.0), swap=True)
+    for frame in (left, right):
+        frame["group"] = "g"
+        frame["sequence"] = "s"
+
+    merged = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    assert merged is not None
+    assert [c for c in merged.columns if "__" in c] == []
+    assert {"perspective", "group", "sequence"} <= set(merged.columns)
+
+
+def test_a_stray_perspective_does_not_license_a_cross_level_join() -> None:
+    """``perspective`` is an alignment key but names no individual.
+
+    It joined ``ALIGN_COLS`` so two pair inputs bind correctly. The level check
+    must keep reading ``ID_COLS``: an individual-level frame that happens to carry
+    a ``perspective`` shares an alignment column with a pair frame and still shares
+    no identity, so the join is still a per-frame cartesian product.
+    """
+    individual = ["frame", "time", "id", "group", "sequence", "perspective", "speed"]
+
+    verdict = alignment_verdict([individual, _PAIR])
+
+    assert verdict.compatible is False
+    assert "individual" in verdict.reason and "pair" in verdict.reason
 
 
 def test_a_collided_column_is_suffixed_with_the_input_that_declared_it() -> None:

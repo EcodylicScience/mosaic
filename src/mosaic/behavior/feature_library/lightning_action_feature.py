@@ -30,7 +30,6 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.types import (
-    COLUMNS as C,
     EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
@@ -43,7 +42,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 
-from .helpers import ensure_columns, feature_columns
+from .helpers import ensure_columns, feature_columns, meta_columns
 from .registry import register_feature
 
 if TYPE_CHECKING:
@@ -131,7 +130,7 @@ class LightningActionFeature:
 
     category = "global"
     name = "lightning-action"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -334,13 +333,11 @@ class LightningActionFeature:
             pad = np.full((n - len(probs), probs.shape[1]), np.nan)
             probs = np.vstack([probs, pad])
 
-        # Build output DataFrame (matches XGBoost format)
-        meta_cols = [
-            c
-            for c in [C.frame_col, C.time_col, C.id_col, C.group_col, C.seq_col]
-            if c in df.columns
-        ]
-        result = df[meta_cols].copy()
+        # Build output DataFrame. The identity travels with the predictions: this
+        # feature is routinely fed pair-level input, and a list that stopped at the
+        # individual columns left two rows per frame with nothing to tell them
+        # apart -- unjoinable against the very features it was trained on.
+        result = df[meta_columns(df)].copy()
 
         for i, cls in enumerate(self._classes):
             result[f"prob_{cls}"] = probs[:, i]

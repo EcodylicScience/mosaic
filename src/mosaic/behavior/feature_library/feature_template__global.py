@@ -30,7 +30,6 @@ import joblib
 import numpy as np
 import pandas as pd
 
-# from .registry import register_feature  # <-- uncomment when ready
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     EmitsLevel,
@@ -40,6 +39,10 @@ from mosaic.core.pipeline.types import (
     Params,
     Result,
 )
+
+from .helpers import feature_columns, meta_columns
+
+# from .registry import register_feature  # <-- uncomment when ready
 
 
 @final
@@ -117,11 +120,12 @@ class MyGlobalFeature:
         for _entry_key, df in inputs():
             if df.empty:
                 continue
-            # Select numeric columns (exclude metadata)
-            numeric = df.select_dtypes(include=[np.number])
-            if numeric.empty:
+            # Select the measurements. Every identity column here is a number
+            # too, so a bare numeric select fits the model on `frame` and the ids.
+            cols = feature_columns(df)
+            if not cols:
                 continue
-            all_data.append(numeric.to_numpy(dtype=np.float32))
+            all_data.append(df[cols].to_numpy(dtype=np.float32))
 
         if not all_data:
             msg = f"{self.name}: no usable inputs found."
@@ -157,16 +161,17 @@ class MyGlobalFeature:
 
         # --- YOUR PER-SEQUENCE MAPPING HERE ---
         # EXAMPLE: project to first 2 dimensions using fitted model
-        numeric = df.select_dtypes(include=[np.number])
-        width = min(numeric.shape[1], 2)
-        projected = numeric.iloc[:, :width].to_numpy(dtype=np.float32)
+        cols = feature_columns(df)
+        width = min(len(cols), 2)
+        projected = df[cols[:width]].to_numpy(dtype=np.float32)
 
         out_cols = [f"feat_{i}" for i in range(projected.shape[1])]
         out = pd.DataFrame(projected, columns=out_cols, index=df.index)
 
-        # Carry over metadata columns
-        meta_cols = sorted(set(df.columns) - set(numeric.columns))
-        for col in meta_cols:
+        # Carry the identity through. Splitting on numeric-vs-not instead would
+        # drop the numeric identity columns from both halves at once -- `id1`,
+        # `id2`, `perspective` and `frame` are numbers, and they are not data.
+        for col in meta_columns(df):
             out[col] = df[col].values
 
         return out

@@ -23,7 +23,7 @@ from .index import (
     resolve_artifact_file,
 )
 from .types import ArtifactSpec, NNResult
-from .types.data_config import ALIGN_COLS, COLUMNS
+from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, META_COLS
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
@@ -61,29 +61,22 @@ def entity_level_of(columns: Iterable[str]) -> str:
     """``"pair"`` / ``"individual"`` / ``"global"`` from column names alone.
 
     Name-based, so it answers for a parquet schema without reading data -- which is
-    what lets a submit-time check resolve a run's level cheaply. The value-sniffing
-    twin, :func:`normalize_identity_columns`, additionally distinguishes a pair
-    frame whose second id is all-null; this does not, and does not need to.
+    what lets a submit-time check resolve a run's level cheaply.
 
-    **The pair spellings below are not every pair spelling in the library, and
-    the fix is not to add one.** ``pair-facing`` and ``attention-target`` write
-    ``focal_id`` with a target column, which none of these match, so both read
-    as ``"global"`` -- no identity -- and a join against an individual-level
-    input is then permitted on ``frame`` alone. Both declare ``emits = "pair"``,
-    so a chain checked before it runs refuses that edge; this predicate, which
-    runs at the merge itself, still does not.
-
-    Those two features are to emit ``id1`` / ``id2`` like every other pair-level
-    feature, with ``id1`` the focal individual and ``id2`` the target. A fourth
-    spelling here would make this a list of names that grows every time a
-    feature invents one, and each addition is a chance to forget; one spelling is
-    what makes it a rule. The rename changes what those features *write*, so it
-    is a change of its own.
+    **There is one pair spelling, and that is the point.** It used to accept
+    ``id_a``/``id_b`` and ``id_A``/``id_B`` beside ``id1``/``id2``, and still
+    missed the ``focal_id``-with-a-target pair that ``pair-facing`` and
+    ``attention-target`` wrote -- so both read as ``"global"``, no identity, and a
+    join against an individual-level input was permitted on ``frame`` alone. A
+    list of names that grows every time a feature invents one is a list somebody
+    forgets to extend; every producer now writes ``id1`` (the focal) and ``id2``
+    (the other), and a feature that does not is caught by
+    ``tests/test_pair_identity_convention.py`` rather than silently read as
+    unidentified here.
     """
     present = set(columns)
-    for a, b in (("id1", "id2"), ("id_a", "id_b"), ("id_A", "id_B")):
-        if a in present and b in present:
-            return "pair"
+    if "id1" in present and "id2" in present:
+        return "pair"
     return "individual" if COLUMNS.id_col in present else "global"
 
 
@@ -93,11 +86,17 @@ def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
     Incompatible when two inputs carry identity at different levels and the keys
     they share carry no identity at all: joining an individual frame to a pair frame
     on ``frame`` alone is a per-frame cartesian product, not an alignment.
+
+    "Carries identity" is ``ID_COLS``, not "a key that is not ``frame`` or ``time``".
+    The two were the same set until ``perspective`` joined ``ALIGN_COLS``, and they
+    mean different things: ``perspective`` separates two rows of one pair but names
+    no individual, so an individual-level frame that happens to carry one must not
+    read as sharing identity with a pair-level frame.
     """
     sets = [set(columns) for columns in column_sets]
     keys = frozenset(_ALIGN_COLS.intersection(*sets)) if sets else frozenset()
     levels = tuple(entity_level_of(columns) for columns in sets)
-    identity = keys - {COLUMNS.frame_col, COLUMNS.time_col}
+    identity = keys & ID_COLS
     concrete = {level for level in levels if level != "global"}
     if len(concrete) > 1 and not identity:
         return AlignmentVerdict(
@@ -155,50 +154,6 @@ def pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
     ]
 
 
-# is this really a valid approach? We may rather want to raise if not numeric but exists
-# also, features decide whether they are "pair", "individual" or "global" internally, why do we need this here?
-# just to write the __global__ marker row to the index?
-def normalize_identity_columns(
-    df: pd.DataFrame,
-) -> tuple[pd.Series | None, pd.Series | None, str]:
-    """
-    Extract canonical identity columns from a frame-aligned DataFrame.
-
-    Returns
-    -------
-    tuple
-        (id1_series_or_None, id2_series_or_None, entity_level)
-        where entity_level is one of {"global", "individual", "pair"}.
-    """
-    if "id1" in df.columns and "id2" in df.columns:
-        id1 = pd.to_numeric(df["id1"], errors="coerce")
-        id2 = pd.to_numeric(df["id2"], errors="coerce")
-        if id1.notna().any() and id2.notna().any():
-            return id1, id2, "pair"
-        if id1.notna().any():
-            return id1, pd.Series(np.nan, index=df.index), "individual"
-        return None, None, "global"
-
-    if "id" in df.columns:
-        id1 = pd.to_numeric(df["id"], errors="coerce")
-        if id1.notna().any():
-            return id1, pd.Series(np.nan, index=df.index), "individual"
-        return None, None, "global"
-
-    # Backward-compatible aliases for older pair outputs
-    for a_col, b_col in (("id_a", "id_b"), ("id_A", "id_B")):
-        if a_col in df.columns and b_col in df.columns:
-            id1 = pd.to_numeric(df[a_col], errors="coerce")
-            id2 = pd.to_numeric(df[b_col], errors="coerce")
-            if id1.notna().any() and id2.notna().any():
-                return id1, id2, "pair"
-            if id1.notna().any():
-                return id1, pd.Series(np.nan, index=df.index), "individual"
-            return None, None, "global"
-
-    return None, None, "global"
-
-
 def load_parquet_dataframe(
     path: Path,
     load_spec: LoadSpec,
@@ -233,6 +188,12 @@ def _merge_parquet_inputs(
     both narrow: *cross_join* for a feature that declares a frame-only merge, and
     the multiplicity check below, which allows a one-to-many join (a per-frame table
     against a per-frame-per-id one) while refusing many-to-many.
+
+    A collided ``META_COLS`` column is **dropped** from the later input rather than
+    numbered. Identity is either joined on or constant within an entry, so the two
+    copies say the same thing; numbering one is what let ``perspective__1`` --
+    numeric, and matching no exclusion list -- be read downstream as a measurement
+    and fitted as data. Only genuine payload keeps the ``__<n>`` suffix.
     """
     it = iter(dfs)
     first = next(it, None)
@@ -258,11 +219,13 @@ def _merge_parquet_inputs(
                 f"cannot merge input {declared}: {on_cols} is not unique on either "
                 "side, so the join would multiply rows"
             )
-        rename_map = {
-            c: f"{c}__{declared}"
-            for c in df_next.columns
-            if c not in on_cols and c in merged.columns
-        }
+        collided = [
+            c for c in df_next.columns if c not in on_cols and c in merged.columns
+        ]
+        identity = [c for c in collided if c in META_COLS]
+        if identity:
+            df_next = df_next.drop(columns=identity)
+        rename_map = {c: f"{c}__{declared}" for c in collided if c not in META_COLS}
         if rename_map:
             df_next = df_next.rename(columns=rename_map)
         merged = merged.merge(df_next, how="inner", on=on_cols)

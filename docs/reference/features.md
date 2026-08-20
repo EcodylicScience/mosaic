@@ -20,7 +20,7 @@ factory rather than being a literal, so there is no value to print.
 
 ### `approach-avoidance`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
+Version `0.3` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
 
 'approach-avoidance' — per-sequence AA event detection for all pairs.
 
@@ -58,7 +58,7 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.approach_avoidance.Appro
 
 ### `attention-target`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget`
+Version `0.2` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget`
 
 Per-frame attention target with group-membership labeling.
 
@@ -203,7 +203,7 @@ Per-sequence feature that measures how a focal individual changes position/headi
 
 ### `orientation-rel`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature`
 
 Orientation-aware relative features between animal pairs, order-agnostic to pose points.
 
@@ -267,7 +267,7 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgoc
 
 ### `pair-facing`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
 
 Per-frame directional facing metric for all ordered pairs of individuals.
 
@@ -284,7 +284,7 @@ Per-frame directional facing metric for all ordered pairs of individuals.
 
 ### `pair-interaction-filter`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter`
 
 Detect pairwise interaction segments from trajectory data.
 
@@ -303,7 +303,7 @@ Detect pairwise interaction segments from trajectory data.
 
 ### `pair-posedistance-pca`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
 
 'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
 
@@ -414,7 +414,7 @@ Per-sequence feature computing translational speed and angular velocity.
 
 ### `temporal-stack`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
+Version `0.4` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
 
 Build temporal context windows over per-sequence feature data.
 
@@ -710,7 +710,7 @@ Subsample per-sequence data into a representative template matrix.
 
 ### `feral`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature`
 
 FERAL vision-transformer behavior classifier as a pipeline feature.
 
@@ -1229,7 +1229,7 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
 ### `lightning-action`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 
@@ -1370,7 +1370,7 @@ XGBoost behavior classifier as a pipeline feature.
 
 ### `egocentric-crop`
 
-Version `0.2` &middot; `mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop`
+Version `0.3` &middot; `mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop`
 
 Generate egocentric (animal-centered) video crops.
 
@@ -1413,7 +1413,7 @@ Generate egocentric (animal-centered) video crops.
 
 ### `interaction-crop-pipeline`
 
-Version `0.2` &middot; `mosaic.behavior.visualization_library.interaction_crop.InteractionCropPipeline`
+Version `0.3` &middot; `mosaic.behavior.visualization_library.interaction_crop.InteractionCropPipeline`
 
 Generate egocentric crop videos for detected interaction segments.
 

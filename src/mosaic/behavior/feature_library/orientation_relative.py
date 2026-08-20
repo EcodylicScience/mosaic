@@ -40,15 +40,20 @@ class OrientationRelativeFeature:
     """
     Orientation-aware relative features between animal pairs, order-agnostic to pose points.
 
-    For each frame and ordered pair (id_a -> id_b):
-      - Express B in A's body frame (using heading angle and global scale).
-      - Emit signed centroid deltas, heading difference, quantiles over B's points
-        in A's frame, and nearest-k distances.
+    For each frame and ordered pair (id1 -> id2):
+      - Express the other in the focal's body frame (using heading angle and
+        global scale).
+      - Emit signed centroid deltas, heading difference, quantiles over the
+        other's points in the focal's frame, and nearest-k distances.
+
+    One row per ordered pair per frame: ``id1`` is the focal, ``id2`` the other,
+    and ``perspective`` says which ordering, so the key is
+    ``(frame, id1, id2, perspective)``.
     """
 
     category = "per-frame"
     name = "orientation-rel"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -186,8 +191,11 @@ class OrientationRelativeFeature:
                     y_vals = rel[:, 1]
                     feats: dict[str, object] = {
                         C.frame_col: int(f),
-                        "id_a": id_a,
-                        "id_b": id_b,
+                        "id1": id_a,
+                        "id2": id_b,
+                        # The focal-first ordering is perspective 0; its mirror,
+                        # the same pair computed the other way round, is 1.
+                        "perspective": 0 if id_a < id_b else 1,
                         C.seq_col: sequence,
                         C.group_col: group,
                         "dx": float(rel_centroid[0]),
