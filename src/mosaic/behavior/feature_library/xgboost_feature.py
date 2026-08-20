@@ -195,6 +195,17 @@ class XgboostFeature:
 
         return features, labels
 
+    def _to_index(self, labels: np.ndarray) -> np.ndarray:
+        """Class labels -> contiguous 0-based column indices."""
+        assert self._classes is not None
+        lookup = {c: i for i, c in enumerate(self._classes)}
+        return np.array([lookup[int(v)] for v in labels], dtype=np.intp)
+
+    def _from_index(self, indices: np.ndarray) -> np.ndarray:
+        """Column indices -> the class labels they stand for."""
+        assert self._classes is not None
+        return np.array([self._classes[int(i)] for i in indices], dtype=np.intp)
+
     def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
             msg = "No templates loaded -- call load_state first"
@@ -220,6 +231,15 @@ class XgboostFeature:
             x_train, y_train = self._undersample_then_smote(x_train, y_train)
 
         if self.params.strategy == "multiclass":
+            # XGBoost's multiclass objective requires labels 0..num_class-1, while
+            # these are behaviour ids -- and a training split need not contain every
+            # one. A class missing here (an interaction that does not occur in the
+            # training recordings) would otherwise leave `num_class` and the label
+            # values disagreeing, and XGBClassifier refuses the fit outright. Index
+            # space is what the rest of this class already speaks: `apply` maps a
+            # probability column back through `self._classes`, and so does the
+            # one-vs-rest branch below.
+            y_fit = self._to_index(y_train)
             model = XGBClassifier(
                 objective="multi:softprob",
                 num_class=len(self._classes),
@@ -232,16 +252,16 @@ class XgboostFeature:
                 eval_metric="mlogloss",
             )
             if self.params.class_weight == "balanced":
-                class_counts = np.bincount(y_train, minlength=max(self._classes) + 1)
+                class_counts = np.bincount(y_fit, minlength=len(self._classes))
                 weights = np.where(
                     class_counts > 0,
-                    len(y_train) / (len(self._classes) * class_counts),
+                    len(y_fit) / (len(self._classes) * class_counts),
                     0.0,
                 )
-                sample_weight = weights[y_train]
-                model.fit(x_train, y_train, sample_weight=sample_weight)
+                sample_weight = weights[y_fit]
+                model.fit(x_train, y_fit, sample_weight=sample_weight)
             else:
-                model.fit(x_train, y_train)
+                model.fit(x_train, y_fit)
             self._model = model
 
         else:
@@ -277,19 +297,24 @@ class XgboostFeature:
 
             if self.params.strategy == "multiclass":
                 assert isinstance(self._model, XGBClassifier)
-                y_pred: np.ndarray = np.asarray(self._model.predict(x_test))
+                # The model was fitted in index space, so its predictions are
+                # column indices; the report has to be in label space.
+                y_pred: np.ndarray = self._from_index(
+                    np.asarray(self._model.predict(x_test))
+                )
             else:
                 assert isinstance(self._model, list)
                 test_probs = np.column_stack(
                     [m.predict_proba(x_test)[:, 1] for m in self._model]
                 )
-                pred_indices = np.argmax(test_probs, axis=1)
-                y_pred = np.array(
-                    [self._classes[int(i)] for i in pred_indices], dtype=np.intp
-                )
+                y_pred = self._from_index(np.argmax(test_probs, axis=1))
 
+            # `zero_division=0` because the splits are by sequence, so the test
+            # split can hold a class the training one did not -- and precision or
+            # recall for a class the model was never given is genuinely 0, not an
+            # undefined value worth warning about on every fit.
             report: dict[str, object] = _cr(  # pyright: ignore[reportUnknownVariableType, reportAssignmentType]
-                y_test, y_pred, output_dict=True
+                y_test, y_pred, output_dict=True, zero_division=0
             )
             self._metrics = report
 
@@ -334,23 +359,31 @@ class XgboostFeature:
                 )
             # Rows where all probs are zeroed out -> default_class
             all_zero = masked_probs.sum(axis=1) == 0
-            predicted_indices = np.argmax(masked_probs, axis=1)
-            predicted_labels = np.array(
-                [self._classes[int(i)] for i in predicted_indices],
-                dtype=np.intp,
-            )
+            predicted_labels = self._from_index(np.argmax(masked_probs, axis=1))
             predicted_labels[all_zero] = self.params.default_class
         else:
-            predicted_indices = np.argmax(probs, axis=1)
-            predicted_labels = np.array(
-                [self._classes[int(i)] for i in predicted_indices],
-                dtype=np.intp,
-            )
+            predicted_labels = self._from_index(np.argmax(probs, axis=1))
 
-        # Build output DataFrame
+        # Build output DataFrame.
+        #
+        # `id1` / `id2` / `perspective` travel with the rest because this feature is
+        # routinely fed pair-level input, and without them the output is two rows per
+        # frame with nothing to tell them apart -- unjoinable against the very
+        # features it was trained on. `id1` and `id2` are alignment columns;
+        # `perspective` is what actually separates A->B from B->A, since both
+        # perspectives carry the same pair ids.
         meta_cols = [
             c
-            for c in [C.frame_col, C.time_col, C.id_col, C.group_col, C.seq_col]
+            for c in [
+                C.frame_col,
+                C.time_col,
+                C.id_col,
+                C.group_col,
+                C.seq_col,
+                "id1",
+                "id2",
+                "perspective",
+            ]
             if c in df.columns
         ]
         result = df[meta_cols].copy()

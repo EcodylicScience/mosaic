@@ -87,12 +87,19 @@ their `--src-format`, and `mosaic convert-tracks` standardizes them.
 | [**Install**](docs/installation.md) | The environment, the extras, and the tools that run in their own environment |
 | [**Reference**](docs/reference/index.md) | Every feature, op, CLI command and track format — generated from the code |
 
-Worked examples live in [`notebooks/`](notebooks/): an end-to-end
-[CalMS21 template](notebooks/calms21-template.ipynb), and collective motion on
-[shiners](notebooks/collective-motion-shiners.ipynb) and
-[zebrafish](notebooks/collective-motion-zebrafish.ipynb). They read data that is not
-bundled with the repository, so treat them as illustrated results rather than as
-runnable tutorials.
+Five worked examples live in [`notebooks/`](notebooks/), and each fetches its own
+data from Hugging Face, so they run as written:
+
+| Notebook | What it shows |
+| --- | --- |
+| [CalMS21 template](notebooks/calms21-template.ipynb) | The fullest path: ingest, features, embedding, clustering, an XGBoost classifier |
+| [Collective motion: shiners](notebooks/collective-motion-shiners.ipynb) | A converter written in the notebook, then order parameters across four group sizes |
+| [Collective motion: zebrafish](notebooks/collective-motion-zebrafish.ipynb) | A keypoint-free tracker, and social-force maps from neighbour positions |
+| [CalMS21 pose training](notebooks/calms21-pose-training-and-tracking.ipynb) | Tracks become pose annotations, train a YOLO model, track with it in TREx |
+| [Shiners point training](notebooks/shiners-polo-tracking.ipynb) | A POLO point model, and two ways to give TREx a body |
+
+The two tracking notebooks drive external tools mosaic does not install; they say so
+and skip those sections when the tool is absent.
 
 ## Status
 

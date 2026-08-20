@@ -148,3 +148,22 @@ That normalization is the point of the standard, and the rules behind it are in
 
     Pose keypoints need no entry — TRex appends every keypoint the model reports that
     you did not name yourself, so an override cannot lose them.
+
+## Worked examples
+
+Two notebooks run a tracker end to end on data they download themselves, and both
+drive TREx:
+
+- [`calms21-pose-training-and-tracking.ipynb`][calms21-pose] tracks two mice with
+  a pose model as the detector and visual identification on, then renders an
+  annotated video.
+- [`shiners-polo-tracking.ipynb`][shiners-polo] tracks the same footage two ways --
+  with a trained point detector, and with no model at all using TREx's own
+  background subtraction -- and measures where the two disagree.
+
+Both probe for TREx before spending a conversion pass, which is worth copying: the
+not-found error is otherwise raised inside the first entry's convert phase, after a
+run root and a failed run-log have already been written.
+
+[calms21-pose]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-pose-training-and-tracking.ipynb
+[shiners-polo]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/shiners-polo-tracking.ipynb
