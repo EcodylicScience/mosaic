@@ -82,6 +82,121 @@ def _make_templates_parquet(
     return path
 
 
+def _make_sparse_class_templates(
+    tmp_path: Path,
+    train_classes: tuple[int, ...],
+    test_classes: tuple[int, ...],
+    n_per_class: int = 40,
+    n_features: int = 5,
+) -> Path:
+    """Templates whose labels are behaviour ids, not a contiguous 0-based range.
+
+    The real shape this guards: a four-class corpus subset to a few recordings,
+    where a behaviour simply does not occur in the training ones. Every other
+    fixture here builds ``range(n_classes)``, which is why a label set starting
+    at 1 went unnoticed.
+    """
+    rng = np.random.default_rng(0)
+    blocks = []
+    for split, classes in (("train", train_classes), ("test", test_classes)):
+        for cls in classes:
+            features = rng.standard_normal((n_per_class, n_features)) + cls * 2
+            df = pd.DataFrame(
+                features, columns=[f"feat_{i}" for i in range(n_features)]
+            )
+            df["label"] = cls
+            df["split"] = split
+            blocks.append(df)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "templates.parquet"
+    pd.concat(blocks, ignore_index=True).to_parquet(path, index=False)
+    return path
+
+
+class TestXgboostSparseClasses:
+    """A class absent from the training split must not break the fit."""
+
+    def _feature(self, templates_path: Path) -> XgboostFeature:
+        feat = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 3,
+                "n_estimators": 10,
+                "max_depth": 3,
+            },
+        )
+        feat._templates = pd.read_parquet(templates_path)
+        feat._feature_columns = [f"feat_{i}" for i in range(5)]
+        return feat
+
+    def test_fit_with_labels_not_starting_at_zero(self, tmp_path: Path) -> None:
+        # Train holds 1, 2, 3 and test holds 0, 1, 3 -- what CalMS21 gives when
+        # `attack` never occurs in the training recordings. Fitting on the raw
+        # labels made XGBoost compare them against the 0..num_class-1 range it
+        # derives from `num_class` and refuse: "Invalid classes inferred from
+        # unique values of `y`. Expected: [0 1 2], got [1 2 3]".
+        path = _make_sparse_class_templates(
+            tmp_path / "templates", train_classes=(1, 2, 3), test_classes=(0, 1, 3)
+        )
+        feat = self._feature(path)
+
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+
+        assert feat._classes == [1, 2, 3]
+        assert isinstance(feat._model, XGBClassifier)
+        # The evaluation report must be in label space, not index space.
+        assert feat._metrics is not None
+        reported = {k for k in feat._metrics if k.isdigit()}
+        assert reported <= {"0", "1", "2", "3"}
+        assert "1" in reported
+
+    def test_apply_keeps_pair_identity(self, tmp_path: Path) -> None:
+        # Pair-level input carries id1/id2 plus a `perspective` that separates A->B
+        # from B->A -- both perspectives share the same pair ids. Dropping them left
+        # two rows per frame with nothing to tell them apart, so the predictions
+        # could not be joined back to the features they came from.
+        path = _make_sparse_class_templates(
+            tmp_path / "templates", train_classes=(1, 2, 3), test_classes=(1, 3)
+        )
+        feat = self._feature(path)
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+
+        rng = np.random.default_rng(2)
+        frame = pd.DataFrame(
+            rng.standard_normal((12, 5)), columns=[f"feat_{i}" for i in range(5)]
+        )
+        frame["frame"] = np.repeat(np.arange(6), 2)
+        frame["id1"] = 0
+        frame["id2"] = 1
+        frame["perspective"] = np.tile([0, 1], 6)
+
+        out = feat.apply(frame)
+
+        assert {"frame", "id1", "id2", "perspective"} <= set(out.columns)
+        key = ["frame", "id1", "id2", "perspective"]
+        assert not out.duplicated(subset=key).any()
+
+    def test_predictions_are_labels_not_indices(self, tmp_path: Path) -> None:
+        path = _make_sparse_class_templates(
+            tmp_path / "templates", train_classes=(1, 2, 3), test_classes=(1, 3)
+        )
+        feat = self._feature(path)
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame(
+            rng.standard_normal((30, 5)) + 2.0,
+            columns=[f"feat_{i}" for i in range(5)],
+        )
+        out = feat.apply(frame)
+
+        predicted = set(out["predicted_label"].unique().tolist())
+        # Index space would offer 0; label space cannot, since 0 was never trained.
+        assert predicted <= {1, 2, 3}, predicted
+        assert 0 not in predicted
+
+
 class TestXgboostFit:
     def test_multiclass_fit(self, tmp_path: Path) -> None:
         templates_path = _make_templates_parquet(tmp_path / "templates")
