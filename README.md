@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pipeline-dark.svg">
-    <img alt="Two ways in, one table out. Video feeds the trackers mosaic runs; tracks produced by other tools are imported instead. Both arrive as one standardized tracks table, which feeds an analysis stage where individual, pair and group features compose with unsupervised and supervised models." src="docs/assets/pipeline-light.svg" width="880">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EcodylicScience/mosaic/main/docs/assets/pipeline-dark.svg">
+    <img alt="Two ways in, one table out. Video feeds the trackers mosaic runs; tracks produced by other tools are imported instead. Both arrive as one standardized tracks table, which feeds an analysis stage where individual, pair and group features compose with unsupervised and supervised models." src="https://raw.githubusercontent.com/EcodylicScience/mosaic/main/docs/assets/pipeline-light.svg" width="880">
   </picture>
 </p>
 
@@ -55,7 +55,7 @@ is not in it — tracking, inference and training alike run in an environment yo
 so no install of mosaic carries an AGPL-licensed dependency. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
 the environment holds a single ffmpeg build.
 
-[Installation](docs/installation.md) has the extras table, a CPU-only PyTorch line, the
+[Installation](https://ecodylicscience.github.io/mosaic/installation/) has the extras table, a CPU-only PyTorch line, the
 tools mosaic drives but does not install, and Windows/WSL2 support.
 
 ## In 60 seconds
@@ -83,20 +83,20 @@ their `--src-format`, and `mosaic convert-tracks` standardizes them.
 
 | | |
 | --- | --- |
-| [**Documentation**](docs/index.md) | What mosaic is, and where everything lives |
-| [**Install**](docs/installation.md) | The environment, the extras, and the tools that run in their own environment |
-| [**Reference**](docs/reference/index.md) | Every feature, op, CLI command and track format — generated from the code |
+| [**Documentation**](https://ecodylicscience.github.io/mosaic/) | What mosaic is, and where everything lives |
+| [**Install**](https://ecodylicscience.github.io/mosaic/installation/) | The environment, the extras, and the tools that run in their own environment |
+| [**Reference**](https://ecodylicscience.github.io/mosaic/reference/) | Every feature, op, CLI command and track format — generated from the code |
 
-Five worked examples live in [`notebooks/`](notebooks/), and each fetches its own
+Five worked examples live in [`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks), and each fetches its own
 data from Hugging Face, so they run as written:
 
 | Notebook | What it shows |
 | --- | --- |
-| [CalMS21 template](notebooks/calms21-template.ipynb) | The fullest path: ingest, features, embedding, clustering, an XGBoost classifier |
-| [Collective motion: shiners](notebooks/collective-motion-shiners.ipynb) | A converter written in the notebook, then order parameters across four group sizes |
-| [Collective motion: zebrafish](notebooks/collective-motion-zebrafish.ipynb) | A keypoint-free tracker, and social-force maps from neighbour positions |
-| [CalMS21 pose training](notebooks/calms21-pose-training-and-tracking.ipynb) | Tracks become pose annotations, train a YOLO model, track with it in TREx |
-| [Shiners point training](notebooks/shiners-polo-tracking.ipynb) | A POLO point model, and two ways to give TREx a body |
+| [CalMS21 template](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-template.ipynb) | The fullest path: ingest, features, embedding, clustering, an XGBoost classifier |
+| [Collective motion: shiners](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-shiners.ipynb) | A converter written in the notebook, then order parameters across four group sizes |
+| [Collective motion: zebrafish](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-zebrafish.ipynb) | A keypoint-free tracker, and social-force maps from neighbour positions |
+| [CalMS21 pose training](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-pose-training-and-tracking.ipynb) | Tracks become pose annotations, train a YOLO model, track with it in TREx |
+| [Shiners point training](https://github.com/EcodylicScience/mosaic/blob/main/notebooks/shiners-polo-tracking.ipynb) | A POLO point model, and two ways to give TREx a body |
 
 The two tracking notebooks drive external tools mosaic does not install; they say so
 and skip those sections when the tool is absent.
@@ -104,20 +104,20 @@ and skip those sections when the tool is absent.
 ## Status
 
 Early development (0.x). Public APIs, feature names, and on-disk layouts may change
-between releases; [CHANGELOG.md](CHANGELOG.md) records what moved and why.
+between releases; [CHANGELOG.md](https://github.com/EcodylicScience/mosaic/blob/main/CHANGELOG.md) records what moved and why.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), and please open an issue before making large
-changes. Working with an AI coding agent? [CLAUDE.md](CLAUDE.md) is the repository
+See [CONTRIBUTING.md](https://github.com/EcodylicScience/mosaic/blob/main/CONTRIBUTING.md), and please open an issue before making large
+changes. Working with an AI coding agent? [CLAUDE.md](https://github.com/EcodylicScience/mosaic/blob/main/CLAUDE.md) is the repository
 orientation.
 
 ## License
 
-GNU Affero General Public License v3 or later. See [LICENSE](LICENSE), and
-[NOTICE](NOTICE) for the third-party attributions that must travel with it.
+GNU Affero General Public License v3 or later. See [LICENSE](https://github.com/EcodylicScience/mosaic/blob/main/LICENSE), and
+[NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) for the third-party attributions that must travel with it.
 
 mosaic bundles no third-party source and no model weights, but it drives tools whose
 terms differ from its own — keypoint-MoSeq prohibits commercial use, TRex requires a
-paid license for company use, and Ultralytics is AGPL-3.0. [NOTICE](NOTICE) records how
+paid license for company use, and Ultralytics is AGPL-3.0. [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) records how
 each component reaches you and what that means for your use of it.
