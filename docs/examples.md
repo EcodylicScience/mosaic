@@ -11,6 +11,22 @@ external tools ([TRex](https://trex.run), and Ultralytics or POLO for training)
 which mosaic runs as separate programs and does not install. Both say so where it
 matters and skip those sections cleanly when the tool is absent.
 
+## Run a copy, not the tracked file
+
+The notebooks are tracked in the repository, so running one in place rewrites a
+tracked file — its outputs and execution counts — and `git pull` then refuses to
+update it. Copy the notebook out and run the copy:
+
+```bash
+mkdir -p ~/mosaic-examples
+cp notebooks/calms21-template.ipynb ~/mosaic-examples/
+```
+
+Each notebook unpacks its data into `~/mosaic-examples/<name>-example/` wherever it is
+run from, so copies started in different places share one download. `DOWNLOAD_DIR` in
+the setup cell overrides that, and `SOURCE = "local"` skips the download to build from
+data you already have.
+
 ## Start here
 
 ### CalMS21, end to end
