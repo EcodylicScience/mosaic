@@ -787,13 +787,37 @@ class EgocentricCrop:
 
         # Process frames
         metadata_rows = []
-        frame_idx = 0
         total_frames = reader.total_frames
         # Last frame in df_target — once we pass this, no further work to do.
         # Lets a frame-filtered df_target short-circuit the per-id video read,
         # which otherwise decodes all `total_frames` frames just to skip past
         # them.  Big speedup when df_target covers a small subrange of the video.
         max_relevant_frame = int(frame_array.max()) if len(frame_array) else -1
+
+        # ...and the same at the front. Without this the reader decodes from
+        # frame 0 to the first row of ``df_target`` and throws every frame away:
+        # on a session whose individuals appear 13k frames in, a 300-frame window
+        # cost 13k decodes per individual. Both multi-readers seek off a keyframe
+        # index, so the cost becomes one GOP (~240 frames on this project's
+        # recordings) rather than the whole prefix.
+        #
+        # ``frame_idx`` counts the reader's position, so it must move with the
+        # seek: the loop below identifies a decoded frame purely by that counter.
+        # A reader that cannot seek keeps the old behaviour rather than failing —
+        # this is an optimisation, and a sequential read is still correct.
+        first_relevant_frame = int(frame_array.min()) if len(frame_array) else 0
+        frame_idx = 0
+        if first_relevant_frame > 0:
+            try:
+                reader.seek(first_relevant_frame)
+                frame_idx = first_relevant_frame
+            except Exception as exc:  # noqa: BLE001 - any seek failure is recoverable
+                print(
+                    f"  [{self.name}] could not seek to frame "
+                    f"{first_relevant_frame} ({type(exc).__name__}); reading "
+                    f"from the start instead"
+                )
+
         progress_total = (
             min(max_relevant_frame + 1, total_frames)
             if max_relevant_frame >= 0
@@ -849,8 +873,15 @@ class EgocentricCrop:
 
                 # Progress logging for long videos
                 if frame_idx % 1000 == 0:
+                    # Report against the range actually being read. Before the
+                    # seek above these were the same thing; now a filtered run
+                    # would otherwise print "14000/14300" for work that started
+                    # at 14000 and looked like it had almost finished before it
+                    # began.
                     print(
-                        f"  [egocentric-crop] id={target_id}: {frame_idx}/{progress_total} frames"
+                        f"  [egocentric-crop] id={target_id}: "
+                        f"{frame_idx - first_relevant_frame}/"
+                        f"{progress_total - first_relevant_frame} frames"
                     )
 
         finally:
