@@ -39,6 +39,10 @@ docs/drafts/
 
 # Local notebooks / scratch files
 notebooks/trex-bees.ipynb
+
+# Example data the notebooks download for themselves (gigabytes each).
+# Each notebook defaults to Path.cwd() / "<name>-example".
+*-example/
 sync-to-remote.ipynb
 behavior-guppies.code-workspace
 behavior-*.ipynb
