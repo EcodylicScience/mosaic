@@ -98,3 +98,21 @@ This was the `yolo-augment` extra until training moved out of mosaic's process. 
 extra in mosaic's own `pyproject.toml` can install a package into an environment mosaic
 does not build, so the name is gone rather than aliased: pip's unknown-extra warning is
 what tells you the opt-in moved.
+
+## Worked examples
+
+Two notebooks train a model from tracks nobody labelled by hand, on data they
+download themselves:
+
+- [`calms21-pose-training-and-tracking.ipynb`][calms21-pose] turns CalMS21's MARS
+  keypoints into YOLO pose annotations through mosaic's `AnnotationSet`, trains with
+  `train-pose`, and hands the result to TREx as a detector.
+- [`shiners-polo-tracking.ipynb`][shiners-polo] does the same for POLO **point**
+  labels, where a label row is `<class> <radius> <x> <y>` and the radius is derived
+  from the data rather than typed in.
+
+Both are bootstrapping rather than annotation -- the labels are as good as the
+tracker that produced them -- and both say so.
+
+[calms21-pose]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/calms21-pose-training-and-tracking.ipynb
+[shiners-polo]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/shiners-polo-tracking.ipynb

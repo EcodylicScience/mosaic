@@ -141,6 +141,7 @@ nav:
   - Getting Started:
       - Install mosaic: installation.md
       - The mosaic dataset: dataset.md
+      - Worked examples: examples.md
   - Guides:
       - Overview: guides/index.md
       - Tracking:
