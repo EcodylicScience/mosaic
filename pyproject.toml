@@ -118,12 +118,7 @@ faiss = ["faiss-cpu>=1.7"]
 # pynwb, sleap-io and napari-video for two filtering wrappers.
 movement = ["movement>=0.17"]
 
-# Capped at <1.1 on purpose: 1.1.0 requires `nvidia-dali-cuda110` with no
-# environment marker, and PyPI serves that as an sdist only. Without the cap
-# `pip install "mosaic-behavior[lightning-action]"` tries to build NVIDIA DALI
-# from source and fails anywhere without CUDA, for a reason nothing here names.
-# Lift the cap only alongside a GPU image.
-lightning-action = ["lightning-action>=1.0,<1.1"]
+lightning-action = ["lightning-action>=1.0"]
 
 # FERAL V-JEPA video behavior classifier (FeralFeature, training + inference),
 # from PyPI as of its 1.0.0 release.

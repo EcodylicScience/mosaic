@@ -95,9 +95,13 @@ gates reading a file the user already has, and the three are ~30 MB together.
   it where it is now read, so pip's unknown-extra warning is the signal that the
   opt-in moved. Both environments declare `opencv-python-headless` outright and
   override away the GUI wheel Ultralytics asks for; see pitfall 8.
-- `lightning-action` is capped at `<1.1`: 1.1.0 requires `nvidia-dali-cuda110`
-  unconditionally, and PyPI serves it as an sdist only, so without the cap the
-  extra fails to install anywhere without CUDA.
+- **`lightning-action` is deliberately uncapped**, because a cap does not help.
+  It requires `nvidia-dali-cuda110` with no environment marker, and PyPI serves
+  that as an sdist for every current version, so the extra fails to install
+  anywhere without CUDA. Every release does it -- 1.0.2 declares the requirement
+  exactly as 1.1.0 does -- so the `<1.1` bound this carried, on the reasoning
+  that 1.1.0 introduced it, only held the extra on an older release. It is also
+  what stops `uv lock` resolving; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - `movement` declares the movement-library integration behind
   `movement-smooth` and `movement-filter-interpolate`. Before it existed those
   were two registered features with no declared dependency at all.
