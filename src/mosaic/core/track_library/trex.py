@@ -575,7 +575,7 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
 
 @register_track_converter
 class TrexNpzCmConverter(TrexNpzConverter):
-    """TRex per-id NPZ kept in the centimetres TRex wrote it in.
+    """TRex per-id NPZ kept in the centimeters TRex wrote it in.
 
     The reader for the case where the factor is *not* recoverable and not
     wanted. TRex scaled its positional output by ``cm_per_pixel`` long before it

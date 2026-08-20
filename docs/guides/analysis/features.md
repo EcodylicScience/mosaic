@@ -39,25 +39,35 @@ parameter, generated from the registry. Grouped by the question they answer:
 
 **Individual.** `speed-angvel` (speed and angular velocity),
 `heading` (body orientation from keypoints, under a method you name),
-`trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`,
-`temporal-stack` (gives a frame its context window).
+`trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`.
 
-**Pair or interactions.** `nearest-neighbor` and its
-`nn-delta-response` / `nn-delta-bins` chain for social forces; the `pair-*` family —
-`pair-position`, `pair-egocentric`, `pair-facing`, `pair-wavelet`,
-`pair-posedistance-pca`; `orientation-rel`, `approach-avoidance`, `attention-target`.
+**Whatever came in.** `temporal-stack` (gives a frame its context window) and the
+global fitters below key their output the way their input was keyed, so they sit at
+whichever level you feed them.
+
+**Pair.** One row per ordered pair per frame: the `pair-*` family — `pair-position`,
+`pair-egocentric`, `pair-facing`, `pair-wavelet`, `pair-posedistance-pca`,
+`pair-interaction-filter` — plus `orientation-rel` and `approach-avoidance`.
+
+**Neighbors and social forces.** `nearest-neighbor` and its `nn-delta-response` /
+`nn-delta-bins` chain, and `attention-target`. These describe an individual's
+relationship to the others around it, so their rows are keyed per individual, not per
+pair.
 
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
 
 **Models fitted over a collection.** t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq and
-the supervised classifiers. Each is listed with its parameters under *Global* in the
+the supervised classifiers. See [Find behaviors without
+labels](discover-behaviors.md), [Train a behavior classifier](train-a-classifier.md)
+and [Identify individuals by appearance](identify-individuals.md); each feature is
+listed with its parameters under *Global* in the
 [features reference](../../reference/features.md).
 
 **Image and video artifacts.** `egocentric-crop` and `interaction-crop-pipeline` cut
-animal-centered clips; `overlay` renders an annotated video. These are features so
-that a pipeline can end on the deliverable rather than one step short of it.
+animal-centered clips; `overlay` renders an annotated video. See
+[Render an annotated video](../media/render-a-video.md).
 
 ## Chaining
 
@@ -78,11 +88,15 @@ work, use a pipeline: [Chain steps into a recipe](../pipelines/chain-steps.md).
 ## The rule that catches most mistakes
 
 **Inputs must align at one entity level.** A per-individual result has one row per
-individual per frame; a pair result has one row per *pair* per frame. They share only
-`frame`, so merging them would pair every individual with every pair and fit
+individual per frame; a pair result has one row per *ordered* pair per frame. They
+share only `frame`, so merging them would pair every individual with every pair and fit
 downstream on rows that never existed.
 
 mosaic refuses that merge and names both levels rather than performing it. Pick one
-level, or run two chains and compare them. [Features and
-composition](../../concepts/features.md) has this and the tracks-variant rule in
-full.
+level, or run two chains and compare them.
+
+Two pair results join one-to-one only when both carry `perspective`, which is what
+separates the two orderings of a pair. [What identifies a pair
+row](../../concepts/features.md#what-identifies-a-pair-row) has the key and why every
+column of it matters; [Features and composition](../../concepts/features.md) has the
+tracks-variant rule.

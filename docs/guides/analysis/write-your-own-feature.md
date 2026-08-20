@@ -28,7 +28,7 @@ Seven attributes and four methods.
 | `category` | Which group it appears under in the reference and in a diagram |
 | `parallelizable` | Whether sequences may be processed concurrently |
 | `scope_dependent` | Whether the output depends on which sequences were in scope |
-| `accepts_overlap` | Whether `apply` may be handed rows from neighbouring sequences |
+| `accepts_overlap` | Whether `apply` may be handed rows from neighboring sequences |
 | `emits` | At what entity level the output rows are keyed |
 | `consumed_roots` | Source roots the feature opens directly, past its inputs |
 
@@ -46,9 +46,7 @@ empty, and does all its work in `apply`. A global one restores a fitted model in
 
 ## `emits` is the one to get right
 
-Three attributes deliberately have no default, because a default would let the next
-feature ship without answering. `emits` is the one where the wrong answer is silent in
-the dangerous direction.
+`emits` has no default, and it is the one where a wrong answer is silent.
 
 It declares what your output rows are keyed by — `"individual"`, `"pair"`,
 `"unidentified"` (a per-frame aggregate over everyone present), or `"as-input"`
@@ -60,6 +58,24 @@ declared as individual would have exactly that join permitted.
 Declare `"as-input"` only where the level genuinely follows the input. A feature that
 always produces the same level declares that level, even when its only legal input
 happens to share it.
+
+### What a pair row looks like
+
+Declaring `"pair"` commits you to one row per **ordered** pair per frame: `id1` is the
+focal, `id2` the other, and `perspective` says which of the two orderings the row is.
+The key is `(frame, id1, id2, perspective)`. A symmetric quantity — a distance, a
+mutual-interaction flag — is written the same on both rows rather than collapsed into
+one.
+
+Two habits to avoid, because neither raises:
+
+- Writing the same `id1`/`id2` on both perspectives. `id1` then means the focal on
+  some features and the lower id on yours, and a merge between them binds every row
+  to the wrong perspective while silently dropping half of one side.
+- Rebuilding your output frame and copying the identity across by name. Use
+  `meta_columns(df)` from `feature_library/helpers.py`; a hand-written list is how
+  `perspective` gets left behind, and without it the rows downstream cannot be told
+  apart at all.
 
 ## Parameters are a Pydantic model
 

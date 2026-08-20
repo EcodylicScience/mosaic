@@ -112,9 +112,8 @@ export MOSAIC_LITPOSE_CONDA_ENV=litpose
 
 ### Ultralytics and POLO
 
-The repository carries both environments' definitions — a `pyproject.toml` and a lock
-file each — so building one is a single command in its directory. Build whichever you
-need:
+These are two separate environments, and one machine can hold both. Build whichever
+you need:
 
 ```bash
 cd src/mosaic/tracking/external/ultralytics-env
@@ -128,22 +127,21 @@ uv sync --python 3.12
 export MOSAIC_POLO_BIN="$PWD/.venv/bin/yolo"
 ```
 
-Pass `--python 3.12` rather than letting uv choose: the committed lock was resolved for
-that interpreter, and a newer one resolves a different set of wheels or none at all.
+Pass `--python 3.12` rather than letting uv choose. The committed lock was resolved
+for that interpreter and a newer one may not resolve at all.
 
-**Two environments, because POLO ships under the distribution name `ultralytics`** and
-so cannot occupy one with upstream. Both install a `yolo` script, which is why
-`MOSAIC_POLO_BIN` is worth setting rather than leaving to `$PATH` — the last step of the
-search cannot tell the two builds apart.
+Set `MOSAIC_POLO_BIN` and `MOSAIC_ULTRALYTICS_BIN` explicitly rather than relying on
+`$PATH`. Both environments install a `yolo` script, and a `$PATH` lookup cannot tell
+them apart.
 
-Add `--extra augment` to either `uv sync` to install `albumentations`, which Ultralytics
-picks up on its own and uses to apply Blur, MedianBlur, ToGray and CLAHE at p=0.01
-during training. Nothing records which way a run went, so it stays deliberate.
+Add `--extra augment` to either `uv sync` to install `albumentations`. Ultralytics then
+applies Blur, MedianBlur, ToGray and CLAHE at p=0.01 during training. Nothing records
+which way a run went, so opt in deliberately.
 
-Both tools open a video path, so an imgstore recording has to be exported first with
-`mosaic run --kind export-store`, as TRex, SLEAP and Lightning Pose already require. The
-error message names the command. `infer-localizer` is unaffected — it is mosaic's own
-PyTorch and reads a store natively.
+Both tools take a video path, so an imgstore recording has to be exported first with
+`mosaic run --kind export-store` — as TRex, SLEAP and Lightning Pose also require. The
+error message names the command. `infer-localizer` reads a store directly and needs no
+export.
 
 ### keypoint-MoSeq
 
@@ -155,6 +153,9 @@ uv sync --python 3.13
 export MOSAIC_KPMS_LICENSE_ACCEPTED=1
 ```
 
+Built here, mosaic finds the interpreter on its own. Built anywhere else, name it:
+`export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python`.
+
 Mosaic will not start keypoint-MoSeq until `MOSAIC_KPMS_LICENSE_ACCEPTED` is set to
 exactly `1`. Harvard OTD licenses keypoint-MoSeq for non-commercial research and
 academic use only, and setting the variable asserts that your use is permitted;
@@ -163,11 +164,10 @@ has the terms in full.
 
 ### FERAL
 
-A mosaic extra rather than an external tool — the classifier runs in mosaic's own
-process — but it wants an environment of its own too. It pins its dependencies to exact
-versions where mosaic's are lower bounds, so installing `[feral]` alongside downgrades
-several of them. Build a second environment holding mosaic and `[feral]`, and point it
-at the same datasets.
+FERAL runs inside mosaic's own process, but install it in an environment of its own:
+FERAL pins exact dependency versions, and installing `[feral]` beside a normal mosaic
+environment downgrades several packages in it. Build a second environment holding
+mosaic and `[feral]`, and point it at the same datasets.
 
 Third-party licenses, and what mosaic does about each, are recorded in
 [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE).
@@ -185,7 +185,7 @@ native-Windows build and need **WSL2**:
 | FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
 | GPU kNN (`faiss`, `faiss-gpu`)                                    | No (`faiss-cpu` works)  | Yes          | n/a   |
 | imgstore recordings (reading is native)                           | Partial                 | Yes          | Yes   |
-| TREx tracking and pose-model training                             | Partial                 | Yes          | Yes   |
+| TRex tracking and pose-model training                             | Partial                 | Yes          | Yes   |
 
 For any **No** or **Partial** capability, install **WSL2** (`wsl --install` in an
 admin PowerShell) and follow the Linux setup above inside Ubuntu. Under WSL, keep the

@@ -48,7 +48,7 @@ inventory(ds)
 | `mosaic reconcile` | The identity scheme moved in a mosaic upgrade; re-addresses artifacts |
 | `mosaic sweep-tracking` | Reclaim tracker working directories that are finished and past their window |
 | `mosaic prune-media` | Delete transcode derivatives no forward link reaches |
-| `mosaic upgrade-tracks` | Rescale centimetre-era TRex tables to pixels |
+| `mosaic upgrade-tracks` | Rescale centimeter-era TRex tables to pixels |
 
 `sweep-tracking` is the one that matters for disk: raw tracker output under
 `_tracking/<tool>/<run_id>/` is often far larger than the parquet it produced, and it
@@ -65,10 +65,3 @@ constraints.
 
 These describe the *dataset*. The per-sequence tags that group sequences for analysis
 are a different thing, owned by the API that manages a project.
-
-## The lock sidecar
-
-Every `index.csv` has a zero-byte `index.csv.lock` beside it, created on the first
-locked write and never removed. It is not data, nothing reads it, and deleting it
-while a writer holds it reintroduces exactly the lost update the lock prevents.
-Anything walking a root should expect it.

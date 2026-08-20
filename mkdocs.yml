@@ -144,6 +144,9 @@ nav:
       - Worked examples: examples.md
   - Guides:
       - Overview: guides/index.md
+      - Media:
+          - Prepare and index your media: guides/media/prepare-media.md
+          - Render an annotated video: guides/media/render-a-video.md
       - Tracking:
           - Import tracks you already have: guides/tracking/import.md
           - Run a tracker: guides/tracking/run-a-tracker.md
@@ -151,6 +154,10 @@ nav:
           - Write a converter for your format: guides/tracking/write-a-converter.md
       - Analysis:
           - Features: guides/analysis/features.md
+          - Import behavior annotations: guides/analysis/import-labels.md
+          - Find behaviors without labels: guides/analysis/discover-behaviors.md
+          - Train a behavior classifier: guides/analysis/train-a-classifier.md
+          - Identify individuals by appearance: guides/analysis/identify-individuals.md
           - Write your own feature: guides/analysis/write-your-own-feature.md
       - Pipelines:
           - Chain steps into a recipe: guides/pipelines/chain-steps.md

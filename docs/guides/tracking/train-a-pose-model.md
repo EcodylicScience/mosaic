@@ -5,7 +5,7 @@ mosaic for the model training process: sample frames, annotate them, train a det
 and hand the weights to a tracker.
 
 This is the most involved path in the section. Read [Run a
-tracker](run-a-tracker.md) first — training exists to feed it.
+tracker](run-a-tracker.md) first: training produces the model a tracker then uses.
 
 ## 1. Sample frames to annotate
 
@@ -42,13 +42,10 @@ A trained model is registered as an artifact directory under
 `models/<kind>/<run_id>/`, so a later step can name a prior training run instead of
 carrying a weights path around.
 
-`train-pose` and `train-points` each drive an environment mosaic does not install,
-built from `src/mosaic/tracking/external/` — `ultralytics-env/` for pose and
-`polo-env/` for points. Two of them, because POLO ships under the distribution name
-`ultralytics` and so cannot occupy one with upstream. Build whichever you need and name
-it with `MOSAIC_ULTRALYTICS_BIN` or `MOSAIC_POLO_BIN`; there is no extra to install and
-one machine can do both. See
-[installation](../../installation.md#tools-that-run-in-their-own-environment).
+`train-pose` and `train-points` each drive an environment mosaic does not install:
+`ultralytics-env/` for pose, `polo-env/` for points. Build whichever you need and name
+it with `MOSAIC_ULTRALYTICS_BIN` or `MOSAIC_POLO_BIN` — see
+[installation](../../installation.md#ultralytics-and-polo). One machine can hold both.
 
 **The first pose training run fetches its base weights.** The default `model` is the
 bare asset name `yolo11n-pose.pt`, which Ultralytics downloads from a GitHub release
@@ -76,11 +73,14 @@ handed a video path -- so an imgstore recording has to be exported with
 `mosaic run --kind export-store` beforehand. `infer-localizer` is mosaic's own PyTorch
 and needs neither.
 
-Or hand the weights to a tracker, which is what TRex's detection model expects:
+Or hand the model to a tracker as its detector:
 
 ```bash
-mosaic track trex -m dataset.yaml --set detect_model=models/train-pose/<run_id>/best.pt
+mosaic track trex -m dataset.yaml --set detect_model=<run_id>
 ```
+
+`detect_model` takes the training run's `run_id`, exactly as `infer-pose` does above.
+A path to a weights file works too, if the weights came from somewhere else.
 
 The difference is identity. Inference detects animals frame by frame; a tracker links
 those detections across frames into individuals. If you need to know which animal is
@@ -88,16 +88,10 @@ which, you want the tracker.
 
 ## Augmentation is opt-in
 
-Building the training environment with `uv sync --python 3.12 --extra augment` adds
-`albumentations`, which Ultralytics picks up on its own and uses to apply Blur,
-MedianBlur, ToGray and CLAHE at p=0.01 during YOLO and POLO training. Nothing records
-which way a run went, so the choice is deliberate rather than a default, and it belongs
-to whoever builds the environment — that is the process that reads it.
-
-This was the `yolo-augment` extra until training moved out of mosaic's process. No
-extra in mosaic's own `pyproject.toml` can install a package into an environment mosaic
-does not build, so the name is gone rather than aliased: pip's unknown-extra warning is
-what tells you the opt-in moved.
+Build the training environment with `uv sync --python 3.12 --extra augment` to add
+`albumentations`. Ultralytics then applies Blur, MedianBlur, ToGray and CLAHE at p=0.01
+during YOLO and POLO training. Nothing records which way a run went, so decide before
+you build: the choice belongs to the environment, not to a mosaic extra.
 
 ## Worked examples
 
@@ -106,7 +100,7 @@ download themselves:
 
 - [`calms21-pose-training-and-tracking.ipynb`][calms21-pose] turns CalMS21's MARS
   keypoints into YOLO pose annotations through mosaic's `AnnotationSet`, trains with
-  `train-pose`, and hands the result to TREx as a detector.
+  `train-pose`, and hands the result to TRex as a detector.
 - [`shiners-polo-tracking.ipynb`][shiners-polo] does the same for POLO **point**
   labels, where a label row is `<class> <radius> <x> <y>` and the radius is derived
   from the data rather than typed in.

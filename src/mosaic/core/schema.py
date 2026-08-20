@@ -359,7 +359,7 @@ register_track_schema(
         forbidden=DERIVED_COLUMNS,
         description=(
             "The tracker-neutral standard: per-frame, per-id tracks in video "
-            "pixels. `X`/`Y` are the individual's body centre -- for a pose-only "
+            "pixels. `X`/`Y` are the individual's body center -- for a pose-only "
             "tracker the mean of that frame's keypoints, for one that measures a "
             "centroid its own. Keypoints are optional: a centroid-only tracker "
             "emits none rather than copying `X`/`Y` into a fabricated `poseX0`, "
@@ -379,11 +379,11 @@ register_track_schema(
         extends="mosaic_v1",
         allows=DERIVED_COLUMNS,
         description=(
-            "`mosaic_v1` plus what TREx genuinely measures, unscaled to pixels. "
-            "TREx reports speed and heading itself, and a weighted centroid "
+            "`mosaic_v1` plus what TRex genuinely measures, unscaled to pixels. "
+            "TRex reports speed and heading itself, and a weighted centroid "
             "distinct from its blob centroid, so none of the derived set is "
-            "forbidden here. `X`/`Y` carry the body centre (TREx's `#wcentroid`), "
-            "and TREx's own bare `X`/`Y` -- which are the *head*, and present "
+            "forbidden here. `X`/`Y` carry the body center (TRex's `#wcentroid`), "
+            "and TRex's own bare `X`/`Y` -- which are the *head*, and present "
             "only where posture was calculated -- are kept as `X#head`/`Y#head`."
         ),
     )
@@ -396,20 +396,14 @@ register_track_schema(
         required=STANDARD_COLUMNS,
         allows=DERIVED_COLUMNS,
         description=(
-            "The same contract as `trex_v2`, in centimetres rather than pixels. "
-            "It exists because the unit is sometimes not recoverable: TREx has "
-            "scaled its positional output by `cm_per_pixel` since long before it "
-            "began recording the factor (2025-02-18, TREx 2.0.0), so an older "
-            "export is centimetres with no record of by how much. Nothing can "
-            "divide that back out, and refusing the data over a number its owner "
-            "may never need would be refusing an analysis that is perfectly well "
-            "defined in centimetres. `X`/`Y` are the body centre here too. "
-            "Deliberately its own family, extending nothing: these columns mean "
-            "the same *things* as `mosaic_v1`'s but not the same numbers, so a "
-            "scope may never resolve both, and `_refuse_mixed_schemas` is what "
-            "says so. Pixels remain the default and what every modern tracker "
-            "emits; `scale-to-cm` converts px -> cm as a recorded step, and "
-            "nothing converts cm -> px without a factor, because nothing can."
+            "The same contract as `trex_v2`, in centimeters rather than pixels, "
+            "with `X`/`Y` still the body center. Use it for archived data whose "
+            "`cm_per_pixel` factor cannot be recovered -- notably TRex exports "
+            "predating TRex 2.0.0, which scaled their output without recording "
+            "by how much. Its own schema family: a feature run whose scope "
+            "resolves both this and a pixel schema is refused rather than mixed. "
+            "For pixel data, `scale-to-cm` converts to centimeters as a recorded "
+            "step instead."
         ),
     )
 )

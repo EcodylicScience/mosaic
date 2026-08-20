@@ -92,7 +92,7 @@ class TrexParams(TrackerOpParams):
 
 @register_op
 class TrexOp(Op[TrexParams]):
-    """Run TREx (convert + track) over scoped videos, bridging results into ``tracks/``."""
+    """Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``."""
 
     kind = TREX_KIND
     category = "convert"

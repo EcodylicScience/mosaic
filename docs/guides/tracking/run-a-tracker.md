@@ -70,8 +70,9 @@ Each tracker has a function that does over a dataset what `mosaic track` does fr
 shell:
 
 ```python
-from mosaic.tracking import run_sleap, run_litpose
+from mosaic.tracking import run_trex, run_sleap, run_litpose, run_ultralytics
 
+run_trex(ds, track_max_individuals=4)
 run_sleap(ds, model_paths=["models/sleap_bottomup"])
 run_litpose(ds, model_path="models/litpose_model")
 ```
@@ -94,7 +95,7 @@ environment variables for that one call.
 ## What comes out
 
 One parquet table per sequence, validated against a registered schema, with every
-spatial column in video pixels and `X`/`Y` at the body centre.
+spatial column in video pixels and `X`/`Y` at the body center.
 
 That normalization is the point of the standard, and the rules behind it are in
 [What a tracker reports, and in what units](../../concepts/tracks.md).
@@ -152,16 +153,16 @@ That normalization is the point of the standard, and the rules behind it are in
 ## Worked examples
 
 Two notebooks run a tracker end to end on data they download themselves, and both
-drive TREx:
+drive TRex:
 
 - [`calms21-pose-training-and-tracking.ipynb`][calms21-pose] tracks two mice with
   a pose model as the detector and visual identification on, then renders an
   annotated video.
 - [`shiners-polo-tracking.ipynb`][shiners-polo] tracks the same footage two ways --
-  with a trained point detector, and with no model at all using TREx's own
+  with a trained point detector, and with no model at all using TRex's own
   background subtraction -- and measures where the two disagree.
 
-Both probe for TREx before spending a conversion pass, which is worth copying: the
+Both probe for TRex before spending a conversion pass, which is worth copying: the
 not-found error is otherwise raised inside the first entry's convert phase, after a
 run root and a failed run-log have already been written.
 

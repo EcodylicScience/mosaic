@@ -19,7 +19,7 @@ lands under `models/`, the per-sequence application under `features/`.
 
 Two features exist purely to make a choice explicit rather than to compute something
 new. `heading` derives an angle from keypoints under a *named* method; `scale-to-cm`
-converts pixels to centimetres using a recorded per-video factor. Both put the choice
+converts pixels to centimeters using a recorded per-video factor. Both put the choice
 into a run identifier, which is the whole reason they are features and not columns a
 converter writes silently.
 
@@ -28,11 +28,32 @@ converter writes silently.
 This is the rule that catches most composition mistakes.
 
 A per-individual result has one row per individual per frame. A pair result has one row
-per *pair* per frame. They share only `frame`, so merging them would pair every
+per *ordered* pair per frame. They share only `frame`, so merging them would pair every
 individual with every pair and fit downstream on rows that never existed.
 
 mosaic refuses that merge and names both levels rather than performing it. Pick one
 level — usually the pair features — or run two chains and compare them.
+
+### What identifies a pair row
+
+A pair result is keyed by `(frame, id1, id2, perspective)`, and every column of that
+key matters.
+
+Pairs are **ordered**: with two individuals A and B, a frame carries a row for A
+looking at B and another for B looking at A. `id1` is the focal — whose frame of
+reference the row is written in — and `id2` is the other. `perspective` says which
+of the two orderings the row is, `0` for the first and `1` for the mirror.
+
+That makes `(frame, id1, id2)` alone *not* a key, which is why two pair results merge
+one-to-one only when both carry `perspective`. It is also why a feature that rewrites
+its columns has to carry `perspective` through: an output that drops it holds two rows
+per frame with nothing to tell them apart, and mosaic will then refuse to join those
+predictions back to the embedding they came from — correctly, since the key was
+destroyed upstream rather than at the join.
+
+A symmetric quantity, such as the distance between the two, is written the same on
+both rows rather than stored once. One shape with no special case is what lets any
+two pair results join.
 
 ## Which tracks a feature reads
 

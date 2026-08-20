@@ -1,12 +1,10 @@
 # Chain steps into a recipe
 
-A **step** is one unit of work with an identity. It may be a **feature** or it may be
-an **op** — a tracker run, a conversion, a transcode. That is the whole point of this
-section: a recipe is not an analysis chain with tracking bolted on the front, it is
-one graph in which both kinds of step are ordinary members.
+A **step** is one unit of work with an identity. It may be a **feature**, or an
+**op**: a tracker run, a conversion, a transcode. Both kinds are ordinary members of
+one graph, so a recipe can run a whole workflow from video to embedding.
 
-There are two ways to spell the same graph, and they resolve identity through one
-shared site so they cannot disagree about what a step will be called.
+There are two ways to spell the same graph.
 
 ## A recipe file, when the graph outlives the session
 
@@ -100,7 +98,7 @@ from mosaic.core.pipeline import Pipeline, FeatureStep
 from mosaic.behavior.feature_library import TrajectorySmooth, SpeedAngvel, FFGroups
 
 pipe = Pipeline(default_run_kwargs={"parallel_workers": 8})
-pipe.add(FeatureStep("smooth", TrajectorySmooth, {"window": 5}))
+pipe.add(FeatureStep("smooth", TrajectorySmooth, {"savgol_window": 5}))
 pipe.add(FeatureStep("speed", SpeedAngvel, {}, ["smooth"]))
 pipe.add(FeatureStep("ff", FFGroups, {"window_size": 20}, ["smooth"]))
 
@@ -135,7 +133,7 @@ pipe = Pipeline(default_run_kwargs={
     "filter_start_time": 3600.0,   # skip the first hour
 })
 
-pipe.add(FeatureStep("smooth", TrajectorySmooth, {"window": 5},
+pipe.add(FeatureStep("smooth", TrajectorySmooth, {"savgol_window": 5},
                      run_kwargs={"parallel_workers": 10, "filter_start_time": None}))
 ```
 

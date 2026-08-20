@@ -5,9 +5,13 @@
 
 ## Media
 
-Video and imgstore recordings are dataset setup rather than analysis.
-[The mosaic dataset](../dataset.md) covers declaring a media source, scanning it, and
-what the media index records.
+| Guide | For |
+| --- | --- |
+| [Prepare and index your media](media/prepare-media.md) | Indexing, transcoding, imgstore, frame extraction, calibration |
+| [Render an annotated video](media/render-a-video.md) | Drawing tracks, identities and behaviors back onto the recording |
+
+Declaring a media source and scanning it is dataset setup — see
+[The mosaic dataset](../dataset.md).
 
 ## Tracking
 
@@ -18,7 +22,7 @@ what the media index records.
 | [Train a pose model](tracking/train-a-pose-model.md) | No off-the-shelf model works on your animal |
 | [Write a converter](tracking/write-a-converter.md) | Your format is not one mosaic already reads |
 
-Every tracks table is video pixels with `X`/`Y` at the body centre, whichever tracker
+Every tracks table is video pixels with `X`/`Y` at the body center, whichever tracker
 produced it. [What a tracker reports](../concepts/tracks.md) covers the units, and why
 a tracker may not give you a speed.
 
@@ -35,6 +39,10 @@ cache the same way, which is what lets them chain.
 | Guide | For |
 | --- | --- |
 | [Features](analysis/features.md) | What the library holds and how to run one |
+| [Import behavior annotations](analysis/import-labels.md) | You have BORIS or CalMS21 annotations to bring in |
+| [Find behaviors without labels](analysis/discover-behaviors.md) | Embedding, clustering and state models |
+| [Train a behavior classifier](analysis/train-a-classifier.md) | You have labels and want predictions on the rest |
+| [Identify individuals by appearance](analysis/identify-individuals.md) | Recovering identity from how an animal looks |
 | [Write your own feature](analysis/write-your-own-feature.md) | The library does not have the quantity you need |
 
 ## Pipelines

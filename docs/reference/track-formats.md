@@ -21,7 +21,7 @@ by `mosaic convert-tracks`.
 | `deeplabcut` | `0.2` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
 | `sleap_analysis_h5` | `0.2` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
 | `trex_npz` | `0.2` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
-| `trex_npz_cm` | `0.1` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimetres TRex wrote it in. |
+| `trex_npz_cm` | `0.1` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
 | `trex_npz_scaled` | `0.1` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
 | `ultralytics_tracks` | `0.2` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
 
@@ -84,13 +84,13 @@ by `mosaic convert-tracks`.
 ## Track schemas
 
 Every schema validates a standardized parquet table. Spatial columns are video
-pixels and `X`/`Y` are the body centre, except in the centimetre families,
+pixels and `X`/`Y` are the body center, except in the centimeter families,
 which say so in their names. A physical unit is otherwise obtained downstream
 by the `scale-to-cm` feature rather than stored in the table.
 
 ### `mosaic_cm_v1`
 
-The same contract as `trex_v2`, in centimetres rather than pixels. It exists because the unit is sometimes not recoverable: TREx has scaled its positional output by `cm_per_pixel` since long before it began recording the factor (2025-02-18, TREx 2.0.0), so an older export is centimetres with no record of by how much. Nothing can divide that back out, and refusing the data over a number its owner may never need would be refusing an analysis that is perfectly well defined in centimetres. `X`/`Y` are the body centre here too. Deliberately its own family, extending nothing: these columns mean the same *things* as `mosaic_v1`'s but not the same numbers, so a scope may never resolve both, and `_refuse_mixed_schemas` is what says so. Pixels remain the default and what every modern tracker emits; `scale-to-cm` converts px -> cm as a recorded step, and nothing converts cm -> px without a factor, because nothing can.
+The same contract as `trex_v2`, in centimeters rather than pixels, with `X`/`Y` still the body center. Use it for archived data whose `cm_per_pixel` factor cannot be recovered -- notably TRex exports predating TRex 2.0.0, which scaled their output without recording by how much. Its own schema family: a feature run whose scope resolves both this and a pixel schema is refused rather than mixed. For pixel data, `scale-to-cm` converts to centimeters as a recorded step instead.
 
 | | |
 | --- | --- |
@@ -103,7 +103,7 @@ The same contract as `trex_v2`, in centimetres rather than pixels. It exists bec
 
 ### `mosaic_v1`
 
-The tracker-neutral standard: per-frame, per-id tracks in video pixels. `X`/`Y` are the individual's body centre -- for a pose-only tracker the mean of that frame's keypoints, for one that measures a centroid its own. Keypoints are optional: a centroid-only tracker emits none rather than copying `X`/`Y` into a fabricated `poseX0`, and the features that need keypoints refuse without them. Every spatial column is pixels; a physical unit is a feature, not a column. Derived quantities (velocity, speed, heading) are forbidden: they belong to features, where the method is chosen and recorded. `group` is required but may be empty.
+The tracker-neutral standard: per-frame, per-id tracks in video pixels. `X`/`Y` are the individual's body center -- for a pose-only tracker the mean of that frame's keypoints, for one that measures a centroid its own. Keypoints are optional: a centroid-only tracker emits none rather than copying `X`/`Y` into a fabricated `poseX0`, and the features that need keypoints refuse without them. Every spatial column is pixels; a physical unit is a feature, not a column. Derived quantities (velocity, speed, heading) are forbidden: they belong to features, where the method is chosen and recorded. `group` is required but may be empty.
 
 | | |
 | --- | --- |
@@ -129,7 +129,7 @@ Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. `group` 
 
 ### `trex_v2`
 
-`mosaic_v1` plus what TREx genuinely measures, unscaled to pixels. TREx reports speed and heading itself, and a weighted centroid distinct from its blob centroid, so none of the derived set is forbidden here. `X`/`Y` carry the body centre (TREx's `#wcentroid`), and TREx's own bare `X`/`Y` -- which are the *head*, and present only where posture was calculated -- are kept as `X#head`/`Y#head`.
+`mosaic_v1` plus what TRex genuinely measures, unscaled to pixels. TRex reports speed and heading itself, and a weighted centroid distinct from its blob centroid, so none of the derived set is forbidden here. `X`/`Y` carry the body center (TRex's `#wcentroid`), and TRex's own bare `X`/`Y` -- which are the *head*, and present only where posture was calculated -- are kept as `X#head`/`Y#head`.
 
 | | |
 | --- | --- |

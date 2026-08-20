@@ -8,7 +8,7 @@ run_id = "<version>-<hash>"
 
 The hash covers the feature's parameters, its inputs, and the frame range. Identical
 inputs and parameters give an identical `run_id`. That single fact produces most of
-mosaic's useful behaviour.
+mosaic's useful behavior.
 
 ## What it buys you
 

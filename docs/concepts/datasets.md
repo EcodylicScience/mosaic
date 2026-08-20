@@ -3,7 +3,7 @@
 A mosaic dataset is a directory with a `dataset.yaml` manifest. The manifest names two
 different kinds of location, and the difference is the point.
 
-## Roots live inside; sources deliberately do not
+## Roots live inside the dataset; sources do not
 
 **Roots** are where mosaic writes. They live inside the dataset, so an `index.csv`
 travels with it when the dataset is copied, archived or synced to another machine.
@@ -62,11 +62,4 @@ key and the filename (`<group>__<sequence>`, or just `<sequence>` when empty). I
 grouping is what tags are for.
 
 `group` keeps one structural role: it is the temporal-contiguity key. Windowed features
-pull neighbouring frames only from within the same group.
-
-## The lock sidecar
-
-Every `index.csv` has a zero-byte `index.csv.lock` beside it, created on the first
-locked write and never removed. It is not data and nothing reads it — but deleting it
-while a writer holds it reintroduces exactly the lost update the lock prevents. Any
-script that walks a root should expect it and skip it.
+pull neighboring frames only from within the same group.

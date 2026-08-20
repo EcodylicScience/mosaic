@@ -31,7 +31,7 @@ which schema the output carries.
 | --- | --- | --- |
 | `trex_npz` | TRex per-individual `.npz` that records `cm_per_pixel` (TRex 2.0.0 and later) | `trex_v2` |
 | `trex_npz_scaled` | The same export from before TRex recorded that factor, with the factor supplied | `trex_v2` |
-| `trex_npz_cm` | The same export where the factor is not recoverable, kept in centimetres | `mosaic_cm_v1` |
+| `trex_npz_cm` | The same export where the factor is not recoverable, kept in centimeters | `mosaic_cm_v1` |
 | `sleap_analysis_h5` | SLEAP HDF5 from `sleap-convert --format analysis` | `mosaic_v1` |
 | `deeplabcut` | DeepLabCut `.csv` / `.h5`, single- and multi-animal — and Lightning Pose, which writes the same shape | `mosaic_v1` |
 | `ultralytics_tracks` | Ultralytics tracker predictions parquet | `mosaic_v1` |
@@ -48,7 +48,7 @@ A dataset can hold more than one tracks variant: the same entries converted by
 different recipes, each in its own `tracks/<variant>/` directory. Different entries
 carrying different variants enables comparison of tracking results.
 
-When a tracks entry carries exactly one variant, features resolve it automatically. When it carries more than one, you need to name the variant: `--tracks-run-id` on `mosaic run`, or `tracks_run_id=` on `run_feature` -- if not, mosaic raises an error saying that specification is neeeded.
+When a tracks entry carries exactly one variant, features resolve it automatically. When it carries more than one, you need to name the variant: `--tracks-run-id` on `mosaic run`, or `tracks_run_id=` on `run_feature` -- if not, mosaic raises an error saying that specification is needed.
 
 ## If your format is not on the list
 

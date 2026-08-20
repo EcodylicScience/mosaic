@@ -70,7 +70,7 @@ per-entry progress. One writer, append-only, so it is NFS-safe. These files are
 ephemeral: bounded by the work and safe to age out.
 
 ```python
-from mosaic.core.pipeline.run_log import read_runs, read_run, run_log_dir
+from mosaic.runlog import read_runs, read_run, run_log_dir
 
 run_dir = run_log_dir(dataset.base_dir)
 read_runs(run_dir, kind="feature")      # newest-first attempt snapshots

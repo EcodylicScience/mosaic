@@ -116,7 +116,7 @@ def scalable_columns(columns: list[str]) -> list[str]:
 @final
 @register_feature
 class ScaleToCm:
-    """Convert every length-bearing column into centimetres.
+    """Convert every length-bearing column into centimeters.
 
     Outputs one row per input row. **Two modes, and they are exclusive rather
     than composable.** ``"derive"`` (the default) emits *only* the scaled

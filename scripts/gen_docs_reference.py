@@ -388,7 +388,7 @@ def render_track_formats() -> str:
         "## Track schemas",
         "",
         "Every schema validates a standardized parquet table. Spatial columns are video",
-        "pixels and `X`/`Y` are the body centre, except in the centimetre families,",
+        "pixels and `X`/`Y` are the body center, except in the centimeter families,",
         "which say so in their names. A physical unit is otherwise obtained downstream",
         "by the `scale-to-cm` feature rather than stored in the table.",
         "",

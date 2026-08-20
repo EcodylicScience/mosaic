@@ -394,7 +394,7 @@ $ mosaic sweep-tracking [OPTIONS]
 
 ## `mosaic upgrade-tracks`
 
-Convert this dataset's TRex tables from centimetres to pixels, in place.
+Convert this dataset's TRex tables from centimeters to pixels, in place.
 
 **Reconverting is the better route** and this is not it. ``convert-tracks``
 re-reads the ``.npz``, so it depends on nothing a previous conversion
@@ -403,7 +403,7 @@ reclaimed by ``sweep-tracking`` once its run passed the retention window.
 
 It works because TRex records the factor it scaled by inside every export,
 and the old conversion copied that field through to the table. A table that
-does not carry it is refused rather than assumed to be unscaled: centimetres
+does not carry it is refused rather than assumed to be unscaled: centimeters
 and pixels are indistinguishable once the number is lost, so guessing would
 be wrong silently.
 

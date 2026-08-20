@@ -88,7 +88,7 @@ accessor on it then fails against a manifest file that is perfectly correct.
 ├── labels/
 ├── tracks/
 ├── _tracking/
-│   ├── trex/  sleap/  litpose/  ultralytics/
+│   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
 │   └── infer-pose/  infer-points/  infer-localizer/
 ├── features/
 └── models/
@@ -194,9 +194,7 @@ mosaic inventory -m ~/dataset/dataset.yaml
 ```
 
 `inventory` reports every computed artifact, its identity, and its **coverage** —
-which entries exist, not merely whether something does. That distinction matters:
-"the feature ran" and "the feature covers all forty sequences" are different facts,
-and only the second lets you trust a result.
+which entries exist, not merely whether something does.
 
-Every answer is computed from disk at read time. There is no database in the dataset
-and no cached status file, so a view can be out of date but never wrong.
+[Keep a dataset organized](guides/pipelines/keep-organized.md) covers the statuses it
+reports and the commands that repair what it finds.

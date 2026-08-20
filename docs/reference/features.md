@@ -391,7 +391,7 @@ CWT spectrograms on PairPoseDistancePCA outputs.
 
 Version `0.2` &middot; `mosaic.behavior.feature_library.scale_to_cm.ScaleToCm`
 
-Convert every length-bearing column into centimetres.
+Convert every length-bearing column into centimeters.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |

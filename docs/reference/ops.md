@@ -118,7 +118,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 Version `0.1` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
 
-Run TREx (convert + track) over scoped videos, bridging results into ``tracks/``.
+Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
