@@ -1,8 +1,10 @@
 # Examples
 
 Five worked notebooks live in
-[`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks) and
-render directly on GitHub, outputs included.
+[`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks). The
+three analysis notebooks render on GitHub with their outputs; the two that train a
+model and drive a tracker render as code, since they need external tools to produce
+anything.
 
 All five fetch their own data from Hugging Face, so they run as written: set
 nothing, change nothing, execute from the top. Each says how large the download
@@ -91,6 +93,8 @@ own.
 Both close the loop -- published tracks become pseudo-annotations, those train a
 detector, and a tracker then runs the model the dataset produced. Neither ships
 model weights; the section on each says why.
+
+These are the two that render without outputs -- run them yourself to see results.
 
 ### CalMS21: a pose model, then TRex
 
