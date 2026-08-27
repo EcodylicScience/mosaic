@@ -53,7 +53,7 @@ _INTERPOLATION_DESCRIPTION = (
     "before computing distances and velocities."
 )
 
-_SAMPLING_DESCRIPTION = (
+_SAMPLING_FPS_FALLBACK_DESCRIPTION = (
     "Frame-rate configuration. Only fps_default is read, as the fallback "
     "frames-per-second used when the table has no fps column, or that "
     "column does not resolve to exactly one value."
@@ -159,9 +159,9 @@ class ApproachAvoidance:
         interpolation: Annotated[
             InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
         ] = Field(default_factory=InterpolationConfig)
-        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
-            default_factory=SamplingConfig
-        )
+        sampling: Annotated[
+            SamplingConfig, Declared(_SAMPLING_FPS_FALLBACK_DESCRIPTION)
+        ] = Field(default_factory=SamplingConfig)
         velocity_units: Annotated[
             Literal["per_frame", "per_second"], Declared(_VELOCITY_UNITS_DESCRIPTION)
         ] = "per_frame"

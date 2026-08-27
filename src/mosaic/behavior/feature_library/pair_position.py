@@ -31,13 +31,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ._sampling_descriptions import SAMPLING_WITH_SMOOTHING_DESCRIPTION
 from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
 
 _INTERPOLATION_DESCRIPTION = "Interpolation settings for missing position data."
-
-_SAMPLING_DESCRIPTION = "Frame rate and smoothing settings."
 
 
 @final
@@ -84,9 +83,9 @@ class PairPositionFeatures:
         interpolation: Annotated[
             InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
         ] = Field(default_factory=InterpolationConfig)
-        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
-            default_factory=SamplingConfig
-        )
+        sampling: Annotated[
+            SamplingConfig, Declared(SAMPLING_WITH_SMOOTHING_DESCRIPTION)
+        ] = Field(default_factory=SamplingConfig)
 
     def __init__(
         self,

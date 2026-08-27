@@ -43,6 +43,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ._identity_model_descriptions import LEARNING_RATE_DESCRIPTION
 from .registry import register_feature
 
 # --- Model artifact ---
@@ -84,13 +85,13 @@ _MODEL_DESCRIPTION = (
     "training run enters this run's identity beside its scope."
 )
 
-_IDENTITIES_DESCRIPTION = (
+_CLASSIFIER_IDENTITIES_DESCRIPTION = (
     "The mapping from an identity name to the group/sequence entries that "
     "contain that individual alone. Takes priority over group_as_identity "
     "when both are given."
 )
 
-_GROUP_AS_IDENTITY_DESCRIPTION = (
+_CLASSIFIER_GROUP_AS_IDENTITY_DESCRIPTION = (
     "Derive one identity per group name from the input entries, used only "
     "when identities is unset. Fitting raises when neither is given."
 )
@@ -106,7 +107,7 @@ _IMAGE_SIZE_DESCRIPTION = (
     "resized to (height, width) before the backbone reads them."
 )
 
-_CHANNELS_DESCRIPTION = (
+_CLASSIFIER_CHANNELS_DESCRIPTION = (
     "The number of channels read from disk: 1 for grayscale, 3 for RGB. "
     "A grayscale image is replicated to 3 channels for the backbone."
 )
@@ -118,8 +119,6 @@ _FREEZE_BACKBONE_DESCRIPTION = (
 )
 
 _EPOCHS_DESCRIPTION = "How long the classifier trains."
-
-_LEARNING_RATE_DESCRIPTION = "The Adam learning rate."
 
 _BATCH_SIZE_DESCRIPTION = "How many crops the classifier reads per training batch."
 
@@ -133,9 +132,11 @@ _MAX_IMAGES_PER_IDENTITY_DESCRIPTION = (
     "many crops from any one identity enter training."
 )
 
-_WEIGHTS_NAME_DESCRIPTION = "The stem of the exported .pth checkpoint filename."
+_CLASSIFIER_WEIGHTS_NAME_DESCRIPTION = (
+    "The stem of the exported .pth checkpoint filename."
+)
 
-_CROP_ROOT_DESCRIPTION = (
+_CLASSIFIER_CROP_ROOT_DESCRIPTION = (
     "Unset, the EgocentricCrop output root is resolved from the input "
     "Result. Set, crops are read from this path first, falling back to "
     "that resolution when the derived directory does not exist."
@@ -209,12 +210,12 @@ class GlobalIdentityModel:
 
         # Primary: explicit identity -> sequences mapping
         identities: Annotated[
-            dict[str, list[str]] | None, Declared(_IDENTITIES_DESCRIPTION)
+            dict[str, list[str]] | None, Declared(_CLASSIFIER_IDENTITIES_DESCRIPTION)
         ] = None
         # Convenience shortcut: treat each group as one identity
-        group_as_identity: Annotated[bool, Declared(_GROUP_AS_IDENTITY_DESCRIPTION)] = (
-            False
-        )
+        group_as_identity: Annotated[
+            bool, Declared(_CLASSIFIER_GROUP_AS_IDENTITY_DESCRIPTION)
+        ] = False
 
         # Backbone selection. Changing ``model_name`` is a licensing decision as
         # well as an accuracy one -- see the module docstring.
@@ -226,13 +227,13 @@ class GlobalIdentityModel:
             tuple[int, int] | None, Declared(_IMAGE_SIZE_DESCRIPTION, unit="px")
         ] = None
         channels: Annotated[
-            int, Field(examples=[1, 3]), Declared(_CHANNELS_DESCRIPTION)
+            int, Field(examples=[1, 3]), Declared(_CLASSIFIER_CHANNELS_DESCRIPTION)
         ] = 3
         freeze_backbone: Annotated[bool, Declared(_FREEZE_BACKBONE_DESCRIPTION)] = True
 
         # Training
         epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 30
-        learning_rate: Annotated[float, Declared(_LEARNING_RATE_DESCRIPTION)] = 0.001
+        learning_rate: Annotated[float, Declared(LEARNING_RATE_DESCRIPTION)] = 0.001
         batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = 32
         val_split: Annotated[float, Declared(_VAL_SPLIT_DESCRIPTION)] = Field(
             default=0.2, ge=0.0, lt=1.0
@@ -244,13 +245,15 @@ class GlobalIdentityModel:
         ] = Field(default=2000, ge=1)
 
         # Export
-        weights_name: Annotated[str, Declared(_WEIGHTS_NAME_DESCRIPTION)] = (
+        weights_name: Annotated[str, Declared(_CLASSIFIER_WEIGHTS_NAME_DESCRIPTION)] = (
             "identity_classifier"
         )
 
         # Path to EgocentricCrop output root (contains group__sequence/ subdirs).
         # If None, the feature tries to resolve it from the input Result.
-        crop_root: Annotated[str | None, Declared(_CROP_ROOT_DESCRIPTION)] = None
+        crop_root: Annotated[
+            str | None, Declared(_CLASSIFIER_CROP_ROOT_DESCRIPTION)
+        ] = None
 
     def __init__(
         self,

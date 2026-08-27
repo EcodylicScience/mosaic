@@ -27,6 +27,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns, feature_columns
+from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -49,13 +50,6 @@ _POOL_DESCRIPTION = (
 )
 
 _RANDOM_STATE_DESCRIPTION = "The random seed for the feature's random sampling steps."
-
-_PAIR_FILTER_DESCRIPTION = (
-    "Unset, every row is read. A nearest-neighbor result narrows the "
-    "input, while it loads, to rows where one individual in the pair "
-    "is the other's nearest neighbor. On an input without id1/id2 "
-    "columns, the filter has no effect."
-)
 
 
 class TemplatesArtifact(TemplatesRef):
@@ -114,7 +108,7 @@ class ExtractTemplates:
             default_factory=PoolConfig
         )
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
-        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+        pair_filter: Annotated[NNResult | None, Declared(PAIR_FILTER_DESCRIPTION)] = (
             None
         )
 

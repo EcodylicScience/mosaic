@@ -37,6 +37,13 @@ from mosaic.tracking.ops.train import (
     finalize_training,
     training_is_complete,
 )
+from mosaic.tracking.ops._train_descriptions import (
+    BASE_MODEL_DESCRIPTION,
+    EPOCHS_DESCRIPTION,
+    IDLE_TIMEOUT_DESCRIPTION,
+    MAX_RUNTIME_DESCRIPTION,
+    OVERWRITE_DESCRIPTION,
+)
 from mosaic.tracking.litpose.templates import default_config_path
 from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
@@ -66,13 +73,6 @@ _BASE_CONFIG_DESCRIPTION = (
     "it."
 )
 
-_BASE_MODEL_DESCRIPTION = (
-    "Weights to fine-tune from, as a path or as the run id of the training "
-    "op that produced them. Identity records the training run id when the "
-    "reference is one, and the weights' content digest when it is a bare "
-    "path."
-)
-
 _MODEL_TYPE_DESCRIPTION = (
     "Which prediction head trains. heatmap_mhcrnn adds temporal context "
     "over five frames. The multiview transformer is for synchronized "
@@ -83,8 +83,6 @@ _BACKBONE_DESCRIPTION = (
     "The feature extractor. Defaults to a ResNet-50 pretrained on animal "
     "pose rather than ImageNet."
 )
-
-_EPOCHS_DESCRIPTION = "How long the model trains at most."
 
 _LITPOSE_OVERRIDES_DESCRIPTION = (
     "Hydra key=value overrides applied last, over model_type, backbone and "
@@ -97,20 +95,6 @@ _DEVICE_DESCRIPTION = "The accelerator to train the model on."
 
 _DEVICE_UNWIRED = "the training subprocess never receives it"
 
-_IDLE_TIMEOUT_DESCRIPTION = (
-    "How long the training subprocess may go without output before it is "
-    "killed. A generous default, because an epoch on a large set is slow "
-    "and a watchdog must not mistake slow for dead."
-)
-
-_MAX_RUNTIME_DESCRIPTION = (
-    "Absolute wall-clock ceiling for the training run. Unset leaves the "
-    "ceiling to whatever queue submitted the run, and idle_timeout still "
-    "applies."
-)
-
-_OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
-
 
 class TrainLitposeParams(Params):
     """Parameters for the ``train-litpose`` op."""
@@ -121,7 +105,7 @@ class TrainLitposeParams(Params):
     # unifying one config reachable at two paths. See the extra argument of
     # train_run_id.
     base_config: Annotated[str, HASH_EXCLUDE, Declared(_BASE_CONFIG_DESCRIPTION)] = ""
-    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    base_model: Annotated[str, Declared(BASE_MODEL_DESCRIPTION)] = ""
     model_type: Annotated[LitposeModelType, Declared(_MODEL_TYPE_DESCRIPTION)] = (
         "heatmap"
     )
@@ -130,7 +114,7 @@ class TrainLitposeParams(Params):
         Field(examples=["resnet50_animal_ap10k", "resnet50"]),
         Declared(_BACKBONE_DESCRIPTION),
     ] = "resnet50_animal_ap10k"
-    max_epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 300
+    max_epochs: Annotated[int, Declared(EPOCHS_DESCRIPTION, unit="epochs")] = 300
     litpose_overrides: Annotated[
         dict[str, JsonValue] | None, Declared(_LITPOSE_OVERRIDES_DESCRIPTION)
     ] = None
@@ -138,14 +122,14 @@ class TrainLitposeParams(Params):
         str, HASH_EXCLUDE, Declared(_DEVICE_DESCRIPTION, unwired=_DEVICE_UNWIRED)
     ] = "auto"
     idle_timeout: Annotated[
-        float, HASH_EXCLUDE, Declared(_IDLE_TIMEOUT_DESCRIPTION, unit="s")
+        float, HASH_EXCLUDE, Declared(IDLE_TIMEOUT_DESCRIPTION, unit="s")
     ] = 1800
     max_runtime: Annotated[
-        float | None, HASH_EXCLUDE, Declared(_MAX_RUNTIME_DESCRIPTION, unit="s")
+        float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
     # A throughput knob, not a property of the model: flipping it must not
     # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
 
 @register_op

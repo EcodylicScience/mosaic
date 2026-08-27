@@ -54,6 +54,11 @@ from mosaic.tracking.ops._common import (
     fingerprint_dataset,
     fingerprint_yolo_dataset,
 )
+from mosaic.tracking.ops._train_descriptions import (
+    BASE_MODEL_DESCRIPTION,
+    EPOCHS_DESCRIPTION,
+    OVERWRITE_DESCRIPTION,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -577,15 +582,6 @@ _MODEL_DESCRIPTION = (
     "resume overrides both with this run's last checkpoint."
 )
 
-_BASE_MODEL_DESCRIPTION = (
-    "Weights to fine-tune from, as a path or as the run id of the training "
-    "op that produced them. Identity records the training run id when the "
-    "reference is one, and the weights' content digest when it is a bare "
-    "path."
-)
-
-_EPOCHS_DESCRIPTION = "How long the model trains at most."
-
 _IMGSZ_DESCRIPTION = (
     "The side a training image is resized to before the model reads it."
 )
@@ -614,8 +610,6 @@ _TRAIN_OVERRIDES_DESCRIPTION = (
 _DEVICE_DESCRIPTION = "Which accelerator trains the model: a GPU index, or cpu."
 
 _BATCH_DESCRIPTION = "How many training images the model reads in one forward pass."
-
-_OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
 
 _LOC_DESCRIPTION = "The localization loss weight, a POLO train keyword."
 
@@ -672,8 +666,8 @@ class PoseTrainParams(Params):
 
     data: Annotated[str, Declared(_DATA_DESCRIPTION)]
     model: Annotated[str, Declared(_MODEL_DESCRIPTION)] = "yolo11n-pose.pt"
-    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
-    epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 300
+    base_model: Annotated[str, Declared(BASE_MODEL_DESCRIPTION)] = ""
+    epochs: Annotated[int, Declared(EPOCHS_DESCRIPTION, unit="epochs")] = 300
     imgsz: Annotated[int, Declared(_IMGSZ_DESCRIPTION, unit="px")] = 640
     patience: Annotated[int, Declared(_PATIENCE_DESCRIPTION, unit="epochs")] = 50
     resume: Annotated[bool, Declared(_RESUME_DESCRIPTION)] = False
@@ -697,7 +691,7 @@ class PoseTrainParams(Params):
     batch: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_DESCRIPTION)] = 16
     # A throughput knob, not a property of the model: flipping it must not
     # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
     @model_validator(mode="after")
     def _train_overrides_do_not_shadow(self) -> Self:
@@ -747,11 +741,11 @@ class PointTrainParams(PoseTrainParams):
 
 class LocalizerTrainParams(Params):
     dataset_dir: Annotated[str, Declared(_DATASET_DIR_DESCRIPTION)]
-    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    base_model: Annotated[str, Declared(BASE_MODEL_DESCRIPTION)] = ""
     num_classes: Annotated[int, Declared(_NUM_CLASSES_DESCRIPTION)] = 4
     initial_channels: Annotated[int, Declared(_INITIAL_CHANNELS_DESCRIPTION)] = 32
     freeze_encoder: Annotated[bool, Declared(_FREEZE_ENCODER_DESCRIPTION)] = False
-    epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 200
+    epochs: Annotated[int, Declared(EPOCHS_DESCRIPTION, unit="epochs")] = 200
     lr: Annotated[float, Declared(_LR_DESCRIPTION)] = 1e-3
     early_stopping_patience: Annotated[
         int, Declared(_EARLY_STOPPING_PATIENCE_DESCRIPTION, unit="epochs")
@@ -770,7 +764,7 @@ class LocalizerTrainParams(Params):
     ] = 128
     # A throughput knob, not a property of the model: flipping it must not
     # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
 
 # --- Ops -----------------------------------------------------------------

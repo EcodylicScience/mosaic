@@ -21,13 +21,10 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
 from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature
 from .types import SamplingConfig
-
-_SAMPLING_DESCRIPTION = (
-    "Frame rate settings. Only fps_default is read; smoothing is not applied."
-)
 
 _SPEED_COL_DESCRIPTION = (
     "The focal individual's speed column. Falls back to speed when absent."
@@ -185,8 +182,8 @@ class NearestNeighborDelta:
         pass
 
     class Params(Params):
-        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
-            default_factory=SamplingConfig
+        sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
+            Field(default_factory=SamplingConfig)
         )
         speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "SPEED"
         nn_id_col: Annotated[str, Declared(_NN_ID_COL_DESCRIPTION)] = "nn_id"

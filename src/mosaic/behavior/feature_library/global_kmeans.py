@@ -39,6 +39,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared
 
 from .helpers import ensure_columns
+from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline._utils import atomic_savez
@@ -72,13 +73,6 @@ _DEVICE_DESCRIPTION = (
 
 _LABEL_ARTIFACT_POINTS_DESCRIPTION = (
     "Assign a cluster label to every template point used for fitting."
-)
-
-_PAIR_FILTER_DESCRIPTION = (
-    "Unset, every row is read. A nearest-neighbor result narrows the "
-    "input, while it loads, to rows where one individual in the pair "
-    "is the other's nearest neighbor. On an input without id1/id2 "
-    "columns, the filter has no effect."
 )
 
 
@@ -190,7 +184,7 @@ class GlobalKMeansClustering:
         label_artifact_points: Annotated[
             bool, Declared(_LABEL_ARTIFACT_POINTS_DESCRIPTION)
         ] = True
-        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+        pair_filter: Annotated[NNResult | None, Declared(PAIR_FILTER_DESCRIPTION)] = (
             None
         )
 
