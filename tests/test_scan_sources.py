@@ -10,6 +10,7 @@ of them is true any more.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -261,6 +262,39 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
         A row whose path cannot be resolved is claimed by nobody -- the same
         conservative answer ``_row_claimed`` gives an empty cell -- rather than
         an exception escaping into the caller's scan.
+
+        An embedded NUL is the trigger that works on every supported
+        interpreter: ``Path.resolve`` rejects it with ``ValueError`` on 3.12 and
+        3.13 alike. The symlink loop below does not, which is why it is a
+        separate, version-gated test.
+        """
+        dataset = make_dataset(tmp_path)
+
+        claim = dataset._walked_claim(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"abs_path": str(tmp_path / "nul\x00name.mp4")},
+                {"abs_path": str(tmp_path / "plain.mp4")},
+                {"abs_path": ""},
+            ]
+        )
+
+        assert claim.claims((tmp_path / "plain.mp4").resolve())
+        assert len(claim.files) == 1, "only the resolvable row is claimed"
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 13),
+        reason="Path.resolve stopped raising on a symlink loop in 3.13",
+    )
+    def test_a_symlink_loop_is_skipped_on_the_versions_that_raise(
+        self, tmp_path: Path
+    ) -> None:
+        """The other half of the guard, where the interpreter still supplies it.
+
+        Python 3.12 raises ``RuntimeError`` resolving a symlink loop; 3.13
+        returns the path unchanged, so the row resolves to itself and is
+        claimed. Both are correct for a scan -- the walk cannot read such a file,
+        so no row like this is produced -- and pinning the 3.12 behavior keeps
+        the guard honest for as long as mosaic supports that interpreter.
         """
         dataset = make_dataset(tmp_path)
         directory = dataset.get_root("media_raw") / "cage__day1"
@@ -269,15 +303,10 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
         (directory / "b.mp4").symlink_to(directory / "a.mp4")
 
         claim = dataset._walked_claim(  # pyright: ignore[reportPrivateUsage]
-            [
-                {"abs_path": str(directory / "a.mp4")},
-                {"abs_path": str(tmp_path / "plain.mp4")},
-                {"abs_path": ""},
-            ]
+            [{"abs_path": str(directory / "a.mp4")}]
         )
 
         assert not claim.claims((directory / "a.mp4").absolute())
-        assert claim.claims((tmp_path / "plain.mp4").resolve())
 
     def test_a_symlinked_tracks_source_does_not_duplicate_either(
         self, tmp_path: Path

@@ -377,5 +377,9 @@ class FFGroups:
             out, min_event, frame_col=frame_col, id_col=id_col
         )[[frame_col, id_col, "event"]]
         out = out.merge(df_events, how="left", on=[frame_col, id_col])
-        out["event"] = out["event"].fillna(-1).astype(int)
+        # to_numeric first: a run that detected no event leaves an object
+        # column of all-NaN, and filling that inferred int64 by a downcast
+        # pandas deprecated (GH#54261). Converting explicitly states the
+        # intent -- event is an integer id, -1 meaning no event.
+        out["event"] = pd.to_numeric(out["event"]).fillna(-1).astype(int)
         return out
