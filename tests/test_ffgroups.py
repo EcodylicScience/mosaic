@@ -211,7 +211,10 @@ def _apply_reference(feature: FFGroups, df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         out["event"] = np.nan
 
-    out["event"] = out["event"].fillna(-1).astype(int)
+    # Mirrors the production conversion, including the explicit to_numeric:
+    # this reference exists to be compared against apply(), so a difference
+    # here would be a difference in the thing under test.
+    out["event"] = pd.to_numeric(out["event"]).fillna(-1).astype(int)
     return out
 
 
@@ -299,3 +302,35 @@ class TestFFGroupsVectorizedEquivalence:
         result = feature.apply(df)
         expected = _apply_reference(feature, df)
         pd.testing.assert_frame_equal(result, expected)
+
+
+class TestEventColumnDtype:
+    """``event`` is an integer column, produced without a silent downcast.
+
+    A run that detects no event at all -- a single frame, or a window shorter
+    than ``min_event_duration`` -- leaves ``_get_events_info`` returning zero
+    rows, and an empty frame's ``event`` column is object dtype. The left-merge
+    then gives every row NaN under that dtype, so filling it converted object to
+    int64 by inference. pandas deprecated that inference (GH#54261) and the
+    suite runs with ``filterwarnings = ["error"]``, so it surfaced as a
+    ``FutureWarning`` raised from whichever call happened to trigger it.
+    """
+
+    def test_no_detected_event_still_yields_an_integer_column(self) -> None:
+        feature = FFGroups(
+            params={
+                "distance_cutoff": 50,
+                "window_size": 5,
+                "min_event_duration": 3,
+            }
+        )
+        df = _make_track_data(n_frames=1, n_ids=4)
+
+        events = _get_events_info(
+            feature.apply(df), 3, frame_col=C.frame_col, id_col=C.id_col
+        )
+        assert events.empty, "this test needs the no-event path"
+
+        out = feature.apply(df)
+        assert out["event"].dtype == np.int64
+        assert (out["event"] == -1).all()

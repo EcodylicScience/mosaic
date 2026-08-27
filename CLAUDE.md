@@ -139,7 +139,9 @@ python -c "from mosaic.core.dataset import Dataset; print('OK')"
 
 ### Testing
 
-Pytest is configured in `pyproject.toml`. Slow tests are deselected by default.
+Pytest is configured in `pyproject.toml`. Slow tests are deselected by default,
+and every run is parallel: `addopts` ends in `-n auto --dist worksteal`, so
+pytest-xdist spreads the suite over one worker per core.
 
 ```bash
 pytest                                      # all tests except those marked slow
@@ -151,8 +153,16 @@ pytest -m feral                             # what CI's feral job runs
 pytest tests/test_run_feature.py            # one file
 pytest tests/test_run_feature.py::test_x    # one test
 pytest -k "feature_params"                  # name pattern
+pytest -n0                                  # one process, for a debugger or -s
 pytest -v                                   # verbose
 ```
+
+`-n0` is the opt-out, and it is the spelling that matters when a run needs one
+process: a `pdb` breakpoint, `-s` output, or a test being bisected for
+cross-test interference. `worksteal` rather than the default `load` because a
+case here costs anywhere from microseconds to a video encode, and a static split
+leaves workers idle at the end of a run. `pytest-xdist` lives in the `test`
+dependency group beside `imgstore`, so every CI job already installs it.
 
 Five markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
 (needs `ffmpeg` **and** `ffprobe` on PATH), `tracker`, `identity` and `feral`. The

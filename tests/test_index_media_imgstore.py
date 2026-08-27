@@ -14,7 +14,7 @@ from tests.helpers import make_dataset
 
 pytest.importorskip("imgstore")
 
-from mosaic_media import MediaProbeError  # noqa: E402
+from mosaic_media import VIDEO_EXTENSIONS, MediaProbeError  # noqa: E402
 
 from mosaic.core.media.imgstore_io import imgstore_store_identity  # noqa: E402
 
@@ -89,22 +89,39 @@ def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
 
 
 @pytest.mark.slow
-def test_index_media_excludes_mp4_chunks_from_video_store(tmp_path, make_imgstore):
-    """A VideoImgStore has real .mp4 chunks inside it; they must not be indexed."""
+def test_index_media_excludes_every_supported_extension_inside_a_store(
+    tmp_path, make_imgstore
+):
+    """A store's contents are never indexed, whatever they are named.
+
+    The exclusion is a parent-path test (``Dataset._probe_dir_rows``) applied
+    before the extension filter, so it is extension-agnostic by construction.
+    Asserting it over one suffix understates it, and no single suffix can be the
+    realistic one: imgstore writes video chunks as ``.avi`` (mjpeg) or ``.mp4``
+    (avc1), and which of those a machine can produce depends on the codecs its
+    OpenCV build can reach. So the store is written in the format that needs no
+    H.264 encoder, and a decoy of every extension mosaic-media recognizes is
+    placed beside the real chunks.
+
+    A decoy is empty on purpose: the skip happens before the probe, so a file
+    that reaches ffprobe would prove the exclusion had already failed.
+    """
     ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(
-        name="vid_store", nframes=12, fmt="avc1/mp4", chunksize=5, parent=search
+        name="vid_store", nframes=12, fmt="mjpeg/avi", chunksize=5, parent=search
     )
-    # Sanity: the store really does contain .mp4 chunk files.
-    assert list(store_dir.glob("*.mp4")), "expected mp4 chunks inside the store"
+    assert list(store_dir.glob("*.avi")), "expected video chunks inside the store"
+
+    for extension in sorted(VIDEO_EXTENSIONS):
+        (store_dir / f"decoy{extension}").write_bytes(b"")
     _write_plain_mp4(search / "plain.mp4")
 
-    out_csv = ds.index_media([search], extensions=(".mp4",))
+    out_csv = ds.index_media([search], extensions=tuple(sorted(VIDEO_EXTENSIONS)))
     df = pd.read_csv(out_csv)
 
     assert (df["media_type"] == "imgstore").sum() == 1
-    assert (df["media_type"] == "video").sum() == 1  # only the plain mp4
+    assert (df["media_type"] == "video").sum() == 1  # only the plain mp4 beside it
     store_resolved = store_dir.resolve()
     for ap in df["abs_path"]:
         assert store_resolved not in Path(ap).resolve().parents

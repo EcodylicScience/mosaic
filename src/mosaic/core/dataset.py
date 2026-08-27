@@ -4141,10 +4141,12 @@ class Dataset:
         ``prune_unsourced``.
 
         A path that cannot be resolved is skipped rather than raised on.
-        ``Path.resolve()`` is non-strict about a *missing* target but still
-        raises ``RuntimeError`` on a symlink **loop**, and ``OSError`` when a
-        parent directory cannot be traversed -- so building this claim could
-        abort a whole scan over one bad link. Skipping is not a shrug: a path
+        ``Path.resolve()`` is non-strict about a *missing* target and about an
+        untraversable parent, but it rejects an embedded NUL with ``ValueError``
+        on every supported interpreter, and on 3.12 it additionally raises
+        ``RuntimeError`` on a symlink **loop** -- 3.13 returns such a path
+        unchanged. So building this claim could abort a whole scan over one bad
+        cell. Skipping is not a shrug: a path
         this process cannot resolve is one no claim can cover, which is exactly
         the conservative answer :meth:`_row_claimed` already gives an empty
         cell. The row then falls through to being preserved, which is the safe

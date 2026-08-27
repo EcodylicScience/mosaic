@@ -76,6 +76,7 @@ dev = [
 # which writes the fixture stores it then reads.
 test = [
     "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
     "imgstore>=0.4",
 ]
 
@@ -239,7 +240,21 @@ testpaths = ["tests"]
 # than intersecting with it -- which is what makes `pytest -m slow` work, and
 # also means `pytest -m "not media"` silently re-enables the slow tests.
 # `tests/test_pytest_config.py` pins the deselection so that stays deliberate.
-addopts = ["-m", "not slow", "-ra", "--strict-markers", "--strict-config"]
+# `-n auto --dist worksteal` appended rather than led: the deselection has to
+# stay first, and `tests/test_pytest_config.py` asserts that it is. worksteal
+# balances a suite whose cases range from microseconds to a video encode, where
+# a static split leaves workers idle. `-n0` runs one invocation serially.
+addopts = [
+    "-m",
+    "not slow",
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "-n",
+    "auto",
+    "--dist",
+    "worksteal",
+]
 # The suite's one xfail already sets strict=True, so this only binds the next
 # author: a non-strict xfail passes whether or not the bug it names is fixed.
 xfail_strict = true
@@ -262,6 +277,17 @@ filterwarnings = [
     # imgstore 0.4 stamps its stores with `datetime.utcnow()`. Third party, on the
     # path of every store this suite builds, and not fixable here.
     "ignore:datetime.datetime.utcnow:DeprecationWarning",
+    # imgstore 0.4 opens an in-memory sqlite index per store read
+    # (`index.py:92`) and never closes it: `ImgStoreIndex` has no close method,
+    # and neither `_ImgStore.close` nor `VideoImgStore.close` reaches the
+    # connection. The suite's own readers all close in a `finally`, so there is
+    # nothing to fix on this side short of reaching into a private attribute.
+    # The garbage collector emits this whenever it finalizes the abandoned
+    # connection, which is an arbitrary allocation inside an unrelated test --
+    # so it cannot be scoped to a module, and as an error it failed a different
+    # test on each run. Nothing in mosaic imports sqlite3, so imgstore is the
+    # only thing this can match.
+    "ignore:unclosed database:ResourceWarning",
     # joblib assigns to `ndarray.shape` when unpickling, which NumPy 2.5 deprecated.
     # Third party, reached by every feature that saves a model.
     "ignore:Setting the shape on a NumPy array:DeprecationWarning",
