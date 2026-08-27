@@ -16,8 +16,8 @@ Requires:
 
 Usage
 -----
->>> from mosaic.tracking.litpose import run_litpose
->>> run_litpose(ds, model_path="models/litpose_model")
+>>> from mosaic.tracking.litpose import LitposeParams, run_litpose
+>>> run_litpose(ds, LitposeParams(model_path="models/litpose_model"))
 
 Equivalently set ``MOSAIC_LITPOSE_CONDA_ENV=litpose`` once and drive it from the
 ``mosaic run --kind litpose`` op.
@@ -28,6 +28,7 @@ from mosaic.tracking.litpose.dataset_runs import (
     list_litpose_runs,
     run_litpose,
 )
+from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.run import (
     LitposeError,
     LitposeNotFoundError,
@@ -39,6 +40,7 @@ __all__ = [
     "LitposeError",
     "LitposeIndexRow",
     "LitposeNotFoundError",
+    "LitposeParams",
     "LitposePredictResult",
     "list_litpose_runs",
     "run_litpose",

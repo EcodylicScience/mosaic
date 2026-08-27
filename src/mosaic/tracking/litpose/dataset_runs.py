@@ -28,14 +28,13 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
@@ -70,6 +69,7 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.version import (
     LITPOSE_KIND,
     LITPOSE_VERSION,
@@ -124,20 +124,27 @@ def litpose_run_id(settings: Mapping[str, object]) -> str:
     return op_run_id(LITPOSE_KIND, LITPOSE_VERSION, dict(settings))
 
 
-def litpose_settings(
-    *,
-    model_id: str,
-    litpose_overrides: Mapping[str, object] | None,
-) -> dict[str, object]:
+def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, object]:
     """Build the settings that define a Lightning Pose result -- the ``run_id`` payload.
 
     The model is carried as its content digest (``model_id``), never a path.
     Lightning Pose is pose-only, so there are no tracker knobs; the Hydra
     ``litpose_overrides`` are identity because they change the produced keypoints.
+
+    Args:
+        params: The run's parameters.
+            :class:`~mosaic.tracking.litpose.params.LitposeParams` describes
+            every field. The scope and execution knobs are excluded from
+            identity and stay out of the payload.
+        model_id: The model's identity -- a training ``run_id`` or a content
+            digest, never a path. The caller resolves it, because a bare model
+            path is a mutable key: swapping the checkpoint in place would let two
+            different runs share one identifier.
     """
+    overrides = params.litpose_overrides
     return {
         "model": model_id,
-        "litpose_overrides": dict(litpose_overrides) if litpose_overrides else None,
+        "litpose_overrides": dict(overrides) if overrides else None,
     }
 
 
@@ -210,18 +217,10 @@ def _bridge_csv_to_tracks(
 
 def run_litpose(
     ds: Dataset,
+    params: LitposeParams,
     *,
-    model_path: Path | str,
-    entries: Iterable[Entry] | None = None,
-    litpose_overrides: Mapping[str, object] | None = None,
-    # execution
-    precision: str = "fp32",
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
     litpose_conda_env: str | None = None,
     litpose_bin: Path | str | None = None,
-    overwrite: bool = False,
-    convert_to_tracks: bool = True,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -235,6 +234,20 @@ def run_litpose(
     ctx: JobContext | None = None,
 ) -> str:
     """Run Lightning Pose inference over scoped videos as a tracked job.
+
+    *params* states what to run and which entries to run it over;
+    :class:`~mosaic.tracking.litpose.params.LitposeParams` describes every field.
+    The Job-Contract knobs beside it (``execution_id`` / ``owner`` / ``track`` /
+    ``progress_callback`` / ``cancel_token``) open the run's context, and *ctx*
+    runs inside one that is already open instead.
+
+    ``litpose_conda_env`` and ``litpose_bin`` are the top two rungs of the
+    location ladder, for a caller holding more than one Lightning Pose
+    environment; below them the entry point is found through
+    ``MOSAIC_LITPOSE_CONDA_ENV`` / ``MOSAIC_LITPOSE_BIN`` and then ``$PATH``.
+    They name a machine rather than a result, so they reach no identifier and the
+    op does not carry them: a queued job would ship a path that means something
+    else on the host that runs it.
 
     Returns the content-addressed ``run_id``.
     """
@@ -251,11 +264,9 @@ def run_litpose(
     # "train here, track with it there" could not be spelled by name. The artifact
     # shape is unaffected: ``MODEL_KINDS`` declares ``train-litpose`` as Lightning
     # Pose's own spec for exactly this.
-    resolved_model = resolve_model_set(ds, [str(model_path)], TRAIN_LITPOSE_KIND)
+    resolved_model = resolve_model_set(ds, [str(params.model_path)], TRAIN_LITPOSE_KIND)
 
-    settings = litpose_settings(
-        model_id=resolved_model.model_id, litpose_overrides=litpose_overrides
-    )
+    settings = litpose_settings(params, model_id=resolved_model.model_id)
     minted = mint_tracker_run(
         ds,
         kind=LITPOSE_KIND,
@@ -268,7 +279,7 @@ def run_litpose(
             "model_type": resolved_model.model_type,
         },
     )
-    scope = ds.resolve_media_scope(entries)
+    scope = ds.resolve_media_scope(params.entries)
     if not scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
@@ -293,7 +304,7 @@ def run_litpose(
         if reusable is None:
             clear_phase_marker(work_dir, "track")
             clear_outputs(work_dir, LITPOSE_KIND, "track")
-            track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            track_claim = claim(seq_ctx, work_dir, "track", params.idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
             # Lightning Pose opens the path itself, so an imgstore recording
             # resolves to the plain video export-store wrote for it. Resolved
@@ -304,14 +315,16 @@ def run_litpose(
                 resolve_tool_input(job.ds, item, kind=LITPOSE_KIND),
                 csv_path,
                 model_dir=resolved_model.path,
-                precision=precision,
-                overrides=litpose_overrides,
-                idle_timeout=idle_timeout,
-                max_runtime=max_runtime,
+                precision=params.precision,
+                overrides=params.litpose_overrides,
+                idle_timeout=params.idle_timeout,
+                max_runtime=params.max_runtime,
                 litpose_conda_env=litpose_conda_env,
                 litpose_bin=litpose_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(seq_ctx, work_dir, track_claim, idle_timeout),
+                on_output=phase_activity(
+                    seq_ctx, work_dir, track_claim, params.idle_timeout
+                ),
             )
             csv_out = predict_result.csv_path
             track_marker = record_phase(
@@ -357,7 +370,7 @@ def run_litpose(
             csv_path=job.ds.relative_to_root(csv_out),
         )
 
-        if not convert_to_tracks:
+        if not params.convert_to_tracks:
             return row
         # A recomputed entry must replace its parquet: the bridge otherwise
         # declines to overwrite, and the table would keep the results of the run
@@ -389,7 +402,7 @@ def run_litpose(
         work_items=build_work_items(ds, scope, kind=LITPOSE_KIND),
         index=litpose_index(litpose_index_path(ds)),
         run_entry=predict_one,
-        overwrite=overwrite,
+        overwrite=params.overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

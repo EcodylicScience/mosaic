@@ -71,16 +71,19 @@ shell:
 
 ```python
 from mosaic.tracking import run_trex, run_sleap, run_litpose, run_ultralytics
+from mosaic.tracking.litpose import LitposeParams
+from mosaic.tracking.sleap import SleapParams
 from mosaic.tracking.trex import TrexParams
 
 run_trex(ds, TrexParams(track_max_individuals=4))
-run_sleap(ds, model_paths=["models/sleap_bottomup"])
-run_litpose(ds, model_path="models/litpose_model")
+run_sleap(ds, SleapParams(model_paths=["models/sleap_bottomup"]))
+run_litpose(ds, LitposeParams(model_path="models/litpose_model"))
 ```
 
-TRex and Ultralytics take their settings as one parameter model, which is what
-declares each field's prose, constraint and phase. SLEAP and Lightning Pose still
-take them as keyword arguments.
+All four take their settings as one parameter model, which declares each field's
+prose and constraint — and, for TRex, the phase that consumes it. The same model
+reaches the run identifier and the tool. A field added to it therefore cannot
+change what runs without changing what the run is called.
 
 TRex additionally exposes its two phases separately, which is useful when you want to
 convert once and re-track several times:

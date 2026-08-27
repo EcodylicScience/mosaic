@@ -853,10 +853,13 @@ def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
     # same settings. Scope to a missing sequence so the run short-circuits (empty media)
     # after the model resolves but before any sleap binary is used.
     from mosaic.tracking import run_sleap
+    from mosaic.tracking.sleap.params import SleapParams
 
     ds = _make_dataset(tmp_path)
     model = _fake_sleap_model(tmp_path)
-    direct = run_sleap(ds, model_paths=[str(model)], entries=[("", "nonexistent")])
+    direct = run_sleap(
+        ds, SleapParams(model_paths=[str(model)], entries=[("", "nonexistent")])
+    )
     via_op = run_op(
         ds,
         "sleap",
@@ -868,7 +871,7 @@ def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
 
 def test_sleap_params_exclude_throughput_from_run_id():
     from mosaic.core.pipeline._utils import hash_params
-    from mosaic.tracking.ops.sleap import SleapParams
+    from mosaic.tracking.sleap.params import SleapParams
 
     a = SleapParams(
         model_paths=["m"],
@@ -977,10 +980,13 @@ def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
     # for the same settings. Scope to a missing sequence so the run short-circuits
     # (empty media) after the model resolves but before any litpose binary is used.
     from mosaic.tracking import run_litpose
+    from mosaic.tracking.litpose.params import LitposeParams
 
     ds = _make_dataset(tmp_path)
     model = _fake_litpose_model(tmp_path)
-    direct = run_litpose(ds, model_path=str(model), entries=[("", "nonexistent")])
+    direct = run_litpose(
+        ds, LitposeParams(model_path=str(model), entries=[("", "nonexistent")])
+    )
     via_op = run_op(
         ds,
         "litpose",
@@ -992,7 +998,7 @@ def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
 
 def test_litpose_params_exclude_throughput_from_run_id():
     from mosaic.core.pipeline._utils import hash_params
-    from mosaic.tracking.ops.litpose import LitposeParams
+    from mosaic.tracking.litpose.params import LitposeParams
 
     a = LitposeParams(
         model_path="m",
