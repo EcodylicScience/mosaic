@@ -1,13 +1,8 @@
 """The parameters every tracker op shares: what to run over, and how to run it.
 
-Three op modules declare the same execution block before adding their tool's own
-knobs, over the scope :class:`~mosaic.core.pipeline.types.OpParams` declares.
-
-**Every field here is ``HASH_EXCLUDE``.** A tracker's ``run_id`` is minted from
-its settings dictionary, which names no entry, so the scope selects which media
-a run covers and never what any of its outputs is called. Folding a selector
-into the identity would move an identifier while the output stays where it is,
-which is a cache miss costing a recompute for nothing.
+:class:`TrackerOpParams` declares the execution knobs, over the scope
+:class:`~mosaic.core.pipeline.types.OpParams` declares. Each tracker's own
+parameter model inherits both and adds its tool's settings.
 
 :class:`PhasedTrackerOpParams` adds what a tool that runs in several subprocess
 phases needs on top: every parameter its subclass declares names the phases that
@@ -18,10 +13,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from pydantic import BaseModel
+
 from mosaic.core.pipeline.markers import Phase
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
 
-__all__ = ["PhasedTrackerOpParams", "TrackerOpParams"]
+__all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
 
 _CONVERT_TO_TRACKS_DESCRIPTION = (
     "Convert the tool's native output into a standardized tracks table once "
@@ -29,8 +26,8 @@ _CONVERT_TO_TRACKS_DESCRIPTION = (
 )
 
 _IDLE_TIMEOUT_DESCRIPTION = (
-    "Kill a phase after this many seconds without a line of output from the "
-    "tool, which is how a hung run is told apart from a slow one."
+    "How long a phase may go without a line of output from the tool before it "
+    "is killed. Silence is what tells a hung run from a slow one."
 )
 
 _MAX_RUNTIME_DESCRIPTION = (
@@ -66,6 +63,39 @@ class TrackerOpParams(OpParams):
     ] = None
 
 
+def refuse_unphased_fields(model: type[BaseModel]) -> None:
+    """Raise unless every field *model* introduces names the phases reading it.
+
+    A field a base already declares is exempt: redeclaring ``idle_timeout`` to
+    change its default states nothing about a tool's phases, and the field has
+    no phase to name. What is checked is what *model* adds.
+
+    Args:
+        model: The parameter model to check.
+
+    Raises:
+        TypeError: A field *model* introduces declares no
+            :class:`~mosaic.core.pipeline.markers.Phase`.
+    """
+    inherited = {
+        name for base in model.__mro__[1:] for name in getattr(base, "model_fields", {})
+    }
+    unphased = sorted(
+        name
+        for name, info in model.model_fields.items()
+        if name in model.__annotations__
+        and name not in inherited
+        and not any(isinstance(marker, Phase) for marker in info.metadata)
+    )
+    if unphased:
+        refused = (
+            f"{model.__name__} declares {unphased} without a Phase. Add "
+            f"Phase(...) to each field's Annotated, naming the phases that "
+            f"consume it."
+        )
+        raise TypeError(refused)
+
+
 class PhasedTrackerOpParams(TrackerOpParams):
     """Base for a tracker whose phases each consume part of the parameters.
 
@@ -77,10 +107,9 @@ class PhasedTrackerOpParams(TrackerOpParams):
     its markers projects an empty settings dictionary and the tool runs on its
     own defaults.
 
-    The check reads ``cls.__annotations__``, which holds a subclass's own fields
-    alone. The scope and execution fields inherited from
-    :class:`~mosaic.core.pipeline.types.OpParams` and :class:`TrackerOpParams`
-    reach no phase of the tool and declare none.
+    The scope and execution fields it inherits reach no phase of the tool and
+    declare none, so :func:`refuse_unphased_fields` checks what a subclass adds
+    and exempts what it inherits.
     """
 
     @classmethod
@@ -91,16 +120,10 @@ class PhasedTrackerOpParams(TrackerOpParams):
         intact. A plain ``__init_subclass__`` runs before either is true.
         """
         super().__pydantic_init_subclass__(**kwargs)
-        unphased = sorted(
-            name
-            for name, info in cls.model_fields.items()
-            if name in cls.__annotations__
-            and not any(isinstance(marker, Phase) for marker in info.metadata)
-        )
-        if unphased:
-            refused = (
-                f"{cls.__name__} declares {unphased} without a Phase. Add "
-                f"Phase(...) to each field's Annotated, naming the phases that "
-                f"consume it."
-            )
-            raise TypeError(refused)
+        refuse_unphased_fields(cls)
+
+
+# The hook fires for subclasses only, so the base is checked here. A tool-facing
+# field added to it would otherwise be the one field in the hierarchy that could
+# name no phase.
+refuse_unphased_fields(PhasedTrackerOpParams)

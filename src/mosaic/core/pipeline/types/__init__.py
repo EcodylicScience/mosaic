@@ -52,6 +52,7 @@ from mosaic.core.pipeline.types.params import (
     GlobalModelParams,
     OpParams,
     Params,
+    Probability,
 )
 from mosaic.core.pipeline.types.results import (
     BodyScaleResult,
@@ -98,6 +99,7 @@ __all__ = [
     "ParquetArtifact",
     "ParquetLoadSpec",
     "PoseConfig",
+    "Probability",
     "Result",
     "ResultColumn",
     "TrackInput",

@@ -30,7 +30,7 @@ Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `source_format` | `string` | `"cvat_points"` |  |
+| `source_format` | `"cvat_points"` | `"cvat_points"` |  |
 | `cvat_xml` | `string` | _required_ |  |
 | `images_dir` | `string` | _required_ |  |
 | `class_names` | list of `string` | _required_ |  |
@@ -174,28 +174,133 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 | `model_path` | `string` | _required_ |  |
 | `task` | `"pose"` \| `"detect"` | `"pose"` |  |
 | `tracker` | `"botsort"` \| `"bytetrack"` \| `"deepocsort"` \| `"fasttrack"` \| `"ocsort"` \| `"tracktrack"` | `"bytetrack"` |  |
-| `tracker_overrides` | `object` \| `None` | `null` |  |
-| `conf` | `number` | `0.1` | > `0.0` |
-| `iou` | `number` | `0.7` |  |
-| `imgsz` | `integer` | `640` |  |
-| `max_det` | `integer` | `300` |  |
+| `tracker_overrides` | `BotsortConfig` \| `BytetrackConfig` \| `DeepocsortConfig` \| `FasttrackConfig` \| `OcsortConfig` \| `TracktrackConfig` \| `None` | `null` |  |
+| `conf` | `number` | `0.1` | > `0.0`, <= `1.0` |
+| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` |
+| `imgsz` | `integer` | `640` | > `0` |
+| `max_det` | `integer` | `300` | > `0` |
 | `classes` | list of `integer` \| `None` | `null` |  |
 | `agnostic_nms` | `boolean` | `false` |  |
-| `start_frame` | `integer` | `0` |  |
+| `start_frame` | `integer` | `0` | >= `0` |
 | `end_frame` | `integer` \| `None` | `null` |  |
-| `frame_step` | `integer` | `1` |  |
+| `frame_step` | `integer` | `1` | >= `1` |
 | `device` | `string` | `"0"` |  |
 | `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  |
-| `batch_size` | `integer` | `8` |  |
+| `batch_size` | `integer` | `8` | >= `1` |
 | `prefetch` | `boolean` | `true` |  |
+
+??? note "`BotsortConfig`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"botsort"` | `"botsort"` |  |
+    | `track_high_thresh` | `number` | `0.25` |  |
+    | `track_low_thresh` | `number` | `0.1` |  |
+    | `new_track_thresh` | `number` | `0.25` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.8` |  |
+    | `fuse_score` | `boolean` | `true` |  |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  |
+    | `proximity_thresh` | `number` | `0.5` |  |
+    | `appearance_thresh` | `number` | `0.8` |  |
+    | `with_reid` | `boolean` | `false` |  |
+    | `model` | `"auto"` | `"auto"` |  |
+
+??? note "`BytetrackConfig`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"bytetrack"` | `"bytetrack"` |  |
+    | `track_high_thresh` | `number` | `0.25` |  |
+    | `track_low_thresh` | `number` | `0.1` |  |
+    | `new_track_thresh` | `number` | `0.25` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.8` |  |
+    | `fuse_score` | `boolean` | `true` |  |
+
+??? note "`DeepocsortConfig`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"deepocsort"` | `"deepocsort"` |  |
+    | `track_high_thresh` | `number` | `0.3` |  |
+    | `track_low_thresh` | `number` | `0.1` |  |
+    | `new_track_thresh` | `number` | `0.3` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.8` |  |
+    | `fuse_score` | `boolean` | `true` |  |
+    | `delta_t` | `integer` | `3` |  |
+    | `inertia` | `number` | `0.2` |  |
+    | `use_byte` | `boolean` | `false` |  |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"none"` |  |
+    | `with_reid` | `boolean` | `false` |  |
+    | `model` | `"auto"` | `"auto"` |  |
+    | `proximity_thresh` | `number` | `0.5` |  |
+    | `appearance_thresh` | `number` | `0.9` |  |
+    | `alpha_fixed_emb` | `number` | `0.95` |  |
 
 ??? note "`Entry`"
 
     No parameters.
 
-??? note "`JsonValue`"
+??? note "`FasttrackConfig`"
 
-    No parameters.
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"fasttrack"` | `"fasttrack"` |  |
+    | `track_high_thresh` | `number` | `0.25` |  |
+    | `track_low_thresh` | `number` | `0.1` |  |
+    | `new_track_thresh` | `number` | `0.25` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.8` |  |
+    | `fuse_score` | `boolean` | `true` |  |
+    | `reset_velocity_offset_occ` | `integer` | `5` |  |
+    | `reset_pos_offset_occ` | `integer` | `3` |  |
+    | `enlarge_bbox_occ` | `number` | `1.1` |  |
+    | `dampen_motion_occ` | `number` | `0.5` |  |
+    | `active_occ_to_lost_thresh` | `integer` | `10` |  |
+    | `occ_cover_thresh` | `number` | `0.7` |  |
+    | `occ_reappear_window` | `integer` | `40` |  |
+    | `init_iou_suppress` | `number` | `0.7` |  |
+
+??? note "`OcsortConfig`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"ocsort"` | `"ocsort"` |  |
+    | `track_high_thresh` | `number` | `0.25` |  |
+    | `track_low_thresh` | `number` | `0.1` |  |
+    | `new_track_thresh` | `number` | `0.25` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.8` |  |
+    | `fuse_score` | `boolean` | `true` |  |
+    | `delta_t` | `integer` | `3` |  |
+    | `inertia` | `number` | `0.2` |  |
+    | `use_byte` | `boolean` | `false` |  |
+
+??? note "`TracktrackConfig`"
+
+    | Parameter | Type | Default | Constraints |
+    | --- | --- | --- | --- |
+    | `tracker_type` | `"tracktrack"` | `"tracktrack"` |  |
+    | `track_high_thresh` | `number` | `0.6` |  |
+    | `track_low_thresh` | `number` | `0.25` |  |
+    | `new_track_thresh` | `number` | `0.7` |  |
+    | `track_buffer` | `integer` | `30` |  |
+    | `match_thresh` | `number` | `0.7` |  |
+    | `lost_match_thr` | `number` | `0.0` |  |
+    | `iou_weight` | `number` | `0.5` |  |
+    | `reid_weight` | `number` | `0.5` |  |
+    | `conf_weight` | `number` | `0.1` |  |
+    | `angle_weight` | `number` | `0.05` |  |
+    | `penalty_p` | `number` | `0.2` |  |
+    | `penalty_q` | `number` | `0.4` |  |
+    | `reduce_step` | `number` | `0.05` |  |
+    | `tai_thr` | `number` | `0.55` |  |
+    | `min_track_len` | `integer` | `3` |  |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  |
+    | `with_reid` | `boolean` | `false` |  |
+    | `model` | `"auto"` | `"auto"` |  |
 
 ### extract
 
@@ -465,7 +570,7 @@ Export one entry's imgstore recordings as plain video and link them.
 
 Version `0.2` &middot; `mosaic.core.pipeline.transcode.TranscodeOp`
 
-Transcode one entry's originals for a target and link the derivatives both ways.
+Transcode the scoped entries' originals for a target, linking both ways.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |

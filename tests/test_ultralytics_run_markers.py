@@ -45,6 +45,7 @@ from mosaic.tracking.ultralytics_track.run import (
     UltralyticsTrackResult,
 )
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
+from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 
 from tests.helpers import write_media_index
 
@@ -76,6 +77,15 @@ def _make_model(path: Path, *, weights: bytes = b"weights") -> Path:
 @pytest.fixture
 def model(tmp_path: Path) -> Path:
     return _make_model(tmp_path / "yolo" / "best.pt")
+
+
+def _params(model: Path, **stated: object) -> UltralyticsParams:
+    """The run's parameters for *model*, with the rest stated by name.
+
+    Validated from a mapping rather than constructed, so a test states one
+    parameter without the call having to satisfy every field's type.
+    """
+    return UltralyticsParams.model_validate({"model_path": str(model), **stated})
 
 
 def _write_predictions(path: Path, *, n_frames: int = 4, n_ids: int = 2) -> None:
@@ -163,7 +173,7 @@ def _index(ds: Dataset) -> pd.DataFrame:
 def test_a_fresh_run_tracks_and_bridges(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    run_id = dr.run_ultralytics(ds, model_path=str(model))
+    run_id = dr.run_ultralytics(ds, _params(model))
 
     assert run_id.startswith("ultralytics.8.4-")
     assert len(ultralytics.tracked) == 1
@@ -201,8 +211,8 @@ def test_a_fresh_run_tracks_and_bridges(
 def test_a_completed_run_reuses_the_tracking(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    first = dr.run_ultralytics(ds, model_path=str(model))
-    second = dr.run_ultralytics(ds, model_path=str(model))
+    first = dr.run_ultralytics(ds, _params(model))
+    second = dr.run_ultralytics(ds, _params(model))
 
     assert second == first
     assert len(ultralytics.tracked) == 1  # the marker proves the phase done
@@ -220,8 +230,8 @@ def test_a_completed_run_reuses_the_tracking(
 def test_overwrite_forces_a_recompute(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    _ = dr.run_ultralytics(ds, model_path=str(model))
-    _ = dr.run_ultralytics(ds, model_path=str(model), overwrite=True)
+    _ = dr.run_ultralytics(ds, _params(model))
+    _ = dr.run_ultralytics(ds, _params(model, overwrite=True))
     assert len(ultralytics.tracked) == 2
 
 
@@ -233,29 +243,25 @@ def test_different_weights_are_a_different_run(
 ) -> None:
     a = _make_model(tmp_path / "a" / "best.pt", weights=b"weights-A")
     b = _make_model(tmp_path / "b" / "best.pt", weights=b"weights-B")
-    assert dr.run_ultralytics(ds, model_path=str(a)) != dr.run_ultralytics(
-        ds, model_path=str(b)
-    )
+    assert dr.run_ultralytics(ds, _params(a)) != dr.run_ultralytics(ds, _params(b))
 
 
 def test_a_different_backend_is_a_different_run(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     assert dr.run_ultralytics(
-        ds, model_path=str(model), tracker="bytetrack"
-    ) != dr.run_ultralytics(ds, model_path=str(model), tracker="ocsort")
+        ds, _params(model, tracker="bytetrack")
+    ) != dr.run_ultralytics(ds, _params(model, tracker="ocsort"))
 
 
 def test_an_override_restating_a_default_is_the_same_run(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     """The payoff of declaring the defaults rather than reading them."""
-    plain = dr.run_ultralytics(ds, model_path=str(model), tracker="bytetrack")
+    plain = dr.run_ultralytics(ds, _params(model, tracker="bytetrack"))
     restated = dr.run_ultralytics(
         ds,
-        model_path=str(model),
-        tracker="bytetrack",
-        tracker_overrides={"track_buffer": 30},
+        _params(model, tracker="bytetrack", tracker_overrides={"track_buffer": 30}),
     )
     assert restated == plain
 
@@ -263,12 +269,10 @@ def test_an_override_restating_a_default_is_the_same_run(
 def test_a_changed_override_is_a_different_run(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    plain = dr.run_ultralytics(ds, model_path=str(model), tracker="bytetrack")
+    plain = dr.run_ultralytics(ds, _params(model, tracker="bytetrack"))
     tuned = dr.run_ultralytics(
         ds,
-        model_path=str(model),
-        tracker="bytetrack",
-        tracker_overrides={"track_buffer": 90},
+        _params(model, tracker="bytetrack", tracker_overrides={"track_buffer": 90}),
     )
     assert tuned != plain
 
@@ -277,11 +281,14 @@ def test_execution_knobs_do_not_move_the_run(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     """Where and how it ran must not name what it produced."""
-    base = dr.run_ultralytics(ds, model_path=str(model))
-    assert dr.run_ultralytics(ds, model_path=str(model), device="cpu") == base
-    assert dr.run_ultralytics(ds, model_path=str(model), precision="fp16") == base
-    assert dr.run_ultralytics(ds, model_path=str(model), batch_size=1) == base
-    assert dr.run_ultralytics(ds, model_path=str(model), prefetch=False) == base
+    base = dr.run_ultralytics(ds, _params(model))
+    for stated in (
+        {"device": "cpu"},
+        {"precision": "fp16"},
+        {"batch_size": 1},
+        {"prefetch": False},
+    ):
+        assert dr.run_ultralytics(ds, _params(model, **stated)) == base
 
 
 # --- a killed run leaves nothing trusted ------------------------------------
@@ -304,7 +311,7 @@ def test_an_interrupted_track_is_not_trusted(
 
     monkeypatch.setattr(dr, "run_ultralytics_tool", dying_track)
     with pytest.raises(RuntimeError):
-        _ = dr.run_ultralytics(ds, model_path=str(model))
+        _ = dr.run_ultralytics(ds, _params(model))
 
     root = ds.get_root("ultralytics")
     for parquet in root.rglob("*.predictions.parquet"):
@@ -314,7 +321,7 @@ def test_an_interrupted_track_is_not_trusted(
     # A working run then does the work: the partial file is not reused.
     fake = FakeUltralytics()
     monkeypatch.setattr(dr, "run_ultralytics_tool", fake.track)
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    _ = dr.run_ultralytics(ds, _params(model))
     assert len(fake.tracked) == 1
     assert len(read_tracks_index(ds)) == 1
 
@@ -326,9 +333,9 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    first = dr.run_ultralytics(ds, model_path=str(model))
+    first = dr.run_ultralytics(ds, _params(model))
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
-    second = dr.run_ultralytics(ds, model_path=str(model))
+    second = dr.run_ultralytics(ds, _params(model))
 
     assert second == first  # the recipe did not change
     assert len(ultralytics.tracked) == 2  # but the bytes did
@@ -338,11 +345,11 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    _ = dr.run_ultralytics(ds, _params(model))
     write_media_index(
         ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
     )
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    _ = dr.run_ultralytics(ds, _params(model))
     assert len(ultralytics.tracked) == 1
 
 
@@ -360,7 +367,7 @@ def test_every_entry_is_tracked_once_into_its_own_directory(
     the counter every backend numbers from starts at zero by construction.
     """
     write_media_index(ds, ["vid1", "vid2"])
-    run_id = dr.run_ultralytics(ds, model_path=str(model))
+    run_id = dr.run_ultralytics(ds, _params(model))
 
     run_root = ultralytics_run_root(ds, run_id)
     assert ultralytics.work_dirs == [run_root / "vid1", run_root / "vid2"]
@@ -381,7 +388,7 @@ def test_an_empty_scope_still_returns_the_run_it_minted(
     that has to happen before the run is named, whatever the scope turns out to
     hold.
     """
-    run_id = dr.run_ultralytics(ds, model_path=str(model), entries=[("", "absent")])
+    run_id = dr.run_ultralytics(ds, _params(model, entries=[("", "absent")]))
     assert run_id.startswith("ultralytics.8.4-")
     assert ultralytics.tracked == []
     assert [kind for _name, kind in ultralytics.events] == ["probe"]
@@ -402,7 +409,7 @@ def test_a_re_run_clears_the_previous_attempts_request_and_response(
     assert TRACK_RESPONSE_NAME in globs
 
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    run_id = dr.run_ultralytics(ds, model_path=str(model))
+    run_id = dr.run_ultralytics(ds, _params(model))
     work_dir = ultralytics_run_root(ds, run_id) / "vid1"
     stale = [work_dir / TRACK_REQUEST_NAME, work_dir / TRACK_RESPONSE_NAME]
     for path in stale:
@@ -411,7 +418,7 @@ def test_a_re_run_clears_the_previous_attempts_request_and_response(
     # Replaced bytes under the same path, which is what invalidates the marker
     # and sends the entry back through the phase.
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    _ = dr.run_ultralytics(ds, _params(model))
 
     assert [path for path in stale if path.exists()] == []
 
@@ -444,7 +451,7 @@ def test_a_store_with_no_export_refuses_and_names_the_command(
     _ = _point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
 
     with pytest.raises(StoreExportMissingError, match="export-store"):
-        _ = dr.run_ultralytics(ds, model_path=str(model))
+        _ = dr.run_ultralytics(ds, _params(model))
     assert ultralytics.tracked == []
 
 
@@ -470,7 +477,7 @@ def test_the_facts_describe_the_file_the_tool_will_open(
 
     monkeypatch.setattr(dr, "resolve_tool_input", resolved_export)
 
-    _ = dr.run_ultralytics(ds, model_path=str(model))
+    _ = dr.run_ultralytics(ds, _params(model))
 
     request = ultralytics.requests[0]
     assert Path(request.video_path) == export

@@ -681,6 +681,35 @@ def test_transcode_params_reject_unknown_key():
         TranscodeParams.model_validate({"entries": [("", "vid1")], "bogus": 1})
 
 
+def test_transcode_refuses_a_run_with_no_scope():
+    """A transcode with no entries would re-encode a whole corpus."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TranscodeParams.model_validate({"target": "analysis"})
+    with pytest.raises(ValidationError):
+        TranscodeParams.model_validate({"entries": [], "target": "analysis"})
+
+
+def test_a_repeated_entry_is_collapsed():
+    """One entry named twice is one entry, in the order it was first given.
+
+    Left standing it would transcode that entry twice and contribute its source
+    uuids twice to an identifier that sorts its sources without collapsing them,
+    naming one job two different things.
+    """
+    params = TranscodeParams(entries=[("g", "s"), ("g", "s"), ("a", "b")])
+    assert params.entries == [("g", "s"), ("a", "b")]
+
+
+def test_a_repeated_entry_names_the_entry_not_the_count() -> None:
+    """``target`` reads as one entry rather than as a two-entry batch."""
+    from mosaic.core.pipeline.transcode import TranscodeOp
+
+    params = TranscodeParams(entries=[("g", "s"), ("g", "s")], target="analysis")
+    assert TranscodeOp().target(params) == "g/s"
+
+
 # Two processes, each linking a different source. Both read the index before
 # either writes, so an unserialized writer computes its whole output frame from a
 # starting state the other has already moved past.

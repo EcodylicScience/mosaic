@@ -156,13 +156,13 @@ _CONF_THRESHOLD_DESCRIPTION = (
 )
 
 _IMGSZ_DESCRIPTION = (
-    "Longest side, in pixels, that a frame is resized to before the model reads "
-    "it. It must match what the model was trained at."
+    "Longest side a frame is resized to before the model reads it. It must "
+    "match what the model was trained at."
 )
 
 _FRAME_STEP_DESCRIPTION = (
-    "Stride between the frames predicted on, so a long recording is covered "
-    "without predicting on every frame of it."
+    "Stride between the frames predicted on. A wider stride covers a long "
+    "recording without predicting on every frame of it."
 )
 
 _START_FRAME_DESCRIPTION = "First frame to predict on, inclusive."

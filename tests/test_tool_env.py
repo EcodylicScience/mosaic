@@ -92,13 +92,15 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_direct_mode_treats_an_explicit_bin_as_the_executable() -> None:
-    got = tool_invocation(_DIRECT, executable="runme", bin_path="/x/somewhere-else")
+    got = tool_invocation(
+        _DIRECT.placed(bin_path="/x/somewhere-else"), executable="runme"
+    )
 
     assert got == ["/x/somewhere-else"]
 
 
 def test_sibling_mode_resolves_the_executable_beside_an_explicit_bin() -> None:
-    got = tool_invocation(_SIBLING, executable="runme", bin_path="/x/bin/other")
+    got = tool_invocation(_SIBLING.placed(bin_path="/x/bin/other"), executable="runme")
 
     assert got == ["/x/bin/runme"]
 
@@ -179,7 +181,7 @@ def test_a_named_conda_env_runs_its_own_executable_not_one_earlier_on_path(
         toolenv.shutil, "which", lambda name: conda if name == "conda" else None
     )
 
-    got = tool_invocation(_DIRECT, executable="runme", conda_env="toolenv")
+    got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
 
     assert got == [
         conda,
@@ -200,7 +202,7 @@ def test_an_executable_absent_from_the_env_falls_back_to_the_bare_name(
         toolenv.shutil, "which", lambda name: conda if name == "conda" else None
     )
 
-    got = tool_invocation(_DIRECT, executable="absent-here", conda_env="toolenv")
+    got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="absent-here")
 
     assert got[-1] == "absent-here"
 
@@ -217,7 +219,7 @@ def test_conda_envs_dirs_locates_an_env_outside_the_base_installation(
     )
     monkeypatch.setenv("CONDA_ENVS_DIRS", str(tmp_path / "elsewhere"))
 
-    got = tool_invocation(_DIRECT, executable="runme", conda_env="toolenv")
+    got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
 
     assert got[-1] == str(elsewhere / "runme")
 
@@ -246,7 +248,7 @@ def test_a_missing_conda_names_the_bin_variable_to_set_instead(
     monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
 
     with pytest.raises(_FakeNotFound, match="MOSAIC_FAKE_BIN"):
-        tool_invocation(_DIRECT, executable="runme", conda_env="nope")
+        tool_invocation(_DIRECT.placed(conda_env="nope"), executable="runme")
 
 
 def test_the_exit_error_carries_the_streams_and_elides_a_long_command() -> None:

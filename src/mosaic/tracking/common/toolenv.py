@@ -5,15 +5,17 @@ environment -- TRex pins ``python=3.11``, SLEAP brings PyTorch and Qt, Lightning
 Pose brings PyTorch and DALI -- so each is reached through its own environment
 and located the same five ways, in the same order:
 
-1. the per-call ``<tool>_conda_env`` argument,
-2. the per-call ``<tool>_bin`` argument,
+1. ``ToolEnv.conda_env``,
+2. ``ToolEnv.bin_path``,
 3. ``MOSAIC_<TOOL>_CONDA_ENV``,
 4. ``MOSAIC_<TOOL>_BIN``,
 5. ``$PATH``.
 
-That ladder was written three times, along with ``conda run`` construction, the
-two exception shapes, and the ``MPLBACKEND`` fix below. What actually differs
-between the three is four values, which is what :class:`ToolEnv` carries.
+The first two are what a caller chooses for one run, through
+:meth:`ToolEnv.placed`; the next two are what the machine says. That ladder was
+written three times, along with ``conda run`` construction, the two exception
+shapes, and the ``MPLBACKEND`` fix below. What differs between the tools is the
+values :class:`ToolEnv` holds.
 
 **The ladder resolves placement, never identity.** Which environment a tool ran
 in is a property of the machine, so none of these values reaches a ``run_id``:
@@ -26,7 +28,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, Final, Literal
 
@@ -38,6 +40,7 @@ __all__ = [
     "ToolExitError",
     "ToolNotFoundError",
     "conda_invocation",
+    "display_overlay",
     "missing_output_error",
     "subprocess_env",
     "tool_invocation",
@@ -154,6 +157,12 @@ class ToolExitError(RuntimeError):
 class ToolEnv:
     """One tool's placement: the names it answers to, and how to reach it.
 
+    The first five fields describe the tool and are declared once beside it. The
+    last four are what one caller chooses for one run, and
+    :meth:`placed` is how they are set -- so a caller states where a tool lives
+    as one value instead of an argument per aspect beside every call. All of it
+    is placement, so none of it reaches a ``run_id``.
+
     Attributes:
         tool: Human name, used only in messages.
         conda_env_var: The ``MOSAIC_<TOOL>_CONDA_ENV`` variable name.
@@ -166,18 +175,13 @@ class ToolEnv:
             Lightning Pose differs: it looks up ``litpose`` in order to find the
             ``python`` beside it, because the interpreter is not on ``$PATH``
             under a distinguishing name.
-        conda_env: Step 1's value, set per call. Empty defers to
-            ``conda_env_var``.
-        bin_path: Step 2's value, set per call. Empty defers to ``bin_var``.
-        display: ``DISPLAY`` for the tool's subprocess, set per call. Empty
-            defers to the tool's own display variable and then to the caller's
-            ``DISPLAY``.
-
-    The last three travel together, so a caller states one placement instead of
-    three arguments beside every call: ``dataclasses.replace(TREX_ENV,
-    conda_env="track", display=":99")`` is a whole answer to *where does this
-    run*. They are placement like the rest, so none of them reaches a
-    ``run_id``.
+        display_var: The variable naming this tool's ``DISPLAY``, for a tool
+            that needs one. Empty means the tool runs without a display, which
+            is every tool but TRex.
+        conda_env: Step 1 of the ladder. Empty defers to ``conda_env_var``.
+        bin_path: Step 2 of the ladder. Empty defers to ``bin_var``.
+        display: ``DISPLAY`` for the tool's subprocess. Empty defers to
+            ``display_var`` and then to the caller's own ``DISPLAY``.
     """
 
     tool: str
@@ -186,9 +190,37 @@ class ToolEnv:
     bin_mode: BinMode
     not_found: type[ToolNotFoundError]
     locator: str = ""
+    display_var: str = ""
     conda_env: str = ""
     bin_path: str = ""
     display: str = ""
+
+    def placed(
+        self,
+        *,
+        conda_env: str | None = None,
+        bin_path: str | Path | None = None,
+        display: str | None = None,
+    ) -> ToolEnv:
+        """This tool, reached through the environment, binary or display given.
+
+        Each argument left unset keeps what this placement already says, so
+        naming one aspect states nothing about the others.
+
+        Args:
+            conda_env: Conda environment to run the tool in.
+            bin_path: Explicit binary, read according to :attr:`bin_mode`.
+            display: ``DISPLAY`` for the tool's subprocess.
+
+        Returns:
+            A placement differing from this one in the fields given.
+        """
+        return replace(
+            self,
+            conda_env=conda_env or self.conda_env,
+            bin_path=str(bin_path) if bin_path else self.bin_path,
+            display=display or self.display,
+        )
 
 
 def _conda_env_executable(conda: str, env_name: str, executable: str) -> Path | None:
@@ -252,28 +284,22 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
     return [conda, "run", "--no-capture-output", "-n", env_name, target]
 
 
-def tool_invocation(
-    env: ToolEnv,
-    *,
-    executable: str,
-    conda_env: str | None = None,
-    bin_path: str | Path | None = None,
-) -> list[str]:
+def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     """Resolve how to launch *executable*, as an argv prefix.
 
-    Precedence, first match wins: the *conda_env* argument, the *bin_path*
-    argument, ``env.conda_env_var``, ``env.bin_var``, then ``$PATH``. Arguments
-    beat environment variables so one call can override a machine's default
-    without disturbing the others.
+    Precedence, first match wins: ``env.conda_env``, ``env.bin_path``,
+    ``env.conda_env_var``, ``env.bin_var``, then ``$PATH``. What a caller chose
+    beats what the machine says, so one run can be placed elsewhere without
+    disturbing the others; :meth:`ToolEnv.placed` is how a caller chooses.
 
     Raises:
         ToolNotFoundError: The subclass named by ``env.not_found``, when neither
             the tool nor ``conda`` can be located.
     """
-    if conda_env:
-        return conda_invocation(env, conda_env, executable)
-    if bin_path:
-        return [_from_bin(env, bin_path, executable)]
+    if env.conda_env:
+        return conda_invocation(env, env.conda_env, executable)
+    if env.bin_path:
+        return [_from_bin(env, env.bin_path, executable)]
 
     env_conda = os.environ.get(env.conda_env_var)
     if env_conda:
@@ -313,6 +339,18 @@ def _from_bin(env: ToolEnv, bin_path: str | Path, executable: str) -> str:
 # with a headless-safe one. An explicitly chosen backend is left alone.
 _INLINE_BACKEND_PREFIX: Final = "module://"
 _HEADLESS_BACKEND: Final = "Agg"
+
+
+def display_overlay(env: ToolEnv) -> dict[str, str] | None:
+    """Return the ``DISPLAY`` overlay *env* asks for, or ``None`` for none.
+
+    A tool that initializes an OpenGL context needs a display even when it draws
+    no window. On a headless host that is a virtual framebuffer (``Xvfb :99
+    ...``), named either on the placement or in the tool's own ``display_var``.
+    ``None`` leaves whatever ``DISPLAY`` the caller already exported.
+    """
+    chosen = env.display or os.environ.get(env.display_var, "")
+    return {"DISPLAY": chosen} if chosen else None
 
 
 def subprocess_env(overlay: Mapping[str, str] | None = None) -> dict[str, str]:

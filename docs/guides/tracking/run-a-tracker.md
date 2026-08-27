@@ -71,26 +71,44 @@ shell:
 
 ```python
 from mosaic.tracking import run_trex, run_sleap, run_litpose, run_ultralytics
+from mosaic.tracking.trex import TrexParams
 
-run_trex(ds, track_max_individuals=4)
+run_trex(ds, TrexParams(track_max_individuals=4))
 run_sleap(ds, model_paths=["models/sleap_bottomup"])
 run_litpose(ds, model_path="models/litpose_model")
 ```
+
+TRex and Ultralytics take their settings as one parameter model, which is what
+declares each field's prose, constraint and phase. SLEAP and Lightning Pose still
+take them as keyword arguments.
 
 TRex additionally exposes its two phases separately, which is useful when you want to
 convert once and re-track several times:
 
 ```python
-from mosaic.tracking.trex import run_trex_convert, run_trex_track
+from pathlib import Path
 
-conv = run_trex_convert("video.mp4", "out/", detect_model="yolo.pt",
-                        track_max_individuals=4, trex_conda_env="trex")
-trk = run_trex_track(conv.pv_path, "out/", track_max_individuals=4,
-                     trex_conda_env="trex")
+from mosaic.tracking.trex import TREX_ENV, TrexParams, run_trex_convert, run_trex_track
+
+params = TrexParams(track_max_individuals=4)
+where = TREX_ENV.placed(conda_env="trex")
+
+conv = run_trex_convert(
+    "video.mp4", "out/",
+    params=params, detect_model_path=Path("yolo.pt"), env=where,
+)
+trk = run_trex_track(conv.pv_path, "out/", params=params, env=where)
 ```
 
-Each function also takes `<tool>_conda_env=` or `<tool>_bin=`, which override the
-environment variables for that one call.
+Both phases read one `TrexParams`, and each sends only the fields its own phase
+declares — which is why re-tracking with a track-only setting changed reuses the
+conversion.
+
+`TREX_ENV.placed(conda_env=..., bin_path=..., display=...)` overrides the
+`MOSAIC_TREX_*` variables for one call, and naming one aspect states nothing about
+the others. Placement describes a machine rather than a result, so it reaches no
+`run_id`. SLEAP, Lightning Pose and Ultralytics take the same thing as
+`<tool>_conda_env=` / `<tool>_bin=` keyword arguments.
 
 ## What comes out
 
@@ -138,12 +156,14 @@ That normalization is the point of the standard, and the rules behind it are in
 
     run_trex(
         ds,
-        track_extra_settings={
-            "output_fields": [
-                *TREX_DEFAULT_OUTPUT_FIELDS,
-                ["tracklet_id", []], ["blobid", []],
-            ]
-        },
+        TrexParams(
+            track_extra_settings={
+                "output_fields": [
+                    *TREX_DEFAULT_OUTPUT_FIELDS,
+                    ["tracklet_id", []], ["blobid", []],
+                ]
+            }
+        ),
     )
     ```
 

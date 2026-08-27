@@ -20,6 +20,7 @@ import pandas as pd
 import pytest
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
+from mosaic.cli.run import entries_from_scope
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.tracking.common.scope import (
@@ -314,12 +315,19 @@ class TestExpandMediaScope:
     """
 
     def _dataset(self, tmp_path: Path) -> Dataset:
+        """Two groups, a repeated sequence name, and one sequence in two clips.
+
+        Written B first so a result that never sorted would be visible, and with
+        ``one`` split across two rows so a result that never collapsed them
+        would be too.
+        """
         return _dataset(
             tmp_path,
             [
-                Clip(filename="a1.mp4", group="A", sequence="one"),
-                Clip(filename="a2.mp4", group="A", sequence="two"),
                 Clip(filename="b1.mp4", group="B", sequence="one"),
+                Clip(filename="a2.mp4", group="A", sequence="two"),
+                Clip(filename="a1.mp4", group="A", sequence="one", order=0),
+                Clip(filename="a1b.mp4", group="A", sequence="one", order=1),
             ],
         )
 
@@ -351,3 +359,89 @@ class TestExpandMediaScope:
         manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
         ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
         assert ds.expand_media_scope(entries=[("A", "one")]) == [("A", "one")]
+
+    def test_an_entry_with_two_clips_is_named_once(self, tmp_path: Path) -> None:
+        """One pair per entry, however many media rows it holds.
+
+        A duplicate pair is not a wider scope: it is one entry named twice, and
+        an op that acts per entry would act on it twice.
+        """
+        ds = self._dataset(tmp_path)
+        expanded = ds.expand_media_scope(groups=["A"])
+        assert expanded is not None
+        assert expanded.count(("A", "one")) == 1
+
+    def test_the_pairs_come_back_sorted(self, tmp_path: Path) -> None:
+        """Index order does not reach an op's params, so a re-index moves nothing."""
+        ds = self._dataset(tmp_path)
+        assert ds.expand_media_scope(groups=["A", "B"]) == [
+            ("A", "one"),
+            ("A", "two"),
+            ("B", "one"),
+        ]
+
+    def test_a_group_with_no_rows_is_an_empty_scope(self, tmp_path: Path) -> None:
+        """Empty is not unscoped: naming a group that holds nothing runs nothing."""
+        ds = self._dataset(tmp_path)
+        assert ds.expand_media_scope(groups=["absent"]) == []
+
+    def test_a_missing_index_is_reported_where_the_scope_is_read(
+        self, tmp_path: Path
+    ) -> None:
+        """The documented raise, which the commands turn into a message."""
+        manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
+        ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+        with pytest.raises(FileNotFoundError):
+            _ = ds.expand_media_scope(groups=["A"])
+
+
+class TestScopeInsideParams:
+    """``mosaic run --kind`` takes its scope inside ``--params``.
+
+    The command declares no scope flags and refuses ``--entries``, so the two
+    keys a person reaches for are read out of the params object and enumerated
+    before the op's own model validates.
+    """
+
+    def _dataset(self, tmp_path: Path) -> Dataset:
+        return _dataset(
+            tmp_path,
+            [
+                Clip(filename="a1.mp4", group="A", sequence="one"),
+                Clip(filename="a2.mp4", group="A", sequence="two"),
+                Clip(filename="b1.mp4", group="B", sequence="one"),
+            ],
+        )
+
+    def test_params_naming_neither_key_are_untouched(self, tmp_path: Path) -> None:
+        """An op with no scope keeps params its model accepts."""
+        ds = self._dataset(tmp_path)
+        params: dict[str, object] = {"data": "datasets/pose/data.yaml", "epochs": 3}
+        assert entries_from_scope(ds, params) == params
+
+    def test_a_group_becomes_the_entry_list(self, tmp_path: Path) -> None:
+        ds = self._dataset(tmp_path)
+        expanded = entries_from_scope(ds, {"n_frames": 2, "groups": ["A"]})
+        assert expanded == {"n_frames": 2, "entries": [("A", "one"), ("A", "two")]}
+
+    def test_an_entry_list_intersects_with_the_group(self, tmp_path: Path) -> None:
+        ds = self._dataset(tmp_path)
+        expanded = entries_from_scope(
+            ds, {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
+        )
+        assert expanded == {"entries": [("A", "one")]}
+
+    def test_an_op_with_no_scope_refuses_the_expansion(self, tmp_path: Path) -> None:
+        """Scoping an op that takes none is refused by name, not silently dropped."""
+        from pydantic import ValidationError
+
+        from mosaic.core.pipeline.ops import OPS
+        from mosaic.tracking import register_ops
+
+        register_ops()
+        ds = self._dataset(tmp_path)
+        expanded = entries_from_scope(
+            ds, {"data": "datasets/pose/data.yaml", "groups": ["A"]}
+        )
+        with pytest.raises(ValidationError, match="entries"):
+            _ = OPS["train-pose"].Params.model_validate(expanded)

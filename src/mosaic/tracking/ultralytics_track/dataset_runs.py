@@ -22,16 +22,14 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.json_value import JsonValue
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV
@@ -69,8 +67,8 @@ from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
 from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
-    TrackerName,
     TrackerSetting,
     resolve_tracker_config,
 )
@@ -81,7 +79,6 @@ from mosaic.tracking.ultralytics_track.version import (
 )
 
 from .run import (
-    ModelTask,
     UnsupportedTaskError,
     effective_tracker_table,
     probe_ultralytics,
@@ -152,20 +149,10 @@ def ultralytics_run_id(settings: Mapping[str, object]) -> str:
 
 
 def ultralytics_settings(
+    params: UltralyticsParams,
     *,
     model_id: str,
-    task: ModelTask,
-    tracker: TrackerName,
     tracker_config: Mapping[str, TrackerSetting],
-    conf: float,
-    iou: float,
-    imgsz: int,
-    max_det: int,
-    classes: Sequence[int] | None,
-    agnostic_nms: bool,
-    start_frame: int,
-    end_frame: int | None,
-    frame_step: int,
 ) -> dict[str, object]:
     """Everything that determines what this run produces, and nothing else.
 
@@ -174,27 +161,44 @@ def ultralytics_settings(
     what it produces. So one value names one variant across every sequence the
     run covered.
 
-    The model is its content identity, never a path. The tracker is named twice
-    on purpose: by backend, which is what a reader wants, and as the fully
-    resolved table, which is what actually ran.
+    Args:
+        params: The run's parameters.
+            :class:`~mosaic.tracking.ultralytics_track.params.UltralyticsParams`
+            describes every field. The scope and execution knobs are excluded
+            from identity and stay out of the payload.
+        model_id: The weights' identity -- a training ``run_id`` or a content
+            digest, never a path. The caller resolves it, because a bare
+            weights path is a mutable key: swapping ``best.pt`` in place would
+            let two different runs share one identifier.
+        tracker_config: The fully resolved backend table.
+            ``resolve_tracker_config`` expands the chosen backend's
+            configuration into it, so a caller who restates a default and one
+            who passes nothing mint the same identifier.
+
+    Returns:
+        The ``run_id`` payload. The tracker is named twice on purpose: by
+        backend, which is what a reader wants, and as the resolved table, which
+        is what ran.
     """
     return {
         "model": model_id,
-        "task": task,
-        "tracker": tracker,
+        "task": params.task,
+        "tracker": params.tracker,
         "tracker_config": dict(tracker_config),
-        "conf": conf,
-        "iou": iou,
-        "imgsz": imgsz,
-        "max_det": max_det,
+        "conf": params.conf,
+        "iou": params.iou,
+        "imgsz": params.imgsz,
+        "max_det": params.max_det,
         # Sorted and de-duplicated here rather than on the field: the identity
         # payload must not depend on the order a user typed a filter in, while
         # `run_params.json` should keep what they wrote.
-        "classes": sorted(set(classes)) if classes is not None else None,
-        "agnostic_nms": agnostic_nms,
-        "start_frame": start_frame,
-        "end_frame": end_frame,
-        "frame_step": frame_step,
+        "classes": (
+            sorted(set(params.classes)) if params.classes is not None else None
+        ),
+        "agnostic_nms": params.agnostic_nms,
+        "start_frame": params.start_frame,
+        "end_frame": params.end_frame,
+        "frame_step": params.frame_step,
     }
 
 
@@ -279,41 +283,30 @@ def _context_token(ctx: JobContext | None) -> CancelToken | None:
 
 def run_ultralytics(
     ds: Dataset,
+    params: UltralyticsParams,
     *,
-    model_path: Path | str,
-    entries: Iterable[Entry] | None = None,
-    task: ModelTask = "pose",
-    tracker: TrackerName = "bytetrack",
-    tracker_overrides: Mapping[str, JsonValue] | None = None,
-    conf: float = 0.1,
-    iou: float = 0.7,
-    imgsz: int = 640,
-    max_det: int = 300,
-    classes: Sequence[int] | None = None,
-    agnostic_nms: bool = False,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    frame_step: int = 1,
-    # execution
-    device: str = "0",
-    precision: Literal["fp32", "fp16"] = "fp32",
-    batch_size: int = 8,
-    prefetch: bool = True,
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
     ultralytics_conda_env: str | None = None,
     ultralytics_bin: Path | str | None = None,
-    overwrite: bool = False,
-    convert_to_tracks: bool = True,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
     track: bool = True,
     progress_callback: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
+    # When set, run inside this already-open JobContext instead of opening one --
+    # the ``mosaic run --kind ultralytics`` path (``UltralyticsOp``) hands its ctx
+    # here so the tracker rides the standard tracking-op runner without
+    # double-wrapping the Job Contract. The standalone path leaves it None;
+    # execution_id/owner/track/callbacks then open one.
     ctx: JobContext | None = None,
 ) -> str:
-    """Track every scoped sequence with *model_path*, and return the run id.
+    """Track every scoped sequence with *params*, and return the run id.
+
+    *params* states what to run and which entries to run it over;
+    :class:`~mosaic.tracking.ultralytics_track.params.UltralyticsParams`
+    describes every field. The Job-Contract knobs beside it (``execution_id`` /
+    ``owner`` / ``track`` / ``progress_callback`` / ``cancel_token``) open the
+    run's context, and *ctx* runs inside one that is already open instead.
 
     ``idle_timeout`` bounds silence and sizes the in-flight claim on each entry's
     working directory: the runner prints a progress line per decoded batch, so a
@@ -330,14 +323,18 @@ def run_ultralytics(
     identifier and the op deliberately does not carry them: a queued job would
     ship a path that means something else on the host that runs it.
     """
-    tracker_config = resolve_tracker_config(tracker, tracker_overrides)
+    tracker_config = resolve_tracker_config(params.tracker, params.tracker_overrides)
+    task, tracker = params.task, params.tracker
+    start_frame, end_frame = params.start_frame, params.end_frame
+    frame_step, idle_timeout = params.frame_step, params.idle_timeout
+    max_runtime = params.max_runtime
 
     # Content, never a path -- and the kind comes from the reference itself,
     # because both `train-pose` and `train-points` produce runnable weights and a
     # run id resolves against the index its own training op wrote.
-    parsed = parse_op_run_id(str(model_path))
+    parsed = parse_op_run_id(params.model_path)
     model_kind = parsed.kind if parsed is not None else TRAIN_POSE_KIND
-    resolved_model = resolve_model(ds, str(model_path), model_kind)
+    resolved_model = resolve_model(ds, params.model_path, model_kind)
 
     # Once per run, before anything is minted: what the environment holds, what
     # the backend ships, what the weights declare and how many keypoints they
@@ -370,19 +367,7 @@ def run_ultralytics(
         )
 
     settings = ultralytics_settings(
-        model_id=resolved_model.model_id,
-        task=task,
-        tracker=tracker,
-        tracker_config=tracker_config,
-        conf=conf,
-        iou=iou,
-        imgsz=imgsz,
-        max_det=max_det,
-        classes=classes,
-        agnostic_nms=agnostic_nms,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        frame_step=frame_step,
+        params, model_id=resolved_model.model_id, tracker_config=tracker_config
     )
     minted = mint_tracker_run(
         ds,
@@ -392,13 +377,13 @@ def run_ultralytics(
         observed={
             "model_id": resolved_model.model_id,
             "task": task,
-            "tracker": tracker,
+            "tracker": params.tracker,
             # Which Ultralytics ran is a property of the machine, so it is
             # recorded beside the variant as provenance and enters no digest.
             "ultralytics_version": probe.ultralytics_version,
         },
     )
-    scope = ds.resolve_media_scope(entries)
+    scope = ds.resolve_media_scope(params.entries)
     if not scope:
         print(
             "[run_ultralytics] No media entries match the given scope.",
@@ -462,19 +447,19 @@ def run_ultralytics(
                     columns=columns,
                     n_keypoints=probe.n_keypoints,
                     task=task,
-                    conf=conf,
-                    iou=iou,
-                    imgsz=imgsz,
-                    max_det=max_det,
-                    classes=list(classes) if classes is not None else None,
-                    agnostic_nms=agnostic_nms,
-                    device=device,
-                    precision=precision,
+                    conf=params.conf,
+                    iou=params.iou,
+                    imgsz=params.imgsz,
+                    max_det=params.max_det,
+                    classes=params.classes,
+                    agnostic_nms=params.agnostic_nms,
+                    device=params.device,
+                    precision=params.precision,
                     start_frame=start_frame,
                     end_frame=end_frame,
                     frame_step=frame_step,
-                    batch_size=batch_size,
-                    prefetch=prefetch,
+                    batch_size=params.batch_size,
+                    prefetch=params.prefetch,
                     media_facts=dataclasses.asdict(facts),
                 ),
                 work_dir=work_dir,
@@ -534,14 +519,14 @@ def run_ultralytics(
             params_hash=minted.params_hash,
             model_id=resolved_model.model_id,
             model_task=task,
-            tracker=tracker,
+            tracker=params.tracker,
             n_ids=n_ids,
             n_frames=n_frames,
             n_keypoints=n_keypoints,
             predictions_path=job.ds.relative_to_root(out_path),
         )
 
-        if not convert_to_tracks:
+        if not params.convert_to_tracks:
             return row
         bridged = publish_or_record(
             job.ctx,
@@ -570,7 +555,7 @@ def run_ultralytics(
         work_items=build_work_items(ds, scope, kind=ULTRALYTICS_KIND),
         index=ultralytics_index(ultralytics_index_path(ds)),
         run_entry=track_one,
-        overwrite=overwrite,
+        overwrite=params.overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

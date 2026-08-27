@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Generic, Self
+from typing import Annotated, Generic, Self, TypeAlias
 
 from pydantic import BaseModel, Field, GetJsonSchemaHandler, model_validator
 from pydantic.json_schema import JsonSchemaValue
@@ -17,6 +17,16 @@ from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 # type and importing this one drags the loader and artifact machinery, and
 # through them pandas, into a manifest read. The package ``__init__`` re-exports
 # it from its new home, so every existing import path is unchanged.
+
+
+Probability: TypeAlias = Annotated[float, Field(ge=0.0, le=1.0)]
+"""The 0..1 bound every probability-valued parameter shares.
+
+A named ``Annotated`` alias states the bound once, and states the constraint
+alone. A description declared here would land inside the ``anyOf`` branch of
+every optional field that reuses it, leaving the property itself undescribed, so
+each field declares its prose beside the field.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +176,12 @@ _OVERWRITE_DESCRIPTION = (
 
 
 class OpParams(Params):
-    """Base for every registered op's parameters: what to run over, and re-runs.
+    """The scope an op runs over, for every op that runs over a set of entries.
+
+    An op that takes no scope at all -- one reading a labelled export, or a
+    training set -- stays on :class:`Params`, and so does one whose arity is a
+    single entry, because both fields here would then be accepted and never
+    read.
 
     Both fields are ``HASH_EXCLUDE``. A selector names which entries a run
     covers rather than what comes out of any one of them, and an op whose
@@ -182,16 +197,14 @@ class OpParams(Params):
     :meth:`~mosaic.core.dataset.Dataset.expand_media_scope` before an op's model
     validates.
 
-    An op that refuses an unscoped run declares its own required ``entries`` on
-    :class:`Params` instead of inheriting this one, because a subclass can
-    neither drop an inherited default nor narrow ``list[Entry] | None`` to
-    ``list[Entry]`` -- both are override errors under a strict type checker.
-    :class:`~mosaic.core.pipeline.transcode.TranscodeParams` is the one such op.
-
-    Attributes:
-        entries: The ``(group, sequence)`` pairs to run over, or ``None`` for
-            every indexed entry.
-        overwrite: Whether an entry already on disk is recomputed.
+    An op that refuses an unscoped run has a choice, and it is a trade rather
+    than a constraint. Inheriting this field keeps the base and refuses ``None``
+    and ``[]`` in a validator, at the cost of an ``entries`` still typed
+    ``list[Entry] | None`` for every reader and an ``overwrite`` the op may not
+    act on; declaring its own required ``entries`` on :class:`Params` buys the
+    static type and gives up the shared base, because a subclass can neither
+    drop an inherited default nor narrow an inherited type.
+    :class:`~mosaic.core.pipeline.transcode.TranscodeParams` takes the second.
     """
 
     entries: Annotated[

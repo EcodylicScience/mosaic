@@ -506,6 +506,19 @@ def open_dataset(path: str | Path, *, ensure_roots: bool = True) -> Dataset:
 # --------------------------
 
 
+def _entry_mask(df: "pd.DataFrame", entries: Iterable[Entry]) -> "pd.Series":
+    """Mask selecting the media-index rows whose entry is one of *entries*.
+
+    One implementation for both scope methods: an enumeration read one way in
+    :meth:`Dataset.expand_media_scope` and another in
+    :meth:`Dataset.resolve_media_scope` is two answers to which rows a caller
+    named.
+    """
+    wanted = {(str(group), str(sequence)) for group, sequence in entries}
+    pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
+    return pd.Series(pairs.isin(wanted), index=df.index)
+
+
 def _media_cell(row: "pd.Series", key: str) -> str:
     """Read a media-index cell of a ``Series`` row as a trimmed string.
 
@@ -4780,9 +4793,7 @@ class Dataset:
         if sequences is not None:
             mask &= df["sequence"].isin({str(sequence) for sequence in sequences})
         if entries is not None:
-            wanted = {(str(group), str(sequence)) for group, sequence in entries}
-            pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
-            mask &= pd.Series(pairs.isin(wanted), index=df.index)
+            mask &= _entry_mask(df, entries)
         scoped = df[mask]
         return sorted(
             {
@@ -4828,9 +4839,7 @@ class Dataset:
 
         mask = pd.Series(True, index=df.index)
         if entries is not None:
-            wanted = {(str(group), str(sequence)) for group, sequence in entries}
-            pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
-            mask &= pd.Series(pairs.isin(wanted), index=df.index)
+            mask &= _entry_mask(df, entries)
         scoped = df[mask]
 
         route_derivatives, derivative_df = self.media_routing_context(index_filename)

@@ -264,13 +264,12 @@ def runner_invocation(
     """Resolve how to launch *env*'s ``python``, as an argv prefix.
 
     The shared five-step ladder (:func:`~mosaic.tracking.common.toolenv.tool_invocation`)
-    applied to one of the two environments above.
+    applied to one of the two environments above. *conda_env* and *bin_path*
+    are what one caller chooses for one run, so they are stated on the placement
+    the ladder reads rather than passed beside it.
     """
     return tool_invocation(
-        env,
-        executable=_PYTHON,
-        conda_env=conda_env,
-        bin_path=bin_path,
+        env.placed(conda_env=conda_env, bin_path=bin_path), executable=_PYTHON
     )
 
 

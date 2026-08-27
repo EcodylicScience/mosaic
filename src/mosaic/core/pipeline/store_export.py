@@ -44,6 +44,7 @@ import pandas as pd
 from mosaic_media import CHROME_149, derive, probe_media
 from mosaic_media.transcode import ANALYSIS_ENCODING, Target, TranscodeError
 
+from mosaic.core.entry import Entry
 from mosaic.core.media.facts_columns import (
     derivative_cell,
     media_row_uuid,
@@ -60,7 +61,6 @@ from mosaic.core.pipeline.transcode import (
     set_back_link,
     set_forward_link,
 )
-from mosaic.core.entry import Entry
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
 from mosaic.media_probe_config import media_thresholds
 

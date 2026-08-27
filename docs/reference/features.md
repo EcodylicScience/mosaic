@@ -613,7 +613,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ### `extract-labeled-templates`
@@ -636,23 +636,23 @@ Extract labeled, split-annotated templates from upstream features.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"behavior"` |  |
-    | `source` | `string` | `"labels"` |  |
-    | `load` | any | _constructed_ |  |
+    | `kind` | `"behavior"` | `"behavior"` |  |
+    | `source` | `"labels"` | `"labels"` |  |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  |
     | `pattern` | `string` \| `None` | `null` |  |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`NpzLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"npz"` |  |
+    | `kind` | `"npz"` | `"npz"` |  |
     | `key` | `string` | _required_ |  |
     | `transpose` | `boolean` | `false` |  |
 
@@ -660,7 +660,7 @@ Extract labeled, split-annotated templates from upstream features.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -802,7 +802,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ### `global-identity-embedding`
@@ -841,7 +841,7 @@ Train an identity model from frozen backbone embeddings + k-NN.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ### `global-identity-model`
@@ -884,7 +884,7 @@ Train a visual identity model from individual animal sequences.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ### `global-kmeans`
@@ -899,7 +899,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 | `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  |
 | `k` | `integer` | `100` | >= `1` |
 | `random_state` | `integer` | `42` |  |
-| `n_init` | `string` \| `integer` | `"auto"` |  |
+| `n_init` | `"auto"` \| `integer` | `"auto"` |  |
 | `max_iter` | `integer` | `300` | >= `1` |
 | `device` | `string` | `"cpu"` |  |
 | `label_artifact_points` | `boolean` | `true` |  |
@@ -909,7 +909,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`KMeansModelArtifact`"
@@ -940,7 +940,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -975,14 +975,14 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -1036,14 +1036,14 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -1116,7 +1116,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`NNResult`"
@@ -1134,7 +1134,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -1200,7 +1200,7 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`KpmsModelArtifact`"
@@ -1259,7 +1259,7 @@ Supervised temporal action segmentation via lightning-action.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`LabeledTemplatesRef`"
@@ -1292,7 +1292,7 @@ Supervised temporal action segmentation via lightning-action.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |
@@ -1312,7 +1312,7 @@ XGBoost behavior classifier as a pipeline feature.
 | `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  |
 | `decision_threshold` | `number` \| `object` \| `None` | `null` |  |
 | `default_class` | `integer` | _required_ |  |
-| `class_weight` | `string` \| `None` | `"balanced"` |  |
+| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  |
 | `use_smote` | `boolean` | `false` |  |
 | `undersample_ratio` | `number` \| `None` | `null` |  |
 | `n_estimators` | `integer` | `100` | >= `1` |
@@ -1326,7 +1326,7 @@ XGBoost behavior classifier as a pipeline feature.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"joblib"` |  |
+    | `kind` | `"joblib"` | `"joblib"` |  |
     | `key` | `string` \| `None` | `null` |  |
 
 ??? note "`LabeledTemplatesRef`"
@@ -1346,7 +1346,7 @@ XGBoost behavior classifier as a pipeline feature.
 
     | Parameter | Type | Default | Constraints |
     | --- | --- | --- | --- |
-    | `kind` | `string` | `"parquet"` |  |
+    | `kind` | `"parquet"` | `"parquet"` |  |
     | `transpose` | `boolean` | `false` |  |
     | `columns` | list of `string` \| `None` | `null` |  |
     | `drop_columns` | list of `string` \| `None` | `null` |  |

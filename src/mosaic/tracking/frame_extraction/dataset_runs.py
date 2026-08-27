@@ -157,8 +157,8 @@ _END_FRAME_DESCRIPTION = (
 )
 
 _CANDIDATE_STEP_DESCRIPTION = (
-    "Stride between candidate frames within the range, so a long recording is "
-    "sampled without decoding every frame of it."
+    "Stride between candidate frames within the range. A wider stride samples "
+    "a long recording without decoding every frame of it."
 )
 
 _CROP_DESCRIPTION = (
@@ -200,10 +200,17 @@ _PARALLEL_MODE_DESCRIPTION = (
 )
 
 
+_OVERWRITE_DESCRIPTION = (
+    "Re-extract into a directory that already holds frames. The run refuses "
+    "rather than removing them, because annotations reference those images by "
+    "path and mosaic cannot tell whether any exist. A second selection is a "
+    "new run, through `revision`."
+)
+
 _REVISION_DESCRIPTION = (
     "Bump to extract a second selection under the same settings. It is the one "
-    "term allowed to move the extraction identifier, and it enters the payload "
-    "only when non-zero, so revision 0 reproduces every identifier on disk."
+    "term allowed to move the extraction identifier, and only a non-zero value "
+    "enters it. Revision 0 reproduces every identifier already on disk."
 )
 
 _PARALLEL_WORKERS_DESCRIPTION = (
@@ -219,6 +226,11 @@ class ExtractFramesParams(OpParams):
     ``HASH_EXCLUDE``: they select *which* work runs or *how fast*, but the
     run_id addresses only the extraction *settings* (so the same settings share
     a run_id and add per-sequence subdirs, like frames/trex).
+
+    ``overwrite`` is redeclared rather than inherited because this op answers it
+    differently: :func:`_refuse_to_overwrite` raises on a directory that already
+    holds frames instead of replacing them, and a client drawing a control from
+    the schema needs the description that says so.
     """
 
     n_frames: Annotated[int, Declared(_N_FRAMES_DESCRIPTION)]
@@ -240,6 +252,7 @@ class ExtractFramesParams(OpParams):
     kmeans_batch_size: Annotated[int, Declared(_KMEANS_BATCH_SIZE_DESCRIPTION)] = 1024
     kmeans_max_iter: Annotated[int, Declared(_KMEANS_MAX_ITER_DESCRIPTION)] = 100
     kmeans_n_init: Annotated[str | int, Declared(_KMEANS_N_INIT_DESCRIPTION)] = "auto"
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
     revision: Annotated[int, HASH_EXCLUDE, Declared(_REVISION_DESCRIPTION)] = 0
     parallel_workers: Annotated[
         int | str | None, HASH_EXCLUDE, Declared(_PARALLEL_WORKERS_DESCRIPTION)

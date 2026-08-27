@@ -136,10 +136,8 @@ def _sleap_invocation(
     environment serves both ``sleap-track`` and ``sleap-convert``.
     """
     return tool_invocation(
-        SLEAP_ENV,
+        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable=script,
-        conda_env=sleap_conda_env,
-        bin_path=sleap_bin,
     )
 
 

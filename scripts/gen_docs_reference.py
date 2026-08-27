@@ -140,18 +140,24 @@ def type_text(spec: Mapping[str, Any]) -> str:
     """One JSON-Schema property reduced to a readable type expression.
 
     `anyOf` is what pydantic emits for `X | None`, which most optional fields
-    are; echoing the full two-branch union would drown the table. A `$ref` names
-    a nested model whose own table follows in a collapsed block.
+    are; echoing the full two-branch union would drown the table. `oneOf` is
+    what a tagged union emits, and its branches are the models a client picks
+    between. A `$ref` names a nested model whose own table follows in a
+    collapsed block.
     """
     ref = spec.get("$ref")
     if isinstance(ref, str):
         return f"`{model_name(ref.rsplit('/', 1)[-1])}`"
-    variants = spec.get("anyOf")
-    if isinstance(variants, list):
-        # `dict.fromkeys` rather than `set`, to keep the declared branch order:
-        # a set would reorder `str | None` between runs and flap `--check`.
-        parts = [type_text(v) for v in variants if isinstance(v, dict)]
-        return " | ".join(dict.fromkeys(parts))
+    for key in ("anyOf", "oneOf"):
+        variants = spec.get(key)
+        if isinstance(variants, list):
+            # `dict.fromkeys` rather than `set`, to keep the declared branch
+            # order: a set would reorder `str | None` between runs and flap
+            # `--check`.
+            parts = [type_text(v) for v in variants if isinstance(v, dict)]
+            return " | ".join(dict.fromkeys(parts))
+    if "const" in spec:
+        return f"`{json.dumps(spec['const'])}`"
     choices = spec.get("enum")
     if isinstance(choices, list):
         return " | ".join(f"`{json.dumps(c)}`" for c in choices)
