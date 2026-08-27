@@ -14,24 +14,15 @@ own adapter. ``tracking/trex/version.py`` is declared here for the same reason.
 
 from __future__ import annotations
 
-from typing import Annotated, TypeAlias
+from typing import Annotated
 
 from pydantic import Field
 
 from mosaic.core.pipeline.markers import Phase
-from mosaic.core.pipeline.types import Declared, JsonValue
+from mosaic.core.pipeline.types import Declared, JsonValue, Probability
 from mosaic.tracking.common.params import PhasedTrackerOpParams
 
-__all__ = ["Probability", "TrexParams"]
-
-Probability: TypeAlias = Annotated[float, Field(ge=0.0, le=1.0)]
-"""The 0..1 bound the three probability-valued TREx thresholds share.
-
-A named ``Annotated`` alias states the bound once, and states the constraint
-alone. A description declared here lands inside the ``anyOf`` branch of every
-optional field that reuses it, leaving the property itself undescribed, so each
-field declares its prose beside the field.
-"""
+__all__ = ["TrexParams"]
 
 _DETECT_MODEL_DESCRIPTION = (
     "A YOLO .pt path, or the run id of the training op that produced the "
@@ -76,7 +67,7 @@ _TRACK_MAX_SPEED_DESCRIPTION = (
 )
 
 _TRACK_MAX_REASSIGN_TIME_DESCRIPTION = (
-    "Seconds to wait before giving up on a lost individual. Unset, TREx applies 0.5."
+    "How long to wait before giving up on a lost individual. Unset, TREx applies 0.5."
 )
 
 _TRACK_TRUSTED_PROBABILITY_DESCRIPTION = (
@@ -90,7 +81,10 @@ _ANALYSIS_RANGE_DESCRIPTION = (
 )
 
 _VISUAL_IDENTIFICATION_MODEL_PATH_DESCRIPTION = (
-    "Pre-trained identity weights (.pth, without the extension)."
+    "Pre-trained identity weights (.pth, without the extension), or the run id "
+    "of the identity-training op that produced them. Identity records the "
+    "training run id when the reference is one, and the weights' content digest "
+    "when it is a bare path."
 )
 
 _AUTO_TRAIN_DESCRIPTION = "Train visual identification automatically after tracking."

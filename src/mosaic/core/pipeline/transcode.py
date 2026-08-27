@@ -30,7 +30,7 @@ import dataclasses
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, override
+from typing import TYPE_CHECKING, Annotated, Any, Self, override
 
 import pandas as pd
 from mosaic_media import (
@@ -53,6 +53,7 @@ from mosaic_media.transcode import (
     run_transcode,
 )
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.media.facts_columns import (
     MEDIA_INDEX_COLUMNS,
@@ -72,10 +73,9 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.core.entry import Entry
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
 from mosaic.media_probe_config import media_thresholds
-from pydantic import Field
+from pydantic import Field, model_validator
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -94,9 +94,9 @@ TRANSCODE_KIND_DIRECTORY = "transcode"
 
 
 _TRANSCODE_ENTRIES_DESCRIPTION = (
-    "Which (group, sequence) entries to transcode. Required and non-empty: a "
-    "transcode with no scope re-encodes a whole corpus because a field was "
-    "omitted."
+    "Which (group, sequence) entries to transcode. Required and non-empty: an "
+    "unscoped transcode would re-encode a whole corpus. A repeated entry is "
+    "collapsed."
 )
 
 _TARGET_DESCRIPTION = (
@@ -124,15 +124,18 @@ class TranscodeParams(Params):
     queue slot for as long as it takes, where five hundred jobs would spread
     across machines. Narrow the entry list to shard it.
 
-    **``Params`` rather than ``OpParams``, and the reason is the type checker.**
-    A transcode refuses an unscoped run, so its ``entries`` is required and
-    non-empty where ``OpParams`` declares one that defaults to ``None`` and
-    means every indexed entry. Redeclaring an inherited field as required is
-    ``reportGeneralTypeIssues``, and narrowing ``list[Entry] | None`` to
-    ``list[Entry]`` is ``reportIncompatibleVariableOverride``, so the required
-    spelling is declared here instead of inherited. Inheriting would also add
-    ``overwrite``, which this op has no use for: reuse is decided by the
-    recipe-addressed filename and the forward link.
+    **``Params`` rather than ``OpParams``, and what that trades.** A transcode
+    refuses an unscoped run, where ``OpParams`` declares an ``entries`` that
+    defaults to ``None`` and means every indexed entry. A subclass cannot
+    inherit that field and make it required -- dropping an inherited default is
+    ``reportGeneralTypeIssues`` and narrowing ``list[Entry] | None`` to
+    ``list[Entry]`` is ``reportIncompatibleVariableOverride`` -- so keeping the
+    base means keeping the optional type and refusing ``None`` and ``[]`` in a
+    validator instead. This op takes the static type: ``entries`` is
+    ``list[Entry]``, so every reader downstream has a list without asking.
+    Declaring it here also leaves out ``overwrite``, which this op has no use
+    for -- reuse is decided by the recipe-addressed filename and the forward
+    link.
     """
 
     # entries selects WHICH videos are transcoded, and the identities of those
@@ -166,6 +169,19 @@ class TranscodeParams(Params):
     allow_hardware: Annotated[
         bool, HASH_EXCLUDE, Declared(_ALLOW_HARDWARE_DESCRIPTION)
     ] = False
+
+    @model_validator(mode="after")
+    def _entries_are_distinct(self) -> Self:
+        """Collapse a repeated entry, keeping the order the caller gave.
+
+        A duplicate is not a scope: it names one entry twice. Left standing it
+        transcodes that entry twice, and ``plan_identity`` contributes its source
+        uuids twice to a run identifier that sorts its sources but does not
+        collapse them, so one job would be named two different things depending
+        on how many times a caller repeated itself.
+        """
+        self.entries = list(dict.fromkeys(self.entries))
+        return self
 
 
 def relative_to_anchor(path: Path, anchor: Path) -> str:
@@ -452,7 +468,7 @@ def _source_uuids_for(ds: "Dataset", entry: tuple[str, str]) -> list[str]:
 
 @register_op
 class TranscodeOp(Op[TranscodeParams]):
-    """Transcode one entry's originals for a target and link the derivatives both ways."""
+    """Transcode the scoped entries' originals for a target, linking both ways."""
 
     kind = "transcode"
     domain = "media"

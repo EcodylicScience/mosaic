@@ -67,7 +67,8 @@ def params_models() -> dict[str, type[Params]]:
     """Return every shipped ``Params`` subclass, keyed by qualified name.
 
     Walks ``__subclasses__()`` transitively rather than reading the op and
-    feature registries, which between them hold 62 of the 83.
+    feature registries, which hold 62 between them and reach neither the
+    converters nor the ``*_template`` modules.
 
     Two kinds of subclass are skipped. A model declared by a test module is a
     fixture rather than a shipped parameter model, so the walk keeps only
@@ -103,7 +104,7 @@ def params_models() -> dict[str, type[Params]]:
 PARAMS_MODELS = params_models()
 MODEL_NAMES = sorted(PARAMS_MODELS)
 
-ALLOWLIST_CEILING = 592
+ALLOWLIST_CEILING = 575
 """Only ever lowered. Raising it admits a field that reaches a client unlabelled."""
 
 ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
@@ -676,23 +677,6 @@ ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
         ("TrajectorySmooth.Params", "speed_threshold"),
         ("TrexScaledNpzParams", "cm_per_pixel"),
         ("TrexScaledNpzParams", "strict_schema"),
-        ("UltralyticsParams", "agnostic_nms"),
-        ("UltralyticsParams", "batch_size"),
-        ("UltralyticsParams", "classes"),
-        ("UltralyticsParams", "conf"),
-        ("UltralyticsParams", "device"),
-        ("UltralyticsParams", "end_frame"),
-        ("UltralyticsParams", "frame_step"),
-        ("UltralyticsParams", "imgsz"),
-        ("UltralyticsParams", "iou"),
-        ("UltralyticsParams", "max_det"),
-        ("UltralyticsParams", "model_path"),
-        ("UltralyticsParams", "precision"),
-        ("UltralyticsParams", "prefetch"),
-        ("UltralyticsParams", "start_frame"),
-        ("UltralyticsParams", "task"),
-        ("UltralyticsParams", "tracker"),
-        ("UltralyticsParams", "tracker_overrides"),
         ("UltralyticsTracksParams", "fps"),
         ("UltralyticsTracksParams", "strict_schema"),
         ("XgboostFeature.Params", "class_weight"),
@@ -888,8 +872,9 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
 def test_the_sample_model_stays_out_of_the_walk() -> None:
     """A ``Params`` subclass declared by a test is a fixture, not a shipped model.
 
-    Twenty-five test modules declare one. Were the walk to pick them up, this
-    file's own sample would be the first to break the guard it supports.
+    Test modules throughout the suite declare one. Were the walk to pick them
+    up, this file's own sample would be the first to break the guard it
+    supports.
     """
     assert DeclarationSample.__qualname__ not in PARAMS_MODELS
 

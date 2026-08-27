@@ -155,10 +155,8 @@ def _litpose_invocation(
     ``python`` on ``$PATH`` would be the caller's own.
     """
     return tool_invocation(
-        LITPOSE_ENV,
+        LITPOSE_ENV.placed(conda_env=litpose_conda_env, bin_path=litpose_bin),
         executable=_PYTHON,
-        conda_env=litpose_conda_env,
-        bin_path=litpose_bin,
     )
 
 

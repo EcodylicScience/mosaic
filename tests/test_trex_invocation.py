@@ -5,27 +5,25 @@ launched: in a conda env, via an explicit binary, or from ``$PATH``) and the
 ``DISPLAY`` overlay, without invoking the real ``trex`` binary.
 
 Placement is one :class:`~mosaic.tracking.common.toolenv.ToolEnv`, so a test
-that reaches a differently placed install states it as a variant of
-:data:`~mosaic.tracking.trex.run.TREX_ENV`.
+that reaches a differently placed install states it as
+``TREX_ENV.placed(...)``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from mosaic.tracking.common import toolenv
-from mosaic.tracking.common.toolenv import ToolEnv
+from mosaic.tracking.common.toolenv import ToolEnv, display_overlay
 
 from mosaic.tracking.trex import run as trex_run
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import (
     TREX_ENV,
     TRexNotFoundError,
-    _resolve_display,
     _trex_invocation,
 )
 
@@ -52,7 +50,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_param_conda_env_wins():
-    assert _trex_invocation(replace(TREX_ENV, conda_env="track")) == [
+    assert _trex_invocation(TREX_ENV.placed(conda_env="track")) == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -63,11 +61,11 @@ def test_param_conda_env_wins():
 
 
 def test_param_bin():
-    assert _trex_invocation(replace(TREX_ENV, bin_path="/x/trex")) == ["/x/trex"]
+    assert _trex_invocation(TREX_ENV.placed(bin_path="/x/trex")) == ["/x/trex"]
 
 
 def test_param_conda_beats_param_bin():
-    placed = replace(TREX_ENV, conda_env="track", bin_path="/x/trex")
+    placed = TREX_ENV.placed(conda_env="track", bin_path="/x/trex")
     assert _trex_invocation(placed)[0] == "/p/bin/conda"
 
 
@@ -85,7 +83,7 @@ def test_env_conda(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_beats_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_TREX_CONDA_ENV", "envc")
-    assert _trex_invocation(replace(TREX_ENV, bin_path="/x/trex")) == ["/x/trex"]
+    assert _trex_invocation(TREX_ENV.placed(bin_path="/x/trex")) == ["/x/trex"]
 
 
 def test_env_bin(monkeypatch: pytest.MonkeyPatch):
@@ -109,7 +107,7 @@ def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(TRexNotFoundError):
-        _trex_invocation(replace(TREX_ENV, conda_env="track"))
+        _trex_invocation(TREX_ENV.placed(conda_env="track"))
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
@@ -119,24 +117,27 @@ def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
         lambda name: "/p/trex" if name == "trex" else None,
     )
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
-    placed = replace(TREX_ENV, conda_env="track")
+    placed = TREX_ENV.placed(conda_env="track")
     assert _trex_invocation(placed)[0] == "/opt/conda/bin/conda"
 
 
 # --- DISPLAY overlay ---
 
 
-def test_resolve_display_explicit():
-    assert _resolve_display(":99") == {"DISPLAY": ":99"}
+def test_a_placed_display_is_what_the_subprocess_gets():
+    assert display_overlay(TREX_ENV.placed(display=":99")) == {"DISPLAY": ":99"}
 
 
-def test_resolve_display_none():
-    assert _resolve_display(None) is None
+def test_no_display_anywhere_leaves_the_inherited_one():
+    assert display_overlay(TREX_ENV) is None
 
 
-def test_resolve_display_env(monkeypatch: pytest.MonkeyPatch):
+def test_the_display_variable_this_tool_declares_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``MOSAIC_TREX_DISPLAY`` is named on TREX_ENV, not hardcoded in a reader."""
     monkeypatch.setenv("MOSAIC_TREX_DISPLAY", ":7")
-    assert _resolve_display(None) == {"DISPLAY": ":7"}
+    assert display_overlay(TREX_ENV) == {"DISPLAY": ":7"}
 
 
 # --- _run_trex wires invocation + env into the supervised subprocess call ---
@@ -529,3 +530,66 @@ def test_pose_fields_are_named_the_way_trex_names_them() -> None:
     ]
     assert trex_run.pose_output_fields(0) == []
     assert trex_run.pose_output_fields(-1) == []
+
+
+# --- the batch wrapper drives both phases of every video from one params ------
+
+
+def test_the_batch_wrapper_sends_each_phase_the_fields_it_declares(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """One params, two phases per video, and the extras do not cross over.
+
+    The convert phase sends ``convert_extra_settings`` and the detection knobs,
+    the track phase sends ``track_extra_settings`` and the tracking knobs, and
+    ``track_max_individuals`` reaches both. Nothing else here reads the model, so
+    a phase that started reading the wrong half would be invisible.
+    """
+    argvs: list[list[str]] = []
+
+    def fake_supervised(cmd: Sequence[str], **_kwargs: object) -> tuple[str, str, int]:
+        argvs.append(list(cmd))
+        for video in ("v0", "v1"):
+            pv = tmp_path / "out" / video / f"{video}.pv"
+            pv.parent.mkdir(parents=True, exist_ok=True)
+            _ = pv.write_bytes(b"pv")
+        return ("", "", 0)
+
+    monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
+    monkeypatch.setattr(trex_run, "_trex_invocation", _bare_name_invocation)
+
+    results = trex_run.run_trex_batch(
+        [tmp_path / "v0.mp4", tmp_path / "v1.mp4"],
+        tmp_path / "out",
+        params=TrexParams(
+            track_max_individuals=4,
+            detect_conf_threshold=0.3,
+            track_max_speed=50.0,
+            convert_extra_settings={"only_on_convert": 1},
+            track_extra_settings={"only_on_track": 2},
+        ),
+        detect_model_path=tmp_path / "weights.pt",
+        vi_model_path=tmp_path / "identity.pth",
+    )
+
+    assert len(results) == 2, "one result per video, in the order given"
+    converts = [argv for argv in argvs if "convert" in argv]
+    tracks = [argv for argv in argvs if "track" in argv]
+    assert len(converts) == 2, "each video is converted"
+    assert len(tracks) == 2, "each video is then tracked"
+
+    assert "-only_on_convert" in converts[0]
+    assert "-only_on_track" not in converts[0]
+    assert "-detect_conf_threshold" in converts[0]
+    assert converts[0][converts[0].index("-m") + 1] == str(tmp_path / "weights.pt")
+
+    assert "-only_on_track" in tracks[0]
+    assert "-only_on_convert" not in tracks[0]
+    assert "-track_max_speed" in tracks[0]
+    identity = tracks[0].index("-visual_identification_model_path") + 1
+    assert tracks[0][identity] == str(tmp_path / "identity.pth")
+
+    for argv in (converts[0], tracks[0]):
+        assert argv[argv.index("-track_max_individuals") + 1] == "4", (
+            "the cap is a convert input as well as a track one"
+        )

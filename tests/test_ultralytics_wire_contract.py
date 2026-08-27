@@ -34,6 +34,7 @@ import mosaic.tracking.common.ultralytics_env as ultralytics_env
 import mosaic.tracking.ops.infer as ops_infer
 import mosaic.tracking.pose_training.ultralytics_infer as ultralytics_infer
 import mosaic.tracking.ultralytics_track.dataset_runs as dataset_runs
+from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 import mosaic.tracking.ultralytics_track.run as ultralytics_run
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.read_target import verified_read_facts
@@ -396,7 +397,9 @@ def test_a_run_speaks_a_protocol_the_runner_program_accepts(
     the proof that the columns mosaic sent are the ones its converter reads.
     """
     run_id = dataset_runs.run_ultralytics(
-        ds, model_path=str(model), ultralytics_bin="/x/bin/yolo"
+        ds,
+        UltralyticsParams(model_path=str(model)),
+        ultralytics_bin="/x/bin/yolo",
     )
 
     assert stand_in.commands == ["probe", "track"]
@@ -436,7 +439,9 @@ def test_gated_media_facts_survive_the_crossing(
 
     monkeypatch.setattr(dataset_runs, "resolve_tool_input", resolved)
     _ = dataset_runs.run_ultralytics(
-        ds, model_path=str(model), ultralytics_bin="/x/bin/yolo"
+        ds,
+        UltralyticsParams(model_path=str(model)),
+        ultralytics_bin="/x/bin/yolo",
     )
 
     measured = verified_read_facts(video, None, "analysis")[0]

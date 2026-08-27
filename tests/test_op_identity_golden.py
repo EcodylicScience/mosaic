@@ -267,6 +267,28 @@ OP_CASES: tuple[OpCase, ...] = (
         case_id="infer-localizer/model",
         params=_op_params("infer-localizer", model="models/localizer/best.pt"),
     ),
+    # --- ultralytics ----------------------------------------------------------
+    # The settings-based cases below pin what ``ultralytics_settings`` builds.
+    # These two pin the params model's own hashed field set, which is what an
+    # added or retyped field moves.
+    OpCase(
+        case_id="ultralytics/model",
+        params=_op_params("ultralytics", model_path="models/pose/best.pt"),
+    ),
+    # An unset ``tracker_overrides`` hashes as null whatever its declared type,
+    # so the case above cannot see its shape. This one hashes the resolved
+    # table -- every setting of the chosen backend, not the two words the caller
+    # wrote -- which is what ``store_export`` reads through the generic
+    # ``identity_dump()``.
+    OpCase(
+        case_id="ultralytics/tracker-overrides",
+        params=_op_params(
+            "ultralytics",
+            model_path="models/pose/best.pt",
+            tracker="botsort",
+            tracker_overrides={"track_buffer": 90},
+        ),
+    ),
 )
 
 # The two transcode identifiers are minted by named, importable functions, so
@@ -630,17 +652,20 @@ def _ultralytics_settings_case() -> dict[str, object]:
     there to pin.
     """
     from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_settings
+    from mosaic.tracking.ultralytics_track.params import UltralyticsParams
     from mosaic.tracking.ultralytics_track.tracker_defaults import (
+        BotsortConfig,
         resolve_tracker_config,
     )
 
-    return ultralytics_settings(
-        model_id="0123456789abcdef",
+    params = UltralyticsParams(
+        # Every field ``ultralytics_settings`` reads is explicit rather than
+        # left to a default, so a changed default moves nothing here for a
+        # reason unrelated to the key set this case exists to guard.
+        model_path="models/pose/best.pt",
         task="pose",
         tracker="botsort",
-        # Built rather than spelled as a literal, so this pins the merge and the
-        # declared defaults as well as the key set.
-        tracker_config=resolve_tracker_config("botsort", {"track_buffer": 90}),
+        tracker_overrides=BotsortConfig(track_buffer=90),
         conf=0.1,
         iou=0.7,
         imgsz=640,
@@ -651,15 +676,17 @@ def _ultralytics_settings_case() -> dict[str, object]:
         end_frame=None,
         frame_step=1,
     )
+    return ultralytics_settings(
+        params,
+        model_id="0123456789abcdef",
+        # Built rather than spelled as a literal, so this pins the merge and the
+        # declared defaults as well as the key set.
+        tracker_config=resolve_tracker_config("botsort", {"track_buffer": 90}),
+    )
 
 
 def _ultralytics_run_id_settings() -> str:
-    """The identifier ``ultralytics_settings``' *key set* mints, pinned.
-
-    Every argument is explicit rather than left to a default, so a changed
-    default moves nothing here for a reason unrelated to the key set this case
-    exists to guard.
-    """
+    """The identifier ``ultralytics_settings``' *key set* mints, pinned."""
     from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_run_id
 
     return ultralytics_run_id(_ultralytics_settings_case())

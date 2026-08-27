@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
-
 from pydantic import BaseModel, ConfigDict
 
 from mosaic.cli._context import attempt_facts, load_dataset
@@ -60,7 +59,7 @@ class _ScopeKeys(BaseModel):
     entries: list[Entry] | None = None
 
 
-def _entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, object]:
+def entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, object]:
     """Replace a ``groups`` / ``sequences`` scope in *params* with ``entries``.
 
     ``mosaic run --kind`` declares no scope flags of its own and refuses
@@ -305,7 +304,7 @@ def run_command(
                 run_id = run_op(
                     ds,
                     op_kind,
-                    _entries_from_scope(ds, params_dict or {}),
+                    entries_from_scope(ds, params_dict or {}),
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

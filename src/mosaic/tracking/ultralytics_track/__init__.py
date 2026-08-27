@@ -21,6 +21,7 @@ from mosaic.tracking.ultralytics_track.dataset_runs import (
     list_ultralytics_runs,
     run_ultralytics,
 )
+from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from mosaic.tracking.ultralytics_track.run import (
     ULTRALYTICS_ENV,
     UltralyticsError,
@@ -31,8 +32,15 @@ from mosaic.tracking.ultralytics_track.run import (
 )
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TRACKER_NAMES,
+    BotsortConfig,
+    BytetrackConfig,
+    DeepocsortConfig,
+    FasttrackConfig,
+    OcsortConfig,
+    TrackerConfig,
     TrackerConfigError,
     TrackerName,
+    TracktrackConfig,
     resolve_tracker_config,
 )
 from mosaic.tracking.ultralytics_track.version import (
@@ -45,11 +53,19 @@ __all__ = [
     "ULTRALYTICS_ENV",
     "ULTRALYTICS_KIND",
     "ULTRALYTICS_VERSION",
+    "BotsortConfig",
+    "BytetrackConfig",
+    "DeepocsortConfig",
+    "FasttrackConfig",
+    "OcsortConfig",
+    "TrackerConfig",
     "TrackerConfigError",
     "TrackerName",
+    "TracktrackConfig",
     "UltralyticsError",
     "UltralyticsIndexRow",
     "UltralyticsNotFoundError",
+    "UltralyticsParams",
     "UltralyticsTrackResult",
     "UnsupportedTaskError",
     "UnsupportedTrackerError",

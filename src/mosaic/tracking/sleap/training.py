@@ -261,10 +261,8 @@ def train_sleap(
         *(f"{key}={value}" for key, value in (overrides or {}).items()),
     ]
     invocation = tool_invocation(
-        SLEAP_ENV,
+        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable=_SLEAP_NN_TRAIN,
-        conda_env=sleap_conda_env,
-        bin_path=sleap_bin,
     )
     cmd = [*invocation, *args]
     logger.info("Running: %s", " ".join(cmd))

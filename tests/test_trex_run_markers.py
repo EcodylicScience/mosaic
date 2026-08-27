@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
+from pydantic import Field
 
 import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.tracking.common.bridge import BridgeCounts
@@ -48,8 +49,11 @@ from mosaic.core.pipeline.markers import (
     read_phase_marker,
     write_inflight,
 )
-from mosaic.core.pipeline.types import Declared
-from mosaic.tracking.common.params import PhasedTrackerOpParams
+from mosaic.core.pipeline.types import Declared, Params
+from mosaic.tracking.common.params import (
+    PhasedTrackerOpParams,
+    refuse_unphased_fields,
+)
 from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
 from mosaic.tracking.trex.params import TrexParams
@@ -669,6 +673,44 @@ def test_a_field_that_names_no_phase_is_refused_at_class_creation() -> None:
     """
     with pytest.raises(TypeError, match="without a Phase"):
         _ = declare_unphased_model()
+
+
+def redeclare_an_inherited_field() -> type[PhasedTrackerOpParams]:
+    """Declare a model that only changes an inherited execution field's default."""
+
+    class Retimed(PhasedTrackerOpParams):
+        idle_timeout: Annotated[float, Field(gt=0.0)] = 60.0
+
+    return Retimed
+
+
+def test_redeclaring_an_inherited_execution_field_needs_no_phase() -> None:
+    """It has no phase to name: no phase of the tool reads it.
+
+    The guard is over what a model adds, so an op that wants a different
+    inactivity bound states it the way pydantic states any default.
+    """
+    assert redeclare_an_inherited_field()().idle_timeout == 60.0
+
+
+class OutsideTheHierarchy(Params):
+    """A model the subclass hook never sees, for checking the check itself."""
+
+    loose: Annotated[int | None, Declared("a knob nobody phased")] = None
+
+
+def test_the_base_itself_is_checked_where_it_is_declared() -> None:
+    """The subclass hook cannot see the class that declares it.
+
+    Without the call beside the class body, a tool-facing field added to
+    ``PhasedTrackerOpParams`` would be the one field in the hierarchy free to
+    name no phase. The check is a function for exactly that reason, and it
+    refuses a model reached any way at all.
+    """
+    refuse_unphased_fields(PhasedTrackerOpParams)
+
+    with pytest.raises(TypeError, match="without a Phase"):
+        refuse_unphased_fields(OutsideTheHierarchy)
 
 
 def test_every_tool_facing_field_reaches_a_phase() -> None:

@@ -143,10 +143,8 @@ def train_litpose(
     assignments.update(overrides or {})
 
     invocation = tool_invocation(
-        LITPOSE_ENV,
+        LITPOSE_ENV.placed(conda_env=litpose_conda_env, bin_path=litpose_bin),
         executable="python",
-        conda_env=litpose_conda_env,
-        bin_path=litpose_bin,
     )
     cmd = [
         *invocation,

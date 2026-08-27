@@ -35,14 +35,17 @@ from pydantic import TypeAdapter
 
 from mosaic.core.json_value import JsonValue
 from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
+from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from mosaic.tracking.ultralytics_track.run import (
     ULTRALYTICS_ENV,
     ultralytics_tracker_defaults,
 )
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     CLOSED_KEYS,
-    TRACKER_KNOBS,
+    GMC_BACKENDS,
+    TRACKER_CONFIG_MODELS,
     TRACKER_NAMES,
+    BotsortConfig,
     TrackerConfigError,
     TrackerName,
     TrackerSetting,
@@ -216,10 +219,62 @@ def test_a_reid_checkpoint_cannot_be_named_by_path() -> None:
             _ = resolve_tracker_config("botsort", {key: "weights/reid.pt"})
 
 
+def test_a_closed_setting_restated_at_its_fixed_value_is_accepted() -> None:
+    """Refusing this is what broke reading a recorded parameter set back.
+
+    The resolved table names every setting, so a caller that submits what it was
+    given submits the closed ones too. Only a value that would change one is
+    refused.
+    """
+    for key in CLOSED_KEYS:
+        fixed = resolve_tracker_config("botsort")[key]
+        assert resolve_tracker_config("botsort", {key: fixed}) == (
+            resolve_tracker_config("botsort")
+        )
+
+
+@pytest.mark.parametrize("name", TRACKER_NAMES)
+def test_a_parameter_set_reads_back_as_the_one_that_was_written(
+    name: TrackerName,
+) -> None:
+    """``model_dump()`` must construct, through Python objects and through JSON.
+
+    ``run_op`` validates a parameter dictionary, ``build_op_params`` builds one
+    for a recipe, and a client submits the fields the published schema showed
+    it. Each of those reads back what an earlier dump wrote, so a dump the model
+    refuses is a recorded run that cannot be replayed.
+    """
+    written = UltralyticsParams(
+        model_path="models/pose/best.pt",
+        tracker=name,
+        tracker_overrides=TRACKER_CONFIG_MODELS[name](),
+    )
+    dumped = written.model_dump()
+    assert UltralyticsParams.model_validate(dumped).model_dump() == dumped
+
+    as_json = written.model_dump_json()
+    assert UltralyticsParams.model_validate_json(as_json).model_dump_json() == as_json
+
+
+def test_gmc_backends_names_the_models_that_declare_a_motion_estimator() -> None:
+    """The set and the tables must not drift apart.
+
+    ``bytetrack`` is the default backend because the alternatives can estimate
+    camera motion, and that claim is only as good as this set.
+    """
+    declaring = {
+        name
+        for name in TRACKER_NAMES
+        if "gmc_method" in TRACKER_CONFIG_MODELS[name].model_fields
+    }
+    assert declaring == GMC_BACKENDS
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [
         ("track_buffer", 30.5),  # a whole number, given a fraction
+        ("track_buffer", True),  # a whole number, given a flag
         ("fuse_score", 1),  # a flag, given an int
         ("match_thresh", True),  # a number, given a flag
         ("gmc_method", "optical"),  # a closed choice, given an unknown name
@@ -238,14 +293,6 @@ def test_a_whole_number_widens_into_a_threshold() -> None:
     widened = resolve_tracker_config("bytetrack", {"match_thresh": 1})["match_thresh"]
     assert isinstance(widened, float)
     assert widened == 1.0
-
-
-def test_every_declared_knob_has_a_default_of_its_own_type() -> None:
-    """A structural check on the tables themselves, needing nothing installed."""
-    for name in TRACKER_NAMES:
-        for key, knob in TRACKER_KNOBS[name].items():
-            resolved = resolve_tracker_config(name)[key]
-            assert type(resolved) is type(knob.default), f"{name}.{key}"
 
 
 # --- the declaration, checked against the Ultralytics environment ----------
@@ -294,7 +341,7 @@ def test_each_declared_table_matches_the_installed_one(
 
     A setting installed but not declared is an identity gap: it affects the run
     and no identifier names it. A setting declared but not installed is a dead
-    knob mosaic offers and nothing reads.
+    setting mosaic offers and nothing reads.
     """
     assert name in installed_tracker_tables, (
         f"the ultralytics in this environment knows "
@@ -310,3 +357,35 @@ def test_each_declared_table_matches_the_installed_one(
     for key in sorted(installed):
         assert installed[key] == declared[key], f"{name}.{key}"
         assert type(installed[key]) is type(declared[key]), f"{name}.{key} type"
+
+
+def test_the_resolved_table_is_the_declared_defaults() -> None:
+    """A structural check on the models themselves, needing nothing installed.
+
+    The type is asserted beside the value, because ``1 == 1.0`` in Python and a
+    whole number where a threshold belongs is a second identifier for one recipe.
+    """
+    for name in TRACKER_NAMES:
+        resolved = resolve_tracker_config(name)
+        declared = TRACKER_CONFIG_MODELS[name].model_fields
+        assert set(resolved) == set(declared), name
+        for key, field in declared.items():
+            assert resolved[key] == field.default, f"{name}.{key}"
+            assert type(resolved[key]) is type(field.default), f"{name}.{key} type"
+
+
+def test_a_configuration_model_resolves_to_the_same_table_as_its_overrides() -> None:
+    """The two doors into ``resolve_tracker_config`` agree.
+
+    ``UltralyticsParams`` validates ``tracker_overrides`` into a model, and the
+    raw mapping is what a direct caller and the golden corpus pass.
+    """
+    assert resolve_tracker_config("botsort", BotsortConfig(track_buffer=90)) == (
+        resolve_tracker_config("botsort", {"track_buffer": 90})
+    )
+
+
+def test_a_configuration_for_another_backend_is_refused() -> None:
+    """The resolved table must not describe a tracker the identifier does not name."""
+    with pytest.raises(TrackerConfigError, match="cannot configure"):
+        _ = resolve_tracker_config("bytetrack", BotsortConfig())

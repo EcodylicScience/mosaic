@@ -803,7 +803,7 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
 
 def test_trex_params_exclude_throughput_from_run_id():
     from mosaic.core.pipeline._utils import hash_params
-    from mosaic.tracking.ops.trex import TrexParams
+    from mosaic.tracking.trex.params import TrexParams
 
     a = TrexParams(
         detect_model="m.pt",
@@ -1227,7 +1227,13 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     captured: dict[str, object] = {}
     import mosaic.tracking.trex.dataset_runs as dr
 
-    def fake_convert(video_path, seq_dir, *, detect_model_path=None, **kw):
+    def fake_convert(
+        video_path: object,
+        seq_dir: object,
+        *,
+        detect_model_path: Path | None = None,
+        **kw: object,
+    ):
         captured["detect_model_path"] = detect_model_path
         raise _Stop()
 

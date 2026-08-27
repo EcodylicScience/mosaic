@@ -109,10 +109,8 @@ def write_slp(
     _ = write_coco_keypoints(annotations, coco_path)
 
     invocation = tool_invocation(
-        SLEAP_PYTHON_ENV,
+        SLEAP_PYTHON_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable="python",
-        conda_env=sleap_conda_env,
-        bin_path=sleap_bin,
     )
     cmd = [*invocation, "-c", _TO_SLP_SNIPPET, str(coco_path), str(root), str(staging)]
     logger.info("Running: %s", " ".join(cmd[:4]) + " ...")

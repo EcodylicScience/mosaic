@@ -45,6 +45,8 @@
   "trex/defaults": "790baf0eff",
   "trex/max-individuals": "2fdfe5dd15",
   "trex/run-id-settings": "trex.0.1-576ec50890",
+  "ultralytics/model": "9d807db216",
   "ultralytics/run-id-settings": "ultralytics.8.4-7175d735b7",
-  "ultralytics/tracker-defaults": "b85743c3e7"
+  "ultralytics/tracker-defaults": "b85743c3e7",
+  "ultralytics/tracker-overrides": "89ab13d463"
 }

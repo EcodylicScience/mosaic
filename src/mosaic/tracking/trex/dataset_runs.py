@@ -1,6 +1,6 @@
 """Dataset-level TREx runs: content-addressed, tracked, tracks-integrated.
 
-``run_trex(ds, ...)`` is the first-class entry point that turns the standalone
+``run_trex(ds, params)`` is the first-class entry point that turns the standalone
 TREx CLI wrappers (:mod:`mosaic.tracking.trex.run`) into a Job-Contract stage,
 mirroring :func:`mosaic.tracking.extract_frames`:
 
@@ -776,11 +776,15 @@ def run_trex(
             one callback is enough.
             """
             seq_ctx.progress.on_phase("convert", _phase_label(item))
-            entry_tick = phase_activity(seq_ctx, work_dir, convert_claim, params.idle_timeout)
+            entry_tick = phase_activity(
+                seq_ctx, work_dir, convert_claim, params.idle_timeout
+            )
             slot_tick = (
                 None
                 if claim_dir == work_dir
-                else phase_activity(seq_ctx, claim_dir, claim_marker, params.idle_timeout)
+                else phase_activity(
+                    seq_ctx, claim_dir, claim_marker, params.idle_timeout
+                )
             )
 
             def on_output(line: str) -> None:

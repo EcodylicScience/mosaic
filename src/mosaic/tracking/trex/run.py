@@ -29,18 +29,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Final, Sequence
+from typing import Callable, Final, Sequence
 
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
+    display_overlay,
     missing_output_error,
     subprocess_env,
     tool_invocation,
@@ -79,12 +80,13 @@ TREX_ENV: Final = ToolEnv(
     bin_var="MOSAIC_TREX_BIN",
     bin_mode="direct",
     not_found=TRexNotFoundError,
+    display_var="MOSAIC_TREX_DISPLAY",
 )
-"""Where TREx is launched from, as the environment alone describes it.
+"""Where TREx is launched from, as the machine's variables describe it.
 
-A caller that reaches a differently placed install states it once with
-``dataclasses.replace(TREX_ENV, conda_env="track", display=":99")`` and passes
-the result to whichever wrapper it calls.
+A caller reaching a differently placed install states it once with
+``TREX_ENV.placed(conda_env="track", display=":99")`` and passes the result to
+whichever wrapper it calls.
 """
 
 
@@ -128,33 +130,15 @@ def _trex_invocation(env: ToolEnv = TREX_ENV) -> list[str]:
     matters more here than for the other tools: TRex relaunches itself, and a
     self-relaunch has to find the real binary rather than a wrapper.
     """
-    return tool_invocation(
-        env,
-        executable=_TREX,
-        conda_env=env.conda_env,
-        bin_path=env.bin_path,
-    )
+    return tool_invocation(env, executable=_TREX)
 
 
-def _resolve_display(display: str | None) -> dict[str, str] | None:
-    """Return an env overlay setting ``DISPLAY`` for the trex subprocess.
-
-    TRex initialises a GLFW/OpenGL context even with ``-nowindow``, so it needs
-    a display. On a headless host run a virtual framebuffer (``Xvfb :99 ...``)
-    and either export ``DISPLAY`` (inherited automatically) or pass *display*
-    here. Falls back to the ``MOSAIC_TREX_DISPLAY`` env var; ``None`` means use
-    whatever ``DISPLAY`` is already in the environment.
-    """
-    d = display or os.environ.get("MOSAIC_TREX_DISPLAY")
-    return {"DISPLAY": d} if d else None
-
-
-def _is_nested(value: list[Any] | tuple[Any, ...]) -> bool:
+def _is_nested(value: Sequence[JsonValue]) -> bool:
     """Does this sequence contain a sequence or a mapping?"""
     return any(isinstance(item, (list, tuple, dict)) for item in value)
 
 
-def _build_args(params: dict[str, Any]) -> list[str]:
+def _build_args(params: dict[str, JsonValue]) -> list[str]:
     """Flatten a param dict into CLI ``-key value`` pairs.
 
     Booleans become bare flags (``-key``) when True and are omitted when
@@ -184,7 +168,7 @@ def _build_args(params: dict[str, Any]) -> list[str]:
             if _is_nested(value):
                 args.extend([f"-{key}", json.dumps(value, separators=(",", ":"))])
             else:
-                args.extend([f"-{key}", f"[{','.join(str(v) for v in value)}]"])
+                args.extend([f"-{key}", f"[{','.join(str(item) for item in value)}]"])
             continue
         if isinstance(value, dict):
             args.extend([f"-{key}", json.dumps(value, separators=(",", ":"))])
@@ -211,6 +195,11 @@ def _run_trex(
     is polled while TRex runs; if it fires, TRex's whole process group is
     killed (it relaunches itself, so a group kill is required) and
     :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
+
+    *idle_timeout* is an inactivity watchdog rather than a runtime ceiling:
+    TRex prints progress while it is healthy, so a live long run keeps resetting
+    it and a hung one does not. *max_runtime* is the absolute ceiling, and
+    ``None`` leaves that to the caller or the queue.
 
     The subprocess always runs in its own process group (killable, orphan-safe)
     via :func:`run_supervised`.
@@ -341,7 +330,7 @@ def run_trex_convert(
 
     # One path stays a bare string, several become T-Rex's `[a,b,c]` PathArray
     # literal -- which is what `_build_args` renders a flat list as already.
-    settings: dict[str, Any] = {
+    settings: dict[str, JsonValue] = {
         "i": str(sources[0]) if len(sources) == 1 else [str(p) for p in sources],
         "task": "convert",
         "nowindow": True,
@@ -366,7 +355,7 @@ def run_trex_convert(
         idle_timeout=params.idle_timeout,
         max_runtime=params.max_runtime,
         invocation=_trex_invocation(env),
-        env_overlay=_resolve_display(env.display),
+        env_overlay=display_overlay(env),
         cancel_check=cancel_check,
         on_output=on_output,
     )
@@ -400,7 +389,10 @@ def run_trex_convert(
     )
 
 
-TREX_DEFAULT_OUTPUT_FIELDS: Final[list[list[Any]]] = [
+# Each entry is the column's name beside the list of modifiers it is exported
+# under. Typed as the JSON values they are, because that is what they reach the
+# settings dictionary as; a list of lists is invariant and would not assign.
+TREX_DEFAULT_OUTPUT_FIELDS: Final[list[JsonValue]] = [
     ["X", ["RAW", "WCENTROID"]],
     ["Y", ["RAW", "WCENTROID"]],
     ["X", ["RAW", "HEAD"]],
@@ -447,7 +439,7 @@ shows up as a column vanishing from ``tracks/``, which
 """
 
 
-def pose_output_fields(n_keypoints: int) -> list[list[Any]]:
+def pose_output_fields(n_keypoints: int) -> list[JsonValue]:
     """The ``poseX<i>``/``poseY<i>`` entries for a model with *n_keypoints*.
 
     The naming is TREx's own: :func:`list_auto_pose_fields` builds exactly these
@@ -514,16 +506,8 @@ def run_trex_track(
         ``.pv``, so once a conversion is shared the implicit lookup finds
         nothing and says nothing. Passed as an absolute path it is honoured
         verbatim, and a named-but-missing file is an error rather than silence.
-    env : ToolEnv
-        Where T-Rex is launched from -- conda environment, binary, ``DISPLAY``.
-        Defaults to :data:`TREX_ENV`, which reads the machine's
-        ``MOSAIC_TREX_*`` variables. Placement never enters a run identifier.
-    cancel_check : callable, optional
-        Polled while T-Rex runs; if it fires, T-Rex's whole process group is
-        killed and ``ProcessCancelled`` propagates.
-    on_output : callable, optional
-        Called with each line T-Rex prints, which is the activity signal a
-        progress display and an in-flight claim are refreshed from.
+    env, cancel_check, on_output
+        As :func:`run_trex_convert` takes them.
 
     Returns
     -------
@@ -541,7 +525,7 @@ def run_trex_track(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    settings: dict[str, Any] = {
+    settings: dict[str, JsonValue] = {
         "i": str(pv_path),
         "task": "track",
         "nowindow": True,
@@ -576,7 +560,7 @@ def run_trex_track(
         idle_timeout=params.idle_timeout,
         max_runtime=params.max_runtime,
         invocation=_trex_invocation(env),
-        env_overlay=_resolve_display(env.display),
+        env_overlay=display_overlay(env),
         cancel_check=cancel_check,
         on_output=on_output,
     )
@@ -645,6 +629,17 @@ def run_trex_batch(
 
     Each video is converted to ``.pv`` format and then tracked, with
     output placed in a per-video subdirectory under *output_dir*.
+
+    One *params* drives both phases of every video, so each phase reads the
+    fields it declares: the conversion sends ``convert_extra_settings`` and the
+    detection knobs, the tracking sends ``track_extra_settings`` and the
+    tracking knobs, and ``track_max_individuals`` reaches both. Nothing about a
+    run is per video except the video, which is what makes the parallel form
+    safe.
+
+    This wrapper writes no run index, no markers and no tracks tables. It is the
+    plain loop for a notebook; :func:`mosaic.tracking.trex.run_trex` is the
+    tracked, resumable, dataset-addressed form.
 
     Parameters
     ----------

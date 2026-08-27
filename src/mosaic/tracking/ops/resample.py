@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key, text_cell
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.op_identity import op_run_id
@@ -42,7 +43,12 @@ from mosaic.core.pipeline.tracks_index import (
     select_variant_rows,
     write_tracks_row,
 )
-from mosaic.core.pipeline.types import Declared, OpParams, Params
+from mosaic.core.pipeline.types import (
+    HASH_EXCLUDE,
+    Declared,
+    OpParams,
+    Params,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -64,6 +70,12 @@ def resample_tracks_run_id(
     )
 
 
+_ENTRIES_DESCRIPTION = (
+    "Which (group, sequence) entries to re-grid. Unset covers every entry the "
+    "tracks index holds under the source variant; this op reads tables and "
+    "never opens media."
+)
+
 _TARGET_FPS_DESCRIPTION = (
     "The uniform frame rate every table is re-gridded onto, which is what "
     "makes one constant expressed in frames mean one duration dataset-wide."
@@ -75,10 +87,9 @@ _SOURCE_TRACKS_RUN_ID_DESCRIPTION = (
 )
 
 _PREFILTER_DESCRIPTION = (
-    "Reject a native sample whose displacement from its predecessor exceeds "
-    "this many table units per second before interpolating, so a mis-detection "
-    "is dropped instead of blended into its neighbors. Unset interpolates the "
-    "samples as they are."
+    "Displacement from the predecessor above which a native sample is rejected "
+    "before interpolating. A rejected mis-detection is dropped instead of "
+    "blended into its neighbors. Unset interpolates the samples as they are."
 )
 
 
@@ -93,23 +104,19 @@ class ResampleTracksParams(OpParams):
     discovery schema a client draws a form from, each one naming a knob this op
     cannot act on.
 
-    Attributes:
-        target_fps: The rate to place every table on.
-        source_tracks_run_id: Which variant to read. ``None`` resolves whichever
-            variant the scope's entries carry, and refuses when they carry two --
-            the same rule ``select_variant_rows`` applies everywhere else, because
-            a chained producer with two possible upstreams has no defensible
-            default.
-        prefilter: Reject native samples whose displacement from their
-            predecessor exceeds this many table units per second, before
-            interpolating -- so a mis-detection is dropped rather than blended
-            into its neighbours. ``None`` interpolates the samples as they are,
-            which is the default because the blend attenuates an outlier in the
-            output by exactly the factor it attenuates it in a downstream
-            detector: whatever a bad-frame gate then misses contributes less than
-            that gate's own threshold.
+    Two defaults carry an argument the field's own prose has no room for.
+    ``source_tracks_run_id`` unset applies the rule ``select_variant_rows``
+    applies everywhere else: a chained producer with two possible upstreams has
+    no defensible default, so it refuses rather than picking. ``prefilter``
+    unset is the default because the blend attenuates an outlier in the output
+    by exactly the factor it attenuates it in a downstream detector -- whatever
+    a bad-frame gate then misses contributes less than that gate's own
+    threshold.
     """
 
+    entries: Annotated[
+        list[Entry] | None, HASH_EXCLUDE, Declared(_ENTRIES_DESCRIPTION)
+    ] = None
     target_fps: Annotated[float, Declared(_TARGET_FPS_DESCRIPTION, unit="fps")]
     source_tracks_run_id: Annotated[
         str | None, Declared(_SOURCE_TRACKS_RUN_ID_DESCRIPTION)
