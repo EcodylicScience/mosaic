@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
+from mosaic.core.params import Declared
 from mosaic.core.strict_model import StrictModel
 
 __all__ = [
@@ -12,36 +13,92 @@ __all__ = [
     "SamplingConfig",
 ]
 
+_LINEAR_INTERP_LIMIT_DESCRIPTION = (
+    "Maximum run of consecutive missing values filled by linear interpolation."
+)
+
+_EDGE_FILL_LIMIT_DESCRIPTION = (
+    "Maximum run of consecutive missing values forward-filled, then "
+    "back-filled, after interpolation leaves them unresolved."
+)
+
+_MAX_MISSING_FRACTION_DESCRIPTION = (
+    "Fraction of missing columns above which a row is dropped entirely."
+)
+
+_FPS_DEFAULT_DESCRIPTION = (
+    "Frame rate used when the data's fps column is absent or does not "
+    "resolve to exactly one value."
+)
+
+_SMOOTH_WIN_DESCRIPTION = (
+    "Length of the moving-average window applied to smooth position and "
+    "angle values before feature computation. A value of 1 or less "
+    "disables smoothing."
+)
+
+_POOL_SIZE_DESCRIPTION = (
+    "Number of candidates collected before selecting the final templates. "
+    "Unset sets the pool to the target template count, so selection makes "
+    "no reduction."
+)
+
+_ALLOCATION_DESCRIPTION = (
+    "How the per-entry quota for the pool is computed. reservoir performs "
+    "weighted reservoir sampling in one pass. exact counts rows first, "
+    "then samples a second pass with proportional quotas."
+)
+
+_MAX_ENTRY_FRACTION_DESCRIPTION = (
+    "Cap on one entry's contribution to the pool, as a fraction of the "
+    "pool size. Unset applies no cap, so each entry's share is "
+    "proportional to its row count. The effective cap never drops below "
+    "one divided by the number of entries seen so far, so the pool can "
+    "still fill completely."
+)
+
 
 class InterpolationConfig(StrictModel):
     """Interpolation parameters for missing pose/position data.
 
     Attributes:
-        linear_interp_limit: Max consecutive NaN frames to fill via linear
-            interpolation. Default 10, must be >= 1.
-        edge_fill_limit: Max frames to forward/backward fill at sequence edges.
-            Default 3, must be >= 0.
-        max_missing_fraction: Rows with a higher fraction of NaN columns are
-            dropped entirely. Default 0.10, range [0, 1].
+        linear_interp_limit: Maximum run of consecutive missing values filled
+            by linear interpolation.
+        edge_fill_limit: Maximum run of consecutive missing values
+            forward-filled, then back-filled, after interpolation leaves them
+            unresolved.
+        max_missing_fraction: Fraction of missing columns above which a row
+            is dropped entirely.
     """
 
-    linear_interp_limit: int = Field(default=10, ge=1)
-    edge_fill_limit: int = Field(default=3, ge=0)
-    max_missing_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
+    linear_interp_limit: Annotated[
+        int, Declared(_LINEAR_INTERP_LIMIT_DESCRIPTION, unit="frames")
+    ] = Field(default=10, ge=1)
+    edge_fill_limit: Annotated[
+        int, Declared(_EDGE_FILL_LIMIT_DESCRIPTION, unit="frames")
+    ] = Field(default=3, ge=0)
+    max_missing_fraction: Annotated[
+        float, Declared(_MAX_MISSING_FRACTION_DESCRIPTION)
+    ] = Field(default=0.10, ge=0.0, le=1.0)
 
 
 class SamplingConfig(StrictModel):
     """Frame rate and temporal smoothing parameters.
 
     Attributes:
-        fps_default: Fallback frames-per-second when the data does not carry an
-            fps column. Default 30.0, must be > 0.
-        smooth_win: Moving-average window size applied to pose coordinates
-            before feature computation. 0 disables smoothing. Default 0.
+        fps_default: Frame rate used when the data's fps column is absent
+            or does not resolve to exactly one value.
+        smooth_win: Length of the moving-average window applied to smooth
+            position and angle values before feature computation. A value
+            of 1 or less disables smoothing.
     """
 
-    fps_default: float = Field(default=30.0, gt=0)
-    smooth_win: int = Field(default=0, ge=0)
+    fps_default: Annotated[float, Declared(_FPS_DEFAULT_DESCRIPTION, unit="fps")] = (
+        Field(default=30.0, gt=0)
+    )
+    smooth_win: Annotated[int, Declared(_SMOOTH_WIN_DESCRIPTION, unit="frames")] = (
+        Field(default=0, ge=0)
+    )
 
 
 class PoolConfig(StrictModel):
@@ -51,20 +108,24 @@ class PoolConfig(StrictModel):
     allocated before the final template selection step.
 
     Attributes:
-        size: Candidate pool size. For "random" strategy, defaults to
-            n_templates (pool == output). For "farthest_first", should
-            be larger (e.g. n_templates * 3).
-        allocation: How per-entry quotas are computed.
-            "reservoir": weighted reservoir sampling, single pass.
-            "exact": two-pass -- first counts rows, second samples
-            with exact proportional quotas.
-            Default "reservoir".
-        max_entry_fraction: Cap per entry as fraction of pool size.
-            None means no cap (purely proportional). At runtime,
-            effective cap is max(max_entry_fraction, 1 / n_entries)
-            so the pool can always be filled completely. Default None.
+        size: Number of candidates collected before selecting the final
+            templates. Unset sets the pool to the target template count,
+            so selection makes no reduction.
+        allocation: How the per-entry quota for the pool is computed.
+            reservoir performs weighted reservoir sampling in one pass.
+            exact counts rows first, then samples a second pass with
+            proportional quotas.
+        max_entry_fraction: Cap on one entry's contribution to the pool, as
+            a fraction of the pool size. Unset applies no cap, so each
+            entry's share is proportional to its row count. The effective
+            cap never drops below one divided by the number of entries
+            seen so far, so the pool can still fill completely.
     """
 
-    size: int | None = None
-    allocation: Literal["reservoir", "exact"] = "reservoir"
-    max_entry_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+    size: Annotated[int | None, Declared(_POOL_SIZE_DESCRIPTION)] = None
+    allocation: Annotated[
+        Literal["reservoir", "exact"], Declared(_ALLOCATION_DESCRIPTION)
+    ] = "reservoir"
+    max_entry_fraction: Annotated[
+        float | None, Declared(_MAX_ENTRY_FRACTION_DESCRIPTION)
+    ] = Field(default=None, ge=0.0, le=1.0)

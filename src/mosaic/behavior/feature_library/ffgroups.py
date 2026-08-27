@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
 
@@ -162,7 +162,7 @@ def _get_events_info(
     """Label rows with event IDs for detected fission-fusion events.
 
     Returns a DataFrame containing only the rows that belong to an event,
-    with an added ``"event"`` column holding the integer event label.
+    with an added ``"event"`` column that records the integer event label.
     """
     events = _find_events(
         df, minimal_length=threshold_ev_duration, frame_col=frame_col, id_col=id_col
@@ -185,6 +185,21 @@ def _get_events_info(
     return result.reset_index(drop=True)
 
 
+_DISTANCE_CUTOFF_DESCRIPTION = (
+    "The pairwise distance below which two individuals are linked. A "
+    "group is a connected component of those links."
+)
+
+_WINDOW_SIZE_DESCRIPTION = (
+    "The sliding-window size for smoothing the pairwise distance matrix "
+    "before thresholding. Must be an odd number."
+)
+
+_MIN_EVENT_DURATION_DESCRIPTION = (
+    "The minimum span, last frame minus first, of a stable subgroup's "
+    "contiguous run for it to be registered as an event."
+)
+
 # --- Feature class ---
 
 
@@ -200,13 +215,8 @@ class FFGroups:
       - group_size (size of that component)
       - event (event id from dp.get_events_info, -1 if not in an event)
 
-    Params:
-        distance_cutoff: Pairwise distance threshold below which two
-            animals are considered in the same group. Default: 50.0.
-        window_size: Sliding-window size (frames) for smoothing the
-            pairwise distance matrix before thresholding. Default: 5.
-        min_event_duration: Minimum number of contiguous frames for a
-            stable subgroup to be registered as an event. Default: 1.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.ffgroups.FFGroups.Params`.
     """
 
     category = "per-frame"
@@ -222,9 +232,15 @@ class FFGroups:
         pass
 
     class Params(Params):
-        distance_cutoff: float = Field(default=50.0, gt=0)
-        window_size: int = Field(default=5, ge=1)
-        min_event_duration: int = Field(default=1, ge=1)
+        distance_cutoff: Annotated[
+            float, Declared(_DISTANCE_CUTOFF_DESCRIPTION, unit="px")
+        ] = Field(default=50.0, gt=0)
+        window_size: Annotated[
+            int, Declared(_WINDOW_SIZE_DESCRIPTION, unit="frames")
+        ] = Field(default=5, ge=1)
+        min_event_duration: Annotated[
+            int, Declared(_MIN_EVENT_DURATION_DESCRIPTION, unit="frames")
+        ] = Field(default=1, ge=1)
 
     def __init__(
         self,

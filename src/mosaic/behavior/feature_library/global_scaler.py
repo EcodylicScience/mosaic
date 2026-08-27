@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, final
 
 import numpy as np
 import pandas as pd
@@ -20,11 +20,22 @@ from mosaic.core.pipeline.types import (
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
+    TemplatesRef,
 )
+from mosaic.core.params import Declared
 
 from .helpers import ensure_columns
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
+
+_TEMPLATES_DESCRIPTION = (
+    "The templates artifact to fit the scaler on. Mutually exclusive with model."
+)
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted scaler model artifact to load, skipping the fit. Mutually "
+    "exclusive with templates."
+)
 
 
 class ScalerModelBundle(TypedDict):
@@ -58,11 +69,8 @@ class GlobalScaler:
     producing templates.parquet). Produces a scaler model bundle and
     scaled templates.
 
-    Params:
-        templates: Templates artifact to fit the scaler on (inherited
-            from GlobalModelParams).
-        model: Pre-fitted ScalerModelArtifact to load (skip fit).
-            Default: ScalerModelArtifact().
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.global_scaler.GlobalScaler.Params`.
     """
 
     category = "global"
@@ -80,14 +88,12 @@ class GlobalScaler:
         _require: ClassVar[InputRequire] = "any"
 
     class Params(GlobalModelParams[ScalerModelArtifact]):
-        """GlobalScaler parameters.
-
-        Attributes:
-            templates: Templates artifact to fit scaler on.
-            model: Pre-fitted scaler model artifact (skip fit).
-        """
-
-        model: ScalerModelArtifact | None = Field(default_factory=ScalerModelArtifact)
+        templates: Annotated[TemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)] = (
+            None
+        )
+        model: Annotated[ScalerModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = (
+            Field(default_factory=ScalerModelArtifact)
+        )
 
     def __init__(
         self,

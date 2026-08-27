@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import ClassVar, Literal, TypedDict, final
+from typing import Annotated, ClassVar, Literal, TypedDict, final
 
 import numpy as np
 import pandas as pd
@@ -21,9 +21,73 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.core.params import Declared
 
 from .helpers import ensure_columns, feature_columns, meta_columns
 from .registry import register_feature
+
+_TEMPLATES_DESCRIPTION = (
+    "The labeled templates artifact to train on. Mutually exclusive with model."
+)
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted XgboostModelArtifact to load, skipping training. Mutually "
+    "exclusive with templates."
+)
+
+_STRATEGY_DESCRIPTION = (
+    "The classification strategy. multiclass fits one multi-class model. "
+    "one_vs_rest fits one binary classifier per class."
+)
+
+_DECISION_THRESHOLD_DESCRIPTION = (
+    "Unset, the predicted class is the class with the highest probability. "
+    "A float applies one probability threshold to every class, and a "
+    "mapping from class to threshold applies a per-class one. Any row "
+    "where no class clears its threshold is assigned default_class."
+)
+
+_DEFAULT_CLASS_DESCRIPTION = (
+    "The class assigned to a row where decision_threshold is set and no "
+    "class clears its threshold."
+)
+
+_CLASS_WEIGHT_DESCRIPTION = (
+    "Unset, every training sample is weighted equally. balanced weights "
+    "each sample inversely to its class's frequency."
+)
+
+_USE_SMOTE_DESCRIPTION = (
+    "Apply SMOTE oversampling to the training set, after any "
+    "undersample_ratio undersampling."
+)
+
+_UNDERSAMPLE_RATIO_DESCRIPTION = (
+    "Unset, no class is undersampled before training. Set, every class "
+    "larger than the minority class is undersampled to this many times "
+    "the minority class's size, never below the minority class's own "
+    "size."
+)
+
+_N_ESTIMATORS_DESCRIPTION = "The number of boosting rounds the model fits."
+
+_MAX_DEPTH_DESCRIPTION = "The maximum depth of each boosted tree."
+
+_LEARNING_RATE_DESCRIPTION = (
+    "The boosting learning rate (XGBoost's eta), scaling each tree's "
+    "contribution to the ensemble."
+)
+
+_SUBSAMPLE_DESCRIPTION = (
+    "The fraction of training rows sampled for each boosting round."
+)
+
+_COLSAMPLE_BYTREE_DESCRIPTION = "The fraction of feature columns sampled for each tree."
+
+_RANDOM_STATE_DESCRIPTION = (
+    "The random seed for XGBoost training and, when enabled, for "
+    "undersampling and SMOTE."
+)
 
 
 class XgboostModelBundle(TypedDict):
@@ -50,32 +114,8 @@ class XgboostFeature:
     Trains on labeled templates (from ExtractLabeledTemplates) and runs
     per-sequence inference. Supports multiclass and one-vs-rest strategies.
 
-    Params:
-        model: Pre-fitted XgboostModelArtifact to load (skip training).
-            Default: XgboostModelArtifact().
-        strategy: Classification strategy — "multiclass" trains a single
-            multi-class model; "one_vs_rest" trains one binary classifier
-            per class. Default: "multiclass".
-        decision_threshold: Probability threshold(s) for positive
-            prediction. A float applies to all classes; a dict maps
-            class -> threshold. None uses argmax. Default: None.
-        default_class: Class label assigned when no class exceeds the
-            decision threshold (required).
-        class_weight: If "balanced", adjust sample weights inversely
-            proportional to class frequency. Default: "balanced".
-        use_smote: If True, apply SMOTE oversampling to the training
-            set. Default: False.
-        undersample_ratio: If set, undersample majority classes to this
-            ratio relative to the minority class before SMOTE.
-            Default: None.
-        n_estimators: Number of boosting rounds. Default: 100.
-        max_depth: Maximum tree depth. Default: 6.
-        learning_rate: Boosting learning rate. Default: 0.1.
-        subsample: Fraction of training samples used per tree.
-            Default: 0.8.
-        colsample_bytree: Fraction of features used per tree.
-            Default: 0.8.
-        random_state: Random seed for reproducibility. Default: 42.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.xgboost_feature.XgboostFeature.Params`.
     """
 
     category = "global"
@@ -92,19 +132,43 @@ class XgboostFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(GlobalModelParams[XgboostModelArtifact, LabeledTemplatesRef]):
-        model: XgboostModelArtifact | None = Field(default_factory=XgboostModelArtifact)
-        strategy: Literal["multiclass", "one_vs_rest"] = "multiclass"
-        decision_threshold: float | Mapping[int, float] | None = None
-        default_class: int
-        class_weight: Literal["balanced"] | None = "balanced"
-        use_smote: bool = False
-        undersample_ratio: float | None = None
-        n_estimators: int = Field(default=100, ge=1)
-        max_depth: int = Field(default=6, ge=1)
-        learning_rate: float = Field(default=0.1, gt=0)
-        subsample: float = Field(default=0.8, gt=0, le=1)
-        colsample_bytree: float = Field(default=0.8, gt=0, le=1)
-        random_state: int = 42
+        templates: Annotated[
+            LabeledTemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)
+        ] = None
+        model: Annotated[XgboostModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = (
+            Field(default_factory=XgboostModelArtifact)
+        )
+        strategy: Annotated[
+            Literal["multiclass", "one_vs_rest"], Declared(_STRATEGY_DESCRIPTION)
+        ] = "multiclass"
+        decision_threshold: Annotated[
+            float | Mapping[int, float] | None,
+            Declared(_DECISION_THRESHOLD_DESCRIPTION),
+        ] = None
+        default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)]
+        class_weight: Annotated[
+            Literal["balanced"] | None, Declared(_CLASS_WEIGHT_DESCRIPTION)
+        ] = "balanced"
+        use_smote: Annotated[bool, Declared(_USE_SMOTE_DESCRIPTION)] = False
+        undersample_ratio: Annotated[
+            float | None, Declared(_UNDERSAMPLE_RATIO_DESCRIPTION)
+        ] = None
+        n_estimators: Annotated[int, Declared(_N_ESTIMATORS_DESCRIPTION)] = Field(
+            default=100, ge=1
+        )
+        max_depth: Annotated[int, Declared(_MAX_DEPTH_DESCRIPTION)] = Field(
+            default=6, ge=1
+        )
+        learning_rate: Annotated[float, Declared(_LEARNING_RATE_DESCRIPTION)] = Field(
+            default=0.1, gt=0
+        )
+        subsample: Annotated[float, Declared(_SUBSAMPLE_DESCRIPTION)] = Field(
+            default=0.8, gt=0, le=1
+        )
+        colsample_bytree: Annotated[float, Declared(_COLSAMPLE_BYTREE_DESCRIPTION)] = (
+            Field(default=0.8, gt=0, le=1)
+        )
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
 
     def __init__(
         self,

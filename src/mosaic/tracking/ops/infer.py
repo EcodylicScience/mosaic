@@ -229,14 +229,38 @@ class PoseInferParams(_InferParamsBase):
     pass
 
 
+_DOR_DESCRIPTION = (
+    "The Distance of Reference threshold POLO evaluated against at training time."
+)
+
+_DOR_UNWIRED = (
+    "reaches no inference argument, though it still enters the run identifier"
+)
+
+
 class PointInferParams(_InferParamsBase):
-    dor: float = 0.8
+    dor: Annotated[float, Declared(_DOR_DESCRIPTION, unwired=_DOR_UNWIRED)] = 0.8
+
+
+_NUM_CLASSES_DESCRIPTION = (
+    "How many output heatmap channels the localizer network has. Must "
+    "match the architecture the referenced model was trained with."
+)
+
+_INITIAL_CHANNELS_DESCRIPTION = (
+    "Base channel width of the localizer network. Must match the "
+    "architecture the referenced model was trained with."
+)
+
+_THRESHOLDS_DESCRIPTION = (
+    "Minimum confidence a detected peak must reach, applied to every class."
+)
 
 
 class LocalizerInferParams(_InferParamsBase):
-    num_classes: int = 4
-    initial_channels: int = 32
-    thresholds: float = 0.5
+    num_classes: Annotated[int, Declared(_NUM_CLASSES_DESCRIPTION)] = 4
+    initial_channels: Annotated[int, Declared(_INITIAL_CHANNELS_DESCRIPTION)] = 32
+    thresholds: Annotated[float, Declared(_THRESHOLDS_DESCRIPTION)] = 0.5
 
 
 # --- Shared machinery ----------------------------------------------------

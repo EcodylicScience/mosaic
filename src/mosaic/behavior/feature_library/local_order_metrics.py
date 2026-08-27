@@ -15,7 +15,7 @@ sizes even as the global state changes.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Self, TypeAlias, final
+from typing import Annotated, Literal, Self, TypeAlias, final
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .collective_math import (
     HeadingSource,
@@ -74,6 +74,69 @@ EMITTED_COLUMNS: frozenset[str] = frozenset(
 
 # Columns whose presence means each individual appears more than once per frame.
 _PAIR_MARKERS = ("id1", "id2", "perspective")
+
+_RADIUS_DESCRIPTION = (
+    "The neighborhood radius, in the unit radius_units selects. mosaic "
+    "tracks record no physical scale, and this field has no default."
+)
+
+_RADIUS_UNITS_DESCRIPTION = (
+    "How radius is interpreted. Known values are position and body_scale. "
+    "position reads radius directly in X/Y units. body_scale multiplies it "
+    "by the sequence's mean body-scale output, the median pairwise "
+    "distance among an individual's finite keypoints rather than a fixed "
+    "body length."
+)
+
+_BODY_SCALE_DESCRIPTION = (
+    "Reference to the upstream body-scale run. Required when radius_units "
+    "is body_scale, and left unset when radius_units is position so no "
+    "dependency is resolved."
+)
+
+_HEADING_SOURCE_DESCRIPTION = (
+    "Which signal defines each individual's heading. Known values are "
+    "auto, orientation and velocity. auto uses the ANGLE column when it "
+    "contains a finite value, falling back to a velocity-derived heading "
+    "otherwise. orientation requires a usable ANGLE column and raises "
+    "otherwise. velocity always derives heading from motion."
+)
+
+_N_SHELLS_DESCRIPTION = (
+    "The number of concentric shells the group is divided into about its "
+    "center of mass."
+)
+
+_N_PERIPHERAL_DESCRIPTION = (
+    "How many of the most peripheral individuals define the group's outer "
+    "radius, by their median distance to center."
+)
+
+_MIN_NEIGHBORS_DESCRIPTION = (
+    "The minimum number of heading-valid neighbors within the disc for "
+    "the local order metrics to be finite for that individual. Only "
+    "neighbors with a usable heading count, excluding one with a valid "
+    "position alone. Below the minimum, local polarization is NaN "
+    "instead of a value computed over the focal individual alone."
+)
+
+_SUBGROUP_COL_DESCRIPTION = (
+    "Confine every disc, centroid, group outer radius and shell to rows "
+    "sharing this column's value. Unset, one neighborhood spans the whole "
+    "frame. May not name a metadata or emitted column."
+)
+
+_FILTER_EXPR_DESCRIPTION = (
+    "A pandas DataFrame.query expression selecting which rows remain. "
+    "Applied after headings are computed. An excluded row does not "
+    "change its successor's heading."
+)
+
+_EXCLUDE_COLS_DESCRIPTION = (
+    "Boolean columns whose truthy rows are dropped, applied after "
+    "headings are computed like filter_expr. A name absent from the "
+    "input is ignored."
+)
 
 
 @final
@@ -124,45 +187,21 @@ class LocalOrderMetrics:
       - ``shell_radial_rotation``: mean ``radial_rotation_self`` over the shell,
         broadcast to each of its members
 
-    Params:
-        radius: Neighborhood radius. **Required, deliberately.** The paper's is
-            three body lengths (15.6 cm at BL = 5.2 cm), but mosaic tracks are in
-            pixels for every pixel-space converter and the schema records no
-            units. A defaulted unit-bearing radius would produce a fully
-            populated, entirely wrong table on any dataset at a different scale,
-            with no error to notice.
-        radius_units: ``"position"`` (default) reads ``radius`` in X/Y units.
-            ``"body_scale"`` multiplies it by the sequence's mean ``body-scale``
-            output -- which is the median pairwise distance among an individual's
-            *finite* keypoints, not a body length, and the keypoint set varies
-            per row so there is no fixed ratio to one. Calibrate by running
-            ``body-scale``, reading its mean, and dividing the physical radius
-            you want by that.
-        body_scale: Reference to the upstream ``body-scale`` run; required under
-            ``radius_units="body_scale"``. Pass the whole model
-            (``{"feature": ..., "run_id": ...}``), not a partial dict: this field
-            has no default to merge onto, deliberately, so a ``"position"`` run
-            does not resolve a dependency it never uses.
-        heading_source: As ``collective-motion-metrics``. ``ANGLE`` is radians.
-            A head/tail identity flip inverts that individual's heading and
-            destroys its local polarization; running once with ``"orientation"``
-            and once with ``"velocity"`` and comparing is a cheap diagnostic.
-        n_shells: Concentric shells about the center of mass. Default 6, the
-            paper's.
-        n_peripheral: Individuals whose median distance-to-center defines
-            ``R_out``. Default 5, the paper's.
-        min_neighbors: Minimum heading-valid *other* disc members for the local
-            metrics to be emitted. Default 1. Gating on the heading-valid count
-            rather than the position-valid one matters: a focal with three
-            neighbors none of whom has a usable heading would otherwise report
-            a local polarization of 1.0 computed over itself alone.
-        subgroup_col: Confines every disc, centroid, ``R_out`` and shell to one
-            subgroup. Default None.
-        filter_expr: ``DataFrame.query`` filter. Applied *after* headings are
-            computed, so excluding a row cannot change its successor's heading.
-        exclude_cols: Boolean columns whose truthy rows are dropped, same timing.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.local_order_metrics.LocalOrderMetrics.Params`.
 
     Notes:
+        Calibrate ``radius`` under ``radius_units="body_scale"`` by running
+        ``body-scale``, reading its mean, and dividing the desired physical
+        radius by that mean. ``body_scale`` takes the whole model, for
+        example ``{"feature": ..., "run_id": ...}``. This field has no
+        default to merge a partial dict onto.
+
+        ``heading_source`` reads the ``ANGLE`` column, which is radians.
+
+        ``n_shells`` and ``n_peripheral`` default to 6 and 5, the paper's
+        values.
+
         ``local_rotation`` averages each disc member's rotation about the
         **group** center, not about a per-focal local center of mass. Inside a
         mill of radius R much larger than the disc radius every disc member moves
@@ -214,18 +253,30 @@ class LocalOrderMetrics:
         pass
 
     class Params(Params):
-        """Local-order-metrics parameters. See the class docstring."""
-
-        radius: float = Field(gt=0)
-        radius_units: RadiusUnits = "position"
-        body_scale: BodyScaleResult | None = None
-        heading_source: HeadingSource = "auto"
-        n_shells: int = Field(default=6, ge=1)
-        n_peripheral: int = Field(default=5, ge=1)
-        min_neighbors: int = Field(default=1, ge=0)
-        subgroup_col: str | None = None
-        filter_expr: str | None = None
-        exclude_cols: list[str] = Field(default_factory=list)
+        radius: Annotated[float, Declared(_RADIUS_DESCRIPTION)] = Field(gt=0)
+        radius_units: Annotated[RadiusUnits, Declared(_RADIUS_UNITS_DESCRIPTION)] = (
+            "position"
+        )
+        body_scale: Annotated[
+            BodyScaleResult | None, Declared(_BODY_SCALE_DESCRIPTION)
+        ] = None
+        heading_source: Annotated[
+            HeadingSource, Declared(_HEADING_SOURCE_DESCRIPTION)
+        ] = "auto"
+        n_shells: Annotated[int, Declared(_N_SHELLS_DESCRIPTION)] = Field(
+            default=6, ge=1
+        )
+        n_peripheral: Annotated[int, Declared(_N_PERIPHERAL_DESCRIPTION)] = Field(
+            default=5, ge=1
+        )
+        min_neighbors: Annotated[int, Declared(_MIN_NEIGHBORS_DESCRIPTION)] = Field(
+            default=1, ge=0
+        )
+        subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+        filter_expr: Annotated[str | None, Declared(_FILTER_EXPR_DESCRIPTION)] = None
+        exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
 
         @model_validator(mode="after")
         def _check(self) -> Self:

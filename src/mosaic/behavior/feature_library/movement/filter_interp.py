@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -14,10 +15,42 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInputs,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from ..registry import register_feature
 from .convert import _ensure_movement, from_movement_dataset, to_movement_dataset
+
+_CONFIDENCE_THRESHOLD_DESCRIPTION = (
+    "Confidence cutoff below which a point is set to NaN. Skipped when "
+    "the input has no confidence columns."
+)
+
+_INTERPOLATION_METHOD_DESCRIPTION = (
+    "Method used to interpolate over NaN gaps in position data. Known "
+    "values are linear, nearest, zero, slinear, quadratic, cubic, "
+    "quintic, polynomial, barycentric, krogh, pchip, spline, akima and "
+    "makima."
+)
+
+_MAX_GAP_DESCRIPTION = (
+    "The longest gap that is interpolated. Unset, gaps of any length are interpolated."
+)
+
+_INCLUDE_CENTROID_DESCRIPTION = (
+    "Include the body center (X, Y) as an additional keypoint named "
+    "centroid, alongside the pose keypoints."
+)
+
+_FPS_DESCRIPTION = (
+    "Frame rate used for the movement dataset's time dimension. Unset, "
+    "the time dimension uses frame numbers instead of seconds."
+)
+
+_KEYPOINT_NAMES_DESCRIPTION = (
+    "Names for the pose keypoints, one per poseX/poseY column pair in "
+    "column order. Unset, they are named keypoint_0, keypoint_1, and so "
+    "on."
+)
 
 
 @final
@@ -49,12 +82,41 @@ class MovementFilterInterpolate:
         pass
 
     class Params(Params):
-        confidence_threshold: float = 0.6
-        interpolation_method: str = "linear"
-        max_gap: int | None = None
-        include_centroid: bool = True
-        fps: float | None = None
-        keypoint_names: list[str] | None = None
+        confidence_threshold: Annotated[
+            float, Declared(_CONFIDENCE_THRESHOLD_DESCRIPTION)
+        ] = 0.6
+        interpolation_method: Annotated[
+            str,
+            Field(
+                examples=[
+                    "linear",
+                    "nearest",
+                    "zero",
+                    "slinear",
+                    "quadratic",
+                    "cubic",
+                    "quintic",
+                    "polynomial",
+                    "barycentric",
+                    "krogh",
+                    "pchip",
+                    "spline",
+                    "akima",
+                    "makima",
+                ]
+            ),
+            Declared(_INTERPOLATION_METHOD_DESCRIPTION),
+        ] = "linear"
+        max_gap: Annotated[
+            int | None, Declared(_MAX_GAP_DESCRIPTION, unit="frames")
+        ] = None
+        include_centroid: Annotated[bool, Declared(_INCLUDE_CENTROID_DESCRIPTION)] = (
+            True
+        )
+        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = None
+        keypoint_names: Annotated[
+            list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
+        ] = None
 
     def __init__(
         self,

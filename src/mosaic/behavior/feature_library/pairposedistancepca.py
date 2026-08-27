@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import TypedDict, final
+from typing import Annotated, TypedDict, final
 
 import joblib
 import numpy as np
@@ -23,11 +23,42 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature
 from .types import InterpolationConfig
+
+_INTERPOLATION_DESCRIPTION = "Interpolation settings for missing pose data."
+
+_POSE_DESCRIPTION = "Pose keypoint configuration: indices and column prefixes."
+
+_INCLUDE_INTRA_A_DESCRIPTION = (
+    "Include the pairwise distances between the focal individual's own keypoints."
+)
+
+_INCLUDE_INTRA_B_DESCRIPTION = (
+    "Include the pairwise distances between the other individual's own keypoints."
+)
+
+_INCLUDE_INTER_DESCRIPTION = (
+    "Include the pairwise distances between the focal individual's "
+    "keypoints and the other individual's keypoints."
+)
+
+_DUPLICATE_PERSPECTIVE_DESCRIPTION = (
+    "Emit each pair twice, once with each individual as id1, the focal "
+    "one. False emits only the row set with the lower-id individual as "
+    "id1."
+)
+
+_N_COMPONENTS_DESCRIPTION = "The number of principal components the PCA retains."
+
+_BATCH_SIZE_DESCRIPTION = (
+    "How many pair-frames are read per batch. duplicate_perspective "
+    "doubles the rows each IncrementalPCA partial_fit or transform call "
+    "receives."
+)
 
 
 class PairPoseDistancePCABundle(TypedDict):
@@ -65,22 +96,8 @@ class PairPoseDistancePCA:
     and ``perspective`` says which ordering, so the key is
     ``(frame, id1, id2, perspective)``.
 
-    Params:
-        interpolation: Interpolation settings for missing pose data.
-            Default: InterpolationConfig().
-        pose: Pose keypoint configuration (indices, column prefixes).
-            Default: PoseConfig().
-        include_intra_A: If True, include intra-animal A pairwise
-            keypoint distances. Default: True.
-        include_intra_B: If True, include intra-animal B pairwise
-            keypoint distances. Default: True.
-        include_inter: If True, include inter-animal pairwise keypoint
-            distances. Default: True.
-        duplicate_perspective: If True, output both A->B and B->A
-            perspectives per pair. Default: True.
-        n_components: Number of PCA components to retain. Default: 6.
-        batch_size: Batch size for IncrementalPCA partial_fit.
-            Default: 5000.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA.Params`.
     """
 
     category = "per-frame"
@@ -96,14 +113,22 @@ class PairPoseDistancePCA:
         pass
 
     class Params(Params):
-        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
-        pose: PoseConfig = Field(default_factory=PoseConfig)
-        include_intra_A: bool = True
-        include_intra_B: bool = True
-        include_inter: bool = True
-        duplicate_perspective: bool = True
-        n_components: int = 6
-        batch_size: int = Field(default=5000, gt=0)
+        interpolation: Annotated[
+            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+        ] = Field(default_factory=InterpolationConfig)
+        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+            default_factory=PoseConfig
+        )
+        include_intra_A: Annotated[bool, Declared(_INCLUDE_INTRA_A_DESCRIPTION)] = True
+        include_intra_B: Annotated[bool, Declared(_INCLUDE_INTRA_B_DESCRIPTION)] = True
+        include_inter: Annotated[bool, Declared(_INCLUDE_INTER_DESCRIPTION)] = True
+        duplicate_perspective: Annotated[
+            bool, Declared(_DUPLICATE_PERSPECTIVE_DESCRIPTION)
+        ] = True
+        n_components: Annotated[int, Declared(_N_COMPONENTS_DESCRIPTION)] = 6
+        batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = Field(
+            default=5000, gt=0
+        )
 
     def __init__(
         self,

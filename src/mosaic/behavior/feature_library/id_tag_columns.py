@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -17,9 +17,29 @@ from mosaic.core.pipeline.types import (
     LabelsSource,
     TrackInputs,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
+
+_LABELS_DESCRIPTION = (
+    "The label dependency to load. Its kind is kept in sync with "
+    "label_kind, which overwrites it when the two differ."
+)
+
+_LABEL_KIND_DESCRIPTION = (
+    "The labels/<kind> subdirectory read for dependency resolution. "
+    "Overwrites labels.kind at construction when the two differ."
+)
+
+_FIELDS_DESCRIPTION = (
+    "Which label fields to attach as columns. Unset, every field found "
+    "in the labels file is attached."
+)
+
+_FIELD_RENAMES_DESCRIPTION = (
+    "A mapping from a label field's original name to its output column "
+    "name. Unset, every field keeps its original name."
+)
 
 
 @final
@@ -32,15 +52,8 @@ class IdTagColumns:
     Outputs per row (same granularity as input tracks/feature):
       frame/time/id/group/sequence + one column per requested label field.
 
-    Params:
-        labels: LabelsSource specifying which labels directory to load.
-            Default: LabelsSource(kind="id_tags").
-        label_kind: Label subdirectory name used for dependency
-            resolution. Default: "id_tags".
-        fields: List of label field names to attach. None means all
-            fields found in the labels file. Default: None.
-        field_renames: Optional mapping of original field names to
-            renamed column names in the output. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.id_tag_columns.IdTagColumns.Params`.
     """
 
     category = "tag"
@@ -56,12 +69,18 @@ class IdTagColumns:
         pass
 
     class Params(Params):
-        labels: LabelsSource = Field(
+        labels: Annotated[LabelsSource, Declared(_LABELS_DESCRIPTION)] = Field(
             default_factory=lambda: LabelsSource(kind="id_tags")
         )
-        label_kind: str = "id_tags"
-        fields: list[str] | None = None
-        field_renames: dict[str, str] | None = None
+        label_kind: Annotated[
+            str,
+            Field(examples=["behavior", "id_tags"]),
+            Declared(_LABEL_KIND_DESCRIPTION),
+        ] = "id_tags"
+        fields: Annotated[list[str] | None, Declared(_FIELDS_DESCRIPTION)] = None
+        field_renames: Annotated[
+            dict[str, str] | None, Declared(_FIELD_RENAMES_DESCRIPTION)
+        ] = None
 
     def __init__(
         self,

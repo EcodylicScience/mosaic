@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 
+from pydantic import Field
+
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
@@ -22,6 +24,7 @@ from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
@@ -47,34 +50,102 @@ LitposeModelType = Literal[
     "heatmap", "heatmap_mhcrnn", "regression", "heatmap_multiview_transformer"
 ]
 """Which prediction head. ``heatmap_mhcrnn`` adds temporal context over five
-frames; the multiview transformer is for synchronised cameras."""
+frames; the multiview transformer is for synchronized cameras."""
+
+
+_PROJECT_DESCRIPTION = (
+    "A Lightning Pose project directory, written with the labeled data to "
+    "train on. Its config.yaml supplies only the data half of the training "
+    "configuration."
+)
+
+_BASE_CONFIG_DESCRIPTION = (
+    "The complete Lightning Pose config to train from, dataset-relative or "
+    "absolute. Unset uses the template config included with mosaic. The "
+    "project's own config.yaml supplies the data half and is merged over "
+    "it."
+)
+
+_BASE_MODEL_DESCRIPTION = (
+    "Weights to fine-tune from, as a path or as the run id of the training "
+    "op that produced them. Identity records the training run id when the "
+    "reference is one, and the weights' content digest when it is a bare "
+    "path."
+)
+
+_MODEL_TYPE_DESCRIPTION = (
+    "Which prediction head trains. heatmap_mhcrnn adds temporal context "
+    "over five frames. The multiview transformer is for synchronized "
+    "cameras."
+)
+
+_BACKBONE_DESCRIPTION = (
+    "The feature extractor. Defaults to a ResNet-50 pretrained on animal "
+    "pose rather than ImageNet."
+)
+
+_EPOCHS_DESCRIPTION = "How long the model trains at most."
+
+_LITPOSE_OVERRIDES_DESCRIPTION = (
+    "Hydra key=value overrides applied last, over model_type, backbone and "
+    "max_epochs as well as anything else Lightning Pose exposes with no "
+    "field here. A key set here wins over base_model where they would set "
+    "the same key."
+)
+
+_DEVICE_DESCRIPTION = "The accelerator to train the model on."
+
+_DEVICE_UNWIRED = "the training subprocess never receives it"
+
+_IDLE_TIMEOUT_DESCRIPTION = (
+    "How long the training subprocess may go without output before it is "
+    "killed. A generous default, because an epoch on a large set is slow "
+    "and a watchdog must not mistake slow for dead."
+)
+
+_MAX_RUNTIME_DESCRIPTION = (
+    "Absolute wall-clock ceiling for the training run. Unset leaves the "
+    "ceiling to whatever queue submitted the run, and idle_timeout still "
+    "applies."
+)
+
+_OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
 
 
 class TrainLitposeParams(Params):
     """Parameters for the ``train-litpose`` op."""
 
-    # A Lightning Pose project directory, or a prior run to fine-tune from.
-    project: str
-    # Where the complete Lightning Pose config is, dataset-relative or absolute.
-    # A **location**, so it is excluded from the hash and the file's content
-    # digest enters the payload instead -- otherwise two different configs at one
-    # path mint one identifier, and one config at two paths mints two. See the
-    # ``extra`` argument of ``train_run_id``.
-    base_config: Annotated[str, HASH_EXCLUDE] = ""
-    base_model: str = ""
-    model_type: LitposeModelType = "heatmap"
-    backbone: str = "resnet50_animal_ap10k"
-    max_epochs: int = 300
-    litpose_overrides: dict[str, JsonValue] | None = None
-    device: Annotated[str, HASH_EXCLUDE] = "auto"
-    idle_timeout: Annotated[float, HASH_EXCLUDE] = 1800
-    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    """Train again even if this exact run already finished.
-
-    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
-    flipping it must not mint a second identity for the same weights.
-    """
+    project: Annotated[str, Declared(_PROJECT_DESCRIPTION)]
+    # A location, excluded from the hash. The file's content digest enters
+    # the payload instead, distinguishing two configs at one path and
+    # unifying one config reachable at two paths. See the extra argument of
+    # train_run_id.
+    base_config: Annotated[str, HASH_EXCLUDE, Declared(_BASE_CONFIG_DESCRIPTION)] = ""
+    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    model_type: Annotated[LitposeModelType, Declared(_MODEL_TYPE_DESCRIPTION)] = (
+        "heatmap"
+    )
+    backbone: Annotated[
+        str,
+        Field(examples=["resnet50_animal_ap10k", "resnet50"]),
+        Declared(_BACKBONE_DESCRIPTION),
+    ] = "resnet50_animal_ap10k"
+    max_epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 300
+    litpose_overrides: Annotated[
+        dict[str, JsonValue] | None, Declared(_LITPOSE_OVERRIDES_DESCRIPTION)
+    ] = None
+    device: Annotated[
+        str, HASH_EXCLUDE, Declared(_DEVICE_DESCRIPTION, unwired=_DEVICE_UNWIRED)
+    ] = "auto"
+    idle_timeout: Annotated[
+        float, HASH_EXCLUDE, Declared(_IDLE_TIMEOUT_DESCRIPTION, unit="s")
+    ] = 1800
+    max_runtime: Annotated[
+        float | None, HASH_EXCLUDE, Declared(_MAX_RUNTIME_DESCRIPTION, unit="s")
+    ] = None
+    # A throughput knob, not a property of the model: flipping it must not
+    # mint a second identity for the same weights.
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 @register_op

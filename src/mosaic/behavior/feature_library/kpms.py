@@ -39,6 +39,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 
@@ -226,6 +227,95 @@ def _tracks_df_to_kpms_arrays(
     return coords, confidences
 
 
+_MODEL_DESCRIPTION = "A pre-fitted model to load. Unset, the feature fits a new model."
+
+_KPMS_PYTHON_DESCRIPTION = (
+    "Path to a Python interpreter with keypoint-moseq installed. Unset, "
+    "resolution falls through to MOSAIC_KPMS_PYTHON, then to the "
+    "environment under feature_library/external/.venv."
+)
+
+_POSE_DESCRIPTION = "Pose keypoint configuration: indices and column prefixes."
+
+_ANTERIOR_BODYPARTS_DESCRIPTION = (
+    "Bodypart names marking the front of the body, used to initialize "
+    "heading for egocentric alignment."
+)
+
+_POSTERIOR_BODYPARTS_DESCRIPTION = (
+    "Bodypart names marking the back of the body, used to initialize "
+    "heading for egocentric alignment."
+)
+
+_FPS_DESCRIPTION = "The frame rate of the input tracks."
+
+_NUM_ITERS_AR_DESCRIPTION = (
+    "How long the AR-only fitting stage runs before the full-model stage begins."
+)
+
+_NUM_ITERS_FULL_DESCRIPTION = (
+    "How long the full-model fitting stage runs after the AR-only stage."
+)
+
+_KAPPA_AR_DESCRIPTION = (
+    "The transition stickiness hyperparameter for the AR-only fitting "
+    "stage. Unset, keypoint-moseq chooses its own value."
+)
+
+_KAPPA_FULL_DESCRIPTION = (
+    "The transition stickiness hyperparameter for the full-model fitting "
+    "stage. Unset, keypoint-moseq chooses its own value."
+)
+
+_LATENT_DIM_DESCRIPTION = (
+    "The dimensionality of the latent pose space fit by PCA. A value "
+    "exceeding (number of keypoints - 1) * 2 is refused."
+)
+
+_LOCATION_AWARE_DESCRIPTION = (
+    "Constrain the centroid-movement prior, setting sigmasq_loc to 0.5 "
+    "rather than 1e6. The fit then treats frame-to-frame centroid "
+    "movement as informative."
+)
+
+_OUTLIER_SCALE_FACTOR_DESCRIPTION = (
+    "The multiplier setting the outlier distance threshold when removing "
+    "keypoint outliers before fitting."
+)
+
+_REMOVE_OUTLIERS_DESCRIPTION = (
+    "Interpolate keypoints identified as outliers by their distance from "
+    "the per-frame medoid, before fitting."
+)
+
+_MIXED_MAP_ITERS_DESCRIPTION = (
+    "How many passes jax_moseq's mixed-map dispatch performs. A value of "
+    "1 or below is ignored."
+)
+
+_PARALLEL_MESSAGE_PASSING_DESCRIPTION = (
+    "Use keypoint-moseq's associative-scan Kalman sampling, faster to "
+    "run and slower to compile. Unset, keypoint-moseq enables it when "
+    "the JAX backend is not the CPU."
+)
+
+_RESUME_DESCRIPTION = (
+    "Continue fitting from a previously saved checkpoint, falling back to "
+    "a fresh fit when none exists."
+)
+
+_DOWNSAMPLE_RATE_DESCRIPTION = (
+    "Keep every Nth frame of the tracks before fitting. Unset, no "
+    "downsampling is applied. Not applied when the fitted model is later "
+    "used to label new tracks."
+)
+
+_SAVE_EVERY_N_ITERS_DESCRIPTION = "How often keypoint-moseq writes a fit checkpoint."
+
+_NUM_ITERS_APPLY_DESCRIPTION = (
+    "How long resampling runs when applying a fitted model to new tracks."
+)
+
 # --- Model artifact ---
 
 
@@ -268,47 +358,8 @@ class KpmsFeature:
         confirm your use is permitted. ``external/README.md`` in this package
         is the setup, and ``NOTICE`` records the terms.
 
-    Params:
-        model: Pre-fitted KpmsModelArtifact to load (skip fit). Default:
-            None (fit from scratch).
-        kpms_python: Path to a Python interpreter with keypoint-moseq
-            installed. None falls through to ``MOSAIC_KPMS_PYTHON``, then to
-            the environment under ``feature_library/external/.venv``.
-            Default: None.
-        pose: Pose keypoint configuration (indices, column prefixes).
-            Default: PoseConfig().
-        anterior_bodyparts: List of bodypart names forming the anterior
-            reference (required, min 1 element).
-        posterior_bodyparts: List of bodypart names forming the posterior
-            reference (required, min 1 element).
-        fps: Frames per second of the input data. Default: 30.
-        num_iters_ar: Number of AR-only fitting iterations. Default: 50.
-        num_iters_full: Number of full model fitting iterations.
-            Default: 500.
-        kappa_ar: AR transition concentration parameter. None lets
-            keypoint-moseq choose. Default: None.
-        kappa_full: Full-model transition concentration parameter. None
-            lets keypoint-moseq choose. Default: None.
-        latent_dim: Dimensionality of the latent pose space. Must satisfy
-            latent_dim < 2 * num_keypoints. Default: 10.
-        location_aware: If True, include centroid location in the model.
-            Default: False.
-        outlier_scale_factor: Scale factor for outlier detection.
-            Default: 6.0.
-        remove_outliers: If True, remove detected outlier frames before
-            fitting. Default: True.
-        mixed_map_iters: Number of mixed MAP iterations. None uses the
-            keypoint-moseq default. Default: None.
-        parallel_message_passing: Enable parallel message passing. None
-            uses the keypoint-moseq default. Default: None.
-        resume: If True, resume fitting from a previously saved
-            checkpoint. Default: True.
-        downsample_rate: Temporal downsampling factor applied before
-            fitting. None disables downsampling. Default: None.
-        save_every_n_iters: Save a checkpoint every N iterations during
-            fit. Default: 25.
-        num_iters_apply: Number of iterations when applying the model to
-            new data. Default: 500.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.kpms.KpmsFeature.Params`.
     """
 
     category = "global"
@@ -328,31 +379,57 @@ class KpmsFeature:
         pass
 
     class Params(Params):
-        model: KpmsModelArtifact | None = None
+        model: Annotated[KpmsModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = None
         # Where the interpreter lives, not what it computes: the same model on
         # two machines resolves through two different paths. Folding that into
         # the identity would mint a second run_id for byte-identical output and
         # recompute a full fit for nothing. HASH_EXCLUDE: dropped from the
         # run_id hash, still recorded in params.json.
-        kpms_python: Annotated[str | None, HASH_EXCLUDE] = None
-        pose: PoseConfig = Field(default_factory=PoseConfig)
-        anterior_bodyparts: list[str] = Field(min_length=1)
-        posterior_bodyparts: list[str] = Field(min_length=1)
-        fps: int = 30
-        num_iters_ar: int = Field(default=50, ge=1)
-        num_iters_full: int = Field(default=500, ge=1)
-        kappa_ar: float | None = None
-        kappa_full: float | None = None
-        latent_dim: int = Field(default=10, ge=1)
-        location_aware: bool = False
-        outlier_scale_factor: float = Field(default=6.0, gt=0)
-        remove_outliers: bool = True
-        mixed_map_iters: int | None = None
-        parallel_message_passing: bool | None = None
-        resume: bool = True
-        downsample_rate: int | None = Field(default=None, ge=1)
-        save_every_n_iters: int = Field(default=25, ge=1)
-        num_iters_apply: int = Field(default=500, ge=1)
+        kpms_python: Annotated[
+            str | None, HASH_EXCLUDE, Declared(_KPMS_PYTHON_DESCRIPTION)
+        ] = None
+        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+            default_factory=PoseConfig
+        )
+        anterior_bodyparts: Annotated[
+            list[str], Declared(_ANTERIOR_BODYPARTS_DESCRIPTION)
+        ] = Field(min_length=1)
+        posterior_bodyparts: Annotated[
+            list[str], Declared(_POSTERIOR_BODYPARTS_DESCRIPTION)
+        ] = Field(min_length=1)
+        fps: Annotated[int, Declared(_FPS_DESCRIPTION, unit="fps")] = 30
+        num_iters_ar: Annotated[
+            int, Declared(_NUM_ITERS_AR_DESCRIPTION, unit="iterations")
+        ] = Field(default=50, ge=1)
+        num_iters_full: Annotated[
+            int, Declared(_NUM_ITERS_FULL_DESCRIPTION, unit="iterations")
+        ] = Field(default=500, ge=1)
+        kappa_ar: Annotated[float | None, Declared(_KAPPA_AR_DESCRIPTION)] = None
+        kappa_full: Annotated[float | None, Declared(_KAPPA_FULL_DESCRIPTION)] = None
+        latent_dim: Annotated[int, Declared(_LATENT_DIM_DESCRIPTION)] = Field(
+            default=10, ge=1
+        )
+        location_aware: Annotated[bool, Declared(_LOCATION_AWARE_DESCRIPTION)] = False
+        outlier_scale_factor: Annotated[
+            float, Declared(_OUTLIER_SCALE_FACTOR_DESCRIPTION)
+        ] = Field(default=6.0, gt=0)
+        remove_outliers: Annotated[bool, Declared(_REMOVE_OUTLIERS_DESCRIPTION)] = True
+        mixed_map_iters: Annotated[
+            int | None, Declared(_MIXED_MAP_ITERS_DESCRIPTION, unit="iterations")
+        ] = None
+        parallel_message_passing: Annotated[
+            bool | None, Declared(_PARALLEL_MESSAGE_PASSING_DESCRIPTION)
+        ] = None
+        resume: Annotated[bool, Declared(_RESUME_DESCRIPTION)] = True
+        downsample_rate: Annotated[
+            int | None, Declared(_DOWNSAMPLE_RATE_DESCRIPTION)
+        ] = Field(default=None, ge=1)
+        save_every_n_iters: Annotated[
+            int, Declared(_SAVE_EVERY_N_ITERS_DESCRIPTION, unit="iterations")
+        ] = Field(default=25, ge=1)
+        num_iters_apply: Annotated[
+            int, Declared(_NUM_ITERS_APPLY_DESCRIPTION, unit="iterations")
+        ] = Field(default=500, ge=1)
 
         @model_validator(mode="after")
         def _check_latent_dim(self) -> Self:

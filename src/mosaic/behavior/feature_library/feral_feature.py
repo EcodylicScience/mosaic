@@ -50,6 +50,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 from mosaic.core.strict_model import StrictModel
@@ -226,32 +227,212 @@ def _chunked(seq, k):
         yield seq[i : i + k]
 
 
+# --- Params ---------------------------------------------------------------
+
+_FERAL_CODE_DIR_DESCRIPTION = (
+    "A local checkout of the feral package, prepended to sys.path. Unset, "
+    "the pip-installed package is used."
+)
+
+_MODEL_NAME_DESCRIPTION = (
+    "The FERAL backbone: a feral.backbones.BACKBONES key or the matching "
+    "HuggingFace slug. An unrecognized value raises. The choice also "
+    "selects the pretrained weights FERAL downloads from the HuggingFace "
+    "hub on first use, whose license differs per entry and is tabulated "
+    "in docs/licensing.md. In inference mode this is a fallback: a "
+    "loaded config.json or checkpoint that records its own backbone "
+    "overrides it."
+)
+
+_PREDICT_PER_ITEM_DESCRIPTION = (
+    "How many predictions the model emits per chunk. In inference mode "
+    "this is a fallback: a loaded config.json or checkpoint that "
+    "records its own value overrides it."
+)
+
+_CHUNK_LENGTH_DESCRIPTION = "The length of one video chunk."
+
+_CHUNK_SHIFT_DESCRIPTION = "The stride between the starts of consecutive chunks."
+
+_CHUNK_STEP_DESCRIPTION = "The stride sampled within one chunk."
+
+_RESIZE_TO_DESCRIPTION = "The side a frame is resized to before the model reads it."
+
+_DEVICE_DESCRIPTION = "Which PyTorch device loads and runs the model."
+
+_INFER_BATCH_SIZE_DESCRIPTION = (
+    "How many chunks apply() reads in one forward pass. Batching is "
+    "numerically equivalent to reading them one at a time."
+)
+
+_INFERENCE_AUTOCAST_DESCRIPTION = (
+    "Run apply()'s forward pass under bfloat16 autocast instead of full "
+    "float32, roughly 1.5-2x faster at the cost of a recall shift of "
+    "around 10 percentage points on threshold-sensitive classes. Read "
+    "only when the model is on a CUDA device."
+)
+
+_CLASS_NAMES_DESCRIPTION = (
+    "Class index to name mapping, keyed by string index. Unset, the "
+    "mapping is read from the model config or checkpoint metadata."
+)
+
+_DECISION_THRESHOLD_DESCRIPTION = (
+    "The minimum probability considered when choosing the predicted "
+    "class. Unset, the predicted class is the argmax over every class. "
+    "Set, the predicted class is default_class when every class falls "
+    "below it."
+)
+
+_DEFAULT_CLASS_DESCRIPTION = (
+    "The class returned when decision_threshold is set and every class falls below it."
+)
+
+_MODEL_DIR_DESCRIPTION = (
+    "A directory containing model_best.pt and config.json from a prior "
+    "training run, for inference mode."
+)
+
+_VIDEO_DIR_DESCRIPTION = "The directory containing crop videos, for training mode."
+
+_LABEL_JSON_DESCRIPTION = (
+    "A FERAL-format label JSON declaring class_names and splits, for training mode."
+)
+
+_TRAINING_DESCRIPTION = (
+    "Training hyperparameters. Required to train. Unset without a model "
+    "to load, fit raises."
+)
+
+
+_EPOCHS_DESCRIPTION = "The number of training epochs."
+
+_TRAIN_BS_DESCRIPTION = "The number of samples per training batch."
+
+_VAL_BS_DESCRIPTION = (
+    "The number of samples per validation batch, also used when evaluating "
+    "a test partition after training."
+)
+
+_NUM_WORKERS_DESCRIPTION = (
+    "The number of subprocess workers for the training and validation data "
+    "loaders, also used when evaluating a test partition after training."
+)
+
+_LR_DESCRIPTION = "The learning rate for the AdamW optimizer."
+
+_WEIGHT_DECAY_DESCRIPTION = "The weight decay for the AdamW optimizer."
+
+_LABEL_SMOOTHING_DESCRIPTION = (
+    "The label smoothing factor for the cross-entropy loss, applied only "
+    "when the label JSON is not multilabel."
+)
+
+_FC_DROP_RATE_DESCRIPTION = "The dropout rate before the classifier head."
+
+_FREEZE_ENCODER_LAYERS_DESCRIPTION = (
+    "The number of backbone encoder layers frozen during fine-tuning."
+)
+
+_CLASS_WEIGHTS_DESCRIPTION = (
+    "The class-weighting scheme forwarded to FERAL's get_weights when "
+    "building the loss weight tensor."
+)
+
+_EMA_DECAY_DESCRIPTION = (
+    "The decay rate for an exponential moving average of the model "
+    "weights. Unset, no EMA model is tracked."
+)
+
+_MIXUP_ALPHA_DESCRIPTION = (
+    "The alpha parameter for torchvision's MixUp training-batch "
+    "augmentation. Unset, no MixUp is applied."
+)
+
+_PART_WARMUP_DESCRIPTION = (
+    "The fraction of total training steps spent in the cosine "
+    "learning-rate schedule's warmup phase."
+)
+
+_PATIENCE_DESCRIPTION = (
+    "The number of epochs without validation improvement before training "
+    "stops early. Unset, training never stops early."
+)
+
+_COMPILE_DESCRIPTION = "Compile the model with torch.compile before training."
+
+_DO_AA_DESCRIPTION = "Apply data augmentation when building the training dataset."
+
+_SEED_DESCRIPTION = "The random seed applied to torch and numpy before training starts."
+
+_PART_SAMPLE_DESCRIPTION = (
+    "The fraction of the training partition included when building the "
+    "training dataset."
+)
+
+_MULTILABEL_THRESHOLD_DESCRIPTION = (
+    "The probability threshold used when computing F1 metrics, applied "
+    "only when the label JSON is multilabel."
+)
+
+_WANDB_PROJECT_DESCRIPTION = (
+    "The Weights & Biases project name recorded in the saved training config."
+)
+
+
 class FeralTrainingConfig(StrictModel):
     """Training hyperparameters for FERAL ViT fine-tuning.
 
     These mirror the FERAL default_vjepa.yaml configuration.
     """
 
-    epochs: int = Field(default=10, ge=1)
-    train_bs: int = Field(default=4, ge=1)
-    val_bs: int = Field(default=8, ge=1)
-    num_workers: int = Field(default=4, ge=0)
-    lr: float = Field(default=4e-5, gt=0)
-    weight_decay: float = Field(default=0.1, ge=0)
-    label_smoothing: float = Field(default=0.1, ge=0, le=1)
-    fc_drop_rate: float = Field(default=0.5, ge=0, le=1)
-    freeze_encoder_layers: int = Field(default=14, ge=0)
-    class_weights: str = "inv_freq_sqrt"
-    ema_decay: float | None = 0.999
-    mixup_alpha: float | None = 0.8
-    part_warmup: float = Field(default=0.2, ge=0, le=1)
-    patience: int | None = None
-    compile: bool = True
-    do_aa: bool = True
-    seed: int = 0
-    part_sample: float = Field(default=1.0, gt=0, le=1)
-    multilabel_threshold: float = Field(default=0.85, ge=0, le=1)
-    wandb_project: str | None = None
+    epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION)] = Field(default=10, ge=1)
+    train_bs: Annotated[int, Declared(_TRAIN_BS_DESCRIPTION)] = Field(default=4, ge=1)
+    val_bs: Annotated[int, Declared(_VAL_BS_DESCRIPTION)] = Field(default=8, ge=1)
+    num_workers: Annotated[int, Declared(_NUM_WORKERS_DESCRIPTION)] = Field(
+        default=4, ge=0
+    )
+    lr: Annotated[float, Declared(_LR_DESCRIPTION)] = Field(default=4e-5, gt=0)
+    weight_decay: Annotated[float, Declared(_WEIGHT_DECAY_DESCRIPTION)] = Field(
+        default=0.1, ge=0
+    )
+    label_smoothing: Annotated[float, Declared(_LABEL_SMOOTHING_DESCRIPTION)] = Field(
+        default=0.1, ge=0, le=1
+    )
+    fc_drop_rate: Annotated[float, Declared(_FC_DROP_RATE_DESCRIPTION)] = Field(
+        default=0.5, ge=0, le=1
+    )
+    freeze_encoder_layers: Annotated[
+        int, Declared(_FREEZE_ENCODER_LAYERS_DESCRIPTION)
+    ] = Field(default=14, ge=0)
+    class_weights: Annotated[str, Declared(_CLASS_WEIGHTS_DESCRIPTION)] = (
+        "inv_freq_sqrt"
+    )
+    ema_decay: Annotated[float | None, Declared(_EMA_DECAY_DESCRIPTION)] = 0.999
+    mixup_alpha: Annotated[float | None, Declared(_MIXUP_ALPHA_DESCRIPTION)] = 0.8
+    part_warmup: Annotated[float, Declared(_PART_WARMUP_DESCRIPTION)] = Field(
+        default=0.2, ge=0, le=1
+    )
+    patience: Annotated[int | None, Declared(_PATIENCE_DESCRIPTION)] = None
+    compile: Annotated[bool, Declared(_COMPILE_DESCRIPTION)] = True
+    do_aa: Annotated[bool, Declared(_DO_AA_DESCRIPTION)] = True
+    seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 0
+    part_sample: Annotated[float, Declared(_PART_SAMPLE_DESCRIPTION)] = Field(
+        default=1.0, gt=0, le=1
+    )
+    multilabel_threshold: Annotated[
+        float, Declared(_MULTILABEL_THRESHOLD_DESCRIPTION)
+    ] = Field(default=0.85, ge=0, le=1)
+    wandb_project: Annotated[
+        str | None,
+        Declared(
+            _WANDB_PROJECT_DESCRIPTION,
+            unwired=(
+                "Stored in the saved config; nothing in this file starts a "
+                "Weights & Biases run with it."
+            ),
+        ),
+    ] = None
 
 
 @final
@@ -305,52 +486,8 @@ class FeralFeature:
        One row per frame with ``target_id``, ``frame``.  Videos are
        derived as ``egocentric_id{target_id}.mp4``.
 
-    Params
-    ------
-    feral_code_dir : Path | None
-        Optional path to a local checkout of the ``feral`` package, prepended
-        to ``sys.path``. ``None`` (default) uses the pip-installed package.
-    model_name : str
-        FERAL backbone: a ``feral.backbones.BACKBONES`` key (e.g.
-        ``"vjepa2_vitl_diving48"``) or the equivalent HuggingFace slug
-        (default: ``facebook/vjepa2-vitl-fpc32-256-diving48``). The choice also
-        selects the pretrained weights FERAL downloads from the HuggingFace hub
-        on first use; their licenses differ per entry and are tabulated in
-        ``docs/licensing.md``.
-    predict_per_item : int
-        Predictions per chunk (default 64).
-    chunk_length : int
-        Frames per video chunk (default 64).
-    chunk_shift : int
-        Stride between chunks for overlapping inference (default 32).
-    chunk_step : int
-        Frame sampling step within chunks (default 1).
-    resize_to : int
-        Input resolution for ViT (default 256).
-    device : str
-        PyTorch device (default "cuda").
-    infer_batch_size : int
-        Chunks per forward pass during apply() (default 4). Pure
-        throughput knob -- batching is numerically equivalent to the
-        per-chunk path (eval() freezes BatchNorm1d, attention is
-        within-sample). Raise for more GPU utilization; lower on OOM.
-    inference_autocast : bool
-        Run apply()'s forward pass in bfloat16 autocast (default False =
-        full float32). See "Precision convention" above.
-    class_names : dict | None
-        Class index -> name mapping. Auto-detected from model config.
-    decision_threshold : float | None
-        Probability threshold for positive class. None uses argmax.
-    default_class : int
-        Fallback class when no class exceeds threshold (default 0).
-    model_dir : Path | None
-        Directory with ``model_best.pt`` + ``config.json`` (inference mode).
-    video_dir : Path | None
-        Directory containing crop videos (training mode).
-    label_json : Path | None
-        Path to FERAL-format label JSON with splits (training mode).
-    training : FeralTrainingConfig | None
-        Training hyperparameters. None = inference-only mode.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.feral_feature.FeralFeature.Params`.
     """
 
     # Global, like `xgboost` and `lightning-action`: it fits a classifier over a
@@ -377,17 +514,32 @@ class FeralFeature:
     class Params(Params):
         # Optional sys.path override for a local checkout of the `feral`
         # package; None uses the pip-installed package (mosaic-behavior[feral]).
-        feral_code_dir: Path | None = None
+        feral_code_dir: Annotated[
+            Path | None, Declared(_FERAL_CODE_DIR_DESCRIPTION)
+        ] = None
         # Shared model config. The backbone also selects the pretrained weights
         # FERAL downloads from the HuggingFace hub on first use. The default's
         # model card declares MIT; per-entry licenses are in docs/licensing.md.
-        model_name: str = "facebook/vjepa2-vitl-fpc32-256-diving48"
-        predict_per_item: int = 64
+        model_name: Annotated[
+            str,
+            Field(
+                examples=[
+                    "facebook/vjepa2-vitl-fpc32-256-diving48",
+                    "vjepa2_vitl_diving48",
+                ]
+            ),
+            Declared(_MODEL_NAME_DESCRIPTION),
+        ] = "facebook/vjepa2-vitl-fpc32-256-diving48"
+        predict_per_item: Annotated[int, Declared(_PREDICT_PER_ITEM_DESCRIPTION)] = 64
         # Inference hyperparameters
-        chunk_length: int = 64
-        chunk_shift: int = 32
-        chunk_step: int = 1
-        resize_to: int = 256
+        chunk_length: Annotated[
+            int, Declared(_CHUNK_LENGTH_DESCRIPTION, unit="frames")
+        ] = 64
+        chunk_shift: Annotated[
+            int, Declared(_CHUNK_SHIFT_DESCRIPTION, unit="frames")
+        ] = 32
+        chunk_step: Annotated[int, Declared(_CHUNK_STEP_DESCRIPTION, unit="frames")] = 1
+        resize_to: Annotated[int, Declared(_RESIZE_TO_DESCRIPTION, unit="px")] = 256
         # Which hardware runs the model, not what the model computes. apply()
         # takes its device off the loaded model rather than off this field, and
         # nothing reads it back from disk -- fit() writes cfg["device"] and reads
@@ -399,7 +551,12 @@ class FeralFeature:
         # kernels reassociate differently. Pinning a run's identity to the card it
         # happened to land on costs a full recompute for nothing, and blocks
         # reloading finished results on a machine without a GPU.
-        device: Annotated[str, HASH_EXCLUDE] = "cuda"
+        device: Annotated[
+            str,
+            HASH_EXCLUDE,
+            Field(examples=["cpu", "cuda"]),
+            Declared(_DEVICE_DESCRIPTION),
+        ] = "cuda"
         # Chunks per forward pass during apply(). Pure throughput knob:
         # batching is numerically equivalent to the per-chunk path
         # (eval() freezes BatchNorm1d + disables dropout; all attention is
@@ -407,25 +564,35 @@ class FeralFeature:
         # to parallel workers via params.model_dump() like any other field.
         # HASH_EXCLUDE: omitted from the run_id hash (it doesn't affect output),
         # so changing it never invalidates cached FERAL outputs.
-        infer_batch_size: Annotated[int, HASH_EXCLUDE] = 4
+        infer_batch_size: Annotated[
+            int, HASH_EXCLUDE, Declared(_INFER_BATCH_SIZE_DESCRIPTION)
+        ] = 4
         # Production inference precision override. Default False = full float32,
         # matching the class-level "Precision convention". Set True for ~1.5-2x
         # speedup at the cost of bfloat16's decision-boundary noise (~10pp
         # recall shift on threshold-sensitive classes). Stored in
         # feral_config.json so re-runs and downstream readers know which
         # precision regime produced the parquets.
-        inference_autocast: bool = False
+        inference_autocast: Annotated[
+            bool, Declared(_INFERENCE_AUTOCAST_DESCRIPTION)
+        ] = False
         # Class configuration (auto-detected from model config if None)
-        class_names: dict[str, str] | None = None
+        class_names: Annotated[
+            dict[str, str] | None, Declared(_CLASS_NAMES_DESCRIPTION)
+        ] = None
         # Decision threshold (matches XgboostFeature pattern)
-        decision_threshold: float | None = None
-        default_class: int = 0
+        decision_threshold: Annotated[
+            float | None, Declared(_DECISION_THRESHOLD_DESCRIPTION)
+        ] = None
+        default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)] = 0
         # Inference mode: point to pre-trained model directory
-        model_dir: Path | None = None
+        model_dir: Annotated[Path | None, Declared(_MODEL_DIR_DESCRIPTION)] = None
         # Training mode: video directory + labels + training config
-        video_dir: Path | None = None
-        label_json: Path | None = None
-        training: FeralTrainingConfig | None = None
+        video_dir: Annotated[Path | None, Declared(_VIDEO_DIR_DESCRIPTION)] = None
+        label_json: Annotated[Path | None, Declared(_LABEL_JSON_DESCRIPTION)] = None
+        training: Annotated[
+            FeralTrainingConfig | None, Declared(_TRAINING_DESCRIPTION)
+        ] = None
 
         @model_validator(mode="after")
         def _check_mode(self) -> Self:

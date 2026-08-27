@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, Literal, TypedDict, final
+from typing import Annotated, ClassVar, Literal, TypedDict, final
 
 import joblib
 import numpy as np
@@ -34,12 +34,52 @@ from mosaic.core.pipeline.types import (
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
+    TemplatesRef,
 )
+from mosaic.core.params import Declared
 
 from .helpers import ensure_columns
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline._utils import atomic_savez
+
+_TEMPLATES_DESCRIPTION = (
+    "The templates artifact to fit the k-means model on. Mutually exclusive with model."
+)
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted k-means model artifact to load instead of fitting one. "
+    "Mutually exclusive with templates."
+)
+
+_K_DESCRIPTION = (
+    "The number of clusters. Fitting raises when the templates have fewer rows than k."
+)
+
+_RANDOM_STATE_DESCRIPTION = "The random seed for k-means initialization."
+
+_N_INIT_DESCRIPTION = (
+    "How many k-means initializations to run, keeping the best. auto "
+    "leaves the count to scikit-learn's own default policy."
+)
+
+_MAX_ITER_DESCRIPTION = "The maximum number of iterations for one k-means run."
+
+_DEVICE_DESCRIPTION = (
+    "The compute device. cuda uses cuML's GPU-accelerated k-means when "
+    "available, falling back to scikit-learn otherwise."
+)
+
+_LABEL_ARTIFACT_POINTS_DESCRIPTION = (
+    "Assign a cluster label to every template point used for fitting."
+)
+
+_PAIR_FILTER_DESCRIPTION = (
+    "Unset, every row is read. A nearest-neighbor result narrows the "
+    "input, while it loads, to rows where one individual in the pair "
+    "is the other's nearest neighbor. On an input without id1/id2 "
+    "columns, the filter has no effect."
+)
 
 
 class KMeansModelBundle(TypedDict):
@@ -109,22 +149,8 @@ class GlobalKMeansClustering:
     Global K-Means clustering on templates loaded via load_state.
     Per-sequence cluster assignment is done in apply().
 
-    Params:
-        templates: Templates artifact to fit on (inherited from
-            GlobalModelParams).
-        model: Pre-fitted KMeansModelArtifact to load (skip fit).
-            Default: KMeansModelArtifact().
-        k: Number of clusters. Default: 100.
-        random_state: Random seed for KMeans initialization.
-            Default: 42.
-        n_init: Number of KMeans initializations to run. Default: "auto".
-        max_iter: Maximum iterations per KMeans run. Default: 300.
-        device: Compute device — "cpu" or "cuda" (requires cuML).
-            Default: "cpu".
-        label_artifact_points: If True, assign cluster labels to the
-            template points used for fitting. Default: True.
-        pair_filter: Optional NNResult for nearest-neighbor pair
-            filtering during dependency resolution. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering.Params`.
     """
 
     category = "global"
@@ -144,28 +170,29 @@ class GlobalKMeansClustering:
         _require: ClassVar[InputRequire] = "any"
 
     class Params(GlobalModelParams[KMeansModelArtifact]):
-        """Global K-means clustering parameters.
+        """Global K-means clustering parameters."""
 
-        Attributes:
-            templates: Templates artifact to fit on (inherited).
-            model: Pre-fitted KMeans model artifact (skip fit).
-            k: Number of clusters. Default 100.
-            random_state: Random seed. Default 42.
-            n_init: KMeans initializations. Default "auto".
-            max_iter: Max iterations per run. Default 300.
-            device: Compute device. Default "cpu".
-            label_artifact_points: Label points used for fitting. Default True.
-            pair_filter: Nearest-neighbor pair filter for dependency resolution. Default None.
-        """
-
-        model: KMeansModelArtifact | None = Field(default_factory=KMeansModelArtifact)
-        k: int = Field(default=100, ge=1)
-        random_state: int = 42
-        n_init: Literal["auto"] | int = "auto"
-        max_iter: int = Field(default=300, ge=1)
-        device: str = "cpu"
-        label_artifact_points: bool = True
-        pair_filter: NNResult | None = None
+        templates: Annotated[TemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)] = (
+            None
+        )
+        model: Annotated[KMeansModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = (
+            Field(default_factory=KMeansModelArtifact)
+        )
+        k: Annotated[int, Declared(_K_DESCRIPTION)] = Field(default=100, ge=1)
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+        n_init: Annotated[Literal["auto"] | int, Declared(_N_INIT_DESCRIPTION)] = "auto"
+        max_iter: Annotated[int, Declared(_MAX_ITER_DESCRIPTION)] = Field(
+            default=300, ge=1
+        )
+        device: Annotated[
+            str, Field(examples=["cpu", "cuda"]), Declared(_DEVICE_DESCRIPTION)
+        ] = "cpu"
+        label_artifact_points: Annotated[
+            bool, Declared(_LABEL_ARTIFACT_POINTS_DESCRIPTION)
+        ] = True
+        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+            None
+        )
 
     def __init__(
         self,

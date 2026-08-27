@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
+from pydantic import Field
+
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -26,6 +28,7 @@ from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 from mosaic.tracking.ops._common import (
@@ -92,6 +95,49 @@ def converted_dataset_index(path: Path) -> IndexCSV[ConvertedDatasetIndexRow]:
 # --- Params --------------------------------------------------------------
 
 
+_SOURCE_FORMAT_DESCRIPTION = "Which annotation format this run converts."
+
+_CVAT_XML_DESCRIPTION = "The CVAT 'for Images 1.1' XML export to convert."
+
+_IMAGES_DIR_DESCRIPTION = (
+    "Directory of images whose filenames match the XML's image name attributes."
+)
+
+_CLASS_NAMES_DESCRIPTION = (
+    "Ordered class names, index used as the class id. An empty list "
+    "auto-detects names from the XML in order of first appearance."
+)
+
+_RADII_DESCRIPTION = (
+    "Detection radius for each class name. Every class the conversion "
+    "resolves needs an entry, whether class_names named it or "
+    "auto-detection found it."
+)
+
+_CLASS_ATTRIBUTE_DESCRIPTION = (
+    "Name of the XML attribute that names each point's class. Empty means "
+    "single-class, with every point assigned class 0."
+)
+
+_SPLIT_DESCRIPTION = "Train, validation and test fractions of the annotated images."
+
+_SPLIT_BY_DESCRIPTION = (
+    "How images are grouped before the split is drawn. group keeps frames "
+    "from the same video together in one split."
+)
+
+_SEED_DESCRIPTION = "Random seed for the train, validation and test split assignment."
+
+_SYMLINK_IMAGES_DESCRIPTION = (
+    "Symlink source images into the dataset instead of copying them."
+)
+
+_OVERWRITE_DESCRIPTION = (
+    "Convert again even if this exact combination of params, XML and "
+    "images already produced a data.yaml."
+)
+
+
 class ConvertPointsParams(Params):
     """Parameters for the ``convert-points`` op (CVAT points -> POLO training dataset).
 
@@ -101,21 +147,33 @@ class ConvertPointsParams(Params):
     same reason.
     """
 
-    source_format: Literal["cvat_points"] = "cvat_points"
+    source_format: Annotated[
+        Literal["cvat_points"], Declared(_SOURCE_FORMAT_DESCRIPTION)
+    ] = "cvat_points"
     # dataset-resolvable inputs (relative to the dataset root, or absolute)
-    cvat_xml: str  # CVAT "for Images 1.1" XML export
-    images_dir: str  # directory of images whose names match the XML <image name>
+    cvat_xml: Annotated[str, Declared(_CVAT_XML_DESCRIPTION)]
+    images_dir: Annotated[str, Declared(_IMAGES_DIR_DESCRIPTION)]
     # class + POLO radius config
-    class_names: list[str]
-    radii: dict[str, float]  # class name -> detection radius in pixels
-    class_attribute: str = "class"  # the <attribute name=...> holding the class
+    class_names: Annotated[list[str], Declared(_CLASS_NAMES_DESCRIPTION)]
+    radii: Annotated[dict[str, float], Declared(_RADII_DESCRIPTION, unit="px")]
+    class_attribute: Annotated[str, Declared(_CLASS_ATTRIBUTE_DESCRIPTION)] = "class"
     # split
-    split: tuple[float, float, float] = (0.8, 0.15, 0.05)
-    split_by: str = "group"  # "group" keeps frames from the same video together
-    seed: int = 42
+    split: Annotated[tuple[float, float, float], Declared(_SPLIT_DESCRIPTION)] = (
+        0.8,
+        0.15,
+        0.05,
+    )
+    split_by: Annotated[
+        str,
+        Field(examples=["group", "image"]),
+        Declared(_SPLIT_BY_DESCRIPTION),
+    ] = "group"
+    seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42
     # execution knobs (excluded from the run_id -- behavior/throughput only)
-    symlink_images: Annotated[bool, HASH_EXCLUDE] = True
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
+    symlink_images: Annotated[
+        bool, HASH_EXCLUDE, Declared(_SYMLINK_IMAGES_DESCRIPTION)
+    ] = True
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 # --- Op ------------------------------------------------------------------

@@ -26,7 +26,7 @@ Example::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, final
+from typing import Annotated, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -40,9 +40,29 @@ from mosaic.core.pipeline.types import (
     PoseConfig,
     TrackInputs,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
+
+_METHOD_DESCRIPTION = (
+    "How rows are chosen. kmeans clusters frames in body-canonical pose "
+    "space and keeps the frame closest to each cluster centroid. uniform "
+    "picks frames at constant stride. clips picks seeds via kmeans and "
+    "takes clip_len consecutive frames from each."
+)
+
+_TARGET_FRAMES_DESCRIPTION = (
+    "The target output row count per sequence. For method=clips this is "
+    "n_clips * clip_len. The number of clips is target_frames // clip_len."
+)
+
+_CLIP_LEN_DESCRIPTION = "The clip length, for method=clips. Ignored otherwise."
+
+_POSE_DESCRIPTION = "Pose-column naming and count configuration."
+
+_SEED_DESCRIPTION = "The random seed for k-means."
+
+_DROP_NAN_DESCRIPTION = "Drop rows with non-finite required columns from the output."
 
 
 @final
@@ -67,10 +87,10 @@ class TrackSubsample:
       ``K = target_frames // clip_len``.
 
     Frames with NaN ``ANGLE`` / ``X`` / ``Y`` / required keypoints are
-    excluded from k-means clustering (they cannot be canonicalized). When
-    ``drop_nan=True`` (default) those frames are also removed from the
-    output. When ``len(df) <= target_frames`` the input is returned
-    unchanged.
+    excluded from k-means clustering (they cannot be canonicalized),
+    independent of ``drop_nan``. ``drop_nan`` is not read by ``apply()``
+    and has no effect. When ``len(df) <= target_frames`` the input is
+    returned unchanged.
 
     Output preserves all input columns -- only row count changes.
 
@@ -84,19 +104,8 @@ class TrackSubsample:
        straddle the gap between two spans -- meaningless temporal
        samples. Use the default non-overlapping stride.
 
-    Params:
-        method: ``"kmeans"`` (default), ``"uniform"``, or ``"clips"``.
-        target_frames: Target output row count per sequence. Default 300.
-            For ``method="clips"`` this is interpreted as
-            ``n_clips * clip_len``; the number of clips is
-            ``target_frames // clip_len``.
-        clip_len: Frames per clip when ``method="clips"``. Default 8.
-            Ignored otherwise.
-        pose: Pose-column naming and count config. Default
-            ``PoseConfig()`` (``pose_n=7``, ``poseX*`` / ``poseY*``).
-        seed: Random seed for k-means. Default 42.
-        drop_nan: If True, drop frames with non-finite required columns
-            from the output. Default True.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.track_subsample.TrackSubsample.Params`.
     """
 
     category = "per-frame"
@@ -112,12 +121,29 @@ class TrackSubsample:
         pass
 
     class Params(Params):
-        method: Literal["kmeans", "uniform", "clips"] = "kmeans"
-        target_frames: int = Field(default=300, ge=1)
-        clip_len: int = Field(default=8, ge=2)
-        pose: PoseConfig = Field(default_factory=PoseConfig)
-        seed: int = 42
-        drop_nan: bool = True
+        method: Annotated[
+            Literal["kmeans", "uniform", "clips"], Declared(_METHOD_DESCRIPTION)
+        ] = "kmeans"
+        target_frames: Annotated[
+            int, Declared(_TARGET_FRAMES_DESCRIPTION, unit="frames")
+        ] = Field(default=300, ge=1)
+        clip_len: Annotated[int, Declared(_CLIP_LEN_DESCRIPTION, unit="frames")] = (
+            Field(default=8, ge=2)
+        )
+        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+            default_factory=PoseConfig
+        )
+        seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42
+        drop_nan: Annotated[
+            bool,
+            Declared(
+                _DROP_NAN_DESCRIPTION,
+                unwired=(
+                    "no code path reads it; apply() emits whatever rows the "
+                    "chosen method selects"
+                ),
+            ),
+        ] = True
 
     def __init__(
         self,

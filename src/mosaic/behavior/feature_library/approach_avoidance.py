@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Literal, final
+from typing import Annotated, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -42,11 +42,83 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
+
+_INTERPOLATION_DESCRIPTION = (
+    "Interpolation settings applied to position and orientation gaps "
+    "before computing distances and velocities."
+)
+
+_SAMPLING_DESCRIPTION = (
+    "Frame-rate configuration. Only fps_default is read, as the fallback "
+    "frames-per-second used when the table has no fps column, or that "
+    "column does not resolve to exactly one value."
+)
+
+_VELOCITY_UNITS_DESCRIPTION = (
+    "The time unit a computed speed is expressed in before comparing it "
+    "against a velocity threshold."
+)
+
+_ANGLE_UNITS_DESCRIPTION = (
+    "Unit of the orientation column, read when orientation_gate_cos is "
+    "set. auto detects radians or degrees from the value range."
+)
+
+_CONSECUTIVE_FRAME_DELTA_DESCRIPTION = (
+    "The expected frame step between consecutive rows. A velocity is "
+    "left unset where the actual step does not match it."
+)
+
+_DISTANCE_THRESHOLD_DESCRIPTION = (
+    "Maximum inter-animal distance, in position units, for a frame to be AA-eligible."
+)
+
+_APPROACHER_VELOCITY_THRESHOLD_DESCRIPTION = (
+    "Minimum speed of the approaching animal, in position units per "
+    "frame or per second as velocity_units selects."
+)
+
+_AVOIDER_VELOCITY_THRESHOLD_DESCRIPTION = (
+    "Minimum speed of the avoiding animal, in position units per frame "
+    "or per second as velocity_units selects."
+)
+
+_COS_APPROACHER_THRESHOLD_DESCRIPTION = (
+    "Minimum cosine between the approacher's velocity and the direction "
+    "toward its partner."
+)
+
+_COS_AVOIDER_THRESHOLD_DESCRIPTION = (
+    "Minimum cosine between the avoider's velocity and the direction "
+    "away from its partner."
+)
+
+_MIN_EVENT_LENGTH_DESCRIPTION = (
+    "Length of the trailing window checked for qualifying rows."
+)
+
+_MIN_EVENT_COUNT_DESCRIPTION = (
+    "Minimum count of qualifying rows within the min_event_length window "
+    "required for a candidate row to count as part of an event. Values "
+    "above min_event_length are silently clamped down to it."
+)
+
+_ORIENTATION_GATE_COS_DESCRIPTION = (
+    "Unset, the orientation gate does not apply. Set, the approacher's "
+    "body orientation must align with its velocity to at least this "
+    "cosine, and a table with no orientation column raises. The default "
+    "is cos(30 degrees)."
+)
+
+_SMOOTH_WINDOW_SEC_DESCRIPTION = (
+    "Unset, thresholds apply framewise. Set, average distance, speed and "
+    "cosine metrics over this many seconds before thresholding."
+)
 
 
 @final
@@ -67,38 +139,8 @@ class ApproachAvoidance:
     any both-perspectives feature it was merged with, and the merge read as a
     broadcast rather than refusing.
 
-    Params:
-        interpolation: Interpolation settings for missing data.
-            Default: InterpolationConfig().
-        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
-        velocity_units: Whether speed thresholds are in "per_frame" or
-            "per_second". Default: "per_frame".
-        angle_units: Unit for heading angles — "radians", "degrees", or
-            "auto" (detect from data range). Default: "radians".
-        consecutive_frame_delta: Expected frame step between consecutive
-            rows; used to detect gaps. Default: 1.0.
-        distance_threshold: Maximum inter-animal distance (in position
-            units) for a frame to be considered AA-eligible. Default: 200.0.
-        approacher_velocity_threshold: Minimum speed of the approaching
-            animal. Default: 5.0.
-        avoider_velocity_threshold: Minimum speed of the avoiding animal.
-            Default: 5.0.
-        cos_approacher_threshold: Minimum cosine between the approacher's
-            velocity vector and the direction toward the partner.
-            Default: 0.8.
-        cos_avoider_threshold: Minimum cosine between the avoider's
-            velocity vector and the direction away from the partner.
-            Default: 0.5.
-        min_event_length: Minimum number of contiguous qualifying frames
-            to form an event. Default: 10.
-        min_event_count: Minimum number of qualifying frames within an
-            event run to keep it. Default: 5.
-        orientation_gate_cos: If set, require the approacher's body
-            orientation to align with its velocity (cos threshold).
-            Default: cos(30°) ≈ 0.866. None disables the gate.
-        smooth_window_sec: If set, apply a sliding-window average (in
-            seconds) to velocities before thresholding. Default: None
-            (disabled; framewise behaviour).
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance.Params`.
     """
 
     category = "per-frame"
@@ -114,22 +156,48 @@ class ApproachAvoidance:
         pass
 
     class Params(Params):
-        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
-        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        velocity_units: Literal["per_frame", "per_second"] = "per_frame"
-        angle_units: Literal["radians", "degrees", "auto"] = "radians"
-        consecutive_frame_delta: float = 1.0
-        distance_threshold: float = Field(default=200.0, gt=0)
-        approacher_velocity_threshold: float = Field(default=5.0, ge=0)
-        avoider_velocity_threshold: float = Field(default=5.0, ge=0)
-        cos_approacher_threshold: float = Field(default=0.8, ge=-1, le=1)
-        cos_avoider_threshold: float = Field(default=0.5, ge=-1, le=1)
-        min_event_length: int = Field(default=10, ge=1)
-        min_event_count: int = Field(default=5, ge=1)
-        orientation_gate_cos: float | None = Field(
-            default=0.8660254037844386, ge=0, le=1
+        interpolation: Annotated[
+            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+        ] = Field(default_factory=InterpolationConfig)
+        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
+            default_factory=SamplingConfig
         )
-        smooth_window_sec: float | None = Field(default=None, gt=0)
+        velocity_units: Annotated[
+            Literal["per_frame", "per_second"], Declared(_VELOCITY_UNITS_DESCRIPTION)
+        ] = "per_frame"
+        angle_units: Annotated[
+            Literal["radians", "degrees", "auto"], Declared(_ANGLE_UNITS_DESCRIPTION)
+        ] = "radians"
+        consecutive_frame_delta: Annotated[
+            float, Declared(_CONSECUTIVE_FRAME_DELTA_DESCRIPTION, unit="frames")
+        ] = 1.0
+        distance_threshold: Annotated[
+            float, Declared(_DISTANCE_THRESHOLD_DESCRIPTION)
+        ] = Field(default=200.0, gt=0)
+        approacher_velocity_threshold: Annotated[
+            float, Declared(_APPROACHER_VELOCITY_THRESHOLD_DESCRIPTION)
+        ] = Field(default=5.0, ge=0)
+        avoider_velocity_threshold: Annotated[
+            float, Declared(_AVOIDER_VELOCITY_THRESHOLD_DESCRIPTION)
+        ] = Field(default=5.0, ge=0)
+        cos_approacher_threshold: Annotated[
+            float, Declared(_COS_APPROACHER_THRESHOLD_DESCRIPTION)
+        ] = Field(default=0.8, ge=-1, le=1)
+        cos_avoider_threshold: Annotated[
+            float, Declared(_COS_AVOIDER_THRESHOLD_DESCRIPTION)
+        ] = Field(default=0.5, ge=-1, le=1)
+        min_event_length: Annotated[
+            int, Declared(_MIN_EVENT_LENGTH_DESCRIPTION, unit="frames")
+        ] = Field(default=10, ge=1)
+        min_event_count: Annotated[
+            int, Declared(_MIN_EVENT_COUNT_DESCRIPTION, unit="frames")
+        ] = Field(default=5, ge=1)
+        orientation_gate_cos: Annotated[
+            float | None, Declared(_ORIENTATION_GATE_COS_DESCRIPTION)
+        ] = Field(default=0.8660254037844386, ge=0, le=1)
+        smooth_window_sec: Annotated[
+            float | None, Declared(_SMOOTH_WINDOW_SEC_DESCRIPTION, unit="s")
+        ] = Field(default=None, gt=0)
 
     def __init__(
         self,

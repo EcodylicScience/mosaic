@@ -26,35 +26,35 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.approach_avoidance.Appro
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |  |
-| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  |  |
-| `angle_units` | `"radians"` \| `"degrees"` \| `"auto"` | `"radians"` |  |  |
-| `consecutive_frame_delta` | `number` | `1.0` |  |  |
-| `distance_threshold` | `number` | `200.0` | > `0` |  |
-| `approacher_velocity_threshold` | `number` | `5.0` | >= `0` |  |
-| `avoider_velocity_threshold` | `number` | `5.0` | >= `0` |  |
-| `cos_approacher_threshold` | `number` | `0.8` | >= `-1`, <= `1` |  |
-| `cos_avoider_threshold` | `number` | `0.5` | >= `-1`, <= `1` |  |
-| `min_event_length` | `integer` | `10` | >= `1` |  |
-| `min_event_count` | `integer` | `5` | >= `1` |  |
-| `orientation_gate_cos` | `number` \| `None` | `0.8660254037844386` |  |  |
-| `smooth_window_sec` | `number` \| `None` | `null` |  |  |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings applied to position and orientation gaps before computing distances and velocities. |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame-rate configuration. Only fps_default is read, as the fallback frames-per-second used when the table has no fps column, or that column does not resolve to exactly one value. |
+| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  | The time unit a computed speed is expressed in before comparing it against a velocity threshold. |
+| `angle_units` | `"radians"` \| `"degrees"` \| `"auto"` | `"radians"` |  | Unit of the orientation column, read when orientation_gate_cos is set. auto detects radians or degrees from the value range. |
+| `consecutive_frame_delta` | `number` | `1.0` |  | The expected frame step between consecutive rows. A velocity is left unset where the actual step does not match it. [frames] |
+| `distance_threshold` | `number` | `200.0` | > `0` | Maximum inter-animal distance, in position units, for a frame to be AA-eligible. |
+| `approacher_velocity_threshold` | `number` | `5.0` | >= `0` | Minimum speed of the approaching animal, in position units per frame or per second as velocity_units selects. |
+| `avoider_velocity_threshold` | `number` | `5.0` | >= `0` | Minimum speed of the avoiding animal, in position units per frame or per second as velocity_units selects. |
+| `cos_approacher_threshold` | `number` | `0.8` | >= `-1`, <= `1` | Minimum cosine between the approacher's velocity and the direction toward its partner. |
+| `cos_avoider_threshold` | `number` | `0.5` | >= `-1`, <= `1` | Minimum cosine between the avoider's velocity and the direction away from its partner. |
+| `min_event_length` | `integer` | `10` | >= `1` | Length of the trailing window checked for qualifying rows. [frames] |
+| `min_event_count` | `integer` | `5` | >= `1` | Minimum count of qualifying rows within the min_event_length window required for a candidate row to count as part of an event. Values above min_event_length are silently clamped down to it. [frames] |
+| `orientation_gate_cos` | `number` \| `None` | `0.8660254037844386` |  | Unset, the orientation gate does not apply. Set, the approacher's body orientation must align with its velocity to at least this cosine, and a table with no orientation column raises. The default is cos(30 degrees). |
+| `smooth_window_sec` | `number` \| `None` | `null` |  | Unset, thresholds apply framewise. Set, average distance, speed and cosine metrics over this many seconds before thresholding. [s] |
 
 ??? note "`InterpolationConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` | Maximum run of consecutive missing values filled by linear interpolation. [frames] |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
 
 ??? note "`SamplingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |  |
-    | `smooth_win` | `integer` | `0` | >= `0` |  |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `attention-target`
 
@@ -64,7 +64,7 @@ Per-frame attention target with group-membership labeling.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `id_group_map` | `object` \| `None` | `null` |  |  |
+| `id_group_map` | `object` \| `None` | `null` |  | Maps each individual id, as a string, to a group label. Unset, focal_group and target_group are always NA and attention_type is none (no facing target) or unknown (a target was picked but its group label is missing). |
 
 ### `body-scale`
 
@@ -82,9 +82,9 @@ Per-sequence fission-fusion grouping metrics.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `distance_cutoff` | `number` | `50.0` | > `0` |  |
-| `window_size` | `integer` | `5` | >= `1` |  |
-| `min_event_duration` | `integer` | `1` | >= `1` |  |
+| `distance_cutoff` | `number` | `50.0` | > `0` | The pairwise distance below which two individuals are linked. A group is a connected component of those links. [px] |
+| `window_size` | `integer` | `5` | >= `1` | The sliding-window size for smoothing the pairwise distance matrix before thresholding. Must be an odd number. [frames] |
+| `min_event_duration` | `integer` | `1` | >= `1` | The minimum span, last frame minus first, of a stable subgroup's contiguous run for it to be registered as an event. [frames] |
 
 ### `heading`
 
@@ -94,10 +94,10 @@ Per-frame body heading derived from pose keypoints.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `method` | `"two_point"` \| `"pca"` | `"two_point"` |  |  |
-| `front_idx` | `integer` | `0` |  |  |
-| `rear_idx` | `integer` | `1` |  |  |
-| `output_col` | `string` | `"ANGLE"` |  |  |
+| `method` | `"two_point"` \| `"pca"` | `"two_point"` |  | Which method derives the heading. two_point points from rear_idx toward front_idx, a determined direction. pca takes the first principal component of every keypoint, an axis whose sign is arbitrary. |
+| `front_idx` | `integer` | `0` |  | The keypoint index of the forward landmark, such as the head, snout or rostrum. Used when method is two_point. |
+| `rear_idx` | `integer` | `1` |  | The keypoint index of the rearward landmark, such as the tail base or abdomen. Used when method is two_point. |
+| `output_col` | `string` | `"ANGLE"` |  | The column the heading is written to. Defaults to the library's own orientation column, the name a downstream feature reading ANGLE already expects. |
 
 ### `local-order-metrics`
 
@@ -107,16 +107,16 @@ Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `radius` | `number` | _required_ | > `0` |  |
-| `radius_units` | `"position"` \| `"body_scale"` | `"position"` |  |  |
-| `body_scale` | `BodyScaleResult` \| `None` | `null` |  |  |
-| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |  |
-| `n_shells` | `integer` | `6` | >= `1` |  |
-| `n_peripheral` | `integer` | `5` | >= `1` |  |
-| `min_neighbors` | `integer` | `1` | >= `0` |  |
-| `subgroup_col` | `string` \| `None` | `null` |  |  |
-| `filter_expr` | `string` \| `None` | `null` |  |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |  |
+| `radius` | `number` | _required_ | > `0` | The neighborhood radius, in the unit radius_units selects. mosaic tracks record no physical scale, and this field has no default. |
+| `radius_units` | `"position"` \| `"body_scale"` | `"position"` |  | How radius is interpreted. Known values are position and body_scale. position reads radius directly in X/Y units. body_scale multiplies it by the sequence's mean body-scale output, the median pairwise distance among an individual's finite keypoints rather than a fixed body length. |
+| `body_scale` | `BodyScaleResult` \| `None` | `null` |  | Reference to the upstream body-scale run. Required when radius_units is body_scale, and left unset when radius_units is position so no dependency is resolved. |
+| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  | Which signal defines each individual's heading. Known values are auto, orientation and velocity. auto uses the ANGLE column when it contains a finite value, falling back to a velocity-derived heading otherwise. orientation requires a usable ANGLE column and raises otherwise. velocity always derives heading from motion. |
+| `n_shells` | `integer` | `6` | >= `1` | The number of concentric shells the group is divided into about its center of mass. |
+| `n_peripheral` | `integer` | `5` | >= `1` | How many of the most peripheral individuals define the group's outer radius, by their median distance to center. |
+| `min_neighbors` | `integer` | `1` | >= `0` | The minimum number of heading-valid neighbors within the disc for the local order metrics to be finite for that individual. Only neighbors with a usable heading count, excluding one with a valid position alone. Below the minimum, local polarization is NaN instead of a value computed over the focal individual alone. |
+| `subgroup_col` | `string` \| `None` | `null` |  | Confine every disc, centroid, group outer radius and shell to rows sharing this column's value. Unset, one neighborhood spans the whole frame. May not name a metadata or emitted column. |
+| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression selecting which rows remain. Applied after headings are computed. An excluded row does not change its successor's heading. |
+| `exclude_cols` | list of `string` | _constructed_ |  | Boolean columns whose truthy rows are dropped, applied after headings are computed like filter_expr. A name absent from the input is ignored. |
 
 ??? note "`BodyScaleResult`"
 
@@ -137,12 +137,12 @@ Filter low-confidence points and interpolate gaps using ``movement``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `confidence_threshold` | `number` | `0.6` |  |  |
-| `interpolation_method` | `string` | `"linear"` |  |  |
-| `max_gap` | `integer` \| `None` | `null` |  |  |
-| `include_centroid` | `boolean` | `true` |  |  |
-| `fps` | `number` \| `None` | `null` |  |  |
-| `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+| `confidence_threshold` | `number` | `0.6` |  | Confidence cutoff below which a point is set to NaN. Skipped when the input has no confidence columns. |
+| `interpolation_method` | `string` | `"linear"` |  | Method used to interpolate over NaN gaps in position data. Known values are linear, nearest, zero, slinear, quadratic, cubic, quintic, polynomial, barycentric, krogh, pchip, spline, akima and makima. |
+| `max_gap` | `integer` \| `None` | `null` |  | The longest gap that is interpolated. Unset, gaps of any length are interpolated. [frames] |
+| `include_centroid` | `boolean` | `true` |  | Include the body center (X, Y) as an additional keypoint named centroid, alongside the pose keypoints. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate used for the movement dataset's time dimension. Unset, the time dimension uses frame numbers instead of seconds. [fps] |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | Names for the pose keypoints, one per poseX/poseY column pair in column order. Unset, they are named keypoint_0, keypoint_1, and so on. |
 
 ### `movement-smooth`
 
@@ -152,15 +152,15 @@ Smooth trajectory positions using the ``movement`` library.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `method` | `"rolling"` \| `"savgol"` | `"savgol"` |  |  |
-| `window` | `integer` | `5` |  |  |
-| `statistic` | `"median"` \| `"mean"` \| `"max"` \| `"min"` | `"median"` |  |  |
-| `min_periods` | `integer` \| `None` | `null` |  |  |
-| `polyorder` | `integer` | `2` |  |  |
-| `savgol_mode` | `string` | `"nearest"` |  |  |
-| `include_centroid` | `boolean` | `true` |  |  |
-| `fps` | `number` \| `None` | `null` |  |  |
-| `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+| `method` | `"rolling"` \| `"savgol"` | `"savgol"` |  | The movement library filter used to smooth the trajectory. savgol applies a Savitzky-Golay filter, and rolling applies a rolling-window statistic. |
+| `window` | `integer` | `5` |  | The size of the smoothing window, as the number of observations covered by each window. [frames] |
+| `statistic` | `"median"` \| `"mean"` \| `"max"` \| `"min"` | `"median"` |  | Which statistic the rolling filter computes over each window. Read only when method is rolling. |
+| `min_periods` | `integer` \| `None` | `null` |  | Minimum observations required within a window for the rolling filter to produce a value there rather than a gap. Unset, it equals window. Read only when method is rolling. [frames] |
+| `polyorder` | `integer` | `2` |  | The order of the polynomial fit within each smoothing window. Must be less than window. Read only when method is savgol. |
+| `savgol_mode` | `string` | `"nearest"` |  | The edge-padding mode for the Savitzky-Golay filter, forwarded to scipy.signal.savgol_filter. Read only when method is savgol. Known values are mirror, constant, nearest, wrap and interp. Any other value raises. interp also raises on a window with a NaN at its edge, under scipy 1.17 and later. |
+| `include_centroid` | `boolean` | `true` |  | Include the X/Y body center as an additional keypoint named centroid, alongside any pose keypoints. False on a table with no pose columns raises. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate used to build the time axis. Unset, the time axis uses frame numbers instead. [fps] |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | Names for the pose keypoints, one per poseX/poseY column pair. Unset, defaults to keypoint_0, keypoint_1, and so on. A count that does not match the number of pose column pairs raises. |
 
 ### `nearest-neighbor`
 
@@ -178,28 +178,28 @@ Per-sequence feature that measures how a focal individual changes position/headi
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  |  |
-| `speed_col` | `string` | `"SPEED"` |  |  |
-| `nn_id_col` | `string` | `"nn_id"` |  |  |
-| `nn_dx_ego_col` | `string` | `"nn_delta_x_ego"` |  |  |
-| `nn_dy_ego_col` | `string` | `"nn_delta_y_ego"` |  |  |
-| `nn_dx_world_col` | `string` | `"nn_delta_x"` |  |  |
-| `nn_dy_world_col` | `string` | `"nn_delta_y"` |  |  |
-| `focal_col` | `string` | `"Focal_fish"` |  |  |
-| `diff_numframes` | `integer` | `4` | >= `1` |  |
-| `diff_numframes_col` | `string` \| `None` | `null` |  |  |
-| `emit_backward` | `boolean` | `false` |  |  |
-| `wrap_angle` | `boolean` | `true` |  |  |
-| `divide_dangle_by_frames` | `boolean` | `true` |  |  |
-| `scale_dangle_by_fps` | `boolean` | `true` |  |  |
-| `tag_cols` | list of `string` | _constructed_ |  |  |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
+| `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
+| `nn_id_col` | `string` | `"nn_id"` |  | The nearest neighbor's id column. Falls back to nn_fishID when absent. |
+| `nn_dx_ego_col` | `string` | `"nn_delta_x_ego"` |  | The column that records the neighbor's x offset in the focal's ego frame. |
+| `nn_dy_ego_col` | `string` | `"nn_delta_y_ego"` |  | The column that records the neighbor's y offset in the focal's ego frame. |
+| `nn_dx_world_col` | `string` | `"nn_delta_x"` |  | The column that records the neighbor's x offset in the world frame, rotated into the ego frame when either nn_dx_ego_col or nn_dy_ego_col is absent. |
+| `nn_dy_world_col` | `string` | `"nn_delta_y"` |  | The column that records the neighbor's y offset in the world frame, rotated into the ego frame when either nn_dx_ego_col or nn_dy_ego_col is absent. |
+| `focal_col` | `string` | `"Focal_fish"` |  | The column flagging a focal individual. Used to look up whether each row's nearest neighbor is itself focal, published as neighbor_focal, and passed through to the output when present. |
+| `diff_numframes` | `integer` | `4` | >= `1` | How far ahead the response delta is measured, unless diff_numframes_col overrides it for a row. [frames] |
+| `diff_numframes_col` | `string` \| `None` | `null` |  | The column that records a per-row lag in frames, used instead of diff_numframes wherever it rounds to a finite whole number of frames of at least one. Unset, or naming a column the table does not have, every row uses diff_numframes. Expresses a speed-adjusted delay (tau_i = tau_ref * S_ref / S_group) that one scalar cannot vary per entry. |
+| `emit_backward` | `boolean` | `false` |  | Also emit the backward window: dx_back and dy_back, computed as the position at t minus the position at t-tau. A row with no valid backward window gets NaN instead of being dropped. |
+| `wrap_angle` | `boolean` | `true` |  | Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept. |
+| `divide_dangle_by_frames` | `boolean` | `true` |  | Divide the heading change by the number of frames it spans. When False, the raw windowed difference is kept. |
+| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the sampling frame rate. Together with divide_dangle_by_frames this gives radians per second. |
+| `tag_cols` | list of `string` | _constructed_ |  | Extra columns passed through unchanged on the focal row, and looked up for the neighbor as neighbor_<tag_col> when the column exists on the full table. |
 
 ??? note "`SamplingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |  |
-    | `smooth_win` | `integer` | `0` | >= `0` |  |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `orientation-rel`
 
@@ -209,9 +209,9 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `scale` | `BodyScaleResult` | _constructed_ |  |  |
-| `nearest_k` | `integer` | `3` | >= `1` |  |
-| `quantiles` | list of `number` | `[0.25, 0.5, 0.75]` |  |  |
+| `scale` | `BodyScaleResult` | _constructed_ |  | Reference to the upstream body-scale run whose per-sequence mean scale normalizes distances into scale-free units. Where the dependency does not resolve, each row falls back to the focal individual's median pairwise keypoint distance in that frame. |
+| `nearest_k` | `integer` | `3` | >= `1` | Number of nearest pose-point distances to emit per pair. |
+| `quantiles` | list of `number` | `[0.25, 0.5, 0.75]` |  | Quantiles of the scale-normalized distance from each of the other individual's keypoints to the focal individual's centroid. Rotating into the focal's body frame changes each point's direction but not this distance, which depends only on scale. |
 
 ??? note "`BodyScaleResult`"
 
@@ -232,38 +232,38 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgoc
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `neck_idx` | `integer` | `3` |  |  |
-| `tail_base_idx` | `integer` | `6` |  |  |
-| `center_mode` | `string` | `"mean"` |  |  |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing pose data. |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate and smoothing settings. |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint column naming and selection. |
+| `neck_idx` | `integer` | `3` |  | Index of the neck keypoint in the pose array. Paired with tail_base_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. When pose.pose_indices is set, this index must be one of the selected indices. |
+| `tail_base_idx` | `integer` | `6` |  | Index of the tail-base keypoint in the pose array. Paired with neck_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. When pose.pose_indices is set, this index must be one of the selected indices. |
+| `center_mode` | `string` | `"mean"` |  | How the animal's center point is computed from its pose keypoints. Every accepted value averages all keypoints. Selecting a single keypoint by index needs an integer, which this field does not accept. **Unwired:** every accepted value averages all keypoints -- the per-keypoint branch needs an int this field refuses. |
 
 ??? note "`InterpolationConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` | Maximum run of consecutive missing values filled by linear interpolation. [frames] |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
 
 ??? note "`PoseConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ??? note "`SamplingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |  |
-    | `smooth_win` | `integer` | `0` | >= `0` |  |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `pair-facing`
 
@@ -273,14 +273,14 @@ Per-frame directional facing metric for all ordered pairs of individuals.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `angle_thresh_deg` | `number` | `45.0` |  |  |
-| `dist_thresh` | `number` | `3.0` |  |  |
-| `cm_per_pixel` | `number` \| `None` | `null` |  |  |
-| `pose_head_index` | `integer` | `3` |  |  |
-| `pose_abdomen_index` | `integer` | `5` |  |  |
-| `body_axis_from` | `string` | `"head_to_abdomen"` |  |  |
-| `x_prefix` | `string` | `"poseX"` |  |  |
-| `y_prefix` | `string` | `"poseY"` |  |  |
+| `angle_thresh_deg` | `number` | `45.0` |  | The maximum angle_diff_deg for is_facing to be true. [deg] |
+| `dist_thresh` | `number` | `3.0` |  | The maximum distance for is_facing to be true, in the unit distance is reported in: centimeters when cm_per_pixel is set, pixels otherwise. |
+| `cm_per_pixel` | `number` \| `None` | `null` |  | The scale factor applied to the head-to-head distance. Unset, distance and dist_thresh are read directly from the tracks with no scaling applied. [cm/px] |
+| `pose_head_index` | `integer` | `3` |  | The pose keypoint index for the head. The default of 3 assumes the TRex bee layout described in the class docstring. |
+| `pose_abdomen_index` | `integer` | `5` |  | The pose keypoint index for the abdomen tip. The default of 5 assumes the TRex bee layout described in the class docstring. |
+| `body_axis_from` | `string` | `"head_to_abdomen"` |  | The direction convention for the body axis. Known values are head_to_abdomen and abdomen_to_head. head_to_abdomen reproduces the original BeesInADish computation, under which is_facing triggers when the abdomen points toward the target. abdomen_to_head flips the sign so is_facing triggers when the head points toward the target. |
+| `x_prefix` | `string` | `"poseX"` |  | The column name prefix for pose X coordinates. |
+| `y_prefix` | `string` | `"poseY"` |  | The column name prefix for pose Y coordinates. |
 
 ### `pair-interaction-filter`
 
@@ -290,16 +290,16 @@ Detect pairwise interaction segments from trajectory data.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `shift_dist` | `number` | `15.0` |  |  |
-| `max_dist` | `number` | `40.0` |  |  |
-| `require_facing` | `boolean` | `true` |  |  |
-| `max_inv_orientation_diff_deg` | `number` | `80.0` |  |  |
-| `min_run_frames` | `integer` | `250` |  |  |
-| `frame_padding` | `integer` | `10` |  |  |
-| `morphological_structure_size` | `integer` | `25` |  |  |
-| `px_scale` | `number` | `1.0` |  |  |
-| `use_pixel_coords` | `boolean` | `true` |  |  |
-| `pose_head_index` | `integer` \| `None` | `null` |  |  |
+| `shift_dist` | `number` | `15.0` |  | Distance each individual is shifted forward along its heading before the distance check runs. 0 uses raw positions with no shift. [px] |
+| `max_dist` | `number` | `40.0` |  | The maximum distance between the shifted positions for a pair to count as interacting. [px] |
+| `require_facing` | `boolean` | `true` |  | Require the pair to also face each other, using max_inv_orientation_diff_deg. False filters on distance alone. |
+| `max_inv_orientation_diff_deg` | `number` | `80.0` |  | The maximum inverse-orientation angle for a pair to count as facing. Ignored when require_facing is false. [deg] |
+| `min_run_frames` | `integer` | `250` |  | The minimum length a continuous run meeting the interaction criteria needs to count as a segment. [frames] |
+| `frame_padding` | `integer` | `10` |  | Padding added before and after each detected segment. [frames] |
+| `morphological_structure_size` | `integer` | `25` |  | Length of the structuring element used to close and open the per-frame interaction mask before segment extraction. 0 disables morphological filtering. [frames] |
+| `px_scale` | `number` | `1.0` |  | Scale factor applied to shift_dist and max_dist, for videos recorded at a different pixel resolution. |
+| `use_pixel_coords` | `boolean` | `true` |  | Use pixel-coordinate columns for the distance calculation. With pose_head_index set, uses that pose keypoint. Otherwise uses x_pixels/y_pixels where present, falling back to X/Y. False always uses X/Y. |
+| `pose_head_index` | `integer` \| `None` | `null` |  | Pose keypoint index used as the position for the distance calculation, together with use_pixel_coords. Unset, x_pixels/y_pixels or X/Y is used instead. |
 
 ### `pair-posedistance-pca`
 
@@ -309,33 +309,33 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.Pair
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `include_intra_A` | `boolean` | `true` |  |  |
-| `include_intra_B` | `boolean` | `true` |  |  |
-| `include_inter` | `boolean` | `true` |  |  |
-| `duplicate_perspective` | `boolean` | `true` |  |  |
-| `n_components` | `integer` | `6` |  |  |
-| `batch_size` | `integer` | `5000` | > `0` |  |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing pose data. |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
+| `include_intra_A` | `boolean` | `true` |  | Include the pairwise distances between the focal individual's own keypoints. |
+| `include_intra_B` | `boolean` | `true` |  | Include the pairwise distances between the other individual's own keypoints. |
+| `include_inter` | `boolean` | `true` |  | Include the pairwise distances between the focal individual's keypoints and the other individual's keypoints. |
+| `duplicate_perspective` | `boolean` | `true` |  | Emit each pair twice, once with each individual as id1, the focal one. False emits only the row set with the lower-id individual as id1. |
+| `n_components` | `integer` | `6` |  | The number of principal components the PCA retains. |
+| `batch_size` | `integer` | `5000` | > `0` | How many pair-frames are read per batch. duplicate_perspective doubles the rows each IncrementalPCA partial_fit or transform call receives. |
 
 ??? note "`InterpolationConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` | Maximum run of consecutive missing values filled by linear interpolation. [frames] |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
 
 ??? note "`PoseConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ### `pair-position`
 
@@ -345,23 +345,23 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_position.PairPositi
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |  |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing position data. |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate and smoothing settings. |
 
 ??? note "`InterpolationConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` | Maximum run of consecutive missing values filled by linear interpolation. [frames] |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
 
 ??? note "`SamplingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |  |
-    | `smooth_win` | `integer` | `0` | >= `0` |  |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `pair-wavelet`
 
@@ -371,21 +371,21 @@ CWT spectrograms on PairPoseDistancePCA outputs.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  |  |
-| `f_min` | `number` | `0.2` | > `0` |  |
-| `f_max` | `number` | `5.0` | > `0` |  |
-| `n_freq` | `integer` | `25` | > `0` |  |
-| `wavelet` | `string` | `"cmor1.5-1.0"` |  |  |
-| `log_floor` | `number` | `-3.0` |  |  |
-| `pc_prefix` | `string` | `"PC"` |  |  |
-| `cols` | list of `string` \| `None` | `null` |  |  |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
+| `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
+| `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
+| `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
+| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. |
+| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to. |
+| `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
+| `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
 
 ??? note "`SamplingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |  |
-    | `smooth_win` | `integer` | `0` | >= `0` |  |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `scale-to-cm`
 
@@ -395,10 +395,10 @@ Convert every length-bearing column into centimeters.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `cm_per_pixel` | `number` \| `None` | `null` |  |  |
-| `mode` | `"derive"` \| `"convert"` | `"derive"` |  |  |
-| `suffix` | `string` | `"_cm"` |  |  |
-| `columns` | list of `string` \| `None` | `null` |  |  |
+| `cm_per_pixel` | `number` \| `None` | `null` |  | Override the dataset's recorded scale. A value that is not positive raises when the feature runs. Unset, the scale is read from the media index for the sequence being processed. [cm/px] |
+| `mode` | `"derive"` \| `"convert"` | `"derive"` |  | derive emits only the scaled columns, each under its own name plus suffix, alongside the metadata. convert returns the whole table with every length column converted in place, under its own name. |
+| `suffix` | `string` | `"_cm"` |  | Appended to each scaled column's name in derive mode. Names nothing in convert mode, which refuses a non-default value. |
+| `columns` | list of `string` \| `None` | `null` |  | Replace the length-bearing classifier with exactly these columns, scaling every one whether or not it is length-bearing. A name absent from the table raises. In convert mode, naming a subset leaves the unnamed length columns in pixels inside a table whose other lengths are centimeters. |
 
 ### `speed-angvel`
 
@@ -408,8 +408,8 @@ Per-sequence feature computing translational speed and angular velocity.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `step_size` | `integer` \| `None` | `null` |  |  |
-| `smooth_window` | `integer` \| `None` | `null` |  |  |
+| `step_size` | `integer` \| `None` | `null` |  | The additional frame step for speed_step and angvel_step, computed beside the one-frame difference. Unset, neither column is emitted. [frames] |
+| `smooth_window` | `integer` \| `None` | `null` |  | The window Savitzky-Golay smoothing (polyorder 1) averages speed over to produce speed_smooth. Unset, speed_smooth is not emitted. Smoothing raises when the window is 0 or 1, or when it exceeds the individual's row count. [frames] |
 | `fps` | `number` \| `None` | `null` |  | Frames per second. When set, dt is derived from the frame column (frame_diff / fps) instead of the time column. This is more robust for constant-fps data where the time column may contain irregular real timestamps. |
 
 ### `temporal-stack`
@@ -420,16 +420,16 @@ Build temporal context windows over per-sequence feature data.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `half` | `integer` | `60` | >= `0` |  |
-| `skip` | `integer` | `5` | >= `1` |  |
-| `use_temporal_stack` | `boolean` | `true` |  |  |
-| `sigma_stack` | `number` | `30.0` |  |  |
-| `add_pool` | `boolean` | `true` |  |  |
-| `pool_stats` | list of `string` | `["mean"]` |  |  |
-| `sigma_pool` | `number` | `30.0` |  |  |
-| `fps` | `number` | `30.0` | > `0` |  |
-| `win_sec` | `number` | `0.5` | > `0` |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
+| `half` | `integer` | `60` | >= `0` | Half-width of the temporal window. The full window spans -half to +half around each row. [frames] |
+| `skip` | `integer` | `5` | >= `1` | The step between time offsets in the stacking window. [frames] |
+| `use_temporal_stack` | `boolean` | `true` |  | Concatenate Gaussian-smoothed copies of each feature column at every offset in the window. False passes through the input feature columns unchanged. |
+| `sigma_stack` | `number` | `30.0` |  | The Gaussian smoothing sigma applied before stacking. 0 disables smoothing. [frames] |
+| `add_pool` | `boolean` | `true` |  | Append pooled statistics computed over a sliding Gaussian window. |
+| `pool_stats` | list of `string` | `["mean"]` |  | Which pooled statistics to compute over the sliding Gaussian window. Known values are mean, std and variance, matched case-insensitively. Any other value is ignored. |
+| `sigma_pool` | `number` | `30.0` |  | The Gaussian sigma for the pooling window. Non-positive computes it from win_sec and fps. [frames] |
+| `fps` | `number` | `30.0` | > `0` | The frame rate used to convert win_sec into a frame count. [fps] |
+| `win_sec` | `number` | `0.5` | > `0` | The width of the pooling window. [s] |
+| `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
 
 ??? note "`NNResult`"
 
@@ -450,23 +450,23 @@ Subsample tracks rows for downstream per-row features.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  |  |
-| `target_frames` | `integer` | `300` | >= `1` |  |
-| `clip_len` | `integer` | `8` | >= `2` |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `seed` | `integer` | `42` |  |  |
-| `drop_nan` | `boolean` | `true` |  |  |
+| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  | How rows are chosen. kmeans clusters frames in body-canonical pose space and keeps the frame closest to each cluster centroid. uniform picks frames at constant stride. clips picks seeds via kmeans and takes clip_len consecutive frames from each. |
+| `target_frames` | `integer` | `300` | >= `1` | The target output row count per sequence. For method=clips this is n_clips * clip_len. The number of clips is target_frames // clip_len. [frames] |
+| `clip_len` | `integer` | `8` | >= `2` | The clip length, for method=clips. Ignored otherwise. [frames] |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose-column naming and count configuration. |
+| `seed` | `integer` | `42` |  | The random seed for k-means. |
+| `drop_nan` | `boolean` | `true` |  | Drop rows with non-finite required columns from the output. **Unwired:** no code path reads it; apply() emits whatever rows the chosen method selects. |
 
 ??? note "`PoseConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ### `trajectory-smooth`
 
@@ -476,13 +476,13 @@ Per-sequence feature that smooths and interpolates trajectory positions.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `speed_threshold` | `number` \| `None` | `null` |  |  |
-| `fps` | `number` \| `None` | `null` |  |  |
-| `interpolate_centroid` | `boolean` | `true` |  |  |
-| `interpolate_pose` | `boolean` | `false` |  |  |
-| `expand_frames` | `integer` | `2` |  |  |
-| `savgol_window` | `integer` \| `None` | `null` |  |  |
-| `savgol_polyorder` | `integer` | `2` |  |  |
+| `speed_threshold` | `number` \| `None` | `null` |  | Unset, no frame is flagged bad. Set, a frame is flagged when its displacement from the previous frame exceeds this value, per frame or, when fps is set, per second. Uses the same unit as the X and Y position columns. |
+| `fps` | `number` \| `None` | `null` |  | Unset, speed_threshold is read as a per-frame value. Set, converts speed_threshold from a per-second rate to per-frame. [fps] |
+| `interpolate_centroid` | `boolean` | `true` |  | Replace a bad frame's centroid position with linear interpolation between the nearest good frames, extending from the nearest good value at a sequence edge. Every remaining gap in each column is filled the same way. |
+| `interpolate_pose` | `boolean` | `false` |  | Replace a bad frame's pose keypoint positions with linear interpolation between the nearest good frames, extending from the nearest good value at a sequence edge. Every remaining gap in each column is filled the same way. |
+| `expand_frames` | `integer` | `2` |  | How far on each side of a speed-flagged row the bad flag extends. [frames] |
+| `savgol_window` | `integer` \| `None` | `null` |  | Unset, no Savitzky-Golay smoothing is applied. Set, smooths centroid and pose positions regardless of the interpolation settings, for an id with at least this many rows. Must exceed savgol_polyorder. An odd value keeps the filter window centered. [frames] |
+| `savgol_polyorder` | `integer` | `2` |  | The polynomial order of the Savitzky-Golay filter. |
 
 ## Per-sequence summary
 
@@ -494,17 +494,17 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |  |
-| `subgroup_col` | `string` \| `None` | `null` |  |  |
-| `area_method` | `"convex_hull"` \| `"alpha_shape"` \| `"none"` | `"convex_hull"` |  |  |
-| `alpha` | `number` \| `None` | `null` |  |  |
-| `min_individuals` | `integer` | `3` | >= `1` |  |
-| `fps` | `number` \| `None` | `null` |  |  |
-| `max_frame_gap` | `integer` \| `None` | `null` |  |  |
-| `min_group_speed` | `number` | `0.0` | >= `0` |  |
-| `speed_col` | `string` \| `None` | `null` |  |  |
-| `filter_expr` | `string` \| `None` | `null` |  |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |  |
+| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  | Where each unit heading comes from. auto uses the ANGLE column when it has at least one finite value, falling back to the direction of travel otherwise -- what simulation output with no body orientation needs. orientation raises when no usable ANGLE column is present. velocity always uses the direction of travel. |
+| `subgroup_col` | `string` \| `None` | `null` |  | The column partitioning each frame into subgroups, typically event from ffgroups. Prefer it over group_membership, whose per-frame connected-component label assigns no identity across frames. Using group_membership instead differences two possibly disjoint sets of animals in centroid_speed and group_angvel. Unset, metrics are computed over the whole group. |
+| `area_method` | `"convex_hull"` \| `"alpha_shape"` \| `"none"` | `"convex_hull"` |  | How area and density are computed. none skips both. |
+| `alpha` | `number` \| `None` | `null` |  | The circumradius cutoff for the alpha shape, in the input's position units. Required when area_method is alpha_shape. |
+| `min_individuals` | `integer` | `3` | >= `1` | Below this count of individuals, the relational metrics are NaN and state is Undefined. The default of 3 rather than 2 accounts for N=2, where the two radial vectors are antiparallel by construction. Rotation contains no information there, yet still feeds the classifier. |
+| `fps` | `number` \| `None` | `null` |  | The frame rate. With a frame order column, this derives dt as frame_diff / fps, immune to the jittery wall-clock timestamps some trackers embed. Unset, dt falls back to the time column, then to one order step. [fps] |
+| `max_frame_gap` | `integer` \| `None` | `null` |  | Frame steps wider than this yield NaN velocity instead of averaging across a gap the shoal reorganized over. Unset, every step is accepted. [frames] |
+| `min_group_speed` | `number` | `0.0` | >= `0` | centroid_heading is NaN at or below this speed. A mill's centroid is stationary by definition, and arctan2(0, 0) returns 0 (due east) with no error, which the threshold guards against. |
+| `speed_col` | `string` \| `None` | `null` |  | The per-individual speed column averaged into mean_speed. Worth setting under subgroup_col, where frame-aggregate cannot express a per-subgroup mean. Unset, mean_speed is not emitted. |
+| `filter_expr` | `string` \| `None` | `null` |  | A DataFrame.query expression applied first, before every other computation. The way to drop event == -1, the pooled non-event pseudo-group from ffgroups: that sentinel is an integer, which exclude_cols cannot express. |
+| `exclude_cols` | list of `string` | _constructed_ |  | Boolean columns whose truthy rows are dropped after filter_expr and before every other computation. One bad position moves the centroid, and with it every radial vector, the covariance and the hull. A name absent from the input is skipped rather than raising. |
 
 ### `ffgroups-metrics`
 
@@ -514,12 +514,12 @@ Per-sequence summary of focal-individual group metrics.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `group_col` | `string` | `"event"` |  |  |
-| `speed_col` | `string` | `"speed"` |  |  |
-| `time_chunk_sec` | `number` \| `None` | `null` |  |  |
-| `frame_chunk` | `integer` \| `None` | `null` |  |  |
-| `centroid_heading_col` | `string` | `"centroid_heading"` |  |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |  |
+| `group_col` | `string` | `"event"` |  | Name of the column identifying group-membership events, for example the one FFGroups writes. Read only when present in the input. |
+| `speed_col` | `string` | `"speed"` |  | The per-frame speed column. |
+| `time_chunk_sec` | `number` \| `None` | `null` |  | Splits each sequence into chunks of this duration, summarized separately. Unset, each sequence is summarized whole. Takes precedence over frame_chunk when both are set and the input has a time column. [s] |
+| `frame_chunk` | `integer` \| `None` | `null` |  | Splits each sequence into chunks of this size, summarized separately. Unset, each sequence is summarized whole. Ignored when time_chunk_sec is also set and the input has a time column. [frames] |
+| `centroid_heading_col` | `string` | `"centroid_heading"` |  | The centroid-heading column, used to rotate positions into the group's reference frame. Read only when present in the input. |
+| `exclude_cols` | list of `string` | _constructed_ |  | Names of boolean columns whose truthy rows are dropped before computation, for example bad_frame. |
 
 ### `frame-aggregate`
 
@@ -529,12 +529,12 @@ Per-sequence feature reducing multi-id data to one row per frame.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `column` | `string` | _required_ |  |  |
-| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  |  |
-| `output_column` | `string` \| `None` | `null` |  |  |
-| `filter_expr` | `string` \| `None` | `null` |  |  |
-| `threshold` | `number` \| `None` | `null` |  |  |
-| `transform` | `"none"` \| `"abs"` | `"none"` |  |  |
+| `column` | `string` | _required_ |  | The name of the column to aggregate. |
+| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  | The aggregation applied across ids within each frame. Known values are mean, median, min, max, std, sum and count. Without threshold, NaN values are skipped for every mode, and count counts non-null values. |
+| `output_column` | `string` \| `None` | `null` |  | The name of the result column. Unset, it is column followed by agg, joined with an underscore. |
+| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression applied before aggregation, for example to dedupe pair-perspective input or drop flagged frames. |
+| `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of ids in the frame exceeding the threshold. |
+| `transform` | `"none"` \| `"abs"` | `"none"` |  | A transform applied to the column before aggregation. Known values are none and abs. abs aggregates the column's absolute value, useful for a magnitude such as angular velocity. |
 
 ### `nn-delta-bins`
 
@@ -544,19 +544,19 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `nbins` | `integer` | `45` | > `0` |  |
-| `binmax` | `number` | `14.0` | > `0` |  |
-| `max_for_avg` | `number` | `5.0` | > `0` |  |
-| `antisymm` | `boolean` | `true` |  |  |
-| `focal_category_col` | `string` | `"Focal_fish"` |  |  |
-| `neighbor_category_col` | `string` | `"neighbor_focal"` |  |  |
-| `group_size_col` | `string` | `"group_size"` |  |  |
-| `exp_col` | `string` | `"Exp"` |  |  |
-| `trial_col` | `string` | `"Trial"` |  |  |
-| `category_specs` | list of any | _constructed_ |  |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |  |
-| `nonfocal_flag_col` | `string` | `"Focal_fish"` |  |  |
-| `nonfocal_flag_value` | `boolean` | `false` |  |  |
+| `nbins` | `integer` | `45` | > `0` | The count of bin edges spanning -binmax to binmax. The two-dimensional y axis takes one more edge than this. |
+| `binmax` | `number` | `14.0` | > `0` | Maximum absolute neighbor offset spanned by a bin edge, in position units. |
+| `max_for_avg` | `number` | `5.0` | > `0` | Maximum neighbor offset, in position units, used to select rows for the turn response, keeping neighbor_x between 0 and max_for_avg. The speed response uses half this value, keeping neighbor_y within plus or minus max_for_avg / 2. |
+| `antisymm` | `boolean` | `true` |  | Duplicate each row of the turn (dangle) response with its y offset and its dangle negated, which folds that response left-right. The speed (dspeed) response never reads this flag. Its one-dimensional bins select a symmetric band of y offsets, and its two-dimensional bins mirror-duplicate every row with the dspeed value unchanged. |
+| `focal_category_col` | `string` | `"Focal_fish"` |  | The column recording the focal animal's category flag. |
+| `neighbor_category_col` | `string` | `"neighbor_focal"` |  | The column recording the neighbor's category flag. |
+| `group_size_col` | `string` | `"group_size"` |  | The column recording the group size. |
+| `exp_col` | `string` | `"Exp"` |  | The column recording the experimental condition identifier. |
+| `trial_col` | `string` | `"Trial"` |  | The column recording the trial identifier. |
+| `category_specs` | list of any | _constructed_ |  | Specs for derived category columns, each a dict with source_col, new_col, quantile (default 0.75) and op, adding a boolean column comparing source_col against its quantile. Any op value other than <= is treated as >, without raising. A spec whose source_col is absent from the table is skipped and adds nothing. |
+| `exclude_cols` | list of `string` | _constructed_ |  | Column names whose truthy rows are dropped before computation. A name absent from the table is skipped rather than raising. |
+| `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
+| `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |
 
 ### `social-motion-summary`
 
@@ -566,11 +566,11 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `fps` | `number` | `30.0` |  |  |
-| `speed_col` | `string` | `"speed"` |  |  |
-| `social_min_group_size` | `integer` | `2` |  |  |
-| `subgroup_col` | `string` \| `None` | `null` |  |  |
-| `compute_burst_coast` | `boolean` | `false` |  |  |
+| `fps` | `number` | `30.0` |  | The frame rate, used to convert frame steps to seconds for the derivative-based metrics and for kick_rate's time base. [fps] |
+| `speed_col` | `string` | `"speed"` |  | The per-frame speed column. speed_smooth is the better input for the derivative-based metrics, but it exists only when speed-angvel ran with smooth_window set. It is not the default for that reason. |
+| `social_min_group_size` | `integer` | `2` |  | The minimum group_size for a frame to count as social, when group_size is available. |
+| `subgroup_col` | `string` \| `None` | `null` |  | The column that splits the output into one row per id per value, typically group_size from ffgroups. Unset, the output has one row per id. |
+| `compute_burst_coast` | `boolean` | `false` |  | Also emit a burst-and-coast gait summary: kick_rate and burst_coast_ratio. |
 
 ## Global (fit once, apply everywhere)
 
@@ -582,19 +582,19 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ArHmmModelArtifact` \| `None` | `null` |  |  |
-| `pca_dim` | `integer` \| `None` | `null` |  |  |
-| `n_states` | `integer` | `50` | >= `2` |  |
-| `n_lags` | `integer` | `1` | >= `1` |  |
-| `sticky_weight` | `number` | `100.0` | >= `0` |  |
-| `n_iter` | `integer` | `200` | >= `1` |  |
-| `tol` | `number` | `0.0001` | > `0` |  |
-| `n_restarts` | `integer` | `1` | >= `1` |  |
-| `standardize` | `boolean` | `true` |  |  |
-| `downsample_rate` | `integer` \| `None` | `null` |  |  |
-| `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` |  |
-| `random_state` | `integer` | `42` |  |  |
-| `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  |  |
+| `model` | `ArHmmModelArtifact` \| `None` | `null` |  | A pre-fitted model artifact to load, skipping the fit. Unset, the model is fit from scratch. |
+| `pca_dim` | `integer` \| `None` | `null` |  | How many components PCA reduces the feature dimensionality to before fitting. Unset, no PCA is applied. Ignored when it is not smaller than the number of input feature columns. |
+| `n_states` | `integer` | `50` | >= `2` | The maximum number of HMM states. Pruned down after fitting when prune_threshold is greater than zero. |
+| `n_lags` | `integer` | `1` | >= `1` | How many preceding steps enter as autoregressive regressors. A step is one row of the sequence being fit, which is a video frame unless downsample_rate has subsampled it. |
+| `sticky_weight` | `number` | `100.0` | >= `0` | The extra pseudo-count added to the diagonal of the transition matrix, encouraging state persistence across frames. |
+| `n_iter` | `integer` | `200` | >= `1` | The ceiling on EM passes per restart. [iterations] |
+| `tol` | `number` | `0.0001` | > `0` | The convergence tolerance on the relative change in log-likelihood between EM iterations. |
+| `n_restarts` | `integer` | `1` | >= `1` | How many random restarts run, keeping the one with the best log-likelihood. |
+| `standardize` | `boolean` | `true` |  | Z-score every feature column before fitting. When False, raw values are used directly. |
+| `downsample_rate` | `integer` \| `None` | `null` |  | The factor every sequence is subsampled by before fitting and inference, upsampled back afterward. Unset, no downsampling is applied. |
+| `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` | The posterior mass fraction below which a fitted state is dropped. |
+| `random_state` | `integer` | `42` |  | The random seed for PCA and model fitting, for reproducible restarts. |
+| `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  | The compute backend for EM and Viterbi decoding. auto uses the numba-compiled path when available and falls back to numpy. numba requests the compiled path but still falls back to numpy if it raises. numpy forces the plain path. jax is reserved for a future GPU path and is not implemented yet. |
 
 ??? note "`ArHmmModelArtifact`"
 
@@ -613,8 +613,8 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ### `extract-labeled-templates`
 
@@ -624,56 +624,56 @@ Extract labeled, split-annotated templates from upstream features.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `GroundTruthLabelsSource` | _required_ |  |  |
-| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |  |
-| `n_per_class` | `integer` \| `object` \| `None` | `null` |  |  |
-| `n_total` | `integer` \| `None` | `null` |  |  |
-| `pool` | `PoolConfig` | _constructed_ |  |  |
-| `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` |  |
-| `random_state` | `integer` | `42` |  |  |
+| `labels` | `GroundTruthLabelsSource` | _required_ |  | Reference to the per-frame ground-truth labels used to assign a class to every template, resolved from labels/<kind>/index.csv. |
+| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  | How templates are selected from the candidate pool. random keeps the pool as collected. farthest_first reduces an oversized pool to the target count per class by iterative farthest-point sampling. |
+| `n_per_class` | `integer` \| `object` \| `None` | `null` |  | The number of templates per class. An int applies the same count to every class, and a mapping sets each class's count individually. Exactly one of n_per_class and n_total must be set. |
+| `n_total` | `integer` \| `None` | `null` |  | The total number of templates, split equally across the classes seen. Each class gets n_total // (number of classes), so the realized total can be lower. Exactly one of n_per_class and n_total must be set. |
+| `pool` | `PoolConfig` | _constructed_ |  | Candidate pool size and per-entry allocation strategy consulted before final template selection. |
+| `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` | Fraction of sequences held out for the test split. |
+| `random_state` | `integer` | `42` |  | The random seed for split assignment and template sampling. |
 
 ??? note "`GroundTruthLabelsSource`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"behavior"` | `"behavior"` |  |  |
-    | `source` | `"labels"` | `"labels"` |  |  |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  |  |
-    | `pattern` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`NpzLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  |  |
-    | `key` | `string` | _required_ |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
 
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`PoolConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `size` | `integer` \| `None` | `null` |  |  |
-    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |  |
-    | `max_entry_fraction` | `number` \| `None` | `null` |  |  |
+    | `size` | `integer` \| `None` | `null` |  | Number of candidates collected before selecting the final templates. Unset sets the pool to the target template count, so selection makes no reduction. |
+    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  | How the per-entry quota for the pool is computed. reservoir performs weighted reservoir sampling in one pass. exact counts rows first, then samples a second pass with proportional quotas. |
+    | `max_entry_fraction` | `number` \| `None` | `null` |  | Cap on one entry's contribution to the pool, as a fraction of the pool size. Unset applies no cap, so each entry's share is proportional to its row count. The effective cap never drops below one divided by the number of entries seen so far, so the pool can still fill completely. |
 
 ### `extract-templates`
 
@@ -683,11 +683,11 @@ Subsample per-sequence data into a representative template matrix.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |  |
-| `n_templates` | `integer` | _required_ | >= `1` |  |
-| `pool` | `PoolConfig` | _constructed_ |  |  |
-| `random_state` | `integer` | `42` |  |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
+| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  | The template selection method. random keeps the candidate pool as the templates. farthest_first reduces the pool to n_templates by greedy farthest-point sampling. |
+| `n_templates` | `integer` | _required_ | >= `1` | The number of templates to select. Under farthest_first the candidate pool is reduced to this many. Under random it sets the pool size only when pool.size is unset, and pool.size then decides how many templates are written. |
+| `pool` | `PoolConfig` | _constructed_ |  | The candidate pool's size, allocation strategy, and per-entry caps. |
+| `random_state` | `integer` | `42` |  | The random seed for the feature's random sampling steps. |
+| `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
 
 ??? note "`NNResult`"
 
@@ -704,9 +704,9 @@ Subsample per-sequence data into a representative template matrix.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `size` | `integer` \| `None` | `null` |  |  |
-    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |  |
-    | `max_entry_fraction` | `number` \| `None` | `null` |  |  |
+    | `size` | `integer` \| `None` | `null` |  | Number of candidates collected before selecting the final templates. Unset sets the pool to the target template count, so selection makes no reduction. |
+    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  | How the per-entry quota for the pool is computed. reservoir performs weighted reservoir sampling in one pass. exact counts rows first, then samples a second pass with proportional quotas. |
+    | `max_entry_fraction` | `number` \| `None` | `null` |  | Cap on one entry's contribution to the pool, as a fraction of the pool size. Unset applies no cap, so each entry's share is proportional to its row count. The effective cap never drops below one divided by the number of entries seen so far, so the pool can still fill completely. |
 
 ### `feral`
 
@@ -716,48 +716,48 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `feral_code_dir` | `string` \| `None` | `null` |  |  |
-| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  |  |
-| `predict_per_item` | `integer` | `64` |  |  |
-| `chunk_length` | `integer` | `64` |  |  |
-| `chunk_shift` | `integer` | `32` |  |  |
-| `chunk_step` | `integer` | `1` |  |  |
-| `resize_to` | `integer` | `256` |  |  |
-| `device` | `string` | `"cuda"` |  |  |
-| `infer_batch_size` | `integer` | `4` |  |  |
-| `inference_autocast` | `boolean` | `false` |  |  |
-| `class_names` | `object` \| `None` | `null` |  |  |
-| `decision_threshold` | `number` \| `None` | `null` |  |  |
-| `default_class` | `integer` | `0` |  |  |
-| `model_dir` | `string` \| `None` | `null` |  |  |
-| `video_dir` | `string` \| `None` | `null` |  |  |
-| `label_json` | `string` \| `None` | `null` |  |  |
-| `training` | `FeralTrainingConfig` \| `None` | `null` |  |  |
+| `feral_code_dir` | `string` \| `None` | `null` |  | A local checkout of the feral package, prepended to sys.path. Unset, the pip-installed package is used. |
+| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  | The FERAL backbone: a feral.backbones.BACKBONES key or the matching HuggingFace slug. An unrecognized value raises. The choice also selects the pretrained weights FERAL downloads from the HuggingFace hub on first use, whose license differs per entry and is tabulated in docs/licensing.md. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own backbone overrides it. |
+| `predict_per_item` | `integer` | `64` |  | How many predictions the model emits per chunk. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own value overrides it. |
+| `chunk_length` | `integer` | `64` |  | The length of one video chunk. [frames] |
+| `chunk_shift` | `integer` | `32` |  | The stride between the starts of consecutive chunks. [frames] |
+| `chunk_step` | `integer` | `1` |  | The stride sampled within one chunk. [frames] |
+| `resize_to` | `integer` | `256` |  | The side a frame is resized to before the model reads it. [px] |
+| `device` | `string` | `"cuda"` |  | Which PyTorch device loads and runs the model. |
+| `infer_batch_size` | `integer` | `4` |  | How many chunks apply() reads in one forward pass. Batching is numerically equivalent to reading them one at a time. |
+| `inference_autocast` | `boolean` | `false` |  | Run apply()'s forward pass under bfloat16 autocast instead of full float32, roughly 1.5-2x faster at the cost of a recall shift of around 10 percentage points on threshold-sensitive classes. Read only when the model is on a CUDA device. |
+| `class_names` | `object` \| `None` | `null` |  | Class index to name mapping, keyed by string index. Unset, the mapping is read from the model config or checkpoint metadata. |
+| `decision_threshold` | `number` \| `None` | `null` |  | The minimum probability considered when choosing the predicted class. Unset, the predicted class is the argmax over every class. Set, the predicted class is default_class when every class falls below it. |
+| `default_class` | `integer` | `0` |  | The class returned when decision_threshold is set and every class falls below it. |
+| `model_dir` | `string` \| `None` | `null` |  | A directory containing model_best.pt and config.json from a prior training run, for inference mode. |
+| `video_dir` | `string` \| `None` | `null` |  | The directory containing crop videos, for training mode. |
+| `label_json` | `string` \| `None` | `null` |  | A FERAL-format label JSON declaring class_names and splits, for training mode. |
+| `training` | `FeralTrainingConfig` \| `None` | `null` |  | Training hyperparameters. Required to train. Unset without a model to load, fit raises. |
 
 ??? note "`FeralTrainingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `epochs` | `integer` | `10` | >= `1` |  |
-    | `train_bs` | `integer` | `4` | >= `1` |  |
-    | `val_bs` | `integer` | `8` | >= `1` |  |
-    | `num_workers` | `integer` | `4` | >= `0` |  |
-    | `lr` | `number` | `4e-05` | > `0` |  |
-    | `weight_decay` | `number` | `0.1` | >= `0` |  |
-    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` |  |
-    | `fc_drop_rate` | `number` | `0.5` | >= `0`, <= `1` |  |
-    | `freeze_encoder_layers` | `integer` | `14` | >= `0` |  |
-    | `class_weights` | `string` | `"inv_freq_sqrt"` |  |  |
-    | `ema_decay` | `number` \| `None` | `0.999` |  |  |
-    | `mixup_alpha` | `number` \| `None` | `0.8` |  |  |
-    | `part_warmup` | `number` | `0.2` | >= `0`, <= `1` |  |
-    | `patience` | `integer` \| `None` | `null` |  |  |
-    | `compile` | `boolean` | `true` |  |  |
-    | `do_aa` | `boolean` | `true` |  |  |
-    | `seed` | `integer` | `0` |  |  |
-    | `part_sample` | `number` | `1.0` | > `0`, <= `1` |  |
-    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` |  |
-    | `wandb_project` | `string` \| `None` | `null` |  |  |
+    | `epochs` | `integer` | `10` | >= `1` | The number of training epochs. |
+    | `train_bs` | `integer` | `4` | >= `1` | The number of samples per training batch. |
+    | `val_bs` | `integer` | `8` | >= `1` | The number of samples per validation batch, also used when evaluating a test partition after training. |
+    | `num_workers` | `integer` | `4` | >= `0` | The number of subprocess workers for the training and validation data loaders, also used when evaluating a test partition after training. |
+    | `lr` | `number` | `4e-05` | > `0` | The learning rate for the AdamW optimizer. |
+    | `weight_decay` | `number` | `0.1` | >= `0` | The weight decay for the AdamW optimizer. |
+    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` | The label smoothing factor for the cross-entropy loss, applied only when the label JSON is not multilabel. |
+    | `fc_drop_rate` | `number` | `0.5` | >= `0`, <= `1` | The dropout rate before the classifier head. |
+    | `freeze_encoder_layers` | `integer` | `14` | >= `0` | The number of backbone encoder layers frozen during fine-tuning. |
+    | `class_weights` | `string` | `"inv_freq_sqrt"` |  | The class-weighting scheme forwarded to FERAL's get_weights when building the loss weight tensor. |
+    | `ema_decay` | `number` \| `None` | `0.999` |  | The decay rate for an exponential moving average of the model weights. Unset, no EMA model is tracked. |
+    | `mixup_alpha` | `number` \| `None` | `0.8` |  | The alpha parameter for torchvision's MixUp training-batch augmentation. Unset, no MixUp is applied. |
+    | `part_warmup` | `number` | `0.2` | >= `0`, <= `1` | The fraction of total training steps spent in the cosine learning-rate schedule's warmup phase. |
+    | `patience` | `integer` \| `None` | `null` |  | The number of epochs without validation improvement before training stops early. Unset, training never stops early. |
+    | `compile` | `boolean` | `true` |  | Compile the model with torch.compile before training. |
+    | `do_aa` | `boolean` | `true` |  | Apply data augmentation when building the training dataset. |
+    | `seed` | `integer` | `0` |  | The random seed applied to torch and numpy before training starts. |
+    | `part_sample` | `number` | `1.0` | > `0`, <= `1` | The fraction of the training partition included when building the training dataset. |
+    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold used when computing F1 metrics, applied only when the label JSON is multilabel. |
+    | `wandb_project` | `string` \| `None` | `null` |  | The Weights & Biases project name recorded in the saved training config. **Unwired:** Stored in the saved config; nothing in this file starts a Weights & Biases run with it.. |
 
 ### `global-identity-dinov2-temporal`
 
@@ -767,23 +767,23 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  |  |
-| `identities` | `object` \| `None` | `null` |  |  |
-| `group_as_identity` | `boolean` | `false` |  |  |
-| `backbone` | `string` | `"dinov2_vits14"` |  |  |
-| `temporal_head` | `"gru"` \| `"perceiver"` \| `"pool"` | `"gru"` |  |  |
-| `embedding_dim` | `integer` | `128` | >= `16` |  |
-| `clip_len` | `integer` | `8` | >= `2` |  |
-| `clip_stride` | `integer` \| `None` | `null` |  |  |
-| `image_size` | tuple of (`integer`, `integer`) | `[224, 224]` | min items `2`, max items `2` |  |
-| `channels` | `integer` | `3` |  |  |
-| `epochs` | `integer` | `50` | >= `1` |  |
-| `learning_rate` | `number` | `0.001` |  |  |
-| `batch_size` | `integer` | `32` | >= `1` |  |
-| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |  |
-| `max_clips_per_identity` | `integer` | `500` | >= `1` |  |
-| `weights_name` | `string` | `"dinov2_temporal_identity"` |  |  |
-| `crop_root` | `string` \| `None` | `null` |  |  |
+| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  | A pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
+| `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
+| `backbone` | `string` | `"dinov2_vits14"` |  | The DINOv2 model name loaded from the facebookresearch/dinov2 torch hub repository. |
+| `temporal_head` | `"gru"` \| `"perceiver"` \| `"pool"` | `"gru"` |  | Which head aggregates a clip's per-frame embeddings into one clip embedding. |
+| `embedding_dim` | `integer` | `128` | >= `16` | The output dimension of the temporal head. |
+| `clip_len` | `integer` | `8` | >= `2` | The length of one clip. [frames] |
+| `clip_stride` | `integer` \| `None` | `null` |  | Unset, the step between clip starts equals clip_len and clips do not overlap. Set, it names that step directly. [frames] |
+| `image_size` | tuple of (`integer`, `integer`) | `[224, 224]` | min items `2`, max items `2` | The crop resize target as (height, width). Must be a multiple of 14 for the DINOv2 patch size. [px] |
+| `channels` | `integer` | `3` |  | How many channels the crop image is read from disk with. 1 reads grayscale and is replicated to 3 channels before the backbone reads it. Any other value reads 3-channel RGB. |
+| `epochs` | `integer` | `50` | >= `1` | The number of optimization passes over the training clips. [epochs] |
+| `learning_rate` | `number` | `0.001` |  | The Adam learning rate. |
+| `batch_size` | `integer` | `32` | >= `1` | The training batch size. |
+| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` | The fraction of clips set aside for validation. 0 disables the split. |
+| `max_clips_per_identity` | `integer` | `500` | >= `1` | The cap on training clips kept per identity. |
+| `weights_name` | `string` | `"dinov2_temporal_identity"` |  | The filename stem for the exported checkpoint, written as <weights_name>.pth. |
+| `crop_root` | `string` \| `None` | `null` |  | Override for the directory EgocentricCrop output is read from. When it names no readable directory, the directory the loaded input came from is used instead. |
 
 ??? note "`DinoV2TemporalIdentityArtifact`"
 
@@ -802,8 +802,8 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ### `global-identity-embedding`
 
@@ -813,16 +813,16 @@ Train an identity model from frozen backbone embeddings + k-NN.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  |  |
-| `identities` | `object` \| `None` | `null` |  |  |
-| `group_as_identity` | `boolean` | `false` |  |  |
-| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |  |
-| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
-| `channels` | `integer` | `3` |  |  |
-| `batch_size` | `integer` | `32` | >= `1` |  |
-| `max_images_per_identity` | `integer` | `2000` | >= `1` |  |
-| `weights_name` | `string` | `"identity_embedding"` |  |  |
-| `crop_root` | `string` \| `None` | `null` |  |  |
+| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  | A pre-fitted EmbeddingIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
+| `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
+| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the frozen embedding backbone. Mosaic ships no weights, and whatever this names downloads at run time under its own license. |
+| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The crop resize target as (height, width). Unset, this follows the backbone's declared input size. [px] |
+| `channels` | `integer` | `3` |  | How many channels the crop image is read from disk with. 1 reads grayscale and is replicated to 3 channels before the backbone reads it. Any other value reads 3-channel RGB. |
+| `batch_size` | `integer` | `32` | >= `1` | The embedding batch size. |
+| `max_images_per_identity` | `integer` | `2000` | >= `1` | The cap on training crops kept per identity. |
+| `weights_name` | `string` | `"identity_embedding"` |  | The filename stem for the exported checkpoint, written as <weights_name>.pth. |
+| `crop_root` | `string` \| `None` | `null` |  | Override for the directory EgocentricCrop output is read from. When it names no readable directory, the directory the loaded input came from is used instead. |
 
 ??? note "`EmbeddingIdentityArtifact`"
 
@@ -841,8 +841,8 @@ Train an identity model from frozen backbone embeddings + k-NN.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ### `global-identity-model`
 
@@ -852,20 +852,20 @@ Train a visual identity model from individual animal sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  |  |
-| `identities` | `object` \| `None` | `null` |  |  |
-| `group_as_identity` | `boolean` | `false` |  |  |
-| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |  |
-| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
-| `channels` | `integer` | `3` |  |  |
-| `freeze_backbone` | `boolean` | `true` |  |  |
-| `epochs` | `integer` | `30` |  |  |
-| `learning_rate` | `number` | `0.001` |  |  |
-| `batch_size` | `integer` | `32` |  |  |
-| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |  |
-| `max_images_per_identity` | `integer` | `2000` | >= `1` |  |
-| `weights_name` | `string` | `"identity_classifier"` |  |  |
-| `crop_root` | `string` \| `None` | `null` |  |  |
+| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  | Unset, the fit runs over the input scope. Set to a pre-fitted ClassifierIdentityArtifact, the fit is skipped and the referenced training run enters this run's identity beside its scope. |
+| `identities` | `object` \| `None` | `null` |  | The mapping from an identity name to the group/sequence entries that contain that individual alone. Takes priority over group_as_identity when both are given. |
+| `group_as_identity` | `boolean` | `false` |  | Derive one identity per group name from the input entries, used only when identities is unset. Fitting raises when neither is given. |
+| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the backbone. Mosaic ships no weights, and whatever is named here is downloaded at run time under its own license. |
+| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  | Unset, the backbone's declared input size is used. Set, crops are resized to (height, width) before the backbone reads them. [px] |
+| `channels` | `integer` | `3` |  | The number of channels read from disk: 1 for grayscale, 3 for RGB. A grayscale image is replicated to 3 channels for the backbone. |
+| `freeze_backbone` | `boolean` | `true` |  | Train the classification head alone, leaving the pretrained backbone untouched. False fine-tunes the whole network end to end, which needs considerably more data. |
+| `epochs` | `integer` | `30` |  | How long the classifier trains. [epochs] |
+| `learning_rate` | `number` | `0.001` |  | The Adam learning rate. |
+| `batch_size` | `integer` | `32` |  | How many crops the classifier reads per training batch. |
+| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` | The fraction of collected images held out for validation. 0 disables the split, training on every image. |
+| `max_images_per_identity` | `integer` | `2000` | >= `1` | The most images used per identity. Balances classes by capping how many crops from any one identity enter training. |
+| `weights_name` | `string` | `"identity_classifier"` |  | The stem of the exported .pth checkpoint filename. |
+| `crop_root` | `string` \| `None` | `null` |  | Unset, the EgocentricCrop output root is resolved from the input Result. Set, crops are read from this path first, falling back to that resolution when the derived directory does not exist. |
 
 ??? note "`ClassifierIdentityArtifact`"
 
@@ -884,8 +884,8 @@ Train a visual identity model from individual animal sequences.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ### `global-kmeans`
 
@@ -895,22 +895,22 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
-| `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  |  |
-| `k` | `integer` | `100` | >= `1` |  |
-| `random_state` | `integer` | `42` |  |  |
-| `n_init` | `"auto"` \| `integer` | `"auto"` |  |  |
-| `max_iter` | `integer` | `300` | >= `1` |  |
-| `device` | `string` | `"cpu"` |  |  |
-| `label_artifact_points` | `boolean` | `true` |  |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  | The templates artifact to fit the k-means model on. Mutually exclusive with model. |
+| `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  | A pre-fitted k-means model artifact to load instead of fitting one. Mutually exclusive with templates. |
+| `k` | `integer` | `100` | >= `1` | The number of clusters. Fitting raises when the templates have fewer rows than k. |
+| `random_state` | `integer` | `42` |  | The random seed for k-means initialization. |
+| `n_init` | `"auto"` \| `integer` | `"auto"` |  | How many k-means initializations to run, keeping the best. auto leaves the count to scikit-learn's own default policy. |
+| `max_iter` | `integer` | `300` | >= `1` | The maximum number of iterations for one k-means run. |
+| `device` | `string` | `"cpu"` |  | The compute device. cuda uses cuML's GPU-accelerated k-means when available, falling back to scikit-learn otherwise. |
+| `label_artifact_points` | `boolean` | `true` |  | Assign a cluster label to every template point used for fitting. |
+| `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`KMeansModelArtifact`"
 
@@ -940,12 +940,12 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`TemplatesRef`"
 
@@ -968,26 +968,26 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
-| `model` | `ScalerModelArtifact` \| `None` | _constructed_ |  |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  | The templates artifact to fit the scaler on. Mutually exclusive with model. |
+| `model` | `ScalerModelArtifact` \| `None` | _constructed_ |  | A pre-fitted scaler model artifact to load, skipping the fit. Mutually exclusive with templates. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`ScalerModelArtifact`"
 
@@ -1023,54 +1023,54 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
-| `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  |  |
-| `random_state` | `integer` | `42` |  |  |
-| `perplexity` | `integer` | `50` | >= `1` |  |
-| `knn_method` | `string` | `"annoy"` |  |  |
-| `n_jobs` | `integer` | `8` | >= `1` |  |
-| `fit` | `TSNEFitConfig` | _constructed_ |  |  |
-| `mapping` | `TSNEMapConfig` | _constructed_ |  |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  | The templates artifact to fit from. Exactly one of templates and model must be given. |
+| `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  | A pre-fitted t-SNE embedding artifact to load, skipping the fit. Exactly one of templates and model must be given. |
+| `random_state` | `integer` | `42` |  | The random seed for PCA initialization and embedding optimization, and for neighbor search when knn_method is annoy. |
+| `perplexity` | `integer` | `50` | >= `1` | The t-SNE perplexity, controlling the effective number of nearest neighbors each point is compared against. |
+| `knn_method` | `string` | `"annoy"` |  | The nearest-neighbor backend. Known values are annoy, faiss and faiss-gpu. Any other value falls back to annoy. |
+| `n_jobs` | `integer` | `8` | >= `1` | How many parallel jobs openTSNE uses for the neighbor search and optimization. |
+| `fit` | `TSNEFitConfig` | _constructed_ |  | The embedding-fit parameters: learning rate, exaggeration schedule and momentum. |
+| `mapping` | `TSNEMapConfig` | _constructed_ |  | The parameters for mapping new points into the fitted embedding: neighbor count, iterations, learning rate, exaggeration, momentum and chunk size. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`TSNEFitConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `learning_rate` | `number` \| `string` | `"auto"` |  |  |
-    | `exaggeration_iters` | `integer` | `250` | >= `1` |  |
-    | `exaggeration` | `number` | `12` | > `0` |  |
-    | `exaggeration_momentum` | `number` | `0.5` | >= `0` |  |
-    | `iters` | `integer` | `750` | >= `1` |  |
-    | `momentum` | `number` | `0.8` | >= `0` |  |
+    | `learning_rate` | `number` \| `string` | `"auto"` |  | The learning rate for the t-SNE embedding, forwarded to both optimization phases. The value auto makes openTSNE compute one from the template count and the exaggeration factor. |
+    | `exaggeration_iters` | `integer` | `250` | >= `1` | The number of iterations in the early exaggeration phase. |
+    | `exaggeration` | `number` | `12` | > `0` | The exaggeration factor during the early exaggeration phase, increasing the attractive force between nearby points to form more compact clusters. |
+    | `exaggeration_momentum` | `number` | `0.5` | >= `0` | The momentum during the early exaggeration phase. |
+    | `iters` | `integer` | `750` | >= `1` | The number of iterations in the refinement phase that follows early exaggeration. |
+    | `momentum` | `number` | `0.8` | >= `0` | The momentum during the refinement phase. |
 
 ??? note "`TSNEMapConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `k` | `integer` | `25` | >= `1` |  |
-    | `iters` | `integer` | `100` | >= `1` |  |
-    | `learning_rate` | `number` | `1.0` | > `0` |  |
-    | `exaggeration` | `number` | `2.0` | > `0` |  |
-    | `momentum` | `number` | `0.0` | >= `0` |  |
-    | `chunk_size` | `integer` | `50000` | >= `1` |  |
+    | `k` | `integer` | `25` | >= `1` | The number of nearest neighbors used to place a new point's initial position in the fitted embedding. |
+    | `iters` | `integer` | `100` | >= `1` | The number of optimization iterations when mapping a new point into the fitted embedding. |
+    | `learning_rate` | `number` | `1.0` | > `0` | The learning rate used when mapping a new point into the fitted embedding. |
+    | `exaggeration` | `number` | `2.0` | > `0` | The exaggeration factor used when mapping a new point into the fitted embedding. |
+    | `momentum` | `number` | `0.0` | >= `0` | The momentum used when mapping a new point into the fitted embedding. |
+    | `chunk_size` | `integer` | `50000` | >= `1` | How many rows apply() maps into the fitted embedding in one prepare_partial call. |
 
 ??? note "`TSNEModelArtifact`"
 
@@ -1106,18 +1106,18 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
-| `model` | `WardModelArtifact` \| `None` | _constructed_ |  |  |
-| `n_clusters` | `integer` | `20` | >= `1` |  |
-| `method` | `string` | `"ward"` |  |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
+| `templates` | `TemplatesRef` \| `None` | `null` |  | The templates artifact to cluster. Mutually exclusive with model. |
+| `model` | `WardModelArtifact` \| `None` | _constructed_ |  | A pre-fitted Ward clustering model artifact to load, skipping the fit. Mutually exclusive with templates. |
+| `n_clusters` | `integer` | `20` | >= `1` | The largest number of clusters cut from the Ward linkage tree. |
+| `method` | `string` | `"ward"` |  | The linkage method passed to scipy.cluster.hierarchy.linkage. ward is the only value the fit accepts, case-insensitively. Any other value raises. |
+| `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`NNResult`"
 
@@ -1134,12 +1134,12 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`TemplatesRef`"
 
@@ -1175,33 +1175,33 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `KpmsModelArtifact` \| `None` | `null` |  |  |
-| `kpms_python` | `string` \| `None` | `null` |  |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `anterior_bodyparts` | list of `string` | _required_ | min items `1` |  |
-| `posterior_bodyparts` | list of `string` | _required_ | min items `1` |  |
-| `fps` | `integer` | `30` |  |  |
-| `num_iters_ar` | `integer` | `50` | >= `1` |  |
-| `num_iters_full` | `integer` | `500` | >= `1` |  |
-| `kappa_ar` | `number` \| `None` | `null` |  |  |
-| `kappa_full` | `number` \| `None` | `null` |  |  |
-| `latent_dim` | `integer` | `10` | >= `1` |  |
-| `location_aware` | `boolean` | `false` |  |  |
-| `outlier_scale_factor` | `number` | `6.0` | > `0` |  |
-| `remove_outliers` | `boolean` | `true` |  |  |
-| `mixed_map_iters` | `integer` \| `None` | `null` |  |  |
-| `parallel_message_passing` | `boolean` \| `None` | `null` |  |  |
-| `resume` | `boolean` | `true` |  |  |
-| `downsample_rate` | `integer` \| `None` | `null` |  |  |
-| `save_every_n_iters` | `integer` | `25` | >= `1` |  |
-| `num_iters_apply` | `integer` | `500` | >= `1` |  |
+| `model` | `KpmsModelArtifact` \| `None` | `null` |  | A pre-fitted model to load. Unset, the feature fits a new model. |
+| `kpms_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with keypoint-moseq installed. Unset, resolution falls through to MOSAIC_KPMS_PYTHON, then to the environment under feature_library/external/.venv. |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
+| `anterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the front of the body, used to initialize heading for egocentric alignment. |
+| `posterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the back of the body, used to initialize heading for egocentric alignment. |
+| `fps` | `integer` | `30` |  | The frame rate of the input tracks. [fps] |
+| `num_iters_ar` | `integer` | `50` | >= `1` | How long the AR-only fitting stage runs before the full-model stage begins. [iterations] |
+| `num_iters_full` | `integer` | `500` | >= `1` | How long the full-model fitting stage runs after the AR-only stage. [iterations] |
+| `kappa_ar` | `number` \| `None` | `null` |  | The transition stickiness hyperparameter for the AR-only fitting stage. Unset, keypoint-moseq chooses its own value. |
+| `kappa_full` | `number` \| `None` | `null` |  | The transition stickiness hyperparameter for the full-model fitting stage. Unset, keypoint-moseq chooses its own value. |
+| `latent_dim` | `integer` | `10` | >= `1` | The dimensionality of the latent pose space fit by PCA. A value exceeding (number of keypoints - 1) * 2 is refused. |
+| `location_aware` | `boolean` | `false` |  | Constrain the centroid-movement prior, setting sigmasq_loc to 0.5 rather than 1e6. The fit then treats frame-to-frame centroid movement as informative. |
+| `outlier_scale_factor` | `number` | `6.0` | > `0` | The multiplier setting the outlier distance threshold when removing keypoint outliers before fitting. |
+| `remove_outliers` | `boolean` | `true` |  | Interpolate keypoints identified as outliers by their distance from the per-frame medoid, before fitting. |
+| `mixed_map_iters` | `integer` \| `None` | `null` |  | How many passes jax_moseq's mixed-map dispatch performs. A value of 1 or below is ignored. [iterations] |
+| `parallel_message_passing` | `boolean` \| `None` | `null` |  | Use keypoint-moseq's associative-scan Kalman sampling, faster to run and slower to compile. Unset, keypoint-moseq enables it when the JAX backend is not the CPU. |
+| `resume` | `boolean` | `true` |  | Continue fitting from a previously saved checkpoint, falling back to a fresh fit when none exists. |
+| `downsample_rate` | `integer` \| `None` | `null` |  | Keep every Nth frame of the tracks before fitting. Unset, no downsampling is applied. Not applied when the fitted model is later used to label new tracks. |
+| `save_every_n_iters` | `integer` | `25` | >= `1` | How often keypoint-moseq writes a fit checkpoint. [iterations] |
+| `num_iters_apply` | `integer` | `500` | >= `1` | How long resampling runs when applying a fitted model to new tracks. [iterations] |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`KpmsModelArtifact`"
 
@@ -1220,12 +1220,12 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ### `lightning-action`
 
@@ -1235,32 +1235,32 @@ Supervised temporal action segmentation via lightning-action.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |  |
-| `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  |  |
-| `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  |  |
-| `num_hid_units` | `integer` | `64` | >= `1` |  |
-| `num_layers` | `integer` | `2` | >= `1` |  |
-| `num_lags` | `integer` | `4` | >= `1` |  |
-| `activation` | `string` | `"lrelu"` |  |  |
-| `dropout_rate` | `number` | `0.1` | >= `0`, <= `1` |  |
-| `sequence_length` | `integer` | `500` | >= `10` |  |
-| `num_epochs` | `integer` | `200` | >= `1` |  |
-| `batch_size` | `integer` | `32` | >= `1` |  |
-| `learning_rate` | `number` | `0.001` | > `0` |  |
-| `weight_decay` | `number` | `0.0` | >= `0` |  |
-| `optimizer` | `"Adam"` \| `"AdamW"` | `"Adam"` |  |  |
-| `weight_classes` | `boolean` | `true` |  |  |
-| `device` | `string` | `"cpu"` |  |  |
-| `random_state` | `integer` | `42` |  |  |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |  |
-| `default_class` | `integer` | _required_ |  |  |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | Labeled feature templates to fit the model on, with label and split columns. Mutually exclusive with model. |
+| `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  | Pre-fitted model to load instead of training. Mutually exclusive with templates. |
+| `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  | Temporal encoder architecture: dtcn (dilated temporal convolution), rnn (LSTM/GRU), or temporalmlp. |
+| `num_hid_units` | `integer` | `64` | >= `1` | Number of hidden units in the temporal encoder's layers. |
+| `num_layers` | `integer` | `2` | >= `1` | Number of layers in the temporal encoder. |
+| `num_lags` | `integer` | `4` | >= `1` | Number of temporal lags the encoder convolves over. Used by the temporalmlp and dtcn heads and ignored by rnn. [frames] |
+| `activation` | `string` | `"lrelu"` |  | Activation function used in the temporal encoder. Known values are relu, lrelu, sigmoid, tanh and linear. |
+| `dropout_rate` | `number` | `0.1` | >= `0`, <= `1` | Dropout rate applied in the temporal encoder for regularization. |
+| `sequence_length` | `integer` | `500` | >= `10` | Length of each training sequence chunk. [frames] |
+| `num_epochs` | `integer` | `200` | >= `1` | How long the model trains. [epochs] |
+| `batch_size` | `integer` | `32` | >= `1` | How many training sequence chunks the model reads in one forward pass. |
+| `learning_rate` | `number` | `0.001` | > `0` | The optimizer's learning rate. |
+| `weight_decay` | `number` | `0.0` | >= `0` | The optimizer's weight decay coefficient. |
+| `optimizer` | `"Adam"` \| `"AdamW"` | `"Adam"` |  | The optimizer used to train the network. |
+| `weight_classes` | `boolean` | `true` |  | Weight the training loss by inverse class frequency, to correct for class imbalance. |
+| `device` | `string` | `"cpu"` |  | Which device trains the model. Known values are cpu and gpu. |
+| `random_state` | `integer` | `42` |  | The random seed for model initialization and training. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Probability threshold for a positive class prediction: a single value applied to every class, or a mapping from class to its own threshold. Unset, the class with the highest probability wins. |
+| `default_class` | `integer` | _required_ |  | Class label assigned to a frame when decision_threshold excludes every class, or when the frame has no predicted probabilities at all. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`LabeledTemplatesRef`"
 
@@ -1292,12 +1292,12 @@ Supervised temporal action segmentation via lightning-action.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ### `xgboost`
 
@@ -1307,27 +1307,27 @@ XGBoost behavior classifier as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |  |
-| `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  |  |
-| `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  |  |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |  |
-| `default_class` | `integer` | _required_ |  |  |
-| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  |  |
-| `use_smote` | `boolean` | `false` |  |  |
-| `undersample_ratio` | `number` \| `None` | `null` |  |  |
-| `n_estimators` | `integer` | `100` | >= `1` |  |
-| `max_depth` | `integer` | `6` | >= `1` |  |
-| `learning_rate` | `number` | `0.1` | > `0` |  |
-| `subsample` | `number` | `0.8` | > `0`, <= `1` |  |
-| `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` |  |
-| `random_state` | `integer` | `42` |  |  |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The labeled templates artifact to train on. Mutually exclusive with model. |
+| `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  | A pre-fitted XgboostModelArtifact to load, skipping training. Mutually exclusive with templates. |
+| `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  | The classification strategy. multiclass fits one multi-class model. one_vs_rest fits one binary classifier per class. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  | Unset, every training sample is weighted equally. balanced weights each sample inversely to its class's frequency. |
+| `use_smote` | `boolean` | `false` |  | Apply SMOTE oversampling to the training set, after any undersample_ratio undersampling. |
+| `undersample_ratio` | `number` \| `None` | `null` |  | Unset, no class is undersampled before training. Set, every class larger than the minority class is undersampled to this many times the minority class's size, never below the minority class's own size. |
+| `n_estimators` | `integer` | `100` | >= `1` | The number of boosting rounds the model fits. |
+| `max_depth` | `integer` | `6` | >= `1` | The maximum depth of each boosted tree. |
+| `learning_rate` | `number` | `0.1` | > `0` | The boosting learning rate (XGBoost's eta), scaling each tree's contribution to the ensemble. |
+| `subsample` | `number` | `0.8` | > `0`, <= `1` | The fraction of training rows sampled for each boosting round. |
+| `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` | The fraction of feature columns sampled for each tree. |
+| `random_state` | `integer` | `42` |  | The random seed for XGBoost training and, when enabled, for undersampling and SMOTE. |
 
 ??? note "`JoblibLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |  |
-    | `key` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`LabeledTemplatesRef`"
 
@@ -1346,12 +1346,12 @@ XGBoost behavior classifier as a pipeline feature.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |  |
-    | `transpose` | `boolean` | `false` |  |  |
-    | `columns` | list of `string` \| `None` | `null` |  |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
-    | `numeric_only` | `boolean` | `true` |  |  |
-    | `frame_column` | `string` \| `None` | `null` |  |  |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`XgboostModelArtifact`"
 
@@ -1404,12 +1404,12 @@ Generate egocentric (animal-centered) video crops.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ### `interaction-crop-pipeline`
 
@@ -1444,12 +1444,12 @@ Generate egocentric crop videos for detected interaction segments.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
-    | `x_prefix` | `string` | `"poseX"` |  |  |
-    | `y_prefix` | `string` | `"poseY"` |  |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
 
 ### `overlay`
 
@@ -1483,13 +1483,13 @@ Attach per-id label fields (from labels/<label_kind>) to each frame, so they can
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `LabelsSource` | _constructed_ |  |  |
-| `label_kind` | `string` | `"id_tags"` |  |  |
-| `fields` | list of `string` \| `None` | `null` |  |  |
-| `field_renames` | `object` \| `None` | `null` |  |  |
+| `labels` | `LabelsSource` | _constructed_ |  | The label dependency to load. Its kind is kept in sync with label_kind, which overwrites it when the two differ. |
+| `label_kind` | `string` | `"id_tags"` |  | The labels/<kind> subdirectory read for dependency resolution. Overwrites labels.kind at construction when the two differ. |
+| `fields` | list of `string` \| `None` | `null` |  | Which label fields to attach as columns. Unset, every field found in the labels file is attached. |
+| `field_renames` | `object` \| `None` | `null` |  | A mapping from a label field's original name to its output column name. Unset, every field keeps its original name. |
 
 ??? note "`LabelsSource`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `string` | _required_ |  |  |
+    | `kind` | `string` | _required_ |  | Which labels/<kind> subdirectory this dependency resolves to. |

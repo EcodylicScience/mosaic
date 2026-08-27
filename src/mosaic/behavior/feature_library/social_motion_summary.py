@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self, final
+from typing import Annotated, Self, final
 
 import numpy as np
 import pandas as pd
@@ -20,10 +20,36 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
+
+_FPS_DESCRIPTION = (
+    "The frame rate, used to convert frame steps to seconds for the "
+    "derivative-based metrics and for kick_rate's time base."
+)
+
+_SPEED_COL_DESCRIPTION = (
+    "The per-frame speed column. speed_smooth is the better input for "
+    "the derivative-based metrics, but it exists only when speed-angvel "
+    "ran with smooth_window set. It is not the default for that reason."
+)
+
+_SOCIAL_MIN_GROUP_SIZE_DESCRIPTION = (
+    "The minimum group_size for a frame to count as social, when "
+    "group_size is available."
+)
+
+_SUBGROUP_COL_DESCRIPTION = (
+    "The column that splits the output into one row per id per value, "
+    "typically group_size from ffgroups. Unset, the output has one row "
+    "per id."
+)
+
+_COMPUTE_BURST_COAST_DESCRIPTION = (
+    "Also emit a burst-and-coast gait summary: kick_rate and burst_coast_ratio."
+)
 
 # Every column this feature emits, for the subgroup_col collision check. A
 # subgroup column sharing a name with an output would give the assembled frame
@@ -264,23 +290,12 @@ class SocialMotionSummary:
     merge rather than fanned out silently. Read it from parquet and merge by hand
     on ``[id, subgroup_col]``.
 
-    Params:
-        fps: Frames per second, used to convert frame steps to seconds when
-            differentiating speed. Default 30.0.
-        speed_col: Column holding per-frame speed. Default "speed". Pass
-            "speed_smooth" to reduce the Savitzky-Golay-filtered speed instead,
-            which is the better input for the derivative-based metrics -- it
-            exists only when ``speed-angvel`` ran with ``smooth_window`` set,
-            which is why it is not the default.
-        social_min_group_size: Minimum ``group_size`` for a frame to count as
-            "social" (when ``group_size`` is available). Default 2.
-        subgroup_col: Column whose values split the output into one row each,
-            typically "group_size" from ``ffgroups``. Default None (one row per
-            fish). Setting it also stops the motion metrics pooling isolated and
-            social frames, which is usually the point: pooled, ``speed_rcv``
-            partly tracks how *often* a fish is alone rather than how it swims.
-        compute_burst_coast: If True, also emit a simple burst-and-coast
-            gait summary (``kick_rate``, ``burst_coast_ratio``). Default False.
+    Setting ``subgroup_col`` also stops the motion metrics pooling isolated and
+    social frames, which is usually the point: pooled, ``speed_rcv`` partly
+    tracks how *often* a fish is alone rather than how it swims.
+
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary.Params`.
     """
 
     category = "summary"
@@ -299,11 +314,15 @@ class SocialMotionSummary:
         pass
 
     class Params(Params):
-        fps: float = 30.0
-        speed_col: str = "speed"
-        social_min_group_size: int = 2
-        subgroup_col: str | None = None
-        compute_burst_coast: bool = False
+        fps: Annotated[float, Declared(_FPS_DESCRIPTION, unit="fps")] = 30.0
+        speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "speed"
+        social_min_group_size: Annotated[
+            int, Declared(_SOCIAL_MIN_GROUP_SIZE_DESCRIPTION)
+        ] = 2
+        subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+        compute_burst_coast: Annotated[
+            bool, Declared(_COMPUTE_BURST_COAST_DESCRIPTION)
+        ] = False
 
         @model_validator(mode="after")
         def _check(self) -> Self:

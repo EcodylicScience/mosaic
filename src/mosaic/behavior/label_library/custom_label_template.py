@@ -51,7 +51,6 @@ from mosaic.core.label_converter import (
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
-    NEEDS_DESCRIPTION,
     Declared,
 )
 
@@ -59,6 +58,8 @@ _FPS_DESCRIPTION = (
     "Frame rate used to convert annotation times to frame indices, unless a "
     "sequence supplies its own."
 )
+
+_VERBOSE_DESCRIPTION = "Whether the converter reports its progress as it runs."
 
 _BACKGROUND_LABEL_DESCRIPTION = "The label assigned when no behavior is annotated."
 
@@ -82,7 +83,7 @@ class CustomLabelParams(LabelConvertParams):
     # animal_id: str = "unknown"
 
     # A knob that does not change the labels -- excluded from the identity.
-    verbose: Annotated[bool, HASH_EXCLUDE, Declared(NEEDS_DESCRIPTION)] = False
+    verbose: Annotated[bool, HASH_EXCLUDE, Declared(_VERBOSE_DESCRIPTION)] = False
 
 
 class CustomLabelConverter(LabelConverter[CustomLabelParams]):

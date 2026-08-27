@@ -27,7 +27,7 @@ import pandas as pd
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from mosaic.core.helpers import text_cell
 from mosaic.core.json_value import JsonValue
@@ -40,6 +40,7 @@ from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.params import (
+    Declared,
     HASH_EXCLUDE,
     Params,
 )
@@ -560,6 +561,103 @@ def train_through_the_tool[RequestT: TrainRequestBase](
 
 # --- Params --------------------------------------------------------------
 
+_DATA_DESCRIPTION = (
+    "Path to the data.yaml declaring the training dataset: its classes, "
+    "keypoint shape and splits."
+)
+
+_POINT_DATA_DESCRIPTION = (
+    "Path to the data.yaml declaring the training dataset: its classes, "
+    "per-class radii and splits."
+)
+
+_MODEL_DESCRIPTION = (
+    "What training starts from: a model config, a bare asset name Ultralytics "
+    "resolves itself, or a path to weights. base_model overrides it, and a "
+    "resume overrides both with this run's last checkpoint."
+)
+
+_BASE_MODEL_DESCRIPTION = (
+    "Weights to fine-tune from, as a path or as the run id of the training "
+    "op that produced them. Identity records the training run id when the "
+    "reference is one, and the weights' content digest when it is a bare "
+    "path."
+)
+
+_EPOCHS_DESCRIPTION = "How long the model trains at most."
+
+_IMGSZ_DESCRIPTION = (
+    "The side a training image is resized to before the model reads it."
+)
+
+_PATIENCE_DESCRIPTION = (
+    "How long training continues without improvement before stopping early."
+)
+
+_RESUME_DESCRIPTION = (
+    "Continue training from this run's own last checkpoint instead of "
+    "starting from the given weights."
+)
+
+_AUGMENTATION_DESCRIPTION = (
+    "A preset name, or a dict with a preset key to start from one and "
+    "override, or without one to replace the augmentation set outright. A "
+    "resumed run applies no augmentation."
+)
+
+_TRAIN_OVERRIDES_DESCRIPTION = (
+    "Extra keyword arguments forwarded verbatim to yolo.train. Keys that "
+    "would collide with a typed field or with an argument the op supplies "
+    "are refused."
+)
+
+_DEVICE_DESCRIPTION = "Which accelerator trains the model: a GPU index, or cpu."
+
+_BATCH_DESCRIPTION = "How many training images the model reads in one forward pass."
+
+_OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
+
+_LOC_DESCRIPTION = "The localization loss weight, a POLO train keyword."
+
+_LOC_LOSS_DESCRIPTION = "Which localization loss POLO minimizes."
+
+_DOR_DESCRIPTION = "The Distance of Reference threshold POLO evaluates against."
+
+_BACKEND_DESCRIPTION = (
+    "The point-detection backend. polo is the only value the op accepts."
+)
+
+_DATASET_DIR_DESCRIPTION = (
+    "The directory convert_coco_localizer writes its train and valid patch sets into."
+)
+
+_NUM_CLASSES_DESCRIPTION = "The number of output heatmap channels."
+
+_INITIAL_CHANNELS_DESCRIPTION = "The base channel width of the localizer network."
+
+_FREEZE_ENCODER_DESCRIPTION = (
+    "Freeze every layer except the 1x1 output head. Useful when fine-tuning "
+    "on a small dataset."
+)
+
+_LR_DESCRIPTION = "The initial Adam learning rate."
+
+_EARLY_STOPPING_PATIENCE_DESCRIPTION = (
+    "How long training continues without validation-loss improvement before "
+    "stopping early."
+)
+
+_AUGMENT_DESCRIPTION = (
+    "Apply the light augmentation preset -- flip and rotation -- during "
+    "training. False applies none."
+)
+
+_SEED_DESCRIPTION = "The random seed for the training run."
+
+_LOCALIZER_BATCH_SIZE_DESCRIPTION = (
+    "How many training patches the model reads in one forward pass."
+)
+
 
 class PoseTrainParams(Params):
     """Parameters for the ``train-pose`` op.
@@ -572,37 +670,34 @@ class PoseTrainParams(Params):
     there is a field for it here.
     """
 
-    data: str  # path to data.yaml
-    model: str = "yolo11n-pose.pt"
-    base_model: str = ""  # weights path OR a prior training run_id (retraining)
-    epochs: int = 300
-    imgsz: int = 640
-    patience: int = 50
-    resume: bool = False
-    augmentation: str | dict[str, JsonValue] | None = None
-    """A preset name, or a dict -- with a ``preset`` key to start from one and
-    override, or without to replace the augmentation set outright.
+    data: Annotated[str, Declared(_DATA_DESCRIPTION)]
+    model: Annotated[str, Declared(_MODEL_DESCRIPTION)] = "yolo11n-pose.pt"
+    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 300
+    imgsz: Annotated[int, Declared(_IMGSZ_DESCRIPTION, unit="px")] = 640
+    patience: Annotated[int, Declared(_PATIENCE_DESCRIPTION, unit="epochs")] = 50
+    resume: Annotated[bool, Declared(_RESUME_DESCRIPTION)] = False
+    augmentation: Annotated[
+        str | dict[str, JsonValue] | None,
+        Field(examples=["none", "light", "medium", "heavy"]),
+        Declared(_AUGMENTATION_DESCRIPTION),
+    ] = None
+    # Hashed: a different learning rate is a different model.
+    train_overrides: Annotated[
+        dict[str, JsonValue] | None, Declared(_TRAIN_OVERRIDES_DESCRIPTION)
+    ] = None
 
-    ``resolve_augmentation`` has always accepted both; the op used to narrow it
-    to ``str``, which put the dict forms out of reach of the CLI and the API.
-    """
-
-    train_overrides: dict[str, JsonValue] | None = None
-    """Extra keyword arguments forwarded verbatim to ``yolo.train``.
-
-    Hashed, because a different learning rate is a different model. Keys that
-    would collide with a typed field or with an argument the op supplies are
-    refused -- see :data:`OP_SUPPLIED_TRAIN_ARGS`.
-    """
-
-    device: Annotated[str, HASH_EXCLUDE] = "0"
-    batch: Annotated[int, HASH_EXCLUDE] = 16
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    """Train again even if this exact run already finished.
-
-    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
-    flipping it must not mint a second identity for the same weights.
-    """
+    # Throughput / environment knobs, excluded from the run_id.
+    device: Annotated[
+        str,
+        HASH_EXCLUDE,
+        Field(examples=["cpu", "0"]),
+        Declared(_DEVICE_DESCRIPTION),
+    ] = "0"
+    batch: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_DESCRIPTION)] = 16
+    # A throughput knob, not a property of the model: flipping it must not
+    # mint a second identity for the same weights.
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
     @model_validator(mode="after")
     def _train_overrides_do_not_shadow(self) -> Self:
@@ -635,34 +730,47 @@ class PoseTrainParams(Params):
 
 
 class PointTrainParams(PoseTrainParams):
+    # make_polo_data_yaml (pose_training/prep.py) writes no kpt_shape.
+    data: Annotated[str, Declared(_POINT_DATA_DESCRIPTION)]
     # POLO nano localizer config. Resolves to ``cfg/models/26/polo26.yaml`` at scale ``n``
     # (Locate task) in the mooch443/POLO fork; matches the deployed ``polo26n`` detector.
-    model: str = "polo26n.yaml"
-    loc: float = 5.0
-    loc_loss: str = "mse"
-    dor: float = 0.8
-    backend: Annotated[str, HASH_EXCLUDE] = "polo"
+    model: Annotated[str, Declared(_MODEL_DESCRIPTION)] = "polo26n.yaml"
+    loc: Annotated[float, Declared(_LOC_DESCRIPTION)] = 5.0
+    loc_loss: Annotated[
+        str, Field(examples=["mse"]), Declared(_LOC_LOSS_DESCRIPTION)
+    ] = "mse"
+    dor: Annotated[float, Declared(_DOR_DESCRIPTION)] = 0.8
+    backend: Annotated[
+        str, HASH_EXCLUDE, Field(examples=["polo"]), Declared(_BACKEND_DESCRIPTION)
+    ] = "polo"
 
 
 class LocalizerTrainParams(Params):
-    dataset_dir: str
-    base_model: str = ""  # weights path OR a prior training run_id (fine-tune)
-    num_classes: int = 4
-    initial_channels: int = 32
-    freeze_encoder: bool = False
-    epochs: int = 200
-    lr: float = 1e-3
-    early_stopping_patience: int = 20
-    augment: bool = True
-    seed: int = 42
-    device: Annotated[str, HASH_EXCLUDE] = "0"
-    batch_size: Annotated[int, HASH_EXCLUDE] = 128
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    """Train again even if this exact run already finished.
-
-    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
-    flipping it must not mint a second identity for the same weights.
-    """
+    dataset_dir: Annotated[str, Declared(_DATASET_DIR_DESCRIPTION)]
+    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    num_classes: Annotated[int, Declared(_NUM_CLASSES_DESCRIPTION)] = 4
+    initial_channels: Annotated[int, Declared(_INITIAL_CHANNELS_DESCRIPTION)] = 32
+    freeze_encoder: Annotated[bool, Declared(_FREEZE_ENCODER_DESCRIPTION)] = False
+    epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 200
+    lr: Annotated[float, Declared(_LR_DESCRIPTION)] = 1e-3
+    early_stopping_patience: Annotated[
+        int, Declared(_EARLY_STOPPING_PATIENCE_DESCRIPTION, unit="epochs")
+    ] = 20
+    augment: Annotated[bool, Declared(_AUGMENT_DESCRIPTION)] = True
+    seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42
+    # Throughput / environment knobs, excluded from the run_id.
+    device: Annotated[
+        str,
+        HASH_EXCLUDE,
+        Field(examples=["cpu", "0"]),
+        Declared(_DEVICE_DESCRIPTION),
+    ] = "0"
+    batch_size: Annotated[
+        int, HASH_EXCLUDE, Declared(_LOCALIZER_BATCH_SIZE_DESCRIPTION)
+    ] = 128
+    # A throughput knob, not a property of the model: flipping it must not
+    # mint a second identity for the same weights.
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 # --- Ops -----------------------------------------------------------------

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
@@ -41,7 +41,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
 
@@ -78,6 +78,69 @@ class ClassifierIdentityArtifact(JoblibArtifact[ClassifierIdentityBundle]):
     load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
+_MODEL_DESCRIPTION = (
+    "Unset, the fit runs over the input scope. Set to a pre-fitted "
+    "ClassifierIdentityArtifact, the fit is skipped and the referenced "
+    "training run enters this run's identity beside its scope."
+)
+
+_IDENTITIES_DESCRIPTION = (
+    "The mapping from an identity name to the group/sequence entries that "
+    "contain that individual alone. Takes priority over group_as_identity "
+    "when both are given."
+)
+
+_GROUP_AS_IDENTITY_DESCRIPTION = (
+    "Derive one identity per group name from the input entries, used only "
+    "when identities is unset. Fitting raises when neither is given."
+)
+
+_MODEL_NAME_DESCRIPTION = (
+    "A bare timm architecture tag or a Hugging Face hub id naming the "
+    "backbone. Mosaic ships no weights, and whatever is named here is "
+    "downloaded at run time under its own license."
+)
+
+_IMAGE_SIZE_DESCRIPTION = (
+    "Unset, the backbone's declared input size is used. Set, crops are "
+    "resized to (height, width) before the backbone reads them."
+)
+
+_CHANNELS_DESCRIPTION = (
+    "The number of channels read from disk: 1 for grayscale, 3 for RGB. "
+    "A grayscale image is replicated to 3 channels for the backbone."
+)
+
+_FREEZE_BACKBONE_DESCRIPTION = (
+    "Train the classification head alone, leaving the pretrained backbone "
+    "untouched. False fine-tunes the whole network end to end, which needs "
+    "considerably more data."
+)
+
+_EPOCHS_DESCRIPTION = "How long the classifier trains."
+
+_LEARNING_RATE_DESCRIPTION = "The Adam learning rate."
+
+_BATCH_SIZE_DESCRIPTION = "How many crops the classifier reads per training batch."
+
+_VAL_SPLIT_DESCRIPTION = (
+    "The fraction of collected images held out for validation. 0 disables "
+    "the split, training on every image."
+)
+
+_MAX_IMAGES_PER_IDENTITY_DESCRIPTION = (
+    "The most images used per identity. Balances classes by capping how "
+    "many crops from any one identity enter training."
+)
+
+_WEIGHTS_NAME_DESCRIPTION = "The stem of the exported .pth checkpoint filename."
+
+_CROP_ROOT_DESCRIPTION = (
+    "Unset, the EgocentricCrop output root is resolved from the input "
+    "Result. Set, crops are read from this path first, falling back to "
+    "that resolution when the derived directory does not exist."
+)
+
 # --- Feature class ---
 
 
@@ -108,39 +171,8 @@ class GlobalIdentityModel:
         )
         result = dataset.run_feature(identity_model)
 
-    Params:
-        model: Pre-fitted ClassifierIdentityArtifact to load, skipping the
-            fit. Default None (fit from scratch). Pinning one makes an
-            inference run's identity carry its training run by reference, so
-            the run needs no scope of its own.
-        identities: Explicit identity -> sequences mapping. Keys are
-            identity names, values are lists of "group/sequence" strings.
-        group_as_identity: Convenience shortcut -- treat each group name
-            as one identity. Default False.
-        model_name: A bare timm architecture tag or a Hugging Face hub id for
-            the backbone. Default
-            ``"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"`` (MIT).
-            Mosaic ships no weights; whatever is named here is downloaded at
-            run time under its own license.
-        image_size: Crop resize target ``(height, width)``. Default None,
-            meaning follow the backbone's declared input size -- which is
-            almost always what you want, and is the only value correct for
-            every backbone.
-        channels: Number of channels read from disk (1 = grayscale,
-            3 = RGB). Grayscale inputs are replicated to 3 channels for
-            the backbone. Default 3.
-        freeze_backbone: Train the classification head alone, leaving the
-            pretrained backbone untouched. Default True. Set False to
-            fine-tune end to end, which needs considerably more data.
-        epochs: Training epochs. Default 30.
-        learning_rate: Adam learning rate. Default 0.001.
-        batch_size: Training batch size. Default 32.
-        val_split: Fraction of data reserved for validation. Default 0.2.
-        max_images_per_identity: Cap on images per identity to balance
-            classes. Default 2000.
-        weights_name: Stem of the exported ``.pth`` checkpoint. Default
-            ``"identity_classifier"``.
-        crop_root: Optional EgocentricCrop output root override.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel.Params`.
     """
 
     category = "global"
@@ -170,39 +202,55 @@ class GlobalIdentityModel:
         _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
-        """Global identity model parameters."""
-
         # Pre-fitted model reference: when set (and resolvable), fit is skipped.
-        model: ClassifierIdentityArtifact | None = None
+        model: Annotated[
+            ClassifierIdentityArtifact | None, Declared(_MODEL_DESCRIPTION)
+        ] = None
 
         # Primary: explicit identity -> sequences mapping
-        identities: dict[str, list[str]] | None = None
+        identities: Annotated[
+            dict[str, list[str]] | None, Declared(_IDENTITIES_DESCRIPTION)
+        ] = None
         # Convenience shortcut: treat each group as one identity
-        group_as_identity: bool = False
+        group_as_identity: Annotated[bool, Declared(_GROUP_AS_IDENTITY_DESCRIPTION)] = (
+            False
+        )
 
         # Backbone selection. Changing ``model_name`` is a licensing decision as
         # well as an accuracy one -- see the module docstring.
-        model_name: str = DEFAULT_MODEL_NAME
+        model_name: Annotated[str, Declared(_MODEL_NAME_DESCRIPTION)] = (
+            DEFAULT_MODEL_NAME
+        )
         # None means follow the backbone's declared input size.
-        image_size: tuple[int, int] | None = None
-        channels: int = 3
-        freeze_backbone: bool = True
+        image_size: Annotated[
+            tuple[int, int] | None, Declared(_IMAGE_SIZE_DESCRIPTION, unit="px")
+        ] = None
+        channels: Annotated[
+            int, Field(examples=[1, 3]), Declared(_CHANNELS_DESCRIPTION)
+        ] = 3
+        freeze_backbone: Annotated[bool, Declared(_FREEZE_BACKBONE_DESCRIPTION)] = True
 
         # Training
-        epochs: int = 30
-        learning_rate: float = 0.001
-        batch_size: int = 32
-        val_split: float = Field(default=0.2, ge=0.0, lt=1.0)
+        epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 30
+        learning_rate: Annotated[float, Declared(_LEARNING_RATE_DESCRIPTION)] = 0.001
+        batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = 32
+        val_split: Annotated[float, Declared(_VAL_SPLIT_DESCRIPTION)] = Field(
+            default=0.2, ge=0.0, lt=1.0
+        )
 
         # Sampling
-        max_images_per_identity: int = Field(default=2000, ge=1)
+        max_images_per_identity: Annotated[
+            int, Declared(_MAX_IMAGES_PER_IDENTITY_DESCRIPTION)
+        ] = Field(default=2000, ge=1)
 
         # Export
-        weights_name: str = "identity_classifier"
+        weights_name: Annotated[str, Declared(_WEIGHTS_NAME_DESCRIPTION)] = (
+            "identity_classifier"
+        )
 
         # Path to EgocentricCrop output root (contains group__sequence/ subdirs).
         # If None, the feature tries to resolve it from the input Result.
-        crop_root: str | None = None
+        crop_root: Annotated[str | None, Declared(_CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
         self,

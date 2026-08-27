@@ -34,6 +34,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 
@@ -68,6 +69,72 @@ class ArHmmModelArtifact(JoblibArtifact[ArHmmModelBundle]):
     load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
+_MODEL_DESCRIPTION = (
+    "A pre-fitted model artifact to load, skipping the fit. Unset, the "
+    "model is fit from scratch."
+)
+
+_PCA_DIM_DESCRIPTION = (
+    "How many components PCA reduces the feature dimensionality to "
+    "before fitting. Unset, no PCA is applied. Ignored when it is not "
+    "smaller than the number of input feature columns."
+)
+
+_N_STATES_DESCRIPTION = (
+    "The maximum number of HMM states. Pruned down after fitting when "
+    "prune_threshold is greater than zero."
+)
+
+_N_LAGS_DESCRIPTION = (
+    "How many preceding steps enter as autoregressive regressors. A "
+    "step is one row of the sequence being fit, which is a video frame "
+    "unless downsample_rate has subsampled it."
+)
+
+_STICKY_WEIGHT_DESCRIPTION = (
+    "The extra pseudo-count added to the diagonal of the transition "
+    "matrix, encouraging state persistence across frames."
+)
+
+_N_ITER_DESCRIPTION = "The ceiling on EM passes per restart."
+
+_TOL_DESCRIPTION = (
+    "The convergence tolerance on the relative change in "
+    "log-likelihood between EM iterations."
+)
+
+_N_RESTARTS_DESCRIPTION = (
+    "How many random restarts run, keeping the one with the best log-likelihood."
+)
+
+_STANDARDIZE_DESCRIPTION = (
+    "Z-score every feature column before fitting. When False, raw "
+    "values are used directly."
+)
+
+_DOWNSAMPLE_RATE_DESCRIPTION = (
+    "The factor every sequence is subsampled by before fitting and "
+    "inference, upsampled back afterward. Unset, no downsampling is "
+    "applied."
+)
+
+_PRUNE_THRESHOLD_DESCRIPTION = (
+    "The posterior mass fraction below which a fitted state is dropped."
+)
+
+_RANDOM_STATE_DESCRIPTION = (
+    "The random seed for PCA and model fitting, for reproducible restarts."
+)
+
+_BACKEND_DESCRIPTION = (
+    "The compute backend for EM and Viterbi decoding. auto uses the "
+    "numba-compiled path when available and falls back to numpy. numba "
+    "requests the compiled path but still falls back to numpy if it "
+    "raises. numpy forces the plain path. jax is reserved for a future "
+    "GPU path and is not implemented yet."
+)
+
+
 # --- Feature class ---
 
 
@@ -79,36 +146,8 @@ class ArHmmFeature:
     Fits an autoregressive Hidden Markov Model across all input sequences
     and assigns per-frame syllable labels via Viterbi decoding.
 
-    Params:
-        model: Pre-fitted ArHmmModelArtifact to load (skip fit).
-            Default: None (fit from scratch).
-        pca_dim: Number of PCA components for dimensionality reduction
-            before fitting.  None skips PCA.  Default: None.
-        n_states: Maximum number of HMM states (pruned after fit).
-            Default: 50.
-        n_lags: AR order (number of lagged frames as regressors).
-            Default: 1.
-        sticky_weight: Extra pseudo-count on the diagonal of the
-            transition matrix (encourages state persistence).
-            Default: 100.0.
-        n_iter: Maximum EM iterations per restart.  Default: 200.
-        tol: Convergence tolerance on relative LL change.
-            Default: 1e-4.
-        n_restarts: Number of random restarts (best LL kept).
-            Default: 1.
-        standardize: If True, z-score features before fitting.
-            Default: True.
-        downsample_rate: Temporal downsampling factor.  None disables.
-            Default: None.
-        prune_threshold: Drop states with posterior mass below this
-            fraction.  Default: 0.01.
-        random_state: Random seed.  Default: 42.
-        backend: Compute backend for EM/Viterbi.  ``"auto"`` (default) uses the
-            numba-compiled path when available and falls back to numpy;
-            ``"numba"`` / ``"numpy"`` force a choice; ``"jax"`` is reserved for a
-            future GPU path.  All backends are numerically equivalent, so this
-            knob is excluded from the ``run_id`` hash — switching it never busts
-            the cache.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.arhmm.ArHmmFeature.Params`.
     """
 
     category = "global"
@@ -131,23 +170,39 @@ class ArHmmFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        model: ArHmmModelArtifact | None = None
-        pca_dim: int | None = Field(default=None, ge=1)
-        n_states: int = Field(default=50, ge=2)
-        n_lags: int = Field(default=1, ge=1)
-        sticky_weight: float = Field(default=100.0, ge=0)
-        n_iter: int = Field(default=200, ge=1)
-        tol: float = Field(default=1e-4, gt=0)
-        n_restarts: int = Field(default=1, ge=1)
-        standardize: bool = True
-        downsample_rate: int | None = Field(default=None, ge=1)
-        prune_threshold: float = Field(default=0.01, ge=0, le=1)
-        random_state: int = 42
+        model: Annotated[ArHmmModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = None
+        pca_dim: Annotated[int | None, Declared(_PCA_DIM_DESCRIPTION)] = Field(
+            default=None, ge=1
+        )
+        n_states: Annotated[int, Declared(_N_STATES_DESCRIPTION)] = Field(
+            default=50, ge=2
+        )
+        n_lags: Annotated[int, Declared(_N_LAGS_DESCRIPTION)] = Field(default=1, ge=1)
+        sticky_weight: Annotated[float, Declared(_STICKY_WEIGHT_DESCRIPTION)] = Field(
+            default=100.0, ge=0
+        )
+        n_iter: Annotated[int, Declared(_N_ITER_DESCRIPTION, unit="iterations")] = (
+            Field(default=200, ge=1)
+        )
+        tol: Annotated[float, Declared(_TOL_DESCRIPTION)] = Field(default=1e-4, gt=0)
+        n_restarts: Annotated[int, Declared(_N_RESTARTS_DESCRIPTION)] = Field(
+            default=1, ge=1
+        )
+        standardize: Annotated[bool, Declared(_STANDARDIZE_DESCRIPTION)] = True
+        downsample_rate: Annotated[
+            int | None, Declared(_DOWNSAMPLE_RATE_DESCRIPTION)
+        ] = Field(default=None, ge=1)
+        prune_threshold: Annotated[float, Declared(_PRUNE_THRESHOLD_DESCRIPTION)] = (
+            Field(default=0.01, ge=0, le=1)
+        )
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
         # HASH_EXCLUDE: backends are numerically equivalent, so this is dropped
         # from the run_id hash (a numpy run and a numba run share one cache entry).
-        backend: Annotated[Literal["auto", "numpy", "numba", "jax"], HASH_EXCLUDE] = (
-            "auto"
-        )
+        backend: Annotated[
+            Literal["auto", "numpy", "numba", "jax"],
+            HASH_EXCLUDE,
+            Declared(_BACKEND_DESCRIPTION),
+        ] = "auto"
 
     def __init__(
         self,

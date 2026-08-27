@@ -7,7 +7,7 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -25,13 +25,29 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInputs,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import (
     ensure_columns,
     wrap_angle,
 )
 from .registry import register_feature
+
+_SCALE_DESCRIPTION = (
+    "Reference to the upstream body-scale run whose per-sequence mean "
+    "scale normalizes distances into scale-free units. Where the "
+    "dependency does not resolve, each row falls back to the focal "
+    "individual's median pairwise keypoint distance in that frame."
+)
+
+_NEAREST_K_DESCRIPTION = "Number of nearest pose-point distances to emit per pair."
+
+_QUANTILES_DESCRIPTION = (
+    "Quantiles of the scale-normalized distance from each of the other "
+    "individual's keypoints to the focal individual's centroid. "
+    "Rotating into the focal's body frame changes each point's "
+    "direction but not this distance, which depends only on scale."
+)
 
 
 @final
@@ -64,19 +80,17 @@ class OrientationRelativeFeature:
         pass
 
     class Params(Params):
-        """Orientation-relative feature parameters.
+        """Orientation-relative feature parameters."""
 
-        Attributes:
-            scale: Body-scale artifact for normalization.
-            nearest_k: Number of nearest pose-point distances to emit.
-                Default 3.
-            quantiles: Distance distribution quantiles to compute.
-                Default [0.25, 0.5, 0.75].
-        """
-
-        scale: BodyScaleResult = Field(default_factory=BodyScaleResult)
-        nearest_k: int = Field(default=3, ge=1)
-        quantiles: list[float] = Field(default=[0.25, 0.5, 0.75])
+        scale: Annotated[BodyScaleResult, Declared(_SCALE_DESCRIPTION)] = Field(
+            default_factory=BodyScaleResult
+        )
+        nearest_k: Annotated[int, Declared(_NEAREST_K_DESCRIPTION)] = Field(
+            default=3, ge=1
+        )
+        quantiles: Annotated[list[float], Declared(_QUANTILES_DESCRIPTION)] = Field(
+            default=[0.25, 0.5, 0.75]
+        )
 
     def __init__(
         self,

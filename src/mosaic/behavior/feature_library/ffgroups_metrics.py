@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -20,10 +20,41 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import apply_exclude_cols, ensure_columns
 from .registry import register_feature
+
+_GROUP_COL_DESCRIPTION = (
+    "Name of the column identifying group-membership events, for "
+    "example the one FFGroups writes. Read only when present in the "
+    "input."
+)
+
+_SPEED_COL_DESCRIPTION = "The per-frame speed column."
+
+_TIME_CHUNK_SEC_DESCRIPTION = (
+    "Splits each sequence into chunks of this duration, summarized "
+    "separately. Unset, each sequence is summarized whole. Takes "
+    "precedence over frame_chunk when both are set and the input has a "
+    "time column."
+)
+
+_FRAME_CHUNK_DESCRIPTION = (
+    "Splits each sequence into chunks of this size, summarized "
+    "separately. Unset, each sequence is summarized whole. Ignored when "
+    "time_chunk_sec is also set and the input has a time column."
+)
+
+_CENTROID_HEADING_COL_DESCRIPTION = (
+    "The centroid-heading column, used to rotate positions into the "
+    "group's reference frame. Read only when present in the input."
+)
+
+_EXCLUDE_COLS_DESCRIPTION = (
+    "Names of boolean columns whose truthy rows are dropped before "
+    "computation, for example bad_frame."
+)
 
 
 @final
@@ -41,20 +72,8 @@ class FFGroupsMetrics:
       - ftime_periphery
       - ftime_periphery_norm
 
-    Params:
-        group_col: Column name that identifies group events (e.g. from
-            FFGroups output). Default: "event".
-        speed_col: Column name for speed values. Default: "speed".
-        time_chunk_sec: If set, split each sequence into time-based
-            chunks of this duration (seconds) and compute summaries per
-            chunk. Default: None (whole sequence).
-        frame_chunk: If set, split each sequence into frame-based chunks
-            of this size and compute summaries per chunk. Default: None.
-        centroid_heading_col: Column for centroid heading used in rotation
-            calculations. Default: "centroid_heading".
-        exclude_cols: List of boolean column names (e.g. "bad_frame")
-            whose truthy rows are dropped before computation.
-            Default: [].
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.ffgroups_metrics.FFGroupsMetrics.Params`.
     """
 
     category = "summary"
@@ -70,12 +89,20 @@ class FFGroupsMetrics:
         pass
 
     class Params(Params):
-        group_col: str = "event"
-        speed_col: str = "speed"
-        time_chunk_sec: float | None = None
-        frame_chunk: int | None = None
-        centroid_heading_col: str = "centroid_heading"
-        exclude_cols: list[str] = Field(default_factory=list)
+        group_col: Annotated[str, Declared(_GROUP_COL_DESCRIPTION)] = "event"
+        speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "speed"
+        time_chunk_sec: Annotated[
+            float | None, Declared(_TIME_CHUNK_SEC_DESCRIPTION, unit="s")
+        ] = None
+        frame_chunk: Annotated[
+            int | None, Declared(_FRAME_CHUNK_DESCRIPTION, unit="frames")
+        ] = None
+        centroid_heading_col: Annotated[
+            str, Declared(_CENTROID_HEADING_COL_DESCRIPTION)
+        ] = "centroid_heading"
+        exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
 
     def __init__(
         self,

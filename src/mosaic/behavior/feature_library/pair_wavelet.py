@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -22,13 +22,40 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from .types import SamplingConfig
 
 import pywt  # pyright: ignore[reportUnknownVariableType]
+
+_SAMPLING_DESCRIPTION = (
+    "Frame rate settings. Only fps_default is read; smoothing is not applied."
+)
+
+_F_MIN_DESCRIPTION = "Minimum frequency of the CWT frequency band."
+
+_F_MAX_DESCRIPTION = "Maximum frequency of the CWT frequency band."
+
+_N_FREQ_DESCRIPTION = (
+    "Number of frequency bins, dyadically spaced between f_min and f_max."
+)
+
+_WAVELET_DESCRIPTION = "Name of the PyWavelets continuous wavelet used for the CWT."
+
+_LOG_FLOOR_DESCRIPTION = "Minimum value the log-power spectrogram is clamped to."
+
+_PC_PREFIX_DESCRIPTION = (
+    "Column-name prefix used to auto-detect principal-component input "
+    "columns, for example PC0 and PC1."
+)
+
+_COLS_DESCRIPTION = (
+    "Explicit input column names for the CWT. Unset, columns are "
+    "auto-detected via pc_prefix, falling back to every numeric feature "
+    "column when none match."
+)
 
 
 @final
@@ -52,18 +79,8 @@ class PairWavelet:
     present, otherwise from fps_default. Frequencies are dyadically spaced
     in [f_min, f_max].
 
-    Params:
-        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
-        f_min: Minimum frequency in Hz for the CWT band. Default: 0.2.
-        f_max: Maximum frequency in Hz for the CWT band. Default: 5.0.
-        n_freq: Number of frequency bins (dyadically spaced between
-            f_min and f_max). Default: 25.
-        wavelet: PyWavelets wavelet name. Default: "cmor1.5-1.0".
-        log_floor: Floor value for log-power clamping. Default: -3.0.
-        pc_prefix: Column prefix used to auto-detect PC input columns
-            (e.g. "PC0", "PC1", ...). Default: "PC".
-        cols: Explicit list of input column names. If None, columns are
-            auto-detected using pc_prefix. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pair_wavelet.PairWavelet.Params`.
     """
 
     category = "per-frame"
@@ -79,14 +96,20 @@ class PairWavelet:
         pass
 
     class Params(Params):
-        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        f_min: float = Field(default=0.2, gt=0)
-        f_max: float = Field(default=5.0, gt=0)
-        n_freq: int = Field(default=25, gt=0)
-        wavelet: str = "cmor1.5-1.0"
-        log_floor: float = -3.0
-        pc_prefix: str = "PC"
-        cols: list[str] | None = None
+        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
+            default_factory=SamplingConfig
+        )
+        f_min: Annotated[
+            float, Field(gt=0), Declared(_F_MIN_DESCRIPTION, unit="Hz")
+        ] = 0.2
+        f_max: Annotated[
+            float, Field(gt=0), Declared(_F_MAX_DESCRIPTION, unit="Hz")
+        ] = 5.0
+        n_freq: Annotated[int, Field(gt=0), Declared(_N_FREQ_DESCRIPTION)] = 25
+        wavelet: Annotated[str, Declared(_WAVELET_DESCRIPTION)] = "cmor1.5-1.0"
+        log_floor: Annotated[float, Declared(_LOG_FLOOR_DESCRIPTION)] = -3.0
+        pc_prefix: Annotated[str, Declared(_PC_PREFIX_DESCRIPTION)] = "PC"
+        cols: Annotated[list[str] | None, Declared(_COLS_DESCRIPTION)] = None
 
     def __init__(
         self,

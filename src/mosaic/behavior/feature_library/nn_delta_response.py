@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -19,11 +19,89 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature
 from .types import SamplingConfig
+
+_SAMPLING_DESCRIPTION = (
+    "Frame rate settings. Only fps_default is read; smoothing is not applied."
+)
+
+_SPEED_COL_DESCRIPTION = (
+    "The focal individual's speed column. Falls back to speed when absent."
+)
+
+_NN_ID_COL_DESCRIPTION = (
+    "The nearest neighbor's id column. Falls back to nn_fishID when absent."
+)
+
+_NN_DX_EGO_COL_DESCRIPTION = (
+    "The column that records the neighbor's x offset in the focal's ego frame."
+)
+
+_NN_DY_EGO_COL_DESCRIPTION = (
+    "The column that records the neighbor's y offset in the focal's ego frame."
+)
+
+_NN_DX_WORLD_COL_DESCRIPTION = (
+    "The column that records the neighbor's x offset in the world "
+    "frame, rotated into the ego frame when either nn_dx_ego_col or "
+    "nn_dy_ego_col is absent."
+)
+
+_NN_DY_WORLD_COL_DESCRIPTION = (
+    "The column that records the neighbor's y offset in the world "
+    "frame, rotated into the ego frame when either nn_dx_ego_col or "
+    "nn_dy_ego_col is absent."
+)
+
+_FOCAL_COL_DESCRIPTION = (
+    "The column flagging a focal individual. Used to look up whether "
+    "each row's nearest neighbor is itself focal, published as "
+    "neighbor_focal, and passed through to the output when present."
+)
+
+_DIFF_NUMFRAMES_DESCRIPTION = (
+    "How far ahead the response delta is measured, unless "
+    "diff_numframes_col overrides it for a row."
+)
+
+_DIFF_NUMFRAMES_COL_DESCRIPTION = (
+    "The column that records a per-row lag in frames, used instead of "
+    "diff_numframes wherever it rounds to a finite whole number of "
+    "frames of at least one. Unset, or naming a column the table does "
+    "not have, every row uses diff_numframes. Expresses a "
+    "speed-adjusted delay (tau_i = tau_ref * S_ref / S_group) that one "
+    "scalar cannot vary per entry."
+)
+
+_EMIT_BACKWARD_DESCRIPTION = (
+    "Also emit the backward window: dx_back and dy_back, computed as "
+    "the position at t minus the position at t-tau. A row with no "
+    "valid backward window gets NaN instead of being dropped."
+)
+
+_WRAP_ANGLE_DESCRIPTION = (
+    "Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept."
+)
+
+_DIVIDE_DANGLE_BY_FRAMES_DESCRIPTION = (
+    "Divide the heading change by the number of frames it spans. When "
+    "False, the raw windowed difference is kept."
+)
+
+_SCALE_DANGLE_BY_FPS_DESCRIPTION = (
+    "Multiply the heading change by the sampling frame rate. Together "
+    "with divide_dangle_by_frames this gives radians per second."
+)
+
+_TAG_COLS_DESCRIPTION = (
+    "Extra columns passed through unchanged on the focal row, and "
+    "looked up for the neighbor as neighbor_<tag_col> when the column "
+    "exists on the full table."
+)
 
 
 def _row_lags(g: pd.DataFrame, lag_col: str | None, default_lag: int) -> np.ndarray:
@@ -90,44 +168,8 @@ class NearestNeighborDelta:
       (the same window run backwards, NaN where there is no valid past); with
       `diff_numframes_col`, also dt_frames (the per-row lag actually used).
 
-    Params:
-        sampling: Frame rate and smoothing settings. Default: SamplingConfig().
-        speed_col: Column name for speed. Default: "SPEED".
-        nn_id_col: Column name for the nearest-neighbor ID.
-            Default: "nn_id".
-        nn_dx_ego_col: Column for neighbor delta-x in ego frame.
-            Default: "nn_delta_x_ego".
-        nn_dy_ego_col: Column for neighbor delta-y in ego frame.
-            Default: "nn_delta_y_ego".
-        nn_dx_world_col: Fallback column for neighbor delta-x in world
-            frame (used when ego columns are absent).
-            Default: "nn_delta_x".
-        nn_dy_world_col: Fallback column for neighbor delta-y in world
-            frame. Default: "nn_delta_y".
-        focal_col: Column name for the focal-animal flag.
-            Default: "Focal_fish".
-        diff_numframes: Number of frames ahead to compute the future
-            response delta. Default: 4.
-        diff_numframes_col: Column holding a *per-row* lag in frames, used
-            instead of `diff_numframes` wherever it is finite and >= 1. This
-            is what expresses a speed-adjusted delay (`tau_i = tau_ref *
-            S_ref / S_group`), which a single scalar cannot, because one
-            feature run carries one parameter set across every entry. The
-            column is built upstream, where the per-condition or per-fish
-            mapping lives. Default: None (uniform lag, the fast path).
-        emit_backward: If True, also emit the *backward* window
-            (`dx_back`, `dy_back` = position at t minus position at t-tau).
-            Rows whose backward window is invalid get NaN rather than being
-            dropped, so a forward-only analysis keeps every row it had.
-            Default: False.
-        wrap_angle: If True, wrap heading differences to [-pi, pi].
-            Default: True.
-        divide_dangle_by_frames: If True, divide the heading change by
-            diff_numframes. Default: True.
-        scale_dangle_by_fps: If True, multiply dangle by fps to convert
-            to radians/sec. Default: True.
-        tag_cols: Additional columns to pass through to the output.
-            Default: [].
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta.Params`.
     """
 
     category = "per-frame"
@@ -143,21 +185,41 @@ class NearestNeighborDelta:
         pass
 
     class Params(Params):
-        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        speed_col: str = "SPEED"
-        nn_id_col: str = "nn_id"
-        nn_dx_ego_col: str = "nn_delta_x_ego"
-        nn_dy_ego_col: str = "nn_delta_y_ego"
-        nn_dx_world_col: str = "nn_delta_x"
-        nn_dy_world_col: str = "nn_delta_y"
-        focal_col: str = "Focal_fish"
-        diff_numframes: int = Field(default=4, ge=1)
-        diff_numframes_col: str | None = None
-        emit_backward: bool = False
-        wrap_angle: bool = True
-        divide_dangle_by_frames: bool = True
-        scale_dangle_by_fps: bool = True
-        tag_cols: list[str] = Field(default_factory=list)
+        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
+            default_factory=SamplingConfig
+        )
+        speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "SPEED"
+        nn_id_col: Annotated[str, Declared(_NN_ID_COL_DESCRIPTION)] = "nn_id"
+        nn_dx_ego_col: Annotated[str, Declared(_NN_DX_EGO_COL_DESCRIPTION)] = (
+            "nn_delta_x_ego"
+        )
+        nn_dy_ego_col: Annotated[str, Declared(_NN_DY_EGO_COL_DESCRIPTION)] = (
+            "nn_delta_y_ego"
+        )
+        nn_dx_world_col: Annotated[str, Declared(_NN_DX_WORLD_COL_DESCRIPTION)] = (
+            "nn_delta_x"
+        )
+        nn_dy_world_col: Annotated[str, Declared(_NN_DY_WORLD_COL_DESCRIPTION)] = (
+            "nn_delta_y"
+        )
+        focal_col: Annotated[str, Declared(_FOCAL_COL_DESCRIPTION)] = "Focal_fish"
+        diff_numframes: Annotated[
+            int, Declared(_DIFF_NUMFRAMES_DESCRIPTION, unit="frames")
+        ] = Field(default=4, ge=1)
+        diff_numframes_col: Annotated[
+            str | None, Declared(_DIFF_NUMFRAMES_COL_DESCRIPTION)
+        ] = None
+        emit_backward: Annotated[bool, Declared(_EMIT_BACKWARD_DESCRIPTION)] = False
+        wrap_angle: Annotated[bool, Declared(_WRAP_ANGLE_DESCRIPTION)] = True
+        divide_dangle_by_frames: Annotated[
+            bool, Declared(_DIVIDE_DANGLE_BY_FRAMES_DESCRIPTION)
+        ] = True
+        scale_dangle_by_fps: Annotated[
+            bool, Declared(_SCALE_DANGLE_BY_FPS_DESCRIPTION)
+        ] = True
+        tag_cols: Annotated[list[str], Declared(_TAG_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
 
     def __init__(
         self,

@@ -17,6 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
+from pydantic import Field
+
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
@@ -24,6 +26,7 @@ from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
+    Declared,
     Params,
 )
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
@@ -45,6 +48,58 @@ if TYPE_CHECKING:
 
 TRAIN_SLEAP_VERSION: str = "0.1"
 
+_LABELS_DESCRIPTION = "The .slp file to train on."
+
+_BASE_MODEL_DESCRIPTION = (
+    "Weights to fine-tune from, as a path or as the run id of the training "
+    "op that produced them. Identity records the training run id when the "
+    "reference is one, and the weights' content digest when it is a bare "
+    "path."
+)
+
+_HEAD_DESCRIPTION = (
+    "Which task the network is trained for. centroid and centered_instance "
+    "are the two halves of a top-down model, trained separately and passed "
+    "to inference as a pair. The multi_class_ heads add identity "
+    "classification."
+)
+
+_BACKBONE_DESCRIPTION = "The feature extractor architecture, independent of the head."
+
+_EPOCHS_DESCRIPTION = "How long the model trains at most."
+
+_SEED_DESCRIPTION = "Seeds sleap-nn's initialization."
+
+_VALIDATION_FRACTION_DESCRIPTION = (
+    "Fraction of labels held out for validation, when no separate "
+    "validation file is given."
+)
+
+_SLEAP_OVERRIDES_DESCRIPTION = (
+    "Hydra key=value overrides applied over the generated config, for "
+    "anything sleap-nn exposes with no field here. A key set here wins "
+    "over base_model and device where they would set the same key."
+)
+
+_DEVICE_DESCRIPTION = (
+    "Which accelerator trains the model, forwarded to sleap-nn as "
+    "trainer_accelerator. auto leaves the choice to sleap-nn."
+)
+
+_IDLE_TIMEOUT_DESCRIPTION = (
+    "How long the training subprocess may go without output before it is "
+    "killed. A generous default, because an epoch on a large set is slow "
+    "and a watchdog must not mistake slow for dead."
+)
+
+_MAX_RUNTIME_DESCRIPTION = (
+    "Absolute wall-clock ceiling for the training run. Unset leaves the "
+    "ceiling to whatever queue submitted the run, and idle_timeout still "
+    "applies."
+)
+
+_OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
+
 
 class TrainSleapParams(Params):
     """Parameters for the ``train-sleap`` op.
@@ -56,25 +111,34 @@ class TrainSleapParams(Params):
     for it here.
     """
 
-    # A .slp to train on, or a prior train-sleap run to fine-tune from.
-    labels: str
-    base_model: str = ""
-    head: SleapHead = "centered_instance"
-    backbone: SleapBackbone = "unet"
-    max_epochs: int = 200
-    seed: int = 42
-    validation_fraction: float = 0.1
-    sleap_overrides: dict[str, JsonValue] | None = None
+    labels: Annotated[str, Declared(_LABELS_DESCRIPTION)]
+    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
+    head: Annotated[SleapHead, Declared(_HEAD_DESCRIPTION)] = "centered_instance"
+    backbone: Annotated[SleapBackbone, Declared(_BACKBONE_DESCRIPTION)] = "unet"
+    max_epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = 200
+    seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42
+    validation_fraction: Annotated[
+        float, Declared(_VALIDATION_FRACTION_DESCRIPTION)
+    ] = 0.1
+    sleap_overrides: Annotated[
+        dict[str, JsonValue] | None, Declared(_SLEAP_OVERRIDES_DESCRIPTION)
+    ] = None
     # Execution knobs: where and how fast, not what was trained.
-    device: Annotated[str, HASH_EXCLUDE] = "auto"
-    idle_timeout: Annotated[float, HASH_EXCLUDE] = 1800
-    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    """Train again even if this exact run already finished.
-
-    ``HASH_EXCLUDE`` because it is a throughput knob, not a property of the model:
-    flipping it must not mint a second identity for the same weights.
-    """
+    device: Annotated[
+        str,
+        HASH_EXCLUDE,
+        Field(examples=["auto", "cpu", "gpu", "0"]),
+        Declared(_DEVICE_DESCRIPTION),
+    ] = "auto"
+    idle_timeout: Annotated[
+        float, HASH_EXCLUDE, Declared(_IDLE_TIMEOUT_DESCRIPTION, unit="s")
+    ] = 1800
+    max_runtime: Annotated[
+        float | None, HASH_EXCLUDE, Declared(_MAX_RUNTIME_DESCRIPTION, unit="s")
+    ] = None
+    # A throughput knob, not a property of the model: flipping it must not
+    # mint a second identity for the same weights.
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 @register_op

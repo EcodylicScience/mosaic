@@ -30,17 +30,17 @@ Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `source_format` | `"cvat_points"` | `"cvat_points"` |  |  |
-| `cvat_xml` | `string` | _required_ |  |  |
-| `images_dir` | `string` | _required_ |  |  |
-| `class_names` | list of `string` | _required_ |  |  |
-| `radii` | `object` | _required_ |  |  |
-| `class_attribute` | `string` | `"class"` |  |  |
-| `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` |  |
-| `split_by` | `string` | `"group"` |  |  |
-| `seed` | `integer` | `42` |  |  |
-| `symlink_images` | `boolean` | `true` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
+| `source_format` | `"cvat_points"` | `"cvat_points"` |  | Which annotation format this run converts. |
+| `cvat_xml` | `string` | _required_ |  | The CVAT 'for Images 1.1' XML export to convert. |
+| `images_dir` | `string` | _required_ |  | Directory of images whose filenames match the XML's image name attributes. |
+| `class_names` | list of `string` | _required_ |  | Ordered class names, index used as the class id. An empty list auto-detects names from the XML in order of first appearance. |
+| `radii` | `object` | _required_ |  | Detection radius for each class name. Every class the conversion resolves needs an entry, whether class_names named it or auto-detection found it. [px] |
+| `class_attribute` | `string` | `"class"` |  | Name of the XML attribute that names each point's class. Empty means single-class, with every point assigned class 0. |
+| `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` | Train, validation and test fractions of the annotated images. |
+| `split_by` | `string` | `"group"` |  | How images are grouped before the split is drawn. group keeps frames from the same video together in one split. |
+| `seed` | `integer` | `42` |  | Random seed for the train, validation and test split assignment. |
+| `symlink_images` | `boolean` | `true` |  | Symlink source images into the dataset instead of copying them. |
+| `overwrite` | `boolean` | `false` |  | Convert again even if this exact combination of params, XML and images already produced a data.yaml. |
 
 #### `litpose`
 
@@ -53,7 +53,7 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 | `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
 | `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
-| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_path` | `string` | _required_ |  | A trained Lightning Pose model directory (config.yaml plus a checkpoint under tb_logs/). |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra config overrides applied at inference time. |
@@ -96,7 +96,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
 | `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
-| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_paths` | list of `string` | _required_ |  | One trained SLEAP model directory, or two for a top-down model (centroid, then centered-instance). |
 | `tracking` | `boolean` | `true` |  | Assign identities to detections across frames. When False, no tracker is attached. |
@@ -131,7 +131,7 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 | `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
 | `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
-| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `detect_model` | `string` \| `None` | `null` |  | A YOLO .pt path, or the run id of the training op that produced the weights. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
 | `detect_type` | `string` \| `None` | `null` |  | The detection algorithm. Known values are yolo, background_subtraction and points. |
@@ -169,7 +169,7 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 | `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
 | `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
-| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_path` | `string` | _required_ |  | The YOLO weights to track with: a .pt path, or the run id of the training op that produced them. Identity records the weights' content digest when the reference is a bare path, and the training run id when it is one. |
 | `task` | `"pose"` \| `"detect"` | `"pose"` |  | Which head the weights carry. Declared rather than read off the file, because it is part of the identifier and a run must not re-mean itself when the weights behind a path change. The loaded model is checked against it and a mismatch is refused by name. |
@@ -358,9 +358,9 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
-| `num_classes` | `integer` | `4` |  |  |
-| `initial_channels` | `integer` | `32` |  |  |
-| `thresholds` | `number` | `0.5` |  |  |
+| `num_classes` | `integer` | `4` |  | How many output heatmap channels the localizer network has. Must match the architecture the referenced model was trained with. |
+| `initial_channels` | `integer` | `32` |  | Base channel width of the localizer network. Must match the architecture the referenced model was trained with. |
+| `thresholds` | `number` | `0.5` |  | Minimum confidence a detected peak must reach, applied to every class. |
 
 ??? note "`Entry`"
 
@@ -387,7 +387,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
-| `dor` | `number` | `0.8` |  |  |
+| `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluated against at training time. **Unwired:** reaches no inference argument, though it still enters the run identifier. |
 
 ??? note "`Entry`"
 
@@ -429,17 +429,17 @@ Train a Lightning Pose model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `project` | `string` | _required_ |  |  |
-| `base_config` | `string` | `""` |  |  |
-| `base_model` | `string` | `""` |  |  |
-| `model_type` | `"heatmap"` \| `"heatmap_mhcrnn"` \| `"regression"` \| `"heatmap_multiview_transformer"` | `"heatmap"` |  |  |
-| `backbone` | `string` | `"resnet50_animal_ap10k"` |  |  |
-| `max_epochs` | `integer` | `300` |  |  |
-| `litpose_overrides` | `object` \| `None` | `null` |  |  |
-| `device` | `string` | `"auto"` |  |  |
-| `idle_timeout` | `number` | `1800` |  |  |
-| `max_runtime` | `number` \| `None` | `null` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
+| `project` | `string` | _required_ |  | A Lightning Pose project directory, written with the labeled data to train on. Its config.yaml supplies only the data half of the training configuration. |
+| `base_config` | `string` | `""` |  | The complete Lightning Pose config to train from, dataset-relative or absolute. Unset uses the template config included with mosaic. The project's own config.yaml supplies the data half and is merged over it. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `model_type` | `"heatmap"` \| `"heatmap_mhcrnn"` \| `"regression"` \| `"heatmap_multiview_transformer"` | `"heatmap"` |  | Which prediction head trains. heatmap_mhcrnn adds temporal context over five frames. The multiview transformer is for synchronized cameras. |
+| `backbone` | `string` | `"resnet50_animal_ap10k"` |  | The feature extractor. Defaults to a ResNet-50 pretrained on animal pose rather than ImageNet. |
+| `max_epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
+| `litpose_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied last, over model_type, backbone and max_epochs as well as anything else Lightning Pose exposes with no field here. A key set here wins over base_model where they would set the same key. |
+| `device` | `string` | `"auto"` |  | The accelerator to train the model on. **Unwired:** the training subprocess never receives it. |
+| `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
+| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 
@@ -453,19 +453,19 @@ Train the heatmap localizer, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `dataset_dir` | `string` | _required_ |  |  |
-| `base_model` | `string` | `""` |  |  |
-| `num_classes` | `integer` | `4` |  |  |
-| `initial_channels` | `integer` | `32` |  |  |
-| `freeze_encoder` | `boolean` | `false` |  |  |
-| `epochs` | `integer` | `200` |  |  |
-| `lr` | `number` | `0.001` |  |  |
-| `early_stopping_patience` | `integer` | `20` |  |  |
-| `augment` | `boolean` | `true` |  |  |
-| `seed` | `integer` | `42` |  |  |
-| `device` | `string` | `"0"` |  |  |
-| `batch_size` | `integer` | `128` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
+| `dataset_dir` | `string` | _required_ |  | The directory convert_coco_localizer writes its train and valid patch sets into. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `num_classes` | `integer` | `4` |  | The number of output heatmap channels. |
+| `initial_channels` | `integer` | `32` |  | The base channel width of the localizer network. |
+| `freeze_encoder` | `boolean` | `false` |  | Freeze every layer except the 1x1 output head. Useful when fine-tuning on a small dataset. |
+| `epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
+| `lr` | `number` | `0.001` |  | The initial Adam learning rate. |
+| `early_stopping_patience` | `integer` | `20` |  | How long training continues without validation-loss improvement before stopping early. [epochs] |
+| `augment` | `boolean` | `true` |  | Apply the light augmentation preset -- flip and rotation -- during training. False applies none. |
+| `seed` | `integer` | `42` |  | The random seed for the training run. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `batch_size` | `integer` | `128` |  | How many training patches the model reads in one forward pass. |
+| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 #### `train-points`
 
@@ -475,22 +475,22 @@ Train a POLO point-detection model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `data` | `string` | _required_ |  |  |
-| `model` | `string` | `"polo26n.yaml"` |  |  |
-| `base_model` | `string` | `""` |  |  |
-| `epochs` | `integer` | `300` |  |  |
-| `imgsz` | `integer` | `640` |  |  |
-| `patience` | `integer` | `50` |  |  |
-| `resume` | `boolean` | `false` |  |  |
-| `augmentation` | `string` \| `object` \| `None` | `null` |  |  |
-| `train_overrides` | `object` \| `None` | `null` |  |  |
-| `device` | `string` | `"0"` |  |  |
-| `batch` | `integer` | `16` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
-| `loc` | `number` | `5.0` |  |  |
-| `loc_loss` | `string` | `"mse"` |  |  |
-| `dor` | `number` | `0.8` |  |  |
-| `backend` | `string` | `"polo"` |  |  |
+| `data` | `string` | _required_ |  | Path to the data.yaml declaring the training dataset: its classes, per-class radii and splits. |
+| `model` | `string` | `"polo26n.yaml"` |  | What training starts from: a model config, a bare asset name Ultralytics resolves itself, or a path to weights. base_model overrides it, and a resume overrides both with this run's last checkpoint. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
+| `imgsz` | `integer` | `640` |  | The side a training image is resized to before the model reads it. [px] |
+| `patience` | `integer` | `50` |  | How long training continues without improvement before stopping early. [epochs] |
+| `resume` | `boolean` | `false` |  | Continue training from this run's own last checkpoint instead of starting from the given weights. |
+| `augmentation` | `string` \| `object` \| `None` | `null` |  | A preset name, or a dict with a preset key to start from one and override, or without one to replace the augmentation set outright. A resumed run applies no augmentation. |
+| `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
+| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
+| `loc` | `number` | `5.0` |  | The localization loss weight, a POLO train keyword. |
+| `loc_loss` | `string` | `"mse"` |  | Which localization loss POLO minimizes. |
+| `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluates against. |
+| `backend` | `string` | `"polo"` |  | The point-detection backend. polo is the only value the op accepts. |
 
 ??? note "`JsonValue`"
 
@@ -504,18 +504,18 @@ Train a YOLO pose model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `data` | `string` | _required_ |  |  |
-| `model` | `string` | `"yolo11n-pose.pt"` |  |  |
-| `base_model` | `string` | `""` |  |  |
-| `epochs` | `integer` | `300` |  |  |
-| `imgsz` | `integer` | `640` |  |  |
-| `patience` | `integer` | `50` |  |  |
-| `resume` | `boolean` | `false` |  |  |
-| `augmentation` | `string` \| `object` \| `None` | `null` |  |  |
-| `train_overrides` | `object` \| `None` | `null` |  |  |
-| `device` | `string` | `"0"` |  |  |
-| `batch` | `integer` | `16` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
+| `data` | `string` | _required_ |  | Path to the data.yaml declaring the training dataset: its classes, keypoint shape and splits. |
+| `model` | `string` | `"yolo11n-pose.pt"` |  | What training starts from: a model config, a bare asset name Ultralytics resolves itself, or a path to weights. base_model overrides it, and a resume overrides both with this run's last checkpoint. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
+| `imgsz` | `integer` | `640` |  | The side a training image is resized to before the model reads it. [px] |
+| `patience` | `integer` | `50` |  | How long training continues without improvement before stopping early. [epochs] |
+| `resume` | `boolean` | `false` |  | Continue training from this run's own last checkpoint instead of starting from the given weights. |
+| `augmentation` | `string` \| `object` \| `None` | `null` |  | A preset name, or a dict with a preset key to start from one and override, or without one to replace the augmentation set outright. A resumed run applies no augmentation. |
+| `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
+| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 
@@ -529,18 +529,18 @@ Train a SLEAP model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `string` | _required_ |  |  |
-| `base_model` | `string` | `""` |  |  |
-| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  |  |
-| `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  |  |
-| `max_epochs` | `integer` | `200` |  |  |
-| `seed` | `integer` | `42` |  |  |
-| `validation_fraction` | `number` | `0.1` |  |  |
-| `sleap_overrides` | `object` \| `None` | `null` |  |  |
-| `device` | `string` | `"auto"` |  |  |
-| `idle_timeout` | `number` | `1800` |  |  |
-| `max_runtime` | `number` \| `None` | `null` |  |  |
-| `overwrite` | `boolean` | `false` |  |  |
+| `labels` | `string` | _required_ |  | The .slp file to train on. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification. |
+| `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  | The feature extractor architecture, independent of the head. |
+| `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
+| `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
+| `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation, when no separate validation file is given. |
+| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key set here wins over base_model and device where they would set the same key. |
+| `device` | `string` | `"auto"` |  | Which accelerator trains the model, forwarded to sleap-nn as trainer_accelerator. auto leaves the choice to sleap-nn. |
+| `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
+| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 

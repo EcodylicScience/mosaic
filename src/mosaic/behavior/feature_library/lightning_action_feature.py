@@ -22,13 +22,14 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, TypedDict, final
 
 import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.params import Declared
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -89,6 +90,74 @@ class LightningActionModelArtifact(JoblibArtifact[LightningActionModelBundle]):
 # --- Feature class ---
 
 
+_TEMPLATES_DESCRIPTION = (
+    "Labeled feature templates to fit the model on, with label and split "
+    "columns. Mutually exclusive with model."
+)
+
+_MODEL_DESCRIPTION = (
+    "Pre-fitted model to load instead of training. Mutually exclusive with templates."
+)
+
+_HEAD_DESCRIPTION = (
+    "Temporal encoder architecture: dtcn (dilated temporal convolution), "
+    "rnn (LSTM/GRU), or temporalmlp."
+)
+
+_NUM_HID_UNITS_DESCRIPTION = "Number of hidden units in the temporal encoder's layers."
+
+_NUM_LAYERS_DESCRIPTION = "Number of layers in the temporal encoder."
+
+_NUM_LAGS_DESCRIPTION = (
+    "Number of temporal lags the encoder convolves over. Used by the "
+    "temporalmlp and dtcn heads and ignored by rnn."
+)
+
+_ACTIVATION_DESCRIPTION = (
+    "Activation function used in the temporal encoder. Known values are "
+    "relu, lrelu, sigmoid, tanh and linear."
+)
+
+_DROPOUT_RATE_DESCRIPTION = (
+    "Dropout rate applied in the temporal encoder for regularization."
+)
+
+_SEQUENCE_LENGTH_DESCRIPTION = "Length of each training sequence chunk."
+
+_NUM_EPOCHS_DESCRIPTION = "How long the model trains."
+
+_BATCH_SIZE_DESCRIPTION = (
+    "How many training sequence chunks the model reads in one forward pass."
+)
+
+_LEARNING_RATE_DESCRIPTION = "The optimizer's learning rate."
+
+_WEIGHT_DECAY_DESCRIPTION = "The optimizer's weight decay coefficient."
+
+_OPTIMIZER_DESCRIPTION = "The optimizer used to train the network."
+
+_WEIGHT_CLASSES_DESCRIPTION = (
+    "Weight the training loss by inverse class frequency, to correct for "
+    "class imbalance."
+)
+
+_DEVICE_DESCRIPTION = "Which device trains the model. Known values are cpu and gpu."
+
+_RANDOM_STATE_DESCRIPTION = "The random seed for model initialization and training."
+
+_DECISION_THRESHOLD_DESCRIPTION = (
+    "Probability threshold for a positive class prediction: a single "
+    "value applied to every class, or a mapping from class to its own "
+    "threshold. Unset, the class with the highest probability wins."
+)
+
+_DEFAULT_CLASS_DESCRIPTION = (
+    "Class label assigned to a frame when decision_threshold excludes "
+    "every class, or when the frame has no predicted probabilities at "
+    "all."
+)
+
+
 @final
 @register_feature
 class LightningActionFeature:
@@ -98,34 +167,8 @@ class LightningActionFeature:
     TemporalMLP head + linear classifier) on labeled templates and
     predicts per-frame action probabilities.
 
-    Params:
-        model: Pre-fitted LightningActionModelArtifact to load (skip
-            training). Default: LightningActionModelArtifact().
-        head: Temporal encoder architecture — "dtcn" (dilated temporal
-            convolution), "rnn" (LSTM/GRU), or "temporalmlp".
-            Default: "dtcn".
-        num_hid_units: Hidden units in the temporal encoder.
-            Default: 64.
-        num_layers: Number of encoder layers. Default: 2.
-        num_lags: Lag/kernel size for temporal context. Default: 4.
-        activation: Activation function. Default: "lrelu".
-        dropout_rate: Dropout rate. Default: 0.1.
-        sequence_length: Training sequence length (frames per chunk).
-            Default: 500.
-        num_epochs: Number of training epochs. Default: 200.
-        batch_size: Training batch size. Default: 32.
-        learning_rate: Optimizer learning rate. Default: 1e-3.
-        weight_decay: Optimizer weight decay. Default: 0.0.
-        optimizer: Optimizer type. Default: "Adam".
-        weight_classes: If True, weight loss by inverse class frequency.
-            Default: True.
-        device: Compute device — "cpu" or "gpu". Default: "cpu".
-        random_state: Random seed. Default: 42.
-        decision_threshold: Probability threshold(s) for positive
-            prediction. A float applies to all classes; a dict maps
-            class -> threshold. None uses argmax. Default: None.
-        default_class: Class label assigned when no class exceeds the
-            decision threshold (required).
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature.Params`.
     """
 
     category = "global"
@@ -142,29 +185,59 @@ class LightningActionFeature:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(GlobalModelParams[LightningActionModelArtifact, LabeledTemplatesRef]):
-        model: LightningActionModelArtifact | None = Field(
-            default_factory=LightningActionModelArtifact
-        )
+        templates: Annotated[
+            LabeledTemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)
+        ] = None
+        model: Annotated[
+            LightningActionModelArtifact | None, Declared(_MODEL_DESCRIPTION)
+        ] = Field(default_factory=LightningActionModelArtifact)
         # --- Network architecture ---
-        head: Literal["temporalmlp", "rnn", "dtcn"] = "dtcn"
-        num_hid_units: int = Field(default=64, ge=1)
-        num_layers: int = Field(default=2, ge=1)
-        num_lags: int = Field(default=4, ge=1)
-        activation: str = "lrelu"
-        dropout_rate: float = Field(default=0.1, ge=0, le=1)
+        head: Annotated[
+            Literal["temporalmlp", "rnn", "dtcn"], Declared(_HEAD_DESCRIPTION)
+        ] = "dtcn"
+        num_hid_units: Annotated[
+            int, Field(ge=1), Declared(_NUM_HID_UNITS_DESCRIPTION)
+        ] = 64
+        num_layers: Annotated[int, Field(ge=1), Declared(_NUM_LAYERS_DESCRIPTION)] = 2
+        num_lags: Annotated[
+            int, Field(ge=1), Declared(_NUM_LAGS_DESCRIPTION, unit="frames")
+        ] = 4
+        activation: Annotated[
+            str,
+            Field(examples=["relu", "lrelu", "sigmoid", "tanh", "linear"]),
+            Declared(_ACTIVATION_DESCRIPTION),
+        ] = "lrelu"
+        dropout_rate: Annotated[
+            float, Field(ge=0, le=1), Declared(_DROPOUT_RATE_DESCRIPTION)
+        ] = 0.1
         # --- Training ---
-        sequence_length: int = Field(default=500, ge=10)
-        num_epochs: int = Field(default=200, ge=1)
-        batch_size: int = Field(default=32, ge=1)
-        learning_rate: float = Field(default=1e-3, gt=0)
-        weight_decay: float = Field(default=0.0, ge=0)
-        optimizer: Literal["Adam", "AdamW"] = "Adam"
-        weight_classes: bool = True
-        device: str = "cpu"
-        random_state: int = 42
+        sequence_length: Annotated[
+            int, Field(ge=10), Declared(_SEQUENCE_LENGTH_DESCRIPTION, unit="frames")
+        ] = 500
+        num_epochs: Annotated[
+            int, Field(ge=1), Declared(_NUM_EPOCHS_DESCRIPTION, unit="epochs")
+        ] = 200
+        batch_size: Annotated[int, Field(ge=1), Declared(_BATCH_SIZE_DESCRIPTION)] = 32
+        learning_rate: Annotated[
+            float, Field(gt=0), Declared(_LEARNING_RATE_DESCRIPTION)
+        ] = 1e-3
+        weight_decay: Annotated[
+            float, Field(ge=0), Declared(_WEIGHT_DECAY_DESCRIPTION)
+        ] = 0.0
+        optimizer: Annotated[
+            Literal["Adam", "AdamW"], Declared(_OPTIMIZER_DESCRIPTION)
+        ] = "Adam"
+        weight_classes: Annotated[bool, Declared(_WEIGHT_CLASSES_DESCRIPTION)] = True
+        device: Annotated[
+            str, Field(examples=["cpu", "gpu"]), Declared(_DEVICE_DESCRIPTION)
+        ] = "cpu"
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
         # --- Inference ---
-        decision_threshold: float | Mapping[int, float] | None = None
-        default_class: int
+        decision_threshold: Annotated[
+            float | Mapping[int, float] | None,
+            Declared(_DECISION_THRESHOLD_DESCRIPTION),
+        ] = None
+        default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)]
 
     def __init__(
         self,

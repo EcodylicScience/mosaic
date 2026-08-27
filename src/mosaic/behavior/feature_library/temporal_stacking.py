@@ -7,7 +7,7 @@ Gaussian-smoothed frames at time offsets and optional pooled statistics.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,7 @@ from mosaic.core.pipeline.types import (
     NNResult,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns, meta_columns
 from .registry import register_feature
@@ -190,32 +190,57 @@ def _pooled_stats(
 
 # --- Feature class ---
 
+_HALF_DESCRIPTION = (
+    "Half-width of the temporal window. The full window spans -half to "
+    "+half around each row."
+)
+
+_SKIP_DESCRIPTION = "The step between time offsets in the stacking window."
+
+_USE_TEMPORAL_STACK_DESCRIPTION = (
+    "Concatenate Gaussian-smoothed copies of each feature column at "
+    "every offset in the window. False passes through the input "
+    "feature columns unchanged."
+)
+
+_SIGMA_STACK_DESCRIPTION = (
+    "The Gaussian smoothing sigma applied before stacking. 0 disables smoothing."
+)
+
+_ADD_POOL_DESCRIPTION = (
+    "Append pooled statistics computed over a sliding Gaussian window."
+)
+
+_POOL_STATS_DESCRIPTION = (
+    "Which pooled statistics to compute over the sliding Gaussian "
+    "window. Known values are mean, std and variance, matched "
+    "case-insensitively. Any other value is ignored."
+)
+
+_SIGMA_POOL_DESCRIPTION = (
+    "The Gaussian sigma for the pooling window. Non-positive computes "
+    "it from win_sec and fps."
+)
+
+_FPS_DESCRIPTION = "The frame rate used to convert win_sec into a frame count."
+
+_WIN_SEC_DESCRIPTION = "The width of the pooling window."
+
+_PAIR_FILTER_DESCRIPTION = (
+    "Unset, every row is read. A nearest-neighbor result narrows the "
+    "input, while it loads, to rows where one individual in the pair "
+    "is the other's nearest neighbor. On an input without id1/id2 "
+    "columns, the filter has no effect."
+)
+
 
 @final
 @register_feature
 class TemporalStackingFeature:
     """Build temporal context windows over per-sequence feature data.
 
-    Params:
-        half: Half-width of the temporal window in frames. The full
-            window spans [-half, +half]. Default: 60.
-        skip: Step size between time offsets in the stacking window.
-            Default: 5.
-        use_temporal_stack: If True, concatenate Gaussian-smoothed
-            copies at each time offset. Default: True.
-        sigma_stack: Gaussian sigma (in frames) for smoothing before
-            stacking. 0 disables smoothing. Default: 30.0.
-        add_pool: If True, append pooled statistics (e.g. mean, std)
-            computed over a sliding Gaussian window. Default: True.
-        pool_stats: Tuple of pooled statistics to compute. Supported:
-            "mean", "std", "variance". Default: ("mean",).
-        sigma_pool: Gaussian sigma (in frames) for the pooling window.
-            Default: 30.0.
-        fps: Frames per second; used to convert win_sec to frames.
-            Default: 30.0.
-        win_sec: Pooling window width in seconds. Default: 0.5.
-        pair_filter: Optional NNResult for nearest-neighbor pair
-            filtering during dependency resolution. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature.Params`.
     """
 
     category = "per-frame"
@@ -231,16 +256,36 @@ class TemporalStackingFeature:
         pass
 
     class Params(Params):
-        half: int = Field(default=60, ge=0)
-        skip: int = Field(default=5, ge=1)
-        use_temporal_stack: bool = True
-        sigma_stack: float = 30.0
-        add_pool: bool = True
-        pool_stats: tuple[str, ...] = ("mean",)
-        sigma_pool: float = 30.0
-        fps: float = Field(default=30.0, gt=0)
-        win_sec: float = Field(default=0.5, gt=0)
-        pair_filter: NNResult | None = None
+        half: Annotated[int, Declared(_HALF_DESCRIPTION, unit="frames")] = Field(
+            default=60, ge=0
+        )
+        skip: Annotated[int, Declared(_SKIP_DESCRIPTION, unit="frames")] = Field(
+            default=5, ge=1
+        )
+        use_temporal_stack: Annotated[
+            bool, Declared(_USE_TEMPORAL_STACK_DESCRIPTION)
+        ] = True
+        sigma_stack: Annotated[
+            float, Declared(_SIGMA_STACK_DESCRIPTION, unit="frames")
+        ] = 30.0
+        add_pool: Annotated[bool, Declared(_ADD_POOL_DESCRIPTION)] = True
+        pool_stats: Annotated[
+            tuple[str, ...],
+            Field(examples=[("mean",), ("mean", "std", "variance")]),
+            Declared(_POOL_STATS_DESCRIPTION),
+        ] = ("mean",)
+        sigma_pool: Annotated[
+            float, Declared(_SIGMA_POOL_DESCRIPTION, unit="frames")
+        ] = 30.0
+        fps: Annotated[float, Declared(_FPS_DESCRIPTION, unit="fps")] = Field(
+            default=30.0, gt=0
+        )
+        win_sec: Annotated[float, Declared(_WIN_SEC_DESCRIPTION, unit="s")] = Field(
+            default=0.5, gt=0
+        )
+        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+            None
+        )
 
         @model_validator(mode="before")
         @classmethod

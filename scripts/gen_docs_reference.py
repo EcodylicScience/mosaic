@@ -187,18 +187,28 @@ def constraints_text(spec: Mapping[str, Any]) -> str:
 
 
 def description_text(spec: Mapping[str, Any]) -> str:
-    """A field's declared prose, with its unit where one is declared.
+    """A field's declared prose, its unit, and why nothing reads it.
 
-    Both keys come from `Declared`, which is mosaic's own text rather than
-    anything pydantic spells, so neither moves when a pydantic release changes
+    Every key comes from `Declared`, which is mosaic's own text rather than
+    anything pydantic spells, so none moves when a pydantic release changes
     how it renders a union. A field declared `NEEDS_DESCRIPTION` renders an empty
     cell, which is what it has to say.
+
+    `x-mosaic-unwired` is rendered because this table is the page a reader
+    consults before setting a parameter. Printing the prose alone would describe
+    a control that changes nothing and say nothing about it.
     """
     description = str(spec.get("description", "") or "").strip()
     unit = str(spec.get("x-mosaic-unit", "") or "").strip()
+    unwired = str(spec.get("x-mosaic-unwired", "") or "").strip()
     if description and unit:
-        return f"{description} [{unit}]"
-    return description or (f"[{unit}]" if unit else "")
+        text = f"{description} [{unit}]"
+    else:
+        text = description or (f"[{unit}]" if unit else "")
+    if not unwired:
+        return text
+    note = f"**Unwired:** {unwired}."
+    return f"{text} {note}" if text else note
 
 
 def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:

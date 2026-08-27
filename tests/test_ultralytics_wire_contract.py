@@ -235,6 +235,29 @@ def test_mosaic_sends_exactly_the_inference_fields_the_runner_reads(
     assert read == declared
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="PointInferParams.dor is hashed into the run id but never sent",
+)
+def test_the_point_inference_request_carries_dor() -> None:
+    """The record for a parameter that keys a run without reaching it.
+
+    ``PointInferParams.dor`` is a POLO train-time keyword. At inference it
+    reaches no argument on either path, and ``InferPointsRequest`` says so in
+    its own docstring -- yet the field carries no ``HASH_EXCLUDE``, so
+    ``identity_dump`` includes it and changing it re-keys a run that computes
+    the identical result. Either it is sent or it stops keying the run, and
+    which of those is right is the maintainer's call.
+
+    This is the boundary the rest of the file guards, so the record belongs
+    here: a value mosaic holds and never sends is the asymmetry these tests
+    exist to catch. ``strict`` retires the marker automatically -- the day the
+    field is added to the request this xpasses and the suite fails until the
+    marker is deleted.
+    """
+    assert "dor" in InferPointsRequest.model_fields
+
+
 # --- the column contract ---------------------------------------------------
 
 

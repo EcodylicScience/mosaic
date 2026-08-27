@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, Self, final
+from typing import Annotated, ClassVar, Literal, Self, final
 
 import numpy as np
 import pandas as pd
@@ -26,12 +26,47 @@ from mosaic.core.pipeline.types import (
     ParquetLoadSpec,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns
 from .registry import register_feature
 from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
+
+_LABELS_DESCRIPTION = (
+    "Reference to the per-frame ground-truth labels used to assign a "
+    "class to every template, resolved from labels/<kind>/index.csv."
+)
+
+_STRATEGY_DESCRIPTION = (
+    "How templates are selected from the candidate pool. random keeps "
+    "the pool as collected. farthest_first reduces an oversized pool to "
+    "the target count per class by iterative farthest-point sampling."
+)
+
+_N_PER_CLASS_DESCRIPTION = (
+    "The number of templates per class. An int applies the same count to "
+    "every class, and a mapping sets each class's count individually. "
+    "Exactly one of n_per_class and n_total must be set."
+)
+
+_N_TOTAL_DESCRIPTION = (
+    "The total number of templates, split equally across the classes "
+    "seen. Each class gets n_total // (number of classes), so the "
+    "realized total can be lower. Exactly one of n_per_class and n_total "
+    "must be set."
+)
+
+_POOL_DESCRIPTION = (
+    "Candidate pool size and per-entry allocation strategy consulted "
+    "before final template selection."
+)
+
+_TEST_FRACTION_DESCRIPTION = "Fraction of sequences held out for the test split."
+
+_RANDOM_STATE_DESCRIPTION = (
+    "The random seed for split assignment and template sampling."
+)
 
 
 @dataclass
@@ -73,22 +108,8 @@ class ExtractLabeledTemplates:
     class. Produces a templates parquet with feature columns + label
     (int) + split (str).
 
-    Params:
-        labels: GroundTruthLabelsSource specifying where to load
-            per-frame ground-truth labels (required).
-        strategy: Template selection method — "random" or
-            "farthest_first". Default: "random".
-        n_per_class: Number of templates per class. An int applies
-            uniformly; a dict maps class -> count. Exactly one of
-            n_per_class or n_total must be set. Default: None.
-        n_total: Total number of templates across all classes
-            (distributed proportionally). Exactly one of n_per_class
-            or n_total must be set. Default: None.
-        pool: PoolConfig controlling candidate pool size and allocation.
-            Default: PoolConfig().
-        test_fraction: Fraction of sequences held out for the test
-            split. Default: 0.2.
-        random_state: Random seed for reproducibility. Default: 42.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates.Params`.
     """
 
     category = "global"
@@ -106,13 +127,21 @@ class ExtractLabeledTemplates:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        labels: GroundTruthLabelsSource
-        strategy: Literal["random", "farthest_first"] = "random"
-        n_per_class: int | Mapping[int, int] | None = None
-        n_total: int | None = None
-        pool: PoolConfig = Field(default_factory=PoolConfig)
-        test_fraction: float = Field(default=0.2, ge=0.0, le=1.0)
-        random_state: int = 42
+        labels: Annotated[GroundTruthLabelsSource, Declared(_LABELS_DESCRIPTION)]
+        strategy: Annotated[
+            Literal["random", "farthest_first"], Declared(_STRATEGY_DESCRIPTION)
+        ] = "random"
+        n_per_class: Annotated[
+            int | Mapping[int, int] | None, Declared(_N_PER_CLASS_DESCRIPTION)
+        ] = None
+        n_total: Annotated[int | None, Declared(_N_TOTAL_DESCRIPTION)] = None
+        pool: Annotated[PoolConfig, Declared(_POOL_DESCRIPTION)] = Field(
+            default_factory=PoolConfig
+        )
+        test_fraction: Annotated[float, Declared(_TEST_FRACTION_DESCRIPTION)] = Field(
+            default=0.2, ge=0.0, le=1.0
+        )
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
 
         @model_validator(mode="after")
         def _require_sampling_spec(self) -> Self:

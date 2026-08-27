@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
@@ -135,6 +135,57 @@ def _find_long_true_runs(
 # Feature
 # ---------------------------------------------------------------------------
 
+_SHIFT_DIST_DESCRIPTION = (
+    "Distance each individual is shifted forward along its heading "
+    "before the distance check runs. 0 uses raw positions with no shift."
+)
+
+_MAX_DIST_DESCRIPTION = (
+    "The maximum distance between the shifted positions for a pair to "
+    "count as interacting."
+)
+
+_REQUIRE_FACING_DESCRIPTION = (
+    "Require the pair to also face each other, using "
+    "max_inv_orientation_diff_deg. False filters on distance alone."
+)
+
+_MAX_INV_ORIENTATION_DIFF_DEG_DESCRIPTION = (
+    "The maximum inverse-orientation angle for a pair to count as "
+    "facing. Ignored when require_facing is false."
+)
+
+_MIN_RUN_FRAMES_DESCRIPTION = (
+    "The minimum length a continuous run meeting the interaction "
+    "criteria needs to count as a segment."
+)
+
+_FRAME_PADDING_DESCRIPTION = "Padding added before and after each detected segment."
+
+_MORPHOLOGICAL_STRUCTURE_SIZE_DESCRIPTION = (
+    "Length of the structuring element used to close and open the "
+    "per-frame interaction mask before segment extraction. 0 disables "
+    "morphological filtering."
+)
+
+_PX_SCALE_DESCRIPTION = (
+    "Scale factor applied to shift_dist and max_dist, for videos "
+    "recorded at a different pixel resolution."
+)
+
+_USE_PIXEL_COORDS_DESCRIPTION = (
+    "Use pixel-coordinate columns for the distance calculation. With "
+    "pose_head_index set, uses that pose keypoint. Otherwise uses "
+    "x_pixels/y_pixels where present, falling back to X/Y. False always "
+    "uses X/Y."
+)
+
+_POSE_HEAD_INDEX_DESCRIPTION = (
+    "Pose keypoint index used as the position for the distance "
+    "calculation, together with use_pixel_coords. Unset, "
+    "x_pixels/y_pixels or X/Y is used instead."
+)
+
 
 @final
 @register_feature
@@ -160,37 +211,8 @@ class PairInteractionFilter:
     what lets any two of them join, and a lone unordered row matches only half of
     an ordered partner's rows -- silently, since the join reads as a broadcast.
 
-    Params
-    ------
-    shift_dist : float
-        Pixel shift along heading before distance check (default 15).
-        Set to 0 to use raw positions without forward shift.
-    max_dist : float
-        Maximum shifted-position distance in pixels (default 40).
-    require_facing : bool
-        If True (default), require individuals to face each other
-        (inverse orientation difference < ``max_inv_orientation_diff_deg``).
-        Set to False for distance-only filtering.
-    max_inv_orientation_diff_deg : float
-        Max angle (degrees) between inverse orientations (default 80).
-        Only used when ``require_facing=True``.
-    min_run_frames : int
-        Minimum continuous frames for a valid interaction (default 250).
-    frame_padding : int
-        Frames to pad before/after each segment (default 10).
-    morphological_structure_size : int
-        Structure element length for binary close/open (default 25).
-        Set to 0 to disable morphological filtering.
-    px_scale : float
-        Scale factor applied to shift_dist and max_dist (default 1.0).
-        Use to adjust for videos with different pixel resolutions.
-    use_pixel_coords : bool
-        If True, use poseX/poseY columns (pixel coordinates) for
-        distance calculations instead of X/Y (world coordinates).
-        Default True since thresholds are in pixel units.
-    pose_head_index : int | None
-        If set and use_pixel_coords is True, use this pose index
-        as the position for distance calculations.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter.Params`.
     """
 
     category = "per-frame"
@@ -206,16 +228,31 @@ class PairInteractionFilter:
         pass
 
     class Params(Params):
-        shift_dist: float = 15.0
-        max_dist: float = 40.0
-        require_facing: bool = True
-        max_inv_orientation_diff_deg: float = 80.0
-        min_run_frames: int = 250
-        frame_padding: int = 10
-        morphological_structure_size: int = 25
-        px_scale: float = 1.0
-        use_pixel_coords: bool = True
-        pose_head_index: int | None = None
+        shift_dist: Annotated[float, Declared(_SHIFT_DIST_DESCRIPTION, unit="px")] = (
+            15.0
+        )
+        max_dist: Annotated[float, Declared(_MAX_DIST_DESCRIPTION, unit="px")] = 40.0
+        require_facing: Annotated[bool, Declared(_REQUIRE_FACING_DESCRIPTION)] = True
+        max_inv_orientation_diff_deg: Annotated[
+            float,
+            Declared(_MAX_INV_ORIENTATION_DIFF_DEG_DESCRIPTION, unit="deg"),
+        ] = 80.0
+        min_run_frames: Annotated[
+            int, Declared(_MIN_RUN_FRAMES_DESCRIPTION, unit="frames")
+        ] = 250
+        frame_padding: Annotated[
+            int, Declared(_FRAME_PADDING_DESCRIPTION, unit="frames")
+        ] = 10
+        morphological_structure_size: Annotated[
+            int, Declared(_MORPHOLOGICAL_STRUCTURE_SIZE_DESCRIPTION, unit="frames")
+        ] = 25
+        px_scale: Annotated[float, Declared(_PX_SCALE_DESCRIPTION)] = 1.0
+        use_pixel_coords: Annotated[bool, Declared(_USE_PIXEL_COORDS_DESCRIPTION)] = (
+            True
+        )
+        pose_head_index: Annotated[
+            int | None, Declared(_POSE_HEAD_INDEX_DESCRIPTION)
+        ] = None
 
     def __init__(
         self,
