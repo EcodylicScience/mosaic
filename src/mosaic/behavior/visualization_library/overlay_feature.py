@@ -23,7 +23,7 @@ body centre, which is what the renderer underneath already does.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import pandas as pd
 from pydantic import Field
@@ -33,10 +33,10 @@ from mosaic.core.pipeline.types import (
     COLUMNS,
     EmitsLevel,
     Inputs,
-    Params,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Declared, Params
 
 from ..feature_library.registry import register_feature
 from .playback import play_video
@@ -46,6 +46,65 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.types.feature import DependencyLookup
 
 __all__ = ["Overlay"]
+
+_LABEL_KIND_DESCRIPTION = (
+    "Kind of converted labels to draw as ground truth. Unset, no ground truth is drawn."
+)
+
+_COLOR_BY_DESCRIPTION = (
+    "Name of an input feature to color the drawing by, matched without "
+    "regard to case. The reserved value gt colors by the ground-truth label."
+)
+
+_LABEL_MAPS_DESCRIPTION = (
+    "Names to render per feature, keyed by the label value written as text."
+)
+
+_HIDE_UNLABELED_DESCRIPTION = (
+    "Skip drawing individuals that lack a label after filtering and mapping."
+)
+
+_START_DESCRIPTION = "The first frame to draw."
+
+_END_DESCRIPTION = (
+    "The last frame to draw, inclusive. Unset, drawing continues to the end "
+    "of the video."
+)
+
+_DOWNSCALE_DESCRIPTION = (
+    "Downscale factor applied to the frame, where 1.0 is no scaling."
+)
+
+_SHOW_INDIVIDUAL_BBOXES_DESCRIPTION = (
+    "Draw a bounding box for each individual. Pose points and labels are "
+    "drawn regardless."
+)
+
+_PAIR_BOX_FEATURE_DESCRIPTION = (
+    "Name of the pair-label feature that determines when to draw a union "
+    "box around both individuals of a pair."
+)
+
+_PAIR_BOX_BEHAVIORS_DESCRIPTION = (
+    "Behavior values that trigger drawing a pair-level box."
+)
+
+_HIDE_INDIVIDUAL_BBOXES_FOR_PAIR_DESCRIPTION = (
+    "Skip drawing an individual's own bounding box when it is already "
+    "inside a drawn pair box."
+)
+
+_DRAW_OPTIONS_DESCRIPTION = (
+    "Per-frame drawing options. Recognized keys are show_labels, "
+    "point_radius, bbox_thickness and font_scale."
+)
+
+_CAMERA_DESCRIPTION = (
+    "Which camera of a synchronized recording to draw. Required when the "
+    "sequence spans more than one, because two views are not one "
+    "timeline. The media resolver refuses to pick between them rather "
+    "than concatenating them into a fabricated timeline."
+)
 
 
 @register_feature
@@ -90,28 +149,33 @@ class Overlay:
         silent overwrite of the first.
         """
 
-        label_kind: str | None = "behavior"
-        """Which converted-label kind to draw as ground truth, or ``None``."""
-        color_by: str | None = None
-        """Which input feature's labels colour the drawing, or ``"gt"``."""
-        label_maps: dict[str, dict[str, str]] = Field(default_factory=dict)
-        """Per feature, the names to render instead of numeric labels."""
-        hide_unlabeled: bool = False
-        start: int = 0
-        end: int | None = None
-        downscale: float = 1.0
-        show_individual_bboxes: bool = True
-        pair_box_feature: str | None = None
-        pair_box_behaviors: list[str] = Field(default_factory=list)
-        hide_individual_bboxes_for_pair: bool = False
-        draw_options: dict[str, Any] = Field(default_factory=dict)
-        camera: str | None = None
-        """Which camera of a synchronized recording to draw.
-
-        Required when the sequence spans more than one: two views are not one
-        timeline, and the media resolver refuses to pick rather than
-        concatenating them into a fabricated one.
-        """
+        label_kind: Annotated[str | None, Declared(_LABEL_KIND_DESCRIPTION)] = (
+            "behavior"
+        )
+        color_by: Annotated[str | None, Declared(_COLOR_BY_DESCRIPTION)] = None
+        label_maps: Annotated[
+            dict[str, dict[str, str]], Declared(_LABEL_MAPS_DESCRIPTION)
+        ] = Field(default_factory=dict)
+        hide_unlabeled: Annotated[bool, Declared(_HIDE_UNLABELED_DESCRIPTION)] = False
+        start: Annotated[int, Declared(_START_DESCRIPTION)] = 0
+        end: Annotated[int | None, Declared(_END_DESCRIPTION)] = None
+        downscale: Annotated[float, Declared(_DOWNSCALE_DESCRIPTION)] = 1.0
+        show_individual_bboxes: Annotated[
+            bool, Declared(_SHOW_INDIVIDUAL_BBOXES_DESCRIPTION)
+        ] = True
+        pair_box_feature: Annotated[
+            str | None, Declared(_PAIR_BOX_FEATURE_DESCRIPTION)
+        ] = None
+        pair_box_behaviors: Annotated[
+            list[str], Declared(_PAIR_BOX_BEHAVIORS_DESCRIPTION)
+        ] = Field(default_factory=list)
+        hide_individual_bboxes_for_pair: Annotated[
+            bool, Declared(_HIDE_INDIVIDUAL_BBOXES_FOR_PAIR_DESCRIPTION)
+        ] = False
+        draw_options: Annotated[dict[str, Any], Declared(_DRAW_OPTIONS_DESCRIPTION)] = (
+            Field(default_factory=dict)
+        )
+        camera: Annotated[str | None, Declared(_CAMERA_DESCRIPTION)] = None
 
     def __init__(
         self,

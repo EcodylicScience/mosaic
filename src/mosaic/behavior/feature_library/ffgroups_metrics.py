@@ -16,11 +16,11 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 
 from .helpers import apply_exclude_cols, ensure_columns
 from .registry import register_feature

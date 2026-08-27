@@ -16,7 +16,12 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.provenance import PROVENANCE_COLUMNS, reached_by
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream, Params
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    Inputs,
+    InputStream,
+)
+from mosaic.core.params import Params
 
 
 class _P(Params):

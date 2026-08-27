@@ -16,7 +16,10 @@ import pandas as pd
 from typing import Annotated
 
 from mosaic.core.helpers import build_compound_name
-from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+)
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -159,16 +162,15 @@ def calms21_to_trex_df(
     return pd.concat(rows, ignore_index=True)
 
 
+_DEBUG_DESCRIPTION = "Print the in-file (group, sequence) pairs."
+
+
 class Calms21Params(TrackConvertParams):
-    """Parameters for the CalMS21 converters.
+    """Parameters for the CalMS21 converters."""
 
-    Attributes:
-        debug: Print the in-file ``(group, sequence)`` pairs. Diagnostics only,
-            so excluded from identity -- it changes what is printed, never what
-            is written.
-    """
-
-    debug: Annotated[bool, HASH_EXCLUDE] = False
+    # Diagnostics only, so excluded from identity -- it changes what is
+    # printed, never what is written.
+    debug: Annotated[bool, HASH_EXCLUDE, Declared(_DEBUG_DESCRIPTION)] = False
 
 
 def calms21_entry_name(seq_id: str) -> str:

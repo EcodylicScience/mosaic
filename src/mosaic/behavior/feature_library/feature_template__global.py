@@ -24,7 +24,7 @@ See GlobalTSNE and GlobalWardClustering for real examples.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, final
+from typing import Annotated, ClassVar, final
 
 import joblib
 import numpy as np
@@ -36,13 +36,15 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     Result,
 )
+from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns, meta_columns
 
 # from .registry import register_feature  # <-- uncomment when ready
+
+_RANDOM_STATE_DESCRIPTION = "Random seed for the fit."
 
 
 @final
@@ -81,13 +83,9 @@ class MyGlobalFeature:
         _require: ClassVar[InputRequire] = "any"
 
     class Params(Params):
-        """Global feature template parameters.
+        """Global feature template parameters."""
 
-        Attributes:
-            random_state: Random seed. Default 42.
-        """
-
-        random_state: int = 42
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
 
     def __init__(
         self,

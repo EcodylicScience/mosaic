@@ -14,13 +14,15 @@ import pytest
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
-    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
+)
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
 )
 from tests.helpers import MockDataset
 

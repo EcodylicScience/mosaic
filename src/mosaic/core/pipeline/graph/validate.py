@@ -57,7 +57,8 @@ from .resolve import (
     resolve_step_spec,
 )
 from .topo import RecipeCycle, topological_order
-from mosaic.core.pipeline.types import ArtifactSpec, Params
+from mosaic.core.pipeline.types import ArtifactSpec
+from mosaic.core.params import Params
 
 if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog

@@ -143,7 +143,7 @@ Parameters are a Pydantic model subclassing `LabelConvertParams`. There is no
 ```python
 from typing import Annotated
 from mosaic.core.label_converter import LabelConvertParams
-from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.params import HASH_EXCLUDE
 
 
 class MyParams(LabelConvertParams):
@@ -491,7 +491,7 @@ change the labels is tagged `HASH_EXCLUDE`:
 
 ```python
 from typing import Annotated
-from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.params import HASH_EXCLUDE
 
 
 class MyParams(CustomLabelParams):

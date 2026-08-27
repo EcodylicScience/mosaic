@@ -25,9 +25,9 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputRequire,
     InputStream,
-    Params,
     TrackInput,
 )
+from mosaic.core.params import Params
 from tests.helpers.tracks import add_tracks_variant
 
 CONVERTED = "convert-demo.0.1-1111111111"

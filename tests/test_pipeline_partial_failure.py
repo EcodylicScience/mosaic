@@ -32,7 +32,12 @@ from mosaic.core.pipeline.graph import (
     execute_step,
     submit_request,
 )
-from mosaic.core.pipeline.types import Inputs, InputStream, Params, TrackInput
+from mosaic.core.pipeline.types import (
+    Inputs,
+    InputStream,
+    TrackInput,
+)
+from mosaic.core.params import Params
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import add_tracks_variant, make_dataset
 

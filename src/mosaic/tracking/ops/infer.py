@@ -47,7 +47,12 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams, Params
+from mosaic.core.pipeline.types import OpParams
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+    Params,
+)
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso

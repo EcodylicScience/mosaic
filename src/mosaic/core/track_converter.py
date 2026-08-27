@@ -40,7 +40,11 @@ import pandas as pd
 from typing_extensions import TypeVar
 
 from mosaic.core.helpers import validate_entry_name
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+    Params,
+)
 
 __all__ = [
     "TRACK_CONVERTERS",
@@ -51,6 +55,11 @@ __all__ = [
     "merge_on_column_union",
     "register_track_converter",
 ]
+
+_STRICT_SCHEMA_DESCRIPTION = (
+    "Raise when the converted table is missing a required column or prefix, "
+    "instead of printing a validation report."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +96,9 @@ class TrackConvertParams(Params):
     identity: flipping it must not mint a second variant of the same tracks.
     """
 
-    strict_schema: Annotated[bool, HASH_EXCLUDE] = False
+    strict_schema: Annotated[
+        bool, HASH_EXCLUDE, Declared(_STRICT_SCHEMA_DESCRIPTION)
+    ] = False
 
 
 P = TypeVar("P", bound=TrackConvertParams, default=TrackConvertParams)

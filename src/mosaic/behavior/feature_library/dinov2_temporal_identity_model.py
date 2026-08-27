@@ -42,7 +42,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
-from mosaic.core.pipeline.types.params import Params
+from mosaic.core.params import Params
 
 from .registry import register_feature
 

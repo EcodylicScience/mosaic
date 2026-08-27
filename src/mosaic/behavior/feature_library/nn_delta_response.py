@@ -15,11 +15,11 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 
 from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature

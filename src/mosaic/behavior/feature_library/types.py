@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.strict_model import StrictModel
 
 __all__ = [
     "InterpolationConfig",

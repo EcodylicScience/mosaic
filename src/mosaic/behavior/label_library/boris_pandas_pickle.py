@@ -42,16 +42,35 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 import pandas as pd
 
+from mosaic.behavior.label_library._boris_descriptions import (
+    BACKGROUND_LABEL_DESCRIPTION,
+    BEHAVIOR_COL_DESCRIPTION,
+    BEHAVIOR_TYPE_COL_DESCRIPTION,
+    CATEGORY_COL_DESCRIPTION,
+    FPS_COL_DESCRIPTION,
+    FPS_DESCRIPTION,
+    INCLUDE_POINT_EVENTS_DESCRIPTION,
+    MODIFIERS_COL_DESCRIPTION,
+    NO_FOCAL_SUBJECT_NAME_DESCRIPTION,
+    OBSERVATION_COL_DESCRIPTION,
+    PAIR_BEHAVIORS_DESCRIPTION,
+    START_COL_DESCRIPTION,
+    STOP_COL_DESCRIPTION,
+    SUBJECT_COL_DESCRIPTION,
+    SUBJECT_ID_MAP_DESCRIPTION,
+)
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.label_converter import (
     LabelConvertParams,
     LabelConverter,
     LabelEntry,
 )
+from mosaic.core.params import Declared
 
 
 class BorisPandasPickleParams(LabelConvertParams):
@@ -62,45 +81,39 @@ class BorisPandasPickleParams(LabelConvertParams):
     the background label, and the column names read from the export -- so they
     are all hashed. ``group_from`` and ``strict_schema`` (on the base) are entry
     policy and validation strictness and are excluded from identity.
-
-    Attributes:
-        fps: Frames per second. If ``None``, auto-detected from the FPS column
-            in the DataFrame.
-        subject_id_map: Mapping from BORIS subject names to numeric IDs, e.g.
-            ``{"bee_0": 0, "bee_1": 1}``. If ``None``, all labels are treated as
-            scene-level (``individual_ids=[-1, -1]``).
-        pair_behaviors: Behavior names that are symmetric pair interactions.
-            These create both ``[i, j]`` and ``[j, i]`` entries.
-        background_label: Label used when no behavior is active (label ID 0).
-        no_focal_subject_name: Name used for behaviors with "No focal subject".
-        include_point_events: Whether to include POINT events (instantaneous
-            behaviors).
-        observation_col: Column name for the observation identifier.
-        subject_col: Column name for the subject.
-        behavior_col: Column name for the behavior.
-        start_col: Column name for the start time.
-        stop_col: Column name for the stop time.
-        behavior_type_col: Column name for the behavior type (STATE/POINT).
-        fps_col: Column name for the FPS value.
-        category_col: Column name for the behavioral category.
-        modifiers_col: Column name for the modifiers.
     """
 
-    fps: float | None = None
-    subject_id_map: dict[str, int] | None = None
-    pair_behaviors: list[str] | None = None
-    background_label: str = "none"
-    no_focal_subject_name: str = "no_focal_subject"
-    include_point_events: bool = True
-    observation_col: str = "Observation id"
-    subject_col: str = "Subject"
-    behavior_col: str = "Behavior"
-    start_col: str = "Start (s)"
-    stop_col: str = "Stop (s)"
-    behavior_type_col: str = "Behavior type"
-    fps_col: str = "FPS"
-    category_col: str = "Behavioral category"
-    modifiers_col: str = "Modifiers (empty if none)"
+    fps: Annotated[float | None, Declared(FPS_DESCRIPTION)] = None
+    subject_id_map: Annotated[
+        dict[str, int] | None, Declared(SUBJECT_ID_MAP_DESCRIPTION)
+    ] = None
+    pair_behaviors: Annotated[
+        list[str] | None, Declared(PAIR_BEHAVIORS_DESCRIPTION)
+    ] = None
+    background_label: Annotated[str, Declared(BACKGROUND_LABEL_DESCRIPTION)] = "none"
+    no_focal_subject_name: Annotated[
+        str, Declared(NO_FOCAL_SUBJECT_NAME_DESCRIPTION)
+    ] = "no_focal_subject"
+    include_point_events: Annotated[
+        bool, Declared(INCLUDE_POINT_EVENTS_DESCRIPTION)
+    ] = True
+    observation_col: Annotated[str, Declared(OBSERVATION_COL_DESCRIPTION)] = (
+        "Observation id"
+    )
+    subject_col: Annotated[str, Declared(SUBJECT_COL_DESCRIPTION)] = "Subject"
+    behavior_col: Annotated[str, Declared(BEHAVIOR_COL_DESCRIPTION)] = "Behavior"
+    start_col: Annotated[str, Declared(START_COL_DESCRIPTION)] = "Start (s)"
+    stop_col: Annotated[str, Declared(STOP_COL_DESCRIPTION)] = "Stop (s)"
+    behavior_type_col: Annotated[str, Declared(BEHAVIOR_TYPE_COL_DESCRIPTION)] = (
+        "Behavior type"
+    )
+    fps_col: Annotated[str, Declared(FPS_COL_DESCRIPTION)] = "FPS"
+    category_col: Annotated[str, Declared(CATEGORY_COL_DESCRIPTION)] = (
+        "Behavioral category"
+    )
+    modifiers_col: Annotated[str, Declared(MODIFIERS_COL_DESCRIPTION)] = (
+        "Modifiers (empty if none)"
+    )
 
 
 class BorisPandasPickleConverter(LabelConverter[BorisPandasPickleParams]):

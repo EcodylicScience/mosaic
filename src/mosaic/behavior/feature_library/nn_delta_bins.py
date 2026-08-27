@@ -14,10 +14,10 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 from .helpers import apply_exclude_cols
 from .registry import register_feature

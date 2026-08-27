@@ -39,7 +39,10 @@ from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
+)
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError

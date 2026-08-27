@@ -55,9 +55,9 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
-| `model_path` | `string` | _required_ |  |  |
-| `litpose_overrides` | `object` \| `None` | `null` |  |  |
-| `precision` | `string` | `"fp32"` |  |  |
+| `model_path` | `string` | _required_ |  | A trained Lightning Pose model directory (config.yaml plus a checkpoint under tb_logs/). |
+| `litpose_overrides` | `object` \| `None` | `null` |  | Hydra config overrides applied at inference time. |
+| `precision` | `string` | `"fp32"` |  | The forward-pass precision: fp32, fp16, or bf16. |
 
 ??? note "`Entry`"
 
@@ -98,19 +98,19 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
-| `model_paths` | list of `string` | _required_ |  |  |
-| `tracking` | `boolean` | `true` |  |  |
-| `tracker` | `string` | `"flow"` |  |  |
-| `similarity` | `string` | `"instance"` |  |  |
-| `match` | `string` | `"hungarian"` |  |  |
-| `track_window` | `integer` | `5` |  |  |
-| `max_instances` | `integer` \| `None` | `null` |  |  |
-| `max_tracking` | `integer` \| `None` | `null` |  |  |
-| `peak_threshold` | `number` | `0.2` |  |  |
-| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
-| `sleap_extra_settings` | `object` \| `None` | `null` |  |  |
-| `batch_size` | `integer` | `4` |  |  |
-| `device` | `string` \| `None` | `null` |  |  |
+| `model_paths` | list of `string` | _required_ |  | One trained SLEAP model directory, or two for a top-down model (centroid, then centered-instance). |
+| `tracking` | `boolean` | `true` |  | Assign identities to detections across frames. When False, no tracker is attached. |
+| `tracker` | `string` | `"flow"` |  | The tracker algorithm. Known values are simple, flow, simplemaxtracks and flowmaxtracks. |
+| `similarity` | `string` | `"instance"` |  | The similarity metric for matching detections across frames, for example instance, centroid, or iou. |
+| `match` | `string` | `"hungarian"` |  | The assignment algorithm for matching detections across frames. Known values are hungarian and greedy. |
+| `track_window` | `integer` | `5` |  | The candidate window for track matching. [frames] |
+| `max_instances` | `integer` \| `None` | `null` |  | The maximum number of instances to detect per frame. |
+| `max_tracking` | `integer` \| `None` | `null` |  | The maximum number of tracks to maintain. Requires a tracker whose name ends in maxtracks. |
+| `peak_threshold` | `number` | `0.2` |  | The minimum confidence for a detected peak. |
+| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The first and last frame to analyze. Unset, SLEAP analyzes the whole video. |
+| `sleap_extra_settings` | `object` \| `None` | `null` |  | Additional sleap-track flags, sent as --key value pairs. A boolean value becomes a bare --key flag when true and is omitted when false, and a None value is skipped. |
+| `batch_size` | `integer` | `4` |  | The inference batch size. |
+| `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, or a GPU index. Unset, cuda and auto all leave the choice to SLEAP. |
 
 ??? note "`Entry`"
 
@@ -144,7 +144,7 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 | `track_max_speed` | `number` \| `None` | `null` |  | The maximum plausible speed. Its meaning depends on the cm_per_pixel the conversion applied. [cm/s] |
 | `track_max_reassign_time` | `number` \| `None` | `null` |  | How long to wait before giving up on a lost individual. Unset, TREx applies 0.5. [s] |
 | `track_trusted_probability` | `number` \| `None` | `null` |  | The probability below which the current tracklet ends and a new one starts. Unset, TREx applies 0.25. Lowering it produces longer tracklets held together by weaker evidence. |
-| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The frame range to analyze. -1 means the beginning or the end of the video. [frames] |
+| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The frame range to analyze. -1 means the beginning or the end of the video. |
 | `visual_identification_model_path` | `string` \| `None` | `null` |  | Pre-trained identity weights (.pth, without the extension), or the run id of the identity-training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
 | `auto_train` | `boolean` | `false` |  | Train visual identification automatically after tracking. |
 | `detect_keypoint_count` | `integer` \| `None` | `null` |  | How many keypoints detect_model reports. Set it whenever that model is a pose model, or the tracks come back without their keypoint columns. TREx derives the poseX<i> / poseY<i> names from a keypoint format it learns by loading the model, and mosaic converts and tracks as two invocations, so the exporting process has never loaded one. |

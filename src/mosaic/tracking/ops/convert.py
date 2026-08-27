@@ -24,7 +24,10 @@ from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
+)
 from mosaic.tracking.ops._common import (
     claim_run_root,
     ensure_models_root,

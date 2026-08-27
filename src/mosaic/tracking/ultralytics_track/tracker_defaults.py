@@ -38,7 +38,10 @@ from typing import Annotated, ClassVar, Final, Literal, TypeAlias
 from pydantic import ConfigDict, Field, ValidationError
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.types import Declared, Params
+from mosaic.core.params import (
+    Declared,
+    Params,
+)
 
 __all__ = [
     "CLOSED_KEYS",
@@ -311,7 +314,7 @@ class _BackendConfig(Params):
     have. No field is declared here: pydantic orders inherited fields ahead of a
     subclass's own, and ``tracker_type`` is first in every resolved table.
 
-    :class:`~mosaic.core.pipeline.types.Params` rather than ``StrictModel``,
+    :class:`~mosaic.core.params.Params` rather than ``StrictModel``,
     which would be enough for validation, because
     ``tests/test_params_declaration.py`` walks ``Params.__subclasses__()``: a
     setting declared without prose has to fail a test rather than depend on

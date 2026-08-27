@@ -12,9 +12,9 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
     InputStream,
-    Params,
     TrackInputs,
 )
+from mosaic.core.params import Params
 
 from ..registry import register_feature
 from .convert import _ensure_movement, from_movement_dataset, to_movement_dataset

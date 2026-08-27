@@ -27,11 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -198,16 +199,16 @@ def _individual_to_trex_df(
     return pd.DataFrame(data)
 
 
+_FPS_DESCRIPTION = (
+    "Frame rate used to derive time. Filled from the dataset's fps_default "
+    "when the caller does not set it."
+)
+
+
 class DlcParams(TrackConvertParams):
-    """Parameters for the DeepLabCut converter.
+    """Parameters for the DeepLabCut converter."""
 
-    Attributes:
-        fps: Frame rate used to derive ``time`` and velocities. Filled from the
-            dataset's ``fps_default`` when the caller does not set it, so the
-            value that reaches identity is the one that was used.
-    """
-
-    fps: float = 30.0
+    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
 @register_track_converter

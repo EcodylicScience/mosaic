@@ -34,10 +34,10 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
     InputStream,
-    Params,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 
 from .helpers import ensure_columns
 from .registry import register_feature

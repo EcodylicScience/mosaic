@@ -11,7 +11,7 @@ and keypoint coordinate transformation into crop space.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import cv2
 import numpy as np
@@ -25,11 +25,11 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     COLUMNS,
     Inputs,
-    Params,
     PoseConfig,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.feature import DependencyLookup
 from mosaic.user_paths import user_path
 
@@ -42,6 +42,114 @@ from .helpers import (
     safe_crop_with_padding,
 )
 
+_TARGET_ID_DESCRIPTION = (
+    "ID of the individual to center the crop on. Unset, the feature "
+    "processes every individual found in the tracks and writes a separate "
+    "output for each."
+)
+
+_CENTER_MODE_DESCRIPTION = (
+    "How to compute the crop center. Known values are default, xy and "
+    "pose0. default averages the pose points present on each row, and uses "
+    "the body center where the table has no pose columns. xy uses the body "
+    "center alone, even where pose points exist. pose0 uses the first pose "
+    "point, and an integer names a specific pose point index. Reading the "
+    "body center needs pixel coordinates. A run refuses an entry recorded "
+    "on the centimeter-era trex_v1 schema under xy, and under any mode "
+    "where the table has no pose columns. An unrecorded schema is read as "
+    "trex_v1."
+)
+
+_POSE_DESCRIPTION = "Pose keypoint column naming and selection."
+
+_CROP_SIZE_DESCRIPTION = "Width and height of the output crop."
+
+_ROTATE_TO_HEADING_DESCRIPTION = (
+    "Rotate the crop so the animal's heading aligns with the +x axis."
+)
+
+_HEADING_POINTS_DESCRIPTION = (
+    "Pose point indices used for heading, as (neck index, tail index). "
+    "The heading direction runs from the tail to the neck, the direction "
+    "the animal faces."
+)
+
+_MARGIN_FACTOR_DESCRIPTION = (
+    "Extra margin for the pre-rotation crop, as a multiple of the final crop size."
+)
+
+_CENTER_OFFSET_PX_DESCRIPTION = (
+    "Offset from the computed center along the heading direction, "
+    "positive toward the head. Useful for centering on a specific body "
+    "part instead of the detected center."
+)
+
+_BODY_MASK_DESCRIPTION = "Apply an elliptical mask isolating the focal individual."
+
+_BODY_MASK_LENGTH_PX_DESCRIPTION = (
+    "Full length of the body mask ellipse along its major axis."
+)
+
+_BODY_MASK_WIDTH_PX_DESCRIPTION = (
+    "Full length of the body mask ellipse along its minor axis."
+)
+
+_USE_CLAHE_DESCRIPTION = (
+    "Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the crop."
+)
+
+_CLAHE_CLIP_LIMIT_DESCRIPTION = "Clip limit for CLAHE contrast enhancement."
+
+_CLAHE_TILE_GRID_SIZE_DESCRIPTION = (
+    "CLAHE tile grid size, applied to both width and height."
+)
+
+_GRAYSCALE_DESCRIPTION = "Convert the crop to single-channel grayscale."
+
+_TRANSFORM_KEYPOINTS_DESCRIPTION = (
+    "Transform pose keypoints into crop coordinates and include them in "
+    "the output as poseX<i>_crop and poseY<i>_crop."
+)
+
+_OUTPUT_MODE_DESCRIPTION = (
+    "Output format. Known values are video, frames and both. video writes "
+    "a single video file per individual, frames writes individual frame "
+    "images, and both writes both."
+)
+
+_OUTPUT_FPS_DESCRIPTION = (
+    "Output video frame rate. Unset, uses the source video frame rate."
+)
+
+_OUTPUT_ROOT_DESCRIPTION = (
+    "Directory the crops are written to, under a <group>__<sequence> "
+    "subdirectory. Unset, the crops go to the run root, or to "
+    "media/egocentric_crops/ when the feature runs outside run_feature."
+)
+
+_FRAME_FORMAT_DESCRIPTION = (
+    "Image file format for frame outputs. Known values are png and jpg."
+)
+
+_INTERPOLATION_DESCRIPTION = (
+    "OpenCV interpolation flag used when rotating the crop. Known values "
+    "are cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, "
+    "cv2.INTER_AREA and cv2.INTER_LANCZOS4."
+)
+
+_BACKGROUND_COLOR_DESCRIPTION = (
+    "Fill value for pixels with no source content, for example 0 for black "
+    "or 255 for white. It pads where the crop window extends past the "
+    "frame, fills the border rotation introduces, and fills the whole crop "
+    "where the center is not finite."
+)
+
+_ANGLE_COL_DESCRIPTION = (
+    "Name of a track column recording a pre-computed heading angle, in "
+    "degrees or radians (auto-detected). Unset, heading is derived from "
+    "heading_points."
+)
+
 
 @register_feature
 class EgocentricCrop:
@@ -52,70 +160,8 @@ class EgocentricCrop:
     optionally rotating to align the animal's heading with the +x axis.
     Can output as video file or individual frame images.
 
-    Parameters
-    ----------
-    target_id : Any, optional
-        ID of the individual to center on. If None, processes ALL individuals
-        found in the tracks data, creating separate outputs for each.
-    center_mode : str or int
-        How to compute the center point:
-        - "default": mean of the pose points *present on each row*
-          (poseX0..N/poseY0..N, pixel coords), falling back to the X/Y body
-          centre only where the table carries no pose columns at all. The
-          averaged subset varies with which keypoints were detected, so a table
-          with patchy pose yields a centre that shifts between rows.
-        - "xy": the X/Y body centre, always. Unlike "default", pose points are
-          never read *for the centre* even where they exist (heading still uses
-          ``heading_points``), and the pixel-units refusal applies
-          unconditionally -- a table recording the centimetre-era ``trex_v1``
-          schema, or recording no schema at all, is rejected rather than
-          cropped at the wrong coordinates.
-        - "pose0" or 0: use poseX0/poseY0 (typically head/nose)
-        - int: use specific pose point index
-    crop_size : tuple of (int, int)
-        Output crop dimensions as (width, height) in pixels
-    rotate_to_heading : bool
-        If True, rotate crop so animal's heading aligns with +x axis
-    heading_points : tuple of (int, int)
-        (neck_idx, tail_idx) pose point indices for heading computation.
-        Heading points FROM tail TO neck (direction animal is facing).
-    margin_factor : float
-        Extra margin for rotation (1.5 = 50% larger pre-crop before rotation)
-    center_offset_px : float
-        Pixel offset along heading direction from computed center (default 0).
-        Positive shifts forward (toward head). Useful for centering on
-        specific body parts, e.g. 35 for body center in bees.
-    body_mask : bool
-        If True, apply elliptical body mask to isolate the focal individual.
-    body_mask_length_px : int
-        Length (semi-major axis) of the body mask ellipse in pixels.
-    body_mask_width_px : int
-        Width (semi-minor axis) of the body mask ellipse in pixels.
-    use_clahe : bool
-        If True, apply CLAHE (Contrast Limited Adaptive Histogram
-        Equalization) to improve contrast in crops.
-    clahe_clip_limit : float
-        CLAHE clip limit parameter.
-    clahe_tile_grid_size : int
-        CLAHE tile grid size (both dimensions).
-    grayscale : bool
-        If True, convert output to single-channel grayscale.
-    transform_keypoints : bool
-        If True, transform pose keypoint coordinates into crop space and
-        include them in the metadata output as poseX<i>_crop, poseY<i>_crop.
-    output_mode : str
-        Output format:
-        - "video": single video file per individual
-        - "frames": individual frame images per individual
-        - "both": video + frames
-    output_fps : float, optional
-        Output video FPS. If None, uses source video FPS.
-    output_root : str, optional
-        Override output directory. If None, outputs to media/egocentric_crops/.
-    frame_format : str
-        Format for frame images ("png" or "jpg")
-    background_color : int
-        Padding color for out-of-bounds regions (0=black, 255=white)
+    Field documentation is on
+    :class:`~mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop.Params`.
 
     Examples
     --------
@@ -148,35 +194,73 @@ class EgocentricCrop:
         pass
 
     class Params(Params):
-        target_id: int | None = None
-        center_mode: str | int = "default"
-        pose: PoseConfig = Field(default_factory=PoseConfig)
-        crop_size: tuple[int, int] = (256, 256)
-        rotate_to_heading: bool = True
-        heading_points: tuple[int, int] = (3, 6)
-        margin_factor: float = 1.5
+        target_id: Annotated[int | None, Declared(_TARGET_ID_DESCRIPTION)] = None
+        center_mode: Annotated[
+            str | int,
+            Field(examples=["default", "xy", "pose0"]),
+            Declared(_CENTER_MODE_DESCRIPTION),
+        ] = "default"
+        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+            default_factory=PoseConfig
+        )
+        crop_size: Annotated[
+            tuple[int, int], Declared(_CROP_SIZE_DESCRIPTION, unit="px")
+        ] = (256, 256)
+        rotate_to_heading: Annotated[bool, Declared(_ROTATE_TO_HEADING_DESCRIPTION)] = (
+            True
+        )
+        heading_points: Annotated[
+            tuple[int, int], Declared(_HEADING_POINTS_DESCRIPTION)
+        ] = (3, 6)
+        margin_factor: Annotated[float, Declared(_MARGIN_FACTOR_DESCRIPTION)] = 1.5
         # Center offset along heading direction (pixels)
-        center_offset_px: float = 0.0
+        center_offset_px: Annotated[
+            float, Declared(_CENTER_OFFSET_PX_DESCRIPTION, unit="px")
+        ] = 0.0
         # Body masking
-        body_mask: bool = False
-        body_mask_length_px: int = 96
-        body_mask_width_px: int = 64
+        body_mask: Annotated[bool, Declared(_BODY_MASK_DESCRIPTION)] = False
+        body_mask_length_px: Annotated[
+            int, Declared(_BODY_MASK_LENGTH_PX_DESCRIPTION, unit="px")
+        ] = 96
+        body_mask_width_px: Annotated[
+            int, Declared(_BODY_MASK_WIDTH_PX_DESCRIPTION, unit="px")
+        ] = 64
         # CLAHE contrast enhancement
-        use_clahe: bool = False
-        clahe_clip_limit: float = 2.0
-        clahe_tile_grid_size: int = 25
+        use_clahe: Annotated[bool, Declared(_USE_CLAHE_DESCRIPTION)] = False
+        clahe_clip_limit: Annotated[float, Declared(_CLAHE_CLIP_LIMIT_DESCRIPTION)] = (
+            2.0
+        )
+        clahe_tile_grid_size: Annotated[
+            int, Declared(_CLAHE_TILE_GRID_SIZE_DESCRIPTION)
+        ] = 25
         # Grayscale output
-        grayscale: bool = False
+        grayscale: Annotated[bool, Declared(_GRAYSCALE_DESCRIPTION)] = False
         # Keypoint transformation
-        transform_keypoints: bool = False
+        transform_keypoints: Annotated[
+            bool, Declared(_TRANSFORM_KEYPOINTS_DESCRIPTION)
+        ] = False
         # Output settings
-        output_mode: str = "video"
-        output_fps: float | None = None
-        output_root: str | None = None
-        frame_format: str = "png"
-        interpolation: int = 1  # cv2.INTER_LINEAR
-        background_color: int = 0
-        angle_col: str | None = None
+        output_mode: Annotated[
+            str,
+            Field(examples=["video", "frames", "both"]),
+            Declared(_OUTPUT_MODE_DESCRIPTION),
+        ] = "video"
+        output_fps: Annotated[
+            float | None, Declared(_OUTPUT_FPS_DESCRIPTION, unit="fps")
+        ] = None
+        output_root: Annotated[str | None, Declared(_OUTPUT_ROOT_DESCRIPTION)] = None
+        frame_format: Annotated[
+            str,
+            Field(examples=["png", "jpg"]),
+            Declared(_FRAME_FORMAT_DESCRIPTION),
+        ] = "png"
+        interpolation: Annotated[
+            int,
+            Field(examples=[0, 1, 2, 3, 4]),
+            Declared(_INTERPOLATION_DESCRIPTION),
+        ] = 1  # cv2.INTER_LINEAR
+        background_color: Annotated[int, Declared(_BACKGROUND_COLOR_DESCRIPTION)] = 0
+        angle_col: Annotated[str | None, Declared(_ANGLE_COL_DESCRIPTION)] = None
 
     def __init__(
         self,

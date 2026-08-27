@@ -29,7 +29,13 @@ from mosaic.core.pipeline.run_log import (
     run_log_dir,
     run_log_path,
 )
-from mosaic.core.pipeline.types import Inputs, InputStream, Params, Result, TrackInput
+from mosaic.core.pipeline.types import (
+    Inputs,
+    InputStream,
+    Result,
+    TrackInput,
+)
+from mosaic.core.params import Params
 from tests.helpers import MockDataset
 
 

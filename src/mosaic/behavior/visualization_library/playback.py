@@ -13,7 +13,7 @@ from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
-from .helpers import require_pixel_positions
+from .helpers import remap_label_value, require_pixel_positions
 from .overlay import prepare_overlay, _remap_overlay_labels
 from .video_stream import render_stream
 from .visual_spec import apply_visualization_spec, playback_kwargs_from_spec
@@ -43,7 +43,7 @@ def build_overlay(
         for feat, mapping in label_maps.items():
             per_id = labels.get("per_id", {}).get(feat, {})
             for key, series in list(per_id.items()):
-                per_id[key] = series.map(mapping).fillna(series)
+                per_id[key] = series.map(lambda v: remap_label_value(v, mapping))
 
     gt_df = None
     if label_kind:
@@ -122,7 +122,8 @@ def play_video(
     downscale : float
         Downscale factor (1.0 = no scaling).
     draw_options : dict, optional
-        Optional frame-drawing options. Allowed keys: "show_labels", "point_radius", "bbox_thickness".
+        Optional frame-drawing options. Allowed keys: "show_labels",
+        "point_radius", "bbox_thickness", "font_scale".
         You can also store defaults in overlay_data["draw_options"].
     show_individual_bboxes : bool
         If False, skip drawing per-id bounding boxes while keeping pose points/labels.

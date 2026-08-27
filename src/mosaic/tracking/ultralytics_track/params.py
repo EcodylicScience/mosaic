@@ -2,7 +2,7 @@
 
 One statement per field serves validation, run identity, invocation and
 discovery. ``Field`` states the constraint pydantic enforces and
-:class:`~mosaic.core.pipeline.types.Declared` states the prose a client draws a
+:class:`~mosaic.core.params.Declared` states the prose a client draws a
 control from. Ultralytics tracks a video in one pass, in an environment of its
 own, so no field names a phase.
 
@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Probability
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+    Probability,
+)
 from mosaic.tracking.common.params import TrackerOpParams
 from mosaic.tracking.ultralytics_track.run import ModelTask
 from mosaic.tracking.ultralytics_track.tracker_defaults import (

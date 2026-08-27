@@ -5,7 +5,7 @@ from typing import Generic, Self, override
 from pydantic import Field
 from typing_extensions import TypeVar
 
-from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.strict_model import StrictModel
 
 F = TypeVar("F", bound=str, default=str)
 

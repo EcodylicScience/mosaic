@@ -22,7 +22,8 @@ from mosaic.core.pipeline.fit_scope import (
 )
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.types import Inputs, Params
+from mosaic.core.pipeline.types import Inputs
+from mosaic.core.params import Params
 
 
 class _P(Params):

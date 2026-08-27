@@ -31,10 +31,10 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 from tests.helpers import (
     add_media_sequence,

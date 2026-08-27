@@ -16,7 +16,8 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.drift import classify_identity
 from mosaic.core.pipeline.media_index import MediaIndexScope
-from mosaic.core.pipeline.types import Inputs, Params
+from mosaic.core.pipeline.types import Inputs
+from mosaic.core.params import Params
 from tests.helpers import make_dataset
 
 

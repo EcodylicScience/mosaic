@@ -16,7 +16,11 @@ from typing import Annotated
 from pydantic import BaseModel
 
 from mosaic.core.pipeline.markers import Phase
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
+from mosaic.core.pipeline.types import OpParams
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+)
 
 __all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
 

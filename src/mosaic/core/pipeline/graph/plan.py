@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline.types import Params
+    from mosaic.core.params import Params
 
     from ..inventory.model import DatasetInventory
     from .compatibility import DeclarationCatalog

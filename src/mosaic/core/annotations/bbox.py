@@ -19,7 +19,7 @@ from typing import Literal
 import numpy as np
 from pydantic import Field
 
-from mosaic.core.pipeline.types import Params
+from mosaic.core.params import Params
 
 __all__ = [
     "BBoxMethod",

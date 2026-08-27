@@ -22,11 +22,11 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     LabeledTemplatesRef,
-    Params,
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
 )
+from mosaic.core.params import Params
 
 from .helpers import feature_columns
 from .registry import register_feature

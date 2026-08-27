@@ -16,10 +16,10 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
-    Params,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 
 from .registry import register_feature
 

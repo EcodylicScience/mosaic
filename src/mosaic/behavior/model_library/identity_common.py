@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from mosaic.core.pipeline.types import InputStream
-    from mosaic.core.pipeline.types.params import Params
+    from mosaic.core.params import Params
 
 
 def build_label_mapping(

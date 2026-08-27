@@ -12,10 +12,10 @@ from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
     InputStream,
-    Params,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 from mosaic.core.pipeline.loading import pose_column_pairs
 
 from .registry import register_feature

@@ -23,9 +23,9 @@ from mosaic.core.pipeline.types import (
     BodyScaleResult,
     DependencyLookup,
     InputStream,
-    Params,
     TrackInputs,
 )
+from mosaic.core.params import Params
 
 from .helpers import (
     ensure_columns,
