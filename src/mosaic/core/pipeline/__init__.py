@@ -29,7 +29,6 @@ from .types import (
     Feature,
     Inputs,
     InputsLike,
-    Params,
     Result,
 )
 from .viz import show_pipeline_diagram, show_pipeline_tree
@@ -49,7 +48,6 @@ __all__ = [
     "InputsLike",
     "Manifest",
     "ManifestEntry",
-    "Params",
     "Pipeline",
     "Result",
     "build_manifest",

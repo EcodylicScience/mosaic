@@ -31,55 +31,55 @@ by `mosaic convert-tracks`.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `debug` | `boolean` | `false` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `debug` | `boolean` | `false` |  | Print the in-file (group, sequence) pairs. |
 
 #### `calms21_npy`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `debug` | `boolean` | `false` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `debug` | `boolean` | `false` |  | Print the in-file (group, sequence) pairs. |
 
 #### `deeplabcut`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `fps` | `number` | `30.0` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the dataset's fps_default when the caller does not set it. |
 
 #### `sleap_analysis_h5`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `fps` | `number` | `30.0` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the source video's measured fps by the tracker bridge. |
 
 #### `trex_npz`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 
 #### `trex_npz_cm`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 
 #### `trex_npz_scaled`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `cm_per_pixel` | `number` | _required_ | > `0.0` |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `cm_per_pixel` | `number` | _required_ | > `0.0` | The scale factor TRex applied when it exported this file, supplied because the export does not record it. [cm/px] |
 
 #### `ultralytics_tracks`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |  |
-| `fps` | `number` | `30.0` |  |  |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the source video's measured fps by the tracker bridge. |
 
 ## Track schemas
 

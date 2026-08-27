@@ -251,6 +251,25 @@ def _lookup_label_series(per_id_map: dict, id_val: Any) -> Optional[pd.Series]:
     return None
 
 
+def remap_label_value(value: Any, mapping: Dict[Any, Any]) -> Any:
+    """Look a label value up in a rename map, by the value and by its text.
+
+    A map declared on ``Params`` is JSON-native and so keyed by strings, while a
+    label read out of a parquet column is whatever that column holds -- an int
+    under ``label_id``, ``prediction``, ``cluster`` and ``state``. Matching both
+    spellings lets one map serve a params run and a direct call. A value that
+    matches neither is returned unchanged.
+    """
+    try:
+        if value in mapping:
+            return mapping[value]
+    except TypeError:
+        # An unhashable label (the list a pair feature collects) keys nothing.
+        return value
+    text = str(value)
+    return mapping[text] if text in mapping else value
+
+
 def _scalar_from_series(value: Any) -> Any:
     """Extract scalar from pd.Series or return as-is."""
     if isinstance(value, pd.Series):

@@ -83,7 +83,7 @@ from mosaic.core.pipeline.tracks_identity import (
     tracks_run_id,
     tracker_variant_payload,
 )
-from mosaic.core.pipeline.types import Params
+from mosaic.core.params import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION

@@ -20,9 +20,9 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     NNResult,
-    Params,
     Result,
 )
+from mosaic.core.params import Params
 
 from .helpers import feature_columns, meta_columns
 from .registry import register_feature

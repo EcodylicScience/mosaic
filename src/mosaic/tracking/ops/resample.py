@@ -43,10 +43,10 @@ from mosaic.core.pipeline.tracks_index import (
     select_variant_rows,
     write_tracks_row,
 )
-from mosaic.core.pipeline.types import (
+from mosaic.core.pipeline.types import OpParams
+from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
-    OpParams,
     Params,
 )
 

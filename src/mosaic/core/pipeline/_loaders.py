@@ -6,18 +6,14 @@ No internal pipeline imports -- both types.py and loading.py import from here.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Literal
 
 import joblib
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-
-class StrictModel(BaseModel):
-    """BaseModel with extra="forbid" to reject unknown fields."""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+from mosaic.core.strict_model import StrictModel
 
 
 class NpzLoadSpec(StrictModel):

@@ -30,7 +30,11 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
+from mosaic.core.pipeline.types import OpParams
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+)
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi

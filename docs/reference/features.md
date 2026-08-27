@@ -1376,29 +1376,29 @@ Generate egocentric (animal-centered) video crops.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `target_id` | `integer` \| `None` | `null` |  |  |
-| `center_mode` | `string` \| `integer` | `"default"` |  |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `crop_size` | tuple of (`integer`, `integer`) | `[256, 256]` | min items `2`, max items `2` |  |
-| `rotate_to_heading` | `boolean` | `true` |  |  |
-| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |  |
-| `margin_factor` | `number` | `1.5` |  |  |
-| `center_offset_px` | `number` | `0.0` |  |  |
-| `body_mask` | `boolean` | `false` |  |  |
-| `body_mask_length_px` | `integer` | `96` |  |  |
-| `body_mask_width_px` | `integer` | `64` |  |  |
-| `use_clahe` | `boolean` | `false` |  |  |
-| `clahe_clip_limit` | `number` | `2.0` |  |  |
-| `clahe_tile_grid_size` | `integer` | `25` |  |  |
-| `grayscale` | `boolean` | `false` |  |  |
-| `transform_keypoints` | `boolean` | `false` |  |  |
-| `output_mode` | `string` | `"video"` |  |  |
-| `output_fps` | `number` \| `None` | `null` |  |  |
-| `output_root` | `string` \| `None` | `null` |  |  |
-| `frame_format` | `string` | `"png"` |  |  |
-| `interpolation` | `integer` | `1` |  |  |
-| `background_color` | `integer` | `0` |  |  |
-| `angle_col` | `string` \| `None` | `null` |  |  |
+| `target_id` | `integer` \| `None` | `null` |  | ID of the individual to center the crop on. Unset, the feature processes every individual found in the tracks and writes a separate output for each. |
+| `center_mode` | `string` \| `integer` | `"default"` |  | How to compute the crop center. Known values are default, xy and pose0. default averages the pose points present on each row, and uses the body center where the table has no pose columns. xy uses the body center alone, even where pose points exist. pose0 uses the first pose point, and an integer names a specific pose point index. Reading the body center needs pixel coordinates. A run refuses an entry recorded on the centimeter-era trex_v1 schema under xy, and under any mode where the table has no pose columns. An unrecorded schema is read as trex_v1. |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint column naming and selection. |
+| `crop_size` | tuple of (`integer`, `integer`) | `[256, 256]` | min items `2`, max items `2` | Width and height of the output crop. [px] |
+| `rotate_to_heading` | `boolean` | `true` |  | Rotate the crop so the animal's heading aligns with the +x axis. |
+| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` | Pose point indices used for heading, as (neck index, tail index). The heading direction runs from the tail to the neck, the direction the animal faces. |
+| `margin_factor` | `number` | `1.5` |  | Extra margin for the pre-rotation crop, as a multiple of the final crop size. |
+| `center_offset_px` | `number` | `0.0` |  | Offset from the computed center along the heading direction, positive toward the head. Useful for centering on a specific body part instead of the detected center. [px] |
+| `body_mask` | `boolean` | `false` |  | Apply an elliptical mask isolating the focal individual. |
+| `body_mask_length_px` | `integer` | `96` |  | Full length of the body mask ellipse along its major axis. [px] |
+| `body_mask_width_px` | `integer` | `64` |  | Full length of the body mask ellipse along its minor axis. [px] |
+| `use_clahe` | `boolean` | `false` |  | Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the crop. |
+| `clahe_clip_limit` | `number` | `2.0` |  | Clip limit for CLAHE contrast enhancement. |
+| `clahe_tile_grid_size` | `integer` | `25` |  | CLAHE tile grid size, applied to both width and height. |
+| `grayscale` | `boolean` | `false` |  | Convert the crop to single-channel grayscale. |
+| `transform_keypoints` | `boolean` | `false` |  | Transform pose keypoints into crop coordinates and include them in the output as poseX<i>_crop and poseY<i>_crop. |
+| `output_mode` | `string` | `"video"` |  | Output format. Known values are video, frames and both. video writes a single video file per individual, frames writes individual frame images, and both writes both. |
+| `output_fps` | `number` \| `None` | `null` |  | Output video frame rate. Unset, uses the source video frame rate. [fps] |
+| `output_root` | `string` \| `None` | `null` |  | Directory the crops are written to, under a <group>__<sequence> subdirectory. Unset, the crops go to the run root, or to media/egocentric_crops/ when the feature runs outside run_feature. |
+| `frame_format` | `string` | `"png"` |  | Image file format for frame outputs. Known values are png and jpg. |
+| `interpolation` | `integer` | `1` |  | OpenCV interpolation flag used when rotating the crop. Known values are cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA and cv2.INTER_LANCZOS4. |
+| `background_color` | `integer` | `0` |  | Fill value for pixels with no source content, for example 0 for black or 255 for white. It pads where the crop window extends past the frame, fills the border rotation introduces, and fills the whole crop where the center is not finite. |
+| `angle_col` | `string` \| `None` | `null` |  | Name of a track column recording a pre-computed heading angle, in degrees or radians (auto-detected). Unset, heading is derived from heading_points. |
 
 ??? note "`PoseConfig`"
 
@@ -1419,26 +1419,26 @@ Generate egocentric crop videos for detected interaction segments.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `crop_size` | tuple of (`integer`, `integer`) | `[192, 192]` | min items `2`, max items `2` |  |
-| `pose` | `PoseConfig` | _constructed_ |  |  |
-| `center_mode` | `string` \| `integer` | `"default"` |  |  |
-| `center_offset_px` | `number` | `0.0` |  |  |
-| `rotate_to_heading` | `boolean` | `true` |  |  |
-| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |  |
-| `margin_factor` | `number` | `1.5` |  |  |
-| `angle_col` | `string` \| `None` | `null` |  |  |
-| `interpolation` | `integer` | `1` |  |  |
-| `background_color` | `integer` | `0` |  |  |
-| `body_mask` | `boolean` | `false` |  |  |
-| `body_mask_length_px` | `integer` | `96` |  |  |
-| `body_mask_width_px` | `integer` | `64` |  |  |
-| `use_clahe` | `boolean` | `false` |  |  |
-| `clahe_clip_limit` | `number` | `2.0` |  |  |
-| `clahe_tile_grid_size` | `integer` | `25` |  |  |
-| `grayscale` | `boolean` | `false` |  |  |
-| `crop_both_individuals` | `boolean` | `true` |  |  |
-| `output_fps` | `number` \| `None` | `null` |  |  |
-| `output_root` | `string` \| `None` | `null` |  |  |
+| `crop_size` | tuple of (`integer`, `integer`) | `[192, 192]` | min items `2`, max items `2` | Width and height of the output crop. [px] |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint column naming and selection. |
+| `center_mode` | `string` \| `integer` | `"default"` |  | How to compute the crop center. Known values are default, xy and pose0. default averages the pose points present on each row, and uses the body center where the table has no pose columns. xy uses the body center alone, even where pose points exist. pose0 uses the first pose point, and an integer names a specific pose point index. Reading the body center needs pixel coordinates. A run refuses an entry recorded on the centimeter-era trex_v1 schema under xy, and under any mode where the table has no pose columns. An unrecorded schema is read as trex_v1. |
+| `center_offset_px` | `number` | `0.0` |  | Offset from the computed center along the heading direction, positive toward the head. Useful for centering on a specific body part instead of the detected center. [px] |
+| `rotate_to_heading` | `boolean` | `true` |  | Rotate the crop so the animal's heading aligns with the +x axis. |
+| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` | Pose point indices used for heading, as (neck index, tail index). The heading direction runs from the tail to the neck, the direction the animal faces. |
+| `margin_factor` | `number` | `1.5` |  | Extra margin for the pre-rotation crop, as a multiple of the final crop size. |
+| `angle_col` | `string` \| `None` | `null` |  | Name of a track column recording a pre-computed heading angle, in degrees or radians (auto-detected). Unset, heading is derived from heading_points. |
+| `interpolation` | `integer` | `1` |  | OpenCV interpolation flag used when rotating the crop. Known values are cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA and cv2.INTER_LANCZOS4. |
+| `background_color` | `integer` | `0` |  | Fill value for pixels with no source content, for example 0 for black or 255 for white. It pads where the crop window extends past the frame, fills the border rotation introduces, and fills the whole crop where the center is not finite. |
+| `body_mask` | `boolean` | `false` |  | Apply an elliptical mask isolating the focal individual. |
+| `body_mask_length_px` | `integer` | `96` |  | Full length of the body mask ellipse along its major axis. [px] |
+| `body_mask_width_px` | `integer` | `64` |  | Full length of the body mask ellipse along its minor axis. [px] |
+| `use_clahe` | `boolean` | `false` |  | Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the crop. |
+| `clahe_clip_limit` | `number` | `2.0` |  | Clip limit for CLAHE contrast enhancement. |
+| `clahe_tile_grid_size` | `integer` | `25` |  | CLAHE tile grid size, applied to both width and height. |
+| `grayscale` | `boolean` | `false` |  | Convert the crop to single-channel grayscale. |
+| `crop_both_individuals` | `boolean` | `true` |  | Crop both individuals of each pair. False keeps only the first perspective, halving the output. |
+| `output_fps` | `number` \| `None` | `null` |  | Output video frame rate. Unset, uses the source video frame rate. [fps] |
+| `output_root` | `string` \| `None` | `null` |  | Directory the crops are written to. Unset, the crops go to the run root, or to media/interaction_crops/ when the feature runs outside run_feature. |
 
 ??? note "`PoseConfig`"
 
@@ -1459,19 +1459,19 @@ Render one annotated video per sequence, from tracks and drawn labels.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `label_kind` | `string` \| `None` | `"behavior"` |  |  |
-| `color_by` | `string` \| `None` | `null` |  |  |
-| `label_maps` | `object` | _constructed_ |  |  |
-| `hide_unlabeled` | `boolean` | `false` |  |  |
-| `start` | `integer` | `0` |  |  |
-| `end` | `integer` \| `None` | `null` |  |  |
-| `downscale` | `number` | `1.0` |  |  |
-| `show_individual_bboxes` | `boolean` | `true` |  |  |
-| `pair_box_feature` | `string` \| `None` | `null` |  |  |
-| `pair_box_behaviors` | list of `string` | _constructed_ |  |  |
-| `hide_individual_bboxes_for_pair` | `boolean` | `false` |  |  |
-| `draw_options` | `object` | _constructed_ |  |  |
-| `camera` | `string` \| `None` | `null` |  |  |
+| `label_kind` | `string` \| `None` | `"behavior"` |  | Kind of converted labels to draw as ground truth. Unset, no ground truth is drawn. |
+| `color_by` | `string` \| `None` | `null` |  | Name of an input feature to color the drawing by, matched without regard to case. The reserved value gt colors by the ground-truth label. |
+| `label_maps` | `object` | _constructed_ |  | Names to render per feature, keyed by the label value written as text. |
+| `hide_unlabeled` | `boolean` | `false` |  | Skip drawing individuals that lack a label after filtering and mapping. |
+| `start` | `integer` | `0` |  | The first frame to draw. |
+| `end` | `integer` \| `None` | `null` |  | The last frame to draw, inclusive. Unset, drawing continues to the end of the video. |
+| `downscale` | `number` | `1.0` |  | Downscale factor applied to the frame, where 1.0 is no scaling. |
+| `show_individual_bboxes` | `boolean` | `true` |  | Draw a bounding box for each individual. Pose points and labels are drawn regardless. |
+| `pair_box_feature` | `string` \| `None` | `null` |  | Name of the pair-label feature that determines when to draw a union box around both individuals of a pair. |
+| `pair_box_behaviors` | list of `string` | _constructed_ |  | Behavior values that trigger drawing a pair-level box. |
+| `hide_individual_bboxes_for_pair` | `boolean` | `false` |  | Skip drawing an individual's own bounding box when it is already inside a drawn pair box. |
+| `draw_options` | `object` | _constructed_ |  | Per-frame drawing options. Recognized keys are show_labels, point_radius, bbox_thickness and font_scale. |
+| `camera` | `string` \| `None` | `null` |  | Which camera of a synchronized recording to draw. Required when the sequence spans more than one, because two views are not one timeline. The media resolver refuses to pick between them rather than concatenating them into a fabricated timeline. |
 
 ## Tag
 

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import model_validator
 
-from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
     import pandas as pd

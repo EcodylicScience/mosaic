@@ -39,26 +39,29 @@ from typing import Annotated
 
 import pandas as pd
 
-from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+)
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
     TrackConvertParams,
 )
 
+_FPS_DESCRIPTION = "Frame rate used to derive time."
+
+_DEBUG_DESCRIPTION = "Print what was found."
+
 
 class MyFormatParams(TrackConvertParams):
-    """Everything that determines this converter's output.
+    """Everything that determines this converter's output."""
 
-    Attributes:
-        fps: Frame rate used to derive ``time``. Determines the output, so it
-            is part of the recipe.
-        debug: Print what was found. Diagnostics only, so it is excluded from
-            identity -- flipping it must not mint a second variant.
-    """
-
-    fps: float = 30.0
-    debug: Annotated[bool, HASH_EXCLUDE] = False
+    # Determines the output, so it is part of the recipe.
+    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
+    # Diagnostics only, so it is excluded from identity -- flipping it must
+    # not mint a second variant.
+    debug: Annotated[bool, HASH_EXCLUDE, Declared(_DEBUG_DESCRIPTION)] = False
 
 
 # Decorate with ``@register_track_converter`` (imported from

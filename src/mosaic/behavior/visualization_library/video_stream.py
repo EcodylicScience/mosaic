@@ -158,7 +158,8 @@ def render_stream(
     hide_individual_bboxes_for_pair : bool
         If True, do not draw per-id boxes for ids participating in selected pair boxes.
     draw_options : dict, optional
-        Optional frame-drawing options. Allowed keys: "show_labels", "point_radius", "bbox_thickness".
+        Optional frame-drawing options. Allowed keys: "show_labels",
+        "point_radius", "bbox_thickness", "font_scale".
 
     Returns
     -------

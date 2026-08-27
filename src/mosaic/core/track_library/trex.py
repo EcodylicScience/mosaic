@@ -44,10 +44,12 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import re
+from typing import Annotated
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.params import Declared
 from mosaic.core.track_library.helpers import column_array, column_names
 from mosaic.core.track_converter import (
     EntryHints,
@@ -617,6 +619,12 @@ class TrexNpzCmConverter(TrexNpzConverter):
         return df
 
 
+_CM_PER_PIXEL_DESCRIPTION = (
+    "The scale factor TRex applied when it exported this file, supplied "
+    "because the export does not record it."
+)
+
+
 class TrexScaledNpzParams(TrackConvertParams):
     """The factor a pre-2025 export did not record.
 
@@ -631,7 +639,9 @@ class TrexScaledNpzParams(TrackConvertParams):
     reported as one skipped sequence per entry.
     """
 
-    cm_per_pixel: float = Field(gt=0.0)
+    cm_per_pixel: Annotated[
+        float, Field(gt=0.0), Declared(_CM_PER_PIXEL_DESCRIPTION, unit="cm/px")
+    ]
 
 
 @register_track_converter

@@ -39,18 +39,20 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
     DependencyLookup,
-    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     Result,
 )
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
+)
+from mosaic.core.strict_model import StrictModel
 
 from mosaic.core.pipeline.progress import CSVProgressCallback
 

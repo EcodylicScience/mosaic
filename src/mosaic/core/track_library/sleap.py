@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import h5py
 import numpy as np
 import pandas as pd
 
+from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -194,16 +196,16 @@ def _track_to_trex_df(
     return pd.DataFrame(data)
 
 
+_FPS_DESCRIPTION = (
+    "Frame rate used to derive time. Filled from the source video's measured "
+    "fps by the tracker bridge."
+)
+
+
 class SleapConvertParams(TrackConvertParams):
-    """Parameters for the SLEAP analysis-HDF5 converter.
+    """Parameters for the SLEAP analysis-HDF5 converter."""
 
-    Attributes:
-        fps: Frame rate used to derive ``time`` and velocities. Filled from the
-            source video's measured fps by the tracker bridge, so the value that
-            reaches identity is the one that was used.
-    """
-
-    fps: float = 30.0
+    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
 @register_track_converter

@@ -13,10 +13,10 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 
 class _TrackOnlyFeature:

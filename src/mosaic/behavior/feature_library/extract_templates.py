@@ -19,12 +19,12 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     NNResult,
-    Params,
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
     TemplatesRef,
 )
+from mosaic.core.params import Params
 
 from .helpers import ensure_columns, feature_columns
 from .registry import register_feature

@@ -24,6 +24,7 @@ from .helpers import (
     _format_label_text,
     _lookup_label_series,
     _scalar_from_series,
+    remap_label_value,
 )
 
 
@@ -936,5 +937,5 @@ def _remap_overlay_labels(overlay: dict, label_maps: Dict[str, dict]) -> None:
         for _id, info in ids_map.items():
             labels_map = info.get("labels") or {}
             for feat, mapping in label_maps.items():
-                if feat in labels_map and labels_map[feat] in mapping:
-                    labels_map[feat] = mapping[labels_map[feat]]
+                if feat in labels_map:
+                    labels_map[feat] = remap_label_value(labels_map[feat], mapping)

@@ -7,7 +7,7 @@ from typing import Literal, Protocol, final
 import pandas as pd
 
 from mosaic.core.pipeline.types.inputs import InputsLike
-from mosaic.core.pipeline.types.params import Params
+from mosaic.core.params import Params
 
 DependencyLookup = dict[tuple[str, str], Path]
 

@@ -33,7 +33,8 @@ if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
     from mosaic.core.pipeline.ops import Op
-    from mosaic.core.pipeline.types import Feature, Params
+    from mosaic.core.pipeline.types import Feature
+    from mosaic.core.params import Params
 
 from ..types.feature import EmitsLevel
 from .compatibility import (

@@ -49,7 +49,18 @@ from mosaic.core.label_converter import (
     LabelConverter,
     LabelEntry,
 )
-from mosaic.core.pipeline.types import HASH_EXCLUDE
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    NEEDS_DESCRIPTION,
+    Declared,
+)
+
+_FPS_DESCRIPTION = (
+    "Frame rate used to convert annotation times to frame indices, unless a "
+    "sequence supplies its own."
+)
+
+_BACKGROUND_LABEL_DESCRIPTION = "The label assigned when no behavior is annotated."
 
 
 class CustomLabelParams(LabelConvertParams):
@@ -63,15 +74,15 @@ class CustomLabelParams(LabelConvertParams):
     """
 
     # Parameters that change the labels -- hashed.
-    fps: float = 30.0
-    background_label: str = "none"
+    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
+    background_label: Annotated[str, Declared(_BACKGROUND_LABEL_DESCRIPTION)] = "none"
 
     # Add your own hashed parameters here (they change the labels):
     # time_offset: float = 0.0
     # animal_id: str = "unknown"
 
-    # A knob that does not change the labels stays out of the identity.
-    verbose: Annotated[bool, HASH_EXCLUDE] = False
+    # A knob that does not change the labels -- excluded from the identity.
+    verbose: Annotated[bool, HASH_EXCLUDE, Declared(NEEDS_DESCRIPTION)] = False
 
 
 class CustomLabelConverter(LabelConverter[CustomLabelParams]):
@@ -378,6 +389,14 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
 # ============================================================
 
 
+_TIME_OFFSET_DESCRIPTION = "Added to all timestamps."
+
+_ANIMAL_ID_DESCRIPTION = (
+    "The animal ID injected into the sequence name and its metadata, since it "
+    "is not present in the BORIS file."
+)
+
+
 class ModifiedBorisParams(CustomLabelParams):
     """Parameters for :class:`ModifiedBorisConverter`.
 
@@ -385,8 +404,8 @@ class ModifiedBorisParams(CustomLabelParams):
     labels, so both are part of the variant identity.
     """
 
-    time_offset: float = 0.0  # Added to all timestamps (seconds).
-    animal_id: str = "unknown"  # Injected animal ID (not in the BORIS file).
+    time_offset: Annotated[float, Declared(_TIME_OFFSET_DESCRIPTION, unit="s")] = 0.0
+    animal_id: Annotated[str, Declared(_ANIMAL_ID_DESCRIPTION)] = "unknown"
 
 
 class ModifiedBorisConverter(CustomLabelConverter):

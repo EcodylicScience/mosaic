@@ -2,7 +2,7 @@
 
 One statement per field serves validation, run identity, subprocess invocation
 and discovery. ``Field`` states the constraint pydantic enforces,
-:class:`~mosaic.core.pipeline.types.Declared` states the prose a client draws a
+:class:`~mosaic.core.params.Declared` states the prose a client draws a
 control from, and :class:`~mosaic.core.pipeline.markers.Phase` names which of
 TREx's two subprocess phases consumes the field.
 
@@ -19,7 +19,11 @@ from typing import Annotated
 from pydantic import Field
 
 from mosaic.core.pipeline.markers import Phase
-from mosaic.core.pipeline.types import Declared, JsonValue, Probability
+from mosaic.core.pipeline.types import JsonValue
+from mosaic.core.params import (
+    Declared,
+    Probability,
+)
 from mosaic.tracking.common.params import PhasedTrackerOpParams
 
 __all__ = ["TrexParams"]
@@ -192,7 +196,7 @@ class TrexParams(PhasedTrackerOpParams):
     ] = None
     analysis_range: Annotated[
         tuple[int, int] | None,
-        Declared(_ANALYSIS_RANGE_DESCRIPTION, unit="frames"),
+        Declared(_ANALYSIS_RANGE_DESCRIPTION),
         Phase("track"),
     ] = None
     visual_identification_model_path: Annotated[

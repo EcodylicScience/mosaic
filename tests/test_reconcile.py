@@ -43,9 +43,9 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
-    Params,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 from tests.helpers import add_tracks_variant
 

@@ -30,14 +30,16 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.types import (
     EmitsLevel,
-    HASH_EXCLUDE,
     DependencyLookup,
     InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
-    Params,
     PoseConfig,
     TrackInputs,
+)
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
 )
 
 from .registry import register_feature

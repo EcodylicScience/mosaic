@@ -61,7 +61,11 @@ from mosaic.core.pipeline.transcode import (
     set_back_link,
     set_forward_link,
 )
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+    Params,
+)
 from mosaic.media_probe_config import media_thresholds
 
 if TYPE_CHECKING:

@@ -25,14 +25,16 @@ from sklearn.decomposition import PCA
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
-    HASH_EXCLUDE,
     InputRequire,
     Inputs,
     InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
-    Params,
     Result,
+)
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
 )
 
 from .arhmm_model import ARHMM, fit_numba, predict_numba

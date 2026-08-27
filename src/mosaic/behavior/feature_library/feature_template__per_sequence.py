@@ -21,7 +21,7 @@ See SpeedAngvel for a real per-sequence feature.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -30,14 +30,16 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     EmitsLevel,
     InputStream,
-    Params,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns, meta_columns
 
 # from .registry import register_feature  # <-- uncomment when ready
+
+_WINDOW_SIZE_DESCRIPTION = "Length of the sliding window."
 
 
 @final
@@ -77,13 +79,11 @@ class MyPerSequenceFeature:
         pass
 
     class Params(Params):
-        """Per-sequence feature template parameters.
+        """Per-sequence feature template parameters."""
 
-        Attributes:
-            window_size: Sliding window size. Default 15.
-        """
-
-        window_size: int = 15
+        window_size: Annotated[
+            int, Declared(_WINDOW_SIZE_DESCRIPTION, unit="frames")
+        ] = 15
 
     def __init__(
         self,

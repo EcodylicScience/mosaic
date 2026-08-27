@@ -34,9 +34,9 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
-    Params,
     Result,
 )
+from mosaic.core.params import Params
 
 from .helpers import ensure_columns
 from .registry import register_feature

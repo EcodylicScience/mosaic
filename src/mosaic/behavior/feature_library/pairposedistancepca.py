@@ -19,11 +19,11 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
-    Params,
     PoseConfig,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.params import Params
 
 from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature

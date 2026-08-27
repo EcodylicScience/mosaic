@@ -49,7 +49,10 @@ from mosaic.core.pipeline.markers import (
     read_phase_marker,
     write_inflight,
 )
-from mosaic.core.pipeline.types import Declared, Params
+from mosaic.core.params import (
+    Declared,
+    Params,
+)
 from mosaic.tracking.common.params import (
     PhasedTrackerOpParams,
     refuse_unphased_fields,

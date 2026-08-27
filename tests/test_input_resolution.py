@@ -36,12 +36,12 @@ from mosaic.core.pipeline.types import (
     Inputs,
     InputStream,
     NNResult,
-    Params,
     ParquetArtifact,
     ParquetLoadSpec,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 UPSTREAM_DIR = "resolution-upstream__from__tracks"
 UPSTREAM_ENTRY = "seq_a"

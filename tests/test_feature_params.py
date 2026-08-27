@@ -14,13 +14,15 @@ from pydantic import Field, ValidationError
 from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
 from mosaic.core.pipeline.types import (
     COLUMNS,
-    HASH_EXCLUDE,
     Inputs,
-    Params,
     Result,
     TemplatesRef,
     TrackInput,
     resolve_order_col,
+)
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
 )
 
 # --- COLUMNS global ---

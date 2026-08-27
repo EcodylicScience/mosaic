@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 
@@ -12,6 +13,7 @@ from mosaic.core.label_converter import (
     LabelConverter,
     LabelEntry,
 )
+from mosaic.core.params import Declared
 from mosaic.core.track_library.calms21 import calms21_entry_name
 
 # The CalMS21 behavior vocabulary. Lived in ``dataset.py`` and was imported back
@@ -33,16 +35,24 @@ def _load_calms21(path: Path):
     return load_calms21(path)
 
 
+_RESIDENT_ID_DESCRIPTION = (
+    "The individual ID assigned to the resident in each directed pair interaction."
+)
+
+_INTRUDER_ID_DESCRIPTION = (
+    "The individual ID assigned to the intruder in each directed pair interaction."
+)
+
+
 class CalMS21BehaviorParams(LabelConvertParams):
     """Parameters for the CalMS21 behavior converter.
 
-    ``resident_id`` / ``intruder_id`` are the individual IDs the directed pair
-    interaction is written between; they change the labels, so they are hashed.
-    ``group_from`` (on the base) is entry policy and is not.
+    Both fields change the labels, so both are hashed. ``group_from`` (on the
+    base) is entry policy and is not.
     """
 
-    resident_id: int = 0
-    intruder_id: int = 1
+    resident_id: Annotated[int, Declared(_RESIDENT_ID_DESCRIPTION)] = 0
+    intruder_id: Annotated[int, Declared(_INTRUDER_ID_DESCRIPTION)] = 1
 
 
 class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):

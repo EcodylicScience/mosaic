@@ -5,7 +5,11 @@ from typing import Generic, Literal
 from pydantic import Field
 from typing_extensions import TypeVar
 
-from mosaic.core.pipeline._loaders import LoadSpec, NpzLoadSpec, StrictModel
+from mosaic.core.pipeline._loaders import (
+    LoadSpec,
+    NpzLoadSpec,
+)
+from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline.types.results import ResultColumn
 
 K = TypeVar("K", bound=str, default=str)

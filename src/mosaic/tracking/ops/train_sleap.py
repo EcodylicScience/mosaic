@@ -21,7 +21,11 @@ from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, JsonValue, Params
+from mosaic.core.pipeline.types import JsonValue
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Params,
+)
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import (
     claim_run_root,

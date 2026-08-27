@@ -33,9 +33,15 @@ from importlib import import_module
 from pathlib import Path
 from typing import Annotated, ClassVar, Generic
 
+from pydantic import Field
 from typing_extensions import TypeVar
 
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    NEEDS_DESCRIPTION,
+    Declared,
+    Params,
+)
 
 __all__ = [
     "LABEL_CONVERTERS",
@@ -48,6 +54,13 @@ __all__ = [
     "registered_label_formats",
     "validate_label_format",
 ]
+
+_GROUP_FROM_DESCRIPTION = (
+    "Which group name a converter assigns to the output. infile assigns the "
+    "group recorded inside the source file, filename assigns the raw "
+    "file-level hint from the labels index, and both behaves the same as "
+    "filename in every converter that reads it."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +94,13 @@ class LabelConvertParams(Params):
     flipping either must not mint a second variant of the same labels.
     """
 
-    strict_schema: Annotated[bool, HASH_EXCLUDE] = False
-    group_from: Annotated[str, HASH_EXCLUDE] = "filename"
+    strict_schema: Annotated[bool, HASH_EXCLUDE, Declared(NEEDS_DESCRIPTION)] = False
+    group_from: Annotated[
+        str,
+        Field(examples=["infile", "filename", "both"]),
+        HASH_EXCLUDE,
+        Declared(_GROUP_FROM_DESCRIPTION),
+    ] = "filename"
 
 
 P = TypeVar("P", bound=LabelConvertParams, default=LabelConvertParams)

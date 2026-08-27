@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
-from mosaic.core.pipeline.types import Params
+from mosaic.core.params import Params
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

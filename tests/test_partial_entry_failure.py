@@ -29,7 +29,12 @@ import pytest
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
-from mosaic.core.pipeline.types import Inputs, InputStream, Params, TrackInput
+from mosaic.core.pipeline.types import (
+    Inputs,
+    InputStream,
+    TrackInput,
+)
+from mosaic.core.params import Params
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import MockDataset
 

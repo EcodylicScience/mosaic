@@ -27,6 +27,7 @@ from mosaic.core.helpers import (
     make_entry_key,
     resolve_frame_range,
 )
+from mosaic.core.params import Params
 
 from ._utils import (
     FeatureMeta,
@@ -80,7 +81,6 @@ from .types import (
     Inputs,
     LabelsSource,
     NNResult,
-    Params,
     Result,
     ResultColumn,
     TrackInput,

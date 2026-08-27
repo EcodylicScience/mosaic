@@ -32,8 +32,14 @@ from mosaic.behavior.visualization_library.helpers import (
     LABEL_PALETTE,
     color_for_id,
     color_for_label,
+    remap_label_value,
 )
-from mosaic.behavior.visualization_library.overlay import draw_frame, prepare_overlay
+from mosaic.behavior.visualization_library.overlay import (
+    _remap_overlay_labels,
+    draw_frame,
+    prepare_overlay,
+)
+from mosaic.behavior.visualization_library.overlay_feature import Overlay
 from mosaic.behavior.visualization_library.playback import play_video
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import open_frame_reader
@@ -404,3 +410,66 @@ def test_a_changed_drawing_is_a_different_artifact(
     )
 
     assert boxless.run_id != plain.run_id
+
+
+# =============================================================================
+# Renaming labels
+# =============================================================================
+
+
+def _labelled_overlay(label_value: object) -> dict:
+    """An overlay holding one label under the feature name ``behavior``."""
+    return {"per_frame": {0: {"ids": {1: {"labels": {"behavior": label_value}}}}}}
+
+
+def _renamed(overlay: dict) -> object:
+    return overlay["per_frame"][0]["ids"][1]["labels"]["behavior"]
+
+
+def test_a_string_keyed_map_renames_a_numeric_label() -> None:
+    """The shape ``Params`` can express has to reach a numeric label.
+
+    ``Overlay.Params.label_maps`` is ``dict[str, dict[str, str]]`` because a
+    params model round-trips through JSON, where an object key is a string. The
+    label it renames comes from whichever column ``_pick_label_column`` picks,
+    and ``label_id``, ``prediction``, ``cluster`` and ``state`` all hold
+    integers. Comparing the two directly matched nothing, so a declared map
+    renamed nothing and raised nothing.
+    """
+    params = Overlay.Params(label_maps={"behavior": {"0": "attack", "1": "rest"}})
+    overlay = _labelled_overlay(0)
+    _remap_overlay_labels(overlay, dict(params.label_maps))
+    assert _renamed(overlay) == "attack"
+
+
+def test_an_integer_keyed_map_still_renames() -> None:
+    """``play_video`` takes ``dict[Any, Any]`` and its callers pass integers."""
+    overlay = _labelled_overlay(0)
+    _remap_overlay_labels(overlay, {"behavior": {0: "attack"}})
+    assert _renamed(overlay) == "attack"
+
+
+def test_a_label_matching_no_key_is_left_alone() -> None:
+    overlay = _labelled_overlay(7)
+    _remap_overlay_labels(overlay, {"behavior": {"0": "attack"}})
+    assert _renamed(overlay) == 7
+
+
+def test_the_lookup_renames_a_numeric_label_series() -> None:
+    """The rule ``build_overlay`` applies to a loaded label series.
+
+    That stage renamed with ``series.map(mapping).fillna(series)``, which
+    restored every value the string keys failed to match. A declared map left
+    the series exactly as it found it and reported nothing.
+    """
+    series = pd.Series([0, 1, 7], index=[0, 1, 2])
+    mapping = {"0": "attack", "1": "rest"}
+    renamed = series.map(lambda v: remap_label_value(v, mapping))
+    assert list(renamed) == ["attack", "rest", 7]
+
+
+def test_an_unhashable_label_is_left_alone() -> None:
+    """A pair feature collects several labels for one id, and a list keys nothing."""
+    overlay = _labelled_overlay(["attack", "rest"])
+    _remap_overlay_labels(overlay, {"behavior": {"0": "x"}})
+    assert _renamed(overlay) == ["attack", "rest"]

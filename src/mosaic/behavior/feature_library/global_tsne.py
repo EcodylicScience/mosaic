@@ -16,7 +16,7 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
-from mosaic.core.pipeline._loaders import StrictModel
+from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,

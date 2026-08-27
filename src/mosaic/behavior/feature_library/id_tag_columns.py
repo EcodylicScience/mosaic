@@ -15,9 +15,9 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
     LabelsSource,
-    Params,
     TrackInputs,
 )
+from mosaic.core.params import Params
 
 from .registry import register_feature
 

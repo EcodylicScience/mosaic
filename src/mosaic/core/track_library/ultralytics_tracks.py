@@ -21,11 +21,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Annotated, Final
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConvertParams,
@@ -171,16 +172,16 @@ def _track_to_trex_df(
     return pd.DataFrame(data)
 
 
+_FPS_DESCRIPTION = (
+    "Frame rate used to derive time. Filled from the source video's measured "
+    "fps by the tracker bridge."
+)
+
+
 class UltralyticsTracksParams(TrackConvertParams):
-    """Parameters for the Ultralytics tracker-output converter.
+    """Parameters for the Ultralytics tracker-output converter."""
 
-    Attributes:
-        fps: Frame rate used to derive ``time`` and velocities. Filled from the
-            source video's measured fps by the tracker bridge, so the value that
-            reaches identity is the one that was used.
-    """
-
-    fps: float = 30.0
+    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
 @register_track_converter

@@ -73,7 +73,11 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    Declared,
+    Params,
+)
 from mosaic.media_probe_config import media_thresholds
 from pydantic import Field, model_validator
 

@@ -46,10 +46,10 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
-    Params,
     Result,
     TrackInput,
 )
+from mosaic.core.params import Params
 
 from .registry import register_feature
 
