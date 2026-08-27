@@ -12,6 +12,11 @@ through a ``JobContext``).
 integration, which both this op and ``run_litpose`` read, so the adapter and the
 tool cannot drift into naming one run two ways.
 
+Registering this op loads the whole ``mosaic.tracking.litpose`` package, because
+the params model and the run function both live in it. Deferring either import
+would not change that: the package ``__init__`` imports ``dataset_runs`` and
+``run`` at module top, so any path into it loads the same modules.
+
 ``resource_class = "gpu"`` because Lightning Pose video inference requires a CUDA
 GPU -- its ``category`` of ``"convert"`` would not imply that, so it declares the
 class explicitly and the execution router sends it to the GPU lane / k8s.
@@ -22,8 +27,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.tracking.litpose.dataset_runs import litpose_settings, run_litpose
 from mosaic.tracking.litpose.params import LitposeParams
-from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
+from mosaic.tracking.litpose.version import (
+    LITPOSE_KIND,
+    LITPOSE_VERSION,
+    TRAIN_LITPOSE_KIND,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -49,8 +59,6 @@ class LitposeOp(Op[LitposeParams]):
     def plan_identity(self, ds: Dataset, params: LitposeParams) -> OpIdentity:
         """What a Lightning Pose run with these settings will be called."""
         from mosaic.tracking.common.mint import planned_model_id, tracker_identity
-        from mosaic.tracking.litpose.dataset_runs import litpose_settings
-        from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
         settings = litpose_settings(
             params,
@@ -61,9 +69,6 @@ class LitposeOp(Op[LitposeParams]):
         return tracker_identity(self.kind, self.version, settings)
 
     def run(self, ds: Dataset, params: LitposeParams, ctx: JobContext) -> str:
-        # Heavy Lightning Pose imports (subprocess) stay inside run() so registration is light.
-        from mosaic.tracking.litpose.dataset_runs import run_litpose
-
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_LITPOSE_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.

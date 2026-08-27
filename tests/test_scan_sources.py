@@ -270,7 +270,7 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
         """
         dataset = make_dataset(tmp_path)
 
-        claim = dataset._walked_claim(  # pyright: ignore[reportPrivateUsage]
+        claim = dataset.walked_claim(
             [
                 {"abs_path": str(tmp_path / "nul\x00name.mp4")},
                 {"abs_path": str(tmp_path / "plain.mp4")},
@@ -302,9 +302,7 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
         (directory / "a.mp4").symlink_to(directory / "b.mp4")
         (directory / "b.mp4").symlink_to(directory / "a.mp4")
 
-        claim = dataset._walked_claim(  # pyright: ignore[reportPrivateUsage]
-            [{"abs_path": str(directory / "a.mp4")}]
-        )
+        claim = dataset.walked_claim([{"abs_path": str(directory / "a.mp4")}])
 
         assert not claim.claims((directory / "a.mp4").absolute())
 

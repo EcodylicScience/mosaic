@@ -12,6 +12,11 @@ settings dict* for the ``run_id`` (the op only re-routes the same call through a
 integration, which both this op and ``run_sleap`` read, so the adapter and the
 tool cannot drift into naming one run two ways.
 
+Registering this op loads the whole ``mosaic.tracking.sleap`` package, because the
+params model and the run function both live in it. Deferring either import would
+not change that: the package ``__init__`` imports ``dataset_runs`` and ``run`` at
+module top, so any path into it loads the same modules.
+
 ``resource_class = "gpu"`` because SLEAP inference wants the GPU -- its ``category``
 of ``"convert"`` would not imply that, so it declares the class explicitly and the
 execution router sends it to the GPU lane / k8s.
@@ -22,8 +27,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.tracking.sleap.dataset_runs import run_sleap, sleap_settings
 from mosaic.tracking.sleap.params import SleapParams
-from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
+from mosaic.tracking.sleap.version import (
+    SLEAP_KIND,
+    SLEAP_VERSION,
+    TRAIN_SLEAP_KIND,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -55,8 +65,6 @@ class SleapOp(Op[SleapParams]):
         ``train-sleap`` as SLEAP's own artifact shape for exactly this.
         """
         from mosaic.tracking.common.mint import planned_model_id, tracker_identity
-        from mosaic.tracking.sleap.dataset_runs import sleap_settings
-        from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
 
         settings = sleap_settings(
             params,
@@ -67,9 +75,6 @@ class SleapOp(Op[SleapParams]):
         return tracker_identity(self.kind, self.version, settings)
 
     def run(self, ds: Dataset, params: SleapParams, ctx: JobContext) -> str:
-        # Heavy SLEAP imports (subprocess/h5py) stay inside run() so registration is light.
-        from mosaic.tracking.sleap.dataset_runs import run_sleap
-
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_SLEAP_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.

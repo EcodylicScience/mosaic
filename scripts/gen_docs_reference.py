@@ -47,7 +47,13 @@ import sys
 from collections.abc import Callable, Mapping
 from inspect import cleandoc
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    # Under `from __future__ import annotations` this is never evaluated at
+    # runtime, which keeps the script's import as light as the deferred
+    # registry imports below make it.
+    from mosaic.core.json_value import JsonValue
 
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parent.parent
 REFERENCE_ROOT: Final = REPOSITORY_ROOT / "docs" / "reference"
@@ -137,7 +143,7 @@ def model_name(raw: str) -> str:
     return raw.rstrip("_")
 
 
-def type_text(spec: Mapping[str, Any]) -> str:
+def type_text(spec: Mapping[str, JsonValue]) -> str:
     """One JSON-Schema property reduced to a readable type expression.
 
     `anyOf` is what pydantic emits for `X | None`, which most optional fields
@@ -180,13 +186,13 @@ def type_text(spec: Mapping[str, Any]) -> str:
     return "any"
 
 
-def constraints_text(spec: Mapping[str, Any]) -> str:
+def constraints_text(spec: Mapping[str, JsonValue]) -> str:
     return ", ".join(
         f"{label} `{spec[key]}`" for key, label in CONSTRAINT_LABELS if key in spec
     )
 
 
-def description_text(spec: Mapping[str, Any]) -> str:
+def description_text(spec: Mapping[str, JsonValue]) -> str:
     """A field's declared prose, its unit, and why nothing reads it.
 
     Every key comes from `Declared`, which is mosaic's own text rather than
@@ -211,7 +217,7 @@ def description_text(spec: Mapping[str, Any]) -> str:
     return f"{text} {note}" if text else note
 
 
-def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:
+def params_table(schema: Mapping[str, JsonValue], depth: int = 0) -> list[str]:
     """The properties table, plus one collapsed table per nested model.
 
     Most feature params carry `$defs`. Inlining them would put dozens of rows
@@ -226,13 +232,15 @@ def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:
         # serializable default, so presence-of-default reports it as required
         # and would tell a reader to pass something the model constructs itself.
         required_names = schema.get("required")
-        required = set(required_names) if isinstance(required_names, list) else set()
+        required: set[JsonValue] = (
+            set(required_names) if isinstance(required_names, list) else set()
+        )
         lines += [
             "| Parameter | Type | Default | Constraints | Description |",
             "| --- | --- | --- | --- | --- |",
         ]
         for name, raw in properties.items():
-            spec: Mapping[str, Any] = raw if isinstance(raw, dict) else {}
+            spec: Mapping[str, JsonValue] = raw if isinstance(raw, dict) else {}
             if name in required:
                 default = "_required_"
             elif "default" in spec:

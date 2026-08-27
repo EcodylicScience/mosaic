@@ -2810,11 +2810,11 @@ class Dataset:
         touched = {
             (str(row.get("group", "")), str(row.get("sequence", ""))) for row in dedup
         }
-        # What the walk found, added to where it looked. See _walked_claim: a
+        # What the walk found, added to where it looked. See walked_claim: a
         # symlinked source stores each row under the target path, which the
         # directory claim does not cover, so without this the scan preserves its
         # own rows and appends a duplicate set on every pass.
-        claim = claim | self._walked_claim(dedup)
+        claim = claim | self.walked_claim(dedup)
         with index_lock(out_csv):
             committed = _read_media_index(out_csv)
             prior_order = build_prior_order(committed)
@@ -4113,7 +4113,7 @@ class Dataset:
             return False
         return claim.claims(self.resolve_path(abs_cell).resolve())
 
-    def _walked_claim(self, rows: Iterable[Mapping[str, object]]) -> ScanClaim:
+    def walked_claim(self, rows: Iterable[Mapping[str, object]]) -> ScanClaim:
         """The claim over the files a scan actually walked, by stored path.
 
         A source's declared claim covers *where it looked*; this covers *what it
@@ -5185,7 +5185,7 @@ class Dataset:
         # The same widening the media scan applies, for the same reason: a
         # symlinked raw file records its target, which the directory claim does
         # not cover, and the scan would preserve the row it had just written.
-        claim = claim | self._walked_claim(rows)
+        claim = claim | self.walked_claim(rows)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         with index_lock(out_csv):
             committed = _read_tracks_raw_index(out_csv)

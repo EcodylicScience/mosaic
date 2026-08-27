@@ -321,9 +321,7 @@ class GlobalTSNE:
     class Params(GlobalModelParams[TSNEModelArtifact]):
         """Global t-SNE parameters."""
 
-        model: Annotated[TSNEModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = (
-            Field(default_factory=TSNEModelArtifact)
-        )
+        model: Annotated[TSNEModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = None
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
         perplexity: Annotated[int, Declared(_PERPLEXITY_DESCRIPTION)] = Field(
             default=50, ge=1

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.json_value import JsonValue
 from mosaic.tracking.common import toolenv
 from mosaic.tracking.common.toolenv import ToolEnv, display_overlay
 
@@ -438,8 +439,11 @@ def _track_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **fields: objec
         seen["args"] = list(args)
         return "", ""
 
+    def fake_invocation(*args: object, **kwargs: object) -> list[str]:
+        return ["trex"]
+
     monkeypatch.setattr(trex_run, "_run_trex", fake_run_trex)
-    monkeypatch.setattr(trex_run, "_trex_invocation", lambda *_, **__: ["trex"])
+    monkeypatch.setattr(trex_run, "_trex_invocation", fake_invocation)
     pv = tmp_path / "conversion.pv"
     _ = pv.write_bytes(b"pv")
     _ = trex_run.run_trex_track(
@@ -508,7 +512,7 @@ def test_an_explicit_output_fields_wins(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The composed value is a default, not a decision taken away from the caller."""
-    mine = [["frame", []], ["poseX0", []]]
+    mine: list[JsonValue] = [["frame", []], ["poseX0", []]]
     fields = _output_fields(
         _track_argv(
             monkeypatch,

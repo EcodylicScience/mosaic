@@ -925,7 +925,7 @@ def draw_frame(
     return canvas
 
 
-def _remap_overlay_labels(overlay: dict, label_maps: Dict[str, dict]) -> None:
+def remap_overlay_labels(overlay: dict, label_maps: Dict[str, dict]) -> None:
     """In-place remap of labels in an already-built overlay."""
     if not overlay:
         return

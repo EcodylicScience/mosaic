@@ -48,7 +48,7 @@ from .failures import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ..inventory.model import Entry
+    from mosaic.core.entry import Entry
 
 __all__ = [
     "FileFailureStore",

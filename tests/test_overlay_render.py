@@ -20,7 +20,7 @@ point of them, and both raise before a frame is ever read.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -32,10 +32,10 @@ from mosaic.behavior.visualization_library.helpers import (
     LABEL_PALETTE,
     color_for_id,
     color_for_label,
-    remap_label_value,
+    label_renamer,
 )
 from mosaic.behavior.visualization_library.overlay import (
-    _remap_overlay_labels,
+    remap_overlay_labels,
     draw_frame,
     prepare_overlay,
 )
@@ -417,12 +417,18 @@ def test_a_changed_drawing_is_a_different_artifact(
 # =============================================================================
 
 
-def _labelled_overlay(label_value: object) -> dict:
+_LabelsMap = dict[str, object]
+_IdInfo = dict[str, _LabelsMap]
+_FrameData = dict[str, dict[int, _IdInfo]]
+_OverlayDict = dict[str, dict[int, _FrameData]]
+
+
+def _labelled_overlay(label_value: object) -> _OverlayDict:
     """An overlay holding one label under the feature name ``behavior``."""
     return {"per_frame": {0: {"ids": {1: {"labels": {"behavior": label_value}}}}}}
 
 
-def _renamed(overlay: dict) -> object:
+def _renamed(overlay: _OverlayDict) -> object:
     return overlay["per_frame"][0]["ids"][1]["labels"]["behavior"]
 
 
@@ -438,20 +444,20 @@ def test_a_string_keyed_map_renames_a_numeric_label() -> None:
     """
     params = Overlay.Params(label_maps={"behavior": {"0": "attack", "1": "rest"}})
     overlay = _labelled_overlay(0)
-    _remap_overlay_labels(overlay, dict(params.label_maps))
+    remap_overlay_labels(overlay, dict(params.label_maps))
     assert _renamed(overlay) == "attack"
 
 
 def test_an_integer_keyed_map_still_renames() -> None:
     """``play_video`` takes ``dict[Any, Any]`` and its callers pass integers."""
     overlay = _labelled_overlay(0)
-    _remap_overlay_labels(overlay, {"behavior": {0: "attack"}})
+    remap_overlay_labels(overlay, {"behavior": {0: "attack"}})
     assert _renamed(overlay) == "attack"
 
 
 def test_a_label_matching_no_key_is_left_alone() -> None:
     overlay = _labelled_overlay(7)
-    _remap_overlay_labels(overlay, {"behavior": {"0": "attack"}})
+    remap_overlay_labels(overlay, {"behavior": {"0": "attack"}})
     assert _renamed(overlay) == 7
 
 
@@ -463,13 +469,13 @@ def test_the_lookup_renames_a_numeric_label_series() -> None:
     the series exactly as it found it and reported nothing.
     """
     series = pd.Series([0, 1, 7], index=[0, 1, 2])
-    mapping = {"0": "attack", "1": "rest"}
-    renamed = series.map(lambda v: remap_label_value(v, mapping))
+    mapping: Mapping[object, object] = {"0": "attack", "1": "rest"}
+    renamed = series.map(label_renamer(mapping))
     assert list(renamed) == ["attack", "rest", 7]
 
 
 def test_an_unhashable_label_is_left_alone() -> None:
     """A pair feature collects several labels for one id, and a list keys nothing."""
     overlay = _labelled_overlay(["attack", "rest"])
-    _remap_overlay_labels(overlay, {"behavior": {"0": "x"}})
+    remap_overlay_labels(overlay, {"behavior": {"0": "x"}})
     assert _renamed(overlay) == ["attack", "rest"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -90,8 +91,9 @@ def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
 
 @pytest.mark.slow
 def test_index_media_excludes_every_supported_extension_inside_a_store(
-    tmp_path, make_imgstore
-):
+    tmp_path: Path,
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
     """A store's contents are never indexed, whatever they are named.
 
     The exclusion is a parent-path test (``Dataset._probe_dir_rows``) applied

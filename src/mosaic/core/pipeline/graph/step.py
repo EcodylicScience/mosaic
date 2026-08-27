@@ -62,8 +62,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import Entry
 
-    from ..inventory.model import Entry
     from ..job import CancelToken
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore

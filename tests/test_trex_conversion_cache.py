@@ -593,7 +593,9 @@ def test_the_convert_argv_never_carries_auto_train(ds: Dataset, trex: FakeTrex) 
         assert isinstance(extra, dict)
         assert "auto_train" not in extra
         assert "load" not in extra
-    assert trex.track_kwargs[0]["params"].auto_train is True
+    tracked = trex.track_kwargs[0]["params"]
+    assert isinstance(tracked, TrexParams)
+    assert tracked.auto_train is True
 
 
 # --- what the conversion root is, and is not --------------------------------
@@ -866,7 +868,9 @@ def test_the_keypoint_count_reaches_the_tracking_call(
     """It is the tracking phase that names the columns, not the conversion."""
     _ = dr.run_trex(ds, TrexParams(detect_keypoint_count=7))
 
-    assert trex.track_kwargs[0]["params"].detect_keypoint_count == 7
+    tracked = trex.track_kwargs[0]["params"]
+    assert isinstance(tracked, TrexParams)
+    assert tracked.detect_keypoint_count == 7
     assert "detect_keypoint_count" not in phase_fields(TrexParams, "convert"), (
         "the conversion must not name the exported columns"
     )

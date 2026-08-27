@@ -1024,7 +1024,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `templates` | `TemplatesRef` \| `None` | `null` |  | The templates artifact to fit from. Exactly one of templates and model must be given. |
-| `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  | A pre-fitted t-SNE embedding artifact to load, skipping the fit. Exactly one of templates and model must be given. |
+| `model` | `TSNEModelArtifact` \| `None` | `null` |  | A pre-fitted t-SNE embedding artifact to load, skipping the fit. Exactly one of templates and model must be given. |
 | `random_state` | `integer` | `42` |  | The random seed for PCA initialization and embedding optimization, and for neighbor search when knn_method is annoy. |
 | `perplexity` | `integer` | `50` | >= `1` | The t-SNE perplexity, controlling the effective number of nearest neighbors each point is compared against. |
 | `knn_method` | `string` | `"annoy"` |  | The nearest-neighbor backend. Known values are annoy, faiss and faiss-gpu. Any other value falls back to annoy. |
