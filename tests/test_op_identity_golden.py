@@ -184,7 +184,7 @@ OP_CASES: tuple[OpCase, ...] = (
     # --- transcode params (the recipe itself is pinned below) -----------------
     OpCase(
         case_id="transcode/analysis-entry",
-        params=_op_params("transcode", entry=("g", "s"), target="analysis"),
+        params=_op_params("transcode", entries=[("g", "s")], target="analysis"),
     ),
     # --- train ----------------------------------------------------------------
     OpCase(
@@ -272,7 +272,7 @@ OP_CASES: tuple[OpCase, ...] = (
 # The two transcode identifiers are minted by named, importable functions, so
 # unlike the op ids above these pin the real payload construction as well as
 # the digest.
-_RECIPE_PARAMS = TranscodeParams(entry=("g", "s"), target="analysis")
+_RECIPE_PARAMS = TranscodeParams(entries=[("g", "s")], target="analysis")
 
 
 def _recipe_hash() -> str:

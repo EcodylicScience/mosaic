@@ -27,7 +27,7 @@ from typing import Annotated
 import typer
 
 from mosaic.cli._context import attempt_facts, load_dataset
-from mosaic.cli._io import emit_json, fail, log, stdout_to_stderr
+from mosaic.cli._io import emit_json, fail, log, parse_entries, stdout_to_stderr
 from mosaic.cli._render import render_kv
 
 __all__ = ["track_command", "tracker_kinds"]
@@ -139,10 +139,20 @@ def track_command(
     ds = load_dataset(manifest)
     fields = OPS[kind].Params.model_json_schema().get("properties", {})
 
+    # --groups and --sequences are a cross product, and params take one entry
+    # list, so the pair is enumerated against the dataset here. A group named
+    # with no sequence means every sequence in it, which only the media index
+    # can answer -- and a dataset with no index reports that as a message rather
+    # than as a traceback, the way every other failure of this command does.
+    try:
+        scope = ds.expand_media_scope(
+            groups or None, sequences or None, parse_entries(entries) or None
+        )
+    except FileNotFoundError as exc:
+        fail(f"{kind} run failed: {exc}")
+
     params: dict[str, object] = {
-        "groups": groups or None,
-        "sequences": sequences or None,
-        "entries": entries or None,
+        "entries": scope,
         "overwrite": overwrite,
         "convert_to_tracks": convert_to_tracks,
         "idle_timeout": idle_timeout,

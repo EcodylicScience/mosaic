@@ -50,16 +50,18 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `entries` | list of `string` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
+| `entries` | list of `Entry` \| `None` | `null` |  |
 | `overwrite` | `boolean` | `false` |  |
+| `convert_to_tracks` | `boolean` | `true` |  |
 | `idle_timeout` | `number` | `900` |  |
 | `max_runtime` | `number` \| `None` | `null` |  |
 | `model_path` | `string` | _required_ |  |
 | `litpose_overrides` | `object` \| `None` | `null` |  |
 | `precision` | `string` | `"fp32"` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 ??? note "`JsonValue`"
 
@@ -73,13 +75,15 @@ Place a dataset's tracks tables on one uniform frame rate.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 | `target_fps` | `number` | _required_ |  |
 | `source_tracks_run_id` | `string` \| `None` | `null` |  |
 | `prefilter` | `number` \| `None` | `null` |  |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `entries` | list of `string` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 #### `sleap`
 
@@ -89,11 +93,9 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `entries` | list of `string` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
+| `entries` | list of `Entry` \| `None` | `null` |  |
 | `overwrite` | `boolean` | `false` |  |
+| `convert_to_tracks` | `boolean` | `true` |  |
 | `idle_timeout` | `number` | `900` |  |
 | `max_runtime` | `number` \| `None` | `null` |  |
 | `model_paths` | list of `string` | _required_ |  |
@@ -110,6 +112,10 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `batch_size` | `integer` | `4` |  |
 | `device` | `string` \| `None` | `null` |  |
 
+??? note "`Entry`"
+
+    No parameters.
+
 ??? note "`JsonValue`"
 
     No parameters.
@@ -122,11 +128,9 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `entries` | list of `string` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
+| `entries` | list of `Entry` \| `None` | `null` |  |
 | `overwrite` | `boolean` | `false` |  |
+| `convert_to_tracks` | `boolean` | `true` |  |
 | `idle_timeout` | `number` | `900` |  |
 | `max_runtime` | `number` \| `None` | `null` |  |
 | `detect_model` | `string` \| `None` | `null` |  |
@@ -146,6 +150,10 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 | `detect_keypoint_count` | `integer` \| `None` | `null` |  |
 | `track_extra_settings` | `object` \| `None` | `null` |  |
 
+??? note "`Entry`"
+
+    No parameters.
+
 ??? note "`JsonValue`"
 
     No parameters.
@@ -158,11 +166,9 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `entries` | list of `string` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
+| `entries` | list of `Entry` \| `None` | `null` |  |
 | `overwrite` | `boolean` | `false` |  |
+| `convert_to_tracks` | `boolean` | `true` |  |
 | `idle_timeout` | `number` | `900` |  |
 | `max_runtime` | `number` \| `None` | `null` |  |
 | `model_path` | `string` | _required_ |  |
@@ -183,6 +189,10 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 | `batch_size` | `integer` | `8` |  |
 | `prefetch` | `boolean` | `true` |  |
 
+??? note "`Entry`"
+
+    No parameters.
+
 ??? note "`JsonValue`"
 
     No parameters.
@@ -197,8 +207,10 @@ Sample representative video frames as PNGs for annotation.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 | `n_frames` | `integer` | _required_ |  |
-| `method` | `string` | `"uniform"` |  |
+| `method` | `"uniform"` \| `"kmeans"` | `"uniform"` |  |
 | `start_frame` | `integer` \| `None` | `null` |  |
 | `end_frame` | `integer` \| `None` | `null` |  |
 | `candidate_step` | `integer` | `1` |  |
@@ -210,12 +222,13 @@ Sample representative video frames as PNGs for annotation.
 | `kmeans_batch_size` | `integer` | `1024` |  |
 | `kmeans_max_iter` | `integer` | `100` |  |
 | `kmeans_n_init` | `string` \| `integer` | `"auto"` |  |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
 | `revision` | `integer` | `0` |  |
 | `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  |
-| `parallel_mode` | `string` | `"thread"` |  |
+| `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 ### infer
 
@@ -227,6 +240,8 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 | `model` | `string` | _required_ |  |
 | `conf_threshold` | `number` | `0.25` |  |
 | `imgsz` | `integer` | `640` |  |
@@ -235,15 +250,16 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  |
 | `max_frames` | `integer` \| `None` | `null` |  |
 | `convert_to_tracks` | `boolean` | `true` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
 | `device` | `string` | `"0"` |  |
 | `batch_size` | `integer` | `8` |  |
 | `save_images` | `boolean` | `false` |  |
 | `num_classes` | `integer` | `4` |  |
 | `initial_channels` | `integer` | `32` |  |
 | `thresholds` | `number` | `0.5` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 #### `infer-points`
 
@@ -253,6 +269,8 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 | `model` | `string` | _required_ |  |
 | `conf_threshold` | `number` | `0.25` |  |
 | `imgsz` | `integer` | `640` |  |
@@ -261,13 +279,14 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  |
 | `max_frames` | `integer` \| `None` | `null` |  |
 | `convert_to_tracks` | `boolean` | `true` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
 | `device` | `string` | `"0"` |  |
 | `batch_size` | `integer` | `8` |  |
 | `save_images` | `boolean` | `false` |  |
 | `dor` | `number` | `0.8` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 #### `infer-pose`
 
@@ -277,6 +296,8 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  |
+| `overwrite` | `boolean` | `false` |  |
 | `model` | `string` | _required_ |  |
 | `conf_threshold` | `number` | `0.25` |  |
 | `imgsz` | `integer` | `640` |  |
@@ -285,12 +306,13 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  |
 | `max_frames` | `integer` \| `None` | `null` |  |
 | `convert_to_tracks` | `boolean` | `true` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `groups` | list of `string` \| `None` | `null` |  |
-| `sequences` | list of `string` \| `None` | `null` |  |
 | `device` | `string` | `"0"` |  |
 | `batch_size` | `integer` | `8` |  |
 | `save_images` | `boolean` | `false` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 ### train
 
@@ -431,9 +453,13 @@ Export one entry's imgstore recordings as plain video and link them.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `entry` | tuple of (`string`, `string`) | _required_ | min items `2`, max items `2` |
+| `entry` | `Entry` | _required_ |  |
 | `camera` | `string` \| `None` | `null` |  |
 | `av1_crf` | `integer` | `14` |  |
+
+??? note "`Entry`"
+
+    No parameters.
 
 #### `transcode`
 
@@ -443,7 +469,10 @@ Transcode one entry's originals for a target and link the derivatives both ways.
 
 | Parameter | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `entry` | tuple of (`string`, `string`) \| `None` | `null` |  |
-| `entries` | list of tuple of (`string`, `string`) | _constructed_ |  |
+| `entries` | list of `Entry` | _required_ | min items `1` |
 | `target` | `"analysis"` \| `"playback"` | `"analysis"` |  |
 | `allow_hardware` | `boolean` | `false` |  |
+
+??? note "`Entry`"
+
+    No parameters.

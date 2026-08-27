@@ -41,6 +41,7 @@ class Clip:
 
     filename: str
     order: int = 0
+    group: str = ""
     sequence: str = "sess"
     camera: str = ""
     video_uuid: str = ""
@@ -87,9 +88,9 @@ def _dataset(tmp_path: Path, clips: list[Clip]) -> Dataset:
         rows.append(
             {
                 "name": clip.filename,
-                "group": "",
+                "group": clip.group,
                 "sequence": clip.sequence,
-                "group_safe": "",
+                "group_safe": clip.group,
                 "sequence_safe": clip.sequence,
                 "camera": clip.camera,
                 "abs_path": ds.relative_to_root(video),
@@ -109,7 +110,7 @@ def _dataset(tmp_path: Path, clips: list[Clip]) -> Dataset:
 
 
 def _items(ds: Dataset, *, kind: str) -> list[TrackerWorkItem]:
-    return build_work_items(ds, ds.resolve_media_scope(None, None), kind=kind)
+    return build_work_items(ds, ds.resolve_media_scope(None), kind=kind)
 
 
 # The measured shape of one real session, shortened.
@@ -302,3 +303,51 @@ class TestTheItemInvariant:
             _ = TrackerWorkItem(
                 group="", sequence="s", key="s", video_paths=(), fps=30.0
             )
+
+
+class TestExpandMediaScope:
+    """A group or sequence scope becomes the entry list an op's params take.
+
+    The expansion is what keeps ``--groups`` expressible after the params
+    dropped the field: a group named with no sequence means every sequence in
+    it, and only the media index knows which those are.
+    """
+
+    def _dataset(self, tmp_path: Path) -> Dataset:
+        return _dataset(
+            tmp_path,
+            [
+                Clip(filename="a1.mp4", group="A", sequence="one"),
+                Clip(filename="a2.mp4", group="A", sequence="two"),
+                Clip(filename="b1.mp4", group="B", sequence="one"),
+            ],
+        )
+
+    def test_a_group_enumerates_its_sequences(self, tmp_path: Path) -> None:
+        ds = self._dataset(tmp_path)
+        assert ds.expand_media_scope(groups=["A"]) == [("A", "one"), ("A", "two")]
+
+    def test_a_sequence_name_repeated_across_groups_yields_both(
+        self, tmp_path: Path
+    ) -> None:
+        """What the cross product cannot express, and why entries are enumerated."""
+        ds = self._dataset(tmp_path)
+        assert ds.expand_media_scope(sequences=["one"]) == [("A", "one"), ("B", "one")]
+
+    def test_the_three_selectors_intersect(self, tmp_path: Path) -> None:
+        ds = self._dataset(tmp_path)
+        expanded = ds.expand_media_scope(
+            groups=["A"], entries=[("A", "one"), ("B", "one")]
+        )
+        assert expanded == [("A", "one")]
+
+    def test_an_unnamed_scope_stays_unscoped(self, tmp_path: Path) -> None:
+        """``None`` reaches the op as ``None``, which every op reads as all entries."""
+        ds = self._dataset(tmp_path)
+        assert ds.expand_media_scope() is None
+
+    def test_an_entry_list_alone_needs_no_media_index(self, tmp_path: Path) -> None:
+        """A dataset with no index still accepts an explicit scope."""
+        manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
+        ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
+        assert ds.expand_media_scope(entries=[("A", "one")]) == [("A", "one")]

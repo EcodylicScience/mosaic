@@ -59,7 +59,7 @@ def media_universe(ds: Dataset) -> frozenset[tuple[str, str]]:
     run.
     """
     try:
-        scope = ds.resolve_media_scope(None, None)
+        scope = ds.resolve_media_scope(None)
     except FileNotFoundError:
         return frozenset()
     return frozenset((entry.group, entry.sequence) for entry in scope)

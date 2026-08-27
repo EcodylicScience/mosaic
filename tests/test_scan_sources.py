@@ -177,7 +177,7 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
         _ = dataset.scan_media()
         _ = dataset.scan_media()
 
-        scope = dataset.resolve_media_scope(None, None, None)
+        scope = dataset.resolve_media_scope(None)
         item = build_work_items(dataset, scope, kind="trex")[0]
         assert item.n_sources == 3, "a clip would be converted more than once"
         assert len({path.name for path in item.video_paths}) == 3

@@ -7,11 +7,12 @@ from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 import pandas as pd
 from mosaic_media import MediaFacts
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
@@ -29,7 +30,7 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
@@ -131,40 +132,121 @@ def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
 # --- Frame extraction op (registered under the Job Contract) ---
 
 
-class ExtractFramesParams(Params):
+ExtractionMethod = Literal["uniform", "kmeans"]
+"""How the frames to keep are chosen: evenly spaced, or by k-means clustering."""
+
+ParallelMode = Literal["thread", "process"]
+"""Which executor runs the per-camera work."""
+
+_N_FRAMES_DESCRIPTION = "How many frames to write per camera."
+
+_METHOD_DESCRIPTION = (
+    "How the frames are chosen: 'uniform' spaces them evenly over the "
+    "candidate range, 'kmeans' clusters the candidates by pixel content and "
+    "keeps one frame per cluster."
+)
+
+_START_FRAME_DESCRIPTION = (
+    "First frame of the range frames are chosen from, inclusive. Unset starts "
+    "at the beginning of the video."
+)
+
+_END_FRAME_DESCRIPTION = (
+    "Last frame of the range frames are chosen from, inclusive. Unset runs to "
+    "the end of the video."
+)
+
+_CANDIDATE_STEP_DESCRIPTION = (
+    "Stride between candidate frames within the range, so a long recording is "
+    "sampled without decoding every frame of it."
+)
+
+_CROP_DESCRIPTION = (
+    "Crop rectangle (x, y, width, height) applied to every written frame. "
+    "Unset writes the full frame."
+)
+
+_RANDOM_STATE_DESCRIPTION = "Seed for k-means and for breaking ties between candidates."
+
+_KMEANS_RESIZE_DESCRIPTION = (
+    "Width and height a candidate frame is resized to before its pixels become "
+    "the clustering feature vector."
+)
+
+_KMEANS_GRAYSCALE_DESCRIPTION = (
+    "Convert a candidate frame to grayscale before flattening it into a "
+    "feature vector, which clusters on layout instead of color."
+)
+
+_KMEANS_MAX_CANDIDATES_DESCRIPTION = (
+    "Cap on how many candidate frames are decoded for clustering; the stride "
+    "widens to stay under it. Unset decodes every candidate in the range."
+)
+
+_KMEANS_BATCH_SIZE_DESCRIPTION = (
+    "How many feature vectors one mini-batch k-means update reads."
+)
+
+_KMEANS_MAX_ITER_DESCRIPTION = "Ceiling on mini-batch k-means iterations."
+
+_KMEANS_N_INIT_DESCRIPTION = (
+    "How many centroid seedings k-means tries before keeping the best. 'auto' "
+    "leaves the count to scikit-learn."
+)
+
+_PARALLEL_MODE_DESCRIPTION = (
+    "Which executor runs the cameras: 'thread' shares one process, 'process' "
+    "forks, which a decoder holding the interpreter lock needs."
+)
+
+
+_REVISION_DESCRIPTION = (
+    "Bump to extract a second selection under the same settings. It is the one "
+    "term allowed to move the extraction identifier, and it enters the payload "
+    "only when non-zero, so revision 0 reproduces every identifier on disk."
+)
+
+_PARALLEL_WORKERS_DESCRIPTION = (
+    "How many cameras are extracted at once. 'auto' reads the machine, and an "
+    "integer pins the count."
+)
+
+
+class ExtractFramesParams(OpParams):
     """Typed parameters for the ``extract-frames`` tracking op.
 
-    Scope selectors (``groups``/``sequences``), ``overwrite``, and the
-    parallelism knobs are ``HASH_EXCLUDE``: they select *which* work runs or
-    *how fast*, but the run_id addresses only the extraction *settings* (so the
-    same settings share a run_id and add per-sequence subdirs, like frames/trex).
+    The scope selector, ``overwrite`` and the parallelism knobs are
+    ``HASH_EXCLUDE``: they select *which* work runs or *how fast*, but the
+    run_id addresses only the extraction *settings* (so the same settings share
+    a run_id and add per-sequence subdirs, like frames/trex).
     """
 
-    n_frames: int
-    method: str = "uniform"
-    start_frame: int | None = None
-    end_frame: int | None = None
-    candidate_step: int = 1
-    crop: tuple[int, int, int, int] | None = None
-    random_state: int = 42
-    kmeans_resize: tuple[int, int] = (64, 64)
-    kmeans_grayscale: bool = True
-    kmeans_max_candidates: int | None = 5000
-    kmeans_batch_size: int = 1024
-    kmeans_max_iter: int = 100
-    kmeans_n_init: str | int = "auto"
-    # scope + throughput (excluded from the content run_id)
-    groups: Annotated[list[str] | None, HASH_EXCLUDE] = None
-    sequences: Annotated[list[str] | None, HASH_EXCLUDE] = None
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    # A deliberate new selection, and the only term allowed to move the frozen
-    # extraction identifier. HASH_EXCLUDE keeps it out of ``identity_dump()``;
-    # ``frames_run_id`` adds it to the payload only when non-zero, so the
-    # default reproduces every identifier already on disk. Bump it to extract a
-    # different selection without disturbing the frames an annotation points at.
-    revision: Annotated[int, HASH_EXCLUDE] = 0
-    parallel_workers: Annotated[int | str | None, HASH_EXCLUDE] = "auto"
-    parallel_mode: Annotated[str, HASH_EXCLUDE] = "thread"
+    n_frames: Annotated[int, Declared(_N_FRAMES_DESCRIPTION)]
+    method: Annotated[ExtractionMethod, Declared(_METHOD_DESCRIPTION)] = "uniform"
+    start_frame: Annotated[int | None, Declared(_START_FRAME_DESCRIPTION)] = None
+    end_frame: Annotated[int | None, Declared(_END_FRAME_DESCRIPTION)] = None
+    candidate_step: Annotated[int, Declared(_CANDIDATE_STEP_DESCRIPTION)] = 1
+    crop: Annotated[tuple[int, int, int, int] | None, Declared(_CROP_DESCRIPTION)] = (
+        None
+    )
+    random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+    kmeans_resize: Annotated[
+        tuple[int, int], Declared(_KMEANS_RESIZE_DESCRIPTION, unit="px")
+    ] = (64, 64)
+    kmeans_grayscale: Annotated[bool, Declared(_KMEANS_GRAYSCALE_DESCRIPTION)] = True
+    kmeans_max_candidates: Annotated[
+        int | None, Declared(_KMEANS_MAX_CANDIDATES_DESCRIPTION)
+    ] = 5000
+    kmeans_batch_size: Annotated[int, Declared(_KMEANS_BATCH_SIZE_DESCRIPTION)] = 1024
+    kmeans_max_iter: Annotated[int, Declared(_KMEANS_MAX_ITER_DESCRIPTION)] = 100
+    kmeans_n_init: Annotated[str | int, Declared(_KMEANS_N_INIT_DESCRIPTION)] = "auto"
+    revision: Annotated[int, HASH_EXCLUDE, Declared(_REVISION_DESCRIPTION)] = 0
+    parallel_workers: Annotated[
+        int | str | None, HASH_EXCLUDE, Declared(_PARALLEL_WORKERS_DESCRIPTION)
+    ] = "auto"
+    parallel_mode: Annotated[
+        ParallelMode, HASH_EXCLUDE, Declared(_PARALLEL_MODE_DESCRIPTION)
+    ] = "thread"
 
 
 def _source_identity_maps(
@@ -427,7 +509,7 @@ def _refuse_to_overwrite(specs: Sequence[_ExtractSpec]) -> None:
     raise AnnotatedFramesWouldBeDestroyed(message)
 
 
-def frames_run_id(method: str, params: ExtractFramesParams) -> str:
+def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     """Mint an extraction run identifier. **Frozen -- do not change this.**
 
     Deliberately does *not* call ``op_run_id``, and deliberately carries no
@@ -464,16 +546,12 @@ def frames_run_id(method: str, params: ExtractFramesParams) -> str:
 
 def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) -> str:
     """Extraction body executed inside a job_context (the op's payload)."""
-    method_norm = str(p.method).strip().lower()
-    if method_norm not in {"uniform", "kmeans"}:
-        raise ValueError("method must be one of: 'uniform', 'kmeans'")
-
     params_hash = hash_params(p.identity_dump())
     # Through the op's plan_identity, so this run is named in one place.
     run_id = ExtractFramesOp().plan_identity(ds, p).run_id
     ctx.set_run_id(run_id)
 
-    run_root = frames_run_root(ds, method_norm, run_id)
+    run_root = frames_run_root(ds, p.method, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
     try:
         (run_root / "run_params.json").write_text(
@@ -481,11 +559,11 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
         )
     except Exception as exc:
         print(
-            f"[extract_frames:{method_norm}] failed to save run_params.json: {exc}",
+            f"[extract_frames:{p.method}] failed to save run_params.json: {exc}",
             file=sys.stderr,
         )
 
-    scope = ds.resolve_media_scope(p.groups, p.sequences)
+    scope = ds.resolve_media_scope(p.entries)
     if not scope:
         print(
             "[extract_frames] No media entries match the given scope.", file=sys.stderr
@@ -531,7 +609,7 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
                 run_id=run_id,
                 params_hash=params_hash,
                 n_frames=int(p.n_frames),
-                method=method_norm,
+                method=p.method,
                 start_frame=p.start_frame,
                 end_frame=p.end_frame,
                 candidate_step=int(p.candidate_step),
@@ -550,7 +628,7 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
     _refuse_to_overwrite(specs)
 
     ctx.set_total(len(specs))
-    idx = frames_index(frames_index_path(ds, method_norm))
+    idx = frames_index(frames_index_path(ds, p.method))
     idx.ensure()
     index_rows: list[FramesIndexRow] = []
 
@@ -614,7 +692,7 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
             idx.mark_finished(run_id)
 
     print(
-        f"[extract_frames:{method_norm}] completed run_id={run_id} "
+        f"[extract_frames:{p.method}] completed run_id={run_id} "
         f"({len(index_rows)}/{len(specs)} sequences) -> {run_root}"
     )
     return run_id
@@ -641,8 +719,7 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
         images an annotator works on, so a change here moves work somebody has
         already done.
         """
-        method = str(params.method).strip().lower()
-        return OpIdentity(run_id=frames_run_id(method, params))
+        return OpIdentity(run_id=frames_run_id(params.method, params))
 
     def run(self, ds: Dataset, params: ExtractFramesParams, ctx: JobContext) -> str:
         return _run_extract_frames(ds, params, ctx)
@@ -651,10 +728,9 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
 def extract_frames(
     ds,
     n_frames: int,
-    method: str = "uniform",
+    method: ExtractionMethod = "uniform",
     *,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
+    entries: Iterable[Entry] | None = None,
     overwrite: bool = False,
     start_frame: int | None = None,
     end_frame: int | None = None,
@@ -668,7 +744,7 @@ def extract_frames(
     kmeans_n_init: str | int = "auto",
     random_state: int = 42,
     parallel_workers: int | str | None = "auto",
-    parallel_mode: str = "thread",
+    parallel_mode: ParallelMode = "thread",
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -684,14 +760,16 @@ def extract_frames(
     per-sequence progress, and supports cooperative cancellation. Returns the
     content ``run_id``.
 
-    Parameters mirror the previous signature (``method`` = "uniform"|"kmeans",
-    ``groups``/``sequences`` scope, k-means knobs, ``parallel_workers``/
-    ``parallel_mode``) plus the standard contract knobs
+    Parameters mirror :class:`ExtractFramesParams` -- the method, the
+    ``entries`` scope, the k-means knobs and ``parallel_workers`` /
+    ``parallel_mode`` -- plus the standard contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
+    :meth:`~mosaic.core.dataset.Dataset.expand_media_scope` turns a group or
+    sequence scope into the entry list this takes.
     """
     params = ExtractFramesParams(
         n_frames=n_frames,
-        method=str(method).strip().lower(),
+        method=method,
         start_frame=start_frame,
         end_frame=end_frame,
         candidate_step=candidate_step,
@@ -703,8 +781,7 @@ def extract_frames(
         kmeans_batch_size=kmeans_batch_size,
         kmeans_max_iter=kmeans_max_iter,
         kmeans_n_init=kmeans_n_init,
-        groups=list(groups) if groups is not None else None,
-        sequences=list(sequences) if sequences is not None else None,
+        entries=list(entries) if entries is not None else None,
         overwrite=overwrite,
         parallel_workers=parallel_workers,
         parallel_mode=parallel_mode,

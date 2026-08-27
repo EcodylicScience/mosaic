@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.track_library.trex import is_per_individual_export
@@ -662,9 +663,7 @@ def _record_conversion_row(
 def run_trex(
     ds: Dataset,
     *,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
+    entries: Iterable[Entry] | None = None,
     # detection / conversion
     detect_model: Path | str | None = None,
     detect_type: str | None = None,
@@ -707,7 +706,7 @@ def run_trex(
 
     Parameters mirror :func:`mosaic.tracking.trex.run_trex_convert` /
     :func:`~mosaic.tracking.trex.run_trex_track`, plus scope
-    (``groups``/``sequences``/``entries``) and the Job-Contract knobs
+    (``entries``) and the Job-Contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
 
     Every TREx parameter defaults to ``None``, which means *do not send it*, so
@@ -804,7 +803,7 @@ def run_trex(
     # The routed facts are still read, for a different job: they are what the
     # concatenated timeline is built from, and TREx cannot supply that -- it
     # takes one frame rate from the first clip and never checks the others.
-    scope = ds.resolve_media_scope(groups, sequences, entries)
+    scope = ds.resolve_media_scope(entries)
     if not scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id

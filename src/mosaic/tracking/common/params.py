@@ -1,38 +1,41 @@
 """The parameters every tracker op shares: what to run over, and how to run it.
 
-Three op modules declared the same scope block and the same execution block
-before adding their tool's own knobs.
+Three op modules declare the same execution block before adding their tool's own
+knobs, over the scope :class:`~mosaic.core.pipeline.types.OpParams` declares.
 
-**Why the scope fields are not ``HASH_EXCLUDE``.** They arguably should be -- a
-tracker's ``run_id`` comes from its settings dict, which is scope-free, so
-whether ``groups`` reaches ``identity_dump()`` changes nothing about what any run
-is called. But the three tracker ops declare them untagged today, unlike
-``_InferParamsBase``, and six digests in ``tests/data/op_identity_golden.json``
-are pinned to that. Moving the fields here preserves them exactly; tagging them
-while moving them would move those six for no behavior change, and a moved digest
-during a refactor should always mean a mistake. Tagging them is a separate
-one-commit contract change.
-
-**Why the move is digest-safe.** ``hash_params`` is
-``sha1(json.dumps(identity_ready(d), sort_keys=True))[:10]`` and
-``Params.identity_dump()`` iterates ``type(self).model_fields``, which includes
-inherited fields. Field names, types, defaults and ``HASH_EXCLUDE`` tagging are
-carried over verbatim, and ``sort_keys=True`` makes the change in declaration
-order invisible.
+**Every field here is ``HASH_EXCLUDE``.** A tracker's ``run_id`` is minted from
+its settings dictionary, which names no entry, so the scope selects which media
+a run covers and never what any of its outputs is called. Folding a selector
+into the identity would move an identifier while the output stays where it is,
+which is a cache miss costing a recompute for nothing.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from mosaic.core.helpers import parse_entry_tokens
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
 
 __all__ = ["TrackerOpParams"]
 
+_CONVERT_TO_TRACKS_DESCRIPTION = (
+    "Convert the tool's native output into a standardized tracks table once "
+    "tracking finishes, instead of leaving the output where the tool wrote it."
+)
 
-class TrackerOpParams(Params):
-    """Scope and execution knobs shared by every tracker op.
+_IDLE_TIMEOUT_DESCRIPTION = (
+    "Kill a phase after this many seconds without a line of output from the "
+    "tool, which is how a hung run is told apart from a slow one."
+)
+
+_MAX_RUNTIME_DESCRIPTION = (
+    "Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to "
+    "whatever queue submitted the run."
+)
+
+
+class TrackerOpParams(OpParams):
+    """Execution knobs shared by every tracker op.
 
     A tracker's own parameters -- its model reference, its thresholds, its
     tracker flavor -- are declared by the subclass. Pydantic allows a required
@@ -47,19 +50,12 @@ class TrackerOpParams(Params):
     would ship to a different one.
     """
 
-    # scope (empty -> all indexed media)
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
-    # "group:sequence" pairs; a bare token is a sequence in the empty group
-    entries: list[str] | None = None
-    convert_to_tracks: Annotated[bool, HASH_EXCLUDE] = True
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    # Inactivity (hang) watchdog: kill a phase after this many seconds with no
-    # output from the tool. max_runtime is an optional absolute ceiling; None
-    # leaves the ceiling to the queue.
-    idle_timeout: Annotated[float, HASH_EXCLUDE] = 900
-    max_runtime: Annotated[float | None, HASH_EXCLUDE] = None
-
-    def entry_pairs(self) -> list[tuple[str, str]]:
-        """The ``entries`` tokens as ``(group, sequence)`` pairs."""
-        return parse_entry_tokens(self.entries)
+    convert_to_tracks: Annotated[
+        bool, HASH_EXCLUDE, Declared(_CONVERT_TO_TRACKS_DESCRIPTION)
+    ] = True
+    idle_timeout: Annotated[
+        float, HASH_EXCLUDE, Declared(_IDLE_TIMEOUT_DESCRIPTION, unit="s")
+    ] = 900
+    max_runtime: Annotated[
+        float | None, HASH_EXCLUDE, Declared(_MAX_RUNTIME_DESCRIPTION, unit="s")
+    ] = None

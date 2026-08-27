@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from typing import Generic, Self
+from dataclasses import dataclass
+from typing import Annotated, Generic, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, GetJsonSchemaHandler, model_validator
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 from typing_extensions import TypeVar
 
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline._loaders import StrictModel
 from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 
@@ -15,7 +19,65 @@ from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 # it from its new home, so every existing import path is unchanged.
 
 
-class _HashExclude:
+@dataclass(frozen=True, slots=True)
+class Declared:
+    """Declares one field's prose and publishes it into that field's schema.
+
+    Goes in the field's ``Annotated``, beside pydantic's own ``Field``::
+
+        track_max_speed: Annotated[
+            float | None,
+            Field(gt=0.0),
+            Declared("the maximum plausible speed", unit="cm/s"),
+        ] = None
+
+    ``Field`` in that bracket carries constraints. A ``description=`` on it
+    overrides this one silently: pydantic applies ``FieldInfo``'s description
+    after the metadata hooks, whichever order the two are written in.
+    ``tests/test_params_declaration.py`` asserts ``FieldInfo.description is
+    None`` on every field to catch that spelling.
+
+    ``description`` is the first positional parameter and has no default. A
+    field that declares a ``Declared`` without prose fails to type-check where
+    it is written.
+
+    Prose given as a value is stored in the class. Python discards an attribute
+    docstring at run time, and ``use_attribute_docstrings=True`` recovers one by
+    reading the class's source lines, which makes the description a property of
+    the source file instead of the class.
+
+    ``mosaic features describe`` and ``mosaic tracking describe`` publish the
+    whole schema and carry the description to a reader.
+    ``scripts/gen_docs_reference.py`` reads the schema as well, but its
+    parameter table holds name, type, default and constraints alone and drops
+    the description.
+
+    Attributes:
+        description: What the parameter means, stated without its unit.
+        unit: The quantity's unit, published as ``x-mosaic-unit``. Empty
+            publishes no unit key.
+    """
+
+    description: str
+    unit: str = ""
+
+    def __get_pydantic_json_schema__(
+        self, source: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Add ``description``, and ``x-mosaic-unit`` where a unit is declared.
+
+        Both keys sit at the field level, outside the ``anyOf`` an optional
+        field renders. A client that unwraps only the non-null branch reads them
+        from the property itself.
+        """
+        schema = handler(source)
+        schema["description"] = self.description
+        if self.unit:
+            schema["x-mosaic-unit"] = self.unit
+        return schema
+
+
+class HashExclude:
     """Marker for ``Annotated[T, HASH_EXCLUDE]`` Params fields omitted from the
     run_id hash. Use for any field that does not determine the output: a
     throughput knob (batch sizes, worker counts) that changes runtime only, a
@@ -29,8 +91,22 @@ class _HashExclude:
 
     __slots__ = ()
 
+    def __get_pydantic_json_schema__(
+        self, source: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Add ``x-mosaic-hash-exclude`` to the field's schema.
 
-HASH_EXCLUDE = _HashExclude()
+        The hook lives on the marker because a bare ``Annotated`` marker reaches
+        ``FieldInfo.metadata`` but not the core schema, whose per-field metadata
+        reads ``{}``. Every ``GenerateJsonSchema`` method receives a core schema,
+        and a generator subclass therefore cannot read this marker.
+        """
+        schema = handler(source)
+        schema["x-mosaic-hash-exclude"] = True
+        return schema
+
+
+HASH_EXCLUDE = HashExclude()
 
 
 class Params(StrictModel):
@@ -51,7 +127,7 @@ class Params(StrictModel):
         """
         dumped = self.model_dump()
         for name, info in type(self).model_fields.items():
-            if any(isinstance(m, _HashExclude) for m in info.metadata):
+            if any(isinstance(m, HashExclude) for m in info.metadata):
                 dumped.pop(name, None)
         return dumped
 
@@ -76,6 +152,52 @@ class Params(StrictModel):
             if isinstance(default_obj, BaseModel):
                 merged[key] = {**default_obj.model_dump(), **value}
         return cls.model_validate(merged)
+
+
+_ENTRIES_DESCRIPTION = (
+    "Which (group, sequence) entries the run covers. Unset covers every entry "
+    "the media index holds."
+)
+
+_OVERWRITE_DESCRIPTION = (
+    "Recompute an entry whose output is already on disk, instead of keeping "
+    "what is there and reporting it done."
+)
+
+
+class OpParams(Params):
+    """Base for every registered op's parameters: what to run over, and re-runs.
+
+    Both fields are ``HASH_EXCLUDE``. A selector names which entries a run
+    covers rather than what comes out of any one of them, and an op whose
+    coverage does change its output hashes the resolved entry identities in
+    ``plan_identity`` instead -- which is also what keeps a sequence rename from
+    moving a run identifier.
+
+    One selector, and it enumerates. A ``groups`` field beside a ``sequences``
+    one expresses a cross product, so it cannot name group A sequence 1 together
+    with group B sequence 2 without also naming A/2 and B/1. ``mosaic track``
+    takes the pair as flags and ``mosaic run --kind`` takes it inside
+    ``--params``; both enumerate it through
+    :meth:`~mosaic.core.dataset.Dataset.expand_media_scope` before an op's model
+    validates.
+
+    An op that refuses an unscoped run declares its own required ``entries`` on
+    :class:`Params` instead of inheriting this one, because a subclass can
+    neither drop an inherited default nor narrow ``list[Entry] | None`` to
+    ``list[Entry]`` -- both are override errors under a strict type checker.
+    :class:`~mosaic.core.pipeline.transcode.TranscodeParams` is the one such op.
+
+    Attributes:
+        entries: The ``(group, sequence)`` pairs to run over, or ``None`` for
+            every indexed entry.
+        overwrite: Whether an entry already on disk is recomputed.
+    """
+
+    entries: Annotated[
+        list[Entry] | None, HASH_EXCLUDE, Declared(_ENTRIES_DESCRIPTION)
+    ] = None
+    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 M = TypeVar("M", bound=JoblibArtifact[object], default=JoblibArtifact[object])

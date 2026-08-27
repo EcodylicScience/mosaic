@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
+
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.read_target import verified_read_facts
@@ -279,9 +281,7 @@ def run_ultralytics(
     ds: Dataset,
     *,
     model_path: Path | str,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
+    entries: Iterable[Entry] | None = None,
     task: ModelTask = "pose",
     tracker: TrackerName = "bytetrack",
     tracker_overrides: Mapping[str, JsonValue] | None = None,
@@ -398,7 +398,7 @@ def run_ultralytics(
             "ultralytics_version": probe.ultralytics_version,
         },
     )
-    scope = ds.resolve_media_scope(groups, sequences, entries)
+    scope = ds.resolve_media_scope(entries)
     if not scope:
         print(
             "[run_ultralytics] No media entries match the given scope.",

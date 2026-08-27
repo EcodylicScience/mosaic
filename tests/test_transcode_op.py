@@ -184,7 +184,7 @@ def test_transcode_op_writes_derivative_and_links(
         _ = ds.resolve_media(group, sequence)
 
     run_id = run_op(
-        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
+        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
     )
     assert run_id.startswith("transcode-")
     transcode_dir = ds.get_root("media") / "transcode"
@@ -236,10 +236,10 @@ def test_analysis_facts_not_crossed_when_playback_transcoded_first(
     # the media index, so a source_path-first lookup would return playback facts
     # for the analysis route.
     _ = run_op(
-        ds, "transcode", TranscodeParams(entry=(group, sequence), target="playback")
+        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="playback")
     )
     _ = run_op(
-        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
+        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
     )
 
     transcode_dir = ds.get_root("media") / "transcode"
@@ -290,10 +290,10 @@ def test_transcode_op_is_idempotent(
     group, sequence = _indexed_entry(ds, source_dir)
 
     first = run_op(
-        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
+        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
     )
     second = run_op(
-        ds, "transcode", TranscodeParams(entry=(group, sequence), target="analysis")
+        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
     )
     assert first == second  # deterministic run_id
     # The real invariant: one derivative, one media row, one raw row -- no duplication.
@@ -308,7 +308,7 @@ def test_an_existing_linked_derivative_is_reused(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, video_uuid = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
     recipe = transcode_recipe_hash(
         params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
@@ -323,7 +323,7 @@ def test_an_existing_but_unlinked_derivative_is_relinked(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
     _clear_forward_links(ds)
     _ = run_op(ds, "transcode", params)
@@ -335,7 +335,7 @@ def test_the_derivative_is_named_after_its_source_and_recipe(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, video_uuid = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
     recipe = transcode_recipe_hash(
         params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
@@ -351,7 +351,7 @@ def test_the_derivative_row_records_the_recipe(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
     rows = read_media_index(ds.get_root("media") / "index.csv")
     recipe = transcode_recipe_hash(
@@ -368,7 +368,7 @@ def test_the_derivative_row_records_the_encoder(
     rather than the machine. Permitting hardware does not settle it either, since
     a machine whose device cannot open av1_nvenc encodes on the CPU."""
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
     rows = read_media_index(ds.get_root("media") / "index.csv")
     assert rows[0]["encoder"] == "libsvtav1"
@@ -380,7 +380,7 @@ def test_a_source_with_no_uuid_refuses_to_transcode(
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset, minted=False)
     with pytest.raises(TranscodeError, match="no video_uuid"):
         _ = run_op(
-            ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
+            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
         )
 
 
@@ -403,7 +403,7 @@ def test_an_imgstore_refuses_to_transcode(
 
     with pytest.raises(TranscodeError, match="imgstore"):
         _ = run_op(
-            ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
+            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
         )
 
 
@@ -443,7 +443,7 @@ def test_a_reorder_produces_zero_re_encodes(
         )
 
     arrange("a.mp4", "b.mp4")
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     _ = run_op(ds, "transcode", params)
 
     transcode_root = ds.get_root("media") / "transcode"
@@ -569,7 +569,7 @@ def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> Non
 
     with pytest.raises(TranscodeError, match="no media_raw root"):
         _ = run_op(
-            ds, "transcode", TranscodeParams(entry=("g", "s"), target="analysis")
+            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
         )
 
     assert index_path.read_bytes() == before, "the originals index was written to"
@@ -584,8 +584,8 @@ def test_the_run_identity_ignores_the_source_order() -> None:
 
 def test_the_recipe_hash_ignores_the_entry() -> None:
     thresholds = media_thresholds()
-    here = TranscodeParams(entry=("g", "s"), target="analysis")
-    elsewhere = TranscodeParams(entry=("other", "sequence"), target="analysis")
+    here = TranscodeParams(entries=[("g", "s")], target="analysis")
+    elsewhere = TranscodeParams(entries=[("other", "sequence")], target="analysis")
     assert transcode_recipe_hash(here, ANALYSIS_ENCODING, CHROME_149, thresholds) == (
         transcode_recipe_hash(elsewhere, ANALYSIS_ENCODING, CHROME_149, thresholds)
     )
@@ -593,8 +593,10 @@ def test_the_recipe_hash_ignores_the_entry() -> None:
 
 def test_the_recipe_hash_ignores_the_hardware_permission() -> None:
     thresholds = media_thresholds()
-    plain = TranscodeParams(entry=("g", "s"), target="analysis")
-    hardware = TranscodeParams(entry=("g", "s"), target="analysis", allow_hardware=True)
+    plain = TranscodeParams(entries=[("g", "s")], target="analysis")
+    hardware = TranscodeParams(
+        entries=[("g", "s")], target="analysis", allow_hardware=True
+    )
     assert transcode_recipe_hash(plain, ANALYSIS_ENCODING, CHROME_149, thresholds) == (
         transcode_recipe_hash(hardware, ANALYSIS_ENCODING, CHROME_149, thresholds)
     )
@@ -602,15 +604,15 @@ def test_the_recipe_hash_ignores_the_hardware_permission() -> None:
 
 def test_the_recipe_hash_separates_the_targets_under_one_encoding() -> None:
     thresholds = media_thresholds()
-    analysis = TranscodeParams(entry=("g", "s"), target="analysis")
-    playback = TranscodeParams(entry=("g", "s"), target="playback")
+    analysis = TranscodeParams(entries=[("g", "s")], target="analysis")
+    playback = TranscodeParams(entries=[("g", "s")], target="playback")
     assert transcode_recipe_hash(
         analysis, ANALYSIS_ENCODING, CHROME_149, thresholds
     ) != transcode_recipe_hash(playback, ANALYSIS_ENCODING, CHROME_149, thresholds)
 
 
 def test_the_recipe_hash_moves_with_the_encoding_parameters() -> None:
-    params = TranscodeParams(entry=("g", "s"), target="analysis")
+    params = TranscodeParams(entries=[("g", "s")], target="analysis")
     thresholds = media_thresholds()
     tuned = dataclasses.replace(
         ANALYSIS_ENCODING, quality=ANALYSIS_ENCODING.quality + 1
@@ -631,7 +633,7 @@ def test_the_recipe_hash_is_stable_across_processes() -> None:
         "from mosaic_media import CHROME_149\n"
         "from mosaic_media.transcode import ANALYSIS_ENCODING\n"
         "print(transcode_recipe_hash("
-        "TranscodeParams(entry=('g','s'), target='analysis'), "
+        "TranscodeParams(entries=[('g','s')], target='analysis'), "
         "ANALYSIS_ENCODING, CHROME_149, media_thresholds()))\n"
     )
     digests = {
@@ -656,7 +658,7 @@ def test_transcode_registered_as_media_op():
     assert info["category"] == "transcode"
     assert "params_schema" in info
     schema = TranscodeParams.model_json_schema()
-    assert {"entry", "target", "allow_hardware"} <= set(schema["properties"])
+    assert {"entries", "target", "allow_hardware"} <= set(schema["properties"])
 
 
 def test_transcode_excluded_from_tracking_listing():
@@ -676,7 +678,7 @@ def test_transcode_params_reject_unknown_key():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        TranscodeParams.model_validate({"entry": ("", "vid1"), "bogus": 1})
+        TranscodeParams.model_validate({"entries": [("", "vid1")], "bogus": 1})
 
 
 # Two processes, each linking a different source. Both read the index before

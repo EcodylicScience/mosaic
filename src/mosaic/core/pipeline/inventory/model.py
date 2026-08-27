@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Final, Literal, TypeGuard, overload
 
+from mosaic.core.entry import CameraEntry, Entry
+
 from .params import ParamsState, RunParams
 
 __all__ = [
@@ -56,18 +58,6 @@ __all__ = [
     "classify",
     "is_artifact_kind",
 ]
-
-type Entry = tuple[str, str]
-"""``(group, sequence)`` -- what a feature run, a tracks table or a tracker covers."""
-
-type CameraEntry = tuple[str, str, str]
-"""``(group, sequence, camera)`` -- what a frame run covers.
-
-The camera axis is part of the key rather than a detail: the cameras of one
-recording share a ``(group, sequence)``, so without it a run that extracted one
-camera would read as covering the entry and the other camera would never be seen
-as missing.
-"""
 
 ArtifactKind = Literal[
     "feature",

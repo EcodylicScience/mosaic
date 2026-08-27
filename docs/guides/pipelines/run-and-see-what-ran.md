@@ -6,7 +6,7 @@ appended to a run log.
 
 ```bash
 mosaic run -m dataset.yaml --feature speed-angvel
-mosaic run -m dataset.yaml --kind transcode --params '{"entry": ["", "trial01"]}'
+mosaic run -m dataset.yaml --kind transcode --params '{"entries": [["", "trial01"]]}'
 mosaic run -m dataset.yaml --feature global-tsne --json    # machine-readable outcome
 ```
 
@@ -17,10 +17,12 @@ both.
 
 Parameters come inline as JSON, from `@file.json`, or from `@-` on stdin.
 
-Narrow the work with `--entries`, `--groups` or `--sequences`. **`--entries` takes
-explicit `group:sequence` pairs and is the only one that can express an arbitrary
-set** — the other two combine as a cross-product, so they cannot name three specific
-recordings out of a grid.
+A feature run narrows with `--entries`, which takes explicit `group:sequence` pairs.
+An op narrows inside `--params`, where `entries` takes the same pairs and a `groups`
+/ `sequences` pair given beside it is enumerated against the dataset into them.
+**Only an explicit pair list can express an arbitrary set** — groups and sequences
+combine as a cross-product, so they cannot name three specific recordings out of a
+grid.
 
 The same holds in Python:
 

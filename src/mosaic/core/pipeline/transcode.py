@@ -30,7 +30,7 @@ import dataclasses
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Self, override
+from typing import TYPE_CHECKING, Annotated, Any, override
 
 import pandas as pd
 from mosaic_media import (
@@ -72,9 +72,10 @@ from mosaic.core.pipeline.media_index import (
     write_media_index_rows,
 )
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.entry import Entry
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
 from mosaic.media_probe_config import media_thresholds
-from pydantic import Field, model_validator
+from pydantic import Field
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -92,6 +93,23 @@ _TICKS_PER_SOURCE = 1000
 TRANSCODE_KIND_DIRECTORY = "transcode"
 
 
+_TRANSCODE_ENTRIES_DESCRIPTION = (
+    "Which (group, sequence) entries to transcode. Required and non-empty: a "
+    "transcode with no scope re-encodes a whole corpus because a field was "
+    "omitted."
+)
+
+_TARGET_DESCRIPTION = (
+    "Which derivative to write: 'analysis' is the one a tool decodes frame by "
+    "frame, 'playback' the one a browser streams."
+)
+
+_ALLOW_HARDWARE_DESCRIPTION = (
+    "Permit a hardware encoder where the machine offers a usable one. The "
+    "encode falls back to the CPU encoder where it does not."
+)
+
+
 class TranscodeParams(Params):
     """What to transcode, and into what.
 
@@ -105,11 +123,21 @@ class TranscodeParams(Params):
     The trade is real and worth stating: a job over five hundred videos holds one
     queue slot for as long as it takes, where five hundred jobs would spread
     across machines. Narrow the entry list to shard it.
+
+    **``Params`` rather than ``OpParams``, and the reason is the type checker.**
+    A transcode refuses an unscoped run, so its ``entries`` is required and
+    non-empty where ``OpParams`` declares one that defaults to ``None`` and
+    means every indexed entry. Redeclaring an inherited field as required is
+    ``reportGeneralTypeIssues``, and narrowing ``list[Entry] | None`` to
+    ``list[Entry]`` is ``reportIncompatibleVariableOverride``, so the required
+    spelling is declared here instead of inherited. Inheriting would also add
+    ``overwrite``, which this op has no use for: reuse is decided by the
+    recipe-addressed filename and the forward link.
     """
 
-    # entry/entries select WHICH videos are transcoded, and the identities of
-    # those videos are hashed in their place, so a sequence rename does not move
-    # the run.
+    # entries selects WHICH videos are transcoded, and the identities of those
+    # videos are hashed in their place, so a sequence rename does not move the
+    # run.
     #
     # allow_hardware is excluded, and the reasoning cuts both ways. A hardware
     # encode and a CPU encode of the same source are not byte-identical, so this
@@ -128,39 +156,16 @@ class TranscodeParams(Params):
     # bytes to one path and each reuses the other's file. Closing that would make
     # the cheapest path in the job -- the reuse check -- pay a device probe; the
     # index cell says which encoder is there instead.
-    entry: Annotated[tuple[str, str] | None, HASH_EXCLUDE] = None
-    entries: Annotated[list[tuple[str, str]], HASH_EXCLUDE] = Field(
-        default_factory=list
-    )
-    target: Target = "analysis"
-    allow_hardware: Annotated[bool, HASH_EXCLUDE] = False
-
-    @model_validator(mode="after")
-    def _some_entry_is_named(self) -> Self:
-        """One of the two has to say what to transcode.
-
-        Both are optional so either spelling stands alone, and neither has a
-        default that would quietly mean "everything": a transcode with no scope
-        is a job that re-encodes a whole corpus because a field was omitted.
-        """
-        if self.entry is None and not self.entries:
-            raise ValueError(
-                "transcode needs something to transcode: pass 'entry' for one "
-                "(group, sequence), or 'entries' for several"
-            )
-        return self
-
-    def all_entries(self) -> list[tuple[str, str]]:
-        """Every entry this job covers, deduplicated, in the order given.
-
-        The singular and the plural are one list rather than two code paths, so
-        nothing downstream has to ask which spelling was used.
-        """
-        found: list[tuple[str, str]] = []
-        for entry in ([self.entry] if self.entry is not None else []) + self.entries:
-            if entry not in found:
-                found.append(entry)
-        return found
+    entries: Annotated[
+        list[Entry],
+        Field(min_length=1),
+        HASH_EXCLUDE,
+        Declared(_TRANSCODE_ENTRIES_DESCRIPTION),
+    ]
+    target: Annotated[Target, Declared(_TARGET_DESCRIPTION)] = "analysis"
+    allow_hardware: Annotated[
+        bool, HASH_EXCLUDE, Declared(_ALLOW_HARDWARE_DESCRIPTION)
+    ] = False
 
 
 def relative_to_anchor(path: Path, anchor: Path) -> str:
@@ -469,7 +474,7 @@ class TranscodeOp(Op[TranscodeParams]):
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams) -> str:
-        entries = params.all_entries()
+        entries = params.entries
         if len(entries) == 1:
             group, sequence = entries[0]
             return f"{group}/{sequence}"
@@ -510,11 +515,9 @@ class TranscodeOp(Op[TranscodeParams]):
         this value names the attempt for the run log and the queue, and widening
         what one run covers moves no file.
         """
-        _refuse_without_media_raw(ds, params.all_entries())
+        _refuse_without_media_raw(ds, params.entries)
         source_uuids = [
-            uuid
-            for entry in params.all_entries()
-            for uuid in _source_uuids_for(ds, entry)
+            uuid for entry in params.entries for uuid in _source_uuids_for(ds, entry)
         ]
         thresholds = media_thresholds()
         encoding = (
@@ -524,7 +527,7 @@ class TranscodeOp(Op[TranscodeParams]):
         return OpIdentity(run_id=transcode_run_id(recipe_hash, source_uuids))
 
     def run(self, ds: "Dataset", params: "TranscodeParams", ctx: "JobContext") -> str:
-        entries = params.all_entries()
+        entries = params.entries
         _refuse_without_media_raw(ds, entries)
 
         # Named in one place, and before any encoding: a corpus that has not been

@@ -104,14 +104,11 @@ class SleapOp(Op[SleapParams]):
         # Heavy SLEAP imports (subprocess/h5py) stay inside run() so registration is light.
         from mosaic.tracking.sleap.dataset_runs import run_sleap
 
-        entry_pairs = params.entry_pairs()
         return run_sleap(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
             model_paths=params.model_paths,
-            groups=params.groups,
-            sequences=params.sequences,
-            entries=entry_pairs or None,
+            entries=params.entries,
             tracking=params.tracking,
             tracker=params.tracker,
             similarity=params.similarity,

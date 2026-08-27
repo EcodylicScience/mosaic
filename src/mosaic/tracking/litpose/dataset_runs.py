@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
@@ -211,9 +212,7 @@ def run_litpose(
     ds: Dataset,
     *,
     model_path: Path | str,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
+    entries: Iterable[Entry] | None = None,
     litpose_overrides: Mapping[str, object] | None = None,
     # execution
     precision: str = "fp32",
@@ -269,7 +268,7 @@ def run_litpose(
             "model_type": resolved_model.model_type,
         },
     )
-    scope = ds.resolve_media_scope(groups, sequences, entries)
+    scope = ds.resolve_media_scope(entries)
     if not scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
