@@ -14,7 +14,11 @@ form from the schema has no other source for a control's label.
 ``Field(description=...)`` overrides a ``Declared`` silently, in either
 declaration order, and the resulting property still carries a description -- so
 the prose guard passes while the ``Declared`` is dead. ``FieldInfo.description is
-None`` is the signal that separates the two.
+None`` is the signal that separates the two. ``FIELD_DESCRIPTION_CEILING`` bounds
+that allowlist as ``ALLOWLIST_CEILING`` bounds the first. Unbounded, the one-line
+repair in front of whoever writes the spelling is to list the field. Its prose
+then survives and its unit, its hash-exclude flag and its unwired record do not,
+and the unit guard stops seeing it.
 
 The prose guard reads ``model_json_schema()`` rather than ``FieldInfo.metadata``.
 A constraint reached through a reusable ``Annotated`` alias lives inside that
@@ -26,18 +30,32 @@ describe different sets of fields.
 
 **Coverage is the import list.** ``Params.__subclasses__()`` sees a class only
 once its module has been imported, so the models enumerated here are the two
-registries plus ``UNREGISTERED_PARAMS_MODULES``. Together those reach every
-``Params`` subclass under ``src/mosaic`` that imports in this environment; the
-two that do not import here, ``feature_library.external.kpms_server`` (jax) and
-``pose_training.localizer_model`` (torch), declare none.
+registries plus ``UNREGISTERED_PARAMS_MODULES``.
+:func:`test_the_import_list_reaches_every_declared_params_model` reads
+``src/mosaic`` as source and names any module that list stops reaching, which is
+the one gap no other guard here can report: an unimported model is invisible to
+every walk over ``__subclasses__()``. The two modules a name match suggests it
+misses, ``feature_library.external.kpms_server`` and
+``pose_training.localizer_model``, declare no ``Params`` subclass at all.
+
+**Both tiers, one bar.** A ``Params`` field typed as another model publishes that
+model's fields as a nested object, and ``NESTED_CONFIG_MODELS`` walks to those.
+``DECLARING_MODELS`` merges the two key spaces for the guards whose subject is
+the same at either depth -- the prose home, the repeated ``Declared``, the unit
+rule. The ``HASH_EXCLUDE`` guard is the one that reads them differently. A
+top-level marker must agree with the schema. A nested one is refused outright,
+because ``identity_dump()`` pops top-level names only.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib
 import re
+from pathlib import Path
 from typing import Annotated
 
+import mosaic
 import pytest
 from pydantic import Field
 
@@ -51,6 +69,11 @@ from mosaic.core.params import (
 from mosaic.core.pipeline.types import Result
 from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
+from tests.helpers import (
+    inside_a_virtualenv,
+    runs_in_an_external_environment,
+    source_tree,
+)
 
 UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
     "mosaic.behavior.feature_library.feature_template__global",
@@ -117,6 +140,90 @@ def params_models() -> dict[str, type[Params]]:
 PARAMS_MODELS = params_models()
 MODEL_NAMES = sorted(PARAMS_MODELS)
 
+
+def nested_config_models() -> dict[str, type[StrictModel]]:
+    """Every plain ``StrictModel`` a ``Params`` field points at, transitively.
+
+    A ``Params`` field whose type is another model publishes that model's own
+    fields as a nested object, and a client drawing a form renders a control per
+    leaf. Those leaves are outside ``PARAMS_MODELS``, so the ceilings above said
+    nothing about them and 62 of them shipped unlabelled.
+
+    ``Result`` subclasses are excluded, and the discriminator is the class rather
+    than its name: an ``ArtifactSpec`` is a pointer to output some earlier run
+    produced, which a client picks whole rather than filling in. Everything else
+    reachable is configuration a caller composes.
+    """
+    found: dict[str, type[StrictModel]] = {}
+    seen: set[type[StrictModel]] = set()
+
+    def walk(model: type[StrictModel]) -> None:
+        if model in seen:
+            return
+        seen.add(model)
+        for info in model.model_fields.values():
+            annotation = info.annotation
+            candidates = (annotation, *(getattr(annotation, "__args__", ()) or ()))
+            for candidate in candidates:
+                if not isinstance(candidate, type):
+                    continue
+                if not issubclass(candidate, StrictModel):
+                    continue
+                if issubclass(candidate, Params):
+                    continue
+                if not issubclass(candidate, Result):
+                    found[candidate.__name__] = candidate
+                walk(candidate)
+
+    for model in PARAMS_MODELS.values():
+        walk(model)
+    return found
+
+
+NESTED_CONFIG_MODELS = nested_config_models()
+NESTED_CONFIG_NAMES = sorted(NESTED_CONFIG_MODELS)
+
+NESTED_CONFIG_EXPECTED: frozenset[str] = frozenset(
+    {
+        "FeralTrainingConfig",
+        "GroundTruthLabelsSource",
+        "InterpolationConfig",
+        "JoblibLoadSpec",
+        "LabelsSource",
+        "NpzLoadSpec",
+        "ParquetLoadSpec",
+        "PoolConfig",
+        "PoseConfig",
+        "SamplingConfig",
+        "TSNEFitConfig",
+        "TSNEMapConfig",
+    }
+)
+"""The whole set the walk reaches, pinned by name rather than counted.
+
+Every nested guard below is parametrized over what the walk returns. A model
+that stops being reachable takes its guards away with it. The remaining guards
+still pass over what is left.
+"""
+
+DECLARING_MODELS: dict[str, type[StrictModel]] = {
+    **PARAMS_MODELS,
+    **NESTED_CONFIG_MODELS,
+}
+"""Both tiers under one key space, for the guards whose subject is the same at
+either depth. The nested-walk guard asserts the two key spaces stay
+disjoint."""
+
+DECLARING_NAMES = sorted(DECLARING_MODELS)
+
+PACKAGE_ROOT = Path(mosaic.__file__ or "").resolve().parent
+
+PARAMS_MODULE_EXEMPTIONS: tuple[tuple[str, str], ...] = ()
+"""Modules declaring a ``Params`` subclass that ``PARAMS_MODELS`` may skip,
+each with the reason its fields reach no client. Empty: every module under
+``src/mosaic`` that declares one is imported by a registry or by
+``UNREGISTERED_PARAMS_MODULES``."""
+
 ALLOWLIST_CEILING = 0
 """Zero, and only ever lowered. Every parameter field mosaic ships declares a
 description, so an entry here would be a field reaching a client unlabelled."""
@@ -139,25 +246,23 @@ only writing prose brings it down.
 _PENDING_PROSE_NAMED = 10
 """How many pending fields a failure names, so hundreds cannot bury the fix."""
 
-ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
-    (
-        # Converting this one means deleting the ``description=`` argument from
-        # its ``Field`` and passing the prose to a ``Declared`` beside it, not
-        # adding a marker next to the ``Field`` that already wins.
-        ("SpeedAngvel.Params", "fps"),
-    )
-)
+FIELD_DESCRIPTION_CEILING = 0
+"""Zero, and only ever lowered. Every field mosaic ships states its prose in a
+``Declared``, where the unit, the hash-exclude flag and the unwired record are
+published beside it. Listing a field here keeps the prose and drops the rest."""
+
+ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset()
 
 ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset()
 
 
-def field_schemas(model: type[Params]) -> dict[str, dict[str, object]]:
+def field_schemas(model: type[StrictModel]) -> dict[str, dict[str, object]]:
     """Return the property schema of each of *model*'s fields."""
     properties: dict[str, dict[str, object]] = model.model_json_schema()["properties"]
     return properties
 
 
-def metadata_of(model: type[Params], field: str) -> list[object]:
+def metadata_of(model: type[StrictModel], field: str) -> list[object]:
     """Return the ``Annotated`` metadata pydantic retained for *field*."""
     metadata: list[object] = model.model_fields[field].metadata
     return metadata
@@ -206,16 +311,19 @@ def test_every_field_declares_a_description(model_name: str) -> None:
     assert not stale, described
 
 
-@pytest.mark.parametrize("model_name", MODEL_NAMES)
+@pytest.mark.parametrize("model_name", DECLARING_NAMES)
 def test_no_field_states_its_prose_on_field(model_name: str) -> None:
-    """``Declared`` is the one home for a description.
+    """``Declared`` is the one home for a description, at either depth.
 
     A ``description=`` on ``Field`` wins over a ``Declared`` in the same
     ``Annotated``, whichever order the two are written in, and the property still
     carries a description -- so the prose guard above cannot see it. A non-None
     ``FieldInfo.description`` is the precise signal.
+
+    A nested config's fields render as controls the same way a top-level
+    field's do. A ``Field`` description there loses the same three records.
     """
-    model = PARAMS_MODELS[model_name]
+    model = DECLARING_MODELS[model_name]
     on_field = sorted(
         field
         for field, info in model.model_fields.items()
@@ -229,10 +337,10 @@ def test_no_field_states_its_prose_on_field(model_name: str) -> None:
     assert not on_field, misplaced
 
 
-@pytest.mark.parametrize("model_name", MODEL_NAMES)
+@pytest.mark.parametrize("model_name", DECLARING_NAMES)
 def test_no_field_declares_two_descriptions(model_name: str) -> None:
     """Two ``Declared`` in one ``Annotated``: the last one wins, silently."""
-    model = PARAMS_MODELS[model_name]
+    model = DECLARING_MODELS[model_name]
     doubled = sorted(
         field
         for field in model.model_fields
@@ -245,15 +353,23 @@ def test_no_field_declares_two_descriptions(model_name: str) -> None:
     assert not doubled, repeated
 
 
-@pytest.mark.parametrize("model_name", MODEL_NAMES)
+@pytest.mark.parametrize("model_name", DECLARING_NAMES)
 def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> None:
     """The set ``identity_dump()`` strips is the set the schema publishes.
 
     ``identity_dump()`` reads ``FieldInfo.metadata`` and a client reads
     ``x-mosaic-hash-exclude``. A marker whose hook stopped being called would
     leave the two describing different fields, and only a client would notice.
+
+    A nested config field carries no marker at all, a stronger bar than
+    agreement. The marker's hook fires wherever the ``Annotated`` sits, and
+    ``x-mosaic-hash-exclude`` does appear under ``$defs``, while
+    ``identity_dump()`` pops top-level names and never descends into a nested
+    model. The schema then states the field sits outside run identity while the
+    hash covers it. A throughput knob belongs on the ``Params`` model, where the
+    strip reaches it.
     """
-    model = PARAMS_MODELS[model_name]
+    model = DECLARING_MODELS[model_name]
     from_metadata = {
         field
         for field in model.model_fields
@@ -269,6 +385,16 @@ def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> Non
         f"{sorted(from_schema)} in the schema."
     )
     assert from_metadata == from_schema, disagreement
+
+    if model_name not in NESTED_CONFIG_MODELS:
+        return
+    nested = (
+        f"{model_name} is a nested config and marks {sorted(from_metadata)} "
+        f"HASH_EXCLUDE. identity_dump() strips top-level names only. The hash "
+        f"still covers those fields while the schema says otherwise. Move the "
+        f"knob onto the Params model."
+    )
+    assert not from_metadata, nested
 
 
 def test_a_placeholder_declares_the_field_and_leaves_the_prose_empty() -> None:
@@ -372,12 +498,13 @@ def test_the_undocumented_count_only_shrinks() -> None:
 
 
 def test_the_allowlist_only_shrinks() -> None:
-    """Nothing may join the allowlist, and nothing may rot on it.
+    """Nothing may join either allowlist, and nothing may rot on either.
 
-    The ceiling stops a new undescribed field from passing on one added line.
-    Resolving each entry stops a renamed or deregistered field from sitting there
-    forever, which the per-model staleness check cannot see: it intersects with
-    the fields a model still has.
+    A ceiling stops one added line from admitting what the guards above refuse:
+    an undescribed field, or a field whose prose sits on ``Field``. Resolving
+    each entry stops a renamed or deregistered field from sitting there forever,
+    which the per-model staleness check cannot see: it intersects with the fields
+    a model still has.
     """
     grown = (
         f"ALLOWED_MISSING_DESCRIPTION holds {len(ALLOWED_MISSING_DESCRIPTION)} "
@@ -385,10 +512,18 @@ def test_the_allowlist_only_shrinks() -> None:
     )
     assert len(ALLOWED_MISSING_DESCRIPTION) <= ALLOWLIST_CEILING, grown
 
+    spelled = (
+        f"ALLOWED_FIELD_DESCRIPTION holds {len(ALLOWED_FIELD_DESCRIPTION)} "
+        f"entries against a ceiling of {FIELD_DESCRIPTION_CEILING}. Move the "
+        f"prose into a Declared(...) beside the Field instead of listing the "
+        f"field here."
+    )
+    assert len(ALLOWED_FIELD_DESCRIPTION) <= FIELD_DESCRIPTION_CEILING, spelled
+
     allowed = ALLOWED_MISSING_DESCRIPTION | ALLOWED_FIELD_DESCRIPTION
-    unknown_models = sorted({model for model, _ in allowed} - set(PARAMS_MODELS))
+    unknown_models = sorted({model for model, _ in allowed} - set(DECLARING_MODELS))
     vanished = (
-        f"allowlisted models {unknown_models} resolve to no Params subclass. "
+        f"allowlisted models {unknown_models} resolve to no declaring model. "
         f"Delete their entries."
     )
     assert not unknown_models, vanished
@@ -396,13 +531,129 @@ def test_the_allowlist_only_shrinks() -> None:
     unknown_fields = sorted(
         f"{model}.{field}"
         for model, field in allowed
-        if field not in PARAMS_MODELS[model].model_fields
+        if field not in DECLARING_MODELS[model].model_fields
     )
     renamed = (
         f"allowlisted fields {unknown_fields} no longer exist. Delete their "
-        f"entries and lower ALLOWLIST_CEILING to match."
+        f"entries and lower the ceiling that bounds them to match."
     )
     assert not unknown_fields, renamed
+
+
+def base_class_name(node: ast.expr) -> str:
+    """Return the name a base-class expression ends in, or empty for anything else.
+
+    A subscript is unwrapped so that ``GlobalModelParams[KMeansModelArtifact]``
+    reports the generic the class inherits from.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Subscript):
+        return base_class_name(node.value)
+    return ""
+
+
+def class_declarations() -> list[tuple[str, str, tuple[str, ...]]]:
+    """Every class under ``src/mosaic``, as ``(module, class, base names)``.
+
+    Two trees are skipped, matching the five sibling structural walks. A
+    virtualenv under the package root holds installed third-party code, where
+    ``class Foo(RequestParams)`` is common and a non-UTF-8 source file raises
+    instead of failing by name. The external-environment trees hold programs run
+    under interpreters mosaic builds nothing of, whose parameter payloads are
+    never published as a mosaic schema.
+    """
+    found: list[tuple[str, str, tuple[str, ...]]] = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        if inside_a_virtualenv(path, PACKAGE_ROOT):
+            continue
+        if runs_in_an_external_environment(path, PACKAGE_ROOT):
+            continue
+        relative = path.relative_to(PACKAGE_ROOT.parent).with_suffix("")
+        module = ".".join(relative.parts)
+        for node in ast.walk(source_tree(path)):
+            if isinstance(node, ast.ClassDef):
+                bases = tuple(base_class_name(base) for base in node.bases)
+                found.append((module, node.name, bases))
+    return found
+
+
+def modules_declaring_params() -> dict[str, tuple[str, ...]]:
+    """Every ``src/mosaic`` module declaring a ``Params`` subclass.
+
+    Read out of the source rather than off ``__subclasses__()``, which is the
+    thing under test: a class becomes a subclass only once its module has been
+    imported.
+
+    The base chain is resolved to a fixed point rather than one level deep. The
+    ``*Params`` suffix seeds the set. Every class it matches then counts as a
+    base itself, which reaches a model inheriting through an intermediate whose
+    name breaks the convention. Nine shipped models are that shape already --
+    three ``*InferParams`` deriving from ``_InferParamsBase``, six tracker
+    backends from ``_BackendConfig``. Both intermediates would carry their
+    subclasses out of this walk the day either moves to a module of its own.
+
+    A base is matched by name, which is what a walk over source can read. The
+    error that leaves is a module listed because it reuses a name. A listed
+    module has to be reached or exempted rather than dropped.
+    """
+    records = class_declarations()
+    matched: set[tuple[str, str]] = set()
+    known: set[str] = set()
+    while True:
+        found = {
+            (module, name)
+            for module, name, bases in records
+            if any(base.endswith("Params") or base in known for base in bases)
+        }
+        if found == matched:
+            break
+        matched = found
+        known = {name for _, name in matched}
+
+    declared: dict[str, tuple[str, ...]] = {}
+    for module, name, _ in records:
+        if (module, name) in matched:
+            declared[module] = declared.get(module, ()) + (name,)
+    return declared
+
+
+def test_the_import_list_reaches_every_declared_params_model() -> None:
+    """A model in an unimported module is guarded by nothing, and reported by nothing.
+
+    Every guard in this file is parametrized over ``PARAMS_MODELS``, which walks
+    ``Params.__subclasses__()`` and therefore sees only what the registries and
+    ``UNREGISTERED_PARAMS_MODULES`` have imported. A new model in a module
+    neither reaches passes all of them by being absent from all of them. This
+    reads the source instead and names the module the day it is added.
+    """
+    declared = modules_declaring_params()
+    canary = (
+        f"the source walk under {PACKAGE_ROOT} reached no module declaring a "
+        f"Params subclass. It is agreeing with itself over an empty set."
+    )
+    assert "mosaic.behavior.feature_library.speed_angvel" in declared, canary
+
+    exempt = {module for module, _ in PARAMS_MODULE_EXEMPTIONS}
+    stale = sorted(exempt - set(declared))
+    gone = (
+        f"exempted modules {stale} declare no Params subclass any more. Delete "
+        f"their entries from PARAMS_MODULE_EXEMPTIONS."
+    )
+    assert not stale, gone
+
+    reached = {model.__module__ for model in PARAMS_MODELS.values()}
+    unreached = sorted(set(declared) - reached - exempt)
+    named = {module: declared[module] for module in unreached}
+    missing = (
+        f"{named} declare a Params subclass PARAMS_MODELS never sees. Register "
+        f"the model, add its module to UNREGISTERED_PARAMS_MODULES, or name it "
+        f"in PARAMS_MODULE_EXEMPTIONS with the reason its fields reach no "
+        f"client."
+    )
+    assert not unreached, missing
 
 
 class DeclarationSample(Params):
@@ -440,58 +691,35 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
     assert properties["inert"]["x-mosaic-unwired"] == "nothing reads it"
 
 
-def nested_config_models() -> dict[str, type[StrictModel]]:
-    """Every plain ``StrictModel`` a ``Params`` field points at, transitively.
-
-    A ``Params`` field whose type is another model publishes that model's own
-    fields as a nested object, and a client drawing a form renders a control per
-    leaf. Those leaves are outside ``PARAMS_MODELS``, so the ceilings above said
-    nothing about them and 62 of them shipped unlabelled.
-
-    ``Result`` subclasses are excluded, and the discriminator is the class rather
-    than its name: an ``ArtifactSpec`` is a pointer to output some earlier run
-    produced, which a client picks whole rather than filling in. Everything else
-    reachable is configuration a caller composes.
-    """
-    found: dict[str, type[StrictModel]] = {}
-    seen: set[type[StrictModel]] = set()
-
-    def walk(model: type[StrictModel]) -> None:
-        if model in seen:
-            return
-        seen.add(model)
-        for info in model.model_fields.values():
-            annotation = info.annotation
-            candidates = (annotation, *(getattr(annotation, "__args__", ()) or ()))
-            for candidate in candidates:
-                if not isinstance(candidate, type):
-                    continue
-                if not issubclass(candidate, StrictModel):
-                    continue
-                if issubclass(candidate, Params):
-                    continue
-                if not issubclass(candidate, Result):
-                    found[candidate.__name__] = candidate
-                walk(candidate)
-
-    for model in PARAMS_MODELS.values():
-        walk(model)
-    return found
-
-
-NESTED_CONFIG_MODELS = nested_config_models()
-NESTED_CONFIG_NAMES = sorted(NESTED_CONFIG_MODELS)
-
-
 def test_the_nested_walk_reaches_the_configs_a_form_renders() -> None:
     """A guard on the walk itself, not on what it finds.
 
-    A refactor that renames a field or stops a model being reachable would empty
-    this walk, and every assertion below would then pass over nothing.
+    The nested guards are parametrized over what the walk returns. A refactor
+    that renames a field or stops a model being reachable takes that model's
+    guards away with it. Every one of them then passes over what is left. A
+    count admits that trade for anything above the floor; the pinned set names
+    the model that left.
+
+    The merge into ``DECLARING_MODELS`` is checked here for the same reason
+    :func:`params_models` checks its own keys: two models under one key leave one
+    of them unchecked.
     """
-    assert len(NESTED_CONFIG_MODELS) >= 10
-    assert "PoseConfig" in NESTED_CONFIG_MODELS
-    assert "SamplingConfig" in NESTED_CONFIG_MODELS
+    found = frozenset(NESTED_CONFIG_MODELS)
+    appeared = sorted(found - NESTED_CONFIG_EXPECTED)
+    disappeared = sorted(NESTED_CONFIG_EXPECTED - found)
+    drift = (
+        f"the nested walk gained {appeared} and lost {disappeared}. Add a new "
+        f"config to NESTED_CONFIG_EXPECTED once it declares its fields; a lost "
+        f"one means its guards stopped running."
+    )
+    assert found == NESTED_CONFIG_EXPECTED, drift
+
+    shared = sorted(set(PARAMS_MODELS) & found)
+    collide = (
+        f"{shared} name both a Params model and a nested config; one of the two "
+        f"is dropped from DECLARING_MODELS and goes unchecked."
+    )
+    assert not shared, collide
 
 
 @pytest.mark.parametrize("model_name", NESTED_CONFIG_NAMES)
@@ -503,9 +731,10 @@ def test_every_nested_config_field_declares_a_description(model_name: str) -> No
     fails here the day it is added.
     """
     model = NESTED_CONFIG_MODELS[model_name]
-    properties = model.model_json_schema().get("properties", {})
     undescribed = sorted(
-        field for field, spec in properties.items() if not spec.get("description")
+        field
+        for field, spec in field_schemas(model).items()
+        if not spec.get("description")
     )
     assert not undescribed, (
         f"{model_name} declares no description for {undescribed}. "
@@ -513,39 +742,7 @@ def test_every_nested_config_field_declares_a_description(model_name: str) -> No
     )
 
 
-@pytest.mark.parametrize("model_name", NESTED_CONFIG_NAMES)
-def test_no_nested_description_states_the_unit_it_already_declares(
-    model_name: str,
-) -> None:
-    """The units rule reaches the nested configs too."""
-    model = NESTED_CONFIG_MODELS[model_name]
-    offenders: list[str] = []
-    for field, spec in model.model_json_schema().get("properties", {}).items():
-        unit = str(spec.get("x-mosaic-unit", "") or "").strip()
-        description = str(spec.get("description", "") or "")
-        if not unit or not description:
-            continue
-        for token in re.split(r"[^a-z]+", unit.lower()):
-            if len(token) < 2:
-                continue
-            for match in re.finditer(rf"\b{re.escape(token)}\b", description.lower()):
-                before = description.lower()[: match.start()].rstrip()
-                after = description.lower()[match.end() :]
-                # A token naming a column is not the unit restated.
-                if before.endswith("/") or before.endswith("per"):
-                    continue
-                if after.startswith(" column"):
-                    continue
-                offenders.append(f"{field} says {token!r} and declares unit={unit!r}")
-                break
-    assert not offenders, (
-        f"{model_name}: "
-        + "; ".join(offenders)
-        + ". State the quantity and let unit= supply the unit."
-    )
-
-
-@pytest.mark.parametrize("model_name", MODEL_NAMES)
+@pytest.mark.parametrize("model_name", DECLARING_NAMES)
 def test_no_description_states_the_unit_it_already_declares(model_name: str) -> None:
     """``Declared``'s two halves must not say the same thing twice.
 
@@ -560,8 +757,11 @@ def test_no_description_states_the_unit_it_already_declares(model_name: str) -> 
     a commit while the rule was a brief clause with a worked example beside it.
     A unit is a short token, so the match is on a word boundary: "framerate"
     and "seconds" do not trip "frames" or "s".
+
+    A nested config renders the same ``description [unit]`` cell and meets the
+    same bar under the same match.
     """
-    model = PARAMS_MODELS[model_name]
+    model = DECLARING_MODELS[model_name]
     offenders: list[str] = []
     for field, spec in field_schemas(model).items():
         unit = str(spec.get("x-mosaic-unit", "") or "").strip()

@@ -35,6 +35,13 @@ _SMOOTH_WINDOW_DESCRIPTION = (
     "individual's row count."
 )
 
+_FPS_DESCRIPTION = (
+    "Frames per second. When set, dt is derived from the "
+    "frame column (frame_diff / fps) instead of the time column. "
+    "This is more robust for constant-fps data where the time column "
+    "may contain irregular real timestamps."
+)
+
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
     """Forward difference with a step; pads leading values with NaN."""
@@ -161,13 +168,7 @@ class SpeedAngvel:
         smooth_window: Annotated[
             int | None, Declared(_SMOOTH_WINDOW_DESCRIPTION, unit="frames")
         ] = None
-        fps: float | None = Field(
-            default=None,
-            description="Frames per second. When set, dt is derived from the "
-            "frame column (frame_diff / fps) instead of the time column. "
-            "This is more robust for constant-fps data where the time column "
-            "may contain irregular real timestamps.",
-        )
+        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION)] = None
 
     def __init__(
         self,

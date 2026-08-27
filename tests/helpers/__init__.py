@@ -19,6 +19,8 @@ What lives where:
   environment built for an external tool.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
+- ``source_scan`` -- reads a module's source as a tree, for the tests that
+  assert what a code path never reads.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -50,6 +52,12 @@ from tests.helpers.media import (
     write_mpeg4_mp4,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.source_scan import (
+    functions_named,
+    module_tree,
+    names_read,
+    source_tree,
+)
 from tests.helpers.training import FakeTrainer, healthy_probe
 from tests.helpers.tracks import (
     add_track_sequences,
@@ -69,15 +77,19 @@ __all__ = [
     "assert_no_literal_tilde",
     "healthy_probe",
     "clean_facts_cells",
+    "functions_named",
     "inside_a_virtualenv",
     "make_dataset",
     "make_pair_df",
     "make_sequence_df",
     "make_templates",
     "missing_ffmpeg_tools",
+    "module_tree",
+    "names_read",
     "require_ffmpeg",
     "runs_in_an_external_environment",
     "sandbox_home",
+    "source_tree",
     "track_sequences",
     "write_media_index",
     "write_mpeg4_mp4",
