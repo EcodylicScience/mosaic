@@ -278,7 +278,7 @@ OP_CASES: tuple[OpCase, ...] = (
     # An unset ``tracker_overrides`` hashes as null whatever its declared type,
     # so the case above cannot see its shape. This one hashes the resolved
     # table -- every setting of the chosen backend, not the two words the caller
-    # wrote -- which is what ``store_export`` reads through the generic
+    # wrote -- which is what ``_op_digest`` hashes through the generic
     # ``identity_dump()``.
     OpCase(
         case_id="ultralytics/tracker-overrides",

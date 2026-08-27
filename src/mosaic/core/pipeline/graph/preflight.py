@@ -37,9 +37,9 @@ from .resolve import build_step_feature
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
 
-    from ..inventory.model import Entry
 
 __all__ = [
     "REFUSED_EXIT_CODE",

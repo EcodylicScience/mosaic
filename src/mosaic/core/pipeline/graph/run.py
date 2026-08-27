@@ -37,9 +37,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import Entry
 
     from ..inventory.cache import InventoryCache
-    from ..inventory.model import Entry
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore
     from .model import Recipe, Request

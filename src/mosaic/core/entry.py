@@ -6,9 +6,8 @@ parameter model cannot import without pointing ``types`` at a package ``graph``
 and ``tracking`` already import. Declaring the pair here lets ``OpParams`` name
 the entries it runs over while every edge keeps pointing one way.
 
-:mod:`mosaic.core.pipeline.inventory.model` imports both aliases from here and
-re-exports them, so ``from mosaic.core.pipeline.inventory import Entry`` keeps
-working and there is one definition of each.
+Every consumer imports them from here, :mod:`mosaic.core.pipeline.inventory.model`
+included. That module re-exports neither, so this is the one import path.
 """
 
 from __future__ import annotations

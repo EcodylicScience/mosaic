@@ -26,9 +26,10 @@ from typing import TYPE_CHECKING, Final, TypeVar
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, project_to_schema
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
-from mosaic.core.pipeline.inventory.model import ArtifactRecord, Entry, InventoryScope
+from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory._read import IndexReader

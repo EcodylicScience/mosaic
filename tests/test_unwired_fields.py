@@ -17,6 +17,13 @@ names that hold the object in the scanned region, since reading by name alone
 lets any ``np.load`` retire a labels source's ``load`` field. Adding a binding to
 a region therefore means adding its name here.
 
+Each scanned region also gets an unmarked control asserting a field that region
+does read. A ``strict`` xfail reports every failure as an xfail, and a control
+written inside a record could never fire. ``functions_named`` raises on a renamed
+function. A scan narrowed any other way -- a rebound local, an ast node shape the
+walker no longer matches -- leaves every record xfailing against a set that lost
+the field, and the control fails instead.
+
 ``test_every_unwired_field_is_recorded_by_a_test`` ties the two sets together, so
 an eleventh field cannot land with no record. Three of the ten are recorded
 beside their subjects rather than here:
@@ -103,6 +110,16 @@ def _labels_resolution_reads() -> set[str]:
     )
 
 
+def test_the_labels_scan_reports_a_field_the_resolution_reads() -> None:
+    """Pins the scan the three records below are measured against.
+
+    ``kind`` names the ``labels/<kind>`` directory ``_build_labels_lookup``
+    resolves against. It is read whether or not ``source``, ``load`` and
+    ``pattern`` ever are.
+    """
+    assert "kind" in _labels_resolution_reads()
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="GroundTruthLabelsSource.source is declared but never read",
@@ -151,6 +168,29 @@ def test_the_labels_resolution_reads_the_file_pattern() -> None:
 # --- ParquetLoadSpec.frame_column ------------------------------------------
 
 
+def _parquet_load_reads() -> set[str]:
+    """Returns the field names the loader module reads off a ``ParquetLoadSpec``.
+
+    The whole module is scanned rather than the one ``case``, since a reader
+    could equally sit in a validator on the model or in a helper the case calls
+    -- a helper's own parameter is picked up from its annotation.
+    """
+    return names_read(
+        [module_tree(_loaders)],
+        owners={"self", "spec"},
+        destructured_classes={"ParquetLoadSpec"},
+    )
+
+
+def test_the_parquet_scan_reports_a_field_the_loader_reads() -> None:
+    """Pins the scan the record below is measured against.
+
+    ``columns`` is one of the four fields the ``ParquetLoadSpec`` case
+    destructures. It is read whether or not ``frame_column`` ever is.
+    """
+    assert "columns" in _parquet_load_reads()
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="ParquetLoadSpec.frame_column is declared but never read",
@@ -162,19 +202,30 @@ def test_the_parquet_load_reads_the_frame_column() -> None:
     and is published wherever a ``LoadSpec`` is. ``load_from_spec``'s
     ``ParquetLoadSpec`` case destructures ``columns``, ``drop_columns``,
     ``numeric_only`` and ``transpose``, then returns the frame with its index
-    untouched. The whole module is scanned rather than the one ``case``, since a
-    reader could equally sit in a validator on the model or in a helper the case
-    calls -- a helper's own parameter is picked up from its annotation.
+    untouched.
     """
-    reads = names_read(
-        [module_tree(_loaders)],
-        owners={"self", "spec"},
-        destructured_classes={"ParquetLoadSpec"},
-    )
-    assert "frame_column" in reads
+    assert "frame_column" in _parquet_load_reads()
 
 
 # --- TrackSubsample.Params.drop_nan ----------------------------------------
+
+
+def _subsampling_reads() -> set[str]:
+    """Returns the field names ``track_subsample`` reads off its ``Params``."""
+    return names_read(
+        [module_tree(track_subsample_module)],
+        owners={"self", "p", "params", "self.params"},
+        destructured_classes={"Params"},
+    )
+
+
+def test_the_subsampling_scan_reports_a_field_apply_reads() -> None:
+    """Pins the scan the record below is measured against.
+
+    ``method`` selects the branch ``apply()`` takes. It is read whether or not
+    ``drop_nan`` ever is.
+    """
+    assert "method" in _subsampling_reads()
 
 
 @pytest.mark.xfail(
@@ -189,12 +240,7 @@ def test_the_subsampling_reads_drop_nan() -> None:
     the clustering whichever way the flag is set, and the uniform and clip
     methods take a stride over the input untouched.
     """
-    reads = names_read(
-        [module_tree(track_subsample_module)],
-        owners={"self", "p", "params", "self.params"},
-        destructured_classes={"Params"},
-    )
-    assert "drop_nan" in reads
+    assert "drop_nan" in _subsampling_reads()
 
 
 # --- FeralTrainingConfig.wandb_project --------------------------------------

@@ -36,8 +36,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import Entry
 
-    from ..inventory.model import Entry
 
 __all__ = ["graph_writes_tracks", "intended_scope", "media_universe"]
 

@@ -267,7 +267,7 @@ markers = [
 ]
 # A warning is a failure, so that the next one becomes visible at the commit that
 # introduces it rather than joining a running total nobody reads. The suite emits
-# 178 today and they are four things, each listed here with why it is allowed.
+# 178 today and they are five things, each listed here with why it is allowed.
 filterwarnings = [
     "error",
     # Mosaic's own, and deliberate: a read of an unprocessed original whose verdict

@@ -8,6 +8,94 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — every parameter says what it means, and ten identifiers move
+
+**Ten identifiers move, and four of them name a directory on disk.** Six name a
+tracker run root. The other four belong to `resample-tracks`, whose
+`plan_identity` mints its tracks variant from the same dump: every
+`resample-tracks.0.1-*` variant directory and tracks-index row on an existing
+dataset is renamed. `mosaic reconcile --apply` re-addresses a moved artifact
+instead of recomputing it, and registers tracks as one of its three reconcilers.
+
+```
+trex/defaults                            8b7a78f4d5 -> 790baf0eff
+trex/max-individuals                     126b71ad3a -> 2fdfe5dd15
+sleap/single-model                       206c842d1b -> 384a016537
+sleap/top-down                           40cf71a844 -> 2fd813de91
+litpose/single-model                     5e79836525 -> feac95ad89
+litpose/with-overrides                   9d6c0fda6b -> d941098e09
+resample-tracks/30fps                    a9d8b3c46d -> 82815cdde7
+resample-tracks/30fps-prefiltered        8ba92b08a1 -> ed393a19d9
+tracks/resample-variant                  5456f6d608 -> 730bd96918
+tracks/resample-variant-other-upstream   69965f347c -> 2fd213e23e
+```
+
+**Which media a run covered used to decide what its outputs were called.** A
+tracker's `run_id` is minted from its settings dictionary, which names no entry,
+and `resample-tracks` minted both its `run_id` and its tracks variant from
+`identity_dump()`. Running one recipe over a second group of sequences produced
+a second identifier for the same recipe. `groups`, `sequences` and `entries` are
+now `HASH_EXCLUDE` on `TrackerOpParams` and on `ResampleTracksParams`. That
+exclusion moves the ten digests above.
+
+**Every parameter field a client can set now publishes a description.** 801
+fields across 91 parameter models, and 62 more across the 12 nested
+configuration models those point at, declare their prose through `Declared`, a
+marker placed in the field's `Annotated` beside pydantic's own `Field`. `mosaic
+features describe`, `mosaic tracking describe` and mosaic-api's `/features`
+endpoint all serve `model_json_schema()`. A form that draws a control from the
+schema now has a label for every one of those fields.
+
+Three keys are new beside `description`. `x-mosaic-unit` states the quantity's
+unit. `x-mosaic-hash-exclude` marks a field the run identity ignores.
+`x-mosaic-unwired` states why a declared field reaches no code path, which lets
+a client refuse to offer a control that changes nothing.
+
+**A parameter model's schema description is its prose alone, without its field
+list.** pydantic copies `__doc__` into the schema verbatim, and the rendered
+`Attributes:` section that `help()` reads was landing there too, publishing every
+description a second time inside one multi-kilobyte string. A model that
+declares no prose of its own now publishes no description at all, where it used
+to publish its parent's.
+
+**Four tracker entry points take a parameter model instead of loose keyword
+arguments.** `run_trex`, `run_sleap`, `run_litpose` and `run_ultralytics` each
+take one model that both the identity and the work read. A setting can no longer
+reach the tool while the `run_id` stays put. `run_trex_convert` and
+`run_trex_track` take it too, alongside a placement object:
+`TREX_ENV.placed(conda_env=..., bin_path=..., display=...)` overrides the
+`MOSAIC_TREX_*` variables for one call, and naming one aspect states nothing
+about the others. Placement describes a machine, not a result, and reaches no
+`run_id`. SLEAP, Lightning Pose and Ultralytics keep `<tool>_conda_env=` and
+`<tool>_bin=` keyword arguments.
+
+Two consequences reach a direct call that a `mosaic run --kind ...` submission
+never had. A model reference is a string on every tracker now: `run_sleap` and
+`run_litpose` accepted a `Path` and take `str`, matching `run_trex` and
+`run_ultralytics`. And a mistyped scalar -- `peak_threshold=1` where a float is
+meant, `track_window=5.0` where an integer is -- mints the identifier the op
+path already minted for that value. One setting used to name two runs depending
+on which entry point submitted it.
+
+**`TranscodeParams.entry` is removed, and `entries` is the one selector.**
+Parameter models forbid unknown fields, so the singular spelling now raises at
+construction. A repeated entry is collapsed, keeping the order the caller gave.
+
+**Three leaf modules hold what every parameter model shares.** `Params`,
+`HASH_EXCLUDE` and the declaration vocabulary are `mosaic.core.params`;
+`StrictModel` is `mosaic.core.strict_model`; `Entry` and `CameraEntry` are
+`mosaic.core.entry`. Two import paths are retired rather than aliased.
+`from mosaic.core.pipeline.types import Params` raises, and so does `from
+mosaic.core.pipeline.inventory import Entry` -- that module re-exported both
+aliases, and every consumer now names the leaf. `Inputs`, `Result`,
+`ArtifactSpec`, `InputStream`, `DependencyLookup` and the two labels sources
+stay in `mosaic.core.pipeline.types`.
+
+**The suite runs one worker per core.** `pytest` gains `-n auto --dist
+worksteal`, and `pytest-xdist` joins the `test` dependency group beside
+`imgstore`. `-n0` is the opt-out a debugger or `-s` needs. A whole run takes 43
+seconds where it took 358.
+
 ## 0.12.0 — the install has a default worth having
 
 **No identifier moves, and no run on disk is re-addressed.** What changes is what

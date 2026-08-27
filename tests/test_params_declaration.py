@@ -163,7 +163,8 @@ def nested_config_models() -> dict[str, type[StrictModel]]:
         seen.add(model)
         for info in model.model_fields.values():
             annotation = info.annotation
-            candidates = (annotation, *(getattr(annotation, "__args__", ()) or ()))
+            args: tuple[object, ...] = getattr(annotation, "__args__", ()) or ()
+            candidates: tuple[object, ...] = (annotation, *args)
             for candidate in candidates:
                 if not isinstance(candidate, type):
                     continue
@@ -171,9 +172,12 @@ def nested_config_models() -> dict[str, type[StrictModel]]:
                     continue
                 if issubclass(candidate, Params):
                     continue
+                # The ``Result`` test below narrows ``candidate``; ``walk`` takes
+                # the binding from before it.
+                nested: type[StrictModel] = candidate
                 if not issubclass(candidate, Result):
                     found[candidate.__name__] = candidate
-                walk(candidate)
+                walk(nested)
 
     for model in PARAMS_MODELS.values():
         walk(model)
@@ -238,9 +242,9 @@ UNDOCUMENTED_CEILING = 0
 """Only ever lowered. Counts every field a client cannot draw a label for.
 
 The sum of both states rather than the placeholder count alone, which is what
-keeps it monotone through the sweep: declaring an undeclared field with
-:data:`NEEDS_DESCRIPTION` moves it between the two and leaves the sum flat, and
-only writing prose brings it down.
+keeps it monotone through the bulk declaration: declaring an undeclared field
+with :data:`NEEDS_DESCRIPTION` moves it between the two and leaves the sum flat,
+and only writing prose brings it down.
 """
 
 _PENDING_PROSE_NAMED = 10
@@ -471,9 +475,9 @@ def test_the_undocumented_count_only_shrinks() -> None:
     the cheapest way to satisfy that guard would be to declare every field and
     describe none -- a schema full of controls a client can label with nothing.
 
-    Undeclared and placeholder fields are counted together because the sweep
-    moves fields from the first state to the second in bulk. Counting the second
-    alone would make that ceiling climb, which is no ratchet at all.
+    Undeclared and placeholder fields are counted together because the bulk
+    declaration moves fields from the first state to the second. Counting the
+    second alone would make that ceiling climb, which is no ratchet at all.
     """
     undeclared: list[str] = []
     pending: list[str] = []
@@ -753,10 +757,10 @@ def test_no_description_states_the_unit_it_already_declares(model_name: str) -> 
     own unit therefore ships it twice: "The number of epochs to train for.
     [epochs]".
 
-    Written as a test rather than left to review because eight of these reached
-    a commit while the rule was a brief clause with a worked example beside it.
-    A unit is a short token, so the match is on a word boundary: "framerate"
-    and "seconds" do not trip "frames" or "s".
+    Written as a test rather than left to convention because eight of these
+    reached a commit while the rule was a brief clause with a worked example
+    beside it. A unit is a short token, so the match is on a word boundary:
+    "framerate" and "seconds" do not trip "frames" or "s".
 
     A nested config renders the same ``description [unit]`` cell and meets the
     same bar under the same match.

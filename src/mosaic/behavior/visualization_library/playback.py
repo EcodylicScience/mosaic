@@ -13,8 +13,8 @@ from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
-from .helpers import remap_label_value, require_pixel_positions
-from .overlay import prepare_overlay, _remap_overlay_labels
+from .helpers import label_renamer, require_pixel_positions
+from .overlay import prepare_overlay, remap_overlay_labels
 from .video_stream import render_stream
 from .visual_spec import apply_visualization_spec, playback_kwargs_from_spec
 
@@ -42,8 +42,9 @@ def build_overlay(
     if label_maps:
         for feat, mapping in label_maps.items():
             per_id = labels.get("per_id", {}).get(feat, {})
+            rename = label_renamer(mapping)
             for key, series in list(per_id.items()):
-                per_id[key] = series.map(lambda v: remap_label_value(v, mapping))
+                per_id[key] = series.map(rename)
 
     gt_df = None
     if label_kind:
@@ -181,7 +182,7 @@ def play_video(
             tracks_run_id=tracks_run_id,
         )
     elif label_maps:
-        _remap_overlay_labels(overlay, label_maps)
+        remap_overlay_labels(overlay, label_maps)
 
     # Spec can provide defaults, direct args still win.
     if pair_box_feature is None:

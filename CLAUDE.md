@@ -489,8 +489,8 @@ non-artifact status mechanism beside the first is what that avoids.
 [`src/mosaic/core/pipeline/`](src/mosaic/core/pipeline/) owns data loading,
 output writing, dependency resolution, and indexing. **Features own
 computation only.** The public typed surface lives in `pipeline/types/`:
-`Params`, `Inputs`, `Result`, `ArtifactSpec`, `InputStream`,
-`DependencyLookup`, `FeatureLabelsSource`, `GroundTruthLabelsSource`.
+`Inputs`, `Result`, `ArtifactSpec`, `InputStream`, `DependencyLookup`,
+`FeatureLabelsSource`, `GroundTruthLabelsSource`.
 
 ### The inventory: what a dataset holds
 
@@ -653,7 +653,7 @@ src/mosaic/
 │   ├── dataset.py              # Dataset orchestrator
 │   ├── manifest.py             # dataset.yaml models (NOT pipeline/manifest.py)
 │   ├── pipeline/               # feature execution engine, typed protocol
-│   │   ├── types/              # Params, Inputs, Result, ArtifactSpec, ...
+│   │   ├── types/              # Inputs, Result, ArtifactSpec, ...
 │   │   ├── run.py              # run_feature() orchestration
 │   │   ├── manifest.py         # unified manifest + per-sequence iterator
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
@@ -668,6 +668,9 @@ src/mosaic/
 │   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
 │   │   └── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
+│   ├── params.py               # Params + the declaration vocabulary every parameter model shares
+│   ├── entry.py                # Entry / CameraEntry: the (group, sequence) aliases
+│   ├── strict_model.py         # StrictModel: the pydantic base, extra="forbid"
 │   ├── analysis.py             # clustering metrics
 │   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
 │   └── track_library/          # track converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
@@ -691,7 +694,7 @@ src/mosaic/
     │   ├── entry.py            # claim, marker reuse, cascade clearing, adoption
     │   ├── bridge.py           # converted frame -> tracks/<variant>/*.parquet
     │   ├── index.py            # TrackerRunRowBase + the typed run index
-    │   ├── params.py           # TrackerOpParams (scope + HASH_EXCLUDE knobs)
+    │   ├── params.py           # TrackerOpParams (HASH_EXCLUDE execution knobs, scope from OpParams)
     │   └── driver.py           # run_tracker(): the per-entry loop
     ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
     ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export

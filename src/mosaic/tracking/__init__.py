@@ -27,7 +27,9 @@ from mosaic.tracking.ultralytics_track import (
 )
 
 # Explicit re-export: importing the ops subpackage runs its registration side
-# effects (kept import-light; heavy backends load lazily inside each op's run()).
+# effects. This is not an import-light path. The four tracker packages above are
+# imported at module top, so pandas, numpy, cv2 and h5py are loaded well before
+# this line is reached.
 from mosaic.tracking import ops as ops
 
 

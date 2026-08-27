@@ -17,7 +17,11 @@ from pydantic_core import CoreSchema
 from mosaic.core.strict_model import StrictModel
 
 Probability: TypeAlias = Annotated[float, Field(ge=0.0, le=1.0)]
-"""The 0..1 bound every probability-valued parameter shares.
+"""The 0..1 bound, named for the parameters that reuse it.
+
+The name does not claim coverage. Four fields are annotated with it, and more
+0..1 parameters -- probabilities among them -- spell ``Field(ge=0.0, le=1.0)``
+inline instead.
 
 A named ``Annotated`` alias states the bound once, and states the constraint
 alone. A description declared here would land inside the ``anyOf`` branch of
@@ -255,7 +259,7 @@ class Params(StrictModel):
             field_info = cls.model_fields.get(key)
             if field_info is None or field_info.default_factory is None:
                 continue
-            default_obj: object = field_info.get_default(call_default_factory=True)  # pyright: ignore[reportAny]
+            default_obj: object = field_info.get_default(call_default_factory=True)
             if isinstance(default_obj, BaseModel):
                 merged[key] = {**default_obj.model_dump(), **value}
         return cls.model_validate(merged)

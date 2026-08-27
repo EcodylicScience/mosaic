@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.dataset_indexes import feature_storages, label_kinds
 from mosaic.core.pipeline.identity_scheme import read_identity_scheme
@@ -45,7 +46,6 @@ from .model import (
     ArtifactStatus,
     Coverage,
     DatasetInventory,
-    Entry,
     ArtifactRecord,
     FeatureRunRef,
     InventoryScope,

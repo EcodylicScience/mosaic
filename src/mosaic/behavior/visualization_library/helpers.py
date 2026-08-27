@@ -9,6 +9,7 @@ This module contains helper functions used across visualization modules:
 
 from __future__ import annotations
 import hashlib
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Tuple, Any, Optional, Dict
 import numpy as np
@@ -251,7 +252,7 @@ def _lookup_label_series(per_id_map: dict, id_val: Any) -> Optional[pd.Series]:
     return None
 
 
-def remap_label_value(value: Any, mapping: Dict[Any, Any]) -> Any:
+def remap_label_value(value: object, mapping: Mapping[object, object]) -> object:
     """Look a label value up in a rename map, by the value and by its text.
 
     A map declared on ``Params`` is JSON-native and so keyed by strings, while a
@@ -268,6 +269,20 @@ def remap_label_value(value: Any, mapping: Dict[Any, Any]) -> Any:
         return value
     text = str(value)
     return mapping[text] if text in mapping else value
+
+
+def label_renamer(mapping: Mapping[object, object]) -> Callable[[object], object]:
+    """A one-argument rename over *mapping*, for ``Series.map``.
+
+    Binding the map here rather than in a lambda at the call site keeps the
+    rename usable inside a loop over several feature maps: each renamer closes
+    over the map it was built from.
+    """
+
+    def rename(value: object) -> object:
+        return remap_label_value(value, mapping)
+
+    return rename
 
 
 def _scalar_from_series(value: Any) -> Any:

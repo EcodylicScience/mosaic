@@ -22,6 +22,7 @@ import pytest
 import mosaic.core.entry as entry_module
 import mosaic.core.params as params_module
 import mosaic.core.strict_model as strict_model_module
+from tests.helpers import source_tree
 
 LEAF_MODULES = (entry_module, params_module, strict_model_module)
 """The three modules the leaf rule covers, for the guard that reads all of
@@ -36,7 +37,7 @@ def _mosaic_imports(path: Path) -> set[str]:
     import counts too, spelled with its dot count, since a module living
     inside the mosaic package reaches back into it at any level.
     """
-    tree = ast.parse(path.read_text())
+    tree = source_tree(path)
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -68,7 +69,7 @@ def _dynamic_import_names(path: Path) -> set[str]:
     """
     dynamic = {"importlib", "__import__"}
     found: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text())):
+    for node in ast.walk(source_tree(path)):
         if isinstance(node, ast.Name):
             spelled = {node.id}
         elif isinstance(node, ast.Attribute):
