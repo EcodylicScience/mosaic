@@ -22,6 +22,7 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run_root
+from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.run import LitposePredictResult
 
 from tests.helpers import write_media_index
@@ -107,7 +108,7 @@ def litpose(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLitpose]:
 def test_a_fresh_run_predicts_and_bridges(
     ds: Dataset, model: Path, litpose: FakeLitpose
 ) -> None:
-    run_id = dr.run_litpose(ds, model_path=str(model))
+    run_id = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     assert run_id.startswith("litpose.2.3-")
     assert len(litpose.predicted) == 1  # the one gated phase ran once
@@ -139,10 +140,10 @@ def test_a_fresh_run_predicts_and_bridges(
 def test_a_completed_run_reuses_the_inference(
     ds: Dataset, model: Path, litpose: FakeLitpose
 ) -> None:
-    first = dr.run_litpose(ds, model_path=str(model))
+    first = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert len(litpose.predicted) == 1
 
-    second = dr.run_litpose(ds, model_path=str(model))
+    second = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert second == first
     # inference is not re-run: the phase marker proves it is done.
     assert len(litpose.predicted) == 1
@@ -167,7 +168,7 @@ def test_an_interrupted_predict_is_not_trusted(
 
     monkeypatch.setattr(dr, "run_litpose_predict", dying_predict)
     with pytest.raises(RuntimeError):
-        dr.run_litpose(ds, model_path=str(model))
+        dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     # No completion marker was written, so nothing bridged to tracks.
     litpose_root = ds.get_root("litpose")
@@ -179,7 +180,7 @@ def test_an_interrupted_predict_is_not_trusted(
     # A working predict now re-runs (clearing the partial) and bridges to tracks.
     fake = FakeLitpose()
     monkeypatch.setattr(dr, "run_litpose_predict", fake.predict)
-    dr.run_litpose(ds, model_path=str(model))
+    dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert len(fake.predicted) == 1  # the partial was not reused
     assert len(read_tracks_index(ds)) == 1
 
@@ -190,10 +191,10 @@ def test_an_interrupted_predict_is_not_trusted(
 def test_overwrite_forces_a_recompute(
     ds: Dataset, model: Path, litpose: FakeLitpose
 ) -> None:
-    dr.run_litpose(ds, model_path=str(model))
+    dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert len(litpose.predicted) == 1
 
-    dr.run_litpose(ds, model_path=str(model), overwrite=True)
+    dr.run_litpose(ds, LitposeParams(model_path=str(model), overwrite=True))
     assert len(litpose.predicted) == 2  # inference ran again
 
 
@@ -206,8 +207,8 @@ def test_different_weights_are_a_different_run(
     m1 = _make_model(tmp_path / "m1", weights=b"weights-A")
     m2 = _make_model(tmp_path / "m2", weights=b"weights-B")
 
-    a = dr.run_litpose(ds, model_path=str(m1))
-    b = dr.run_litpose(ds, model_path=str(m2))
+    a = dr.run_litpose(ds, LitposeParams(model_path=str(m1)))
+    b = dr.run_litpose(ds, LitposeParams(model_path=str(m2)))
     assert a != b
     assert litpose_run_root(ds, a) != litpose_run_root(ds, b)
 
@@ -222,8 +223,8 @@ def test_a_different_config_is_a_different_run(
     (m2 / "config.yaml").write_text(
         "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
     )
-    a = dr.run_litpose(ds, model_path=str(m1))
-    b = dr.run_litpose(ds, model_path=str(m2))
+    a = dr.run_litpose(ds, LitposeParams(model_path=str(m1)))
+    b = dr.run_litpose(ds, LitposeParams(model_path=str(m2)))
     assert a != b
 
 
@@ -240,10 +241,10 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     reused a prediction over content that no longer exists.
     """
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    run_id = dr.run_litpose(ds, model_path=str(model))
+    run_id = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
-    second = dr.run_litpose(ds, model_path=str(model))
+    second = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     assert second == run_id, "settings did not change, so neither does the identity"
     assert len(litpose.predicted) == 2, "the replaced video was not re-predicted"
@@ -254,12 +255,12 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
 ) -> None:
     """The other direction, and the saving the uid comparison buys."""
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    run_id = dr.run_litpose(ds, model_path=str(model))
+    run_id = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     write_media_index(
         ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
     )
-    second = dr.run_litpose(ds, model_path=str(model))
+    second = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     assert second == run_id
     assert len(litpose.predicted) == 1, "the same bytes were predicted twice"
@@ -269,10 +270,10 @@ def test_an_absent_uid_still_falls_back_to_the_path(
     ds: Dataset, model: Path, litpose: FakeLitpose
 ) -> None:
     """Media indexed before the identity columns carries no uid."""
-    run_id = dr.run_litpose(ds, model_path=str(model))
+    run_id = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
 
-    second = dr.run_litpose(ds, model_path=str(model))
+    second = dr.run_litpose(ds, LitposeParams(model_path=str(model)))
 
     assert second == run_id
     assert len(litpose.predicted) == 2, "a changed source with no uid must re-predict"
@@ -326,7 +327,7 @@ def test_a_training_run_id_reaches_the_weights_that_run_produced(
     training_run_id = "train-litpose.0.1-81dcc883b6"
     _register_training_run(ds, model, training_run_id)
 
-    run_id = dr.run_litpose(ds, model_path=training_run_id)
+    run_id = dr.run_litpose(ds, LitposeParams(model_path=training_run_id))
 
     assert run_id.startswith("litpose.2.3-")
     assert litpose.predicted, "the run resolved its model but never predicted"

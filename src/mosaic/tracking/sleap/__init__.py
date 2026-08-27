@@ -23,8 +23,10 @@ Usage
 
 The dataset-level entry point runs it as a tracked, tracks-integrated job:
 
->>> from mosaic.tracking.sleap import run_sleap
->>> run_sleap(ds, model_paths=["models/td_centroid", "models/td_instance"])
+>>> from mosaic.tracking.sleap import SleapParams, run_sleap
+>>> run_sleap(
+...     ds, SleapParams(model_paths=["models/td_centroid", "models/td_instance"]),
+... )
 
 Equivalently set ``MOSAIC_SLEAP_CONDA_ENV=sleap`` once and drive it from the
 ``mosaic run --kind sleap`` op.
@@ -35,6 +37,7 @@ from mosaic.tracking.sleap.dataset_runs import (
     list_sleap_runs,
     run_sleap,
 )
+from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import (
     SleapConvertResult,
     SleapError,
@@ -49,6 +52,7 @@ __all__ = [
     "SleapError",
     "SleapIndexRow",
     "SleapNotFoundError",
+    "SleapParams",
     "SleapTrackResult",
     "list_sleap_runs",
     "run_sleap",

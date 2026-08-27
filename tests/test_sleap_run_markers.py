@@ -22,6 +22,7 @@ import mosaic.tracking.sleap.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
+from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
 
 from tests.helpers import write_media_index
@@ -105,7 +106,7 @@ def _tracks_rows(ds: Dataset) -> pd.DataFrame:
 def test_a_fresh_run_infers_converts_and_bridges(
     ds: Dataset, model: Path, sleap: FakeSleap
 ) -> None:
-    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+    run_id = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     assert run_id.startswith("sleap.1.6-")
     assert sleap.tracked and sleap.converted  # both phases ran once
@@ -135,10 +136,10 @@ def test_a_fresh_run_infers_converts_and_bridges(
 def test_a_completed_run_reuses_the_inference(
     ds: Dataset, model: Path, sleap: FakeSleap
 ) -> None:
-    first = dr.run_sleap(ds, model_paths=[str(model)])
+    first = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     assert len(sleap.tracked) == 1
 
-    second = dr.run_sleap(ds, model_paths=[str(model)])
+    second = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     assert second == first
     # inference is not re-run: the phase marker proves it is done, and the .h5
     # already exists so the analysis export is not re-run either.
@@ -167,7 +168,7 @@ def test_an_interrupted_analysis_export_is_not_trusted(
 
     monkeypatch.setattr(dr, "run_sleap_convert", dying_convert)
     with pytest.raises(RuntimeError):
-        dr.run_sleap(ds, model_paths=[str(model)])
+        dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     sleap_root = ds.get_root("sleap")
     # Inference finished (its .slp and marker are valid) but no canonical .h5 was
@@ -179,7 +180,7 @@ def test_an_interrupted_analysis_export_is_not_trusted(
     # A working export now publishes the canonical .h5 and bridges to tracks,
     # WITHOUT re-running the already-complete inference.
     monkeypatch.setattr(dr, "run_sleap_convert", fake.convert)
-    dr.run_sleap(ds, model_paths=[str(model)])
+    dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     assert len(fake.tracked) == 1  # inference reused
     assert list(sleap_root.rglob("*.analysis.h5"))
     assert len(read_tracks_index(ds)) == 1
@@ -191,10 +192,10 @@ def test_an_interrupted_analysis_export_is_not_trusted(
 def test_overwrite_forces_a_recompute(
     ds: Dataset, model: Path, sleap: FakeSleap
 ) -> None:
-    dr.run_sleap(ds, model_paths=[str(model)])
+    dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     assert len(sleap.tracked) == 1
 
-    dr.run_sleap(ds, model_paths=[str(model)], overwrite=True)
+    dr.run_sleap(ds, SleapParams(model_paths=[str(model)], overwrite=True))
     assert len(sleap.tracked) == 2  # inference ran again
 
 
@@ -211,8 +212,8 @@ def test_different_weights_are_a_different_run(
     (m1 / "best.ckpt").write_bytes(b"weights-A")
     (m2 / "best.ckpt").write_bytes(b"weights-B")
 
-    a = dr.run_sleap(ds, model_paths=[str(m1)])
-    b = dr.run_sleap(ds, model_paths=[str(m2)])
+    a = dr.run_sleap(ds, SleapParams(model_paths=[str(m1)]))
+    b = dr.run_sleap(ds, SleapParams(model_paths=[str(m2)]))
     assert a != b
     assert sleap_run_root(ds, a) != sleap_run_root(ds, b)
 
@@ -231,10 +232,10 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     recorded ``source_uid`` on its markers and never read it back.
     """
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+    run_id = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
-    second = dr.run_sleap(ds, model_paths=[str(model)])
+    second = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     assert second == run_id, "settings did not change, so neither does the identity"
     assert len(sleap.tracked) == 2, "the replaced video was not re-inferred"
@@ -250,12 +251,12 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     the inference; the uid says it is the same video.
     """
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
-    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+    run_id = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     write_media_index(
         ds, ["vid1"], filenames={"vid1": "renamed.mp4"}, uids={"vid1": "uid-aaa"}
     )
-    second = dr.run_sleap(ds, model_paths=[str(model)])
+    second = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     assert second == run_id
     assert len(sleap.tracked) == 1, "the same bytes were inferred twice"
@@ -269,10 +270,10 @@ def test_an_absent_uid_still_falls_back_to_the_path(
     Dropping the path comparison would remove the source guard from exactly the
     datasets that cannot supply a uid.
     """
-    run_id = dr.run_sleap(ds, model_paths=[str(model)])
+    run_id = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     write_media_index(ds, ["vid1"], filenames={"vid1": "vid2.mp4"})
 
-    second = dr.run_sleap(ds, model_paths=[str(model)])
+    second = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
     assert second == run_id
     assert len(sleap.tracked) == 2, "a changed source with no uid must re-infer"
@@ -325,7 +326,7 @@ def test_a_training_run_id_reaches_the_weights_that_run_produced(
     training_run_id = "train-sleap.0.1-4b57beb256"
     _register_training_run(ds, model, training_run_id)
 
-    run_id = dr.run_sleap(ds, model_paths=[training_run_id])
+    run_id = dr.run_sleap(ds, SleapParams(model_paths=[training_run_id]))
 
     assert run_id.startswith("sleap.1.6-")
     assert sleap.tracked, "the run resolved its model but never inferred"
@@ -351,8 +352,8 @@ def test_naming_the_training_run_records_lineage_a_path_cannot(
     training_run_id = "train-sleap.0.1-4b57beb256"
     _register_training_run(ds, model, training_run_id)
 
-    by_directory = dr.run_sleap(ds, model_paths=[str(model)])
-    by_run_id = dr.run_sleap(ds, model_paths=[training_run_id])
+    by_directory = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
+    by_run_id = dr.run_sleap(ds, SleapParams(model_paths=[training_run_id]))
 
     assert by_run_id != by_directory
     sidx = pd.read_csv(sleap_index_path(ds))

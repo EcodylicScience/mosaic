@@ -30,14 +30,13 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
@@ -75,6 +74,7 @@ from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.model_refs import resolve_model_set
+from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.version import (
     SLEAP_KIND,
     SLEAP_VERSION,
@@ -129,38 +129,38 @@ def sleap_run_id(settings: Mapping[str, object]) -> str:
     return op_run_id(SLEAP_KIND, SLEAP_VERSION, dict(settings))
 
 
-def sleap_settings(
-    *,
-    model_id: str,
-    tracking: bool,
-    tracker: str,
-    similarity: str,
-    match: str,
-    track_window: int,
-    max_instances: int | None,
-    max_tracking: int | None,
-    peak_threshold: float,
-    analysis_range: tuple[int, int] | None,
-    sleap_extra_settings: Mapping[str, object] | None,
-) -> dict[str, object]:
+def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
     """Build the settings that define a SLEAP tracking result -- the ``run_id`` payload.
 
     The model is carried as its content digest (``model_id``), never a path. When
     tracking is off, the tracker knobs are dropped from identity so retuning them
     cannot bust a cache they never fed.
+
+    Args:
+        params: The run's parameters.
+            :class:`~mosaic.tracking.sleap.params.SleapParams` describes every
+            field. The scope and execution knobs are excluded from identity and
+            stay out of the payload.
+        model_id: The weights' identity -- a training ``run_id`` or a content
+            digest, never a path. The caller resolves it, because a bare weights
+            path is a mutable key: swapping the checkpoint in place would let two
+            different runs share one identifier.
     """
+    tracking = params.tracking
     return {
         "model": model_id,
         "tracking": tracking,
-        "tracker": tracker if tracking else None,
-        "similarity": similarity if tracking else None,
-        "match": match if tracking else None,
-        "track_window": track_window if tracking else None,
-        "max_instances": max_instances,
-        "max_tracking": max_tracking,
-        "peak_threshold": peak_threshold,
-        "analysis_range": list(analysis_range) if analysis_range else None,
-        "sleap_extra_settings": sleap_extra_settings,
+        "tracker": params.tracker if tracking else None,
+        "similarity": params.similarity if tracking else None,
+        "match": params.match if tracking else None,
+        "track_window": params.track_window if tracking else None,
+        "max_instances": params.max_instances,
+        "max_tracking": params.max_tracking,
+        "peak_threshold": params.peak_threshold,
+        "analysis_range": (
+            list(params.analysis_range) if params.analysis_range else None
+        ),
+        "sleap_extra_settings": params.sleap_extra_settings,
     }
 
 
@@ -230,29 +230,10 @@ def _bridge_analysis_h5_to_tracks(
 
 def run_sleap(
     ds: Dataset,
+    params: SleapParams,
     *,
-    model_paths: Sequence[Path | str],
-    entries: Iterable[Entry] | None = None,
-    # tracking
-    tracking: bool = True,
-    tracker: str = "flow",
-    similarity: str = "instance",
-    match: str = "hungarian",
-    track_window: int = 5,
-    max_instances: int | None = None,
-    max_tracking: int | None = None,
-    peak_threshold: float = 0.2,
-    analysis_range: tuple[int, int] | None = None,
-    sleap_extra_settings: Mapping[str, object] | None = None,
-    # execution
-    batch_size: int = 4,
-    device: str | None = None,
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
     sleap_conda_env: str | None = None,
     sleap_bin: Path | str | None = None,
-    overwrite: bool = False,
-    convert_to_tracks: bool = True,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -265,6 +246,19 @@ def run_sleap(
     ctx: JobContext | None = None,
 ) -> str:
     """Run SLEAP (infer + track) over scoped videos as a tracked job.
+
+    *params* states what to run and which entries to run it over;
+    :class:`~mosaic.tracking.sleap.params.SleapParams` describes every field.
+    The Job-Contract knobs beside it (``execution_id`` / ``owner`` / ``track`` /
+    ``progress_callback`` / ``cancel_token``) open the run's context, and *ctx*
+    runs inside one that is already open instead.
+
+    ``sleap_conda_env`` and ``sleap_bin`` are the top two rungs of the location
+    ladder, for a caller holding more than one SLEAP environment; below them the
+    console scripts are found through ``MOSAIC_SLEAP_CONDA_ENV`` /
+    ``MOSAIC_SLEAP_BIN`` and then ``$PATH``. They name a machine rather than a
+    result, so they reach no identifier and the op does not carry them: a queued
+    job would ship a path that means something else on the host that runs it.
 
     Returns the content-addressed ``run_id``.
     """
@@ -283,22 +277,10 @@ def run_sleap(
     # artifact shape is unaffected: ``MODEL_KINDS`` declares ``train-sleap`` as
     # SLEAP's own spec for exactly this.
     resolved_models = resolve_model_set(
-        ds, [str(m) for m in model_paths], TRAIN_SLEAP_KIND
+        ds, [str(m) for m in params.model_paths], TRAIN_SLEAP_KIND
     )
 
-    settings = sleap_settings(
-        model_id=resolved_models.model_id,
-        tracking=tracking,
-        tracker=tracker,
-        similarity=similarity,
-        match=match,
-        track_window=track_window,
-        max_instances=max_instances,
-        max_tracking=max_tracking,
-        peak_threshold=peak_threshold,
-        analysis_range=analysis_range,
-        sleap_extra_settings=sleap_extra_settings,
-    )
+    settings = sleap_settings(params, model_id=resolved_models.model_id)
     minted = mint_tracker_run(
         ds,
         kind=SLEAP_KIND,
@@ -311,12 +293,13 @@ def run_sleap(
             "model_type": resolved_models.model_type,
         },
     )
-    scope = ds.resolve_media_scope(entries)
+    scope = ds.resolve_media_scope(params.entries)
     if not scope:
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
     # sleap-track takes a frame selection as one "start-end" token.
+    analysis_range = params.analysis_range
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
 
     def track_one(job: EntryJob) -> SleapIndexRow | None:
@@ -347,7 +330,7 @@ def run_sleap(
         if reusable is None:
             clear_phase_marker(work_dir, "track")
             clear_outputs(work_dir, SLEAP_KIND, "track")
-            track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            track_claim = claim(seq_ctx, work_dir, "track", params.idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
             # SLEAP opens the path itself, so an imgstore recording resolves to
             # the plain video export-store wrote for it. Resolved here rather
@@ -357,24 +340,26 @@ def run_sleap(
                 resolve_tool_input(job.ds, item, kind=SLEAP_KIND),
                 slp_path,
                 model_paths=resolved_models.paths,
-                tracking=tracking,
-                tracker=tracker,
-                similarity=similarity,
-                match=match,
-                track_window=track_window,
-                max_instances=max_instances,
-                max_tracking=max_tracking,
-                peak_threshold=peak_threshold,
-                batch_size=batch_size,
+                tracking=params.tracking,
+                tracker=params.tracker,
+                similarity=params.similarity,
+                match=params.match,
+                track_window=params.track_window,
+                max_instances=params.max_instances,
+                max_tracking=params.max_tracking,
+                peak_threshold=params.peak_threshold,
+                batch_size=params.batch_size,
                 frames=frames_arg,
-                device=device,
-                extra_settings=sleap_extra_settings,
-                idle_timeout=idle_timeout,
-                max_runtime=max_runtime,
+                device=params.device,
+                extra_settings=params.sleap_extra_settings,
+                idle_timeout=params.idle_timeout,
+                max_runtime=params.max_runtime,
                 sleap_conda_env=sleap_conda_env,
                 sleap_bin=sleap_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(seq_ctx, work_dir, track_claim, idle_timeout),
+                on_output=phase_activity(
+                    seq_ctx, work_dir, track_claim, params.idle_timeout
+                ),
             )
             slp_out = track_result.slp_path
             track_marker = record_phase(
@@ -405,16 +390,18 @@ def run_sleap(
             h5_path.unlink(missing_ok=True)
             h5_tmp = work_dir / f"{item.key}.analysis.h5.partial"
             h5_tmp.unlink(missing_ok=True)
-            export_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            export_claim = claim(seq_ctx, work_dir, "track", params.idle_timeout)
             convert_result = run_sleap_convert(
                 slp_out,
                 h5_tmp,
-                idle_timeout=idle_timeout,
-                max_runtime=max_runtime,
+                idle_timeout=params.idle_timeout,
+                max_runtime=params.max_runtime,
                 sleap_conda_env=sleap_conda_env,
                 sleap_bin=sleap_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(seq_ctx, work_dir, export_claim, idle_timeout),
+                on_output=phase_activity(
+                    seq_ctx, work_dir, export_claim, params.idle_timeout
+                ),
             )
             os.replace(convert_result.analysis_h5_path, h5_path)
             h5_tmp.unlink(missing_ok=True)
@@ -446,7 +433,7 @@ def run_sleap(
             analysis_h5_path=job.ds.relative_to_root(h5_path),
         )
 
-        if not convert_to_tracks:
+        if not params.convert_to_tracks:
             return row
         bridged = publish_or_record(
             job.ctx,
@@ -475,7 +462,7 @@ def run_sleap(
         work_items=build_work_items(ds, scope, kind=SLEAP_KIND),
         index=sleap_index(sleap_index_path(ds)),
         run_entry=track_one,
-        overwrite=overwrite,
+        overwrite=params.overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

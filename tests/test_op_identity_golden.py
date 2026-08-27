@@ -474,25 +474,27 @@ def _sleap_run_id_settings() -> str:
     a fully green suite.
 
     ``tracking`` is True because the tracker knobs are dropped from identity when
-    it is False -- the True case is the one that carries every key.
+    it is False -- the True case is the one that carries every key. The model
+    reference on the params is not read here: the payload records the identity
+    the caller resolved it to, passed beside it.
     """
     from mosaic.tracking.sleap.dataset_runs import sleap_run_id, sleap_settings
+    from mosaic.tracking.sleap.params import SleapParams
 
-    return sleap_run_id(
-        sleap_settings(
-            model_id="0123456789abcdef",
-            tracking=True,
-            tracker="flow",
-            similarity="instance",
-            match="hungarian",
-            track_window=5,
-            max_instances=4,
-            max_tracking=4,
-            peak_threshold=0.2,
-            analysis_range=None,
-            sleap_extra_settings=None,
-        )
+    params = SleapParams(
+        model_paths=["models/centroid"],
+        tracking=True,
+        tracker="flow",
+        similarity="instance",
+        match="hungarian",
+        track_window=5,
+        max_instances=4,
+        max_tracking=4,
+        peak_threshold=0.2,
+        analysis_range=None,
+        sleap_extra_settings=None,
     )
+    return sleap_run_id(sleap_settings(params, model_id="0123456789abcdef"))
 
 
 def _litpose_run_id_settings() -> str:
@@ -503,13 +505,10 @@ def _litpose_run_id_settings() -> str:
     in without noticing.
     """
     from mosaic.tracking.litpose.dataset_runs import litpose_run_id, litpose_settings
+    from mosaic.tracking.litpose.params import LitposeParams
 
-    return litpose_run_id(
-        litpose_settings(
-            model_id="0123456789abcdef",
-            litpose_overrides=None,
-        )
-    )
+    params = LitposeParams(model_path="models/litpose_model", litpose_overrides=None)
+    return litpose_run_id(litpose_settings(params, model_id="0123456789abcdef"))
 
 
 # The per-sequence composition hashes (item 4.4). Function cases for the same

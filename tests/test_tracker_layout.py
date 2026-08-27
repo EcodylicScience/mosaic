@@ -33,6 +33,8 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
+from mosaic.tracking.litpose.params import LitposeParams
+from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.params import TrexParams
 
 # Marker fields this file does not own. Masked rather than dropped, so a field
@@ -216,7 +218,7 @@ def test_litpose_leaves_this_shape(
 ) -> None:
     import mosaic.tracking.litpose.dataset_runs as litpose_runs
 
-    run_id = litpose_runs.run_litpose(ds, model_path=str(litpose_model))
+    run_id = litpose_runs.run_litpose(ds, LitposeParams(model_path=str(litpose_model)))
     got = snapshot(ds, "litpose", run_id)
 
     assert got["files"] == [
@@ -352,7 +354,7 @@ def test_sleap_leaves_this_shape(
 ) -> None:
     import mosaic.tracking.sleap.dataset_runs as sleap_runs
 
-    run_id = sleap_runs.run_sleap(ds, model_paths=[str(sleap_model)])
+    run_id = sleap_runs.run_sleap(ds, SleapParams(model_paths=[str(sleap_model)]))
     got = snapshot(ds, "sleap", run_id)
 
     # The .h5 sits beside the .slp with no marker of its own: it is the ungated,
