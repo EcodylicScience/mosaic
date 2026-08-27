@@ -24,15 +24,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
 from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from .types import SamplingConfig
 
 import pywt  # pyright: ignore[reportUnknownVariableType]
-
-_SAMPLING_DESCRIPTION = (
-    "Frame rate settings. Only fps_default is read; smoothing is not applied."
-)
 
 _F_MIN_DESCRIPTION = "Minimum frequency of the CWT frequency band."
 
@@ -96,8 +93,8 @@ class PairWavelet:
         pass
 
     class Params(Params):
-        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
-            default_factory=SamplingConfig
+        sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
+            Field(default_factory=SamplingConfig)
         )
         f_min: Annotated[
             float, Field(gt=0), Declared(_F_MIN_DESCRIPTION, unit="Hz")

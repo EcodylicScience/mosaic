@@ -25,6 +25,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns, meta_columns
+from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 
 # --- Computation helpers ---
@@ -226,13 +227,6 @@ _FPS_DESCRIPTION = "The frame rate used to convert win_sec into a frame count."
 
 _WIN_SEC_DESCRIPTION = "The width of the pooling window."
 
-_PAIR_FILTER_DESCRIPTION = (
-    "Unset, every row is read. A nearest-neighbor result narrows the "
-    "input, while it loads, to rows where one individual in the pair "
-    "is the other's nearest neighbor. On an input without id1/id2 "
-    "columns, the filter has no effect."
-)
-
 
 @final
 @register_feature
@@ -283,7 +277,7 @@ class TemporalStackingFeature:
         win_sec: Annotated[float, Declared(_WIN_SEC_DESCRIPTION, unit="s")] = Field(
             default=0.5, gt=0
         )
-        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+        pair_filter: Annotated[NNResult | None, Declared(PAIR_FILTER_DESCRIPTION)] = (
             None
         )
 

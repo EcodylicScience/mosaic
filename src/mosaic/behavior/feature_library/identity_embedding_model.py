@@ -42,6 +42,13 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ._identity_model_descriptions import (
+    CHANNELS_DESCRIPTION,
+    CROP_ROOT_DESCRIPTION,
+    GROUP_AS_IDENTITY_DESCRIPTION,
+    IDENTITIES_DESCRIPTION,
+    WEIGHTS_NAME_DESCRIPTION,
+)
 from .registry import register_feature
 
 # --- Model artifact ---
@@ -85,17 +92,6 @@ _MODEL_DESCRIPTION = (
     "group_as_identity."
 )
 
-_IDENTITIES_DESCRIPTION = (
-    "An explicit mapping of identity name to the sequences containing "
-    "that individual alone. Takes precedence over group_as_identity."
-)
-
-_GROUP_AS_IDENTITY_DESCRIPTION = (
-    "Treat each sequence's group name as its identity, instead of "
-    "listing sequences explicitly under identities. Ignored when "
-    "identities is set."
-)
-
 _MODEL_NAME_DESCRIPTION = (
     "A bare timm architecture tag or a Hugging Face hub id naming the "
     "frozen embedding backbone. Mosaic ships no weights, and whatever "
@@ -107,25 +103,9 @@ _IMAGE_SIZE_DESCRIPTION = (
     "the backbone's declared input size."
 )
 
-_CHANNELS_DESCRIPTION = (
-    "How many channels the crop image is read from disk with. 1 reads "
-    "grayscale and is replicated to 3 channels before the backbone "
-    "reads it. Any other value reads 3-channel RGB."
-)
-
 _BATCH_SIZE_DESCRIPTION = "The embedding batch size."
 
 _MAX_IMAGES_PER_IDENTITY_DESCRIPTION = "The cap on training crops kept per identity."
-
-_WEIGHTS_NAME_DESCRIPTION = (
-    "The filename stem for the exported checkpoint, written as <weights_name>.pth."
-)
-
-_CROP_ROOT_DESCRIPTION = (
-    "Override for the directory EgocentricCrop output is read from. "
-    "When it names no readable directory, the directory the loaded "
-    "input came from is used instead."
-)
 
 
 @final
@@ -202,10 +182,10 @@ class GlobalIdentityEmbedding:
 
         # Primary: explicit identity -> sequences mapping
         identities: Annotated[
-            dict[str, list[str]] | None, Declared(_IDENTITIES_DESCRIPTION)
+            dict[str, list[str]] | None, Declared(IDENTITIES_DESCRIPTION)
         ] = None
         # Convenience shortcut: treat each group as one identity
-        group_as_identity: Annotated[bool, Declared(_GROUP_AS_IDENTITY_DESCRIPTION)] = (
+        group_as_identity: Annotated[bool, Declared(GROUP_AS_IDENTITY_DESCRIPTION)] = (
             False
         )
 
@@ -219,7 +199,7 @@ class GlobalIdentityEmbedding:
             tuple[int, int] | None, Declared(_IMAGE_SIZE_DESCRIPTION, unit="px")
         ] = None
         channels: Annotated[
-            int, Field(examples=[1, 3]), Declared(_CHANNELS_DESCRIPTION)
+            int, Field(examples=[1, 3]), Declared(CHANNELS_DESCRIPTION)
         ] = 3
 
         # Inference
@@ -233,12 +213,12 @@ class GlobalIdentityEmbedding:
         ] = Field(default=2000, ge=1)
 
         # Export
-        weights_name: Annotated[str, Declared(_WEIGHTS_NAME_DESCRIPTION)] = (
+        weights_name: Annotated[str, Declared(WEIGHTS_NAME_DESCRIPTION)] = (
             "identity_embedding"
         )
 
         # Path to EgocentricCrop output root.
-        crop_root: Annotated[str | None, Declared(_CROP_ROOT_DESCRIPTION)] = None
+        crop_root: Annotated[str | None, Declared(CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
         self,
