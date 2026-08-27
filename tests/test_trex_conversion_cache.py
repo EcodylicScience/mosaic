@@ -28,7 +28,11 @@ import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline._utils import hash_params
-from mosaic.core.pipeline.markers import read_phase_marker, write_phase_marker
+from mosaic.core.pipeline.markers import (
+    phase_fields,
+    read_phase_marker,
+    write_phase_marker,
+)
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
@@ -37,6 +41,7 @@ from mosaic.tracking.trex.conversion_cache import (
     CONVERT_KIND,
     conversion_run_id,
 )
+from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 from mosaic.tracking.trex.version import TREX_VERSION
 
@@ -216,7 +221,7 @@ def test_the_slot_run_id_is_the_convert_phase_hash(ds: Dataset, trex: FakeTrex) 
     the gate and the address disagree, and every slot would then miss forever
     while looking correct.
     """
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     parsed = parse_op_run_id(slot.parent.name)
     assert parsed is not None
@@ -232,7 +237,7 @@ def test_the_slot_name_carries_the_source_and_the_recipe(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """Both terms in the path is what makes a published slot immutable."""
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     assert slot.name == "uid-vid1"
     assert slot.parent.name.startswith(f"{CONVERT_KIND}.{TREX_VERSION}-")
@@ -240,9 +245,9 @@ def test_the_slot_name_carries_the_source_and_the_recipe(
 
 def test_a_track_only_change_reuses_the_conversion(ds: Dataset, trex: FakeTrex) -> None:
     """The feature: a sweep converts once and tracks many times."""
-    _ = dr.run_trex(ds, track_max_speed=50)
-    _ = dr.run_trex(ds, track_max_speed=120)
-    _ = dr.run_trex(ds, track_max_speed=200)
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=50))
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=120))
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=200))
 
     assert len(trex.converted) == 1, "a track-only change must not reconvert"
     assert len(trex.tracked) == 3
@@ -251,8 +256,8 @@ def test_a_track_only_change_reuses_the_conversion(ds: Dataset, trex: FakeTrex) 
 
 def test_a_convert_change_mints_a_new_slot(ds: Dataset, trex: FakeTrex) -> None:
     """A cache keyed too loosely would serve a `.pv` made under other detection."""
-    _ = dr.run_trex(ds, detect_conf_threshold=0.5)
-    _ = dr.run_trex(ds, detect_conf_threshold=0.9)
+    _ = dr.run_trex(ds, TrexParams(detect_conf_threshold=0.5))
+    _ = dr.run_trex(ds, TrexParams(detect_conf_threshold=0.9))
 
     assert len(trex.converted) == 2
     assert len(slots(ds)) == 2
@@ -262,10 +267,10 @@ def test_a_replaced_source_video_mints_a_different_slot(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """Same path, new bytes: never the same conversion, and never rewritten."""
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     first = slot_of(ds, "uid-vid1")
     write_media(ds, sequence="vid1", uid="uid-replaced")
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
 
     assert len(trex.converted) == 2
     assert first.exists(), "a published slot is never rebuilt in place"
@@ -281,7 +286,7 @@ def test_media_without_a_uid_converts_in_place_and_says_so(
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     write_media(dataset, sequence="vid1", uid="")
 
-    run_id = dr.run_trex(dataset)
+    run_id = dr.run_trex(dataset, TrexParams())
     assert slots(dataset) == []
     marker = read_phase_marker(dataset.get_root("trex") / run_id / "vid1", "convert")
     assert marker is not None
@@ -314,8 +319,8 @@ def test_a_cache_hit_and_a_fresh_convert_produce_one_identity(
         if name == "warm":
             # Prime the cache with a run at other tracking settings, so the run
             # under test is a hit rather than a conversion.
-            _ = dr.run_trex(dataset, track_max_speed=999)
-        warm_ids.append(dr.run_trex(dataset, track_max_speed=50))
+            _ = dr.run_trex(dataset, TrexParams(track_max_speed=999))
+        warm_ids.append(dr.run_trex(dataset, TrexParams(track_max_speed=50)))
         table = sorted(dataset.get_root("tracks").rglob("*.parquet"))
         tables.append(pd.read_parquet(table[-1]))
         if name == "warm":
@@ -339,7 +344,7 @@ def test_the_track_argv_names_the_conversions_settings_file(
     not an error. Everything the conversion recorded would fall back to what
     ``detect_type`` implies, and the run would say nothing about it.
     """
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     settings_path = trex.track_kwargs[0]["settings_path"]
     assert isinstance(settings_path, Path)
     assert settings_path.is_absolute(), "a relative -s resolves under -d"
@@ -354,7 +359,7 @@ def test_no_settings_file_means_no_dash_s(ds: Dataset, trex: FakeTrex) -> None:
     must keep tracking exactly as they did.
     """
     trex.write_settings = False
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     assert trex.track_kwargs[0]["settings_path"] is None
 
 
@@ -369,7 +374,7 @@ def test_a_conversion_without_settings_is_not_published(
     made it -- which is exactly where it lived before this cache existed.
     """
     trex.write_settings = False
-    run_id = dr.run_trex(ds)
+    run_id = dr.run_trex(ds, TrexParams())
     assert slots(ds) == [], (
         "an unpublished slot must not be left behind: an empty directory carries "
         "no marker, which the sweeper refuses as `foreign` permanently"
@@ -383,11 +388,11 @@ def test_a_cache_hit_without_a_settings_file_reconverts(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """A `.pv` whose parameters are gone is a miss, never a silent hit."""
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     (slot_of(ds) / f"{CONVERSION_STEM}.settings").unlink()
     shutil.rmtree(ds.get_root("trex"))
 
-    _ = dr.run_trex(ds, track_max_speed=120)
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=120))
     assert len(trex.converted) == 2
 
 
@@ -403,7 +408,7 @@ def test_the_conversion_results_file_is_not_published(
     under this layout is the slot. Deleting it at publish makes that unreachable
     by construction rather than by argument.
     """
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     assert list(slot.glob("*.results")) == []
     assert list(slot.glob("*.results.meta")) == []
@@ -414,7 +419,7 @@ def test_the_slot_holds_only_what_a_later_run_needs(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """The published shape, pinned. A diff is intended and re-pinned, or a defect."""
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     assert sorted(p.name for p in slot.iterdir()) == [
         ".mosaic-convert.json",
@@ -425,17 +430,17 @@ def test_the_slot_holds_only_what_a_later_run_needs(
 
 def test_a_torn_publish_leaves_no_marker(ds: Dataset, trex: FakeTrex) -> None:
     """Reuse needs the marker *and* the output, so a partial slot is never served."""
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     (slot / ".mosaic-convert.json").unlink()
     shutil.rmtree(ds.get_root("trex"))
 
-    _ = dr.run_trex(ds, track_max_speed=120)
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=120))
     assert len(trex.converted) == 2, "a slot with no marker must not be bound"
 
 
 def test_no_staging_directory_survives_a_clean_run(ds: Dataset, trex: FakeTrex) -> None:
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     assert list(slot_of(ds).glob(".incoming-*")) == []
 
 
@@ -449,7 +454,7 @@ def _legacy_conversion(ds: Dataset, trex: FakeTrex) -> Path:
     `.pv` and its settings beside the tracking output, with a convert marker
     naming them.
     """
-    run_id = dr.run_trex(ds)
+    run_id = dr.run_trex(ds, TrexParams())
     work_dir = ds.get_root("trex") / run_id / "vid1"
     slot = slot_of(ds)
     for name in (f"{CONVERSION_STEM}.pv", f"{CONVERSION_STEM}.settings"):
@@ -475,7 +480,7 @@ def test_adoption_hard_links_rather_than_copies(ds: Dataset, trex: FakeTrex) -> 
     local_pv = _legacy_conversion(ds, trex)
     before = len(trex.converted)
 
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     assert len(trex.converted) == before, "an adopted conversion is not redone"
 
     slot_pv = slot_of(ds) / f"{CONVERSION_STEM}.pv"
@@ -496,8 +501,8 @@ def test_adoption_hard_links_rather_than_copies(ds: Dataset, trex: FakeTrex) -> 
 def test_adoption_is_idempotent(ds: Dataset, trex: FakeTrex) -> None:
     """Running again must not republish over a live slot."""
     local_pv = _legacy_conversion(ds, trex)
-    _ = dr.run_trex(ds)
-    _ = dr.run_trex(ds, track_max_speed=120)
+    _ = dr.run_trex(ds, TrexParams())
+    _ = dr.run_trex(ds, TrexParams(track_max_speed=120))
 
     assert len(slots(ds)) == 1
     assert local_pv.stat().st_nlink == 2
@@ -514,7 +519,7 @@ def test_a_failed_link_keeps_the_run_correct(
 
     monkeypatch.setattr(os, "link", refuse)
     before = len(trex.converted)
-    run_id = dr.run_trex(ds)
+    run_id = dr.run_trex(ds, TrexParams())
 
     assert len(trex.converted) == before, "the local conversion is still used"
     assert local_pv.stat().st_nlink == 1
@@ -544,7 +549,7 @@ def test_a_marker_without_provenance_is_reused_but_not_adopted(
     )
     before = len(trex.converted)
 
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     assert len(trex.converted) == before, "it is still reused in place"
     assert slots(ds) == [], "and never promoted into the cache"
 
@@ -554,19 +559,19 @@ def test_a_marker_without_provenance_is_reused_but_not_adopted(
 
 def test_overwrite_reuses_the_conversion(ds: Dataset, trex: FakeTrex) -> None:
     """``overwrite`` means re-track, not re-convert 28 GB."""
-    _ = dr.run_trex(ds)
-    _ = dr.run_trex(ds, overwrite=True)
+    _ = dr.run_trex(ds, TrexParams())
+    _ = dr.run_trex(ds, TrexParams(overwrite=True))
 
     assert len(trex.converted) == 1
     assert len(trex.tracked) == 2
 
 
 def test_overwrite_never_touches_a_slot(ds: Dataset, trex: FakeTrex) -> None:
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     stamp = (slot / f"{CONVERSION_STEM}.pv").stat().st_mtime_ns
 
-    _ = dr.run_trex(ds, overwrite=True)
+    _ = dr.run_trex(ds, TrexParams(overwrite=True))
     assert (slot / f"{CONVERSION_STEM}.pv").stat().st_mtime_ns == stamp
 
 
@@ -581,14 +586,14 @@ def test_the_convert_argv_never_carries_auto_train(ds: Dataset, trex: FakeTrex) 
     shared slot. ``auto_train`` is a tracking setting and only the tracking argv
     may carry it.
     """
-    _ = dr.run_trex(ds, auto_train=True)
+    _ = dr.run_trex(ds, TrexParams(auto_train=True))
     for kwargs in trex.convert_kwargs:
         assert "auto_train" not in kwargs
         extra = kwargs.get("extra_settings") or {}
         assert isinstance(extra, dict)
         assert "auto_train" not in extra
         assert "load" not in extra
-    assert trex.track_kwargs[0]["auto_train"] is True
+    assert trex.track_kwargs[0]["params"].auto_train is True
 
 
 # --- what the conversion root is, and is not --------------------------------
@@ -616,7 +621,7 @@ def test_the_index_row_names_the_slot_directory(ds: Dataset, trex: FakeTrex) -> 
     Pointing it at the ``.pv`` would make every slot read as ``unrowed`` -- which
     is refused, so the cache would grow without bound while reporting cleanly.
     """
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     index = pd.read_csv(ds.get_root(CONVERT_KIND) / "index.csv")
     assert len(index) == 1
     row = index.iloc[0]
@@ -677,7 +682,7 @@ def test_a_held_slot_is_waited_for_and_the_entry_claim_survives(
 
     # Run once to build the real slot, then put it back into the state a peer
     # mid-conversion would leave: present, claimed, nothing published.
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     published_marker = read_phase_marker(slot, "convert")
     assert published_marker is not None
@@ -711,7 +716,7 @@ def test_a_held_slot_is_waited_for_and_the_entry_claim_survives(
         (slot / ".mosaic-inflight.json").unlink(missing_ok=True)
 
     monkeypatch.setattr(dr.time, "sleep", fake_sleep)
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
 
     assert len(seen_expiry) >= 2, "the wait loop was never exercised"
     assert trex.converted == [], "a held slot must be waited for, not duplicated"
@@ -735,7 +740,7 @@ def test_a_crashed_conversion_leaves_no_staging_tree(
 
     trex.on_convert = explode
     with pytest.raises(RuntimeError):
-        _ = dr.run_trex(ds)
+        _ = dr.run_trex(ds, TrexParams())
 
     leftovers = list(ds.get_root(CONVERT_KIND).rglob(".incoming-*"))
     assert leftovers == [], f"staging survived a crash: {leftovers}"
@@ -751,7 +756,7 @@ def test_a_stale_staging_tree_is_cleared_by_the_next_conversion(
     would otherwise sit in the slot forever -- and a slot carrying debris and no
     marker is refused by the sweeper rather than reclaimed.
     """
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     _unpublish(slot)
     stale = slot / ".incoming-someone-else"
@@ -760,7 +765,7 @@ def test_a_stale_staging_tree_is_cleared_by_the_next_conversion(
     shutil.rmtree(ds.get_root("trex"))
     trex.converted.clear()
 
-    _ = dr.run_trex(ds)
+    _ = dr.run_trex(ds, TrexParams())
 
     assert not stale.exists()
     assert len(trex.converted) == 1, "an unpublished slot must be reconverted"
@@ -796,7 +801,7 @@ def test_visual_identification_probabilities_are_not_read_as_tracks(
 
     monkeypatch.setattr(dr, "run_trex_track", track_with_vi_probs)
 
-    variant = dr.run_trex(ds, auto_train=True)
+    variant = dr.run_trex(ds, TrexParams(auto_train=True))
 
     published = read_tracks_index(ds)
     assert len(published) == 1, "the entry published, so visual identity is usable"
@@ -842,11 +847,11 @@ def test_naming_the_keypoints_re_tracks_but_reuses_the_conversion(
     keypoints re-run detection over the whole video, which is the expensive
     phase and the one the shared conversion cache exists to avoid.
     """
-    first = dr.run_trex(ds)
+    first = dr.run_trex(ds, TrexParams())
     converted_once = list(trex.converted)
     assert len(converted_once) == 1
 
-    second = dr.run_trex(ds, detect_keypoint_count=7)
+    second = dr.run_trex(ds, TrexParams(detect_keypoint_count=7))
 
     assert second != first, "the exported columns changed, so the run must"
     assert trex.converted == converted_once, (
@@ -859,7 +864,9 @@ def test_the_keypoint_count_reaches_the_tracking_call(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """It is the tracking phase that names the columns, not the conversion."""
-    _ = dr.run_trex(ds, detect_keypoint_count=7)
+    _ = dr.run_trex(ds, TrexParams(detect_keypoint_count=7))
 
-    assert trex.track_kwargs[0]["detect_keypoint_count"] == 7
-    assert "detect_keypoint_count" not in trex.convert_kwargs[0]
+    assert trex.track_kwargs[0]["params"].detect_keypoint_count == 7
+    assert "detect_keypoint_count" not in phase_fields(TrexParams, "convert"), (
+        "the conversion must not name the exported columns"
+    )

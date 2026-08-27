@@ -792,9 +792,10 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
     # settings, so existing TREx tracks stay cache-valid after the op refactor. Scope to a
     # missing sequence so the run short-circuits (empty media) before any trex binary is used.
     from mosaic.tracking import run_trex
+    from mosaic.tracking.trex.params import TrexParams
 
     ds = _make_dataset(tmp_path)
-    direct = run_trex(ds, entries=[("", "nonexistent")])
+    direct = run_trex(ds, TrexParams(entries=[("", "nonexistent")]))
     via_op = run_op(ds, "trex", {"entries": [("", "nonexistent")]})
     assert direct == via_op
     assert direct.startswith("trex.")
@@ -1190,6 +1191,7 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     from mosaic.core.pipeline.models import model_index_path, model_run_root
     from mosaic.tracking import run_trex
     from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+    from mosaic.tracking.trex.params import TrexParams
 
     ds = _make_dataset(tmp_path)
 
@@ -1218,25 +1220,29 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     )
     idx.mark_finished(rid)
 
-    # Capture what detect_model run_trex_convert receives, then abort before the binary.
+    # Capture the weights run_trex_convert receives, then abort before the binary.
     class _Stop(Exception):
         pass
 
     captured: dict[str, object] = {}
     import mosaic.tracking.trex.dataset_runs as dr
 
-    def fake_convert(video_path, seq_dir, *, detect_model=None, **kw):
-        captured["detect_model"] = detect_model
+    def fake_convert(video_path, seq_dir, *, detect_model_path=None, **kw):
+        captured["detect_model_path"] = detect_model_path
         raise _Stop()
 
     monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
 
     try:
-        run_trex(ds, entries=[("", "vid1")], detect_model=rid, detect_type="yolo")
+        run_trex(
+            ds,
+            TrexParams(entries=[("", "vid1")], detect_model=rid, detect_type="yolo"),
+        )
     except _Stop:
         pass
 
-    assert captured["detect_model"] == weights  # resolved run_id -> absolute best.pt
+    # resolved run_id -> absolute best.pt
+    assert captured["detect_model_path"] == weights
 
 
 # --- verdict routing in the per-frame ops (analysis-required originals) -----
@@ -1375,6 +1381,7 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
     )
     assert derivative is not None
     import mosaic.tracking.trex.dataset_runs as dr
+    from mosaic.tracking.trex.params import TrexParams
     from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 
     seen: list[Path] = []
@@ -1398,7 +1405,7 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
     monkeypatch.setattr(dr, "run_trex_track", fake_track)
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     # TREx tracked the clean analysis derivative, never the defective original.
     assert [p.resolve() for p in seen] == [derivative.resolve()]
 
@@ -1406,6 +1413,7 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
 def test_run_trex_required_unlinked_raises(tmp_path, monkeypatch):
     ds, _original, _ = _routing_dataset(tmp_path, analysis_derivative_path="")
     import mosaic.tracking.trex.dataset_runs as dr
+    from mosaic.tracking.trex.params import TrexParams
 
     def _fail(*args, **kw):
         raise AssertionError("TREx must not run for a required-unlinked entry")
@@ -1416,7 +1424,7 @@ def test_run_trex_required_unlinked_raises(tmp_path, monkeypatch):
     # The required-but-unlinked entry raises during media resolution, before any
     # TREx subprocess opens the defective original.
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
-        dr.run_trex(ds, entries=[("", "vid1")])
+        dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
 
 # --- generic registry moved into core/pipeline ------------------------------

@@ -33,6 +33,7 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
+from mosaic.tracking.trex.params import TrexParams
 
 # Marker fields this file does not own. Masked rather than dropped, so a field
 # that stops being written is still a visible diff. The first group differs
@@ -519,7 +520,7 @@ def fake_trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeTrex]:
 def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
     import mosaic.tracking.trex.dataset_runs as trex_runs
 
-    run_id = trex_runs.run_trex(ds)
+    run_id = trex_runs.run_trex(ds, TrexParams())
     got = snapshot(ds, "trex", run_id)
 
     # The conversion is no longer in here. It is shared between every run over
@@ -594,16 +595,16 @@ def test_trex_gates_its_two_phases_on_different_parameter_subsets(
 ) -> None:
     """The property a shared driver must not collapse into one hash.
 
-    ``CONVERT_KEYS`` and ``TRACK_KEYS`` project the settings onto what each phase
-    actually consumes, so retuning a track-only knob reuses the conversion. A
-    driver that hashed the whole settings dict per phase would agree with itself
-    and mismatch every marker already on disk, re-converting every sequence once.
-    Asserted from the markers rather than from the projection, because the
-    markers are what a later run compares against.
+    ``phase_settings`` projects the settings onto what each phase consumes,
+    reading the phase each field declares, so retuning a track-only knob reuses
+    the conversion. A driver that hashed the whole settings dict per phase would
+    agree with itself and mismatch every marker already on disk, re-converting
+    every sequence once. Asserted from the markers rather than from the
+    projection, because the markers are what a later run compares against.
     """
     import mosaic.tracking.trex.dataset_runs as trex_runs
 
-    run_id = trex_runs.run_trex(ds)
+    run_id = trex_runs.run_trex(ds, TrexParams())
     seq_dir = trex_runs.trex_run_root(ds, run_id) / "vid1"
 
     convert = json.loads((seq_dir / ".mosaic-convert.json").read_text())
@@ -675,7 +676,7 @@ def test_an_extra_trex_column_survives_into_the_tracks_table(
     monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
     monkeypatch.setattr(trex_runs, "run_trex_track", track_with_extra_fields)
 
-    run_id = trex_runs.run_trex(ds)
+    run_id = trex_runs.run_trex(ds, TrexParams())
 
     table = pd.read_parquet(next(ds.get_root("tracks").rglob("*.parquet")))
     assert "tracklet_id" in table.columns, "an extra TREx field was dropped"
@@ -778,7 +779,7 @@ def test_a_lost_entry_is_recorded_and_the_others_still_publish(
     _add_second_entry(ds)
     _ = _trex_failing_for(monkeypatch, {"vid1"})
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-partial")
+    _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-partial")
 
     snapshot = _snapshot_for(ds, "exec-partial")
     assert snapshot["entries_failed"] == 1
@@ -816,7 +817,7 @@ def test_the_lost_entry_keeps_its_row_so_a_rerun_can_adopt_it(
     _add_second_entry(ds)
     _ = _trex_failing_for(monkeypatch, {"vid1"})
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-keeps-row")
+    _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-keeps-row")
 
     listed = trex_runs.list_trex_runs(ds)
     assert set(listed["sequence"]) == {"vid1", "vid2"}
@@ -832,7 +833,7 @@ def test_the_run_log_names_the_entry_and_the_error(
     _add_second_entry(ds)
     _ = _trex_failing_for(monkeypatch, {"vid1"})
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-named")
+    _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-named")
 
     log_path = run_log_dir(ds.base_dir) / "exec-named.jsonl"
     events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
@@ -858,7 +859,7 @@ def test_losing_every_entry_raises_instead_of_reporting_success(
     _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
 
     with pytest.raises(AllEntriesFailed, match="produced no tracks"):
-        _ = trex_runs.run_trex(ds, execution_id="exec-all-lost")
+        _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-all-lost")
 
 
 def test_the_tracking_rows_survive_the_all_lost_raise(
@@ -872,7 +873,7 @@ def test_the_tracking_rows_survive_the_all_lost_raise(
     _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
 
     with pytest.raises(AllEntriesFailed):
-        _ = trex_runs.run_trex(ds, execution_id="exec-rows-survive")
+        _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-rows-survive")
 
     listed = trex_runs.list_trex_runs(ds)
     assert set(listed["sequence"]) == {"vid1", "vid2"}
@@ -891,7 +892,9 @@ def test_not_converting_to_tracks_is_not_a_failure(
     _add_second_entry(ds)
     _ = _trex_failing_for(monkeypatch, {"vid1", "vid2"})
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-no-bridge", convert_to_tracks=False)
+    _ = trex_runs.run_trex(
+        ds, TrexParams(convert_to_tracks=False), execution_id="exec-no-bridge"
+    )
 
     assert _snapshot_for(ds, "exec-no-bridge")["entries_failed"] == 0
 
@@ -919,7 +922,7 @@ def test_an_entry_with_no_detections_is_a_success_not_a_loss(
         lambda *_args, **_kwargs: BridgeCounts(n_rows=0, n_ids=0),
     )
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-empty")
+    _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-empty")
 
     assert _snapshot_for(ds, "exec-empty")["entries_failed"] == 0
     # A published table of zero rows is still a published entry: the count is of
@@ -943,7 +946,7 @@ def test_a_tracker_records_how_many_entries_it_published(
     monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
     monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
 
-    _ = trex_runs.run_trex(ds, execution_id="exec-two")
+    _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-two")
 
     snapshot = _snapshot_for(ds, "exec-two")
     assert snapshot["entries_written"] == 2

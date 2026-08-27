@@ -28,6 +28,7 @@ import shutil
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 import pandas as pd
@@ -42,12 +43,16 @@ from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.markers import (
     InflightMarker,
     inflight_marker_path,
+    phase_fields,
     read_inflight,
     read_phase_marker,
     write_inflight,
 )
+from mosaic.core.pipeline.types import Declared
+from mosaic.tracking.common.params import PhasedTrackerOpParams
 from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
+from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 
 # --- fixtures --------------------------------------------------------------
@@ -238,8 +243,8 @@ def index_rows(ds: Dataset) -> pd.DataFrame:
 
 
 def test_a_complete_run_is_reused(ds: Dataset, trex: FakeTrex) -> None:
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
-    dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 1, "a complete run must not recompute"
     assert len(trex.tracked) == 1
@@ -249,12 +254,14 @@ def test_a_complete_run_is_reused(ds: Dataset, trex: FakeTrex) -> None:
 
 def test_a_cancelled_run_recomputes(ds: Dataset, trex: FakeTrex) -> None:
     """The defect: an empty directory from a killed run read as complete forever."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")], convert_to_tracks=False)
+    run_id = dr.run_trex(
+        ds, TrexParams(entries=[("", "vid1")], convert_to_tracks=False)
+    )
     partial = seq_dir_of(ds, run_id)
     shutil.rmtree(partial)
     partial.mkdir(parents=True)
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 2, "a directory with no outputs is not a result"
 
@@ -263,13 +270,13 @@ def test_an_interrupted_track_reruns_only_the_track_phase(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """Retaining the .pv is the entire point of keeping the intermediate."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     work_dir = seq_dir_of(ds, run_id)
     # A track phase killed after convert: its marker and outputs are gone.
     (work_dir / ".mosaic-track.json").unlink()
     shutil.rmtree(work_dir / "data")
 
-    dr.run_trex(ds, entries=[("", "vid1")], overwrite=False)
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")], overwrite=False))
 
     assert len(trex.converted) == 1, "convert completed; it must not run again"
     assert len(trex.tracked) == 2
@@ -283,11 +290,11 @@ def test_the_track_phase_receives_the_recorded_pv(
     monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
     monkeypatch.setattr(dr, "run_trex_track", fake.track)
 
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     work_dir = seq_dir_of(ds, run_id)
     (work_dir / ".mosaic-track.json").unlink()
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(fake.converted) == 1, "convert completed even though seq_dir has no .pv"
     assert [p.name for p in fake.tracked] == ["vid1.pv", "vid1.pv"]
@@ -301,15 +308,15 @@ def test_a_track_finding_no_individuals_still_counts_as_complete(
     monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
     monkeypatch.setattr(dr, "run_trex_track", fake.track)
 
-    dr.run_trex(ds, entries=[("", "vid1")])
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(fake.tracked) == 1, "an empty result is a result, not a missing one"
 
 
 def test_overwrite_clears_the_markers(ds: Dataset, trex: FakeTrex) -> None:
-    dr.run_trex(ds, entries=[("", "vid1")])
-    dr.run_trex(ds, entries=[("", "vid1")], overwrite=True)
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")], overwrite=True))
 
     assert len(trex.converted) == 2
     assert len(trex.tracked) == 2
@@ -320,12 +327,12 @@ def test_overwrite_clears_the_markers(ds: Dataset, trex: FakeTrex) -> None:
 
 def test_a_legacy_complete_directory_is_adopted(ds: Dataset, trex: FakeTrex) -> None:
     """Without adoption, every already-tracked sequence re-tracks -- hours each."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     work_dir = seq_dir_of(ds, run_id)
     for marker in work_dir.glob(".mosaic-*.json"):
         marker.unlink()
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 1, "a directory holding a finished run is finished"
     adopted = read_phase_marker(work_dir, "track")
@@ -342,14 +349,14 @@ def test_a_legacy_directory_without_results_recomputes(
     So neither proves completion on its own, and a directory holding only those
     is indistinguishable from one killed partway.
     """
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     work_dir = seq_dir_of(ds, run_id)
     for marker in work_dir.glob(".mosaic-*.json"):
         marker.unlink()
     for results in work_dir.glob("*.results"):
         results.unlink()
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 2
 
@@ -365,7 +372,7 @@ def test_the_claim_is_held_during_the_phase_and_released_after(
     monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
     monkeypatch.setattr(dr, "run_trex_track", fake.track)
 
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(seen) == 1
     held = seen[0]
@@ -405,7 +412,7 @@ def test_the_activity_callback_re_stamps_the_running_claim(
     monkeypatch.setattr(dr, "run_trex_convert", convert_and_refresh)
     monkeypatch.setattr(dr, "run_trex_track", fake.track)
 
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(fake.converted) == 1
     assert read_inflight(seq_dir_of(ds, run_id)) is None, (
@@ -424,7 +431,7 @@ def test_the_claim_is_released_when_a_phase_raises(
     monkeypatch.setattr(dr, "run_trex_convert", explode)
 
     with pytest.raises(RuntimeError, match="convert died"):
-        dr.run_trex(ds, entries=[("", "vid1")])
+        dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert list(ds.get_root("trex").rglob(".mosaic-inflight.json")) == []
 
@@ -436,7 +443,7 @@ def test_a_live_foreign_claim_skips_the_entry(ds: Dataset, trex: FakeTrex) -> No
     execution produced a result it never touched.
     """
     # An empty scope returns the identifier without doing any work.
-    run_id = dr.run_trex(ds, entries=[("", "no-such-sequence")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "no-such-sequence")]))
     work_dir = seq_dir_of(ds, run_id)
     work_dir.mkdir(parents=True)
     write_inflight(
@@ -447,7 +454,7 @@ def test_a_live_foreign_claim_skips_the_entry(ds: Dataset, trex: FakeTrex) -> No
         ),
     )
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert trex.converted == [], "the entry belongs to another execution"
     assert read_inflight(work_dir) is not None, "someone else's claim must survive"
@@ -470,7 +477,7 @@ def test_a_held_entry_does_not_stop_the_rest_of_the_batch(
             MediaEntry(sequence="vid2", filename="vid2.mp4"),
         ],
     )
-    run_id = dr.run_trex(ds, entries=[("", "no-such-sequence")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "no-such-sequence")]))
     held = seq_dir_of(ds, run_id, key="vid1")
     held.mkdir(parents=True)
     write_inflight(
@@ -481,7 +488,7 @@ def test_a_held_entry_does_not_stop_the_rest_of_the_batch(
         ),
     )
 
-    dr.run_trex(ds, entries=[("", "vid1"), ("", "vid2")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1"), ("", "vid2")]))
 
     assert [p.name for p in trex.converted] == ["vid2.mp4"], (
         "the free entry must still run"
@@ -492,7 +499,7 @@ def test_a_held_entry_does_not_stop_the_rest_of_the_batch(
 
 def test_overwrite_does_not_destroy_a_live_claim(ds: Dataset, trex: FakeTrex) -> None:
     """The claim check must precede every destructive step, rmtree included."""
-    run_id = dr.run_trex(ds, entries=[("", "no-such-sequence")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "no-such-sequence")]))
     work_dir = seq_dir_of(ds, run_id)
     work_dir.mkdir(parents=True)
     _ = (work_dir / "in-progress.pv").write_bytes(b"someone else's work")
@@ -504,7 +511,7 @@ def test_overwrite_does_not_destroy_a_live_claim(ds: Dataset, trex: FakeTrex) ->
         ),
     )
 
-    dr.run_trex(ds, entries=[("", "vid1")], overwrite=True)
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")], overwrite=True))
 
     assert trex.converted == []
     assert (work_dir / "in-progress.pv").exists(), "overwrite clobbered a live run"
@@ -513,7 +520,9 @@ def test_overwrite_does_not_destroy_a_live_claim(ds: Dataset, trex: FakeTrex) ->
 
 def test_an_expired_foreign_claim_is_reclaimed(ds: Dataset, trex: FakeTrex) -> None:
     """A claim whose execution died must not hold the directory forever."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")], convert_to_tracks=False)
+    run_id = dr.run_trex(
+        ds, TrexParams(entries=[("", "vid1")], convert_to_tracks=False)
+    )
     work_dir = seq_dir_of(ds, run_id)
     # A run killed partway: markers gone, outputs incomplete, claim left behind.
     shutil.rmtree(work_dir)
@@ -526,7 +535,7 @@ def test_an_expired_foreign_claim_is_reclaimed(ds: Dataset, trex: FakeTrex) -> N
         ),
     )
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 2, "the entry was reclaimed and recomputed"
     assert not inflight_marker_path(work_dir).exists()
@@ -537,10 +546,10 @@ def test_an_expired_foreign_claim_is_reclaimed(ds: Dataset, trex: FakeTrex) -> N
 
 def test_a_changed_source_video_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
     """The identity hashes settings only, so nothing else would notice."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
 
-    second = dr.run_trex(ds, entries=[("", "vid1")])
+    second = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert second == run_id, "settings did not change, so neither does the identity"
     assert [p.name for p in trex.converted] == ["vid1.mp4", "vid2.mp4"]
@@ -574,11 +583,11 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         assert producer_run_id.startswith("trex.")
         return BridgeCounts(n_rows=1, n_ids=1)
 
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
 
     monkeypatch.setattr(dr, "_bridge_npz_to_tracks", record_bridge)
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert written == [Path("__vid1")]
 
@@ -587,13 +596,13 @@ def test_a_moved_dataset_does_not_recompute(
     ds: Dataset, trex: FakeTrex, tmp_path: Path
 ) -> None:
     """The guard compares resolved paths, so relocation is not a source change."""
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     moved = tmp_path.parent / f"{tmp_path.name}-moved"
     shutil.copytree(tmp_path, moved)
     relocated = Dataset(manifest_path=moved / "dataset.yaml").load()
 
-    dr.run_trex(relocated, entries=[("", "vid1")])
+    dr.run_trex(relocated, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 1, "a moved dataset holds the same result"
 
@@ -602,8 +611,8 @@ def test_the_reuse_path_reports_the_video_that_produced_the_data(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """The row is the only recorded edge from tracks back to media."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
-    dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     rows = index_rows(ds)
     assert len(rows) == 1, "one row per (run_id, group, sequence)"
@@ -631,8 +640,8 @@ def test_two_cameras_produce_one_work_item(ds: Dataset, trex: FakeTrex) -> None:
         ],
     )
 
-    dr.run_trex(ds, entries=[("", "vid1")])
-    dr.run_trex(ds, entries=[("", "vid1")])
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert len(trex.converted) == 1
     assert len(index_rows(ds)) == 1
@@ -641,36 +650,44 @@ def test_two_cameras_produce_one_work_item(ds: Dataset, trex: FakeTrex) -> None:
 # --- the identity itself does not move -------------------------------------
 
 
-def test_the_phase_key_sets_partition_the_settings(ds: Dataset) -> None:
-    """A settings key in neither phase would silently stop invalidating anything."""
-    settings = dr.trex_settings(
-        detect_model=None,
-        detect_type="yolo",
-        detect_conf_threshold=0.5,
-        detect_iou_threshold=0.1,
-        cm_per_pixel=1.0,
-        meta_encoding="gray",
-        convert_extra_settings=None,
-        track_max_individuals=1,
-        track_max_speed=80.0,
-        track_max_reassign_time=2.0,
-        track_trusted_probability=0.1,
-        analysis_range=None,
-        visual_identification_model_path=None,
-        auto_train=False,
-        detect_keypoint_count=None,
-        track_extra_settings=None,
-    )
+def declare_unphased_model() -> type[PhasedTrackerOpParams]:
+    """Declare a model whose own field names no phase, for the guard to refuse."""
 
-    assert set(dr.CONVERT_KEYS) | set(dr.TRACK_KEYS) == set(settings)
-    assert "track_max_individuals" in dr.CONVERT_KEYS, (
+    class Unphased(PhasedTrackerOpParams):
+        forgotten: Annotated[int | None, Declared("a knob nobody phased")] = None
+
+    return Unphased
+
+
+def test_a_field_that_names_no_phase_is_refused_at_class_creation() -> None:
+    """A settings key in neither phase would stop invalidating anything.
+
+    ``phase_fields`` returns an empty tuple both for a phase no field names and
+    for a model that declares no ``Phase`` at all, so a ``TrexParams`` that lost
+    its markers would project an empty settings dictionary and TREx would run on
+    its own defaults. The base class refuses such a model where it is written.
+    """
+    with pytest.raises(TypeError, match="without a Phase"):
+        _ = declare_unphased_model()
+
+
+def test_every_tool_facing_field_reaches_a_phase() -> None:
+    """The other half: the phases between them consume all sixteen fields."""
+    phased = set(phase_fields(TrexParams, "convert")) | set(
+        phase_fields(TrexParams, "track")
+    )
+    inherited = set(PhasedTrackerOpParams.model_fields)
+
+    assert phased == set(TrexParams.model_fields) - inherited
+    assert "track_max_individuals" in phase_fields(TrexParams, "convert"), (
         "it is a convert input despite its name -- changing it must re-convert"
     )
+    assert "track_max_individuals" in phase_fields(TrexParams, "track")
 
 
 def test_a_partial_run_still_records_its_index_row(ds: Dataset, trex: FakeTrex) -> None:
     """A skipped entry writes no row; a completed one in the same batch still does."""
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     rows = index_rows(ds)
 
     assert list(rows["run_id"]) == [run_id]
@@ -695,12 +712,12 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     write_media_index(
         ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
     )
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     write_media_index(
         ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-bbb")]
     )
-    second = dr.run_trex(ds, entries=[("", "vid1")])
+    second = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert second == run_id, "settings did not change, so neither does the identity"
     assert len(trex.converted) == 2, "the replaced video was not re-converted"
@@ -718,12 +735,12 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     write_media_index(
         ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
     )
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     write_media_index(
         ds, [MediaEntry(sequence="vid1", filename="renamed.mp4", video_uuid="uid-aaa")]
     )
-    second = dr.run_trex(ds, entries=[("", "vid1")])
+    second = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert second == run_id
     assert len(trex.converted) == 1, "the same bytes were converted twice"
@@ -738,10 +755,10 @@ def test_an_absent_uid_still_falls_back_to_the_path(
     marker adopted from a pre-marker directory. Dropping the path compare would
     remove the guard from exactly those.
     """
-    run_id = dr.run_trex(ds, entries=[("", "vid1")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
 
-    second = dr.run_trex(ds, entries=[("", "vid1")])
+    second = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
 
     assert second == run_id
     assert [p.name for p in trex.converted] == ["vid1.mp4", "vid2.mp4"]
@@ -795,7 +812,7 @@ def _session(ds: Dataset, *names: str, widths: dict[str, int] | None = None) -> 
 
 def test_a_session_converts_once_with_every_clip(ds: Dataset, trex: FakeTrex) -> None:
     _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
 
     assert len(trex.sources) == 1, "three clips, one conversion"
     assert [p.name for p in trex.sources[0]] == ["c0.mp4", "c1.mp4", "c2.mp4"]
@@ -812,7 +829,7 @@ def test_the_pv_is_named_for_the_entry_not_the_first_clip(
     unchanged -- the name is chosen, never inherited from the clips.
     """
     _session(ds, "c0.mp4", "c1.mp4")
-    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     marker = read_phase_marker(seq_dir, "convert")
     assert marker is not None
@@ -824,17 +841,17 @@ def test_the_pv_is_named_for_the_entry_not_the_first_clip(
 
 def test_an_unchanged_session_is_reused(ds: Dataset, trex: FakeTrex) -> None:
     _session(ds, "c0.mp4", "c1.mp4")
-    _ = dr.run_trex(ds, entries=[("", "sess")])
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     assert len(trex.sources) == 1
 
 
 def test_adding_a_clip_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
     """What the first clip's uid cannot see, and the composition can."""
     _session(ds, "c0.mp4", "c1.mp4")
-    first = dr.run_trex(ds, entries=[("", "sess")])
+    first = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
-    second = dr.run_trex(ds, entries=[("", "sess")])
+    second = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
 
     assert len(trex.sources) == 2, "the added clip must invalidate the conversion"
     assert first == second, "the settings did not change, so the run_id must not"
@@ -842,15 +859,15 @@ def test_adding_a_clip_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
 
 def test_reordering_the_clips_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
     _session(ds, "c0.mp4", "c1.mp4")
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     _session(ds, "c1.mp4", "c0.mp4")
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     assert len(trex.sources) == 2
 
 
 def test_the_row_records_the_whole_arrangement(ds: Dataset, trex: FakeTrex) -> None:
     _session(ds, "c0.mp4", "c1.mp4")
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     # Through the typed reader, which is the documented read path: it projects
     # to the schema and reads a blank cell as "", where a raw read_csv gives NaN.
     row = dr.list_trex_runs(ds).iloc[0]
@@ -867,7 +884,7 @@ def test_the_row_records_the_whole_arrangement(ds: Dataset, trex: FakeTrex) -> N
 
 def test_a_single_video_row_says_so(ds: Dataset, trex: FakeTrex) -> None:
     """One clip is not a session, and its cells must not imply one."""
-    _ = dr.run_trex(ds, entries=[("", "vid1")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
     row = dr.list_trex_runs(ds).iloc[0]
     assert int(row["n_source_videos"]) == 1
     assert str(row["media_composition"]) == ""
@@ -879,7 +896,7 @@ def test_a_resolution_mismatch_is_refused_before_trex_runs(
     _session(ds, "c0.mp4", "c1.mp4", widths={"c1.mp4": 1280})
 
     with pytest.raises(JoinedSourceMismatchError, match="c1.mp4"):
-        _ = dr.run_trex(ds, entries=[("", "sess")])
+        _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     assert trex.sources == [], "nothing may be converted before the refusal"
 
 
@@ -896,13 +913,13 @@ def test_a_joined_entry_is_not_adopted(ds: Dataset, trex: FakeTrex) -> None:
     different question, covered separately.
     """
     _session(ds, "c0.mp4", "c1.mp4")
-    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     for marker in seq_dir.glob(".mosaic-*.json"):
         marker.unlink()
     shutil.rmtree(ds.get_root(CONVERT_KIND))
 
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     assert len(trex.sources) == 2, "a joined entry must recompute, never adopt"
     convert_marker = read_phase_marker(seq_dir_of(ds, run_id, "sess"), "convert")
     assert convert_marker is not None
@@ -920,12 +937,12 @@ def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
     of adoption, which would have skipped both on no evidence at all.
     """
     _session(ds, "c0.mp4", "c1.mp4")
-    run_id = dr.run_trex(ds, entries=[("", "sess")])
+    run_id = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     for marker in seq_dir.glob(".mosaic-*.json"):
         marker.unlink()
     trex.tracked.clear()
 
-    _ = dr.run_trex(ds, entries=[("", "sess")])
+    _ = dr.run_trex(ds, TrexParams(entries=[("", "sess")]))
     assert len(trex.sources) == 1, "the slot's conversion covers this clip set"
     assert len(trex.tracked) == 1, "tracking is redone, never adopted"

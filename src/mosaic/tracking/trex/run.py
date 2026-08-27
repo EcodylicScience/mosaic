@@ -7,20 +7,22 @@ animal videos.
 Requires:
     The ``trex`` binary. Because the TRex conda package pins ``python=3.11`` and
     ``numpy=1.26``, it usually lives in its **own** conda env (e.g. ``track``)
-    rather than the mosaic env. Point the wrappers at it one of three ways
-    (highest precedence first), via per-call args or env vars:
+    rather than the mosaic env. Every wrapper takes a
+    :class:`~mosaic.tracking.common.toolenv.ToolEnv` naming where it is, and
+    :data:`TREX_ENV` reads that from the machine. In precedence order:
 
-    * ``trex_conda_env=`` / ``MOSAIC_TREX_CONDA_ENV`` — run via
+    * ``ToolEnv.conda_env`` / ``MOSAIC_TREX_CONDA_ENV`` -- run via
       ``conda run -n <env> trex`` (recommended for the two-env setup);
-    * ``trex_bin=`` / ``MOSAIC_TREX_BIN`` — an explicit path to the binary;
+    * ``ToolEnv.bin_path`` / ``MOSAIC_TREX_BIN`` -- an explicit path to the
+      binary;
     * otherwise ``trex`` is looked up on ``$PATH`` (single-env install).
 
     TRex initialises an OpenGL/GLFW context even headless, so on a server you
     need a display: run a virtual framebuffer (``Xvfb :99 -screen 0 ...``) and
-    pass ``display=":99"`` (or set ``DISPLAY`` / ``MOSAIC_TREX_DISPLAY``). Do
-    **not** wrap ``trex`` in ``xvfb-run`` on ``$PATH`` — TRex relaunches itself,
-    so a per-call ``xvfb-run`` wrapper fork-bombs; one persistent ``Xvfb`` is
-    correct.
+    set ``ToolEnv.display`` to ``":99"`` (or set ``DISPLAY`` /
+    ``MOSAIC_TREX_DISPLAY``). Do **not** wrap ``trex`` in ``xvfb-run`` on
+    ``$PATH`` -- TRex relaunches itself, so a per-call ``xvfb-run`` wrapper
+    fork-bombs; one persistent ``Xvfb`` is correct.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Sequence
 
 from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
@@ -70,13 +73,19 @@ class TRexError(ToolExitError):
 
 
 # TRex is a single binary, so an explicit MOSAIC_TREX_BIN names it directly.
-_TREX_ENV: Final = ToolEnv(
+TREX_ENV: Final = ToolEnv(
     tool="T-Rex",
     conda_env_var="MOSAIC_TREX_CONDA_ENV",
     bin_var="MOSAIC_TREX_BIN",
     bin_mode="direct",
     not_found=TRexNotFoundError,
 )
+"""Where TREx is launched from, as the environment alone describes it.
+
+A caller that reaches a differently placed install states it once with
+``dataclasses.replace(TREX_ENV, conda_env="track", display=":99")`` and passes
+the result to whichever wrapper it calls.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -111,24 +120,19 @@ class TRexTrackResult:
 # ---------------------------------------------------------------------------
 
 
-def _trex_invocation(
-    *,
-    trex_conda_env: str | None = None,
-    trex_bin: str | Path | None = None,
-) -> list[str]:
+def _trex_invocation(env: ToolEnv = TREX_ENV) -> list[str]:
     """Resolve how to launch ``trex``, returned as an argv prefix.
 
-    The shared five-step ladder (:func:`tool_invocation`) applied to
-    :data:`_TREX_ENV`. ``conda run`` puts the target environment's ``bin`` first
-    on ``PATH``, which matters more here than for the other tools: TRex
-    relaunches itself, and a self-relaunch has to find the real binary rather
-    than a wrapper.
+    The shared five-step ladder (:func:`tool_invocation`) applied to *env*.
+    ``conda run`` puts the target environment's ``bin`` first on ``PATH``, which
+    matters more here than for the other tools: TRex relaunches itself, and a
+    self-relaunch has to find the real binary rather than a wrapper.
     """
     return tool_invocation(
-        _TREX_ENV,
+        env,
         executable=_TREX,
-        conda_env=trex_conda_env,
-        bin_path=trex_bin,
+        conda_env=env.conda_env,
+        bin_path=env.bin_path,
     )
 
 
@@ -195,15 +199,15 @@ def _run_trex(
     idle_timeout: float,
     max_runtime: float | None = None,
     invocation: list[str] | None = None,
-    env: dict[str, str] | None = None,
+    env_overlay: dict[str, str] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute ``trex`` with *args* and return (stdout, stderr).
 
     *invocation* is the argv prefix from :func:`_trex_invocation` (defaults to
-    the ``$PATH`` lookup). *env* is an overlay merged onto ``os.environ`` for
-    the subprocess (e.g. ``{"DISPLAY": ":99"}``). *cancel_check*, when supplied,
+    the ``$PATH`` lookup). *env_overlay* is merged onto ``os.environ`` for the
+    subprocess (e.g. ``{"DISPLAY": ":99"}``). *cancel_check*, when supplied,
     is polled while TRex runs; if it fires, TRex's whole process group is
     killed (it relaunches itself, so a group kill is required) and
     :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
@@ -218,7 +222,7 @@ def _run_trex(
 
     stdout, stderr, returncode = run_supervised(
         cmd,
-        env=subprocess_env(env),
+        env=subprocess_env(env_overlay),
         cancel_check=cancel_check,
         timeout=max_runtime,
         idle_timeout=idle_timeout,
@@ -255,20 +259,10 @@ def run_trex_convert(
     video_path: Path | str | Sequence[Path | str],
     output_dir: Path | str,
     *,
+    params: TrexParams,
+    detect_model_path: Path | None = None,
     output_name: str | None = None,
-    detect_model: Path | str | None = None,
-    detect_type: str | None = None,
-    detect_conf_threshold: float | None = None,
-    detect_iou_threshold: float | None = None,
-    track_max_individuals: int | None = None,
-    cm_per_pixel: float | None = None,
-    meta_encoding: str | None = None,
-    extra_settings: dict[str, Any] | None = None,
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
-    trex_conda_env: str | None = None,
-    trex_bin: Path | str | None = None,
-    display: str | None = None,
+    env: ToolEnv = TREX_ENV,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
 ) -> TRexConvertResult:
@@ -276,12 +270,6 @@ def run_trex_convert(
 
     Runs T-Rex in headless mode (``-nowindow -auto_quit``) to convert a
     video file, applying the specified detection model and parameters.
-
-    **Every T-Rex parameter below defaults to ``None``, meaning it is not put on
-    the argv at all**, so T-Rex's own default applies. mosaic used to default
-    each of them to a value of its own, none of which matched T-Rex's, with no
-    way for a caller to decline -- see
-    :class:`~mosaic.tracking.ops.trex.TrexParams`.
 
     Parameters
     ----------
@@ -305,6 +293,16 @@ def run_trex_convert(
         for what mosaic does with it.
     output_dir : path
         Directory for output files (``.pv``, ``.settings``, background).
+    params : TrexParams
+        The run's parameters. Every field the ``convert`` phase declares is read
+        from here, along with the phase's inactivity and runtime bounds; the
+        fields the ``track`` phase declares are ignored.
+        :class:`~mosaic.tracking.trex.params.TrexParams` describes each one.
+    detect_model_path : path, optional
+        The detection weights file to hand T-Rex. A **resolved path**, not the
+        reference ``params.detect_model`` holds: identity records what a model
+        *is* and the executor needs where it is, and the two are different
+        values. Unset sends no model.
     output_name : str, optional
         Stem for the ``.pv`` T-Rex writes, passed as its ``filename`` setting.
         Left unset, T-Rex names the output itself -- after the single source's
@@ -312,45 +310,16 @@ def run_trex_convert(
         directory**. So a joined conversion without this lands somewhere the
         caller did not choose and may not find. Not a T-Rex *setting* in mosaic's
         sense: it is a path, and paths never enter a run identifier.
-    detect_model : path, optional
-        Path to a YOLO ``.pt`` model file for detection/pose.
-    detect_type : str, optional
-        Detection algorithm, e.g. ``"yolo"`` or ``"background_subtraction"``.
-    detect_conf_threshold : float, optional
-        Minimum YOLO detection confidence. T-Rex's own default is 0.1.
-    detect_iou_threshold : float, optional
-        NMS IoU threshold for suppressing overlapping detections. T-Rex has no
-        numeric default: left unset it "preserves the upstream model's default
-        postprocessing behaviour", while setting it "may disable end-to-end
-        NMS-free inference". Passing a number is therefore a behavioural choice
-        about the detector, not only a threshold.
-    track_max_individuals : int, optional
-        Maximum number of simultaneous individuals to track.
-    cm_per_pixel : float, optional
-        Spatial calibration factor. Unset, T-Rex derives it from
-        ``meta_real_width / video_width``.
-    meta_encoding : str, optional
-        Pixel encoding: ``"gray"`` or ``"rgb8"``.
-    extra_settings : dict, optional
-        Additional T-Rex parameters passed as ``-key value`` pairs. A ``None``
-        value here removes a parameter this function would otherwise send.
-    idle_timeout : float
-        Kill the subprocess after this many seconds with no output on either
-        stream (an inactivity/hang watchdog; default 900). TRex prints progress
-        while healthy, so a live long run keeps resetting it.
-    max_runtime : float, optional
-        Optional absolute wall-clock ceiling; ``None`` (default) imposes no
-        total limit and leaves the ceiling to the caller / queue.
-    trex_conda_env : str, optional
-        Run ``trex`` inside this conda env via ``conda run -n <env>`` (e.g.
-        ``"track"``). Use when TRex lives in a different env than the caller.
-        Overrides ``MOSAIC_TREX_CONDA_ENV``. See :func:`_trex_invocation`.
-    trex_bin : path, optional
-        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
-    display : str, optional
-        ``DISPLAY`` value for the subprocess (e.g. ``":99"`` for a headless
-        ``Xvfb``). Overrides ``MOSAIC_TREX_DISPLAY``; ``None`` inherits the
-        current ``DISPLAY``.
+    env : ToolEnv
+        Where T-Rex is launched from -- conda environment, binary, ``DISPLAY``.
+        Defaults to :data:`TREX_ENV`, which reads the machine's
+        ``MOSAIC_TREX_*`` variables. Placement never enters a run identifier.
+    cancel_check : callable, optional
+        Polled while T-Rex runs; if it fires, T-Rex's whole process group is
+        killed and ``ProcessCancelled`` propagates.
+    on_output : callable, optional
+        Called with each line T-Rex prints, which is the activity signal a
+        progress display and an in-flight claim are refreshed from.
 
     Returns
     -------
@@ -372,32 +341,32 @@ def run_trex_convert(
 
     # One path stays a bare string, several become T-Rex's `[a,b,c]` PathArray
     # literal -- which is what `_build_args` renders a flat list as already.
-    params: dict[str, Any] = {
+    settings: dict[str, Any] = {
         "i": str(sources[0]) if len(sources) == 1 else [str(p) for p in sources],
         "task": "convert",
         "nowindow": True,
         "auto_quit": True,
         "d": str(output_dir),
-        "detect_type": detect_type,
-        "detect_conf_threshold": detect_conf_threshold,
-        "detect_iou_threshold": detect_iou_threshold,
-        "track_max_individuals": track_max_individuals,
-        "cm_per_pixel": cm_per_pixel,
-        "meta_encoding": meta_encoding,
+        "detect_type": params.detect_type,
+        "detect_conf_threshold": params.detect_conf_threshold,
+        "detect_iou_threshold": params.detect_iou_threshold,
+        "track_max_individuals": params.track_max_individuals,
+        "cm_per_pixel": params.cm_per_pixel,
+        "meta_encoding": params.meta_encoding,
     }
     if output_name is not None:
-        params["filename"] = str(output_dir / f"{output_name}.pv")
-    if detect_model is not None:
-        params["m"] = str(detect_model)
-    if extra_settings:
-        params.update(extra_settings)
+        settings["filename"] = str(output_dir / f"{output_name}.pv")
+    if detect_model_path is not None:
+        settings["m"] = str(detect_model_path)
+    if params.convert_extra_settings:
+        settings.update(params.convert_extra_settings)
 
     stdout, stderr = _run_trex(
-        _build_args(params),
-        idle_timeout=idle_timeout,
-        max_runtime=max_runtime,
-        invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
-        env=_resolve_display(display),
+        _build_args(settings),
+        idle_timeout=params.idle_timeout,
+        max_runtime=params.max_runtime,
+        invocation=_trex_invocation(env),
+        env_overlay=_resolve_display(env.display),
         cancel_check=cancel_check,
         on_output=on_output,
     )
@@ -503,21 +472,10 @@ def run_trex_track(
     pv_path: Path | str,
     output_dir: Path | str,
     *,
-    track_max_individuals: int | None = None,
-    track_max_speed: float | None = None,
-    track_max_reassign_time: float | None = None,
-    track_trusted_probability: float | None = None,
-    analysis_range: tuple[int, int] | None = None,
-    visual_identification_model_path: Path | str | None = None,
-    auto_train: bool = False,
-    detect_keypoint_count: int | None = None,
+    params: TrexParams,
+    vi_model_path: Path | None = None,
     settings_path: Path | str | None = None,
-    extra_settings: dict[str, Any] | None = None,
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
-    trex_conda_env: str | None = None,
-    trex_bin: Path | str | None = None,
-    display: str | None = None,
+    env: ToolEnv = TREX_ENV,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
 ) -> TRexTrackResult:
@@ -526,16 +484,22 @@ def run_trex_track(
     Runs T-Rex in headless mode to perform tracking and (optionally)
     visual-identification training.
 
-    **Every T-Rex parameter below defaults to ``None``, meaning it is not put on
-    the argv at all**, so T-Rex's own default applies. See
-    :func:`run_trex_convert` and :class:`~mosaic.tracking.ops.trex.TrexParams`.
-
     Parameters
     ----------
     pv_path : path
         Converted T-Rex ``.pv`` file.
     output_dir : path
         Directory for output NPZ and results files.
+    params : TrexParams
+        The run's parameters. Every field the ``track`` phase declares is read
+        from here, along with the phase's inactivity and runtime bounds; the
+        fields the ``convert`` phase declares are ignored.
+        :class:`~mosaic.tracking.trex.params.TrexParams` describes each one.
+    vi_model_path : path, optional
+        The identity weights file to hand T-Rex. A **resolved path**, not the
+        reference ``params.visual_identification_model_path`` holds, for the
+        reason :func:`run_trex_convert` gives for its detection model. Unset
+        sends no model.
     settings_path : path, optional
         The conversion's ``.settings`` file, passed to T-Rex as ``-s``.
 
@@ -550,60 +514,16 @@ def run_trex_track(
         ``.pv``, so once a conversion is shared the implicit lookup finds
         nothing and says nothing. Passed as an absolute path it is honoured
         verbatim, and a named-but-missing file is an error rather than silence.
-    track_max_individuals : int, optional
-        Number of individuals to track. T-Rex's own default is 1024.
-    track_max_speed : float, optional
-        Maximum plausible speed in cm/s -- so its meaning depends on the
-        ``cm_per_pixel`` the conversion applied.
-    track_max_reassign_time : float, optional
-        Seconds to wait before giving up on a lost individual. T-Rex's own
-        default is 0.5.
-    track_trusted_probability : float, optional
-        Probability below which the current tracklet ends and a new one starts.
-        T-Rex's own default is 0.25. This is the parameter that decides where a
-        tracklet boundary falls, so lowering it yields longer tracklets held
-        together by weaker evidence.
-    analysis_range : tuple of (start, end), optional
-        Frame range to analyse.  ``-1`` means beginning/end of video.
-    visual_identification_model_path : path, optional
-        Path to pre-trained identity weights (``.pth``, without extension).
-    auto_train : bool
-        Automatically train visual identification after tracking (default False).
-    detect_keypoint_count : int, optional
-        How many keypoints the detection model reports. Given, ``output_fields``
-        is composed as :data:`TREX_DEFAULT_OUTPUT_FIELDS` plus that many
-        ``poseX<i>``/``poseY<i>`` columns, so a pose model's keypoints reach the
-        export.
-
-        **They do not otherwise.** TREx appends those columns itself from
-        ``detect_keypoint_format``, which it sets when it *loads a model* -- and
-        which is not among the settings it writes into the ``.pv``, is refused
-        from the command line, and is refused from a settings file (it answers
-        ``No valid detect_keypoint_format set``). Since convert and track are
-        two separate invocations here, the tracking process has no model to ask,
-        and the failure is silent: tracking succeeds and the table has no
-        keypoints. Naming the columns is the only route that works.
-
-        ``None`` leaves ``output_fields`` unset, which is right for a detection
-        model with no keypoints to export. An ``output_fields`` in
-        *extra_settings* wins over this.
-    extra_settings : dict, optional
-        Additional T-Rex parameters passed as ``-key value`` pairs.
-    idle_timeout : float
-        Kill the subprocess after this many seconds with no output on either
-        stream (an inactivity/hang watchdog; default 900). TRex prints progress
-        while healthy, so a live long run keeps resetting it.
-    max_runtime : float, optional
-        Optional absolute wall-clock ceiling; ``None`` (default) imposes no
-        total limit and leaves the ceiling to the caller / queue.
-    trex_conda_env : str, optional
-        Run ``trex`` inside this conda env via ``conda run -n <env>``
-        (overrides ``MOSAIC_TREX_CONDA_ENV``). See :func:`_trex_invocation`.
-    trex_bin : path, optional
-        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
-    display : str, optional
-        ``DISPLAY`` for the subprocess (e.g. ``":99"`` for headless ``Xvfb``;
-        overrides ``MOSAIC_TREX_DISPLAY``).
+    env : ToolEnv
+        Where T-Rex is launched from -- conda environment, binary, ``DISPLAY``.
+        Defaults to :data:`TREX_ENV`, which reads the machine's
+        ``MOSAIC_TREX_*`` variables. Placement never enters a run identifier.
+    cancel_check : callable, optional
+        Polled while T-Rex runs; if it fires, T-Rex's whole process group is
+        killed and ``ProcessCancelled`` propagates.
+    on_output : callable, optional
+        Called with each line T-Rex prints, which is the activity signal a
+        progress display and an in-flight claim are refreshed from.
 
     Returns
     -------
@@ -621,44 +541,42 @@ def run_trex_track(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    params: dict[str, Any] = {
+    settings: dict[str, Any] = {
         "i": str(pv_path),
         "task": "track",
         "nowindow": True,
         "auto_quit": True,
         "d": str(output_dir),
-        "track_max_individuals": track_max_individuals,
-        "track_max_speed": track_max_speed,
-        "track_max_reassign_time": track_max_reassign_time,
-        "track_trusted_probability": track_trusted_probability,
+        "track_max_individuals": params.track_max_individuals,
+        "track_max_speed": params.track_max_speed,
+        "track_max_reassign_time": params.track_max_reassign_time,
+        "track_trusted_probability": params.track_trusted_probability,
     }
-    if analysis_range is not None:
-        params["analysis_range"] = list(analysis_range)
-    if visual_identification_model_path is not None:
-        params["visual_identification_model_path"] = str(
-            visual_identification_model_path
-        )
-    if auto_train:
-        params["auto_train"] = True
-    if detect_keypoint_count:
-        # Before the `extra_settings` update below, so an explicit
-        # `output_fields` from the caller replaces this rather than the reverse.
-        params["output_fields"] = TREX_DEFAULT_OUTPUT_FIELDS + pose_output_fields(
-            detect_keypoint_count
+    if params.analysis_range is not None:
+        settings["analysis_range"] = list(params.analysis_range)
+    if vi_model_path is not None:
+        settings["visual_identification_model_path"] = str(vi_model_path)
+    if params.auto_train:
+        settings["auto_train"] = True
+    if params.detect_keypoint_count:
+        # Before the track_extra_settings update below, so an explicit
+        # output_fields from the caller replaces this rather than the reverse.
+        settings["output_fields"] = TREX_DEFAULT_OUTPUT_FIELDS + pose_output_fields(
+            params.detect_keypoint_count
         )
     if settings_path is not None:
         # Absolute, because a relative one is resolved under `output_dir` and
         # the conversion this names generally does not live there.
-        params["s"] = str(Path(settings_path).resolve())
-    if extra_settings:
-        params.update(extra_settings)
+        settings["s"] = str(Path(settings_path).resolve())
+    if params.track_extra_settings:
+        settings.update(params.track_extra_settings)
 
     stdout, stderr = _run_trex(
-        _build_args(params),
-        idle_timeout=idle_timeout,
-        max_runtime=max_runtime,
-        invocation=_trex_invocation(trex_conda_env=trex_conda_env, trex_bin=trex_bin),
-        env=_resolve_display(display),
+        _build_args(settings),
+        idle_timeout=params.idle_timeout,
+        max_runtime=params.max_runtime,
+        invocation=_trex_invocation(env),
+        env_overlay=_resolve_display(env.display),
         cancel_check=cancel_check,
         on_output=on_output,
     )
@@ -690,33 +608,26 @@ def run_trex_track(
 def _convert_and_track_single(
     video_path: Path,
     output_dir: Path,
-    detect_model: Path | None,
-    track_max_individuals: int | None,
-    common_settings: dict[str, Any] | None,
-    trex_conda_env: str | None = None,
-    trex_bin: Path | str | None = None,
-    display: str | None = None,
+    params: TrexParams,
+    detect_model_path: Path | None,
+    vi_model_path: Path | None,
+    env: ToolEnv,
 ) -> TRexTrackResult:
     """Convert and track a single video (for use with ProcessPoolExecutor)."""
     vid_output = output_dir / video_path.stem
     convert_result = run_trex_convert(
         video_path,
         vid_output,
-        detect_model=detect_model,
-        track_max_individuals=track_max_individuals,
-        extra_settings=common_settings,
-        trex_conda_env=trex_conda_env,
-        trex_bin=trex_bin,
-        display=display,
+        params=params,
+        detect_model_path=detect_model_path,
+        env=env,
     )
     return run_trex_track(
         convert_result.pv_path,
         vid_output,
-        track_max_individuals=track_max_individuals,
-        extra_settings=common_settings,
-        trex_conda_env=trex_conda_env,
-        trex_bin=trex_bin,
-        display=display,
+        params=params,
+        vi_model_path=vi_model_path,
+        env=env,
     )
 
 
@@ -724,13 +635,11 @@ def run_trex_batch(
     video_paths: Sequence[Path | str],
     output_dir: Path | str,
     *,
-    detect_model: Path | str | None = None,
-    track_max_individuals: int | None = None,
-    common_settings: dict[str, Any] | None = None,
+    params: TrexParams,
+    detect_model_path: Path | None = None,
+    vi_model_path: Path | None = None,
     parallel_workers: int = 1,
-    trex_conda_env: str | None = None,
-    trex_bin: Path | str | None = None,
-    display: str | None = None,
+    env: ToolEnv = TREX_ENV,
 ) -> list[TRexTrackResult]:
     """Convert and track multiple videos.
 
@@ -743,22 +652,16 @@ def run_trex_batch(
         Input video files to process.
     output_dir : path
         Root output directory.
-    detect_model : path, optional
-        YOLO ``.pt`` model for detection/pose.
-    track_max_individuals : int, optional
-        Number of individuals per video. Unset leaves T-Rex's own default.
-    common_settings : dict, optional
-        Additional T-Rex parameters applied to every video.
+    params : TrexParams
+        The parameters both phases read, applied to every video.
+    detect_model_path : path, optional
+        Resolved detection weights, as :func:`run_trex_convert` takes them.
+    vi_model_path : path, optional
+        Resolved identity weights, as :func:`run_trex_track` takes them.
     parallel_workers : int
         Number of parallel workers (default 1 = sequential).
-    trex_conda_env : str, optional
-        Run ``trex`` inside this conda env via ``conda run -n <env>``
-        (overrides ``MOSAIC_TREX_CONDA_ENV``). See :func:`_trex_invocation`.
-    trex_bin : path, optional
-        Explicit path to the ``trex`` binary (overrides ``MOSAIC_TREX_BIN``).
-    display : str, optional
-        ``DISPLAY`` for the subprocesses (e.g. ``":99"`` for headless ``Xvfb``;
-        overrides ``MOSAIC_TREX_DISPLAY``).
+    env : ToolEnv
+        Where T-Rex is launched from, as :func:`run_trex_convert` takes it.
 
     Returns
     -------
@@ -767,39 +670,30 @@ def run_trex_batch(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    dm = Path(detect_model) if detect_model is not None else None
     paths = [Path(p) for p in video_paths]
 
     if parallel_workers <= 1:
         results: list[TRexTrackResult] = []
-        for vp in paths:
-            logger.info("Processing %s ...", vp.name)
-            r = _convert_and_track_single(
-                vp,
-                output_dir,
-                dm,
-                track_max_individuals,
-                common_settings,
-                trex_conda_env,
-                trex_bin,
-                display,
+        for video in paths:
+            logger.info("Processing %s ...", video.name)
+            results.append(
+                _convert_and_track_single(
+                    video, output_dir, params, detect_model_path, vi_model_path, env
+                )
             )
-            results.append(r)
         return results
 
     with ProcessPoolExecutor(max_workers=parallel_workers) as pool:
         futures = [
             pool.submit(
                 _convert_and_track_single,
-                vp,
+                video,
                 output_dir,
-                dm,
-                track_max_individuals,
-                common_settings,
-                trex_conda_env,
-                trex_bin,
-                display,
+                params,
+                detect_model_path,
+                vi_model_path,
+                env,
             )
-            for vp in paths
+            for video in paths
         ]
-        return [f.result() for f in futures]
+        return [future.result() for future in futures]

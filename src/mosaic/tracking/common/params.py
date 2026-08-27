@@ -8,15 +8,20 @@ its settings dictionary, which names no entry, so the scope selects which media
 a run covers and never what any of its outputs is called. Folding a selector
 into the identity would move an identifier while the output stays where it is,
 which is a cache miss costing a recompute for nothing.
+
+:class:`PhasedTrackerOpParams` adds what a tool that runs in several subprocess
+phases needs on top: every parameter its subclass declares names the phases that
+consume it, checked when the subclass is created.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
+from mosaic.core.pipeline.markers import Phase
 from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams
 
-__all__ = ["TrackerOpParams"]
+__all__ = ["PhasedTrackerOpParams", "TrackerOpParams"]
 
 _CONVERT_TO_TRACKS_DESCRIPTION = (
     "Convert the tool's native output into a standardized tracks table once "
@@ -59,3 +64,43 @@ class TrackerOpParams(OpParams):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(_MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
+
+
+class PhasedTrackerOpParams(TrackerOpParams):
+    """Base for a tracker whose phases each consume part of the parameters.
+
+    Every field a subclass adds names the phases that consume it, and this class
+    refuses the subclass at class creation otherwise.
+    :func:`~mosaic.core.pipeline.markers.phase_fields` returns an empty tuple
+    both for a phase no field names and for a model that declares no
+    :class:`~mosaic.core.pipeline.markers.Phase` at all, so a model that lost
+    its markers projects an empty settings dictionary and the tool runs on its
+    own defaults.
+
+    The check reads ``cls.__annotations__``, which holds a subclass's own fields
+    alone. The scope and execution fields inherited from
+    :class:`~mosaic.core.pipeline.types.OpParams` and :class:`TrackerOpParams`
+    reach no phase of the tool and declare none.
+    """
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        """Refuse a subclass field that names no phase.
+
+        ``model_fields`` is complete here, with its ``Annotated`` metadata
+        intact. A plain ``__init_subclass__`` runs before either is true.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        unphased = sorted(
+            name
+            for name, info in cls.model_fields.items()
+            if name in cls.__annotations__
+            and not any(isinstance(marker, Phase) for marker in info.metadata)
+        )
+        if unphased:
+            refused = (
+                f"{cls.__name__} declares {unphased} without a Phase. Add "
+                f"Phase(...) to each field's Annotated, naming the phases that "
+                f"consume it."
+            )
+            raise TypeError(refused)

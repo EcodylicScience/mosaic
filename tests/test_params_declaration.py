@@ -103,7 +103,7 @@ def params_models() -> dict[str, type[Params]]:
 PARAMS_MODELS = params_models()
 MODEL_NAMES = sorted(PARAMS_MODELS)
 
-ALLOWLIST_CEILING = 607
+ALLOWLIST_CEILING = 592
 """Only ever lowered. Raising it admits a field that reaches a client unlabelled."""
 
 ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
@@ -674,22 +674,6 @@ ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
         ("TrajectorySmooth.Params", "savgol_polyorder"),
         ("TrajectorySmooth.Params", "savgol_window"),
         ("TrajectorySmooth.Params", "speed_threshold"),
-        ("TrexParams", "analysis_range"),
-        ("TrexParams", "auto_train"),
-        ("TrexParams", "cm_per_pixel"),
-        ("TrexParams", "convert_extra_settings"),
-        ("TrexParams", "detect_conf_threshold"),
-        ("TrexParams", "detect_iou_threshold"),
-        ("TrexParams", "detect_keypoint_count"),
-        ("TrexParams", "detect_model"),
-        ("TrexParams", "detect_type"),
-        ("TrexParams", "meta_encoding"),
-        ("TrexParams", "track_extra_settings"),
-        ("TrexParams", "track_max_individuals"),
-        ("TrexParams", "track_max_reassign_time"),
-        ("TrexParams", "track_max_speed"),
-        ("TrexParams", "track_trusted_probability"),
-        ("TrexParams", "visual_identification_model_path"),
         ("TrexScaledNpzParams", "cm_per_pixel"),
         ("TrexScaledNpzParams", "strict_schema"),
         ("UltralyticsParams", "agnostic_nms"),
