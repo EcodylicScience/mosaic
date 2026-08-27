@@ -8,8 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import ast
-
 from mosaic.behavior import label_library
 from mosaic.core import dataset as dataset_module
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
@@ -21,7 +19,7 @@ from mosaic.core.pipeline.labels_index import (
     write_labels_row,
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
-from tests.helpers import make_dataset
+from tests.helpers import functions_named, make_dataset, names_read, source_tree
 
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -338,26 +336,22 @@ def test_the_label_conversion_reads_strict_schema() -> None:
 
     Scanned across both places a reader could plausibly sit -- the conversion
     method and every registered converter -- rather than asserted at one call
-    site, so that wiring it anywhere retires the marker. ``strict`` is what
-    retires it: the day something reads the field this xpasses and the suite
-    fails until the marker is deleted.
+    site, so that wiring it anywhere retires the marker. The scan counts a read
+    only off the names a converter's params are bound to, since ``strict_schema``
+    is reached as ``conv_params.strict_schema`` on the tracks side and every
+    converter here names its own ``params``. ``strict`` is what retires it: the
+    day something reads the field this xpasses and the suite fails until the
+    marker is deleted.
     """
-    trees: list[ast.AST] = []
-    dataset_source = Path(dataset_module.__file__ or "").read_text(encoding="utf-8")
-    for node in ast.walk(ast.parse(dataset_source)):
-        if isinstance(node, ast.FunctionDef) and node.name == "convert_all_labels":
-            trees.append(node)
-    assert trees, "convert_all_labels was renamed; this scan no longer reads it"
-
+    trees = functions_named(dataset_module, ["convert_all_labels"])
     library = Path(label_library.__file__ or "").parent
-    for module in sorted(library.glob("*.py")):
-        trees.append(ast.parse(module.read_text(encoding="utf-8")))
+    for module_path in sorted(library.glob("*.py")):
+        trees.append(source_tree(module_path))
 
-    reads = {
-        node.attr
-        for tree in trees
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-    }
+    reads = names_read(
+        trees,
+        owners={"params", "conv_params", "label_params", "p", "self.params"},
+        destructured_classes={"LabelConvertParams"},
+    )
 
     assert "strict_schema" in reads
