@@ -41,14 +41,13 @@ import os
 import shutil
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.track_library.trex import is_per_individual_export
@@ -114,10 +113,12 @@ from mosaic.core.pipeline.markers import (
     PhaseMarker,
     PhaseName,
     clear_phase_markers,
+    phase_fields,
     refresh_inflight,
     write_phase_marker,
 )
 from mosaic.runlog import now_iso
+from mosaic.tracking.trex.params import TrexParams
 
 from .run import run_trex_convert, run_trex_track
 
@@ -209,63 +210,23 @@ def trex_run_id(settings: Mapping[str, object]) -> str:
     return op_run_id(TREX_KIND, TREX_VERSION, dict(settings))
 
 
-# Which settings each TREx task actually consumes, from the two parameter dicts
-# built in ``trex/run.py``. A key in neither set would silently stop invalidating
-# anything, which ``trex_settings`` and its test guard against.
-#
-# ``track_max_individuals`` appears in **both**, and the reason is narrower than
-# it looks. Nothing in TRex's conversion reads it: it reaches the ``.pv`` only
-# through the trailing metadata blob, which sits after the index table and shifts
-# no frame data, and a later ``-task track`` overrides it from the command line
-# anyway. It stays a convert key because every convert marker already on disk
-# recorded a ``params_hash`` computed from this projection, so moving it would
-# re-key every existing conversion -- the reconversion the shared cache exists to
-# avoid. The cost is only that changing it reconverts when it need not.
-CONVERT_KEYS: Final[tuple[str, ...]] = (
-    "detect_model",
-    "detect_type",
-    "detect_conf_threshold",
-    "detect_iou_threshold",
-    "cm_per_pixel",
-    "meta_encoding",
-    "convert_extra_settings",
-    "track_max_individuals",
+SETTING_FIELDS: Final[tuple[str, ...]] = tuple(
+    dict.fromkeys(name for phase in PHASES for name in phase_fields(TrexParams, phase))
 )
-TRACK_KEYS: Final[tuple[str, ...]] = (
-    "track_max_individuals",
-    # A track key and deliberately not a convert one: it changes which columns
-    # are *exported*, never what was detected. So naming the keypoints re-keys
-    # the tracking run -- the cheap phase -- and reuses the `.pv`, which is the
-    # expensive one.
-    "detect_keypoint_count",
-    "track_max_speed",
-    "track_max_reassign_time",
-    "track_trusted_probability",
-    "analysis_range",
-    "visual_identification_model_path",
-    "auto_train",
-    "track_extra_settings",
-)
+"""The parameters TREx consumes, and so the payload a run identifier is minted from.
+
+Read from the phase markers on :class:`~mosaic.tracking.trex.params.TrexParams`
+rather than listed here, so a field joins the payload by declaring the phase
+that consumes it and by nothing else. ``track_max_individuals`` is named by both
+phases and appears once.
+"""
 
 
 def trex_settings(
+    params: TrexParams,
     *,
-    detect_model: Path | str | None,
-    detect_type: str | None,
-    detect_conf_threshold: float | None,
-    detect_iou_threshold: float | None,
-    cm_per_pixel: float | None,
-    meta_encoding: str | None,
-    convert_extra_settings: dict[str, Any] | None,
-    track_max_individuals: int | None,
-    track_max_speed: float | None,
-    track_max_reassign_time: float | None,
-    track_trusted_probability: float | None,
-    analysis_range: tuple[int, int] | None,
-    visual_identification_model_path: Path | str | None,
-    auto_train: bool,
-    detect_keypoint_count: int | None,
-    track_extra_settings: dict[str, Any] | None,
+    detect_model_id: str | None,
+    vi_model_id: str | None,
 ) -> dict[str, object]:
     """Build the settings that define a tracking result -- the ``run_id`` payload.
 
@@ -274,46 +235,42 @@ def trex_settings(
     does the resolving, because what these settings must carry is what the model
     *is*: a bare weights path is a mutable key, and swapping ``best.pt`` in place
     would let two different runs share one identifier and report the second as
-    already done. This docstring said the opposite for three milestones, which is
-    the state the caller had already left behind for ``detect_model``.
+    already done. The two arrive beside the model because resolving either one
+    needs the dataset.
 
     **``None`` means "not sent", and is recorded as such.** It is a distinct
     setting from any value, because the run it describes is one where TREx's own
     default governed -- so it hashes to a distinct ``run_id``, which is what
-    stops a run made under mosaic's old imposed defaults from being reused for a
-    run that leaves TREx to decide. The key is kept rather than dropped, so the
-    payload's shape does not depend on what was set.
+    keeps a run made under an imposed default from being reused for a run that
+    leaves TREx to decide. The key is kept rather than dropped, so the payload's
+    shape does not depend on what was set.
+
+    Args:
+        params: The run's parameters. Only the phase-declaring fields reach the
+            payload; the scope and execution knobs are excluded from identity
+            and stay out of it.
+        detect_model_id: The detection model's identity, or ``None``.
+        vi_model_id: The visual-identification model's identity, or ``None``.
     """
-    return {
-        "detect_model": str(detect_model) if detect_model is not None else None,
-        "detect_type": detect_type,
-        "detect_conf_threshold": detect_conf_threshold,
-        "detect_iou_threshold": detect_iou_threshold,
-        "cm_per_pixel": cm_per_pixel,
-        "meta_encoding": meta_encoding,
-        "convert_extra_settings": convert_extra_settings,
-        "track_max_individuals": track_max_individuals,
-        "track_max_speed": track_max_speed,
-        "track_max_reassign_time": track_max_reassign_time,
-        "track_trusted_probability": track_trusted_probability,
-        "analysis_range": list(analysis_range) if analysis_range else None,
-        "visual_identification_model_path": (
-            str(visual_identification_model_path)
-            if visual_identification_model_path is not None
-            else None
-        ),
-        "auto_train": auto_train,
-        "detect_keypoint_count": detect_keypoint_count,
-        "track_extra_settings": track_extra_settings,
-    }
+    dumped: dict[str, object] = dict(params.model_dump())
+    settings = {name: dumped[name] for name in SETTING_FIELDS}
+    settings["detect_model"] = detect_model_id
+    settings["visual_identification_model_path"] = vi_model_id
+    return settings
 
 
 def phase_settings(
     settings: Mapping[str, object], phase: PhaseName
 ) -> dict[str, object]:
-    """Project *settings* onto the subset one phase consumes."""
-    keys = CONVERT_KEYS if phase == "convert" else TRACK_KEYS
-    return {key: settings[key] for key in keys}
+    """Project *settings* onto the subset one phase consumes.
+
+    The **resolved** settings dictionary is the input, never the params model:
+    it holds each model reference as the identity the run is named by, where the
+    model holds the raw reference. Every convert and track completion marker
+    records the digest of this projection and compares against it on re-entry,
+    so a projection over different values re-converts every entry on disk.
+    """
+    return {name: settings[name] for name in phase_fields(TrexParams, phase)}
 
 
 # --- Per-entry reuse ------------------------------------------------------
@@ -662,34 +619,8 @@ def _record_conversion_row(
 
 def run_trex(
     ds: Dataset,
+    params: TrexParams,
     *,
-    entries: Iterable[Entry] | None = None,
-    # detection / conversion
-    detect_model: Path | str | None = None,
-    detect_type: str | None = None,
-    detect_conf_threshold: float | None = None,
-    detect_iou_threshold: float | None = None,
-    cm_per_pixel: float | None = None,
-    meta_encoding: str | None = None,
-    convert_extra_settings: dict[str, Any] | None = None,
-    # tracking
-    track_max_individuals: int | None = None,
-    track_max_speed: float | None = None,
-    track_max_reassign_time: float | None = None,
-    track_trusted_probability: float | None = None,
-    analysis_range: tuple[int, int] | None = None,
-    visual_identification_model_path: Path | str | None = None,
-    auto_train: bool = False,
-    detect_keypoint_count: int | None = None,
-    track_extra_settings: dict[str, Any] | None = None,
-    # execution
-    idle_timeout: float = 900,
-    max_runtime: float | None = None,
-    trex_conda_env: str | None = None,
-    trex_bin: Path | str | None = None,
-    display: str | None = None,
-    overwrite: bool = False,
-    convert_to_tracks: bool = True,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -704,14 +635,16 @@ def run_trex(
 ) -> str:
     """Run TREx (convert + track) over scoped videos as a tracked job.
 
-    Parameters mirror :func:`mosaic.tracking.trex.run_trex_convert` /
-    :func:`~mosaic.tracking.trex.run_trex_track`, plus scope
-    (``entries``) and the Job-Contract knobs
-    (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
+    *params* states what to run and which entries to run it over;
+    :class:`~mosaic.tracking.trex.params.TrexParams` describes every field and
+    names the phase that consumes it. The Job-Contract knobs beside it
+    (``execution_id`` / ``owner`` / ``track`` / ``progress_callback`` /
+    ``cancel_token``) open the run's context, and *ctx* runs inside one that is
+    already open instead.
 
-    Every TREx parameter defaults to ``None``, which means *do not send it*, so
-    TREx's own default governs. See :class:`~mosaic.tracking.ops.trex.TrexParams`
-    for why mosaic declares no default of its own.
+    Which conda environment, binary and display TREx is launched from is read
+    from ``MOSAIC_TREX_CONDA_ENV`` / ``MOSAIC_TREX_BIN`` / ``MOSAIC_TREX_DISPLAY``,
+    so the run identifier does not depend on where the tool was installed.
 
     Returns the content-addressed ``run_id``.
     """
@@ -719,64 +652,38 @@ def run_trex(
     # what the settings must carry is the model's identity and not the string
     # that pointed at it. A bare weights path is a mutable key: swap best.pt and
     # two tracker runs share one variant directory, reporting the second as
-    # already done.
-    #
-    # This is a reordering, and it changes behaviour in one visible way worth
-    # stating: an unresolvable model reference now aborts before any run root or
-    # tracks variant is recorded, where it used to be swallowed and handed to
-    # TREx to complain about. Failing before anything is written is the better
-    # half of that trade -- a recorded variant naming a model that could not be
-    # found describes a run that never happened.
-    detect_model_exec: Path | str | None = detect_model
+    # already done. An unresolvable reference aborts here, before any run root or
+    # tracks variant is recorded, because a recorded variant naming a model that
+    # could not be found describes a run that never happened.
+    detect_model_path: Path | None = None
     detect_model_id: str | None = None
-    if detect_model is not None:
-        ref = str(detect_model)
-        # Ask the identity module, not the string. The old `ref.rsplit("-", 1)[0]`
-        # read "train-points.0.1-<digest>" as the kind "train-points.0.1", which
-        # is not registered, so resolve_model looked for a path that never
-        # existed. A ref that is not a run identifier at all (a bare weights
-        # path) falls back rather than guessing, for the same reason.
-        parsed = parse_op_run_id(ref)
+    if params.detect_model is not None:
+        # Ask the identity module rather than splitting the string: a reference
+        # that is not a run identifier at all -- a bare weights path -- falls
+        # back to the points index instead of being read as a kind of its own.
+        parsed = parse_op_run_id(params.detect_model)
         model_kind = parsed.kind if parsed is not None else "train-points"
-        resolved_model = resolve_model(ds, ref, model_kind)
-        detect_model_exec = resolved_model.path
+        resolved_model = resolve_model(ds, params.detect_model, model_kind)
+        detect_model_path = resolved_model.path
         detect_model_id = resolved_model.model_id
 
-    # The *second* model reference in the same settings dict, and the half item
-    # 8.5's "hashed as a string rather than resolved content" describes that was
-    # still open: the visual-identification weights were carried as a bare path
-    # straight into `TRACK_KEYS`. It is the identical defect -- swap the file and
-    # two runs share one identifier -- and it bites harder here than for the
-    # detector, because item 8.5 makes the working directory a durable cache and
-    # a mutable key on a durable cache never expires.
-    vi_model_exec: Path | str | None = visual_identification_model_path
+    # The *second* model reference in the same settings dict, resolved for the
+    # identical reason: swap the identity weights and two runs share one
+    # identifier. It matters more here, because the working directory is a
+    # durable cache and a mutable key on a durable cache never expires.
+    vi_model_path: Path | None = None
     vi_model_id: str | None = None
-    if visual_identification_model_path is not None:
-        vi_ref = str(visual_identification_model_path)
+    if params.visual_identification_model_path is not None:
+        vi_ref = params.visual_identification_model_path
         vi_parsed = parse_op_run_id(vi_ref)
         vi_kind = vi_parsed.kind if vi_parsed is not None else "train-identity"
         resolved_vi = resolve_model(ds, vi_ref, vi_kind)
-        vi_model_exec = resolved_vi.path
+        vi_model_path = resolved_vi.path
         vi_model_id = resolved_vi.model_id
 
     # Settings that define the tracking result -> the content hash.
     settings = trex_settings(
-        detect_model=detect_model_id,
-        detect_type=detect_type,
-        detect_conf_threshold=detect_conf_threshold,
-        detect_iou_threshold=detect_iou_threshold,
-        cm_per_pixel=cm_per_pixel,
-        meta_encoding=meta_encoding,
-        convert_extra_settings=convert_extra_settings,
-        track_max_individuals=track_max_individuals,
-        track_max_speed=track_max_speed,
-        track_max_reassign_time=track_max_reassign_time,
-        track_trusted_probability=track_trusted_probability,
-        analysis_range=analysis_range,
-        visual_identification_model_path=vi_model_id,
-        auto_train=auto_train,
-        detect_keypoint_count=detect_keypoint_count,
-        track_extra_settings=track_extra_settings,
+        params, detect_model_id=detect_model_id, vi_model_id=vi_model_id
     )
     minted = mint_tracker_run(
         ds, kind=TREX_KIND, version=TREX_VERSION, settings=settings
@@ -803,7 +710,7 @@ def run_trex(
     # The routed facts are still read, for a different job: they are what the
     # concatenated timeline is built from, and TREx cannot supply that -- it
     # takes one frame rate from the first clip and never checks the others.
-    scope = ds.resolve_media_scope(entries)
+    scope = ds.resolve_media_scope(params.entries)
     if not scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
@@ -869,11 +776,11 @@ def run_trex(
             one callback is enough.
             """
             seq_ctx.progress.on_phase("convert", _phase_label(item))
-            entry_tick = phase_activity(seq_ctx, work_dir, convert_claim, idle_timeout)
+            entry_tick = phase_activity(seq_ctx, work_dir, convert_claim, params.idle_timeout)
             slot_tick = (
                 None
                 if claim_dir == work_dir
-                else phase_activity(seq_ctx, claim_dir, claim_marker, idle_timeout)
+                else phase_activity(seq_ctx, claim_dir, claim_marker, params.idle_timeout)
             )
 
             def on_output(line: str) -> None:
@@ -891,24 +798,13 @@ def run_trex(
                 out_dir,
                 # TREx names a single-source `.pv` after its stem, which is where
                 # mosaic already looks -- but for several sources sharing a
-                # parent it uses *the parent directory's* name, which is neither
+                # parent it uses the parent directory's name, which is neither
                 # chosen nor looked for. A cached conversion pins the stem
                 # outright, because the slot is shared and the source file's name
                 # must not decide what is inside it.
                 output_name=name,
-                detect_model=detect_model_exec,
-                detect_type=detect_type,
-                detect_conf_threshold=detect_conf_threshold,
-                detect_iou_threshold=detect_iou_threshold,
-                track_max_individuals=track_max_individuals,
-                cm_per_pixel=cm_per_pixel,
-                meta_encoding=meta_encoding,
-                extra_settings=convert_extra_settings,
-                idle_timeout=idle_timeout,
-                max_runtime=max_runtime,
-                trex_conda_env=trex_conda_env,
-                trex_bin=trex_bin,
-                display=display,
+                params=params,
+                detect_model_path=detect_model_path,
                 cancel_check=cancel_check,
                 on_output=on_output,
             ).pv_path
@@ -957,7 +853,7 @@ def run_trex(
                 marker=local_marker,
                 local_pv=pv_path,
                 convert_hash=phase_hashes["convert"],
-                idle_timeout=idle_timeout,
+                idle_timeout=params.idle_timeout,
             )
             if adopted is not None:
                 pv_path = adopted
@@ -979,7 +875,7 @@ def run_trex(
             # Taken before either route, and held across the whole conversion --
             # including any wait on a peer's. This entry's directory is claimed
             # for the duration whether the conversion happens here or elsewhere.
-            convert_claim = claim(seq_ctx, work_dir, "convert", idle_timeout)
+            convert_claim = claim(seq_ctx, work_dir, "convert", params.idle_timeout)
             if slot is None:
                 # No content identity for this media, so there is no durable key
                 # -- only a path, and a path is a mutable key. Convert in place,
@@ -998,7 +894,7 @@ def run_trex(
                     job,
                     slot=slot,
                     convert_hash=phase_hashes["convert"],
-                    idle_timeout=idle_timeout,
+                    idle_timeout=params.idle_timeout,
                     entry_claim=convert_claim,
                     convert_into=convert_into,
                 )
@@ -1014,7 +910,7 @@ def run_trex(
         )
         if track_marker is None:
             clear_outputs(work_dir, TREX_KIND, "track")
-            track_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
+            track_claim = claim(seq_ctx, work_dir, "track", params.idle_timeout)
             seq_ctx.progress.on_phase("track", _phase_label(item))
             # Named explicitly rather than left to TRex's implicit lookup, which
             # composes `<output_dir>/<pv stem>.settings` and so finds nothing
@@ -1029,22 +925,12 @@ def run_trex(
                 settings_path=(
                     conversion_settings if conversion_settings.exists() else None
                 ),
-                track_max_individuals=track_max_individuals,
-                track_max_speed=track_max_speed,
-                track_max_reassign_time=track_max_reassign_time,
-                track_trusted_probability=track_trusted_probability,
-                analysis_range=analysis_range,
-                visual_identification_model_path=vi_model_exec,
-                auto_train=auto_train,
-                detect_keypoint_count=detect_keypoint_count,
-                extra_settings=track_extra_settings,
-                idle_timeout=idle_timeout,
-                max_runtime=max_runtime,
-                trex_conda_env=trex_conda_env,
-                trex_bin=trex_bin,
-                display=display,
+                params=params,
+                vi_model_path=vi_model_path,
                 cancel_check=cancel_check,
-                on_output=phase_activity(seq_ctx, work_dir, track_claim, idle_timeout),
+                on_output=phase_activity(
+                    seq_ctx, work_dir, track_claim, params.idle_timeout
+                ),
             )
             results = sorted(work_dir.glob("*.results"))
             track_marker = record_phase(
@@ -1111,7 +997,7 @@ def run_trex(
             n_source_videos=item.n_sources,
         )
 
-        if convert_to_tracks:
+        if params.convert_to_tracks:
             # A recomputed entry must replace its parquet: the bridge otherwise
             # declines to overwrite, and the table would keep the results of the
             # run just invalidated.
@@ -1141,7 +1027,7 @@ def run_trex(
         work_items=build_work_items(ds, scope, kind=TREX_KIND),
         index=trex_index(trex_index_path(ds)),
         run_entry=convert_and_track,
-        overwrite=overwrite,
+        overwrite=params.overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

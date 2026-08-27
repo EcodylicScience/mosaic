@@ -381,30 +381,37 @@ def _trex_run_id_settings() -> str:
     inside ``trex_settings`` moves every TREx run root and tracks variant on
     disk with a fully green suite. This is the case that fails instead.
 
-    Every argument is given explicitly rather than relying on defaults, because
-    a default that changed would move this line for a reason unrelated to the
-    key set it exists to guard.
+    Every field is set explicitly rather than relying on defaults, because a
+    default that changed would move this line for a reason unrelated to the key
+    set it exists to guard. Both model references arrive as the identities the
+    caller resolved them to, which the settings record.
     """
     from mosaic.tracking.trex.dataset_runs import trex_run_id, trex_settings
+    from mosaic.tracking.trex.params import TrexParams
 
+    params = TrexParams(
+        detect_model="train-points.0.1-aaaaaaaaaa",
+        detect_type="points",
+        detect_conf_threshold=0.25,
+        detect_iou_threshold=0.7,
+        cm_per_pixel=0.5,
+        meta_encoding="gray",
+        convert_extra_settings=None,
+        track_max_individuals=4,
+        track_max_speed=50.0,
+        track_max_reassign_time=0.5,
+        track_trusted_probability=0.5,
+        analysis_range=None,
+        visual_identification_model_path="train-identity.0.1-bbbbbbbbbb",
+        auto_train=False,
+        detect_keypoint_count=7,
+        track_extra_settings=None,
+    )
     return trex_run_id(
         trex_settings(
-            detect_model="train-points.0.1-aaaaaaaaaa",
-            detect_type="points",
-            detect_conf_threshold=0.25,
-            detect_iou_threshold=0.7,
-            cm_per_pixel=0.5,
-            meta_encoding="gray",
-            convert_extra_settings=None,
-            track_max_individuals=4,
-            track_max_speed=50.0,
-            track_max_reassign_time=0.5,
-            track_trusted_probability=0.5,
-            analysis_range=None,
-            visual_identification_model_path="train-identity.0.1-bbbbbbbbbb",
-            auto_train=False,
-            detect_keypoint_count=7,
-            track_extra_settings=None,
+            params,
+            detect_model_id="train-points.0.1-aaaaaaaaaa",
+            vi_model_id="train-identity.0.1-bbbbbbbbbb",
         )
     )
 

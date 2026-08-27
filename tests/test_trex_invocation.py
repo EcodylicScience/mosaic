@@ -3,18 +3,27 @@
 Covers :func:`mosaic.tracking.trex.run._trex_invocation` (how ``trex`` is
 launched: in a conda env, via an explicit binary, or from ``$PATH``) and the
 ``DISPLAY`` overlay, without invoking the real ``trex`` binary.
+
+Placement is one :class:`~mosaic.tracking.common.toolenv.ToolEnv`, so a test
+that reaches a differently placed install states it as a variant of
+:data:`~mosaic.tracking.trex.run.TREX_ENV`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from mosaic.tracking.common import toolenv
+from mosaic.tracking.common.toolenv import ToolEnv
 
 from mosaic.tracking.trex import run as trex_run
+from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import (
+    TREX_ENV,
     TRexNotFoundError,
     _resolve_display,
     _trex_invocation,
@@ -43,7 +52,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_param_conda_env_wins():
-    assert _trex_invocation(trex_conda_env="track") == [
+    assert _trex_invocation(replace(TREX_ENV, conda_env="track")) == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -54,14 +63,12 @@ def test_param_conda_env_wins():
 
 
 def test_param_bin():
-    assert _trex_invocation(trex_bin="/x/trex") == ["/x/trex"]
+    assert _trex_invocation(replace(TREX_ENV, bin_path="/x/trex")) == ["/x/trex"]
 
 
 def test_param_conda_beats_param_bin():
-    assert (
-        _trex_invocation(trex_conda_env="track", trex_bin="/x/trex")[0]
-        == "/p/bin/conda"
-    )
+    placed = replace(TREX_ENV, conda_env="track", bin_path="/x/trex")
+    assert _trex_invocation(placed)[0] == "/p/bin/conda"
 
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
@@ -78,7 +85,7 @@ def test_env_conda(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_beats_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_TREX_CONDA_ENV", "envc")
-    assert _trex_invocation(trex_bin="/x/trex") == ["/x/trex"]
+    assert _trex_invocation(replace(TREX_ENV, bin_path="/x/trex")) == ["/x/trex"]
 
 
 def test_env_bin(monkeypatch: pytest.MonkeyPatch):
@@ -102,7 +109,7 @@ def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(TRexNotFoundError):
-        _trex_invocation(trex_conda_env="track")
+        _trex_invocation(replace(TREX_ENV, conda_env="track"))
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
@@ -112,7 +119,8 @@ def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
         lambda name: "/p/trex" if name == "trex" else None,
     )
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
-    assert _trex_invocation(trex_conda_env="track")[0] == "/opt/conda/bin/conda"
+    placed = replace(TREX_ENV, conda_env="track")
+    assert _trex_invocation(placed)[0] == "/opt/conda/bin/conda"
 
 
 # --- DISPLAY overlay ---
@@ -150,7 +158,7 @@ def test_run_trex_passes_invocation_and_env(monkeypatch: pytest.MonkeyPatch):
         ["-task", "convert"],
         idle_timeout=5,
         invocation=["/p/bin/conda", "run", "-n", "track", "trex"],
-        env={"DISPLAY": ":99"},
+        env_overlay={"DISPLAY": ":99"},
     )
     assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "track", "trex"]
     assert captured["cmd"][-2:] == ["-task", "convert"]
@@ -224,7 +232,7 @@ class _Captured(Exception):
 
 
 def _captured_argv(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, phase: str, **kwargs: object
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, phase: str, **values: object
 ) -> list[str]:
     """Run one phase against a stubbed subprocess and return the argv it built.
 
@@ -241,12 +249,13 @@ def _captured_argv(
         raise _Captured
 
     monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
+    params = TrexParams.model_validate(values)
     out = tmp_path / phase
     with pytest.raises(_Captured):
         if phase == "convert":
-            trex_run.run_trex_convert(tmp_path / "v.mp4", out, **kwargs)
+            _ = trex_run.run_trex_convert(tmp_path / "v.mp4", out, params=params)
         else:
-            trex_run.run_trex_track(tmp_path / "v.pv", out, **kwargs)
+            _ = trex_run.run_trex_track(tmp_path / "v.pv", out, params=params)
     # Without this the argv-absence assertions below pass on an empty list, which
     # is exactly how the first version of this helper was silently vacuous.
     assert captured, "the phase never reached the subprocess, so no argv was built"
@@ -255,7 +264,7 @@ def _captured_argv(
 
 @pytest.mark.parametrize("phase", sorted(UNSENT_WHEN_UNSET))
 def test_an_unset_parameter_is_not_on_the_argv(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, phase: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, phase: str
 ):
     """mosaic declares no default, so an unset parameter reaches TREx as absent.
 
@@ -278,7 +287,7 @@ def test_an_unset_parameter_is_not_on_the_argv(
     )
 
 
-def test_a_set_parameter_is_still_sent(monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_a_set_parameter_is_still_sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """The other half: unset means absent, it does not mean unreachable."""
     argv = _captured_argv(
         monkeypatch,
@@ -297,21 +306,21 @@ def test_a_set_parameter_is_still_sent(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_extra_settings_can_unset_a_parameter(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """A ``None`` in the pass-through dict removes a parameter the caller set.
 
     The escape hatch for the case where the two layers disagree, and the
     mechanism the whole change rests on: ``_build_args`` skips a ``None``, and
-    ``extra_settings`` is merged over the assembled params, so this is the last
-    word on any single flag.
+    the phase's extra settings are merged over the assembled ones, so this is
+    the last word on any single flag.
     """
     argv = _captured_argv(
         monkeypatch,
         tmp_path,
         "convert",
         detect_conf_threshold=0.5,
-        extra_settings={"detect_conf_threshold": None},
+        convert_extra_settings={"detect_conf_threshold": None},
     )
     assert "-detect_conf_threshold" not in argv
 
@@ -325,51 +334,64 @@ def test_extra_settings_can_unset_a_parameter(
 # what these pin.
 
 
-def _convert_argv(monkeypatch: pytest.MonkeyPatch, tmp_path, **kwargs) -> list[str]:
-    """The argv one ``run_trex_convert`` call would hand the binary."""
-    captured: dict = {}
-    video_path = kwargs.pop("video_path")
-    first = video_path if isinstance(video_path, (str, Path)) else video_path[0]
-    stem = kwargs.get("output_name") or Path(first).stem
+def _bare_name_invocation(_env: ToolEnv) -> list[str]:
+    """Stand in for the placement ladder, which these argv tests do not read."""
+    return ["trex"]
 
-    def fake_supervised(cmd, **_kwargs):
+
+def _convert_argv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    video_path: Path | Sequence[Path],
+    output_name: str | None = None,
+) -> list[str]:
+    """The argv one ``run_trex_convert`` call would hand the binary."""
+    captured: dict[str, list[str]] = {}
+    first = video_path if isinstance(video_path, Path) else video_path[0]
+    stem = output_name or first.stem
+
+    def fake_supervised(cmd: Sequence[str], **_kwargs: object) -> tuple[str, str, int]:
         captured["cmd"] = list(cmd)
         # Satisfy the output lookup so the call returns rather than raising.
         _ = (tmp_path / f"{stem}.pv").write_bytes(b"pv")
         return ("", "", 0)
 
     monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
-    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
-    _ = trex_run.run_trex_convert(video_path, tmp_path, **kwargs)
+    monkeypatch.setattr(trex_run, "_trex_invocation", _bare_name_invocation)
+    _ = trex_run.run_trex_convert(
+        video_path, tmp_path, params=TrexParams(), output_name=output_name
+    )
     return captured["cmd"]
 
 
-def test_one_video_is_still_a_bare_path(monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_one_video_is_still_a_bare_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     """The single-source argv must not move: every existing run depends on it."""
-    argv = _convert_argv(monkeypatch, tmp_path, video_path=tmp_path / "vid1.mp4")
+    argv = _convert_argv(monkeypatch, tmp_path, tmp_path / "vid1.mp4")
     assert argv[argv.index("-i") + 1] == str(tmp_path / "vid1.mp4")
     assert "-filename" not in argv
 
 
 def test_several_videos_become_one_bracketed_array(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     clips = [tmp_path / "c0.mp4", tmp_path / "c1.mp4", tmp_path / "c2.mp4"]
-    argv = _convert_argv(monkeypatch, tmp_path, video_path=clips, output_name="sess")
+    argv = _convert_argv(monkeypatch, tmp_path, clips, output_name="sess")
     assert argv[argv.index("-i") + 1] == (f"[{clips[0]},{clips[1]},{clips[2]}]")
 
 
 def test_the_clip_order_given_is_the_order_sent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """It is video_order, it is semantic, and nothing here may sort it."""
     clips = [tmp_path / "c2.mp4", tmp_path / "c0.mp4", tmp_path / "c1.mp4"]
-    argv = _convert_argv(monkeypatch, tmp_path, video_path=clips, output_name="sess")
+    argv = _convert_argv(monkeypatch, tmp_path, clips, output_name="sess")
     assert argv[argv.index("-i") + 1] == (f"[{clips[0]},{clips[1]},{clips[2]}]")
 
 
 def test_output_name_pins_the_pv_that_would_otherwise_be_the_parent_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """TREx's find_basename names a multi-source .pv after the shared parent.
 
@@ -377,25 +399,23 @@ def test_output_name_pins_the_pv_that_would_otherwise_be_the_parent_dir(
     mosaic did not choose and does not look for.
     """
     clips = [tmp_path / "c0.mp4", tmp_path / "c1.mp4"]
-    argv = _convert_argv(
-        monkeypatch, tmp_path, video_path=clips, output_name="grp__sess"
-    )
+    argv = _convert_argv(monkeypatch, tmp_path, clips, output_name="grp__sess")
     assert argv[argv.index("-filename") + 1] == str(tmp_path / "grp__sess.pv")
 
 
-def test_the_located_pv_follows_output_name(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    captured: dict = {}
-
-    def fake_supervised(cmd, **_kwargs):
-        captured["cmd"] = list(cmd)
+def test_the_located_pv_follows_output_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def fake_supervised(cmd: Sequence[str], **_kwargs: object) -> tuple[str, str, int]:
         _ = (tmp_path / "grp__sess.pv").write_bytes(b"pv")
         return ("", "", 0)
 
     monkeypatch.setattr(trex_run, "run_supervised", fake_supervised)
-    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
+    monkeypatch.setattr(trex_run, "_trex_invocation", _bare_name_invocation)
     result = trex_run.run_trex_convert(
         [tmp_path / "c0.mp4", tmp_path / "c1.mp4"],
         tmp_path,
+        params=TrexParams(),
         output_name="grp__sess",
     )
     assert result.pv_path == tmp_path / "grp__sess.pv"
@@ -409,7 +429,7 @@ def test_no_sources_is_refused():
 # --- pose columns reach the track argv, because TREx will not add them ---
 
 
-def _track_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: object):
+def _track_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **fields: object):
     """Run ``run_trex_track`` against a stubbed binary and return its argv."""
     seen: dict[str, list[str]] = {}
 
@@ -418,10 +438,12 @@ def _track_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: objec
         return "", ""
 
     monkeypatch.setattr(trex_run, "_run_trex", fake_run_trex)
-    monkeypatch.setattr(trex_run, "_trex_invocation", lambda **_: ["trex"])
+    monkeypatch.setattr(trex_run, "_trex_invocation", lambda *_, **__: ["trex"])
     pv = tmp_path / "conversion.pv"
     _ = pv.write_bytes(b"pv")
-    _ = trex_run.run_trex_track(pv, tmp_path / "out", **kwargs)  # pyright: ignore[reportArgumentType]
+    _ = trex_run.run_trex_track(
+        pv, tmp_path / "out", params=TrexParams.model_validate(fields)
+    )
     return seen["args"]
 
 
@@ -491,7 +513,7 @@ def test_an_explicit_output_fields_wins(
             monkeypatch,
             tmp_path,
             detect_keypoint_count=7,
-            extra_settings={"output_fields": mine},
+            track_extra_settings={"output_fields": mine},
         )
     )
     assert fields == mine

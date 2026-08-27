@@ -166,6 +166,18 @@ class ToolEnv:
             Lightning Pose differs: it looks up ``litpose`` in order to find the
             ``python`` beside it, because the interpreter is not on ``$PATH``
             under a distinguishing name.
+        conda_env: Step 1's value, set per call. Empty defers to
+            ``conda_env_var``.
+        bin_path: Step 2's value, set per call. Empty defers to ``bin_var``.
+        display: ``DISPLAY`` for the tool's subprocess, set per call. Empty
+            defers to the tool's own display variable and then to the caller's
+            ``DISPLAY``.
+
+    The last three travel together, so a caller states one placement instead of
+    three arguments beside every call: ``dataclasses.replace(TREX_ENV,
+    conda_env="track", display=":99")`` is a whole answer to *where does this
+    run*. They are placement like the rest, so none of them reaches a
+    ``run_id``.
     """
 
     tool: str
@@ -174,6 +186,9 @@ class ToolEnv:
     bin_mode: BinMode
     not_found: type[ToolNotFoundError]
     locator: str = ""
+    conda_env: str = ""
+    bin_path: str = ""
+    display: str = ""
 
 
 def _conda_env_executable(conda: str, env_name: str, executable: str) -> Path | None:
