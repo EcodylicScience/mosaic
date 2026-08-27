@@ -148,22 +148,26 @@ def _selected_backend(value: object) -> TrackerName | None:
 class UltralyticsParams(TrackerOpParams):
     """Parameters for the ``ultralytics`` tracking op and for ``run_ultralytics``.
 
-    ``tracker_overrides`` is a tagged union over the six backend
-    configurations, so the discovery schema states the settings the selected
-    backend takes with their types, defaults, choices and prose, and a client
-    reads ``tracker`` to pick the branch it draws. The tag is ``tracker_type``,
-    which is also the first key of the resolved table. A caller never types it:
-    a mapping given here is tagged from ``tracker`` before validation, and a
-    tag that disagrees with ``tracker`` is refused.
+    ``tracker_overrides`` takes the settings of whichever backend ``tracker``
+    names, and only those. Its tag is supplied from ``tracker`` before
+    validation, so a caller never writes one, and a tag disagreeing with
+    ``tracker`` is refused rather than silently reassigned.
 
-    Every tool-facing field states a concrete default rather than deferring to
-    Ultralytics. Mosaic never imports the library, so it cannot read a default
-    at the call site: the values are transcribed in ``tracker_defaults`` and the
-    preflight diffs them against the release the external environment holds.
-    ``conf`` is the one whose declared default differs from the documented one,
-    for the reason its description states.
+    Every tool-facing field states a concrete default, which is the value the
+    installed Ultralytics release applies. ``conf`` is the one that differs from
+    the documented default, for the reason its description gives.
     """
 
+    # tracker_overrides is a tagged union over the six backend configurations,
+    # so the discovery schema states the settings the selected backend takes
+    # with their types, defaults, choices and prose, and a client reads tracker
+    # to pick the branch it draws. The tag is tracker_type, which is also the
+    # first key of the resolved table.
+    #
+    # The defaults are stated rather than deferred to because mosaic never
+    # imports Ultralytics and so cannot read one at the call site:
+    # tracker_defaults transcribes them and the preflight diffs the
+    # transcription against the release the external environment holds.
     model_path: Annotated[str, Declared(_MODEL_PATH_DESCRIPTION)]
     task: Annotated[ModelTask, Declared(_TASK_DESCRIPTION)] = "pose"
     tracker: Annotated[TrackerName, Declared(_TRACKER_DESCRIPTION)] = "bytetrack"

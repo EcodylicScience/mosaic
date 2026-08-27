@@ -24,9 +24,10 @@ puts the docs change in the same review as the code change that caused it.
 **Why a reduced parameter table rather than the raw schema.** The JSON-Schema
 document moves whenever pydantic changes how it spells a union or where it hangs
 a constraint, and every such move would fail `--check` on an unrelated pull
-request. Name, type, default and constraints absorb that. The prose stays in the
-docstrings, which is where this codebase already keeps it -- almost no field
-carries a `Field(description=...)`.
+request. Name, type, default and constraints absorb that. The description is
+mosaic's own text, published by `Declared` and by nothing else -- the `Field`
+spelling is refused -- so it moves when an author changes it and at no other
+time.
 
 Writes nothing by default, like `gen_third_party_inventory.py` beside it.
 `--check` regenerates in memory and prints a unified diff of whatever no longer
@@ -185,6 +186,21 @@ def constraints_text(spec: Mapping[str, Any]) -> str:
     )
 
 
+def description_text(spec: Mapping[str, Any]) -> str:
+    """A field's declared prose, with its unit where one is declared.
+
+    Both keys come from `Declared`, which is mosaic's own text rather than
+    anything pydantic spells, so neither moves when a pydantic release changes
+    how it renders a union. A field declared `NEEDS_DESCRIPTION` renders an empty
+    cell, which is what it has to say.
+    """
+    description = str(spec.get("description", "") or "").strip()
+    unit = str(spec.get("x-mosaic-unit", "") or "").strip()
+    if description and unit:
+        return f"{description} [{unit}]"
+    return description or (f"[{unit}]" if unit else "")
+
+
 def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:
     """The properties table, plus one collapsed table per nested model.
 
@@ -202,8 +218,8 @@ def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:
         required_names = schema.get("required")
         required = set(required_names) if isinstance(required_names, list) else set()
         lines += [
-            "| Parameter | Type | Default | Constraints |",
-            "| --- | --- | --- | --- |",
+            "| Parameter | Type | Default | Constraints | Description |",
+            "| --- | --- | --- | --- | --- |",
         ]
         for name, raw in properties.items():
             spec: Mapping[str, Any] = raw if isinstance(raw, dict) else {}
@@ -215,7 +231,8 @@ def params_table(schema: Mapping[str, Any], depth: int = 0) -> list[str]:
                 default = "_constructed_"
             lines.append(
                 f"| `{name}` | {escape_cell(type_text(spec))} "
-                f"| {escape_cell(default)} | {escape_cell(constraints_text(spec))} |"
+                f"| {escape_cell(default)} | {escape_cell(constraints_text(spec))} "
+                f"| {escape_cell(description_text(spec))} |"
             )
         lines.append("")
     else:

@@ -1,10 +1,14 @@
 """Every parameter field declares itself, and every declared fact reaches the schema.
 
-``ALLOWED_MISSING_DESCRIPTION`` lists the ``(model, field)`` pairs whose prose is
-unwritten. It only ever shrinks, and ``ALLOWLIST_CEILING`` is the mechanism:
-describing a field removes its entry and lowers the ceiling, so adding an entry
-fails until someone raises a literal deliberately. A client drawing a form from
-the schema has no other source for a control's label.
+Two states are separable at the schema and each has its own ratchet. A field with
+no ``Declared`` publishes no description key and sits in
+``ALLOWED_MISSING_DESCRIPTION``, bounded by ``ALLOWLIST_CEILING``. A field
+declared ``Declared(NEEDS_DESCRIPTION)`` publishes an empty one. Declaring a
+field and describing it are separate pieces of work, so ``UNDOCUMENTED_CEILING``
+bounds the two states together: moving a field between them leaves it flat and
+only writing prose brings it down. Both ceilings only ever come down, which is
+what stops either state from being reached by adding a line. A client drawing a
+form from the schema has no other source for a control's label.
 
 ``ALLOWED_FIELD_DESCRIPTION`` is the second ratchet, over the forbidden spelling.
 ``Field(description=...)`` overrides a ``Declared`` silently, in either
@@ -36,7 +40,13 @@ from typing import Annotated
 import pytest
 from pydantic import Field
 
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, HashExclude, Params
+from mosaic.core.pipeline.types import (
+    HASH_EXCLUDE,
+    NEEDS_DESCRIPTION,
+    Declared,
+    HashExclude,
+    Params,
+)
 from mosaic.tracking import register_ops
 
 UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
@@ -106,6 +116,18 @@ MODEL_NAMES = sorted(PARAMS_MODELS)
 
 ALLOWLIST_CEILING = 575
 """Only ever lowered. Raising it admits a field that reaches a client unlabelled."""
+
+UNDOCUMENTED_CEILING = 575
+"""Only ever lowered. Counts every field a client cannot draw a label for.
+
+The sum of both states rather than the placeholder count alone, which is what
+keeps it monotone through the sweep: declaring an undeclared field with
+:data:`NEEDS_DESCRIPTION` moves it between the two and leaves the sum flat, and
+only writing prose brings it down.
+"""
+
+_PENDING_PROSE_NAMED = 10
+"""How many pending fields a failure names, so hundreds cannot bury the fix."""
 
 ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
     (
@@ -711,12 +733,22 @@ def metadata_of(model: type[Params], field: str) -> list[object]:
 
 @pytest.mark.parametrize("model_name", MODEL_NAMES)
 def test_every_field_declares_a_description(model_name: str) -> None:
-    """A field reaches a client with prose, or it is on the shrinking allowlist."""
+    """A field carries a ``Declared``, or it is on the shrinking allowlist.
+
+    Presence of the description key is the question, not whether the prose is
+    written: ``Declared(NEEDS_DESCRIPTION)`` publishes an empty one, which
+    declares the field and hands the debt to
+    :func:`test_the_pending_prose_only_shrinks`. A field with no ``Declared`` at
+    all publishes no key, and nothing else writes one --
+    ``use_attribute_docstrings`` is off and
+    :func:`test_no_field_states_its_prose_on_field` forbids the ``Field``
+    spelling.
+    """
     model = PARAMS_MODELS[model_name]
     undescribed = {
         field
         for field, spec in field_schemas(model).items()
-        if not spec.get("description")
+        if "description" not in spec
     }
     unlisted = sorted(
         field
@@ -805,6 +837,106 @@ def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> Non
         f"{sorted(from_schema)} in the schema."
     )
     assert from_metadata == from_schema, disagreement
+
+
+def test_a_placeholder_declares_the_field_and_leaves_the_prose_empty() -> None:
+    """The two states the guards above tell apart, pinned on a throwaway model.
+
+    Everything here rests on a field with no ``Declared`` publishing no
+    description key at all, while a placeholder publishes an empty one. Were
+    pydantic to start emitting ``description`` for an undeclared field, or to
+    drop an empty one, the declaration guard would silently stop guarding and
+    the prose ceiling would silently stop counting.
+    """
+
+    class Sampled(Params):
+        declared: Annotated[int, Declared("How many samples to take.")] = 1
+        pending: Annotated[int, Declared(NEEDS_DESCRIPTION)] = 2
+        bare: int = 3
+
+    schemas = field_schemas(Sampled)
+    assert schemas["declared"]["description"] == "How many samples to take."
+    assert schemas["pending"]["description"] == NEEDS_DESCRIPTION
+    assert "description" not in schemas["bare"], (
+        "an undeclared field must publish no key, or the declaration guard "
+        "cannot tell it from a placeholder"
+    )
+
+
+def test_the_attributes_section_states_only_what_was_declared() -> None:
+    """Three ways the rendered section could state something false.
+
+    Appending to ``cls.__doc__`` rather than ``cls.__dict__``'s entry would copy
+    a parent's prose onto a child that declared none. Rendering a field left at
+    ``NEEDS_DESCRIPTION`` would publish an attribute entry that says nothing.
+    Synthesizing a summary for a class whose author wrote none would put words in
+    their mouth, which is the reason ``gen_docs_reference.summary_line`` renders
+    an empty cell instead.
+    """
+
+    class Documented(Params):
+        """A model whose author wrote a summary."""
+
+        stated: Annotated[int, Declared("How many.")] = 1
+        owed: Annotated[int, Declared(NEEDS_DESCRIPTION)] = 2
+
+    class Undocumented(Params):
+        stated: Annotated[int, Declared("How many.")] = 1
+
+    documented = Documented.__doc__ or ""
+    assert documented.startswith("A model whose author wrote a summary.")
+    assert "stated: How many." in documented
+    assert "owed" not in documented, "a placeholder states nothing, so it is left out"
+
+    undocumented = Undocumented.__dict__.get("__doc__") or ""
+    assert undocumented.startswith("Attributes:"), (
+        "a class that declared no docstring gets the section and no invented summary"
+    )
+    assert "Base for all feature parameter models" not in undocumented, (
+        "the parent's prose must not be copied onto a child that declared none"
+    )
+
+
+def test_the_attributes_section_carries_a_declared_unit() -> None:
+    """``x-mosaic-unit`` reaches a schema client; this is the same fact for a reader."""
+
+    class Timed(Params):
+        idle_timeout: Annotated[float, Declared("How long to wait.", unit="s")] = 900
+
+    assert "idle_timeout: How long to wait. [s]" in (Timed.__doc__ or "")
+
+
+def test_the_undocumented_count_only_shrinks() -> None:
+    """A placeholder is a debt with a bound, never a resting state.
+
+    ``Declared(NEEDS_DESCRIPTION)`` passes the declaration guard, so without this
+    the cheapest way to satisfy that guard would be to declare every field and
+    describe none -- a schema full of controls a client can label with nothing.
+
+    Undeclared and placeholder fields are counted together because the sweep
+    moves fields from the first state to the second in bulk. Counting the second
+    alone would make that ceiling climb, which is no ratchet at all.
+    """
+    undeclared: list[str] = []
+    pending: list[str] = []
+    for model_name, model in PARAMS_MODELS.items():
+        for field, spec in field_schemas(model).items():
+            if "description" not in spec:
+                undeclared.append(f"{model_name}.{field}")
+            elif spec["description"] == NEEDS_DESCRIPTION:
+                pending.append(f"{model_name}.{field}")
+
+    total = len(undeclared) + len(pending)
+    named = ", ".join(sorted(pending)[:_PENDING_PROSE_NAMED])
+    rest = len(pending) - _PENDING_PROSE_NAMED
+    grown = (
+        f"{len(undeclared)} fields declare no description and {len(pending)} "
+        f"declare NEEDS_DESCRIPTION, {total} against a ceiling of "
+        f"{UNDOCUMENTED_CEILING}. Placeholders: {named}"
+        f"{f' and {rest} more' if rest > 0 else ''}. Write prose and lower "
+        f"UNDOCUMENTED_CEILING to match."
+    )
+    assert total <= UNDOCUMENTED_CEILING, grown
 
 
 def test_the_allowlist_only_shrinks() -> None:

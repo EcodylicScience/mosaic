@@ -47,6 +47,7 @@ from mosaic.core.pipeline.types.labels import (
 )
 from mosaic.core.pipeline.types.params import (
     HASH_EXCLUDE,
+    NEEDS_DESCRIPTION,
     Declared,
     HashExclude,
     GlobalModelParams,
@@ -90,6 +91,7 @@ __all__ = [
     "LabelsSourceSpec",
     "LoadSpec",
     "META_COLS",
+    "NEEDS_DESCRIPTION",
     "NNResult",
     "NpzArtifact",
     "NpzLoadSpec",

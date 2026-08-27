@@ -24,37 +24,37 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.approach_avoidance.Appro
 
 'approach-avoidance' — per-sequence AA event detection for all pairs.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |
-| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  |
-| `angle_units` | `"radians"` \| `"degrees"` \| `"auto"` | `"radians"` |  |
-| `consecutive_frame_delta` | `number` | `1.0` |  |
-| `distance_threshold` | `number` | `200.0` | > `0` |
-| `approacher_velocity_threshold` | `number` | `5.0` | >= `0` |
-| `avoider_velocity_threshold` | `number` | `5.0` | >= `0` |
-| `cos_approacher_threshold` | `number` | `0.8` | >= `-1`, <= `1` |
-| `cos_avoider_threshold` | `number` | `0.5` | >= `-1`, <= `1` |
-| `min_event_length` | `integer` | `10` | >= `1` |
-| `min_event_count` | `integer` | `5` | >= `1` |
-| `orientation_gate_cos` | `number` \| `None` | `0.8660254037844386` |  |
-| `smooth_window_sec` | `number` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
+| `sampling` | `SamplingConfig` | _constructed_ |  |  |
+| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  |  |
+| `angle_units` | `"radians"` \| `"degrees"` \| `"auto"` | `"radians"` |  |  |
+| `consecutive_frame_delta` | `number` | `1.0` |  |  |
+| `distance_threshold` | `number` | `200.0` | > `0` |  |
+| `approacher_velocity_threshold` | `number` | `5.0` | >= `0` |  |
+| `avoider_velocity_threshold` | `number` | `5.0` | >= `0` |  |
+| `cos_approacher_threshold` | `number` | `0.8` | >= `-1`, <= `1` |  |
+| `cos_avoider_threshold` | `number` | `0.5` | >= `-1`, <= `1` |  |
+| `min_event_length` | `integer` | `10` | >= `1` |  |
+| `min_event_count` | `integer` | `5` | >= `1` |  |
+| `orientation_gate_cos` | `number` \| `None` | `0.8660254037844386` |  |  |
+| `smooth_window_sec` | `number` \| `None` | `null` |  |  |
 
 ??? note "`InterpolationConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
 
 ??? note "`SamplingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |
-    | `smooth_win` | `integer` | `0` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` |  |
+    | `smooth_win` | `integer` | `0` | >= `0` |  |
 
 ### `attention-target`
 
@@ -62,9 +62,9 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.attention_target.Attenti
 
 Per-frame attention target with group-membership labeling.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `id_group_map` | `object` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `id_group_map` | `object` \| `None` | `null` |  |  |
 
 ### `body-scale`
 
@@ -80,11 +80,11 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups.FFGroups`
 
 Per-sequence fission-fusion grouping metrics.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `distance_cutoff` | `number` | `50.0` | > `0` |
-| `window_size` | `integer` | `5` | >= `1` |
-| `min_event_duration` | `integer` | `1` | >= `1` |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `distance_cutoff` | `number` | `50.0` | > `0` |  |
+| `window_size` | `integer` | `5` | >= `1` |  |
+| `min_event_duration` | `integer` | `1` | >= `1` |  |
 
 ### `heading`
 
@@ -92,12 +92,12 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.heading.HeadingFeature`
 
 Per-frame body heading derived from pose keypoints.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `method` | `"two_point"` \| `"pca"` | `"two_point"` |  |
-| `front_idx` | `integer` | `0` |  |
-| `rear_idx` | `integer` | `1` |  |
-| `output_col` | `string` | `"ANGLE"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `method` | `"two_point"` \| `"pca"` | `"two_point"` |  |  |
+| `front_idx` | `integer` | `0` |  |  |
+| `rear_idx` | `integer` | `1` |  |  |
+| `output_col` | `string` | `"ANGLE"` |  |  |
 
 ### `local-order-metrics`
 
@@ -105,29 +105,29 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.local_order_metrics.Loca
 
 Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `radius` | `number` | _required_ | > `0` |
-| `radius_units` | `"position"` \| `"body_scale"` | `"position"` |  |
-| `body_scale` | `BodyScaleResult` \| `None` | `null` |  |
-| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |
-| `n_shells` | `integer` | `6` | >= `1` |
-| `n_peripheral` | `integer` | `5` | >= `1` |
-| `min_neighbors` | `integer` | `1` | >= `0` |
-| `subgroup_col` | `string` \| `None` | `null` |  |
-| `filter_expr` | `string` \| `None` | `null` |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `radius` | `number` | _required_ | > `0` |  |
+| `radius_units` | `"position"` \| `"body_scale"` | `"position"` |  |  |
+| `body_scale` | `BodyScaleResult` \| `None` | `null` |  |  |
+| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |  |
+| `n_shells` | `integer` | `6` | >= `1` |  |
+| `n_peripheral` | `integer` | `5` | >= `1` |  |
+| `min_neighbors` | `integer` | `1` | >= `0` |  |
+| `subgroup_col` | `string` \| `None` | `null` |  |  |
+| `filter_expr` | `string` \| `None` | `null` |  |  |
+| `exclude_cols` | list of `string` | _constructed_ |  |  |
 
 ??? note "`BodyScaleResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"body-scale"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"body-scale"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ### `movement-filter-interpolate`
 
@@ -135,14 +135,14 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.movement.filter_interp.M
 
 Filter low-confidence points and interpolate gaps using ``movement``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `confidence_threshold` | `number` | `0.6` |  |
-| `interpolation_method` | `string` | `"linear"` |  |
-| `max_gap` | `integer` \| `None` | `null` |  |
-| `include_centroid` | `boolean` | `true` |  |
-| `fps` | `number` \| `None` | `null` |  |
-| `keypoint_names` | list of `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `confidence_threshold` | `number` | `0.6` |  |  |
+| `interpolation_method` | `string` | `"linear"` |  |  |
+| `max_gap` | `integer` \| `None` | `null` |  |  |
+| `include_centroid` | `boolean` | `true` |  |  |
+| `fps` | `number` \| `None` | `null` |  |  |
+| `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `movement-smooth`
 
@@ -150,17 +150,17 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.movement.smooth.Movement
 
 Smooth trajectory positions using the ``movement`` library.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `method` | `"rolling"` \| `"savgol"` | `"savgol"` |  |
-| `window` | `integer` | `5` |  |
-| `statistic` | `"median"` \| `"mean"` \| `"max"` \| `"min"` | `"median"` |  |
-| `min_periods` | `integer` \| `None` | `null` |  |
-| `polyorder` | `integer` | `2` |  |
-| `savgol_mode` | `string` | `"nearest"` |  |
-| `include_centroid` | `boolean` | `true` |  |
-| `fps` | `number` \| `None` | `null` |  |
-| `keypoint_names` | list of `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `method` | `"rolling"` \| `"savgol"` | `"savgol"` |  |  |
+| `window` | `integer` | `5` |  |  |
+| `statistic` | `"median"` \| `"mean"` \| `"max"` \| `"min"` | `"median"` |  |  |
+| `min_periods` | `integer` \| `None` | `null` |  |  |
+| `polyorder` | `integer` | `2` |  |  |
+| `savgol_mode` | `string` | `"nearest"` |  |  |
+| `include_centroid` | `boolean` | `true` |  |  |
+| `fps` | `number` \| `None` | `null` |  |  |
+| `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `nearest-neighbor`
 
@@ -176,30 +176,30 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.nn_delta_response.Neares
 
 Per-sequence feature that measures how a focal individual changes position/heading/speed over the next `diff_numframes` frames relative to its nearest neighbor at the current frame.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  |
-| `speed_col` | `string` | `"SPEED"` |  |
-| `nn_id_col` | `string` | `"nn_id"` |  |
-| `nn_dx_ego_col` | `string` | `"nn_delta_x_ego"` |  |
-| `nn_dy_ego_col` | `string` | `"nn_delta_y_ego"` |  |
-| `nn_dx_world_col` | `string` | `"nn_delta_x"` |  |
-| `nn_dy_world_col` | `string` | `"nn_delta_y"` |  |
-| `focal_col` | `string` | `"Focal_fish"` |  |
-| `diff_numframes` | `integer` | `4` | >= `1` |
-| `diff_numframes_col` | `string` \| `None` | `null` |  |
-| `emit_backward` | `boolean` | `false` |  |
-| `wrap_angle` | `boolean` | `true` |  |
-| `divide_dangle_by_frames` | `boolean` | `true` |  |
-| `scale_dangle_by_fps` | `boolean` | `true` |  |
-| `tag_cols` | list of `string` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sampling` | `SamplingConfig` | _constructed_ |  |  |
+| `speed_col` | `string` | `"SPEED"` |  |  |
+| `nn_id_col` | `string` | `"nn_id"` |  |  |
+| `nn_dx_ego_col` | `string` | `"nn_delta_x_ego"` |  |  |
+| `nn_dy_ego_col` | `string` | `"nn_delta_y_ego"` |  |  |
+| `nn_dx_world_col` | `string` | `"nn_delta_x"` |  |  |
+| `nn_dy_world_col` | `string` | `"nn_delta_y"` |  |  |
+| `focal_col` | `string` | `"Focal_fish"` |  |  |
+| `diff_numframes` | `integer` | `4` | >= `1` |  |
+| `diff_numframes_col` | `string` \| `None` | `null` |  |  |
+| `emit_backward` | `boolean` | `false` |  |  |
+| `wrap_angle` | `boolean` | `true` |  |  |
+| `divide_dangle_by_frames` | `boolean` | `true` |  |  |
+| `scale_dangle_by_fps` | `boolean` | `true` |  |  |
+| `tag_cols` | list of `string` | _constructed_ |  |  |
 
 ??? note "`SamplingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |
-    | `smooth_win` | `integer` | `0` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` |  |
+    | `smooth_win` | `integer` | `0` | >= `0` |  |
 
 ### `orientation-rel`
 
@@ -207,22 +207,22 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.orientation_relative.Ori
 
 Orientation-aware relative features between animal pairs, order-agnostic to pose points.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `scale` | `BodyScaleResult` | _constructed_ |  |
-| `nearest_k` | `integer` | `3` | >= `1` |
-| `quantiles` | list of `number` | `[0.25, 0.5, 0.75]` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `scale` | `BodyScaleResult` | _constructed_ |  |  |
+| `nearest_k` | `integer` | `3` | >= `1` |  |
+| `quantiles` | list of `number` | `[0.25, 0.5, 0.75]` |  |  |
 
 ??? note "`BodyScaleResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"body-scale"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"body-scale"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ### `pair-egocentric`
 
@@ -230,40 +230,40 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgoc
 
 'pair-egocentric' -- per-sequence egocentric + kinematic features for dyads. Produces a row-wise DataFrame with columns:   - frame (if available) or time passthrough (only if it's the order col)   - perspective: 0 for A->B, 1 for B->A   - id1, id2: pair identifiers   - feature columns (e.g., A_speed, AB_dx_egoA, ...)   - (optionally) group/sequence if present in df, for convenience
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `neck_idx` | `integer` | `3` |  |
-| `tail_base_idx` | `integer` | `6` |  |
-| `center_mode` | `string` | `"mean"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
+| `sampling` | `SamplingConfig` | _constructed_ |  |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `neck_idx` | `integer` | `3` |  |  |
+| `tail_base_idx` | `integer` | `6` |  |  |
+| `center_mode` | `string` | `"mean"` |  |  |
 
 ??? note "`InterpolationConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ??? note "`SamplingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |
-    | `smooth_win` | `integer` | `0` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` |  |
+    | `smooth_win` | `integer` | `0` | >= `0` |  |
 
 ### `pair-facing`
 
@@ -271,16 +271,16 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
 
 Per-frame directional facing metric for all ordered pairs of individuals.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `angle_thresh_deg` | `number` | `45.0` |  |
-| `dist_thresh` | `number` | `3.0` |  |
-| `cm_per_pixel` | `number` \| `None` | `null` |  |
-| `pose_head_index` | `integer` | `3` |  |
-| `pose_abdomen_index` | `integer` | `5` |  |
-| `body_axis_from` | `string` | `"head_to_abdomen"` |  |
-| `x_prefix` | `string` | `"poseX"` |  |
-| `y_prefix` | `string` | `"poseY"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `angle_thresh_deg` | `number` | `45.0` |  |  |
+| `dist_thresh` | `number` | `3.0` |  |  |
+| `cm_per_pixel` | `number` \| `None` | `null` |  |  |
+| `pose_head_index` | `integer` | `3` |  |  |
+| `pose_abdomen_index` | `integer` | `5` |  |  |
+| `body_axis_from` | `string` | `"head_to_abdomen"` |  |  |
+| `x_prefix` | `string` | `"poseX"` |  |  |
+| `y_prefix` | `string` | `"poseY"` |  |  |
 
 ### `pair-interaction-filter`
 
@@ -288,18 +288,18 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.
 
 Detect pairwise interaction segments from trajectory data.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `shift_dist` | `number` | `15.0` |  |
-| `max_dist` | `number` | `40.0` |  |
-| `require_facing` | `boolean` | `true` |  |
-| `max_inv_orientation_diff_deg` | `number` | `80.0` |  |
-| `min_run_frames` | `integer` | `250` |  |
-| `frame_padding` | `integer` | `10` |  |
-| `morphological_structure_size` | `integer` | `25` |  |
-| `px_scale` | `number` | `1.0` |  |
-| `use_pixel_coords` | `boolean` | `true` |  |
-| `pose_head_index` | `integer` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `shift_dist` | `number` | `15.0` |  |  |
+| `max_dist` | `number` | `40.0` |  |  |
+| `require_facing` | `boolean` | `true` |  |  |
+| `max_inv_orientation_diff_deg` | `number` | `80.0` |  |  |
+| `min_run_frames` | `integer` | `250` |  |  |
+| `frame_padding` | `integer` | `10` |  |  |
+| `morphological_structure_size` | `integer` | `25` |  |  |
+| `px_scale` | `number` | `1.0` |  |  |
+| `use_pixel_coords` | `boolean` | `true` |  |  |
+| `pose_head_index` | `integer` \| `None` | `null` |  |  |
 
 ### `pair-posedistance-pca`
 
@@ -307,35 +307,35 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.Pair
 
 'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `include_intra_A` | `boolean` | `true` |  |
-| `include_intra_B` | `boolean` | `true` |  |
-| `include_inter` | `boolean` | `true` |  |
-| `duplicate_perspective` | `boolean` | `true` |  |
-| `n_components` | `integer` | `6` |  |
-| `batch_size` | `integer` | `5000` | > `0` |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `include_intra_A` | `boolean` | `true` |  |  |
+| `include_intra_B` | `boolean` | `true` |  |  |
+| `include_inter` | `boolean` | `true` |  |  |
+| `duplicate_perspective` | `boolean` | `true` |  |  |
+| `n_components` | `integer` | `6` |  |  |
+| `batch_size` | `integer` | `5000` | > `0` |  |
 
 ??? note "`InterpolationConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `pair-position`
 
@@ -343,25 +343,25 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_position.PairPositi
 
 'pair-position' -- per-sequence egocentric + kinematic features for all pairs.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `interpolation` | `InterpolationConfig` | _constructed_ |  |
-| `sampling` | `SamplingConfig` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `interpolation` | `InterpolationConfig` | _constructed_ |  |  |
+| `sampling` | `SamplingConfig` | _constructed_ |  |  |
 
 ??? note "`InterpolationConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `linear_interp_limit` | `integer` | `10` | >= `1` |
-    | `edge_fill_limit` | `integer` | `3` | >= `0` |
-    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `linear_interp_limit` | `integer` | `10` | >= `1` |  |
+    | `edge_fill_limit` | `integer` | `3` | >= `0` |  |
+    | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` |  |
 
 ??? note "`SamplingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |
-    | `smooth_win` | `integer` | `0` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` |  |
+    | `smooth_win` | `integer` | `0` | >= `0` |  |
 
 ### `pair-wavelet`
 
@@ -369,23 +369,23 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet
 
 CWT spectrograms on PairPoseDistancePCA outputs.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  |
-| `f_min` | `number` | `0.2` | > `0` |
-| `f_max` | `number` | `5.0` | > `0` |
-| `n_freq` | `integer` | `25` | > `0` |
-| `wavelet` | `string` | `"cmor1.5-1.0"` |  |
-| `log_floor` | `number` | `-3.0` |  |
-| `pc_prefix` | `string` | `"PC"` |  |
-| `cols` | list of `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sampling` | `SamplingConfig` | _constructed_ |  |  |
+| `f_min` | `number` | `0.2` | > `0` |  |
+| `f_max` | `number` | `5.0` | > `0` |  |
+| `n_freq` | `integer` | `25` | > `0` |  |
+| `wavelet` | `string` | `"cmor1.5-1.0"` |  |  |
+| `log_floor` | `number` | `-3.0` |  |  |
+| `pc_prefix` | `string` | `"PC"` |  |  |
+| `cols` | list of `string` \| `None` | `null` |  |  |
 
 ??? note "`SamplingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` |
-    | `smooth_win` | `integer` | `0` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` |  |
+    | `smooth_win` | `integer` | `0` | >= `0` |  |
 
 ### `scale-to-cm`
 
@@ -393,12 +393,12 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.scale_to_cm.ScaleToCm`
 
 Convert every length-bearing column into centimeters.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `cm_per_pixel` | `number` \| `None` | `null` |  |
-| `mode` | `"derive"` \| `"convert"` | `"derive"` |  |
-| `suffix` | `string` | `"_cm"` |  |
-| `columns` | list of `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `cm_per_pixel` | `number` \| `None` | `null` |  |  |
+| `mode` | `"derive"` \| `"convert"` | `"derive"` |  |  |
+| `suffix` | `string` | `"_cm"` |  |  |
+| `columns` | list of `string` \| `None` | `null` |  |  |
 
 ### `speed-angvel`
 
@@ -406,11 +406,11 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.speed_angvel.SpeedAngvel
 
 Per-sequence feature computing translational speed and angular velocity.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `step_size` | `integer` \| `None` | `null` |  |
-| `smooth_window` | `integer` \| `None` | `null` |  |
-| `fps` | `number` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `step_size` | `integer` \| `None` | `null` |  |  |
+| `smooth_window` | `integer` \| `None` | `null` |  |  |
+| `fps` | `number` \| `None` | `null` |  | Frames per second. When set, dt is derived from the frame column (frame_diff / fps) instead of the time column. This is more robust for constant-fps data where the time column may contain irregular real timestamps. |
 
 ### `temporal-stack`
 
@@ -418,29 +418,29 @@ Version `0.4` &middot; `mosaic.behavior.feature_library.temporal_stacking.Tempor
 
 Build temporal context windows over per-sequence feature data.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `half` | `integer` | `60` | >= `0` |
-| `skip` | `integer` | `5` | >= `1` |
-| `use_temporal_stack` | `boolean` | `true` |  |
-| `sigma_stack` | `number` | `30.0` |  |
-| `add_pool` | `boolean` | `true` |  |
-| `pool_stats` | list of `string` | `["mean"]` |  |
-| `sigma_pool` | `number` | `30.0` |  |
-| `fps` | `number` | `30.0` | > `0` |
-| `win_sec` | `number` | `0.5` | > `0` |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `half` | `integer` | `60` | >= `0` |  |
+| `skip` | `integer` | `5` | >= `1` |  |
+| `use_temporal_stack` | `boolean` | `true` |  |  |
+| `sigma_stack` | `number` | `30.0` |  |  |
+| `add_pool` | `boolean` | `true` |  |  |
+| `pool_stats` | list of `string` | `["mean"]` |  |  |
+| `sigma_pool` | `number` | `30.0` |  |  |
+| `fps` | `number` | `30.0` | > `0` |  |
+| `win_sec` | `number` | `0.5` | > `0` |  |
+| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
 
 ??? note "`NNResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"nearest-neighbor"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"nearest-neighbor"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ### `track-subsample`
 
@@ -448,25 +448,25 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSub
 
 Subsample tracks rows for downstream per-row features.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  |
-| `target_frames` | `integer` | `300` | >= `1` |
-| `clip_len` | `integer` | `8` | >= `2` |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `seed` | `integer` | `42` |  |
-| `drop_nan` | `boolean` | `true` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  |  |
+| `target_frames` | `integer` | `300` | >= `1` |  |
+| `clip_len` | `integer` | `8` | >= `2` |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `seed` | `integer` | `42` |  |  |
+| `drop_nan` | `boolean` | `true` |  |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `trajectory-smooth`
 
@@ -474,15 +474,15 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.trajectory_smooth.Trajec
 
 Per-sequence feature that smooths and interpolates trajectory positions.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `speed_threshold` | `number` \| `None` | `null` |  |
-| `fps` | `number` \| `None` | `null` |  |
-| `interpolate_centroid` | `boolean` | `true` |  |
-| `interpolate_pose` | `boolean` | `false` |  |
-| `expand_frames` | `integer` | `2` |  |
-| `savgol_window` | `integer` \| `None` | `null` |  |
-| `savgol_polyorder` | `integer` | `2` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `speed_threshold` | `number` \| `None` | `null` |  |  |
+| `fps` | `number` \| `None` | `null` |  |  |
+| `interpolate_centroid` | `boolean` | `true` |  |  |
+| `interpolate_pose` | `boolean` | `false` |  |  |
+| `expand_frames` | `integer` | `2` |  |  |
+| `savgol_window` | `integer` \| `None` | `null` |  |  |
+| `savgol_polyorder` | `integer` | `2` |  |  |
 
 ## Per-sequence summary
 
@@ -492,19 +492,19 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.collective_motion_metric
 
 Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |
-| `subgroup_col` | `string` \| `None` | `null` |  |
-| `area_method` | `"convex_hull"` \| `"alpha_shape"` \| `"none"` | `"convex_hull"` |  |
-| `alpha` | `number` \| `None` | `null` |  |
-| `min_individuals` | `integer` | `3` | >= `1` |
-| `fps` | `number` \| `None` | `null` |  |
-| `max_frame_gap` | `integer` \| `None` | `null` |  |
-| `min_group_speed` | `number` | `0.0` | >= `0` |
-| `speed_col` | `string` \| `None` | `null` |  |
-| `filter_expr` | `string` \| `None` | `null` |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `heading_source` | `"auto"` \| `"orientation"` \| `"velocity"` | `"auto"` |  |  |
+| `subgroup_col` | `string` \| `None` | `null` |  |  |
+| `area_method` | `"convex_hull"` \| `"alpha_shape"` \| `"none"` | `"convex_hull"` |  |  |
+| `alpha` | `number` \| `None` | `null` |  |  |
+| `min_individuals` | `integer` | `3` | >= `1` |  |
+| `fps` | `number` \| `None` | `null` |  |  |
+| `max_frame_gap` | `integer` \| `None` | `null` |  |  |
+| `min_group_speed` | `number` | `0.0` | >= `0` |  |
+| `speed_col` | `string` \| `None` | `null` |  |  |
+| `filter_expr` | `string` \| `None` | `null` |  |  |
+| `exclude_cols` | list of `string` | _constructed_ |  |  |
 
 ### `ffgroups-metrics`
 
@@ -512,14 +512,14 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups_metrics.FFGroup
 
 Per-sequence summary of focal-individual group metrics.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `group_col` | `string` | `"event"` |  |
-| `speed_col` | `string` | `"speed"` |  |
-| `time_chunk_sec` | `number` \| `None` | `null` |  |
-| `frame_chunk` | `integer` \| `None` | `null` |  |
-| `centroid_heading_col` | `string` | `"centroid_heading"` |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `group_col` | `string` | `"event"` |  |  |
+| `speed_col` | `string` | `"speed"` |  |  |
+| `time_chunk_sec` | `number` \| `None` | `null` |  |  |
+| `frame_chunk` | `integer` \| `None` | `null` |  |  |
+| `centroid_heading_col` | `string` | `"centroid_heading"` |  |  |
+| `exclude_cols` | list of `string` | _constructed_ |  |  |
 
 ### `frame-aggregate`
 
@@ -527,14 +527,14 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.frame_aggregate.FrameAgg
 
 Per-sequence feature reducing multi-id data to one row per frame.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `column` | `string` | _required_ |  |
-| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  |
-| `output_column` | `string` \| `None` | `null` |  |
-| `filter_expr` | `string` \| `None` | `null` |  |
-| `threshold` | `number` \| `None` | `null` |  |
-| `transform` | `"none"` \| `"abs"` | `"none"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `column` | `string` | _required_ |  |  |
+| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  |  |
+| `output_column` | `string` \| `None` | `null` |  |  |
+| `filter_expr` | `string` \| `None` | `null` |  |  |
+| `threshold` | `number` \| `None` | `null` |  |  |
+| `transform` | `"none"` \| `"abs"` | `"none"` |  |  |
 
 ### `nn-delta-bins`
 
@@ -542,21 +542,21 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNei
 
 Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `nbins` | `integer` | `45` | > `0` |
-| `binmax` | `number` | `14.0` | > `0` |
-| `max_for_avg` | `number` | `5.0` | > `0` |
-| `antisymm` | `boolean` | `true` |  |
-| `focal_category_col` | `string` | `"Focal_fish"` |  |
-| `neighbor_category_col` | `string` | `"neighbor_focal"` |  |
-| `group_size_col` | `string` | `"group_size"` |  |
-| `exp_col` | `string` | `"Exp"` |  |
-| `trial_col` | `string` | `"Trial"` |  |
-| `category_specs` | list of any | _constructed_ |  |
-| `exclude_cols` | list of `string` | _constructed_ |  |
-| `nonfocal_flag_col` | `string` | `"Focal_fish"` |  |
-| `nonfocal_flag_value` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `nbins` | `integer` | `45` | > `0` |  |
+| `binmax` | `number` | `14.0` | > `0` |  |
+| `max_for_avg` | `number` | `5.0` | > `0` |  |
+| `antisymm` | `boolean` | `true` |  |  |
+| `focal_category_col` | `string` | `"Focal_fish"` |  |  |
+| `neighbor_category_col` | `string` | `"neighbor_focal"` |  |  |
+| `group_size_col` | `string` | `"group_size"` |  |  |
+| `exp_col` | `string` | `"Exp"` |  |  |
+| `trial_col` | `string` | `"Trial"` |  |  |
+| `category_specs` | list of any | _constructed_ |  |  |
+| `exclude_cols` | list of `string` | _constructed_ |  |  |
+| `nonfocal_flag_col` | `string` | `"Focal_fish"` |  |  |
+| `nonfocal_flag_value` | `boolean` | `false` |  |  |
 
 ### `social-motion-summary`
 
@@ -564,13 +564,13 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.social_motion_summary.So
 
 Per-fish summary of social-interaction and locomotor-style metrics.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `fps` | `number` | `30.0` |  |
-| `speed_col` | `string` | `"speed"` |  |
-| `social_min_group_size` | `integer` | `2` |  |
-| `subgroup_col` | `string` \| `None` | `null` |  |
-| `compute_burst_coast` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `fps` | `number` | `30.0` |  |  |
+| `speed_col` | `string` | `"speed"` |  |  |
+| `social_min_group_size` | `integer` | `2` |  |  |
+| `subgroup_col` | `string` \| `None` | `null` |  |  |
+| `compute_burst_coast` | `boolean` | `false` |  |  |
 
 ## Global (fit once, apply everywhere)
 
@@ -580,41 +580,41 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
 
 AR-HMM behavioral syllable discovery as a pipeline feature.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `model` | `ArHmmModelArtifact` \| `None` | `null` |  |
-| `pca_dim` | `integer` \| `None` | `null` |  |
-| `n_states` | `integer` | `50` | >= `2` |
-| `n_lags` | `integer` | `1` | >= `1` |
-| `sticky_weight` | `number` | `100.0` | >= `0` |
-| `n_iter` | `integer` | `200` | >= `1` |
-| `tol` | `number` | `0.0001` | > `0` |
-| `n_restarts` | `integer` | `1` | >= `1` |
-| `standardize` | `boolean` | `true` |  |
-| `downsample_rate` | `integer` \| `None` | `null` |  |
-| `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` |
-| `random_state` | `integer` | `42` |  |
-| `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `ArHmmModelArtifact` \| `None` | `null` |  |  |
+| `pca_dim` | `integer` \| `None` | `null` |  |  |
+| `n_states` | `integer` | `50` | >= `2` |  |
+| `n_lags` | `integer` | `1` | >= `1` |  |
+| `sticky_weight` | `number` | `100.0` | >= `0` |  |
+| `n_iter` | `integer` | `200` | >= `1` |  |
+| `tol` | `number` | `0.0001` | > `0` |  |
+| `n_restarts` | `integer` | `1` | >= `1` |  |
+| `standardize` | `boolean` | `true` |  |  |
+| `downsample_rate` | `integer` \| `None` | `null` |  |  |
+| `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` |  |
+| `random_state` | `integer` | `42` |  |  |
+| `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  |  |
 
 ??? note "`ArHmmModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"arhmm"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"arhmm_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"arhmm"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"arhmm_model.joblib"` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ### `extract-labeled-templates`
 
@@ -622,58 +622,58 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.extract_labeled_template
 
 Extract labeled, split-annotated templates from upstream features.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `labels` | `GroundTruthLabelsSource` | _required_ |  |
-| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |
-| `n_per_class` | `integer` \| `object` \| `None` | `null` |  |
-| `n_total` | `integer` \| `None` | `null` |  |
-| `pool` | `PoolConfig` | _constructed_ |  |
-| `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` |
-| `random_state` | `integer` | `42` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `GroundTruthLabelsSource` | _required_ |  |  |
+| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |  |
+| `n_per_class` | `integer` \| `object` \| `None` | `null` |  |  |
+| `n_total` | `integer` \| `None` | `null` |  |  |
+| `pool` | `PoolConfig` | _constructed_ |  |  |
+| `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` |  |
+| `random_state` | `integer` | `42` |  |  |
 
 ??? note "`GroundTruthLabelsSource`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"behavior"` | `"behavior"` |  |
-    | `source` | `"labels"` | `"labels"` |  |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  |  |
+    | `source` | `"labels"` | `"labels"` |  |  |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` \| `None` | `null` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`NpzLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  |
-    | `key` | `string` | _required_ |  |
-    | `transpose` | `boolean` | `false` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  |  |
+    | `key` | `string` | _required_ |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`PoolConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `size` | `integer` \| `None` | `null` |  |
-    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |
-    | `max_entry_fraction` | `number` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `size` | `integer` \| `None` | `null` |  |  |
+    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |  |
+    | `max_entry_fraction` | `number` \| `None` | `null` |  |  |
 
 ### `extract-templates`
 
@@ -681,32 +681,32 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.extract_templates.Extrac
 
 Subsample per-sequence data into a representative template matrix.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |
-| `n_templates` | `integer` | _required_ | >= `1` |
-| `pool` | `PoolConfig` | _constructed_ |  |
-| `random_state` | `integer` | `42` |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  |  |
+| `n_templates` | `integer` | _required_ | >= `1` |  |
+| `pool` | `PoolConfig` | _constructed_ |  |  |
+| `random_state` | `integer` | `42` |  |  |
+| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
 
 ??? note "`NNResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"nearest-neighbor"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"nearest-neighbor"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ??? note "`PoolConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `size` | `integer` \| `None` | `null` |  |
-    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |
-    | `max_entry_fraction` | `number` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `size` | `integer` \| `None` | `null` |  |  |
+    | `allocation` | `"reservoir"` \| `"exact"` | `"reservoir"` |  |  |
+    | `max_entry_fraction` | `number` \| `None` | `null` |  |  |
 
 ### `feral`
 
@@ -714,50 +714,50 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeatu
 
 FERAL vision-transformer behavior classifier as a pipeline feature.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `feral_code_dir` | `string` \| `None` | `null` |  |
-| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  |
-| `predict_per_item` | `integer` | `64` |  |
-| `chunk_length` | `integer` | `64` |  |
-| `chunk_shift` | `integer` | `32` |  |
-| `chunk_step` | `integer` | `1` |  |
-| `resize_to` | `integer` | `256` |  |
-| `device` | `string` | `"cuda"` |  |
-| `infer_batch_size` | `integer` | `4` |  |
-| `inference_autocast` | `boolean` | `false` |  |
-| `class_names` | `object` \| `None` | `null` |  |
-| `decision_threshold` | `number` \| `None` | `null` |  |
-| `default_class` | `integer` | `0` |  |
-| `model_dir` | `string` \| `None` | `null` |  |
-| `video_dir` | `string` \| `None` | `null` |  |
-| `label_json` | `string` \| `None` | `null` |  |
-| `training` | `FeralTrainingConfig` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `feral_code_dir` | `string` \| `None` | `null` |  |  |
+| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  |  |
+| `predict_per_item` | `integer` | `64` |  |  |
+| `chunk_length` | `integer` | `64` |  |  |
+| `chunk_shift` | `integer` | `32` |  |  |
+| `chunk_step` | `integer` | `1` |  |  |
+| `resize_to` | `integer` | `256` |  |  |
+| `device` | `string` | `"cuda"` |  |  |
+| `infer_batch_size` | `integer` | `4` |  |  |
+| `inference_autocast` | `boolean` | `false` |  |  |
+| `class_names` | `object` \| `None` | `null` |  |  |
+| `decision_threshold` | `number` \| `None` | `null` |  |  |
+| `default_class` | `integer` | `0` |  |  |
+| `model_dir` | `string` \| `None` | `null` |  |  |
+| `video_dir` | `string` \| `None` | `null` |  |  |
+| `label_json` | `string` \| `None` | `null` |  |  |
+| `training` | `FeralTrainingConfig` \| `None` | `null` |  |  |
 
 ??? note "`FeralTrainingConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `epochs` | `integer` | `10` | >= `1` |
-    | `train_bs` | `integer` | `4` | >= `1` |
-    | `val_bs` | `integer` | `8` | >= `1` |
-    | `num_workers` | `integer` | `4` | >= `0` |
-    | `lr` | `number` | `4e-05` | > `0` |
-    | `weight_decay` | `number` | `0.1` | >= `0` |
-    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` |
-    | `fc_drop_rate` | `number` | `0.5` | >= `0`, <= `1` |
-    | `freeze_encoder_layers` | `integer` | `14` | >= `0` |
-    | `class_weights` | `string` | `"inv_freq_sqrt"` |  |
-    | `ema_decay` | `number` \| `None` | `0.999` |  |
-    | `mixup_alpha` | `number` \| `None` | `0.8` |  |
-    | `part_warmup` | `number` | `0.2` | >= `0`, <= `1` |
-    | `patience` | `integer` \| `None` | `null` |  |
-    | `compile` | `boolean` | `true` |  |
-    | `do_aa` | `boolean` | `true` |  |
-    | `seed` | `integer` | `0` |  |
-    | `part_sample` | `number` | `1.0` | > `0`, <= `1` |
-    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` |
-    | `wandb_project` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `epochs` | `integer` | `10` | >= `1` |  |
+    | `train_bs` | `integer` | `4` | >= `1` |  |
+    | `val_bs` | `integer` | `8` | >= `1` |  |
+    | `num_workers` | `integer` | `4` | >= `0` |  |
+    | `lr` | `number` | `4e-05` | > `0` |  |
+    | `weight_decay` | `number` | `0.1` | >= `0` |  |
+    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` |  |
+    | `fc_drop_rate` | `number` | `0.5` | >= `0`, <= `1` |  |
+    | `freeze_encoder_layers` | `integer` | `14` | >= `0` |  |
+    | `class_weights` | `string` | `"inv_freq_sqrt"` |  |  |
+    | `ema_decay` | `number` \| `None` | `0.999` |  |  |
+    | `mixup_alpha` | `number` \| `None` | `0.8` |  |  |
+    | `part_warmup` | `number` | `0.2` | >= `0`, <= `1` |  |
+    | `patience` | `integer` \| `None` | `null` |  |  |
+    | `compile` | `boolean` | `true` |  |  |
+    | `do_aa` | `boolean` | `true` |  |  |
+    | `seed` | `integer` | `0` |  |  |
+    | `part_sample` | `number` | `1.0` | > `0`, <= `1` |  |
+    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` |  |
+    | `wandb_project` | `string` \| `None` | `null` |  |  |
 
 ### `global-identity-dinov2-temporal`
 
@@ -765,45 +765,45 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.dinov2_temporal_identity
 
 Train a DINOv2 + temporal identity model from individual sequences.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  |
-| `identities` | `object` \| `None` | `null` |  |
-| `group_as_identity` | `boolean` | `false` |  |
-| `backbone` | `string` | `"dinov2_vits14"` |  |
-| `temporal_head` | `"gru"` \| `"perceiver"` \| `"pool"` | `"gru"` |  |
-| `embedding_dim` | `integer` | `128` | >= `16` |
-| `clip_len` | `integer` | `8` | >= `2` |
-| `clip_stride` | `integer` \| `None` | `null` |  |
-| `image_size` | tuple of (`integer`, `integer`) | `[224, 224]` | min items `2`, max items `2` |
-| `channels` | `integer` | `3` |  |
-| `epochs` | `integer` | `50` | >= `1` |
-| `learning_rate` | `number` | `0.001` |  |
-| `batch_size` | `integer` | `32` | >= `1` |
-| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |
-| `max_clips_per_identity` | `integer` | `500` | >= `1` |
-| `weights_name` | `string` | `"dinov2_temporal_identity"` |  |
-| `crop_root` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  |  |
+| `identities` | `object` \| `None` | `null` |  |  |
+| `group_as_identity` | `boolean` | `false` |  |  |
+| `backbone` | `string` | `"dinov2_vits14"` |  |  |
+| `temporal_head` | `"gru"` \| `"perceiver"` \| `"pool"` | `"gru"` |  |  |
+| `embedding_dim` | `integer` | `128` | >= `16` |  |
+| `clip_len` | `integer` | `8` | >= `2` |  |
+| `clip_stride` | `integer` \| `None` | `null` |  |  |
+| `image_size` | tuple of (`integer`, `integer`) | `[224, 224]` | min items `2`, max items `2` |  |
+| `channels` | `integer` | `3` |  |  |
+| `epochs` | `integer` | `50` | >= `1` |  |
+| `learning_rate` | `number` | `0.001` |  |  |
+| `batch_size` | `integer` | `32` | >= `1` |  |
+| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |  |
+| `max_clips_per_identity` | `integer` | `500` | >= `1` |  |
+| `weights_name` | `string` | `"dinov2_temporal_identity"` |  |  |
+| `crop_root` | `string` \| `None` | `null` |  |  |
 
 ??? note "`DinoV2TemporalIdentityArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-identity-dinov2-temporal"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"dinov2_temporal_identity_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-identity-dinov2-temporal"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"dinov2_temporal_identity_model.joblib"` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ### `global-identity-embedding`
 
@@ -811,38 +811,38 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.identity_embedding_model
 
 Train an identity model from frozen backbone embeddings + k-NN.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  |
-| `identities` | `object` \| `None` | `null` |  |
-| `group_as_identity` | `boolean` | `false` |  |
-| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |
-| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |
-| `channels` | `integer` | `3` |  |
-| `batch_size` | `integer` | `32` | >= `1` |
-| `max_images_per_identity` | `integer` | `2000` | >= `1` |
-| `weights_name` | `string` | `"identity_embedding"` |  |
-| `crop_root` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  |  |
+| `identities` | `object` \| `None` | `null` |  |  |
+| `group_as_identity` | `boolean` | `false` |  |  |
+| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |  |
+| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
+| `channels` | `integer` | `3` |  |  |
+| `batch_size` | `integer` | `32` | >= `1` |  |
+| `max_images_per_identity` | `integer` | `2000` | >= `1` |  |
+| `weights_name` | `string` | `"identity_embedding"` |  |  |
+| `crop_root` | `string` \| `None` | `null` |  |  |
 
 ??? note "`EmbeddingIdentityArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-identity-embedding"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"identity_embedding_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-identity-embedding"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"identity_embedding_model.joblib"` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ### `global-identity-model`
 
@@ -850,42 +850,42 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.identity_model.GlobalIde
 
 Train a visual identity model from individual animal sequences.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  |
-| `identities` | `object` \| `None` | `null` |  |
-| `group_as_identity` | `boolean` | `false` |  |
-| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |
-| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |
-| `channels` | `integer` | `3` |  |
-| `freeze_backbone` | `boolean` | `true` |  |
-| `epochs` | `integer` | `30` |  |
-| `learning_rate` | `number` | `0.001` |  |
-| `batch_size` | `integer` | `32` |  |
-| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |
-| `max_images_per_identity` | `integer` | `2000` | >= `1` |
-| `weights_name` | `string` | `"identity_classifier"` |  |
-| `crop_root` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  |  |
+| `identities` | `object` \| `None` | `null` |  |  |
+| `group_as_identity` | `boolean` | `false` |  |  |
+| `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  |  |
+| `image_size` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
+| `channels` | `integer` | `3` |  |  |
+| `freeze_backbone` | `boolean` | `true` |  |  |
+| `epochs` | `integer` | `30` |  |  |
+| `learning_rate` | `number` | `0.001` |  |  |
+| `batch_size` | `integer` | `32` |  |  |
+| `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` |  |
+| `max_images_per_identity` | `integer` | `2000` | >= `1` |  |
+| `weights_name` | `string` | `"identity_classifier"` |  |  |
+| `crop_root` | `string` \| `None` | `null` |  |  |
 
 ??? note "`ClassifierIdentityArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-identity-model"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"identity_classifier_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-identity-model"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"identity_classifier_model.joblib"` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ### `global-kmeans`
 
@@ -893,72 +893,72 @@ Version `0.4` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMea
 
 Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply().
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |
-| `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  |
-| `k` | `integer` | `100` | >= `1` |
-| `random_state` | `integer` | `42` |  |
-| `n_init` | `"auto"` \| `integer` | `"auto"` |  |
-| `max_iter` | `integer` | `300` | >= `1` |
-| `device` | `string` | `"cpu"` |  |
-| `label_artifact_points` | `boolean` | `true` |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
+| `model` | `KMeansModelArtifact` \| `None` | _constructed_ |  |  |
+| `k` | `integer` | `100` | >= `1` |  |
+| `random_state` | `integer` | `42` |  |  |
+| `n_init` | `"auto"` \| `integer` | `"auto"` |  |  |
+| `max_iter` | `integer` | `300` | >= `1` |  |
+| `device` | `string` | `"cpu"` |  |  |
+| `label_artifact_points` | `boolean` | `true` |  |  |
+| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`KMeansModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-kmeans"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-kmeans"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"model.joblib"` |  |  |
 
 ??? note "`NNResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"nearest-neighbor"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"nearest-neighbor"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`TemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ### `global-scaler`
 
@@ -966,54 +966,54 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScal
 
 Fit a StandardScaler on templates and scale per-sequence data.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |
-| `model` | `ScalerModelArtifact` \| `None` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
+| `model` | `ScalerModelArtifact` \| `None` | _constructed_ |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`ScalerModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-scaler"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"scaler.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-scaler"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"scaler.joblib"` |  |  |
 
 ??? note "`TemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ### `global-tsne`
 
@@ -1021,82 +1021,82 @@ Version `0.4` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE`
 
 Fit an openTSNE embedding on templates and map per-sequence data.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |
-| `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  |
-| `random_state` | `integer` | `42` |  |
-| `perplexity` | `integer` | `50` | >= `1` |
-| `knn_method` | `string` | `"annoy"` |  |
-| `n_jobs` | `integer` | `8` | >= `1` |
-| `fit` | `TSNEFitConfig` | _constructed_ |  |
-| `mapping` | `TSNEMapConfig` | _constructed_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
+| `model` | `TSNEModelArtifact` \| `None` | _constructed_ |  |  |
+| `random_state` | `integer` | `42` |  |  |
+| `perplexity` | `integer` | `50` | >= `1` |  |
+| `knn_method` | `string` | `"annoy"` |  |  |
+| `n_jobs` | `integer` | `8` | >= `1` |  |
+| `fit` | `TSNEFitConfig` | _constructed_ |  |  |
+| `mapping` | `TSNEMapConfig` | _constructed_ |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`TSNEFitConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `learning_rate` | `number` \| `string` | `"auto"` |  |
-    | `exaggeration_iters` | `integer` | `250` | >= `1` |
-    | `exaggeration` | `number` | `12` | > `0` |
-    | `exaggeration_momentum` | `number` | `0.5` | >= `0` |
-    | `iters` | `integer` | `750` | >= `1` |
-    | `momentum` | `number` | `0.8` | >= `0` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `learning_rate` | `number` \| `string` | `"auto"` |  |  |
+    | `exaggeration_iters` | `integer` | `250` | >= `1` |  |
+    | `exaggeration` | `number` | `12` | > `0` |  |
+    | `exaggeration_momentum` | `number` | `0.5` | >= `0` |  |
+    | `iters` | `integer` | `750` | >= `1` |  |
+    | `momentum` | `number` | `0.8` | >= `0` |  |
 
 ??? note "`TSNEMapConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `k` | `integer` | `25` | >= `1` |
-    | `iters` | `integer` | `100` | >= `1` |
-    | `learning_rate` | `number` | `1.0` | > `0` |
-    | `exaggeration` | `number` | `2.0` | > `0` |
-    | `momentum` | `number` | `0.0` | >= `0` |
-    | `chunk_size` | `integer` | `50000` | >= `1` |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `k` | `integer` | `25` | >= `1` |  |
+    | `iters` | `integer` | `100` | >= `1` |  |
+    | `learning_rate` | `number` | `1.0` | > `0` |  |
+    | `exaggeration` | `number` | `2.0` | > `0` |  |
+    | `momentum` | `number` | `0.0` | >= `0` |  |
+    | `chunk_size` | `integer` | `50000` | >= `1` |  |
 
 ??? note "`TSNEModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-tsne"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"embedding.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-tsne"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"embedding.joblib"` |  |  |
 
 ??? note "`TemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ### `global-ward`
 
@@ -1104,68 +1104,68 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardCl
 
 Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `TemplatesRef` \| `None` | `null` |  |
-| `model` | `WardModelArtifact` \| `None` | _constructed_ |  |
-| `n_clusters` | `integer` | `20` | >= `1` |
-| `method` | `string` | `"ward"` |  |
-| `pair_filter` | `NNResult` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `TemplatesRef` \| `None` | `null` |  |  |
+| `model` | `WardModelArtifact` \| `None` | _constructed_ |  |  |
+| `n_clusters` | `integer` | `20` | >= `1` |  |
+| `method` | `string` | `"ward"` |  |  |
+| `pair_filter` | `NNResult` \| `None` | `null` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`NNResult`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"nearest-neighbor"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"nearest-neighbor"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`TemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ??? note "`WardModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"global-ward"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"global-ward"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"model.joblib"` |  |  |
 
 ### `kpms`
 
@@ -1173,59 +1173,59 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.kpms.KpmsFeature`
 
 Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `model` | `KpmsModelArtifact` \| `None` | `null` |  |
-| `kpms_python` | `string` \| `None` | `null` |  |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `anterior_bodyparts` | list of `string` | _required_ | min items `1` |
-| `posterior_bodyparts` | list of `string` | _required_ | min items `1` |
-| `fps` | `integer` | `30` |  |
-| `num_iters_ar` | `integer` | `50` | >= `1` |
-| `num_iters_full` | `integer` | `500` | >= `1` |
-| `kappa_ar` | `number` \| `None` | `null` |  |
-| `kappa_full` | `number` \| `None` | `null` |  |
-| `latent_dim` | `integer` | `10` | >= `1` |
-| `location_aware` | `boolean` | `false` |  |
-| `outlier_scale_factor` | `number` | `6.0` | > `0` |
-| `remove_outliers` | `boolean` | `true` |  |
-| `mixed_map_iters` | `integer` \| `None` | `null` |  |
-| `parallel_message_passing` | `boolean` \| `None` | `null` |  |
-| `resume` | `boolean` | `true` |  |
-| `downsample_rate` | `integer` \| `None` | `null` |  |
-| `save_every_n_iters` | `integer` | `25` | >= `1` |
-| `num_iters_apply` | `integer` | `500` | >= `1` |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `KpmsModelArtifact` \| `None` | `null` |  |  |
+| `kpms_python` | `string` \| `None` | `null` |  |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `anterior_bodyparts` | list of `string` | _required_ | min items `1` |  |
+| `posterior_bodyparts` | list of `string` | _required_ | min items `1` |  |
+| `fps` | `integer` | `30` |  |  |
+| `num_iters_ar` | `integer` | `50` | >= `1` |  |
+| `num_iters_full` | `integer` | `500` | >= `1` |  |
+| `kappa_ar` | `number` \| `None` | `null` |  |  |
+| `kappa_full` | `number` \| `None` | `null` |  |  |
+| `latent_dim` | `integer` | `10` | >= `1` |  |
+| `location_aware` | `boolean` | `false` |  |  |
+| `outlier_scale_factor` | `number` | `6.0` | > `0` |  |
+| `remove_outliers` | `boolean` | `true` |  |  |
+| `mixed_map_iters` | `integer` \| `None` | `null` |  |  |
+| `parallel_message_passing` | `boolean` \| `None` | `null` |  |  |
+| `resume` | `boolean` | `true` |  |  |
+| `downsample_rate` | `integer` \| `None` | `null` |  |  |
+| `save_every_n_iters` | `integer` | `25` | >= `1` |  |
+| `num_iters_apply` | `integer` | `500` | >= `1` |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`KpmsModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"kpms"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"kpms_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"kpms"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"kpms_model.joblib"` |  |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `lightning-action`
 
@@ -1233,71 +1233,71 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.lightning_action_feature
 
 Supervised temporal action segmentation via lightning-action.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |
-| `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  |
-| `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  |
-| `num_hid_units` | `integer` | `64` | >= `1` |
-| `num_layers` | `integer` | `2` | >= `1` |
-| `num_lags` | `integer` | `4` | >= `1` |
-| `activation` | `string` | `"lrelu"` |  |
-| `dropout_rate` | `number` | `0.1` | >= `0`, <= `1` |
-| `sequence_length` | `integer` | `500` | >= `10` |
-| `num_epochs` | `integer` | `200` | >= `1` |
-| `batch_size` | `integer` | `32` | >= `1` |
-| `learning_rate` | `number` | `0.001` | > `0` |
-| `weight_decay` | `number` | `0.0` | >= `0` |
-| `optimizer` | `"Adam"` \| `"AdamW"` | `"Adam"` |  |
-| `weight_classes` | `boolean` | `true` |  |
-| `device` | `string` | `"cpu"` |  |
-| `random_state` | `integer` | `42` |  |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |
-| `default_class` | `integer` | _required_ |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |  |
+| `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  |  |
+| `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  |  |
+| `num_hid_units` | `integer` | `64` | >= `1` |  |
+| `num_layers` | `integer` | `2` | >= `1` |  |
+| `num_lags` | `integer` | `4` | >= `1` |  |
+| `activation` | `string` | `"lrelu"` |  |  |
+| `dropout_rate` | `number` | `0.1` | >= `0`, <= `1` |  |
+| `sequence_length` | `integer` | `500` | >= `10` |  |
+| `num_epochs` | `integer` | `200` | >= `1` |  |
+| `batch_size` | `integer` | `32` | >= `1` |  |
+| `learning_rate` | `number` | `0.001` | > `0` |  |
+| `weight_decay` | `number` | `0.0` | >= `0` |  |
+| `optimizer` | `"Adam"` \| `"AdamW"` | `"Adam"` |  |  |
+| `weight_classes` | `boolean` | `true` |  |  |
+| `device` | `string` | `"cpu"` |  |  |
+| `random_state` | `integer` | `42` |  |  |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |  |
+| `default_class` | `integer` | _required_ |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`LabeledTemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ??? note "`LightningActionModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"lightning-action"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"lightning_action_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"lightning-action"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"lightning_action_model.joblib"` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ### `xgboost`
 
@@ -1305,66 +1305,66 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostF
 
 XGBoost behavior classifier as a pipeline feature.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |
-| `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  |
-| `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |
-| `default_class` | `integer` | _required_ |  |
-| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  |
-| `use_smote` | `boolean` | `false` |  |
-| `undersample_ratio` | `number` \| `None` | `null` |  |
-| `n_estimators` | `integer` | `100` | >= `1` |
-| `max_depth` | `integer` | `6` | >= `1` |
-| `learning_rate` | `number` | `0.1` | > `0` |
-| `subsample` | `number` | `0.8` | > `0`, <= `1` |
-| `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` |
-| `random_state` | `integer` | `42` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  |  |
+| `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  |  |
+| `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  |  |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  |  |
+| `default_class` | `integer` | _required_ |  |  |
+| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  |  |
+| `use_smote` | `boolean` | `false` |  |  |
+| `undersample_ratio` | `number` \| `None` | `null` |  |  |
+| `n_estimators` | `integer` | `100` | >= `1` |  |
+| `max_depth` | `integer` | `6` | >= `1` |  |
+| `learning_rate` | `number` | `0.1` | > `0` |  |
+| `subsample` | `number` | `0.8` | > `0`, <= `1` |  |
+| `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` |  |
+| `random_state` | `integer` | `42` |  |  |
 
 ??? note "`JoblibLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  |
-    | `key` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  |  |
+    | `key` | `string` \| `None` | `null` |  |  |
 
 ??? note "`LabeledTemplatesRef`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `""` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `ParquetLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"templates.parquet"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"templates.parquet"` |  |  |
 
 ??? note "`ParquetLoadSpec`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  |
-    | `transpose` | `boolean` | `false` |  |
-    | `columns` | list of `string` \| `None` | `null` |  |
-    | `drop_columns` | list of `string` \| `None` | `null` |  |
-    | `numeric_only` | `boolean` | `true` |  |
-    | `frame_column` | `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  |  |
+    | `transpose` | `boolean` | `false` |  |  |
+    | `columns` | list of `string` \| `None` | `null` |  |  |
+    | `drop_columns` | list of `string` \| `None` | `null` |  |  |
+    | `numeric_only` | `boolean` | `true` |  |  |
+    | `frame_column` | `string` \| `None` | `null` |  |  |
 
 ??? note "`XgboostModelArtifact`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `feature` | `string` | `"xgboost"` |  |
-    | `run_id` | `string` \| `None` | `null` |  |
-    | `execution_id` | `string` \| `None` | `null` |  |
-    | `cache_hit` | `boolean` | `false` |  |
-    | `failed_entries` | list of `string` | `[]` |  |
-    | `entries_written` | `integer` | `0` |  |
-    | `load` | `JoblibLoadSpec` | _constructed_ |  |
-    | `pattern` | `string` | `"xgboost_model.joblib"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"xgboost"` |  |  |
+    | `run_id` | `string` \| `None` | `null` |  |  |
+    | `execution_id` | `string` \| `None` | `null` |  |  |
+    | `cache_hit` | `boolean` | `false` |  |  |
+    | `failed_entries` | list of `string` | `[]` |  |  |
+    | `entries_written` | `integer` | `0` |  |  |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  |  |
+    | `pattern` | `string` | `"xgboost_model.joblib"` |  |  |
 
 ## Media
 
@@ -1374,42 +1374,42 @@ Version `0.3` &middot; `mosaic.behavior.visualization_library.egocentric_crop.Eg
 
 Generate egocentric (animal-centered) video crops.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `target_id` | `integer` \| `None` | `null` |  |
-| `center_mode` | `string` \| `integer` | `"default"` |  |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `crop_size` | tuple of (`integer`, `integer`) | `[256, 256]` | min items `2`, max items `2` |
-| `rotate_to_heading` | `boolean` | `true` |  |
-| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |
-| `margin_factor` | `number` | `1.5` |  |
-| `center_offset_px` | `number` | `0.0` |  |
-| `body_mask` | `boolean` | `false` |  |
-| `body_mask_length_px` | `integer` | `96` |  |
-| `body_mask_width_px` | `integer` | `64` |  |
-| `use_clahe` | `boolean` | `false` |  |
-| `clahe_clip_limit` | `number` | `2.0` |  |
-| `clahe_tile_grid_size` | `integer` | `25` |  |
-| `grayscale` | `boolean` | `false` |  |
-| `transform_keypoints` | `boolean` | `false` |  |
-| `output_mode` | `string` | `"video"` |  |
-| `output_fps` | `number` \| `None` | `null` |  |
-| `output_root` | `string` \| `None` | `null` |  |
-| `frame_format` | `string` | `"png"` |  |
-| `interpolation` | `integer` | `1` |  |
-| `background_color` | `integer` | `0` |  |
-| `angle_col` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `target_id` | `integer` \| `None` | `null` |  |  |
+| `center_mode` | `string` \| `integer` | `"default"` |  |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `crop_size` | tuple of (`integer`, `integer`) | `[256, 256]` | min items `2`, max items `2` |  |
+| `rotate_to_heading` | `boolean` | `true` |  |  |
+| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |  |
+| `margin_factor` | `number` | `1.5` |  |  |
+| `center_offset_px` | `number` | `0.0` |  |  |
+| `body_mask` | `boolean` | `false` |  |  |
+| `body_mask_length_px` | `integer` | `96` |  |  |
+| `body_mask_width_px` | `integer` | `64` |  |  |
+| `use_clahe` | `boolean` | `false` |  |  |
+| `clahe_clip_limit` | `number` | `2.0` |  |  |
+| `clahe_tile_grid_size` | `integer` | `25` |  |  |
+| `grayscale` | `boolean` | `false` |  |  |
+| `transform_keypoints` | `boolean` | `false` |  |  |
+| `output_mode` | `string` | `"video"` |  |  |
+| `output_fps` | `number` \| `None` | `null` |  |  |
+| `output_root` | `string` \| `None` | `null` |  |  |
+| `frame_format` | `string` | `"png"` |  |  |
+| `interpolation` | `integer` | `1` |  |  |
+| `background_color` | `integer` | `0` |  |  |
+| `angle_col` | `string` \| `None` | `null` |  |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `interaction-crop-pipeline`
 
@@ -1417,39 +1417,39 @@ Version `0.3` &middot; `mosaic.behavior.visualization_library.interaction_crop.I
 
 Generate egocentric crop videos for detected interaction segments.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `crop_size` | tuple of (`integer`, `integer`) | `[192, 192]` | min items `2`, max items `2` |
-| `pose` | `PoseConfig` | _constructed_ |  |
-| `center_mode` | `string` \| `integer` | `"default"` |  |
-| `center_offset_px` | `number` | `0.0` |  |
-| `rotate_to_heading` | `boolean` | `true` |  |
-| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |
-| `margin_factor` | `number` | `1.5` |  |
-| `angle_col` | `string` \| `None` | `null` |  |
-| `interpolation` | `integer` | `1` |  |
-| `background_color` | `integer` | `0` |  |
-| `body_mask` | `boolean` | `false` |  |
-| `body_mask_length_px` | `integer` | `96` |  |
-| `body_mask_width_px` | `integer` | `64` |  |
-| `use_clahe` | `boolean` | `false` |  |
-| `clahe_clip_limit` | `number` | `2.0` |  |
-| `clahe_tile_grid_size` | `integer` | `25` |  |
-| `grayscale` | `boolean` | `false` |  |
-| `crop_both_individuals` | `boolean` | `true` |  |
-| `output_fps` | `number` \| `None` | `null` |  |
-| `output_root` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `crop_size` | tuple of (`integer`, `integer`) | `[192, 192]` | min items `2`, max items `2` |  |
+| `pose` | `PoseConfig` | _constructed_ |  |  |
+| `center_mode` | `string` \| `integer` | `"default"` |  |  |
+| `center_offset_px` | `number` | `0.0` |  |  |
+| `rotate_to_heading` | `boolean` | `true` |  |  |
+| `heading_points` | tuple of (`integer`, `integer`) | `[3, 6]` | min items `2`, max items `2` |  |
+| `margin_factor` | `number` | `1.5` |  |  |
+| `angle_col` | `string` \| `None` | `null` |  |  |
+| `interpolation` | `integer` | `1` |  |  |
+| `background_color` | `integer` | `0` |  |  |
+| `body_mask` | `boolean` | `false` |  |  |
+| `body_mask_length_px` | `integer` | `96` |  |  |
+| `body_mask_width_px` | `integer` | `64` |  |  |
+| `use_clahe` | `boolean` | `false` |  |  |
+| `clahe_clip_limit` | `number` | `2.0` |  |  |
+| `clahe_tile_grid_size` | `integer` | `25` |  |  |
+| `grayscale` | `boolean` | `false` |  |  |
+| `crop_both_individuals` | `boolean` | `true` |  |  |
+| `output_fps` | `number` \| `None` | `null` |  |  |
+| `output_root` | `string` \| `None` | `null` |  |  |
 
 ??? note "`PoseConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `pose_n` | `integer` | `7` |  |
-    | `pose_indices` | list of `integer` \| `None` | `null` |  |
-    | `x_prefix` | `string` | `"poseX"` |  |
-    | `y_prefix` | `string` | `"poseY"` |  |
-    | `confidence_prefix` | `string` | `"poseP"` |  |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  |  |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  |  |
+    | `x_prefix` | `string` | `"poseX"` |  |  |
+    | `y_prefix` | `string` | `"poseY"` |  |  |
+    | `confidence_prefix` | `string` | `"poseP"` |  |  |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  |  |
 
 ### `overlay`
 
@@ -1457,21 +1457,21 @@ Version `0.1` &middot; `mosaic.behavior.visualization_library.overlay_feature.Ov
 
 Render one annotated video per sequence, from tracks and drawn labels.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `label_kind` | `string` \| `None` | `"behavior"` |  |
-| `color_by` | `string` \| `None` | `null` |  |
-| `label_maps` | `object` | _constructed_ |  |
-| `hide_unlabeled` | `boolean` | `false` |  |
-| `start` | `integer` | `0` |  |
-| `end` | `integer` \| `None` | `null` |  |
-| `downscale` | `number` | `1.0` |  |
-| `show_individual_bboxes` | `boolean` | `true` |  |
-| `pair_box_feature` | `string` \| `None` | `null` |  |
-| `pair_box_behaviors` | list of `string` | _constructed_ |  |
-| `hide_individual_bboxes_for_pair` | `boolean` | `false` |  |
-| `draw_options` | `object` | _constructed_ |  |
-| `camera` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `label_kind` | `string` \| `None` | `"behavior"` |  |  |
+| `color_by` | `string` \| `None` | `null` |  |  |
+| `label_maps` | `object` | _constructed_ |  |  |
+| `hide_unlabeled` | `boolean` | `false` |  |  |
+| `start` | `integer` | `0` |  |  |
+| `end` | `integer` \| `None` | `null` |  |  |
+| `downscale` | `number` | `1.0` |  |  |
+| `show_individual_bboxes` | `boolean` | `true` |  |  |
+| `pair_box_feature` | `string` \| `None` | `null` |  |  |
+| `pair_box_behaviors` | list of `string` | _constructed_ |  |  |
+| `hide_individual_bboxes_for_pair` | `boolean` | `false` |  |  |
+| `draw_options` | `object` | _constructed_ |  |  |
+| `camera` | `string` \| `None` | `null` |  |  |
 
 ## Tag
 
@@ -1481,15 +1481,15 @@ Version `0.1` &middot; `mosaic.behavior.feature_library.id_tag_columns.IdTagColu
 
 Attach per-id label fields (from labels/<label_kind>) to each frame, so they can be merged via Inputs() and used as categories (e.g., focal/nonfocal).
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `labels` | `LabelsSource` | _constructed_ |  |
-| `label_kind` | `string` | `"id_tags"` |  |
-| `fields` | list of `string` \| `None` | `null` |  |
-| `field_renames` | `object` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `LabelsSource` | _constructed_ |  |  |
+| `label_kind` | `string` | `"id_tags"` |  |  |
+| `fields` | list of `string` \| `None` | `null` |  |  |
+| `field_renames` | `object` \| `None` | `null` |  |  |
 
 ??? note "`LabelsSource`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `kind` | `string` | _required_ |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | _required_ |  |  |

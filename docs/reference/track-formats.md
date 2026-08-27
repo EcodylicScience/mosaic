@@ -29,57 +29,57 @@ by `mosaic convert-tracks`.
 
 #### `calms21_json`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `debug` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `debug` | `boolean` | `false` |  |  |
 
 #### `calms21_npy`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `debug` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `debug` | `boolean` | `false` |  |  |
 
 #### `deeplabcut`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `fps` | `number` | `30.0` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `fps` | `number` | `30.0` |  |  |
 
 #### `sleap_analysis_h5`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `fps` | `number` | `30.0` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `fps` | `number` | `30.0` |  |  |
 
 #### `trex_npz`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
 
 #### `trex_npz_cm`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
 
 #### `trex_npz_scaled`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `cm_per_pixel` | `number` | _required_ | > `0.0` |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `cm_per_pixel` | `number` | _required_ | > `0.0` |  |
 
 #### `ultralytics_tracks`
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `strict_schema` | `boolean` | `false` |  |
-| `fps` | `number` | `30.0` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  |  |
+| `fps` | `number` | `30.0` |  |  |
 
 ## Track schemas
 
