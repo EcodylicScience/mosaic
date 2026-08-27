@@ -235,7 +235,7 @@ def test_resolve_media_multicamera_requires_camera(tmp_path, make_imgstore):
     assert one.paths[0].name == "rec.CAMA"
 
     # The scope enumerates one entry per camera, each its own single-store media.
-    scope = ds.resolve_media_scope(None, None)
+    scope = ds.resolve_media_scope(None)
     assert sorted(e.camera for e in scope) == ["CAMA", "CAMB"]
     assert all(len(e.resolved.paths) == 1 for e in scope)
 

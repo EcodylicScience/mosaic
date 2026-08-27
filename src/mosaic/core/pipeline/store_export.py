@@ -60,7 +60,8 @@ from mosaic.core.pipeline.transcode import (
     set_back_link,
     set_forward_link,
 )
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.entry import Entry
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, Params
 from mosaic.media_probe_config import media_thresholds
 
 if TYPE_CHECKING:
@@ -94,20 +95,42 @@ _HEARTBEAT_EVERY: Final = 25
 """Frames between progress heartbeats and cancellation checks."""
 
 
+_ENTRY_DESCRIPTION = (
+    "The one (group, sequence) whose stores are exported. Singular: this op "
+    "exports one entry per run."
+)
+
+_CAMERA_DESCRIPTION = (
+    "Which camera of the entry to export. Unset exports every camera, each to "
+    "its own file."
+)
+
+_AV1_CRF_DESCRIPTION = (
+    "AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an "
+    "analysis transcode encodes at. Named for its scale because this writer "
+    "encodes AV1, whose `crf` argument is a deprecated shim in x264's scale."
+)
+
+
 class StoreExportParams(Params):
-    """Parameters for one entry's store export."""
+    """Parameters for one entry's store export.
+
+    **``Params`` rather than ``OpParams``, and singular where every other op is
+    plural.** This op runs over one entry, so an inherited ``entries`` list
+    would be accepted and never read, and an inherited ``overwrite`` likewise:
+    reuse is decided by the recipe-addressed filename and the forward link.
+    Widening ``entry`` to ``entries`` changes the op's arity, which is a
+    separate decision from declaring the scope contract.
+    """
 
     # entry and camera both select WHICH stores are exported rather than what
     # comes out of one, so both stay out of the recipe -- the identities of the
     # stores actually exported are hashed in their place. Without the exclusion,
     # exporting one camera and exporting both would name the same camera's file
     # two different things.
-    entry: Annotated[tuple[str, str], HASH_EXCLUDE]
-    camera: Annotated[str | None, HASH_EXCLUDE] = None
-    # The AV1 CRF, 0 (lossless) to 63, defaulting to what an analysis transcode
-    # uses. Named for its scale because it is one: this writer encodes AV1, and
-    # its `crf` argument is a deprecated shim in x264's scale.
-    av1_crf: int = ANALYSIS_ENCODING.quality
+    entry: Annotated[Entry, HASH_EXCLUDE, Declared(_ENTRY_DESCRIPTION)]
+    camera: Annotated[str | None, HASH_EXCLUDE, Declared(_CAMERA_DESCRIPTION)] = None
+    av1_crf: Annotated[int, Declared(_AV1_CRF_DESCRIPTION)] = ANALYSIS_ENCODING.quality
 
 
 def export_recipe_hash(params: StoreExportParams) -> str:

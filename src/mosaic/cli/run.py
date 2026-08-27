@@ -21,9 +21,11 @@ break precisely where it is hardest to see.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
+
+from pydantic import BaseModel, ConfigDict
 
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
@@ -36,6 +38,52 @@ from mosaic.cli._io import (
     stdout_to_stderr,
 )
 from mosaic.cli._render import render_kv
+from mosaic.core.entry import Entry
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
+
+class _ScopeKeys(BaseModel):
+    """The scope an op's ``--params`` may name, read before the op's own model.
+
+    ``extra="ignore"`` because every other key belongs to the op. The three are
+    read together: ``groups`` and ``sequences`` are a cross product this expands
+    into the entry list an op declares, and an ``entries`` given alongside them
+    intersects with it.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    groups: list[str] | None = None
+    sequences: list[str] | None = None
+    entries: list[Entry] | None = None
+
+
+def _entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, object]:
+    """Replace a ``groups`` / ``sequences`` scope in *params* with ``entries``.
+
+    ``mosaic run --kind`` declares no scope flags of its own and refuses
+    ``--entries``, so an op's scope arrives inside ``--params``. Op params
+    declare one entry list, and the pair a person reaches for names a cross
+    product, so it is enumerated against the dataset here -- the same expansion
+    ``mosaic track`` does with its flags.
+
+    Params naming neither key are returned unchanged, so an op with no scope at
+    all keeps params its model accepts.
+    """
+    if "groups" not in params and "sequences" not in params:
+        return params
+    scope = _ScopeKeys.model_validate(params)
+    expanded = {
+        key: value
+        for key, value in params.items()
+        if key not in {"groups", "sequences"}
+    }
+    expanded["entries"] = ds.expand_media_scope(
+        scope.groups, scope.sequences, scope.entries
+    )
+    return expanded
 
 
 def run_command(
@@ -257,7 +305,7 @@ def run_command(
                 run_id = run_op(
                     ds,
                     op_kind,
-                    params_dict or {},
+                    _entries_from_scope(ds, params_dict or {}),
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

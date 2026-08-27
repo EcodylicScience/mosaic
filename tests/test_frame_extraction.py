@@ -346,7 +346,7 @@ def test_an_extracted_frame_set_records_what_it_was_cut_from(
     ds = scenario_dataset_with_media
     expected_uids, expected_compositions = _source_identity_maps(ds, [("", "seq_a")])
 
-    _ = extract_frames(ds, n_frames=2, method="uniform", sequences=["seq_a"])
+    _ = extract_frames(ds, n_frames=2, method="uniform", entries=[("", "seq_a")])
 
     runs = list_frame_runs(ds, method="uniform")
     rows = runs[runs["sequence"] == "seq_a"]
@@ -371,7 +371,7 @@ def test_a_frames_row_stores_its_video_paths_root_relative(
     from mosaic.tracking.frame_extraction import list_frame_runs
 
     ds = scenario_dataset_with_media
-    _ = extract_frames(ds, n_frames=2, method="uniform", sequences=["seq_a"])
+    _ = extract_frames(ds, n_frames=2, method="uniform", entries=[("", "seq_a")])
 
     rows = list_frame_runs(ds, method="uniform")
     stored = str(rows[rows["sequence"] == "seq_a"].iloc[0]["video_abs_path"])

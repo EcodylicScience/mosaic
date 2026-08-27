@@ -47,7 +47,7 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.types import HASH_EXCLUDE, Declared, OpParams, Params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
@@ -146,21 +146,78 @@ PerVideo: TypeAlias = Callable[[VideoInput], VideoPredictions]
 # --- Params --------------------------------------------------------------
 
 
-class _InferParamsBase(Params):
-    model: str  # weights path OR a prior training run_id
-    conf_threshold: float = 0.25
-    imgsz: int = 640
-    frame_step: int = 1
-    start_frame: int = 0
-    end_frame: int | None = None
-    max_frames: int | None = None
-    convert_to_tracks: bool = True
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-    groups: Annotated[list[str] | None, HASH_EXCLUDE] = None
-    sequences: Annotated[list[str] | None, HASH_EXCLUDE] = None
-    device: Annotated[str, HASH_EXCLUDE] = "0"
-    batch_size: Annotated[int, HASH_EXCLUDE] = 8
-    save_images: Annotated[bool, HASH_EXCLUDE] = False
+_MODEL_DESCRIPTION = (
+    "The weights to predict with, as a path or as the run identifier of the "
+    "training run that produced them."
+)
+
+_CONF_THRESHOLD_DESCRIPTION = (
+    "Minimum detection confidence a prediction must reach to be written."
+)
+
+_IMGSZ_DESCRIPTION = (
+    "Longest side, in pixels, that a frame is resized to before the model reads "
+    "it. It must match what the model was trained at."
+)
+
+_FRAME_STEP_DESCRIPTION = (
+    "Stride between the frames predicted on, so a long recording is covered "
+    "without predicting on every frame of it."
+)
+
+_START_FRAME_DESCRIPTION = "First frame to predict on, inclusive."
+
+_END_FRAME_DESCRIPTION = (
+    "Last frame to predict on, inclusive. Unset runs to the end of the video."
+)
+
+_MAX_FRAMES_DESCRIPTION = (
+    "Ceiling on how many frames are predicted on per entry. Unset predicts on "
+    "the whole range."
+)
+
+_CONVERT_TO_TRACKS_DESCRIPTION = (
+    "Bridge the predictions into a standardized tracks table once inference "
+    "finishes, instead of leaving them in the run directory alone."
+)
+
+_DEVICE_DESCRIPTION = (
+    "Which accelerator the model runs on, in the tool's own spelling: a GPU "
+    "index, or 'cpu'."
+)
+
+_BATCH_SIZE_DESCRIPTION = "How many frames the model reads in one forward pass."
+
+_SAVE_IMAGES_DESCRIPTION = (
+    "Write an annotated image per predicted frame beside the predictions, which "
+    "is for inspecting a model rather than for any consumer downstream."
+)
+
+
+class _InferParamsBase(OpParams):
+    """What every inference op predicts with, over the scope ``OpParams`` names.
+
+    ``convert_to_tracks`` reaches ``identity_dump()`` where the same knob on
+    :class:`~mosaic.tracking.common.params.TrackerOpParams` is ``HASH_EXCLUDE``.
+    Whether the two should agree is open: bridging writes a second artifact from
+    predictions that are already on disk, which argues for excluding it, and the
+    exclusion would move every ``infer-*`` run identifier and every tracks
+    variant minted from one.
+    """
+
+    model: Annotated[str, Declared(_MODEL_DESCRIPTION)]
+    conf_threshold: Annotated[float, Declared(_CONF_THRESHOLD_DESCRIPTION)] = 0.25
+    imgsz: Annotated[int, Declared(_IMGSZ_DESCRIPTION, unit="px")] = 640
+    frame_step: Annotated[int, Declared(_FRAME_STEP_DESCRIPTION)] = 1
+    start_frame: Annotated[int, Declared(_START_FRAME_DESCRIPTION)] = 0
+    end_frame: Annotated[int | None, Declared(_END_FRAME_DESCRIPTION)] = None
+    max_frames: Annotated[int | None, Declared(_MAX_FRAMES_DESCRIPTION)] = None
+    convert_to_tracks: Annotated[bool, Declared(_CONVERT_TO_TRACKS_DESCRIPTION)] = True
+    device: Annotated[str, HASH_EXCLUDE, Declared(_DEVICE_DESCRIPTION)] = "0"
+    batch_size: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)] = 8
+    save_images: Annotated[bool, HASH_EXCLUDE, Declared(_SAVE_IMAGES_DESCRIPTION)] = (
+        False
+    )
 
 
 class PoseInferParams(_InferParamsBase):
@@ -315,7 +372,7 @@ def _run_inference_op(
     run_id = identity.run_id
     ctx.set_run_id(run_id)
 
-    scope = ds.resolve_media_scope(params.groups, params.sequences)
+    scope = ds.resolve_media_scope(params.entries)
     if not scope:
         print(f"[{kind}] No media entries match the given scope.")
         return run_id

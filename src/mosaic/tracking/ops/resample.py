@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import pandas as pd
 
-from mosaic.core.helpers import make_entry_key, parse_entry_tokens, text_cell
+from mosaic.core.helpers import make_entry_key, text_cell
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
@@ -42,7 +42,7 @@ from mosaic.core.pipeline.tracks_index import (
     select_variant_rows,
     write_tracks_row,
 )
-from mosaic.core.pipeline.types import HASH_EXCLUDE, Params
+from mosaic.core.pipeline.types import Declared, OpParams, Params
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -64,14 +64,34 @@ def resample_tracks_run_id(
     )
 
 
-class ResampleTracksParams(Params):
+_TARGET_FPS_DESCRIPTION = (
+    "The uniform frame rate every table is re-gridded onto, which is what "
+    "makes one constant expressed in frames mean one duration dataset-wide."
+)
+
+_SOURCE_TRACKS_RUN_ID_DESCRIPTION = (
+    "Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves "
+    "whichever variant the scope's entries hold, and refuses when they hold two."
+)
+
+_PREFILTER_DESCRIPTION = (
+    "Reject a native sample whose displacement from its predecessor exceeds "
+    "this many table units per second before interpolating, so a mis-detection "
+    "is dropped instead of blended into its neighbors. Unset interpolates the "
+    "samples as they are."
+)
+
+
+class ResampleTracksParams(OpParams):
     """Parameters for ``resample-tracks``.
 
-    Scope fields of its own rather than ``TrackerOpParams``: that class carries
-    ``convert_to_tracks``, ``idle_timeout`` and ``max_runtime``, which describe
-    driving an external tool and mean nothing to a table rewrite, and its fields
-    are hashed -- so inheriting them would put four settings this op cannot act on
-    into its identity.
+    ``OpParams`` rather than ``TrackerOpParams``: ``convert_to_tracks``,
+    ``idle_timeout`` and ``max_runtime`` describe driving an external tool and
+    mean nothing to a table rewrite. Each of the three is ``HASH_EXCLUDE``, so
+    inheriting them would leave this op's identity where it is -- and they would
+    still appear in ``model_dump()``, in the recorded ``params.json`` and in the
+    discovery schema a client draws a form from, each one naming a knob this op
+    cannot act on.
 
     Attributes:
         target_fps: The rate to place every table on.
@@ -88,36 +108,24 @@ class ResampleTracksParams(Params):
             output by exactly the factor it attenuates it in a downstream
             detector: whatever a bad-frame gate then misses contributes less than
             that gate's own threshold.
-        groups: Restrict to these groups.
-        sequences: Restrict to these sequences.
-        entries: Restrict to these ``"group:sequence"`` pairs; a bare token is a
-            sequence in the empty group.
-        overwrite: Rewrite tables that are already present.
     """
 
-    target_fps: float
-    source_tracks_run_id: str | None = None
-    prefilter: float | None = None
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
-    entries: list[str] | None = None
-    overwrite: Annotated[bool, HASH_EXCLUDE] = False
-
-    def entry_pairs(self) -> list[tuple[str, str]]:
-        """The ``entries`` tokens as ``(group, sequence)`` pairs."""
-        return parse_entry_tokens(self.entries)
+    target_fps: Annotated[float, Declared(_TARGET_FPS_DESCRIPTION, unit="fps")]
+    source_tracks_run_id: Annotated[
+        str | None, Declared(_SOURCE_TRACKS_RUN_ID_DESCRIPTION)
+    ] = None
+    prefilter: Annotated[
+        float | None, Declared(_PREFILTER_DESCRIPTION, unit="units/s")
+    ] = None
 
 
 def _in_scope(row: pd.Series, params: ResampleTracksParams) -> bool:
     """Whether one tracks-index row is one this run covers."""
+    if params.entries is None:
+        return True
     group = text_cell(row.get("group", ""))
     sequence = text_cell(row.get("sequence", ""))
-    if params.groups is not None and group not in set(params.groups):
-        return False
-    if params.sequences is not None and sequence not in set(params.sequences):
-        return False
-    pairs = params.entry_pairs()
-    return not pairs or (group, sequence) in set(pairs)
+    return (group, sequence) in set(params.entries)
 
 
 def _source_rows(

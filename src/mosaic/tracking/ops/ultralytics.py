@@ -153,14 +153,11 @@ class UltralyticsOp(Op[UltralyticsParams]):
         # Ultralytics and torch stay inside run(), so registration is light.
         from mosaic.tracking.ultralytics_track.dataset_runs import run_ultralytics
 
-        entry_pairs = params.entry_pairs()
         return run_ultralytics(
             ds,
             ctx=ctx,
             model_path=params.model_path,
-            groups=params.groups,
-            sequences=params.sequences,
-            entries=entry_pairs or None,
+            entries=params.entries,
             task=params.task,
             tracker=params.tracker,
             tracker_overrides=params.tracker_overrides,

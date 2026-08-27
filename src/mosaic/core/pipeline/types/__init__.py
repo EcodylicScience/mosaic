@@ -47,7 +47,10 @@ from mosaic.core.pipeline.types.labels import (
 )
 from mosaic.core.pipeline.types.params import (
     HASH_EXCLUDE,
+    Declared,
+    HashExclude,
     GlobalModelParams,
+    OpParams,
     Params,
 )
 from mosaic.core.pipeline.types.results import (
@@ -63,6 +66,7 @@ __all__ = [
     "BodyScaleResult",
     "COLUMNS",
     "Columns",
+    "Declared",
     "DependencyLookup",
     "EmitsLevel",
     "Feature",
@@ -70,6 +74,7 @@ __all__ = [
     "GlobalModelParams",
     "GroundTruthLabelsSource",
     "HASH_EXCLUDE",
+    "HashExclude",
     "ID_COLS",
     "InputStream",
     "InputItem",
@@ -87,6 +92,7 @@ __all__ = [
     "NNResult",
     "NpzArtifact",
     "NpzLoadSpec",
+    "OpParams",
     "PAIR_COLS",
     "Params",
     "ParquetArtifact",

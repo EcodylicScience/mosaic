@@ -90,7 +90,13 @@ def converted_dataset_index(path: Path) -> IndexCSV[ConvertedDatasetIndexRow]:
 
 
 class ConvertPointsParams(Params):
-    """Parameters for the ``convert-points`` op (CVAT points -> POLO training dataset)."""
+    """Parameters for the ``convert-points`` op (CVAT points -> POLO training dataset).
+
+    ``Params`` rather than ``OpParams``: this op names an XML export and an
+    images directory, never a media entry, so an inherited ``entries`` selector
+    would be accepted and never read. Its ``overwrite`` is declared here for the
+    same reason.
+    """
 
     source_format: Literal["cvat_points"] = "cvat_points"
     # dataset-resolvable inputs (relative to the dataset root, or absolute)

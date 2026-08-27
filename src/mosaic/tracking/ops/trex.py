@@ -162,13 +162,10 @@ class TrexOp(Op[TrexParams]):
         # Heavy TREx imports (subprocess/opencv) stay inside run() so registration is light.
         from mosaic.tracking.trex.dataset_runs import run_trex
 
-        entry_pairs = params.entry_pairs()
         return run_trex(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
-            groups=params.groups,
-            sequences=params.sequences,
-            entries=entry_pairs or None,
+            entries=params.entries,
             detect_model=params.detect_model,
             detect_type=params.detect_type,
             detect_conf_threshold=params.detect_conf_threshold,

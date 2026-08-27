@@ -50,7 +50,7 @@ def _live_recipe(ds: Dataset, target: Target = "analysis") -> str:
 
     encoding = ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING
     return transcode_recipe_hash(
-        TranscodeParams(entry=("", ""), target=target),
+        TranscodeParams(entries=[("", "")], target=target),
         encoding,
         CHROME_149,
         media_thresholds(),

@@ -381,7 +381,7 @@ def test_an_empty_scope_still_returns_the_run_it_minted(
     that has to happen before the run is named, whatever the scope turns out to
     hold.
     """
-    run_id = dr.run_ultralytics(ds, model_path=str(model), sequences=["absent"])
+    run_id = dr.run_ultralytics(ds, model_path=str(model), entries=[("", "absent")])
     assert run_id.startswith("ultralytics.8.4-")
     assert ultralytics.tracked == []
     assert [kind for _name, kind in ultralytics.events] == ["probe"]

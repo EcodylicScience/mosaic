@@ -52,6 +52,11 @@ import mosaic-queue, and a run started from a notebook holds no lease.
 one filesystem. Two hosts writing one sync-service folder can therefore both
 claim the same directory. These markers are safe for many writers on one
 mount, or many machines one at a time, never both.
+
+:class:`Phase` and :func:`phase_fields` carry the other sense of the word. They
+mark nothing on disk: :class:`Phase` is ``Annotated`` metadata naming which
+phases of a multi-phase op consume a parameter field, and it lives here because
+it reuses the :data:`PhaseName` vocabulary the on-disk markers already own.
 """
 
 from __future__ import annotations
@@ -59,7 +64,7 @@ from __future__ import annotations
 import datetime
 import os
 from pathlib import Path
-from typing import Final, Literal, TypeVar
+from typing import Final, Literal, TypeVar, final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -73,6 +78,7 @@ __all__ = [
     "MARKER_SCHEMA_VERSION",
     "InflightMarker",
     "InflightState",
+    "Phase",
     "PhaseMarker",
     "PhaseName",
     "clear_inflight",
@@ -82,6 +88,7 @@ __all__ = [
     "inflight_marker_path",
     "inflight_state",
     "new_inflight",
+    "phase_fields",
     "phase_marker_path",
     "read_inflight",
     "read_phase_marker",
@@ -99,6 +106,74 @@ tracker phase and shares nothing with the other two beyond this protocol -- whic
 is the point: the sweeper reads markers, not producers, so a fourth kind of
 output joins by writing one rather than by teaching the sweeper about itself.
 """
+
+
+@final
+class Phase:
+    """Names which phases of a multi-phase op consume a parameter field.
+
+    Goes in a tool-facing field's ``Annotated``, beside the field's ``Declared``
+    and any pydantic ``Field``::
+
+        cm_per_pixel: Annotated[float | None, Declared("..."), Phase("convert")]
+        track_max_individuals: Annotated[
+            int | None,
+            Declared("the maximum number of simultaneous individuals to track"),
+            Phase("convert", "track"),
+        ]
+
+    The first phase is a required positional parameter. A declaration that names
+    no phase fails to type-check where it is written. A plain final class rather
+    than a dataclass, because a dataclass cannot express varargs.
+
+    Two markers naming the same phases are still two objects: instances compare
+    by identity, and :func:`phase_fields` selects by ``isinstance`` and
+    membership in :attr:`names` rather than by comparing markers.
+
+    It declares no JSON Schema hook. :func:`phase_fields` reads it from
+    ``FieldInfo.metadata`` to project a settings dictionary per phase, and a
+    client groups a form by the layout it chooses instead of by an op's
+    execution phases.
+
+    Attributes:
+        names: The phases that consume the field. Read-only.
+    """
+
+    __slots__ = ("_names",)
+
+    def __init__(self, first: PhaseName, *rest: PhaseName) -> None:
+        self._names: frozenset[PhaseName] = frozenset((first, *rest))
+
+    @property
+    def names(self) -> frozenset[PhaseName]:
+        """The phases that consume the field."""
+        return self._names
+
+    def __repr__(self) -> str:
+        named = ", ".join(repr(name) for name in sorted(self._names))
+        return f"Phase({named})"
+
+
+def phase_fields(model: type[BaseModel], phase: PhaseName) -> tuple[str, ...]:
+    """Return the fields of *model* that *phase* consumes, in declaration order.
+
+    Args:
+        model: Parameter model to read.
+        phase: Phase to select.
+
+    Returns:
+        Field names, in the order *model* declares them. A field that declares
+        no :class:`Phase` is omitted.
+    """
+    return tuple(
+        name
+        for name, info in model.model_fields.items()
+        if any(
+            isinstance(marker, Phase) and phase in marker.names
+            for marker in info.metadata
+        )
+    )
+
 
 InflightState = Literal["free", "mine", "live", "expired", "orphaned"]
 

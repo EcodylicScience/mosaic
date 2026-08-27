@@ -227,10 +227,18 @@ def test_hash_exclude_does_not_change_run_id():
     from mosaic.core.pipeline._utils import hash_params
 
     a = ExtractFramesParams(
-        n_frames=10, method="uniform", parallel_workers=1, overwrite=True, groups=["g"]
+        n_frames=10,
+        method="uniform",
+        parallel_workers=1,
+        overwrite=True,
+        entries=[("g", "s")],
     )
     b = ExtractFramesParams(
-        n_frames=10, method="uniform", parallel_workers=8, overwrite=False, groups=None
+        n_frames=10,
+        method="uniform",
+        parallel_workers=8,
+        overwrite=False,
+        entries=None,
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
     # a real param DOES change it
@@ -786,8 +794,8 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
     from mosaic.tracking import run_trex
 
     ds = _make_dataset(tmp_path)
-    direct = run_trex(ds, sequences=["nonexistent"])
-    via_op = run_op(ds, "trex", {"sequences": ["nonexistent"]})
+    direct = run_trex(ds, entries=[("", "nonexistent")])
+    via_op = run_op(ds, "trex", {"entries": [("", "nonexistent")]})
     assert direct == via_op
     assert direct.startswith("trex.")
 
@@ -847,9 +855,11 @@ def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
 
     ds = _make_dataset(tmp_path)
     model = _fake_sleap_model(tmp_path)
-    direct = run_sleap(ds, model_paths=[str(model)], sequences=["nonexistent"])
+    direct = run_sleap(ds, model_paths=[str(model)], entries=[("", "nonexistent")])
     via_op = run_op(
-        ds, "sleap", {"model_paths": [str(model)], "sequences": ["nonexistent"]}
+        ds,
+        "sleap",
+        {"model_paths": [str(model)], "entries": [("", "nonexistent")]},
     )
     assert direct == via_op
     assert direct.startswith("sleap.1.6-")
@@ -969,9 +979,11 @@ def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
 
     ds = _make_dataset(tmp_path)
     model = _fake_litpose_model(tmp_path)
-    direct = run_litpose(ds, model_path=str(model), sequences=["nonexistent"])
+    direct = run_litpose(ds, model_path=str(model), entries=[("", "nonexistent")])
     via_op = run_op(
-        ds, "litpose", {"model_path": str(model), "sequences": ["nonexistent"]}
+        ds,
+        "litpose",
+        {"model_path": str(model), "entries": [("", "nonexistent")]},
     )
     assert direct == via_op
     assert direct.startswith("litpose.2.3-")
@@ -1220,7 +1232,7 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
 
     try:
-        run_trex(ds, sequences=["vid1"], detect_model=rid, detect_type="yolo")
+        run_trex(ds, entries=[("", "vid1")], detect_model=rid, detect_type="yolo")
     except _Stop:
         pass
 

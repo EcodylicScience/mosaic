@@ -85,6 +85,7 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
+from .entry import Entry
 from .json_value import JsonValue
 from .manifest import (
     AnyScanSource,
@@ -3881,10 +3882,10 @@ class Dataset:
 
         live_recipes = {
             target: transcode_recipe_hash(
-                # `entry` and `allow_hardware` are both HASH_EXCLUDE, so any
+                # `entries` and `allow_hardware` are both HASH_EXCLUDE, so any
                 # entry yields the recipe every current run of this target would
                 # name its output after.
-                TranscodeParams(entry=("", ""), target=target),
+                TranscodeParams(entries=[("", "")], target=target),
                 ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
                 CHROME_149,
                 media_thresholds(),
@@ -4745,26 +4746,70 @@ class Dataset:
             facts.append(routed_facts)
         return ResolvedMedia(paths=paths, facts=facts)
 
+    def expand_media_scope(
+        self,
+        groups: Iterable[str] | None = None,
+        sequences: Iterable[str] | None = None,
+        entries: Iterable[Entry] | None = None,
+        index_filename: str = "index.csv",
+    ) -> list[Entry] | None:
+        """Enumerate the ``(group, sequence)`` pairs a flag-shaped scope names.
+
+        The bridge between a command line, which offers ``--groups`` and
+        ``--sequences``, and an op's params, which take an entry list.
+        ``groups=["A"]`` alone means every sequence in group A, and only an
+        enumeration against the index can say which those are. All three
+        selectors intersect, matching what :meth:`resolve_media_scope` does with
+        the pairs this returns.
+
+        Returns ``None`` when none of the three names anything, which every op
+        reads as every indexed entry. The index is read only when *groups* or
+        *sequences* is given, so an explicit entry list needs no index at all.
+
+        Raises:
+            FileNotFoundError: If *groups* or *sequences* is given and the
+                originals index does not exist.
+        """
+        if groups is None and sequences is None:
+            return None if entries is None else list(entries)
+
+        df = self._load_media_index(index_filename)
+        mask = pd.Series(True, index=df.index)
+        if groups is not None:
+            mask &= df["group"].isin({str(group) for group in groups})
+        if sequences is not None:
+            mask &= df["sequence"].isin({str(sequence) for sequence in sequences})
+        if entries is not None:
+            wanted = {(str(group), str(sequence)) for group, sequence in entries}
+            pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
+            mask &= pd.Series(pairs.isin(wanted), index=df.index)
+        scoped = df[mask]
+        return sorted(
+            {
+                (str(group), str(sequence))
+                for group, sequence in zip(
+                    scoped["group"], scoped["sequence"], strict=True
+                )
+            }
+        )
+
     def resolve_media_scope(
         self,
-        groups: Iterable[str] | None,
-        sequences: Iterable[str] | None,
-        entries: Iterable[tuple[str, str]] | None = None,
+        entries: Iterable[Entry] | None,
         index_filename: str = "index.csv",
     ) -> list[ResolvedScopeEntry]:
         """Enumerate the scoped ``(group, sequence, camera)`` entries with media.
 
-        Reads the originals index once, filters it to the given *groups* /
-        *sequences* scope (either may be ``None`` to keep all), and returns one
-        :class:`ResolvedScopeEntry` per distinct ``(group, sequence, camera)`` in
-        deterministic order -- so the cameras of one recording become separate
-        entries and are never concatenated into a single timeline. When *entries*
-        is given, the scope is further restricted to rows whose
-        ``(group, sequence)`` pair is in that set -- an explicit enumeration that
-        pins an arbitrary subset even when sequence names repeat across groups
-        (unlike the *groups*/*sequences* cross-product). Each entry's
-        :class:`ResolvedMedia` carries its ``video_order``-sorted paths and
-        stored facts, routed by transcode verdict exactly as
+        Reads the originals index once, restricts it to the rows whose
+        ``(group, sequence)`` pair is in *entries* (``None`` keeps all), and
+        returns one :class:`ResolvedScopeEntry` per distinct
+        ``(group, sequence, camera)`` in deterministic order -- so the cameras of
+        one recording become separate entries and are never concatenated into a
+        single timeline. An explicit enumeration pins an arbitrary subset even
+        when sequence names repeat across groups;
+        :meth:`expand_media_scope` builds one from a group / sequence scope. Each
+        entry's :class:`ResolvedMedia` carries its ``video_order``-sorted paths
+        and stored facts, routed by transcode verdict exactly as
         :meth:`resolve_media` does. When an entry has an empty group and a
         sequence whose safe name is empty, the returned sequence label falls back
         to the first original file's stem.
@@ -4782,10 +4827,6 @@ class Dataset:
         df = self._load_media_index(index_filename)
 
         mask = pd.Series(True, index=df.index)
-        if groups is not None:
-            mask &= df["group"].isin({str(g) for g in groups})
-        if sequences is not None:
-            mask &= df["sequence"].isin({str(s) for s in sequences})
         if entries is not None:
             wanted = {(str(group), str(sequence)) for group, sequence in entries}
             pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])

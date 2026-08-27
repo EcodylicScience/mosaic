@@ -78,14 +78,11 @@ class LitposeOp(Op[LitposeParams]):
         # Heavy Lightning Pose imports (subprocess) stay inside run() so registration is light.
         from mosaic.tracking.litpose.dataset_runs import run_litpose
 
-        entry_pairs = params.entry_pairs()
         return run_litpose(
             ds,
             ctx=ctx,  # run within the op's Job Contract -- no double-wrapping
             model_path=params.model_path,
-            groups=params.groups,
-            sequences=params.sequences,
-            entries=entry_pairs or None,
+            entries=params.entries,
             litpose_overrides=params.litpose_overrides,
             precision=params.precision,
             convert_to_tracks=params.convert_to_tracks,
